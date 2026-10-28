@@ -26,7 +26,10 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
   event it covers, and the lines that name `prev` empty after it are
   the events it covers, so the index keeps the shapes 0.19.0 reads
   (lakelands#1468); the index is the engine's own and no part of the
-  format. The open's check of the last group reads its lines as whole
+  format. As 086 decides for 0.21.0, an event's index line names `id`
+  empty, and the engine reads the id from the event's line, which holds
+  it whole; a line written before names it and is read as it stands
+  (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`). The open's check of the last group reads its lines as whole
   events of their format; the store writes the append that creates a
   lake, and the one that upgrades it, whole (`docs/log-format.md`
   §1.2), so 0.19.0 counts that group even while it is a lake's only one

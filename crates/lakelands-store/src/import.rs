@@ -13,7 +13,9 @@
 //! it, the one format, no member where a reader refuses it: an ingest
 //! sealed under another source's key among them), then read once more
 //! for what only an import needs: every event belongs to the lake the
-//! location names, and every fence is the one its writer held
+//! location names, its `id` is of the form `docs/log-format.md` §3 gives
+//! it, which a reader does not judge and an engine keeps as its bytes,
+//! and every fence is the one its writer held
 //! (`docs/log-format.md` §4.1: 0 at position 0, each `lease_taken`
 //! carrying the fence it names, every other event the fence of the
 //! `lease_taken` before it). A fault in the files refuses the
@@ -292,6 +294,13 @@ fn check(
             {
                 let taken = (event.body.keys.iter()).chain(&event.body.apart);
                 shredded.extend(taken.map(|k| (source.clone(), k.clone())));
+            }
+            // PostgreSQL keeps an id as its 16 bytes (086); a log another
+            // writer made may hold one of another form.
+            if !event.id.of_form() {
+                let flaw = Flaw::IdNotOfForm;
+                let at = Some(event.position);
+                return Err(lakelands_core::damaged(Part::Export, at, flaw));
             }
             if event.fence != fence {
                 let (carried, lease) = (event.fence, fence);

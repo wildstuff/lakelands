@@ -38,7 +38,13 @@ configured. With `disable` the connection is plaintext.
 
 - An event's canonical bytes are stored unchanged, one row per event,
   with the position, id, `prev`, `hash` and fence beside them, and the
-  first position of the segment it belongs to.
+  first position of the segment it belongs to. As 086 decides for
+  0.21.0, `id`, `prev` and `hash` are kept as the bytes their hex digits
+  spell and handed back as the same lower-case hex; an index on the id
+  answers which position holds it, and the projection keeps no
+  `applied` table. A log kept as text is converted in place by the
+  first writer's open of 0.21.0, in one transaction
+  (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
 - A segment's digest is the SHA-256 of its events' bytes, each followed
   by one line feed: the digest of the file the format describes
   (`docs/log-format.md` §4.2).

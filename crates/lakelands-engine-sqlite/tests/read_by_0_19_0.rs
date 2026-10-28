@@ -20,69 +20,17 @@
 //! which only makes it harder to pass: every committed line of every
 //! index is parsed, as a read's halving may land on any of them.
 
+mod read_by;
+
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use lakelands_api::Location;
 use lakelands_api::engine::OpenMode;
 use lakelands_api::event::LOG_FORMAT_VERSION;
 use lakelands_api::ontology::StorageKind::Text;
-use lakelands_api::seam::Seams;
 use lakelands_core::conformance::fixture::{Lake, source_record, sourced, type_decl};
-use lakelands_engine_sqlite::SqliteOpener;
+use read_by::{Old, seams};
 use serde_json::{Value, json};
-
-fn seams() -> Seams {
-    Seams {
-        engines: vec![Arc::new(SqliteOpener)],
-        ..Seams::default()
-    }
-}
-
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("read-by-0-19-0-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
-
-/// An event line as 0.19.0 reads one.
-#[derive(Clone, Debug)]
-struct Old {
-    position: u64,
-    offset: u64,
-    len: u64,
-    prev: String,
-    hash: String,
-}
-
-/// 0.19.0's `parse_line`: `["c"]` is a commit line, `["e", position,
-/// fence, offset, len, id, prev, hash]` an event line, with exactly
-/// these seven members of these kinds; anything else it refuses, a line
-/// that is no JSON or whose members do not fit as `NotJson`, any other
-/// shape as `UnknownLine`: either is a damaged index.
-fn parse_line(line: &[u8]) -> Result<Option<Old>, String> {
-    let shown = || String::from_utf8_lossy(line).into_owned();
-    let parsed: Value =
-        serde_json::from_slice(line).map_err(|_| format!("no JSON: {}", shown()))?;
-    match parsed.as_array().map(Vec::as_slice) {
-        Some([kind]) if kind == "c" => Ok(None),
-        Some([kind, rest @ ..]) if kind == "e" => {
-            let members: (u64, u64, u64, u64, String, String, String) =
-                serde_json::from_value(Value::Array(rest.to_vec()))
-                    .map_err(|_| format!("members that do not fit: {}", shown()))?;
-            let (position, _, offset, len, _, prev, hash) = members;
-            Ok(Some(Old {
-                position,
-                offset,
-                len,
-                prev,
-                hash,
-            }))
-        }
-        _ => Err(format!("a line it does not know: {}", shown())),
-    }
-}
 
 /// 0.19.0's `whole`: each line of the group is in the segment file, a
 /// line feed after it, and the line, read as an event, hashes to the hash
@@ -108,29 +56,10 @@ fn whole(segment: &[u8], group: &[Old]) -> bool {
 /// format: the first committed event's line and the last's, as their
 /// bytes. Every way it would call the log damaged first is an error here.
 fn older(dir: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let mut firsts: Vec<u64> = std::fs::read_dir(dir.join("log"))
-        .unwrap()
-        .filter_map(|e| {
-            let name = e.unwrap().file_name().into_string().unwrap();
-            let stem = name.strip_suffix(".jsonl")?.to_owned();
-            (stem.len() == 20).then(|| stem.parse().unwrap())
-        })
-        .collect();
-    firsts.sort_unstable();
+    let firsts = read_by::segments(dir);
     let (mut ends, mut last_hash) = (Vec::new(), None::<String>);
     for (i, first) in firsts.iter().enumerate() {
-        let segment = std::fs::read(dir.join("log").join(format!("{first:020}.jsonl"))).unwrap();
-        let index = std::fs::read(dir.join("index").join(format!("{first:020}.idx"))).unwrap();
-        let (mut groups, mut group) = (Vec::new(), Vec::new());
-        for line in index.split_inclusive(|b| *b == b'\n') {
-            let Some(line) = line.strip_suffix(b"\n") else {
-                break;
-            };
-            match parse_line(line).map_err(|e| format!("segment {first}: {e}"))? {
-                Some(e) => group.push(e),
-                None => groups.push(std::mem::take(&mut group)),
-            }
-        }
+        let (segment, mut groups) = read_by::groups(dir, *first)?;
         let events: Vec<&Old> = groups.iter().flatten().collect();
         // Its first event line names its own position, and a later
         // segment's names the last hash of the one before (`follows`).
@@ -184,7 +113,7 @@ fn framed(dir: &Path) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lake_this_build_made_is_read_by_0_19_0_up_to_its_format() {
-    let dir = scratch("made");
+    let dir = read_by::scratch("0-19-0", "made");
     let mut location = Location::sqlite("lake", &dir);
     location.limits.seal_after_bytes = 1 << 20;
     let store = lakelands_store::open(location.clone(), seams(), OpenMode::Create);
@@ -228,7 +157,7 @@ async fn a_lake_this_build_made_is_read_by_0_19_0_up_to_its_format() {
 async fn a_lake_of_19_upgraded_is_read_by_0_19_0_up_to_its_format() {
     let vectors =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/19");
-    let dir = scratch("upgraded");
+    let dir = read_by::scratch("0-19-0", "upgraded");
     let location = Location::sqlite("vectors", &dir);
     lakelands_store::import(location.clone(), seams(), vectors.clone())
         .await
@@ -264,7 +193,7 @@ async fn a_lake_of_19_upgraded_is_read_by_0_19_0_up_to_its_format() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lake_just_made_is_read_by_0_19_0_up_to_its_format() {
-    let dir = scratch("just-made");
+    let dir = read_by::scratch("0-19-0", "just-made");
     let location = Location::sqlite("lake", &dir);
     let store = lakelands_store::open(location, seams(), OpenMode::Create);
     store.await.unwrap().close().await.unwrap();

@@ -125,7 +125,12 @@ into a lake of its own.
   changes it only for the lines written after it: a line of an earlier
   format is a full event, read as it stands beside the new ones in one
   segment, and a value sealed in an earlier format opens by its event's
-  `v`.
+  `v`. What an engine keeps beside the log is its own: as 086 decides
+  for 0.21.0, the first writer's open of 0.21.0 on PostgreSQL converts
+  the log's `id`, `prev` and `hash` columns from text to their bytes in
+  place, under the lease and before any append, in one transaction,
+  and not again; every event's bytes, hash and id stay as they were
+  (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
 - **A writer's open upgrades.** It appends, after its `lease_taken`, one
   `lake_upgraded` from the older format to the release's, and the lake
   is written in the new one from there; a step that changes a fold also

@@ -1090,6 +1090,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `no_event_in` | `name` (String) | the file {name} holds no event | A file holds no event. |
 | `no_segment_file` | — | there is no segment file under log/ | There is no segment file. |
 | `index_missing` | `name` (String) | the segment {name} has no index file | A segment has no index file beside it. |
+| `id_not_of_form` | — | its `id` is not 32 lower-case hex digits | An event's `id` is not 32 lower-case hex digits. |
 | `fence_mismatch` | `carried` (u64), `lease` (u64) | an event carries fence {carried}, and its writer's lease had fence {lease} | An event carries another fence than its writer's lease had. |
 | `digest_differs` | `engine` (String), `file` (String) | the engine digests the segment before it as `{engine}`, and the file's is `{file}` | The engine and the file digest a segment differently. |
 | `nothing_to_seal` | — | the engine holds no event of the segment before it to seal | The engine holds no event of the segment before to seal. |

@@ -144,6 +144,12 @@ check!(
     given
 );
 
+check!(
+    IMPORT_ID_FORM = an_import_refuses_an_id_not_of_its_form_naming_its_position,
+    "086 and log-format §3: an export whose line carries an `id` that is not 32 lower-case hex digits, its hash made right, is refused on import naming the flaw and the line's position, on every engine, as PostgreSQL keeps an id as its bytes",
+    given
+);
+
 /// The check's scratch directory, cleared of anything an earlier run
 /// left, and removed again when the check ends, however it ends.
 pub(super) struct Scratch(PathBuf);
@@ -1284,6 +1290,37 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
             "an export whose line {said} must be refused naming it; it was refused with: {why:?}"
         );
     }
+    Ok(())
+}
+
+async fn an_import_refuses_an_id_not_of_its_form_naming_its_position(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let scratch = Scratch::new(given.scratch.clone());
+    invoices(store.as_ref(), 0, 1).await?;
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let file = (files(&from)?.pop()).ok_or_else(|| Failure::new("the export holds a file"))?;
+    let mut lines = lines_of(&from, &file)?;
+    let at = lines.len() - 1;
+    let position = serde_json::from_slice::<Value>(&lines[at]).ok();
+    let position = position.and_then(|e| e["position"].as_u64());
+    lines[at] = rehashed(&lines[at], |e| {
+        e["id"] = json!(e["id"].as_str().map(str::to_uppercase));
+    })?;
+    rewrite(&from, &file, &lines)?;
+    let imported = (given.import)(from, store.lake().clone(), None, import_seams()).await;
+    let why = refused(
+        imported,
+        "an export whose last line's `id` is upper-case hex",
+    )?;
+    ensure!(
+        matches!(why.situation(), Some(Situation::Damaged { position: Some(p), flaw: Flaw::IdNotOfForm, .. })
+            if Some(p.0) == position),
+        "an export whose line at {position:?} carries an upper-case `id` must be refused naming \
+         the flaw and that position; it was refused with: {why:?}"
+    );
     Ok(())
 }
 

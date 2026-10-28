@@ -625,7 +625,7 @@ async fn a_compact_vacuums_the_projection_beside_an_open_reader_and_reports_its_
         );
         tokio::task::block_in_place(|| admin(&url, &statement)[0].get(0))
     };
-    for table in ["records", "applied", "outputs", "meta"] {
+    for table in ["records", "routes", "outputs", "meta"] {
         assert!(vacuumed(table), "the projection's `{table}` was vacuumed");
     }
     assert!(!vacuumed("log"), "the log's table was not vacuumed");

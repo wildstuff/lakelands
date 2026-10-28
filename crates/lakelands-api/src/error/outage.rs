@@ -858,6 +858,8 @@ catalog! {
         NoSegmentFile => "there is no segment file under log/",
         /// A segment has no index file beside it.
         IndexMissing { name: String } => "the segment {name} has no index file",
+        /// An event's `id` is not 32 lower-case hex digits.
+        IdNotOfForm => "its `id` is not 32 lower-case hex digits",
         /// An event carries another fence than its writer's lease had.
         FenceMismatch { carried: u64, lease: u64 } => "an event carries fence {carried}, and its writer's lease had fence {lease}",
         /// The engine and the file digest a segment differently.

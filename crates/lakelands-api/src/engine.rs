@@ -65,9 +65,12 @@ pub struct Frame {
 
 /// One event as it crosses the engine seam: its line of the stored form
 /// and the frame it shares, and the envelope members an engine needs to
-/// check an append without parsing them. The store builds it; the engine
-/// stores `bytes` and `frame` unchanged and gives the same value back
-/// from `read`, where the events one frame covers share it.
+/// check an append without parsing them. The store builds it, `bytes`
+/// holding `id` as their own `id` member; the engine stores `bytes` and
+/// `frame` unchanged and gives the same value back from `read`, where the
+/// events one frame covers share it. It may keep the id only in `bytes`
+/// and answer the one the line holds, so an event whose `bytes` hold
+/// another id, or none, is outside the contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CanonicalEvent {
     /// The event's position.

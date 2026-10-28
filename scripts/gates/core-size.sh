@@ -34,7 +34,7 @@
 CRATES=(lakelands-api lakelands-core lakelands-store lakelands-engine-mem lakelands-engine-sqlite lakelands-engine-pg)
 PRODUCT_CEILING=94000
 PRODUCT_BASE=scripts/gates/core-size.product.base
-SPEC_CEILING=172500
+SPEC_CEILING=173000
 SPEC_BASE=scripts/gates/core-size.spec.base
 CYPHER_CRATES=(lakelands-cypher)
 CYPHER_PRODUCT_CEILING=2500

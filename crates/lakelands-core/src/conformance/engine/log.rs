@@ -141,7 +141,7 @@ engine_check!(
 
 engine_check!(
     APPENDED_OUTLIVES_ITS_HANDLE = reopening an_append_that_returned_is_read_by_the_next_handle,
-    "seams, append: an append is durable before it returns, so the events are there, byte for byte, for a handle opened after the writer's handle was dropped without closing"
+    "seams, append, and 086: an append is durable before it returns, so the events are there, byte for byte and with the id, `prev`, `hash` and fence they were handed in with, for a handle opened after the writer's handle was dropped without closing: one event, a framed run, and a run across a seal"
 );
 
 fn an_append_that_returned_is_read_by_the_next_handle(
@@ -152,25 +152,33 @@ fn an_append_that_returned_is_read_by_the_next_handle(
         .reopen(engine.lake(), OpenMode::Write)
         .map_err(|e| Failure::new(format!("opening a handle for writing: {e}")))?;
     let lease = writer.take_lease("the writer").must("taking the lease")?;
-    let events = chain(0, 3, &Digest::zero(), &lease);
-    writer
-        .append(&lease, &events)
-        .must("appending three events")?;
+    // One event, a framed run, and a run across a seal (086).
+    let mut events = chain(0, 1, &Digest::zero(), &lease);
+    let (run, _) = framed(20, 1, 4, &events[0].hash, &lease);
+    let first = chain(5, 2, &run[3].hash, &lease);
+    let more = chain(7, 2, &first[1].hash, &lease);
+    (writer.append(&lease, &events))
+        .and_then(|()| writer.append(&lease, &run))
+        .and_then(|()| seal(writer.as_ref(), &lease, &first).map(drop))
+        .and_then(|()| writer.append(&lease, &more))
+        .must("appending one event, a framed run and a run across a seal")?;
+    events.extend(run.into_iter().chain(first).chain(more));
     // The writer ends without releasing its lease or closing the lake.
     drop(writer);
     let next = harness
         .reopen(engine.lake(), OpenMode::Read)
         .map_err(|e| Failure::new(format!("opening the next handle: {e}")))?;
     let read = next
-        .read(Position(0), 10)
+        .read(Position(0), 100)
         .must("reading through the next handle")?;
     ensure!(
         read == events,
-        "three events were appended and the append returned; the writer's handle was then \
-         dropped without closing, and a handle opened after it reads {} event(s){}",
+        "one event, a framed run and a run across a seal were appended and the appends \
+         returned; the writer's handle was then dropped without closing, and a handle opened \
+         after it reads {} event(s){}",
         read.len(),
         if read.len() == events.len() {
-            " whose bytes differ"
+            " whose id, prev, hash, fence or bytes differ"
         } else {
             ""
         }
@@ -891,6 +899,7 @@ fn framed(
         let mut event = json!({
             "body": {"kind": "note", "n": p},
             "fence": fence,
+            "id": format!("{p:032x}"),
             "known_at": "2026-01-01T00:00:00.000000Z",
             "position": p,
             "prev": prev.0,
