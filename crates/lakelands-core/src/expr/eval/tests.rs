@@ -472,3 +472,14 @@ fn landing_in_a_field_follows_its_kind() {
     );
     assert_eq!(to_json(&Val::Null, K::Text, None), Some(Value::Null));
 }
+
+#[test]
+fn a_double_written_with_an_exponent_computes_where_a_decimal_holds_it() {
+    use lakelands_api::ontology::StorageKind as K;
+    let twice = ok("n * 2", json!({"n": 1e21}));
+    assert_eq!(twice, num("2000000000000000000000"));
+    assert_eq!(to_json(&twice, K::Number, None), Some(json!(2e21)));
+    assert_eq!(ok("n * 2", json!({"n": 1e-7})), num("0.0000002"));
+    // Past what a decimal holds (about 7.9e28) the number is no operand.
+    assert!(run("n * 2", json!({"n": 1e29})).is_err());
+}
