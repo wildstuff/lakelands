@@ -61,29 +61,29 @@ fn vectors(format: u32) -> PathBuf {
         .join(format.to_string())
 }
 
-async fn a_lake_of_format_14_is_upgraded_and_read(store: Store, given: Given) -> Held {
-    vectors_upgraded(store, given, OLDEST_LOG_FORMAT).await
+/// Each check of one kept format: the function it runs, given the format.
+macro_rules! by_format {
+    ($($check:ident = $run:ident($format:expr)),* $(,)?) => {
+        $(async fn $check(store: Store, given: Given) -> Held {
+            $run(store, given, $format).await
+        })*
+    };
 }
 
-async fn a_lake_of_format_15_is_upgraded_and_read(store: Store, given: Given) -> Held {
-    vectors_upgraded(store, given, 15).await
-}
-
-async fn a_lake_of_format_16_is_upgraded_and_read(store: Store, given: Given) -> Held {
-    vectors_upgraded(store, given, 16).await
-}
-
-async fn a_lake_of_format_17_is_upgraded_and_read(store: Store, given: Given) -> Held {
-    vectors_upgraded(store, given, 17).await
-}
-
-async fn a_lake_of_format_18_is_upgraded_and_read(store: Store, given: Given) -> Held {
-    vectors_upgraded(store, given, 18).await
-}
-
-async fn a_lake_of_format_19_is_upgraded_and_read(store: Store, given: Given) -> Held {
-    vectors_upgraded(store, given, 19).await
-}
+by_format!(
+    a_lake_of_format_14_is_upgraded_and_read = vectors_upgraded(OLDEST_LOG_FORMAT),
+    a_lake_of_format_15_is_upgraded_and_read = vectors_upgraded(15),
+    a_lake_of_format_16_is_upgraded_and_read = vectors_upgraded(16),
+    a_lake_of_format_17_is_upgraded_and_read = vectors_upgraded(17),
+    a_lake_of_format_18_is_upgraded_and_read = vectors_upgraded(18),
+    a_lake_of_format_19_is_upgraded_and_read = vectors_upgraded(19),
+    a_lake_the_release_before_made_is_read_as_it_answered = kept_lake_answers(14),
+    the_lake_of_format_15_is_read_as_it_answered = kept_lake_answers(15),
+    the_lake_of_format_16_is_read_as_it_answered = kept_lake_answers(16),
+    the_lake_of_format_17_is_read_as_it_answered = kept_lake_answers(17),
+    the_lake_of_format_18_is_read_as_it_answered = kept_lake_answers(18),
+    the_lake_of_format_19_is_read_as_it_answered = kept_lake_answers(19),
+);
 
 /// The vectors of the older format `old`, imported, upgraded and read.
 async fn vectors_upgraded(store: Store, given: Given, old: u32) -> Held {
@@ -248,30 +248,6 @@ async fn a_lake_of_format_19_takes_boxes_beside_the_members_it_sealed_alone(
         }
     }
     Ok(())
-}
-
-async fn a_lake_the_release_before_made_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 14).await
-}
-
-async fn the_lake_of_format_15_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 15).await
-}
-
-async fn the_lake_of_format_16_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 16).await
-}
-
-async fn the_lake_of_format_17_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 17).await
-}
-
-async fn the_lake_of_format_18_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 18).await
-}
-
-async fn the_lake_of_format_19_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 19).await
 }
 
 async fn the_lake_of_format_20_is_read_as_it_answered(store: Store, given: Given) -> Held {

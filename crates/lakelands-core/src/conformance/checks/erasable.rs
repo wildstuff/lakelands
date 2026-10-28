@@ -23,7 +23,7 @@ check!(
 
 check!(
     ONE_BOX = a_records_sealed_members_are_sealed_in_one_box,
-    "083: a source's ingest of a record with two erasable members seals both in one `sealed.box`, the patch leaving both out and `sealed.fields` naming both, and its id is made with the box (`lakelands:ingest:v2`); the record reads back each value, after a rebuild too; the same values against the same state append nothing; the same values written again at a later version seal to another box; and once the source is forgotten, neither value reads",
+    "083, lakelands#1498: a source's ingest of a record with two erasable members seals both in one `sealed.box`, the patch leaving both out and `sealed.fields` naming both, and its id is made with the box (`lakelands:ingest:v2`); under the key of fixed bytes `docs/log-format/sealed-bytes.json` keeps, the type's schema hash (SHA-256 over canonical bytes), the ingest's id and box (AES-256-GCM-SIV), and the input digest (HMAC-SHA-256 under a key HKDF derives) and sealed output of a field computed outside the lake from `name` are the bytes that file keeps, as the store wrote them before the crypto crates' bump; the record reads back each value, after a rebuild too; the same values against the same state append nothing; the same values written again at a later version seal to another box; and once the source is forgotten, neither value reads",
     reopens
 );
 
@@ -396,20 +396,49 @@ async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plai
 }
 
 async fn a_records_sealed_members_are_sealed_in_one_box(store: Store, reopen: Reopen) -> Held {
-    let (_, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
+    let file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/sealed-bytes.json");
+    let keys = Arc::new(Keys::from_file(&file, store.lake())?);
+    let store = again(&reopen, store, with(&keys), "with the kept key").await?;
     let l = Lake::of(store.as_ref());
+    let before = store.head().await.must("reading the head")?;
+    l.declare_json(json!({"declare": "function", "name": "shout",
+        "backing": crate::conformance::backing::KIND,
+        "inputs": [{"name": "name", "type": {"kind": "text"}}],
+        "config": {"token": "one_box", "echo": "name"}}))
+        .await?;
     let mut t = person();
     t.fields.push(FieldDecl {
         erasable: true,
         ..sourced("email", StorageKind::Text)
     });
+    t.fields
+        .push(computed_by("loud", StorageKind::Text, "shout", &["name"]));
     l.declare(t).await?;
     let ada = || {
         let ada = json!({"id": "p1", "name": "Ada", "email": "ada@example.org", "city": "Oslo"});
         source_record("person", "p1", ada)
     };
-    let before = store.head().await.must("reading the head")?;
     l.ingest("crm", vec![ada()]).await.must("ingesting p1")?;
+    let kept = std::fs::read(&file).map_err(|e| Failure::new(format!("reading {file:?}: {e}")))?;
+    let kept: Value =
+        serde_json::from_slice(&kept).map_err(|e| Failure::new(format!("{file:?}: {e}")))?;
+    let wrote: Vec<Value> = (events_after(store.as_ref(), before).await?.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::Declared { schema_hash, .. } => schema_hash.as_ref().map(|h| json!(h)),
+            EventBody::RecordIngested { .. } => Some(json!([e.id, e.sealed])),
+            EventBody::OutputRecorded { input, output, .. } => {
+                Some(json!([input, output, e.sealed]))
+            }
+            _ => None,
+        })
+        .collect();
+    ensure!(
+        json!(wrote) == kept["wrote"],
+        "the schema hash, the ingest's id and box and the output's digest and box are the bytes kept for them, {}; they are {}",
+        kept["wrote"],
+        json!(wrote)
+    );
     let events = ingested(store.as_ref(), before).await?;
     let [e] = events.as_slice() else {
         return Err(Failure::new(format!(
@@ -433,18 +462,12 @@ async fn a_records_sealed_members_are_sealed_in_one_box(store: Store, reopen: Re
         one && out && stored(e, "city") == json!("Oslo"),
         "one `sealed.box` holds `name` and `email`, which the patch leaves out, and `city` stays in the patch; the event is {e:?}"
     );
-    if let (EventBody::RecordIngested { patch, .. }, Some(b)) = (&e.body, boxed(e)) {
-        let id =
-            crate::log::boxed_ingest_id(&"crm".into(), &"person".into(), &"p1".into(), 0, patch, b);
-        ensure!(
-            e.id == id,
-            "the ingest's id is made under `lakelands:ingest:v2` with its box: {}; it is {}",
-            id.0,
-            e.id.0
-        );
-    }
     let back = async || -> Held {
-        for (f, want) in [("name", "Ada"), ("email", "ada@example.org")] {
+        for (f, want) in [
+            ("name", "Ada"),
+            ("email", "ada@example.org"),
+            ("loud", "Ada"),
+        ] {
             let v = read(&l, "p1", f).await?;
             ensure!(v == json!(want), "`p1` reads `{f}` {want}; it reads {v}");
         }
