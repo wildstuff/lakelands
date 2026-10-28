@@ -857,7 +857,9 @@ moment before, and opens a moment later.
      on SQLite, 7.9 s and 0.13 s on PostgreSQL; with a 64-dimension
      vector and an eight-field order index, 12.6 s and 0.35 s on SQLite,
      29.9 s and 0.31 s on PostgreSQL. The build ahead itself takes about
-     what the open took without it.
+     what the open took without it. On PostgreSQL from 0.20.0 the open
+     also rewrites the log's columns (below), and a build ahead still
+     running fails on its next read: let it end first.
 
   On PostgreSQL the swap is one transaction of some 30 ms, and waits for
   every transaction reading the projection's tables; a reader that
@@ -932,9 +934,12 @@ release with real installations, to it (`docs/log-format.md` §6;
   At 1 000 000 events, a `log` of 509 MB, it took 2.7 s on a local
   disk and, until it committed, room about the size of that table again
   (485 MB) and as much WAL; it grows with the log. The log and `applied`
-  are then about 27 % smaller. A 0.20.0 process,
-  a reader too, cannot read on after it: stop every one first. A
-  conversion that fails leaves the lake as 0.20.0 left it.
+  are then about 27 % smaller. The rewrite lifts
+  `engine.tuning.statement_timeout_secs` for its own transaction, so a
+  timeout shorter than it does not refuse every writer's open. A 0.20.0
+  process, a reader too, cannot read on after it, and neither can a
+  0.21.0 handle opened before it, a build ahead or a reader: stop every
+  one first. A conversion that fails leaves the lake as 0.20.0 left it.
 - **A reader waits for the writer.** A read-only open of a lake not yet
   upgraded is refused before anything is read, naming the way
   (`log_upgrade_owed` in `docs/refusals.md`); so is a mirror of such a

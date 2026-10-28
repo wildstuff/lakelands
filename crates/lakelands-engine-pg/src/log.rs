@@ -104,6 +104,9 @@ pub(crate) fn convert(db: &mut Db, names: &Names) -> Result<bool> {
     if text.is_empty() && !unindexed && !applied {
         return Ok(false);
     }
+    // The rewrite takes as long as the log is big: no statement timeout
+    // a host set holds it, past the transaction it runs in.
+    db.batch("SET LOCAL statement_timeout = 0")?;
     if text.iter().any(|c| c == "id") {
         let odd = format!(
             "SELECT min(position) FROM {} WHERE id !~ '^[0-9a-f]{{32}}$'",

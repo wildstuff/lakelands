@@ -11,10 +11,10 @@
 //! rebuilt with its graphs, and its pages are what they were. A lake of
 //! format 19, its log without `frames` and its projection one layout
 //! back, as 0.19.0 left it, is upgraded by the first writer's open
-//! (lakelands#1467). A log 0.20.0 kept, its `id`, `prev` and `hash` as
-//! text beside `applied`, is read as it is and converted in place by the
-//! first writer's open, once, every event, digest and export as before
-//! (lakelands#1518).
+//! (lakelands#1467). A lake 0.20.0 left, of format 20 with its `id`,
+//! `prev` and `hash` as text beside `applied`, is read as it is and
+//! converted in place by the first writer's open, once, as it upgrades,
+//! every event, digest and export as before (lakelands#1518).
 
 mod common;
 
@@ -324,14 +324,19 @@ fn exported(location: &Location, dir: &std::path::Path) -> Vec<(std::ffi::OsStri
     files
 }
 
-/// A log 0.20.0 kept is read as it is; a conversion that fails, on an id
-/// not of its form or a `prev` that spells no bytes, leaves it; the first
-/// writer's open converts it, every event, digest and export as before,
-/// a kept id answering a redelivery; the open after changes nothing.
+/// A lake as 0.20.0 left it, of format 20 on text columns beside
+/// `applied`: its ends are read as they are and a reader is refused
+/// until it is upgraded; a conversion that fails, on an id not of its
+/// form or a `prev` that spells no bytes, leaves it; the first writer's
+/// open converts it as it takes the lease and appends one `lake_upgraded`
+/// from 20, every event, digest and export as before, each id the log
+/// held answering where it stands; the open after rewrites nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_log_0_20_0_kept_is_converted_in_place_by_the_first_writers_open() {
+async fn a_lake_0_20_0_left_is_converted_in_place_by_the_first_writers_open() {
     use lakelands_api::engine::EngineOpener;
     use lakelands_api::error::{Flaw, Part};
+    use lakelands_api::event::EventId;
+    use lakelands_api::id::Position;
     let Some(url) = common::url_or_skip("log of 0.20.0") else {
         return;
     };
@@ -343,45 +348,43 @@ async fn a_log_0_20_0_kept_is_converted_in_place_by_the_first_writers_open() {
         tokio::task::block_in_place(|| connect().batch_execute(sql).unwrap());
     };
     let kept = || tokio::task::block_in_place(|| kept(&url, &schema));
-    // Two segments, the first sealed, and the events a writer appends after.
+    let engine = |mode| tokio::task::block_in_place(|| PgOpener.open(&location, mode).unwrap());
+    // Two segments, the first sealed: the vectors' eight events, and none
+    // of the import's upgrade.
     let vectors =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/20");
     lakelands_store::import(location.clone(), seams(), vectors)
         .await
         .unwrap();
-    let store = open(&location, OpenMode::Write).await.unwrap();
-    let l = Lake::of(store.as_ref());
-    l.declare(type_decl("note", vec![sourced("text", Text)]))
-        .await
-        .unwrap();
-    let note = |n: u32| source_record("note", &format!("n{n}"), json!({"text": "kept"}));
-    for n in 0..3 {
-        l.ingest("crm", vec![note(n)]).await.unwrap();
-    }
-    let events = log_events(store.as_ref()).await.unwrap();
-    store.close().await.unwrap();
+    run(&format!(
+        "DELETE FROM {s}.log WHERE position > 7; DROP TABLE {s}.quarantined; \
+         UPDATE {s}.meta SET n = 7 WHERE k = 'folded'"
+    ));
+    let events = tokio::task::block_in_place(|| engine(OpenMode::Read).read(Position(0), 100));
+    let events = events.unwrap();
     let scratch = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(&schema);
     let taken = |at: &str| {
         let export = || exported(&location, &scratch.join(at));
         tokio::task::block_in_place(|| (rows(&url, &schema), export()))
     };
     let (before, export) = taken("before");
-    run(&format!("DROP TABLE {s}.quarantined; {}", as_text(&s)));
+    run(&as_text(&s));
     assert_eq!(kept(), AS_TEXT);
-    // Read as it is: its ends, by a reader, and by a build ahead.
+    // Read as it is, both ends by 20; a reader of the store is refused.
     let ends = PgOpener.log_ends(&location).unwrap().unwrap();
-    let (first, last) = (&events[0], events.last().unwrap());
-    assert_eq!(
-        (ends.0.position, &ends.0.id, ends.1.position, &ends.1.hash),
-        (first.position, &first.id, last.position, &last.hash),
-        "the ends"
+    let v = |e: &[u8]| serde_json::from_slice::<serde_json::Value>(e).unwrap()["v"].clone();
+    assert_eq!([&ends.0, &ends.1], [&events[0], &events[7]], "the ends");
+    assert_eq!([v(&ends.0.bytes), v(&ends.1.bytes)], [json!(20), json!(20)]);
+    let read = tokio::task::block_in_place(|| engine(OpenMode::Read).read(Position(0), 100));
+    assert_eq!(read.unwrap(), events, "the engine reads it as it is");
+    let refused = open(&location, OpenMode::Read).await.err();
+    assert!(
+        matches!(
+            refused.as_ref().and_then(|e| e.situation()),
+            Some(Situation::LogUpgradeOwed { found: 20, .. })
+        ),
+        "a reader waits for the writer: {refused:?}"
     );
-    let reader = open(&location, OpenMode::Read).await.unwrap();
-    assert_eq!(log_events(reader.as_ref()).await.unwrap(), events);
-    reader.close().await.unwrap();
-    let built = lakelands_store::build_ahead(location.clone(), seams());
-    built.await.unwrap();
-    assert_eq!(kept(), AS_TEXT);
     // Two conversions that fail, each leaving the log as it was.
     let planted = [
         "SET id = upper(id) WHERE position = 3",
@@ -403,8 +406,20 @@ async fn a_log_0_20_0_kept_is_converted_in_place_by_the_first_writers_open() {
     }
     let store = open(&location, OpenMode::Write).await.unwrap();
     assert_eq!(kept(), CONVERTED);
+    assert_eq!(
+        store.rebuilt_at_open(),
+        None,
+        "converted as it takes the lease"
+    );
+    let read = log_events(store.as_ref()).await.unwrap();
+    let marked = read.iter().filter(
+        |e| matches!(e.body, EventBody::LakeUpgraded { from: 20, to } if to == LOG_FORMAT_VERSION),
+    );
+    assert_eq!(marked.count(), 1, "one `lake_upgraded` from 20: {read:?}");
+    store.verify(None, None).await.unwrap();
+    store.close().await.unwrap();
     let (after, again) = taken("after");
-    // The open appended its `lease_taken`, after every event it found.
+    // The open appended its `lease_taken` and `lake_upgraded` after them.
     assert!(after.0.starts_with(&before.0), "every event as before");
     assert_eq!(after.1, before.1, "every segment's digest as before");
     let (sealed, active) = export.split_at(export.len() - 1);
@@ -412,15 +427,17 @@ async fn a_log_0_20_0_kept_is_converted_in_place_by_the_first_writers_open() {
     assert_eq!(&again[..sealed.len()], sealed, "the sealed ones'");
     assert_eq!(again[sealed.len()].0, active[0].0);
     assert!(again[sealed.len()].1.starts_with(&active[0].1));
-    let read = log_events(store.as_ref()).await.unwrap();
+    let reader = engine(OpenMode::Read);
+    let read = tokio::task::block_in_place(|| reader.read(Position(0), 100)).unwrap();
     assert_eq!(read[..events.len()], events[..]);
-    // An id the log held before answers a redelivery.
-    let l = Lake::of(store.as_ref());
-    l.ingest("crm", vec![note(0)]).await.unwrap();
-    let redelivered = log_events(store.as_ref()).await.unwrap();
-    assert_eq!(redelivered.len(), read.len(), "appends nothing");
-    store.verify(None, None).await.unwrap();
-    store.close().await.unwrap();
+    // Each id the log held before answers where it stands.
+    let mut ids: Vec<EventId> = events.iter().map(|e| e.id.clone()).collect();
+    ids.push(EventId(format!("{:032x}", 1)));
+    let applied = tokio::task::block_in_place(|| reader.view(None)?.applied_many(&ids));
+    let mut at: Vec<_> = events.iter().map(|e| Some(e.position)).collect();
+    at.push(None);
+    assert_eq!(applied.unwrap(), at, "each id where it stands");
+    drop(reader);
     let first = tokio::task::block_in_place(|| rows(&url, &schema));
     let store = open(&location, OpenMode::Write).await.unwrap();
     store.close().await.unwrap();

@@ -101,8 +101,10 @@ reads the log, as 054 says it refused 0.20.0's for 0.19.0.
   missing, and drops `applied`. It is idempotent: it does only what the
   catalogue shows undone, and a lake converted is untouched. A crash or
   an error midway leaves nothing of it, the lake as 0.20.0 left it, and
-  the next such open converts it; the error is the open's answer. The
-  conversion rewrites the `log` table and its indexes: it needs free
+  the next such open converts it; the error is the open's answer. It
+  lifts the statement timeout a host set for its own transaction, since
+  a timeout shorter than the rewrite would refuse every writer's open
+  and leave the lake never written again. The conversion rewrites the `log` table and its indexes: it needs free
   space about the size of that table until it commits, holds the table
   for its whole run, and takes time with the lake's events (measured at
   the build, and said in `docs/hosting.md` and the release notes).
@@ -154,13 +156,15 @@ writer's open of 0.21.0 on PostgreSQL takes as long as the rewrite, which
     0.21.0 made, and one it upgraded, by format 21 and call neither
     damaged. Every line this build writes names `id` empty, and a
     segment of lines of 20 and of 21 reads back whole.
-  - PostgreSQL, `older_layout.rs`: a lake as 0.20.0 left it (text
-    columns, `applied`) has its ends read as 20 and is read by a build
-    ahead; the first writer's open converts it, after which every event,
-    every digest and the export are byte for byte as before; a
-    conversion failed inside its transaction leaves the lake as 0.20.0
-    left it and the next open converts it; a second open changes
-    nothing.
+  - PostgreSQL, `older_layout.rs`: a lake as 0.20.0 left it (format
+    20 on text columns, `applied`) has its ends read as 20 and is read
+    by the engine, while a reader of the store is refused
+    `log_upgrade_owed`; the first writer's open converts it as it takes
+    the lease and appends one `lake_upgraded` from 20, after which every
+    event, every digest and the export are byte for byte as before and
+    each id the log held is answered at its position; a conversion
+    failed inside its transaction leaves the lake as 0.20.0 left it and
+    the next open converts it; a second open changes nothing.
 - **Size:** measured, not tested, as 083 measured: 10 000 records of
   one source, 32 an append, plain, before (0.21.0 without this) and
   after, on SQLite by the `index/` files after `close`, on PostgreSQL by
