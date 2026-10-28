@@ -1374,6 +1374,7 @@ impl Lake {
                 None => w.removals.push(act),
             }
         }
+        self.reclaim_kept();
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
         self.keys.unlist();

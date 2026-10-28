@@ -117,6 +117,11 @@ impl Lake {
         let began = std::time::Instant::now();
         let mut assembled = Lake::assemble(location, seams, engine, lease.clone());
         let lake = assembled.turn();
+        // The last reclaim's time is read before the rebuild replaces the
+        // projection that keeps it.
+        if rebuilds {
+            lake.reclaim_kept();
+        }
         // The rebuild folds beside the projection and swaps the scratch in
         // (071): an upgrade's goes on from where a build ahead stopped, an
         // open to rebuild folds the whole log. Either is folded as the

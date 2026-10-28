@@ -25,6 +25,7 @@ use aes_gcm_siv::aead::{Aead, KeyInit};
 use aes_gcm_siv::{Aes256GcmSiv, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use hkdf::HkdfExtract;
 use hmac::{Hmac, Mac};
 use lakelands_api::engine::{LakeEngine, ProjectionView};
 use lakelands_api::error::{Seam, Situation};
@@ -35,7 +36,7 @@ use lakelands_api::{Error, FieldName, LakeId, Position, Result, SourceId, Value}
 use lakelands_core::canonical;
 use lakelands_core::lock;
 use sha2::{Digest as _, Sha256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The sources' keys an open lake was given, asked of the host's key store
 /// once and never written anywhere: by the writer, which seals and folds,
@@ -501,16 +502,10 @@ pub fn compose(version: &DataKey, apart: &[DataKey]) -> DataKey {
     if apart.is_empty() {
         return version.clone();
     }
-    let mac = |k: &[u8], parts: &[&[u8]]| {
-        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(k).expect("HMAC takes any key");
-        parts.iter().for_each(|p| m.update(p));
-        Zeroizing::new(<[u8; 32]>::from(m.finalize().into_bytes()))
-    };
-    let ikm: Vec<&[u8]> = std::iter::once(&version.0[..])
-        .chain(apart.iter().map(|k| &k.0[..]))
-        .collect();
-    let prk = mac(&[0; 32], &ikm);
-    DataKey(*mac(&*prk, &[b"lakelands:apart:v1".as_slice(), &[1]]))
+    DataKey(*hkdf(
+        std::iter::once(version).chain(apart),
+        b"lakelands:apart:v1",
+    ))
 }
 
 /// The store's own seam under which the fold keeps the sources the log
@@ -785,7 +780,7 @@ pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, cipher
     let close = |v: &Value, n: [u8; 12]| {
         let plain = canonical::to_vec(v);
         let sealed = cipher
-            .encrypt(Nonce::from_slice(&n), plain.as_slice())
+            .encrypt(&Nonce::from(n), plain.as_slice())
             .expect("AES-256-GCM-SIV seals any value");
         STANDARD.encode(sealed)
     };
@@ -822,7 +817,7 @@ pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
     let unsealable = || Error::unavailable(Situation::Unsealable { position });
     let opened = |v: &Value, n: [u8; 12]| -> Option<Value> {
         let b = STANDARD.decode(v.as_str()?).ok()?;
-        let plain = cipher.decrypt(Nonce::from_slice(&n), b.as_slice()).ok()?;
+        let plain = cipher.decrypt(&Nonce::from(n), b.as_slice()).ok()?;
         serde_json::from_slice(&plain).ok()
     };
     let at = |f: Option<&str>| place(&source, &event.body, f);
@@ -866,22 +861,27 @@ pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
     Ok(())
 }
 
+/// HKDF-SHA-256 with an empty salt over the keys' bytes in order: the
+/// pseudorandom key between is wiped, the key out is wiped when dropped.
+fn hkdf<'a>(ikm: impl IntoIterator<Item = &'a DataKey>, info: &[u8]) -> Zeroizing<[u8; 32]> {
+    let mut extract = HkdfExtract::<Sha256>::new(None);
+    ikm.into_iter().for_each(|k| extract.input_ikm(&k.0));
+    let (mut prk, expand) = extract.finalize();
+    prk.as_mut_slice().zeroize();
+    let mut key = Zeroizing::new([0; 32]);
+    expand.expand(info, &mut *key).expect("HKDF gives 32 bytes");
+    key
+}
+
 /// The digest of a call whose input holds sealed values: HMAC-SHA-256
 /// under a key derived from the source's (HKDF-SHA-256, info
 /// `lakelands:output:v1`), so no digest of plaintext enters the log and
 /// none links to a value once the key is gone.
 pub fn digest(key: &DataKey, call: &Value) -> Digest {
-    let mac = |k: &[u8], parts: &[&[u8]]| {
-        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(k).expect("HMAC takes any key");
-        parts.iter().for_each(|p| m.update(p));
-        Zeroizing::new(<[u8; 32]>::from(m.finalize().into_bytes()))
-    };
-    let prk = mac(&[0; 32], &[&key.0]);
-    let derived = mac(&*prk, &[b"lakelands:output:v1".as_slice(), &[1]]);
-    Digest(canonical::hex(&*mac(
-        &*derived,
-        &[&canonical::to_vec(call)],
-    )))
+    let derived = hkdf([key], b"lakelands:output:v1");
+    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&*derived).expect("HMAC takes any key");
+    m.update(&canonical::to_vec(call));
+    Digest(canonical::hex(&m.finalize().into_bytes()))
 }
 
 #[cfg(test)]

@@ -1965,6 +1965,11 @@ pub struct ForgetReport {
     /// of the log took, which the act walks again. The fold's cost is the ontology's and
     /// a reclaim's the projection's, so the act may still differ from it.
     pub expected_ms: u64,
+    /// Whether `expected_ms` leaves the reclaim out because this lake has
+    /// not timed one yet (a lake upgraded from a release that kept none,
+    /// before its first reclaim): the act may take longer than it says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reclaim_untimed: bool,
     /// The head after the act, or the head the preflight read.
     pub position: Position,
     /// The projection's storage in bytes before and after the act's
@@ -2012,6 +2017,11 @@ pub struct ForgetSetReport {
     /// milliseconds, as `ForgetReport::expected_ms` says it: one rebuild
     /// and one reclaim, and the preflight's own walk for the whole set.
     pub expected_ms: u64,
+    /// Whether `expected_ms` leaves the reclaim out because this lake has
+    /// not timed one yet (a lake upgraded from a release that kept none,
+    /// before its first reclaim): the act may take longer than it says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reclaim_untimed: bool,
     /// The head after the act, or the head the preflight read.
     pub position: Position,
     /// The projection's storage in bytes before and after the act's
@@ -2185,6 +2195,11 @@ pub struct RemoveReport {
     /// rebuild this handle ran folded, the last reclaim's time and the
     /// preflight's own walk, as [`ForgetReport::expected_ms`].
     pub expected_ms: u64,
+    /// Whether `expected_ms` leaves the reclaim out because this lake has
+    /// not timed one yet (a lake upgraded from a release that kept none,
+    /// before its first reclaim): the act may take longer than it says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reclaim_untimed: bool,
     /// The head after the act, or the head the preflight read.
     pub position: Position,
     /// The projection's storage in bytes before and after the act's
@@ -2344,12 +2359,20 @@ impl RemoveReport {
             ));
         }
         let (n, ms) = (counted(self.log_events, "event"), self.expected_ms);
+        let untimed = match self.reclaim_untimed {
+            true => UNTIMED,
+            false => "",
+        };
         said.push(format!(
-            "The act refolds {n}, about {ms} ms under the writer's lock."
+            "The act refolds {n}: {ms} ms of the writer's lock, the figure the summary rounds to seconds{untimed}."
         ));
         said
     }
 }
+
+/// What a preflight adds to its figure where the lake has timed no reclaim
+/// yet ([`RemoveReport::reclaim_untimed`]).
+pub const UNTIMED: &str = ", not counting the reclaim, which this lake has not timed yet";
 
 /// `n` and `noun`, plural but for one.
 fn counted(n: u64, noun: &str) -> String {

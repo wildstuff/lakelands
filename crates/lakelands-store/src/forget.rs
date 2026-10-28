@@ -221,6 +221,7 @@ fn found(
             plaintext: t.plaintext,
             events,
             expected_ms: lake.expected_ms(events),
+            reclaim_untimed: lake.untimed(),
             position: view.position().unwrap_or(Position::GENESIS),
             reclaimed: None,
             reclaim_owed: lake.reclaim_owed(),
@@ -483,6 +484,7 @@ fn of_set(
             true => way.scoped_ms,
             false => way.rebuild_ms,
         },
+        reclaim_untimed: lake.untimed(),
         way,
         position: view.position().unwrap_or(Position::GENESIS),
         reclaimed: None,
@@ -496,6 +498,7 @@ fn of_set(
 fn settle(set: &mut ForgetSetReport) {
     for r in &mut set.sources {
         r.expected_ms = set.expected_ms;
+        r.reclaim_untimed = set.reclaim_untimed;
         r.position = set.position;
         r.reclaim_owed.clone_from(&set.reclaim_owed);
         r.way.clone_from(&set.way);

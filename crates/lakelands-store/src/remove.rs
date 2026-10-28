@@ -585,6 +585,7 @@ fn found(
         unshredded,
         log_events,
         expected_ms: lake.expected_ms(log_events),
+        reclaim_untimed: lake.untimed(),
         position: head.unwrap_or(Position::GENESIS),
         reclaimed: None,
         reclaim_owed: lake.reclaim_owed(),

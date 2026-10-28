@@ -1135,13 +1135,35 @@ impl Lake {
     }
 
     /// Keep the rate of a rebuild that began at `began` and folded the
-    /// log through `events`.
+    /// log through `events`, and put the last reclaim's time back in the
+    /// projection the rebuild made ([`Self::reclaim_kept`]).
     fn measured(&self, began: std::time::Instant, events: u64) {
         let micros = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);
         if events > 0 {
             let rate = events.saturating_mul(1_000_000) / micros.max(1);
             self.rebuilt_rate.store(rate.max(1), Ordering::SeqCst);
         }
+        if self.reclaim_ms.load(Ordering::SeqCst) > 0 {
+            // An estimate's input: one not kept fails nothing.
+            let head = (self.engine.view(None).ok()).and_then(|v| v.position());
+            let _ = self.keep_timed(head.unwrap_or(Position::GENESIS));
+        }
+    }
+
+    /// Hold the time of the last reclaim in this handle, from the
+    /// projection where it ran none, before a rebuild clears the
+    /// projection: [`Self::measured`] puts it back after.
+    fn reclaim_kept(&self) {
+        let ms = self.timed().1;
+        if ms > 0 {
+            self.reclaim_ms.store(ms, Ordering::SeqCst);
+        }
+    }
+
+    /// Whether no reclaim has been timed, by this handle or the
+    /// projection: an estimate leaves the reclaim out.
+    pub(crate) fn untimed(&self) -> bool {
+        self.timed().1 == 0
     }
 
     /// How long an act that rebuilds a log of `events` and reclaims is
@@ -1286,7 +1308,8 @@ impl Lake {
         let began = std::time::Instant::now();
         let reclaimed = self.engine.projection().compact();
         if reclaimed.is_ok() {
-            self.reclaim_ms.store(elapsed_ms(began), Ordering::SeqCst);
+            self.reclaim_ms
+                .store(elapsed_ms(began).max(1), Ordering::SeqCst);
         }
         // A compact that fails with no act waiting owes nothing.
         if waiting || reclaimed.is_ok() {
