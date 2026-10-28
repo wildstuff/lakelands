@@ -794,7 +794,7 @@ fn a_tool_name_too_long_names_the_declaration_it_comes_from() {
             .collect()
     };
     let ty: TypeName = long.as_str().into();
-    let door = from(name_problems(&[ty.clone()], &[], &[]));
+    let door = from(name_problems(std::slice::from_ref(&ty), &[], &[]));
     assert!(
         door.iter()
             .all(|f| *f == NameSource::Type { ty: ty.clone() })
