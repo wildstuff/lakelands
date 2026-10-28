@@ -951,8 +951,10 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     // Order the fields as the fold will compute them: a field computed by
     // a function reads what that function's expression reads, so it is
     // ordered, and checked for cycles, with the function resolved.
-    derive::order(&crate::record::resolve_functions(t, o))
-        .map_err(|e| Error::invalid(at(&owner, e)))?;
+    derive::order(&derive::resolve_functions(t, |n| {
+        o.functions.get(n).map(|e| &e.decl)
+    }))
+    .map_err(|e| Error::invalid(at(&owner, e)))?;
     // Its computed fields, derived or computed by a function, read one another
     // without a cycle, so a chain of fills within one record ends
     // (`docs/decisions/022-functions-are-declarations.md`, extended).
@@ -1796,7 +1798,7 @@ fn initial_holds(
     c: &ConstraintDecl,
     e: &lakelands_api::expr::Expr,
 ) -> Result<()> {
-    let resolved = crate::record::resolve_functions(t, o);
+    let resolved = derive::resolve_functions(t, |n| o.functions.get(n).map(|e| &e.decl));
     let fixed = derive::fixed(&resolved);
     let read = e.fields_read();
     if read.is_empty() || !read.iter().all(|n| fixed.contains(*n)) || !c.at_ingest.refuses() {

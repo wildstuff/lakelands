@@ -26,6 +26,7 @@ use lakelands_api::error::{Case, Place, Said};
 use lakelands_api::expr::{Expr, Func};
 use lakelands_api::ontology::{Authority, FieldDecl, OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::StoredRecord;
+use lakelands_api::write::FunctionDecl;
 use lakelands_api::{FieldMeta, FieldName, Timestamp, Value};
 
 use crate::expr::{WriteScope, eval, eval::to_json, parse};
@@ -86,6 +87,26 @@ fn typed(field: &FieldDecl) -> Result<Option<Expr>, Said> {
             Said::from(e.case).within(Place::Field { name })
         }),
     }
+}
+
+/// A type with each field computed by an `expr` function given that
+/// function's expression as its `derived`. `function` finds a declared
+/// function by name; one not found, or backed otherwise, leaves its field
+/// as it is. A host computing a record's derived fields as the store does
+/// resolves the type with this before [`order`] and [`apply`].
+pub fn resolve_functions<'a>(
+    decl: &TypeDecl,
+    function: impl Fn(&str) -> Option<&'a FunctionDecl>,
+) -> TypeDecl {
+    let mut out = decl.clone();
+    for f in &mut out.fields {
+        if let Some(name) = &f.function
+            && let Some(expr) = function(name).and_then(|d| d.expr.as_ref())
+        {
+            f.derived = Some(expr.clone());
+        }
+    }
+    out
 }
 
 /// The derived fields of a type in the order the fold computes them: each
