@@ -269,8 +269,12 @@ catalog! {
             #[serde(with = "closed::list")]
             from: Vec<NameSource>,
         } => "the tool name `{name}` would come from {from}",
-        /// A tool name would be longer than [`MAX_TOOL_NAME`].
-        TooLong { name: String } => "the tool name `{name}` is longer than 64 characters",
+        /// A tool name would be longer than [`MAX_TOOL_NAME`]; one problem for each declaration it comes from.
+        TooLong {
+            name: String,
+            #[serde(default, skip_serializing_if = "Option::is_none", with = "closed::option")]
+            from: Option<NameSource>,
+        } => "the tool name `{name}`[ of {from}] is longer than 64 characters",
         /// A declaration's name has nothing left once made a tool name.
         Empty {
             #[serde(with = "closed")]
@@ -352,7 +356,10 @@ pub fn name_problems(
             continue;
         }
         if name.len() > MAX_TOOL_NAME {
-            problems.push(NameProblem::TooLong { name: name.clone() });
+            problems.extend(from.iter().map(|from| NameProblem::TooLong {
+                name: name.clone(),
+                from: Some(from.clone()),
+            }));
         }
         if from.len() > 1 {
             problems.push(NameProblem::Collision { name, from });

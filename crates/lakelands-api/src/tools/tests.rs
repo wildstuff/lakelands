@@ -781,3 +781,31 @@ fn a_query_schema_shows_an_aggregate_a_depth_and_a_cursor() {
         assert!(text.contains(same), "{text}");
     }
 }
+
+#[test]
+fn a_tool_name_too_long_names_the_declaration_it_comes_from() {
+    let long = "x".repeat(70);
+    let from = |p: Vec<NameProblem>| -> Vec<NameSource> {
+        p.into_iter()
+            .map(|p| match p {
+                NameProblem::TooLong { from, .. } => from.expect("the store fills it"),
+                p => panic!("{p:?}"),
+            })
+            .collect()
+    };
+    let ty: TypeName = long.as_str().into();
+    let door = from(name_problems(&[ty.clone()], &[], &[]));
+    assert!(
+        door.iter()
+            .all(|f| *f == NameSource::Type { ty: ty.clone() })
+    );
+    assert!(!door.is_empty());
+    let (t, relation): (TypeName, RelationName) = ("a".into(), "r".repeat(70).as_str().into());
+    let link = from(name_problems(&[], &[], &[(t.clone(), relation.clone())]));
+    assert_eq!(link.len(), 2, "one for each link door");
+    assert!(link.iter().all(|f| *f
+        == NameSource::Link {
+            relation: relation.clone(),
+            ty: t.clone()
+        }));
+}
