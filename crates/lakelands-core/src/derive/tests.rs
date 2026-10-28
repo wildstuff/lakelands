@@ -205,3 +205,34 @@ fn a_write_that_touches_no_input_clears_nothing() {
     assert!(apply(&t, &[], &mut f, &w).unwrap().is_empty());
     assert_eq!(f[&FieldName::from("verdict")], json!("ok"));
 }
+
+fn function(v: Value) -> FunctionDecl {
+    serde_json::from_value(v).unwrap()
+}
+
+fn with_function(name: &str) -> TypeDecl {
+    let mut f = decimal("total", None);
+    f["function"] = json!(name);
+    ty(json!({"name": "Order", "fields": [f]}))
+}
+
+#[test]
+fn an_expr_function_is_resolved() {
+    let f = function(json!({"name": "sum", "backing": "expr", "expr": "1 + 2"}));
+    let out = resolve_functions(&with_function("sum"), |n| (n == "sum").then_some(&f));
+    assert_eq!(out.fields[0].derived, f.expr);
+    assert!(out.fields[0].derived.is_some());
+}
+
+#[test]
+fn a_function_of_another_backing_is_not_resolved() {
+    let f = function(json!({"name": "sum", "backing": "http"}));
+    let t = with_function("sum");
+    assert_eq!(resolve_functions(&t, |_| Some(&f)), t);
+}
+
+#[test]
+fn an_unknown_function_is_not_resolved() {
+    let t = with_function("missing");
+    assert_eq!(resolve_functions(&t, |_| None), t);
+}

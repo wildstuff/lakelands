@@ -68,7 +68,7 @@ pub struct Plan {
     /// allocated in its place.
     entries: Vec<Held>,
     /// The type with its `expr` functions' bodies put in
-    /// ([`resolve_functions`]).
+    /// ([`derive::resolve_functions`]).
     decl: TypeDecl,
     /// The value types its fields name.
     value_types: Vec<ValueTypeDecl>,
@@ -97,7 +97,7 @@ pub(crate) struct Constraint {
 
 impl Plan {
     fn of(o: &Ontology, raw: &TypeDecl) -> Plan {
-        let decl = resolve_functions(raw, o);
+        let decl = derive::resolve_functions(raw, |n| o.functions.get(n).map(|e| &e.decl));
         let named = raw.fields.iter().filter_map(|f| f.ty.value_type.as_ref());
         let procedures = raw.fields.iter().filter_map(|f| {
             let name = f.function.as_ref()?;
@@ -576,19 +576,6 @@ fn compute(
         meta.clear();
     }
     Ok(changed)
-}
-
-/// Gives each field computed by an `expr` function that function's expression; other backings are left to [`backed`].
-pub fn resolve_functions(decl: &TypeDecl, ontology: &Ontology) -> TypeDecl {
-    let mut out = decl.clone();
-    for f in &mut out.fields {
-        if let Some(name) = &f.function
-            && let Some(func) = ontology.functions.get(name)
-        {
-            f.derived = func.decl.expr.clone();
-        }
-    }
-    out
 }
 
 /// Refuse a record that lacks a value for a required field.

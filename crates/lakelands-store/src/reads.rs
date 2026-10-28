@@ -717,7 +717,7 @@ impl<'a> Reader<'a> {
             .filter(|t| t.fields.iter().any(|f| f.at_read()))
         {
             let (decl, value_types) = (
-                crate::record::resolve_functions(decl, o),
+                core_derive::resolve_functions(decl, |n| o.functions.get(n).map(|e| &e.decl)),
                 o.value_type_list(),
             );
             for r in &mut rows {
