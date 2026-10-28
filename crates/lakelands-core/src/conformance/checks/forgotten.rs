@@ -660,7 +660,7 @@ check!(
 
 check!(
     FORGET_EXPECTED_TIME = the_expected_time_follows_the_lakes_last_rebuild,
-    "058, extended (lakelands#1152, lakelands#1486): the time a preflight expects the act to hold the writer's lock is an estimate: before the handle has rebuilt, the log's events at the engine's stated rate and the preflight's own walk of the log, which the act walks again; after a rebuild, the events at that rebuild's measured rate, with the last reclaim's time and the walk, for a forgetting and a removal alike: after an open that rebuilds a projection an older build laid out, at most that open's time and the walk's; after `rebuild()` and a `compact()` that outlasts it, the act's rebuild and its reclaim, at most their measured time and the walk's and at least two thirds of the two less 10 ms, the engine's stated rate set aside, and so on a handle opened after them, from the rate and the time the projection keeps",
+    "058, extended (lakelands#1152, lakelands#1486, lakelands#1508): the time a preflight expects the act to hold the writer's lock is an estimate: before the handle has rebuilt, the log's events at the engine's stated rate and the preflight's own walk of the log, which the act walks again; after a rebuild, the events at that rebuild's measured rate, with the last reclaim's time and the walk, for a forgetting and a removal alike: after an open that rebuilds a projection an older build laid out, at most that open's time and the walk's; after `rebuild()` and a `compact()` that outlasts it, the act's rebuild and its reclaim, at most their measured time and the walk's and at least two thirds of the two less 10 ms, the engine's stated rate set aside, and so on a handle opened after them, or after a rebuild that followed them, from the rate and the time the projection keeps; before any reclaim the preflight says it leaves the reclaim out",
     given
 );
 
@@ -1146,7 +1146,7 @@ async fn the_expected_time_follows_the_lakes_last_rebuild(
     let pre = store.forget_preflight(&crm).await.must("the preflight")?;
     let took = took + ms(began);
     ensure!(
-        fails[3].load(Ordering::SeqCst) == 0 && pre.expected_ms <= took + 2,
+        fails[3].load(Ordering::SeqCst) == 0 && pre.expected_ms <= took + 2 && pre.reclaim_untimed,
         "after an open that rebuilt the projection, the open and the preflight's own walk of \
          {took} ms, the preflight expects at most that time; it expects {} ms of {} events",
         pre.expected_ms,
@@ -1177,7 +1177,7 @@ async fn the_expected_time_follows_the_lakes_last_rebuild(
     ];
     for ((what, ms), walked) in both.into_iter().zip(walks) {
         ensure!(
-            ms <= took + walked + 3 && took * 2 <= ms * 3 + 30,
+            ms <= took + walked + 3 && took * 2 <= ms * 3 + 30 && !pre.reclaim_untimed,
             "after a rebuild and a reclaim of {took} ms the {what}'s preflight, whose own walk \
              took {walked} ms, expects at most the three and at least two thirds of the two \
              less 10 ms; it expects {ms} ms of {} events",
@@ -1193,6 +1193,13 @@ async fn the_expected_time_follows_the_lakes_last_rebuild(
         ms <= took + walked + 3 && took * 2 <= ms * 3 + 30,
         "a handle opened after a rebuild and a reclaim of {took} ms expects them as the handle \
          that ran them does, with its walk of {walked} ms; it expects {ms} ms"
+    );
+    store.rebuild().await.must("rebuilding")?;
+    let store = fault(store).await.map_err(opened)?;
+    let pre = store.forget_preflight(&crm).await.must("the preflight")?;
+    ensure!(
+        !pre.reclaim_untimed && pre.expected_ms >= u64::from(waits),
+        "after a rebuild a new handle expects the {waits} ms reclaim: {pre:?}"
     );
     Ok(())
 }

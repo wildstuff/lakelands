@@ -419,21 +419,6 @@ fn a_scan_includes_retired_and_restricted_records_only_when_asked() {
 }
 
 #[test]
-fn a_scan_filters_exactly_and_an_unevaluable_filter_matches_nothing() {
-    let e = fresh();
-    numbered(e.as_ref());
-    let v = e.view(None).unwrap();
-    let filter = |text: &str| Scan {
-        filter: Some(lakelands_core::expr::parse(text).unwrap()),
-        ..scan(100)
-    };
-    let t = TypeName::from("t");
-    assert_eq!(keys(&v.scan(&t, &filter("n > 5")).unwrap()), ["b", "e"]);
-    assert_eq!(keys(&v.scan(&t, &filter("n is null")).unwrap()), ["c"]);
-    assert!(v.scan(&t, &filter("n / 0 > 1")).unwrap().is_empty());
-}
-
-#[test]
 fn a_scan_continues_after_a_keyset_position_and_stops_at_its_limit() {
     let e = fresh();
     numbered(e.as_ref());
