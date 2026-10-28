@@ -1,6 +1,6 @@
 # 090 — A setting value may hold from a date
 
-**Proposed** on lakelands#1549, for 0.21.0. The operator reviews it on the issue; merging it does not accept it.
+Decided on lakelands#1549 by the operator (2026-10-29), for 0.21.0.
 
 ## What is decided
 
@@ -312,25 +312,16 @@ from the declaration.
 `lakelands settings` prints a dated setting's periods after its line,
 one a line: `from start: 16 %`, `from 2026-07-01: 19 %`.
 
-### The day of an instant: the operator's open question
+### The day of an instant: UTC
 
 `at` may be a `date_time`, and the clock is an instant. Each has to be
-judged against a calendar date. **Open question for the operator: is the
-day of an instant its date in UTC, or its date in a time zone declared
-on the lake?**
-
-**Recommended: UTC.** The rest of this record reads with this sentence:
+judged against a calendar date. The operator chose UTC:
 
 > **The day of an instant is its calendar date in UTC; a `date` is its
 > own day.**
 
-Under the other answer, only that sentence changes, to:
-
-> **The day of an instant is its calendar date in the time zone the
-> lake's `day_zone` setting names, as of the event folded or the
-> position read; a `date` is its own day.**
-
-The options:
+A time zone declared on the lake (a `day_zone` setting naming an IANA
+zone) was the other answer, and was not taken. The reasons:
 - **UTC.** The expression language already counts days in UTC.
   `today()` is the UTC midnight of the clock, `date_bucket` cuts UTC
   buckets, and a `date` is its UTC midnight (`docs/log-format.md` §1.3).
@@ -469,8 +460,8 @@ an answer drift, a kept view or a kept set, is refused at the write.
   list.
 - **Not for every key.** The store's own settings and undeclared keys
   hold one value.
-- **Not a time zone.** Whatever the open question decides, a `date`
-  stays its own day.
+- **Not a time zone.** A `date` stays its own day, and the day of
+  an instant is its UTC date.
 
 ## Checks
 
@@ -581,3 +572,5 @@ gains no method, and the engines do not move.
 ## How it came to be
 
 - Proposed on lakelands#1549, for 0.21.0.
+- Decided by the operator on lakelands#1549 (2026-10-29): accepted, with
+  the day of an instant in UTC.
