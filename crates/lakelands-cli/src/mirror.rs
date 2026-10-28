@@ -491,6 +491,7 @@ fn crossing(depth: u32) -> WriteContext {
         origin: WriteOrigin::Reactive,
         depth,
         cause: None,
+        on_behalf_of: None,
     }
 }
 

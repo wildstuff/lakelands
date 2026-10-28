@@ -38,7 +38,7 @@ impl Call<'_> {
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<(Outcome, Option<External>)> {
-        check_context(self.lake, &self.context)?;
+        check_context(self.lake, &self.context, self.who)?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
@@ -99,7 +99,7 @@ impl Call<'_> {
     /// every value (`docs/log-format.md` §1.3), exactly as an applied write
     /// would.
     pub fn propose(&self, mut write: ProposedWrite, why: String) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
+        check_context(self.lake, &self.context, self.who)?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let key_opt = match &write {
@@ -131,7 +131,8 @@ impl Call<'_> {
             who,
             followed,
             shown,
-            ..*self
+            lake: self.lake,
+            context: self.context.clone(),
         };
         // A re-key's sections of the other types, for the outcome (062).
         let mut others = Vec::new();
@@ -517,7 +518,7 @@ impl Call<'_> {
         asked: &Principal,
         plan_id: Option<&str>,
     ) -> Result<(Outcome, Option<External>)> {
-        check_context(self.lake, &self.context)?;
+        check_context(self.lake, &self.context, self.who)?;
         granted(self.who.grants.review)?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
@@ -656,9 +657,13 @@ impl Call<'_> {
         };
         let accepted_at = position_after(&w, 0);
         let mut drafts = vec![accepted];
+        // Whom the proposer wrote for goes with it, never the accepter's
+        // (088).
+        let made_for = proposed_for(self.lake, &p)?;
         let as_accepted = |mut d: Draft| {
             if d.origin == Origin::Authored {
                 d.writer = p.proposer.clone();
+                d.context.on_behalf_of = made_for.clone();
             }
             d.cause = d.cause.or(Some(accepted_at));
             d
@@ -673,6 +678,7 @@ impl Call<'_> {
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         d.at.sight = Sight::held(&proposer, &w.ontology);
         (d.envelope.writer, d.envelope.cause) = (Some(p.proposer.clone()), Some(accepted_at));
+        d.envelope.on_behalf_of = made_for.clone();
         // What the write leaves is judged by the reviewer's pairs too: a
         // holder of `only` accepts no write that takes a record out of its
         // reach, as it writes none (051). A refusal of the plan is told as
@@ -886,6 +892,7 @@ impl Call<'_> {
                 );
                 let envelope = Envelope {
                     writer: Some(p.proposer.clone()),
+                    on_behalf_of: made_for.clone(),
                     cause: Some(accepted_at),
                     ..Envelope::of(Origin::Authored)
                 };
@@ -1025,7 +1032,7 @@ impl Call<'_> {
 
     /// `reject`.
     pub fn reject(&self, proposal: &ProposalId, asked: &Principal, why: String) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
+        check_context(self.lake, &self.context, self.who)?;
         granted(self.who.grants.review)?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
@@ -1204,4 +1211,14 @@ impl Call<'_> {
 /// A write's clock, never before the last `known_at`.
 fn clock(w: &Writer) -> Timestamp {
     crate::lake::wall_clock().max(w.last_known_at)
+}
+
+/// Whom the proposer of `p` acted for, as its `write_proposed` names it
+/// (088).
+fn proposed_for(lake: &Lake, p: &lakelands_api::write::Proposal) -> Result<Option<String>> {
+    let stored = lake.engine.read(p.position, 1)?;
+    match stored.first().map(log::open).transpose()? {
+        Some(e) if e.position == p.position => Ok(e.on_behalf_of),
+        _ => Ok(None),
+    }
 }

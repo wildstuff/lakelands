@@ -75,6 +75,7 @@ async fn a_reaction_naming_a_firing_appended_concurrently_never_passes_its_ceili
             origin: WriteOrigin::Reactive,
             depth: 2,
             cause: Some(firing),
+            on_behalf_of: None,
         });
         let (direct, react) = (cat.clone(), own.clone());
         let a = tokio::spawn(async move {

@@ -34,6 +34,11 @@ check!(
 );
 
 check!(
+    ACCEPTED_FOR_THE_PROPOSER = an_accepted_write_names_whom_its_proposer_wrote_for,
+    "088 (lakelands#1489): `agent:a`, bound for `human:alice`, proposes an upsert, and `human:bob`, bound for no one, accepts it; `write_accepted` names `human:bob` and no `on_behalf_of`, and the upsert names `agent:a` for `human:alice`, as the proposer wrote it"
+);
+
+check!(
     REJECT_AND_DECIDED = a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided,
     "013: rejecting appends `write_rejected` and nothing else; a decided proposal is refused as decided"
 );
@@ -1820,6 +1825,45 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
          not granted to one listed the write in part, else answer a write changed since it \
          was proposed, append nothing (the head moved: {moved_head}) and leave each pending \
          ({pending}): {wrong:#?}"
+    );
+    Ok(())
+}
+
+async fn an_accepted_write_names_whom_its_proposer_wrote_for(store: Store) -> Held {
+    let l = ledger(store.as_ref()).await?;
+    let agent = principal(store.as_ref(), PrincipalKind::Agent, "a", Grants::owner());
+    let bob = principal(
+        store.as_ref(),
+        PrincipalKind::Human,
+        "bob",
+        Grants {
+            default: Access::Read,
+            review: true,
+            ..Grants::default()
+        },
+    );
+    let for_alice = store.catalog(super::context::made_for("human:alice"));
+    let write =
+        json!({"write": "upsert", "type": "invoice", "key": "i", "patch": {"status": "held"}});
+    let proposed = for_alice
+        .propose(&agent, de(write), "for alice".into())
+        .await;
+    let (at, id) = proposal(&proposed.must("`agent:a` proposing for alice")?)?;
+    l.cat
+        .accept(&bob, &id)
+        .await
+        .must("`human:bob` accepting")?;
+    let events = events_from(store.as_ref(), at).await?;
+    let named = |is: fn(&EventBody) -> bool| {
+        (events.iter().find(|e| is(&e.body)))
+            .map(|e| (e.writer.as_str(), e.on_behalf_of.as_deref()))
+    };
+    let accepted = named(|b| matches!(b, EventBody::WriteAccepted { .. }));
+    let upserted = named(|b| matches!(b, EventBody::RecordUpserted { .. }));
+    ensure!(
+        accepted == Some(("human:bob", None)) && upserted == Some(("agent:a", Some("human:alice"))),
+        "the acceptance names `human:bob` for no one and the upsert `agent:a` for \
+         `human:alice`: {accepted:?}, {upserted:?}"
     );
     Ok(())
 }

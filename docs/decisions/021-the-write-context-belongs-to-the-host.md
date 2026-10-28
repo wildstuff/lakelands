@@ -5,8 +5,10 @@
 ### The host sets the context, and no door takes one from its caller
 
 `WriteContext` — where a write comes from (a direct call, a reaction to
-an earlier change, a scheduled procedure) and how deep in a chain of
-reactions it sits — is set by the host, never by a caller. A host obtains
+an earlier change, a scheduled procedure), how deep in a chain of
+reactions it sits, and the principal it is made for, `on_behalf_of`
+(`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`)
+— is set by the host, never by a caller. A host obtains
 a `Catalog` from its `LakeStore` bound to a context, and every write
 through that catalog carries the context into the log. No public door
 (MCP, REST, the CLI) accepts one from its caller.
@@ -46,6 +48,11 @@ trigger's firing names the write that fired it. So lineage is one chain
 from any event back to the change that started it, never a choice
 between two causes. The cause sits in the envelope's `cause`, never
 inside `context`.
+
+Whom the write is for, `on_behalf_of`, goes the same way: the store
+checks its form before anything is appended, on every door that checks
+the ceiling, and moves it to the envelope beside `writer`, never inside
+`context`; an event the store writes as itself names none (088).
 
 The cause is lineage, not depth. The host still sets `depth`, and a
 scheduled step naming its run at depth 0 is coherent.
@@ -211,3 +218,6 @@ must learn. A caller holds a principal, not a context.
   is the one every door makes: it compares the depth with the lake's
   configured ceiling and reads no head. The head enters at the append,
   for the cause and a trigger's ceiling.
+- The context names the principal a write is made for, `on_behalf_of`,
+  checked where the depth is and carried in the envelope (088,
+  lakelands#1489).

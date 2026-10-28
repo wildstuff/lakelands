@@ -165,6 +165,7 @@ fn meta(writer: &str, at: u64) -> lakelands_api::record::FieldMeta {
         procedure_version: None,
         error: None,
         erased: false,
+        on_behalf_of: None,
     }
 }
 

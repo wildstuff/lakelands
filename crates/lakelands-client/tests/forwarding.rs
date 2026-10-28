@@ -313,7 +313,7 @@ async fn a_write_through_the_handle_is_read_back_through_it() {
 }
 
 /// The write context the handle's host gives its catalog is the one the
-/// writer's log carries.
+/// writer's log carries, whom the write is for with it (088).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_write_context_crosses_to_the_writer() {
     let (handle, held) = forwarding(sqlite_at()).await;
@@ -322,8 +322,9 @@ async fn the_write_context_crosses_to_the_writer() {
         origin: WriteOrigin::Reactive,
         depth: 1,
         cause: Some(Position(1)),
+        on_behalf_of: Some("human:alice".into()),
     };
-    let o = (handle.catalog(context))
+    let o = (handle.catalog(context.clone()))
         .upsert(
             &f.cast.clerk,
             &TypeName::from("invoice"),
@@ -341,12 +342,17 @@ async fn the_write_context_crosses_to_the_writer() {
     let event = (batch.events.iter())
         .find(|e| e.position == at)
         .expect("the write's event");
-    // The cause is the envelope's, never the context's.
+    // The cause and whom the write is for are the envelope's, never the
+    // context's.
     let carried = WriteContext {
         cause: None,
-        ..context
+        on_behalf_of: None,
+        ..context.clone()
     };
-    assert_eq!((event.context, event.cause), (carried, context.cause));
+    assert_eq!(
+        (&event.context, event.cause, &event.on_behalf_of),
+        (&carried, context.cause, &context.on_behalf_of)
+    );
     held.release().await;
 }
 

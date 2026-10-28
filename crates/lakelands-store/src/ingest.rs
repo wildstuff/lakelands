@@ -97,7 +97,7 @@ pub fn window(
     source: &SourceId,
     (first, records, places): (u64, Vec<SourceRecord>, Vec<u64>),
 ) -> Result<Committed> {
-    crate::writes::check_context(lake, &context)?;
+    crate::writes::check_context(lake, &context, who)?;
     let mut w = lake.for_write()?;
     // Under the writer, so through every rename the lake has folded, and
     // with its references as the head's types show them (024, extended).
@@ -946,7 +946,7 @@ pub fn run(
                 continue;
             }
             let (w, s, d) = (who.clone(), source.clone(), delivery.clone());
-            let a = apart.clone();
+            let (a, context) = (apart.clone(), context.clone());
             let first = next;
             next += batch.len() as u64;
             let at = (batch.iter())

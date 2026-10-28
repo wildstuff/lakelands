@@ -41,12 +41,13 @@ every kind, and `body`, which holds the kind and its payload.
 | `prev` | string | always | The `hash` of the event at `position - 1`; 64 `0` digits at position 0. |
 | `known_at` | string | always | The lake's wall time when the event was appended (§1.3). |
 | `writer` | string | always | The principal the event was written as, `<kind>:<id>`, where `<kind>` is `human`, `agent`, `service` or `system`: `human:alice@example.com`, `service:importer`, `system:lakelands`. The id holds no `0x00` (§3). |
+| `on_behalf_of` | string | from format 21, when the write was made for someone | The principal the writer made the write for, in the form of `writer`, of kind `human`, `agent` or `service`, and never the writer itself: the host's context names it, and every event written as the writer carries it, a `write_accepted` naming whom its accepter wrote for and the accepted write keeping its proposer's; an event written as `system:lakelands` names none (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`). Rights are judged on `writer` alone. A reader refuses it in a format before 21, naming the format, and in `context`, naming it. It is not part of the ingest id (§3). |
 | `origin` | string | always | Which authority wrote it: `source`, `authored`, `derived` or `system`. |
 | `source` | string | source events | The source a `source` event came from. |
 | `seen_at` | string | when known | When the source observed the values (§1.3). |
 | `upstream` | object | when read from another lake | `{ "lake", "position" }`: the lake whose log the values were read from (its lake id) and the position of the event there whose state they are (an integer). Only on `record_ingested`; a reader refuses it on any other kind, naming the kind. The ingesting principal states it, as it states `seen_at`. |
 | `procedure` | object | when one did | `{ "name", "version" }`, both strings, of the procedure that produced the values: for a verb, its name and its declaration's `version` in decimal digits; for a function backing, the function's name and its declaration's `version`; for an embedding, the model as the backend names it and the version it reports. |
-| `context` | object | always | The host's context for the write: `{ "origin": "direct" \| "reactive" \| "scheduled", "depth": n }`, `depth` an integer ≥ 0. It never carries `cause`: a reader refuses a `context` that does, naming it. |
+| `context` | object | always | The host's context for the write: `{ "origin": "direct" \| "reactive" \| "scheduled", "depth": n }`, `depth` an integer ≥ 0. It never carries `cause` or `on_behalf_of`: a reader refuses a `context` that does, naming the member. |
 | `cause` | integer | consequences | The position of the event this one follows from: a verb's write names its `verb_called`, an accepted proposal's write names its `write_accepted`, a fired trigger names the write that fired it. An event of a host's write that the store sets no cause for names the position the host gave, at or below the head when it was appended (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); any kind may carry it. |
 | `fence` | integer | always | The fencing token of the writer lease the event was appended under (§4); `0` for the event at position 0, which is written before any lease exists in the lake. |
 | `idempotency_key` | string | when given | The caller's idempotency key of an authored write. |
@@ -614,6 +615,7 @@ clears, the fold records the field's provenance from the envelope
 | `seen_at` | `seen_at` |
 | `position` | `position` |
 | `writer` | `writer` |
+| `on_behalf_of` | `on_behalf_of`, from format 21 |
 | `source` | `source` |
 | `procedure` | `procedure.name` |
 | `procedure_version` | `procedure.version` |
@@ -835,7 +837,7 @@ So the separators are unambiguous.
   carrying any other field is refused whole, never trimmed, per
   `docs/decisions/012-writes-touch-only-their-fields.md`) and has
   normalised every `date_time` value to the one form of §1.3. The
-  envelope's `seen_at`, `upstream` and `writer` are not in the preimage: a record
+  envelope's `seen_at`, `upstream`, `writer` and `on_behalf_of` are not in the preimage: a record
   delivered twice by the same source with the same values against the
   same state of the record has the same id whoever relayed it and
   whenever the source captured it, and the second delivery appends

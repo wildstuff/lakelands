@@ -392,7 +392,7 @@ impl Call<'_> {
     /// `dismiss_quarantined`: the close of `id`, appended where it is
     /// open, and its first close where it was closed already (085).
     pub fn dismiss_quarantined(&self, id: &QuarantineId) -> Result<QuarantineClose> {
-        check_context(self.lake, &self.context)?;
+        check_context(self.lake, &self.context, self.who)?;
         granted(self.who.grants.ingest)?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;

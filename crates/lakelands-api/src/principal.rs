@@ -464,10 +464,11 @@ pub enum WriteOrigin {
     Scheduled,
 }
 
-/// The host's context for a write: its origin and how deep in a chain of
-/// reactions it sits. The store refuses a reactive write deeper than the
-/// lake's configured ceiling, so a trigger cannot feed itself forever.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// The host's context for a write: its origin, how deep in a chain of
+/// reactions it sits, and whom it is made for. The store refuses a
+/// reactive write deeper than the lake's configured ceiling, so a trigger
+/// cannot feed itself forever.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WriteContext {
     /// Where the write comes from.
     pub origin: WriteOrigin,
@@ -482,6 +483,15 @@ pub struct WriteContext {
     /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cause: Option<crate::id::Position>,
+    /// The principal the write is made for, `<kind>:<id>` with `<kind>`
+    /// one of `human`, `agent` or `service`, where the writer acts for
+    /// another: a component filing what a person asked for. It lands in
+    /// the envelope's `on_behalf_of` of each event the write appends under
+    /// its writer, never in `context`, and in each field's provenance. It
+    /// is recorded, not trusted: rights are judged on the writer alone
+    /// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
 }
 
 #[cfg(test)]

@@ -527,7 +527,7 @@ fn record_schema(ty: &TypeDescription, lake: &LakeDescription) -> Value {
             "fields": {"type": "object", "properties": fields},
             "masked": {"type": "array", "items": {"type": "string"}},
             "meta": {"type": "object",
-                     "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value."},
+                     "description": "Per field: origin, known_at, seen_at, position, writer, on_behalf_of (the principal the writer acted for, where it acted for one), source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value."},
         },
         "required": ["type", "key", "version", "fields"],
     })

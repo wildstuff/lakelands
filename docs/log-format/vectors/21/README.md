@@ -109,7 +109,10 @@ The files:
     two forms format 17 holds and 16 does not (lakelands#1148);
   - a `declared` trigger, `slip_made`, whose strict guard reads
     `created()`, that names the kinds of change that fire it and binds
-    its reactions to depth 1 (60), a write that makes a slip (61), the
+    its reactions to depth 1 (60), a write that makes a slip (61),
+    made by `agent:agent` for `human:reader`, which its envelope's
+    `on_behalf_of` names beside `writer`, a member format 21 adds (088,
+    lakelands#1489), the
     `trigger_fired` it sets off, naming the kind of change and that it
     made the record (62), a reaction one deeper naming that firing,
     which makes another slip (63), and the `trigger_dropped` of
@@ -193,13 +196,15 @@ The files:
     `forgotten` and a `purged` close end what the source wrote here, and
     the conformance suite holds them.
 
-  Its `misplaced` holds five lines that are not of the lake. Each
+  Its `misplaced` holds seven lines that are not of the lake. Each
   stands at its position after the event before it, in the release's
   format and with its hash made right, and carries one member where it
   never sits, so a reader refuses it for that alone: `upstream` on a
   `record_retired`, `cause` inside `context`, an `output_recorded`
   with both `output` and `output_at`, `sealed` on a `record_retired`,
-  and `delivery` on a `record_retired`.
+  `delivery` on a `record_retired`, `sealed` on a `record_ingested`
+  naming another source than its own, and `on_behalf_of` inside
+  `context`.
 - `framed.json`: the lake's next append, three `record_ingested` of
   `erp` at positions 94 to 96, in the stored form a writer of format 21
   writes (`docs/log-format.md` §1.2): `stored`, a frame line holding every

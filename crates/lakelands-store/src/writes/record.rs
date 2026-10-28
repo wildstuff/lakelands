@@ -22,6 +22,9 @@ pub(crate) struct Envelope {
     pub origin: Origin,
     /// Who writes them, where it is not the caller.
     pub writer: Option<String>,
+    /// Whom `writer` acts for, where `writer` is set: at an accept, the
+    /// proposer's (088).
+    pub on_behalf_of: Option<String>,
     /// The event they follow from.
     pub cause: Option<Position>,
     /// The procedure that produced their values.
@@ -44,6 +47,7 @@ impl Envelope {
         Envelope {
             origin,
             writer: None,
+            on_behalf_of: None,
             cause: None,
             procedure: None,
             id: None,
@@ -106,7 +110,11 @@ impl Decide<'_> {
             body,
             EventBody::RecordIngested { .. } | EventBody::RecordQuarantined { .. }
         );
-        let own = self.call.draft(self.at.now, e.origin, body);
+        let mut own = self.call.draft(self.at.now, e.origin, body);
+        // Whom the write is for goes with its writer (088).
+        if e.writer.is_some() {
+            own.context.on_behalf_of = e.on_behalf_of;
+        }
         Draft {
             sealed: e.sealed.filter(|_| ingested),
             writer: e.writer.unwrap_or(own.writer),
@@ -637,13 +645,18 @@ impl Decide<'_> {
         before: Option<&StoredRecord>,
         after: &StoredRecord,
     ) -> Result<Vec<Draft>> {
-        let (o, now, cause, context) = (self.ontology, self.at.now, self.next, self.call.context);
+        let (o, now, cause, context) = (
+            self.ontology,
+            self.at.now,
+            self.next,
+            self.call.context.clone(),
+        );
         let mut out = Vec::new();
         // A reaction carries the context of the write that caused it, so
         // a host acting on it writes one level deeper (021).
         let system = |body| Draft {
             cause: Some(cause),
-            context,
+            context: context.clone(),
             ..Draft::system(now, body)
         };
         let at = (after.ty.clone(), after.key.clone());
@@ -955,7 +968,7 @@ impl<'a> Asked<'a> {
         patch: &Patch,
         expected: Option<Version>,
     ) -> Result<()> {
-        check_context(self.lake, &self.context)?;
+        check_context(self.lake, self.context, self.who)?;
         ordinary_door(ty)?;
         let view = self.lake.engine.view(None)?;
         let w = self.lake.reading(view.as_ref())?;
@@ -999,7 +1012,7 @@ impl Call<'_> {
     /// A record door's own questions of its context: its depth, and for
     /// `upsert` and `retire` a type written through no other door.
     fn checked(&self, op: Op<'_>) -> Result<()> {
-        check_context(self.lake, &self.context)?;
+        check_context(self.lake, &self.context, self.who)?;
         match op {
             Op::Upsert(ty, ..) | Op::Retire(ty, _) => ordinary_door(ty),
             _ => Ok(()),

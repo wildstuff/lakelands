@@ -125,6 +125,7 @@ fn reaction(cause: Position, depth: u32) -> WriteContext {
         origin: WriteOrigin::Reactive,
         depth,
         cause: Some(cause),
+        on_behalf_of: None,
     }
 }
 

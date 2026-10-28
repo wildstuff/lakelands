@@ -90,6 +90,10 @@ pub struct Event {
     pub known_at: Timestamp,
     /// The principal it was written as, `<kind>:<id>`.
     pub writer: String,
+    /// The principal `writer` acted for, from format 21, where the host's
+    /// context named one (088).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
     /// Which authority wrote it.
     pub origin: Origin,
     /// The source, for an event from a source.

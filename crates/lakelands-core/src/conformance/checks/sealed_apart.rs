@@ -73,13 +73,13 @@ check!(
 
 check!(
     APART_PER_DELIVERY = a_delivery_a_record_names_is_sealed_under_a_key_of_its_own,
-    "065, extended (lakelands#1528): one call of `crm` in `page`, sealed apart at a `commit_window` of 2, writes `a` and `b` in `item-1`, `c` in `item-2` and `d` in the call's: three keys apart, `item-1`'s shared by `a` and `b` across two windows; taking `item-1` back with `require_shredded` destroys its key alone, `a` and `b` retired while `c` and `d` read their names, after a writer opened again and a rebuild too",
+    "065, extended (lakelands#1528): one call of `crm` in `page`, sealed apart at a `commit_window` of 2, writes `a` and `b` in `item-1`, `c` in `item-2` and `d` in the call's, and quarantines `q` in `item-2`: three keys apart, `item-1`'s shared by `a` and `b` across two windows, and `q`'s cell sealed under `item-2`'s, as `c` is; taking `item-1` back with `require_shredded` destroys its key alone, `a` and `b` retired while `c` and `d` read their names, after a writer opened again and a rebuild too",
     reopens
 );
 
 check!(
     APART_ASKED_ONCE = a_window_asks_for_its_keys_apart_in_one_request,
-    "065, extended (lakelands#1528): under a key store that counts its requests, six one-record deliveries over two sources sealed apart at a `commit_window` of 6 make one request of six keys and no other, at 2 three requests of two; a window whose keys the call keeps already makes none; where the request fails and `create_apart` refuses `unbound` at the record at index 3, that record is refused with `from` 2 and nothing of its window is appended",
+    "065, extended (lakelands#1528): under a key store that counts its requests, six one-record deliveries over two sources sealed apart at a `commit_window` of 6 make one request of six keys and no other, at 2 three requests of two; a window whose keys the call keeps already makes none; where the request answers five keys for six, the sixth record's is asked alone and the six are sealed under six keys apart; where the request fails and `create_apart` refuses `unbound` at the record at index 3, that record is refused with `from` 2 and nothing of its window is appended",
     reopens
 );
 
@@ -100,12 +100,16 @@ async fn a_delivery_a_record_names_is_sealed_under_a_key_of_its_own(
         p("c", "Cy", Some("item-2")),
         p("b", "Bea", Some("item-1")),
         p("d", "Dee", None),
+        SourceRecord {
+            delivery: Some("item-2".into()),
+            ..source_record("person", "q", json!({"id": "q", "name": "Quin", "zz": 1}))
+        },
     ];
     let opts = IngestOpts {
         delivery: Some("page".into()),
         sealed_apart: true,
+        quarantine_refused: true,
         commit_window: Some(2),
-        ..IngestOpts::default()
     };
     let mark = store.head().await.must("reading the head")?;
     let said = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &crm, opts, records);
@@ -116,6 +120,7 @@ async fn a_delivery_a_record_names_is_sealed_under_a_key_of_its_own(
         s.map(|(_, s)| s.apart.clone()).unwrap_or_default()
     };
     let (a, b, c, d) = (of("a"), of("b"), of("c"), of("d"));
+    let q = (sealed.iter().find(|(w, _)| w == "quarantined q")).map(|(_, s)| &s.apart);
     let made = keys.apart(store.lake(), &crm);
     ensure!(
         a.len() == 1
@@ -125,8 +130,10 @@ async fn a_delivery_a_record_names_is_sealed_under_a_key_of_its_own(
             && a != c
             && c != d
             && a != d
+            && q == Some(&c)
             && made.len() == 3,
-        "`a` and `b` share `item-1`'s key, and `c` and `d` each have one of their own: \
+        "`a` and `b` share `item-1`'s key, `c` and `d` each have one of their own, and \
+         `q` is sealed under `c`'s: \
          {sealed:?}, the key store holding {made:?}"
     );
     let item = Selection::Delivery("item-1".into());
@@ -210,6 +217,18 @@ async fn a_window_asks_for_its_keys_apart_in_one_request(store: Store, reopen: R
         asked == [Some(2)],
         "a window whose keys the call keeps makes no request: {asked:?}"
     );
+    let before = store.head().await.must("reading the head")?;
+    counted.short.store(true, Ordering::SeqCst);
+    let (said, asked) = call(6, six("d")).await;
+    counted.short.store(false, Ordering::SeqCst);
+    said.must("ingesting six deliveries whose request answers five keys")?;
+    let sealed = seals(store.as_ref(), before).await?;
+    let apart: BTreeSet<_> = (sealed.iter()).flat_map(|(_, s)| &s.apart).collect();
+    ensure!(
+        asked == [Some(6), None] && sealed.len() == 6 && apart.len() == 6,
+        "a request answering five keys for six asks the sixth alone and seals each record \
+         under a key apart of its own: asked {asked:?}, sealed {sealed:?}"
+    );
     counted.fails.store(true, Ordering::SeqCst);
     *crate::lock(&counted.alone) = Some(3);
     let (said, _) = call(2, six("e")).await;
@@ -230,13 +249,15 @@ async fn a_window_asks_for_its_keys_apart_in_one_request(store: Store, reopen: R
 }
 
 /// The suite's key store, whose `destroy_apart` and `create_apart_many`
-/// fail while `fails` is set. It counts its requests for keys apart in
+/// fail while `fails` is set, and whose `create_apart_many` answers one
+/// key short while `short` is. It counts its requests for keys apart in
 /// `asked`, the size of each `create_apart_many` and `None` for each
 /// `create_apart`, which refuses as unbound once `alone` is spent.
 #[derive(Default)]
 struct FailingApart {
     keys: Arc<Keys>,
     fails: AtomicBool,
+    short: AtomicBool,
     asked: std::sync::Mutex<Vec<Option<usize>>>,
     alone: std::sync::Mutex<Option<usize>>,
 }
@@ -296,7 +317,11 @@ impl KeyStore for FailingApart {
     ) -> lakelands_api::Result<Vec<KeyId>> {
         crate::lock(&self.asked).push(Some(sources.len()));
         self.failed()?;
-        self.keys.create_apart_many(lake, sources)
+        let mut ids = self.keys.create_apart_many(lake, sources)?;
+        if self.short.load(Ordering::SeqCst) {
+            ids.pop();
+        }
+        Ok(ids)
     }
     fn destroy_apart(
         &self,
@@ -328,9 +353,13 @@ async fn apart(l: &Lake, delivery: &str, records: Vec<SourceRecord>) -> Held {
 async fn seals(store: &dyn LakeStore, after: Position) -> Result<Vec<(String, Sealed)>, Failure> {
     let events = events_after(store, after).await?;
     let sealed = |e: Event| {
-        let what = match &e.body {
-            EventBody::RecordIngested { key, .. } => format!("ingest {key}"),
-            EventBody::OutputRecorded { seam, .. } => format!("output {seam}"),
+        // A quarantined record holds its seal in its payload.
+        let (what, seal) = match e.body {
+            EventBody::RecordIngested { key, .. } => (format!("ingest {key}"), e.sealed),
+            EventBody::OutputRecorded { seam, .. } => (format!("output {seam}"), e.sealed),
+            EventBody::RecordQuarantined { key, sealed, .. } => {
+                (format!("quarantined {key}"), sealed)
+            }
             _ => return None,
         };
         // The box aside: what is compared here is the keys a seal names.
@@ -338,7 +367,7 @@ async fn seals(store: &dyn LakeStore, after: Position) -> Result<Vec<(String, Se
             what,
             Sealed {
                 boxed: None,
-                ..e.sealed?
+                ..seal?
             },
         ))
     };

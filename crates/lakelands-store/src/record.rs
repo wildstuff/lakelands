@@ -211,9 +211,11 @@ pub(crate) fn initial_of(
 }
 
 /// The provenance of a field filled with its `initial` at `event`: at a
-/// create, and at a migration that fills it (050).
+/// create, and at a migration that fills it (050). The store fills it by
+/// its own hand, for no one (088).
 pub(crate) fn initial_meta(event: &Event) -> FieldMeta {
     FieldMeta {
+        on_behalf_of: None,
         upstream: None,
         seen_at: None,
         source: None,
@@ -266,6 +268,7 @@ pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
         seen_at: event.seen_at,
         position: event.position,
         writer: event.writer.clone(),
+        on_behalf_of: event.on_behalf_of.clone(),
         source: event.source.clone(),
         procedure: event.procedure.as_ref().map(|p| p.name.clone()),
         procedure_version: event.procedure.as_ref().map(|p| p.version.clone()),

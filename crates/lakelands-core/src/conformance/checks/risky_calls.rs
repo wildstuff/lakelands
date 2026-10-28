@@ -13,6 +13,7 @@ use lakelands_api::record::SourceRecord;
 use lakelands_api::write::Outcome;
 
 use crate::conformance::backing::{KIND, causes, made};
+use crate::conformance::fixture::upsert;
 use crate::conformance::prelude::*;
 
 check!(
@@ -69,6 +70,11 @@ check!(
 check!(
     HELD_CALL_NOT_THERE = a_held_records_call_is_not_there_to_one_not_answered_it,
     "064 and 006: the call proposed for a held record is not there to a reviewer who does not hold `restricted`, whose listing is as with no such record, and is there to one who does"
+);
+
+check!(
+    CALL_PROPOSED_FOR = a_proposed_call_names_whom_its_write_was_for,
+    "064 and 088 (lakelands#1489): `agent:worker` bound for `human:alice` upserts a ticket whose field a function above low computes; the `write_proposed` of its call is written as `agent:worker` for `human:alice`, the reviewer's `write_accepted` names no one, and every event the accept writes as `agent:worker` names `human:alice`"
 );
 
 check!(
@@ -1505,5 +1511,59 @@ async fn an_expr_function_declares_no_risk_and_a_risk_is_described(store: Store)
         risk == Some(Risk::Medium),
         "`notify` was declared medium, and describe answers it so; it answers {risk:?}"
     );
+    Ok(())
+}
+
+async fn a_proposed_call_names_whom_its_write_was_for(store: Store) -> Held {
+    let l = tickets(store.as_ref(), "call_proposed_for", Risk::High).await?;
+    let (rev, worker, alice) = (
+        reviewer(store.as_ref(), false),
+        writer(store.as_ref()),
+        "human:alice",
+    );
+    let cat = store.catalog(super::context::made_for(alice));
+    let before = store.head().await.must("reading the head")?;
+    upsert(
+        cat.as_ref(),
+        &worker,
+        "ticket",
+        "t1",
+        json!({"subject": "a"}),
+    )
+    .await?;
+    let proposed = events_after(store.as_ref(), before).await?;
+    let drafted = proposed
+        .iter()
+        .find(|e| matches!(e.body, EventBody::WriteProposed { .. }));
+    let named = drafted.map(|e| (e.writer.as_str(), e.on_behalf_of.as_deref()));
+    ensure!(
+        named == Some((worker.writer().as_str(), Some(alice))),
+        "the call t1's write left owed is proposed as `{}` for `{alice}`; its \
+         `write_proposed` names {named:?}",
+        worker.writer()
+    );
+    let listed = pending(&l, &rev).await?;
+    let id = of_key(&listed, "t1")
+        .map(|p| p.id.clone())
+        .unwrap_or_default();
+    let head = store.head().await.must("reading the head")?;
+    accept(store.as_ref(), &l, &rev, &id).await?;
+    let accepted = events_after(store.as_ref(), head).await?;
+    for e in &accepted {
+        let want = if e.writer == worker.writer().as_str() {
+            Some(alice)
+        } else {
+            None
+        };
+        ensure!(
+            e.on_behalf_of.as_deref() == want,
+            "the accept of t1's call writes as the proposer for whom it proposed, and as the \
+             reviewer for no one; the `{}` at {} written as `{}` names {:?}",
+            e.body.kind(),
+            e.position,
+            e.writer,
+            e.on_behalf_of
+        );
+    }
     Ok(())
 }

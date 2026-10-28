@@ -28,6 +28,7 @@ use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use lakelands_api::event::EventBody;
 use lakelands_api::id::Position;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{Risk, VerbDecl, VerbEffect};
@@ -859,7 +860,8 @@ async fn an_ingest_line_with_an_unknown_member_is_refused() {
 }
 
 /// `?quarantine_refused` carries the option to the store: the refused
-/// record is quarantined and the stream goes on; `GET …/quarantined`
+/// record is quarantined and the stream goes on, a line's own `delivery`
+/// naming the record's where the query names the call's; `GET …/quarantined`
 /// lists it by its filter and `POST …/quarantined/dismiss` closes it
 /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
 #[tokio::test]
@@ -876,7 +878,7 @@ async fn a_refused_record_is_quarantined_listed_and_dismissed_over_rest() {
         "content-type: application/x-ndjson",
         r#"{"type":"invoice","key":"INV-Q1","fields":{"amount":"1.00"}}"#,
         r#"{"type":"invoice","key":"INV-Q2","fields":{"amount":"2.00","status":"x"}}"#,
-        r#"{"type":"invoice","key":"INV-Q3","fields":{"amount":"3.00"}}"#,
+        r#"{"type":"invoice","key":"INV-Q3","fields":{"amount":"3.00"},"delivery":"item-3"}"#,
     ];
     let (status, _, body) = exchange(addr, &block).await;
     assert_eq!(status, "200", "{body}");
@@ -887,6 +889,21 @@ async fn a_refused_record_is_quarantined_listed_and_dismissed_over_rest() {
         .collect();
     let records: u64 = windows.iter().filter_map(|w| w["records"].as_u64()).sum();
     assert_eq!((quarantined, records), (vec![json!(1)], 2), "{body}");
+    let (feed, all) = (store.feed(), FeedFilter::default());
+    let log = feed.poll(Position(0), &all, 1000).await.unwrap();
+    let delivered: Vec<_> = (log.events.into_iter())
+        .filter_map(|e| match e.body {
+            EventBody::RecordIngested { key, .. } if key.0.starts_with("INV-Q") => {
+                Some((key.0, e.delivery?.to_string()))
+            }
+            _ => None,
+        })
+        .collect();
+    let named = |k: &str, d: &str| (k.to_owned(), d.to_owned());
+    assert_eq!(
+        delivered,
+        [named("INV-Q1", "q1"), named("INV-Q3", "item-3")]
+    );
     let id = json!({"source": "bank", "delivery": "q1", "index": 1});
     let list = |query: &'static str| {
         let start = format!("GET /lakes/finance/quarantined{query}");

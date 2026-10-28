@@ -1225,7 +1225,7 @@ impl Call<'_> {
                 let body = retirement(&before.ty, &before.key, before.version);
                 let retired = Draft {
                     cause: Some(migrated),
-                    context: self.context,
+                    context: self.context.clone(),
                     ..Draft::system(now, body)
                 };
                 drafts.extend(d.retiring(&before, retired)?);

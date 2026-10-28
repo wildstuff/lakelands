@@ -110,7 +110,7 @@ pub(crate) fn plan_of(
 impl Call<'_> {
     /// `plan`.
     pub fn plan(&self, change: Changed) -> Result<lakelands_api::read::Reply<Plan>> {
-        check_context(self.lake, &self.context)?;
+        check_context(self.lake, &self.context, self.who)?;
         let mut w = self.writer()?;
         let planned = self.planned(&mut w, change, When::Plan, Against::default())?;
         Ok(lakelands_api::read::Reply {
@@ -137,7 +137,7 @@ impl Call<'_> {
     /// judges every record, so what it refuses for a record held from its
     /// caller would tell of that record.
     pub(crate) fn enacting(&self) -> Result<()> {
-        check_context(self.lake, &self.context)?;
+        check_context(self.lake, &self.context, self.who)?;
         granted(self.authors())?;
         self.restricted_to_act()
     }
@@ -180,7 +180,7 @@ impl Call<'_> {
 
     /// What `plan` makes, appended and answered with its plan.
     fn made(&self, plan: impl FnOnce(&Self, &mut Writer) -> Result<Planned>) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
+        check_context(self.lake, &self.context, self.who)?;
         let mut w = self.writer()?;
         let planned = plan(self, &mut w)?;
         let from = head(&w).next();

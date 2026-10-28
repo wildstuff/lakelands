@@ -46,6 +46,10 @@ pub struct FieldMeta {
     pub position: Position,
     /// The principal that wrote it, as `<kind>:<id>`.
     pub writer: String,
+    /// The principal `writer` acted for, where its event names one
+    /// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
     /// The source it came from, for a value from a source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceId>,

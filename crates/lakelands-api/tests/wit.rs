@@ -474,6 +474,7 @@ fn field_meta() -> FieldMeta {
         procedure_version: Some("1".into()),
         error: Some("the backing failed".into()),
         erased: true,
+        on_behalf_of: Some("human:b".into()),
     }
 }
 
@@ -1012,6 +1013,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 cause: Some(Position(1)),
                 origin: WriteOrigin::Reactive,
                 depth: 1,
+                on_behalf_of: Some("human:b".into()),
             }),
         ),
         ("field_type", members(&field_type())),

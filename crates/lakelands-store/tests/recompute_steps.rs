@@ -170,6 +170,7 @@ fn context(n: u32) -> WriteContext {
         origin: WriteOrigin::Scheduled,
         depth: n,
         cause: None,
+        on_behalf_of: None,
     }
 }
 
@@ -189,6 +190,7 @@ fn stamped(n: u32, who: &str, position: Position, version: Option<&str>) -> Fiel
         upstream: Some(upstream(n)),
         error: None,
         erased: false,
+        on_behalf_of: None,
     }
 }
 
@@ -446,7 +448,7 @@ fn row_3_an_output_recorded_later_fills_the_record_the_step_cleared() {
             (
                 o.cause,
                 o.ty.to_string(),
-                o.context,
+                o.context.clone(),
                 matches!(o.of, Of::Sweep { .. }),
             )
         })
