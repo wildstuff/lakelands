@@ -2,8 +2,7 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1541, for 0.21.0. The operator reviews it on
-the issue; merging it does not accept it. It needs no log format, no
+Decided on lakelands#1541 by the operator (2026-10-28), for 0.21.0. It needs no log format, no
 step and no engine work: the store ranks with what a read at a position
 already answers. It extends
 `docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`,
