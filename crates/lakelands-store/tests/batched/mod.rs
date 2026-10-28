@@ -1059,6 +1059,7 @@ pub async fn an_ingest_window_closes_a_batch(place: &Place, name: &str) {
                 seen_at: None,
                 upstream: None,
                 source: None,
+                delivery: None,
                 resubmits: None,
             };
             let source = SourceId::from("feed");

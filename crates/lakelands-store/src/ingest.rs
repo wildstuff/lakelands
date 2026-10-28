@@ -8,7 +8,8 @@
 //! [`Committed`] with the position its last event took and the call's
 //! delivery: the caller's, else `d<first position>`, the position of the
 //! first event the call appended. Every `record_ingested` of the call
-//! carries it in its envelope. A window is all or nothing: if one of its
+//! carries it in its envelope, or the delivery its record names: one call
+//! may carry many deliveries, each taken back alone (087). A window is all or nothing: if one of its
 //! records is refused, nothing of the window is appended, the refusal is
 //! the stream's next item and the stream ends — the caller's own offset
 //! says where to resume
@@ -64,14 +65,18 @@ use lakelands_core::{canonical, links};
 /// How long a window waits for more records after its first.
 const WINDOW: Duration = Duration::from_millis(2);
 
-/// The keys of a call's delivery sealed apart, one per source it writes
-/// for, made at its first sealed value and kept for its every window
-/// (065).
-pub type Apart = std::sync::Mutex<BTreeMap<SourceId, KeyId>>;
+/// The keys of a call sealed apart, one per source and delivery it writes
+/// for, none naming the call's own, made before the first window that
+/// seals a value of the pair and kept for its every window (065, 087).
+pub type Apart = std::sync::Mutex<BTreeMap<Pair, KeyId>>;
+
+/// A source and the delivery a record names, none for the call's.
+type Pair = (SourceId, Option<DeliveryId>);
 
 /// Decide and append one window, in the call's `delivery` where one is
 /// named or decided already, its values sealed apart too where `apart`
-/// keeps the call's keys.
+/// keeps the call's keys; `places` holds each record's place among the
+/// call's records of its delivery.
 pub fn window(
     lake: &Turn<'_>,
     who: &Principal,
@@ -82,7 +87,7 @@ pub fn window(
         bool,
     ),
     source: &SourceId,
-    (first, records): (u64, Vec<SourceRecord>),
+    (first, records, places): (u64, Vec<SourceRecord>, Vec<u64>),
 ) -> Result<Committed> {
     crate::writes::check_context(lake, &context)?;
     let mut w = lake.for_write()?;
@@ -116,7 +121,7 @@ pub fn window(
             (&call, apart, quarantine),
             &w,
             (view.as_ref(), now),
-            (source, first, &records),
+            (source, first, &records, &places),
             &mut asks,
         );
         // An outage too: the judgement may have met it past a record that
@@ -149,7 +154,7 @@ pub fn window(
         )
     };
     for d in drafts.iter_mut().filter(ingested) {
-        d.delivery = delivery.clone();
+        d.delivery = d.delivery.take().or_else(|| delivery.clone());
     }
     // A window that appends nothing committed no record, and answers the head.
     let position = if drafts.is_empty() {
@@ -295,7 +300,7 @@ fn judge(
     (call, apart, quarantine): (&Call<'_>, Option<&Apart>, Option<(&DeliveryId, u32)>),
     w: &Writer,
     (view, now): (&dyn ProjectionView, Timestamp),
-    (source, first, records): (&SourceId, u64, &[SourceRecord]),
+    (source, first, records, places): (&SourceId, u64, &[SourceRecord], &[u64]),
     asks: &mut Asks,
 ) -> Result<Judged> {
     let lake = call.lake;
@@ -345,6 +350,9 @@ fn judge(
     for (ty, keys) in keys.into_iter().chain(targets) {
         d.pending.prime(view, ty, &keys)?;
     }
+    if let Some(apart) = apart {
+        ask_apart((lake, w), apart, (&d, &forgotten), source, records);
+    }
     // The keys of an insert-only type this window writes, each once.
     let mut once = BTreeSet::new();
     let mut ciphers = crate::sealing::Ciphers::default();
@@ -354,8 +362,12 @@ fn judge(
         open: BTreeMap::new(),
     };
     let mut quarantined = Vec::new();
-    for (i, r) in records.iter().enumerate() {
+    for (i, (r, place)) in records.iter().zip(places).enumerate() {
         let index = first + i as u64;
+        let pair = (
+            r.source.clone().unwrap_or_else(|| source.clone()),
+            r.delivery.clone(),
+        );
         // The record's own source, else the call's: its event and its id.
         let source = r.source.as_ref().unwrap_or(source);
         let target = resubmitted(&d, (view, &rows), r, source);
@@ -372,6 +384,9 @@ fn judge(
             let patch = d.checked(decl, &r.key, &r.fields)?;
             if let Some(own) = &r.source {
                 crate::writes::check_source(own)?;
+            }
+            if let Some(own) = &r.delivery {
+                crate::writes::check_delivery(own)?;
             }
             stated(r)?;
             // A record a holder of `only` is not admitted is, to it, a key that
@@ -395,7 +410,7 @@ fn judge(
             // Its values of an erasable field enter the log sealed under its
             // key, in one box, and its id is the patch's and the box's as
             // stored: no digest of a plaintext value enters the log (058, 083).
-            let sealed = sealing((lake, w, view, now), apart, source, (decl, &patch))?;
+            let sealed = sealing((lake, w, view, now), apart, &pair, (decl, &patch))?;
             let id = match &sealed {
                 Some(s) => {
                     let mut body = EventBody::RecordIngested {
@@ -474,7 +489,11 @@ fn judge(
                     )?;
                 }
             }
-            drafts.extend(d.planned(plan)?.drafts);
+            let planned = d.planned(plan)?.drafts.into_iter();
+            drafts.extend(planned.map(|p| Draft {
+                delivery: r.delivery.clone(),
+                ..p
+            }));
             if decl.insert_only {
                 once.insert(at);
             }
@@ -520,8 +539,8 @@ fn judge(
                 let made = quarantining(
                     (call.lake, w, view, now),
                     (&mut d, &mut rows, &mut ciphers, apart),
-                    (r, source, target.as_ref(), &forgotten),
-                    (e, index, first),
+                    (r, &pair, target.as_ref(), &forgotten),
+                    (e, index, first, *place),
                 )?;
                 match made {
                     Some(draft) => {
@@ -543,20 +562,19 @@ fn judge(
     })
 }
 
-/// The values of `patch` a record of `decl` from `source` seals: those of
-/// its erasable fields that hold one, in one box under the source's newest
-/// key, turned as the settings say, and the call's own where its delivery
-/// is sealed apart (058, 065, 083); none where it holds none.
+/// The values of `patch` a record of `decl` from the pair's source seals:
+/// those of its erasable fields that hold one, in one box under the
+/// source's newest key, turned as the settings say, and the pair's own
+/// where the call is sealed apart (058, 065, 083, 087); none where it
+/// holds none.
 fn sealing(
     (lake, w, view, now): (&Lake, &Writer, &dyn ProjectionView, Timestamp),
     apart: Option<&Apart>,
-    source: &SourceId,
+    pair: &Pair,
     (decl, patch): (&lakelands_api::ontology::TypeDecl, &lakelands_api::Patch),
 ) -> Result<Option<Sealed>> {
-    let mut fields: Vec<_> = (decl.fields.iter())
-        .filter(|f| f.erasable && patch.get(&f.name).is_some_and(|v| !v.is_null()))
-        .map(|f| f.name.clone())
-        .collect();
+    let source = &pair.0;
+    let mut fields = erasable(decl, patch);
     if fields.is_empty() {
         return Ok(None);
     }
@@ -567,7 +585,7 @@ fn sealing(
     let (key, _) = lake.keys.sealing(source, newest.map(|(k, _)| k), rotate)?;
     // A delivery sealed apart seals under its version and its own key,
     // composed (065).
-    let apart = apart.map(|a| apart_key((lake, w), a, source)).transpose()?;
+    let apart = apart.map(|a| apart_key((lake, w), a, pair)).transpose()?;
     Ok(Some(Sealed {
         key,
         source: None,
@@ -578,7 +596,8 @@ fn sealing(
 }
 
 /// The version that `r`'s refusal `e` makes of its quarantined record,
-/// the one it resubmits or its own place in the call's delivery: none
+/// the one it resubmits or its own place among the call's records of its
+/// delivery: none
 /// where it is a duplicate of the record's last version (085). A refusal
 /// of the call, of its source, of a type not shown or of a key or value
 /// the log cannot hold is not quarantined, nor is one past the bound: the
@@ -592,15 +611,16 @@ fn quarantining(
         &mut crate::sealing::Ciphers,
         Option<&Apart>,
     ),
-    (r, source, target, forgotten): (
+    (r, pair, target, forgotten): (
         &SourceRecord,
-        &SourceId,
+        &Pair,
         Option<&Quarantined>,
         &BTreeMap<SourceId, String>,
     ),
-    (e, index, first): (Error, u64, u64),
+    (e, index, first, place): (Error, u64, u64, u64),
 ) -> Result<Option<Draft>> {
-    let (delivery, max) = rows.asked.expect("the call quarantines");
+    let (call, max) = rows.asked.expect("the call quarantines");
+    let (source, delivery) = (&pair.0, pair.1.as_ref().unwrap_or(call));
     let decl = match d.at.sight.ty(&r.ty) {
         Ok(decl) if !matches!(e, Error::Unavailable { .. } | Error::Unbound { .. }) => decl,
         _ => return Err(ingested(e, index, first, r)),
@@ -609,6 +629,7 @@ fn quarantining(
         || r.source
             .as_ref()
             .is_some_and(|s| crate::writes::check_source(s).is_err())
+        || (r.delivery.as_ref()).is_some_and(|d| crate::writes::check_delivery(d).is_err())
         || stated(r).is_err()
         || forgotten.contains_key(source)
         || r.key.as_str().contains('\0');
@@ -619,7 +640,7 @@ fn quarantining(
         || QuarantineId {
             source: source.clone(),
             delivery: delivery.clone(),
-            index,
+            index: place,
         },
         |q| q.id.clone(),
     );
@@ -627,7 +648,7 @@ fn quarantining(
         Some(q) => Some(q.clone()),
         None => rows.row(view, &id)?,
     };
-    let sealed = sealing((lake, w, view, now), apart, source, (decl, &r.fields));
+    let sealed = sealing((lake, w, view, now), apart, pair, (decl, &r.fields));
     let sealed = sealed.map_err(|e| ingested(e, index, first, r))?;
     let body = |version: u32| EventBody::RecordQuarantined {
         ty: r.ty.clone(),
@@ -680,6 +701,7 @@ fn quarantining(
     let draft = Draft {
         id: Some(at.map_err(|e| ingested(e, index, first, r))?),
         source: Some(source.clone()),
+        delivery: pair.1.clone(),
         sealed,
         seen_at: None,
         upstream: None,
@@ -788,25 +810,81 @@ fn stated(r: &SourceRecord) -> Result<()> {
     }
 }
 
-/// The key `source`'s values of the call are sealed apart under, by
-/// id: the one `apart` keeps, else a new one the key store makes, kept
-/// there. One an act of removal named since, which a writer knows from
-/// the act it met or made, is not sealed under again: what the call
-/// writes after the act is not the act's, so it takes a key of its own
-/// (065).
-fn apart_key((lake, w): (&Lake, &Writer), apart: &Apart, source: &SourceId) -> Result<KeyId> {
-    let kept = lakelands_core::lock(apart).get(source).cloned();
-    let taken = |id: &KeyId| {
-        lake.keys.doomed(source, id) || w.removals.iter().any(|r| r.destroyed(source, id))
-    };
-    match kept.filter(|id| !taken(id)) {
+/// The key the pair's values of the call are sealed apart under, by id:
+/// the one `apart` keeps, else a new one the key store makes, kept there.
+fn apart_key((lake, w): (&Lake, &Writer), apart: &Apart, pair: &Pair) -> Result<KeyId> {
+    match kept((lake, w), apart, pair) {
         Some(id) => Ok(id),
         None => {
-            let (id, _) = lake.keys.apart(source)?;
-            lakelands_core::lock(apart).insert(source.clone(), id.clone());
+            let (id, _) = lake.keys.apart(&pair.0)?;
+            lakelands_core::lock(apart).insert(pair.clone(), id.clone());
             Ok(id)
         }
     }
+}
+
+/// The key `apart` keeps for the pair. One an act of removal named
+/// since, which a writer knows from the act it met or made, is not sealed
+/// under again: what the call writes after the act is not the act's, so
+/// it takes a key of its own (065).
+fn kept((lake, w): (&Lake, &Writer), apart: &Apart, pair: &Pair) -> Option<KeyId> {
+    let source = &pair.0;
+    let taken = |id: &KeyId| {
+        lake.keys.doomed(source, id) || w.removals.iter().any(|r| r.destroyed(source, id))
+    };
+    (lakelands_core::lock(apart).get(pair).cloned()).filter(|id| !taken(id))
+}
+
+/// Ask the key store, in one request, for a key of every pair of the
+/// window's records that would seal a value and whose key the call does
+/// not keep, so they are kept before the window's append (087). A record
+/// would seal where its type is shown, its key, source and delivery are
+/// well formed, its source is not forgotten and it carries a value of an
+/// erasable field. The request is a saving: where it fails, or missed a
+/// pair, a record asks for its key alone as it is judged.
+fn ask_apart(
+    (lake, w): (&Lake, &Writer),
+    apart: &Apart,
+    (d, forgotten): (&Decide<'_>, &BTreeMap<SourceId, String>),
+    source: &SourceId,
+    records: &[SourceRecord],
+) {
+    let mut pairs: Vec<Pair> = Vec::new();
+    for r in records {
+        let pair = (
+            r.source.clone().unwrap_or_else(|| source.clone()),
+            r.delivery.clone(),
+        );
+        let seals =
+            d.at.sight
+                .ty(&r.ty)
+                .is_ok_and(|decl| !erasable(decl, &r.fields).is_empty())
+                && crate::writes::check_key(&r.key).is_ok()
+                && crate::writes::check_source(&pair.0).is_ok()
+                && (r.delivery.as_ref()).is_none_or(|d| crate::writes::check_delivery(d).is_ok())
+                && !forgotten.contains_key(&pair.0);
+        if seals && !pairs.contains(&pair) && kept((lake, w), apart, &pair).is_none() {
+            pairs.push(pair);
+        }
+    }
+    if pairs.is_empty() {
+        return;
+    }
+    let sources: Vec<SourceId> = pairs.iter().map(|(s, _)| s.clone()).collect();
+    if let Ok(ids) = lake.keys.apart_many(&sources) {
+        lakelands_core::lock(apart).extend(pairs.into_iter().zip(ids));
+    }
+}
+
+/// The erasable fields of `decl` that `patch` gives a value.
+fn erasable(
+    decl: &lakelands_api::ontology::TypeDecl,
+    patch: &lakelands_api::Patch,
+) -> Vec<lakelands_api::FieldName> {
+    (decl.fields.iter())
+        .filter(|f| f.erasable && patch.get(&f.name).is_some_and(|v| !v.is_null()))
+        .map(|f| f.name.clone())
+        .collect()
 }
 
 /// The next item of a stream, if it arrives before `deadline`.
@@ -832,6 +910,8 @@ pub fn run(
     mut records: SourceStream,
 ) -> CommitStream {
     let mut delivery = opts.delivery;
+    let named = delivery.clone();
+    let mut places: BTreeMap<Option<DeliveryId>, u64> = BTreeMap::new();
     let apart = opts.sealed_apart.then(|| Arc::new(Apart::default()));
     let quarantine = opts.quarantine_refused;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Committed>>(4);
@@ -844,7 +924,12 @@ pub fn run(
             let mut deadline = None;
             while batch.len() < size {
                 match next_before(&mut records, deadline).await {
-                    Some(Some(r)) => {
+                    Some(Some(mut r)) => {
+                        // A record that names the call's own delivery is
+                        // in it: there is no second one of that name.
+                        if r.delivery.is_some() && r.delivery == named {
+                            r.delivery = None;
+                        }
                         batch.push(r);
                         deadline.get_or_insert_with(|| tokio::time::Instant::now() + WINDOW);
                     }
@@ -862,9 +947,16 @@ pub fn run(
             let a = apart.clone();
             let first = next;
             next += batch.len() as u64;
+            let at = (batch.iter())
+                .map(|r| {
+                    let place = places.entry(r.delivery.clone()).or_default();
+                    *place += 1;
+                    *place - 1
+                })
+                .collect();
             let run = move |t: &Turn<'_>| {
                 let how = (context, d, a.as_deref(), quarantine);
-                crate::lake::owing(|| window(t, &w, how, &s, (first, batch)))
+                crate::lake::owing(|| window(t, &w, how, &s, (first, batch, at)))
             };
             let mut answer = exec::write(&lake, run).await;
             // The calls the window made due are made before it answers, so

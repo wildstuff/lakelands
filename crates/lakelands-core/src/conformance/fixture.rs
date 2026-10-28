@@ -1189,6 +1189,7 @@ pub fn source_record(ty: &str, key: &str, fields: Value) -> SourceRecord {
         key: RecordKey::from(key),
         fields: patch(fields),
         seen_at: None,
+        delivery: None,
         resubmits: None,
     }
 }
