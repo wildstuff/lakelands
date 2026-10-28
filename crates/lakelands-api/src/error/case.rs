@@ -1554,6 +1554,12 @@ catalog! {
         } => "it reaches several types[, `{reached}`][, {also}], and [it reads `{field}`, which is[ missing from {missing}][[{?missing},] of another kind, value type, target or dimensions in {other}]|the step after it reads one]; name the step's `type`",
         /// A step deeper than the lake walks.
         StepTooDeep { max: u32, asked: u32 } => "a step may walk at most {max} hops; this one asks for {asked}",
+        /// A search with `text_as_of` beside what ranks by the head: a vector
+        /// or a second stage.
+        TextAsOfBeside { member: String } => "`text_as_of` ranks the text the records held at an earlier position, and a search's `{member}` ranks by the head; search the text alone, with no `vector` and no `rerank`",
+        /// A search with `text_as_of` that names no earlier position or no
+        /// `where` to bound its records.
+        TextAsOfNeeds { member: String } => "`text_as_of` ranks the text the records a `where` selects held at an earlier position, and the search names no `{member}`; name one, or search at the head without it",
         /// A `text_weight` out of range.
         TextWeightRange => "`text_weight` must be above 0 and at most 1000000",
         /// A `total` beside an aggregate.

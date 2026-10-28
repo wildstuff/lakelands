@@ -1121,6 +1121,7 @@ async fn the_vectors_of_moved_links_are_found_under_the_new_link_type(store: Sto
             matches: false,
             at: Default::default(),
             rerank: None,
+            text_as_of: false,
         };
         let (cat, own) = (l.cat.clone(), l.own.clone());
         async move { cat.search(&own, search).await.map(|r| r.data.hits.len()) }

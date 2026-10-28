@@ -125,6 +125,10 @@ impl Reader<'_> {
         let Some(r) = &s.rerank else {
             return Ok(None);
         };
+        // `text_as_of` beside it is refused as such, first (`Search::misfit`).
+        if s.text_as_of {
+            self.searched(s)?;
+        }
         let max = self.lake.limits.max_rerank_top;
         let case = r.misfit(&s.mode).or(match r.top > max {
             true => Some(Case::RerankTopAbove { max }),
@@ -218,6 +222,7 @@ impl Reader<'_> {
             with_meta: false,
             matches: false,
             at: ReadAt::default(),
+            text_as_of: false,
         })
     }
 

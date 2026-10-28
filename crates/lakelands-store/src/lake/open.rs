@@ -50,6 +50,13 @@ pub(crate) fn opener(
             case,
         ));
     }
+    // 089 bounds the limit: a location above it is refused here, at open,
+    // not at the first search with `text_as_of`.
+    let ceiling = lakelands_api::location::Limits::TEXT_AS_OF_CEILING;
+    if limits.max_text_as_of > ceiling {
+        let case = lakelands_api::error::Case::LimitRange { max: ceiling };
+        return Err(Error::invalid_at(&"limits.max_text_as_of".into(), case));
+    }
     let name: String = match &location.engine {
         EngineConfig::Sqlite { .. } => "sqlite".into(),
         EngineConfig::Memory => "memory".into(),

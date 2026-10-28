@@ -257,6 +257,7 @@ async fn reads(
                 with_meta: true,
                 matches: false,
                 at,
+                text_as_of: false,
             };
             let r = l.cat.search(&l.own, search).await;
             push(format!("a search for {text}"), answered(r));

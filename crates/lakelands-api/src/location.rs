@@ -318,6 +318,11 @@ pub struct Limits {
     /// second stage ranks, which a cursor carries
     /// (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
     pub max_rerank_top: u32,
+    /// The most records a search with `text_as_of` may rank, at most
+    /// [`Limits::TEXT_AS_OF_CEILING`]: one whose `where` selects more at
+    /// the position is refused `limit_range`, never cut, so 0 turns it off
+    /// (`docs/decisions/089-a-search-may-rank-by-the-text-at-the-position-it-reads.md`).
+    pub max_text_as_of: u32,
     /// Whether the lake chooses an order index from the pages it had to
     /// sort whole, beside the fields `sort_index.<type>` names
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`). Off, only
@@ -359,6 +364,10 @@ impl Limits {
     /// lists every sealed segment, and an open reads each one's end.
     pub const SEAL_FLOOR: u64 = 1 << 20;
 
+    /// The most `max_text_as_of` may be: a lake whose location sets more
+    /// is not opened.
+    pub const TEXT_AS_OF_CEILING: u32 = 1_000_000;
+
     /// The bound a segment is sealed by size at, none where it is off.
     pub fn seal_bound(&self) -> Option<u64> {
         (self.seal_after_bytes > 0).then(|| self.seal_after_bytes.max(Self::SEAL_FLOOR))
@@ -379,6 +388,7 @@ impl Default for Limits {
             max_set_changes: 20_000,
             max_change_records: 10_000,
             max_rerank_top: 100,
+            max_text_as_of: 10_000,
             choose_order_index: true,
             order_after_pages: 3,
             order_window_secs: 600,

@@ -158,6 +158,7 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
             matches: false,
             at: read_at(as_of),
             rerank: None,
+            text_as_of: false,
         };
         let hits = c.search(own, search).await.must("searching what is late")?;
         let hit = hits.data.hits.first().map(|h| &h.record);

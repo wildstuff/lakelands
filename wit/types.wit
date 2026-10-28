@@ -1163,6 +1163,7 @@ interface types {
         rerank: option<rerank>,
         with-meta: bool,
         matches: bool,
+        text-as-of: bool,
         at: read-at,
     }
 
@@ -1919,6 +1920,7 @@ interface types {
         max-set-changes: u32,
         max-change-records: u32,
         max-rerank-top: u32,
+        max-text-as-of: u32,
         choose-order-index: bool,
         order-after-pages: u32,
         order-window-secs: u32,

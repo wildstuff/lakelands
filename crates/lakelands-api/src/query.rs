@@ -758,6 +758,12 @@ pub struct Search {
     /// ([`Hit::matches`]). A search with no text cannot ask for it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub matches: bool,
+    /// Rank by the text the records held at `as_of`, not at the head: a
+    /// lexical search over the records its `where` selects there, at most
+    /// the lake's `max_text_as_of`, scored over those records alone
+    /// (`docs/decisions/089-a-search-may-rank-by-the-text-at-the-position-it-reads.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text_as_of: bool,
     /// The time axes.
     #[serde(default, flatten)]
     pub at: ReadAt,
@@ -766,9 +772,33 @@ pub struct Search {
 impl Search {
     /// What the search asks that no ranking can do
     /// ([`SearchMode::misfit`]), or `matches` with no text to match.
+    /// A search with `text_as_of` reads an earlier position, a `where` and
+    /// text alone, with no second stage (089); a page its cursor continues
+    /// reads the cursor's position.
     pub fn misfit(&self) -> Option<(Option<FieldName>, Case)> {
         let textless = self.matches && matches!(self.mode, SearchMode::Vector { .. });
-        (self.mode.misfit()).or_else(|| textless.then_some((None, Case::MatchesWithoutText)))
+        let then = [
+            (
+                self.at.as_of.is_none() && self.cursor.is_none(),
+                true,
+                "as_of",
+            ),
+            (self.filter.is_none(), true, "where"),
+            (
+                !matches!(self.mode, SearchMode::Lexical { .. }),
+                false,
+                "vector",
+            ),
+            (self.rerank.is_some(), false, "rerank"),
+        ];
+        let then = (then.into_iter()).find(|(fault, ..)| *fault && self.text_as_of);
+        let then = then.map(|(_, needs, member)| match (needs, member.to_owned()) {
+            (true, member) => Case::TextAsOfNeeds { member },
+            (false, member) => Case::TextAsOfBeside { member },
+        });
+        (self.mode.misfit())
+            .or_else(|| textless.then_some((None, Case::MatchesWithoutText)))
+            .or_else(|| then.map(|c| (Some("text_as_of".into()), c)))
     }
 }
 
@@ -796,6 +826,8 @@ struct SearchWire {
     with_meta: bool,
     #[serde(default)]
     matches: bool,
+    #[serde(default)]
+    text_as_of: bool,
     #[serde(default, flatten)]
     at: ReadAt,
 }
@@ -820,26 +852,17 @@ impl<'de> Deserialize<'de> for Search {
         }
         let mode = serde_json::from_value(Value::Object(mode)).map_err(D::Error::custom)?;
         let w: SearchWire = serde_json::from_value(Value::Object(own)).map_err(D::Error::custom)?;
-        let (ty, k, cursor, filter, rerank, with_meta, matches, at) = (
-            w.ty,
-            w.k,
-            w.cursor,
-            w.filter,
-            w.rerank,
-            w.with_meta,
-            w.matches,
-            w.at,
-        );
         Ok(Search {
-            ty,
+            ty: w.ty,
             mode,
-            k,
-            cursor,
-            filter,
-            rerank,
-            with_meta,
-            matches,
-            at,
+            k: w.k,
+            cursor: w.cursor,
+            filter: w.filter,
+            rerank: w.rerank,
+            with_meta: w.with_meta,
+            matches: w.matches,
+            text_as_of: w.text_as_of,
+            at: w.at,
         })
     }
 }

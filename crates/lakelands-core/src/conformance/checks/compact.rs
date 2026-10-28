@@ -245,6 +245,7 @@ async fn answers(
             matches: false,
             at,
             rerank: None,
+            text_as_of: false,
         };
         out.push((
             format!("a lexical search at {p}"),
@@ -260,6 +261,7 @@ async fn answers(
             matches: false,
             at,
             rerank: None,
+            text_as_of: false,
         };
         out.push((
             format!("a vector search at {p}"),

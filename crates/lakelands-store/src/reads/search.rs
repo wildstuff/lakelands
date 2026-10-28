@@ -147,9 +147,12 @@ impl<'a> Reader<'a> {
         if let Some(top) = self.rerank_top(s)? {
             return self.reranked(s, top).map(Ok);
         }
-        let first = match self.first_stage(s, None, carried)? {
-            Ok(first) => first,
-            Err(moved) => return Ok(Err(moved)),
+        let first = match s.text_as_of {
+            true => self.text_then(s)?,
+            false => match self.first_stage(s, None, carried)? {
+                Ok(first) => first,
+                Err(moved) => return Ok(Err(moved)),
+            },
         };
         let k = s.k.max(1) as usize;
         let First {
@@ -799,7 +802,7 @@ impl<'a> Reader<'a> {
             self.admitted_ends(decl, &rows)?,
             self.sight.admit(&decl.name),
         );
-        let at_head = self.head_admitted(decl, &keys)?;
+        let at_head = self.head_admitted(decl, &keys, false)?;
         let mut stored: BTreeMap<RecordKey, StoredRecord> = (rows.into_iter().zip(ends))
             .filter(|(r, ends)| *ends && at_head.as_ref().is_none_or(|h| h.contains(&r.key)))
             .map(|(r, _)| (r.key.clone(), r))
@@ -832,11 +835,14 @@ impl<'a> Reader<'a> {
     /// there and by the name and the key it bears there: a ranking by the text
     /// and vectors at the head must find no record by another's (051).
     /// A grant that cannot be applied to the head's declaration admits
-    /// none there (lakelands#771). `None` where every candidate passes.
-    fn head_admitted(
+    /// none there (lakelands#771). A record retired at the head is admitted
+    /// only where `retired`, as a ranking by the text then (089) reads it.
+    /// `None` where every candidate passes.
+    pub(super) fn head_admitted(
         &self,
         decl: &TypeDecl,
         keys: &[RecordKey],
+        retired: bool,
     ) -> Result<Option<BTreeSet<RecordKey>>> {
         let Some(h) = self.head.as_ref().filter(|_| !self.whole(decl)) else {
             return Ok(None);
@@ -853,7 +859,7 @@ impl<'a> Reader<'a> {
         let fields: Vec<_> = rows.iter().map(|r| &r.fields).collect();
         let ends = sees.ends(decl, &fields, &mut |end, keys| head.get_many(end, keys))?;
         let admitted: BTreeSet<RecordKey> = (rows.into_iter().zip(ends))
-            .filter(|(r, ends)| *ends && !r.retired && at_head.holds(&r.fields))
+            .filter(|(r, ends)| *ends && (retired || !r.retired) && at_head.holds(&r.fields))
             .map(|(r, _)| r.key)
             .collect();
         let admitted = keys

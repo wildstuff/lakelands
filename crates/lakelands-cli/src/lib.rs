@@ -331,6 +331,19 @@ fn command() -> Command {
                 .arg(Arg::new("plan").long("plan").value_name("ID").help("For a MATCH … SET, REMOVE or DELETE: make the change only if its plan is still this one (the `report_id` the plan printed); without it, print the plan and change nothing")),
         )
         .subcommand(
+            Command::new("search")
+                .about("Rank a type's records by the words of a text, best first, each hit with its score")
+                .arg(Arg::new("type").long("type").value_name("TYPE").required(true).help("The type searched"))
+                .arg(Arg::new("text").long("text").value_name("TEXT").required(true).help("The words ranked in the type's searchable fields"))
+                .arg(Arg::new("where").long("where").value_name("EXPR").help("Only the records this condition selects, in the expression grammar"))
+                .arg(Arg::new("k").long("k").value_name("N").value_parser(clap::value_parser!(u32)).help("At most this many hits a page; 20 when not given"))
+                .arg(Arg::new("as-of").long("as-of").value_name("POSITION").value_parser(clap::value_parser!(u64)).help("Read the lake as it was at this position"))
+                .arg(Arg::new("valid-at").long("valid-at").value_name("INSTANT").help("Read what was true in the world at this instant, as `2026-06-30T00:00:00Z`"))
+                .arg(Arg::new("text-as-of").long("text-as-of").action(ArgAction::SetTrue).help("Rank by the text the records `--where` selects held at `--as-of`, not by the head's"))
+                .arg(Arg::new("matches").long("matches").action(ArgAction::SetTrue).help("Print on each hit where the text matched it"))
+                .arg(Arg::new("cursor").long("cursor").value_name("CURSOR").help("Continue a page: the `next_cursor` the last page printed")),
+        )
+        .subcommand(
             Command::new("recompute")
                 .about("Compute again what a function or a type in force computes: retry a failed call, make a field that waits")
                 .arg(Arg::new("function").long("function").value_name("NAME").conflicts_with("type").help("A function: every type that names it"))
@@ -844,6 +857,27 @@ async fn dispatch(
             );
             let given = (statement.as_str(), pairs.unwrap_or_default());
             commands::query(out, catalog.as_ref(), &who, given, at).await
+        }
+        "search" => {
+            let words = text(sub, "text").unwrap_or_default();
+            let search = lakelands_api::query::Search {
+                ty: text(sub, "type").unwrap_or_default().into(),
+                mode: lakelands_api::query::SearchMode::lexical(words),
+                k: sub.get_one::<u32>("k").copied().unwrap_or(20),
+                cursor: None,
+                filter: text(sub, "where").map(|w| w.as_str().into()),
+                rerank: None,
+                with_meta: false,
+                matches: sub.get_flag("matches"),
+                text_as_of: sub.get_flag("text-as-of"),
+                at: lakelands_api::read::ReadAt::default(),
+            };
+            let at = (
+                sub.get_one::<u64>("as-of").map(|p| Position(*p)),
+                text(sub, "valid-at"),
+                text(sub, "cursor"),
+            );
+            commands::search(out, catalog.as_ref(), &who, search, at).await
         }
         "recompute" => {
             let (function, ty) = (text(sub, "function"), text(sub, "type"));

@@ -248,6 +248,7 @@ macro_rules! door_checks {
             a_vector_ranking_reads_a_vector_field,
             a_search_limited_to_named_fields_matches_and_probes_only_those,
             a_search_weighs_its_own_text_fields_over_its_types,
+            a_search_with_text_as_of_ranks_the_text_then,
             a_hybrid_search_fuses_its_text_and_vector_ranks,
             #[own_principals]
             a_grant_admits_only_the_records_whose_fields_hold_its_values,
@@ -10847,6 +10848,7 @@ async fn read_doors(c: &Arc<dyn Catalog>, who: &Principal, t: &str) -> Vec<(&'st
         matches: false,
         at: at(),
         rerank: None,
+        text_as_of: false,
     };
     let from = Pattern::traverse(t.clone(), key("v1"), Vec::new());
     let total = Find {
@@ -11684,6 +11686,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
                             clock: None,
                         },
                         rerank: None,
+                        text_as_of: false,
                     },
                 )
                 .await
@@ -11724,6 +11727,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
                 ty,
                 mode,
                 rerank: None,
+                text_as_of: false,
             };
             let hits = catalog.search(owner, s).await.expect("the search answers");
             let said = hits.data.axes.into_iter();
@@ -11774,6 +11778,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         ty: ty("doc"),
         mode: hybrid(),
         rerank: None,
+        text_as_of: false,
     };
     let hits = f
         .catalog
@@ -12325,6 +12330,7 @@ pub async fn a_vector_ranking_reads_a_vector_field(store: Arc<dyn LakeStore>) {
         matches: false,
         at: ReadAt::default(),
         rerank: None,
+        text_as_of: false,
     };
     let hybrid = |field: &str, vector: Option<Vec<f32>>| SearchMode::Hybrid {
         text: "harbour".into(),
@@ -12588,6 +12594,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
         matches: false,
         at: ReadAt::default(),
         rerank: None,
+        text_as_of: false,
     };
     let modes = |fields: Option<Vec<FieldName>>| {
         [
@@ -12766,6 +12773,7 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
         matches: false,
         at: ReadAt::default(),
         rerank: None,
+        text_as_of: false,
     };
     let found = |hits: &lakelands_api::query::Hits| {
         hits.hits
@@ -12854,6 +12862,69 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
     }
 }
 
+/// A search as of a position with `text_as_of` ranks the text the records
+/// its `where` selects held there (089, lakelands#1541): of two pages a
+/// later write swapped, it finds the one that held the word then, its
+/// match in that text. Without a `where` it is refused, naming
+/// `text_as_of`.
+pub async fn a_search_with_text_as_of_ranks_the_text_then(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, owner) = (&f.catalog, &f.cast.owner);
+    let page = json!({"name": "page", "fields": [
+        {"name": "doc", "type": {"kind": "text"}},
+        {"name": "text", "type": {"kind": "text"}, "searchable": true}]});
+    let page = serde_json::from_value::<TypeDecl>(page).expect("a type");
+    let declared = c.declare(owner, Declaration::Type(page));
+    declared.await.expect("the owner declares `page`");
+    let (cover, invoice) = (json!("Cover letter"), json!("Invoice 4711, total"));
+    let mut then = None;
+    for (k, words) in [
+        ("p1", &cover),
+        ("p2", &invoice),
+        ("p1", &invoice),
+        ("p2", &cover),
+    ] {
+        let fields = patch(&[("doc", json!("d1")), ("text", words.clone())]);
+        let (t, k) = (ty("page"), key(k));
+        let wrote = c.upsert(owner, &t, &k, fields, WriteOpts::default());
+        let p = applied(&wrote.await.expect("a page is written")).0;
+        then = then.or((k.as_str() == "p2").then_some(p));
+    }
+    let search = |filter: Option<&str>| Search {
+        ty: ty("page"),
+        mode: SearchMode::lexical("4711"),
+        k: 5,
+        cursor: None,
+        filter: filter.map(Into::into),
+        with_meta: false,
+        matches: true,
+        at: at(then.expect("the swap's position")),
+        rerank: None,
+        text_as_of: true,
+    };
+    let got = c.search(owner, search(Some("doc = 'd1'"))).await;
+    let got = got.expect("a search with `text_as_of` answers").data;
+    let found: Vec<(&str, Vec<lakelands_api::query::Span>)> = (got.hits.iter())
+        .map(|h| {
+            (
+                h.record.key.as_str(),
+                h.matches.values().flat_map(|m| m.spans.clone()).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [("p2", vec![lakelands_api::query::Span { start: 8, end: 12 }])]
+    );
+    let e = c.search(owner, search(None)).await.map(drop);
+    assert!(
+        matches!(&e, Err(e) if matches!(refusal(e), (Some(f), Refusal::Invalid(said))
+            if f.as_str() == "text_as_of"
+                && said.case == Case::TextAsOfNeeds { member: "where".into() })),
+        "`text_as_of` without a `where` is refused, naming it: {e:?}"
+    );
+}
+
 /// A lexical search's own `text_fields` weighs a match in each field it
 /// names over its type's `search_weights` setting, a field it does not
 /// name at the setting's weight, else 1 (025, extended, lakelands#1237):
@@ -12918,6 +12989,7 @@ pub async fn a_search_weighs_its_own_text_fields_over_its_types(store: Arc<dyn L
         matches: false,
         at: ReadAt::default(),
         rerank: None,
+        text_as_of: false,
     };
     // BM25F of one token, once in a field of one word, weighed by `w`:
     // both records hold it, over two fields, so its idf is ln(6/5).
@@ -13028,6 +13100,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
         matches: false,
         at: ReadAt::default(),
         rerank: None,
+        text_as_of: false,
     };
     let hybrid = |text_weight, weight| SearchMode::Hybrid {
         text: "harbour".into(),

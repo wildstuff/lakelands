@@ -768,12 +768,19 @@ its reader's class: the hold that stands at the head governs every
 position (006), so that graph holds nothing the class may see at no
 position. Keeping full-text and vector indexes for every
 earlier state would make each engine carry a second history of its
-largest structures, for a ranking no caller has asked for; if one ever
-does, it is a later, additive change.
+largest structures. A lexical search bounded by a `where` may instead
+ask, with `text_as_of`, to be ranked by the text its records held at
+that position: the store reads them there and ranks them with the same
+pipeline and function, its statistics over those records, each field it
+ranks searchable both there and at the head and tokenised in the
+language its type declared there, and keeps no index of the past
+(`docs/decisions/089-a-search-may-rank-by-the-text-at-the-position-it-reads.md`).
+A vector ranking stays the head's.
 
 So a search reads its names, its caller's rights and its `where` at the
 position it reads, and its rankings by the head's declaration, whose
-indexes they read. A field's kind, its dimensions, and
+indexes they read; one with `text_as_of` reads no index, and tokenises
+by the declaration of the position, as above. A field's kind, its dimensions, and
 whether a model fills it and which are the head's: a query embedded by
 the model of the earlier position, or a query vector of its length, would
 be ranked against vectors of another space or length. Each field a
@@ -1098,3 +1105,7 @@ Of an index asked for:
 - Extended: a field hidden on only the records a condition selects is
   judged at the earlier position and at the head, per record, as a
   field hidden on the whole type is (lakelands#1456).
+- Extended by 089 (lakelands#1541): a lexical search bounded by a
+  `where` may rank by the text at the position it reads, `text_as_of`;
+  without it a search at an earlier position ranks by the head, as
+  before.

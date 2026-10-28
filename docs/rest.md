@@ -123,7 +123,7 @@ key may hold any character.
 | `POST …/verbs/<verb>` | a verb declared on its type | body: its payload (none is `{}`); `Idempotency-Key` |
 | `POST …/query` | the pattern query | body: the query tool's arguments |
 | `POST …/cypher` | an openCypher statement, run as the pattern or the one write door call it translates to | body: `statement`, `params`, `cursor`, `as_of`, `valid_at`, `plan_id` |
-| `POST …/search` | search | body: the search tool's arguments |
+| `POST …/search` | search | body: the search tool's arguments; `text_as_of: true` with `as_of` and `where` ranks the text the records held at `as_of` |
 | `GET …/describe` | describe the lake | query: `as_of`, `valid_at` |
 | `GET …/describe/<type>` | describe one type | query: `as_of`, `valid_at` |
 | `GET …/quarantined` | quarantined records | query: `source`, `type`, `delivery`, `index`, `state` (`open` or `closed`), `limit`, `after` (an id, as JSON) |

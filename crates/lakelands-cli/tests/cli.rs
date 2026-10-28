@@ -837,6 +837,66 @@ fn apply_refuses_a_set_the_lake_refuses_whole_naming_every_problem() {
     }
 }
 
+/// `search` ranks a type's records by `--text`; as of a position, with
+/// `--text-as-of`, by the text the records `--where` selects held there,
+/// so of two pages a second ingest swapped it finds the one that held the
+/// words then. Without `--where` it is refused, naming `text_as_of`.
+#[test]
+fn search_ranks_the_text_then_with_text_as_of() {
+    for backend in BACKENDS {
+        let sh = Shell::on("search", backend);
+        sh.lake();
+        let page = "name: page\nfields:\n  doc: { type: text, authority: source }\n  text: { type: text, searchable: true, authority: source }\n";
+        assert_eq!(
+            sh.run(&["apply", &sh.bundle("pages", &[("types/page.yaml", page)])])
+                .code,
+            0
+        );
+        let rows = |one: &str, two: &str| {
+            let row = |key, text| {
+                format!(
+                    "{{\"type\": \"page\", \"key\": \"{key}\", \"fields\": {{\"doc\": \"d1\", \"text\": \"{text}\"}}}}\n"
+                )
+            };
+            row("p1", one) + &row("p2", two)
+        };
+        let (cover, invoice) = ("Cover letter", "Invoice 4711, total");
+        let first = sh.run(&[
+            "ingest",
+            &sh.file("first.ndjson", &rows(cover, invoice)),
+            "--source",
+            "scan",
+        ]);
+        let before = first.out.trim_end().rsplit(' ').next().unwrap().to_owned();
+        let second = sh.file("second.ndjson", &rows(invoice, cover));
+        let said = sh.run(&["ingest", &second, "--source", "scan"]);
+        assert_eq!(said.code, 0, "{}", said.err);
+        let search = [
+            "search", "--type", "page", "--text", "4711", "--as-of", &before,
+        ];
+        let hits = |more: &[&str]| {
+            let said = sh.run(&[&search[..], more].concat());
+            assert_eq!((said.code, said.err.as_str()), (0, ""), "{}", said.out);
+            let said: serde_json::Value = serde_json::from_str(&said.out).unwrap();
+            let hit = |h: &serde_json::Value| (h["record"]["key"].clone(), h["matches"].clone());
+            said["data"]["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(hit)
+                .collect::<Vec<_>>()
+        };
+        let then = hits(&["--where", "doc = 'd1'", "--text-as-of", "--matches"]);
+        let spans = serde_json::json!({"text": {"spans": [{"start": 8, "end": 12}], "count": 1}});
+        assert_eq!(then, [("p2".into(), spans)]);
+        let head = hits(&["--where", "doc = 'd1'"]);
+        assert_eq!(head, [("p1".into(), serde_json::Value::Null)]);
+        let refused = sh.run(&[&search[..], &["--text-as-of"]].concat());
+        assert_eq!((refused.code, refused.out.as_str()), (1, ""));
+        assert!(refused.err.contains("text_as_of"), "{}", refused.err);
+    }
+}
+
 #[test]
 fn ingest_prints_one_line_per_commit_window_and_skips_what_it_has() {
     for backend in BACKENDS {
@@ -3156,6 +3216,7 @@ limits.max_offset                       location  100000 (default)
 limits.max_set_changes                  location  20000 (default)
 limits.max_change_records               location  10000 (default)
 limits.max_rerank_top                   location  100 (default)
+limits.max_text_as_of                   location  10000 (default)
 limits.choose_order_index               location  true (default)
 limits.order_after_pages                location  3 (default)
 limits.order_window_secs                location  600 (default)

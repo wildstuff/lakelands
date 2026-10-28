@@ -1373,6 +1373,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     rerank: Some(rerank()),
                     with_meta: true,
                     matches: true,
+                    text_as_of: true,
                     at: read_at(),
                 }),
                 &[
@@ -1686,6 +1687,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 max_set_changes: 8,
                 max_change_records: 17,
                 max_rerank_top: 9,
+                max_text_as_of: 20,
                 choose_order_index: true,
                 order_after_pages: 10,
                 order_window_secs: 11,

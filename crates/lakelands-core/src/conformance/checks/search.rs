@@ -840,6 +840,7 @@ pub(super) fn doc_search(mode: SearchMode) -> Search {
         matches: false,
         at: ReadAt::default(),
         rerank: None,
+        text_as_of: false,
     }
 }
 
@@ -1663,4 +1664,397 @@ async fn a_search_as_of_a_position_ranks_by_the_heads_declaration(
         absent,
         ("nosuch", "secret"),
     )
+}
+
+check!(
+    TEXT_AS_OF_FINDS_THE_TEXT_THEN = a_search_with_text_as_of_ranks_the_text_the_records_held_then,
+    "089 (lakelands#1541): a lexical search as of a position with `text_as_of` ranks the records its `where` selects there by the text they held there, so of two pages whose words a later write swapped it finds the one that held them then, its matches in that text; without `text_as_of` it ranks by the head, as before, and at the head it finds the page that holds them now"
+);
+
+check!(
+    TEXT_AS_OF_SAME_AT_EVERY_HEAD = a_search_with_text_as_of_answers_the_same_at_every_head,
+    "089 (lakelands#1541): a search with `text_as_of` answers the same pages, scores to the bit and matches at every head: writes after its position to the records it ranks, and a record written after it, move none of it, its cursor's next page neither; a record its `where` leaves out weighs in no score"
+);
+
+check!(
+    TEXT_AS_OF_REFUSED = text_as_of_is_refused_where_it_cannot_rank_the_text_then,
+    "089 (lakelands#1541): `text_as_of` without `as_of`, without `where`, beside a vector axis or beside `rerank` is refused as invalid naming `text_as_of`, before the `where`, the fields or a reranker are judged; a `where` that selects more records at the position read than the lake's `limits.max_text_as_of` is refused as `limit_range` naming the setting, never cut short, and one that selects as many is answered whole, however many it selects at the head; a location whose `limits.max_text_as_of` is above 1 000 000 is refused at open, naming the setting",
+    given
+);
+
+check!(
+    TEXT_AS_OF_HOLDS_BOTH_POSITIONS =
+        text_as_of_ranks_a_field_only_where_it_is_shown_at_both_positions,
+    "089 and 025 (lakelands#1541): a search with `text_as_of` ranks and matches a field of a record only where its reader is shown it there both at the position read and at the head: a field a hiding lowers on the record at the head, or lowered on it at the position, is neither matched nor ranked nor counted, the record scored as one that never held it; a record retired at the head since is ranked as it was"
+);
+
+check!(
+    TEXT_AS_OF_DECLARED_THEN = a_search_with_text_as_of_reads_the_declaration_then,
+    "089 and 025 (lakelands#1541): a search with `text_as_of` tokenises in the language its type declared at the position read, not the head's, and ranks and matches a field only where it is searchable both there and at the head"
+);
+
+/// `page`: `doc` names its document, `state` its state, `title` and
+/// `text` are searchable.
+async fn pages(store: &dyn LakeStore, rows: &[(&str, Value)]) -> Result<Lake, Failure> {
+    let l = Lake::of(store);
+    let text = |name| field(name, StorageKind::Text);
+    let fields = vec![
+        text("doc"),
+        text("state"),
+        searchable("title"),
+        searchable("text"),
+    ];
+    l.declare(type_decl("page", fields)).await?;
+    for (key, fields) in rows {
+        l.upsert("page", key, fields.clone()).await?;
+    }
+    Ok(l)
+}
+
+/// A search of `page` for `text` in `doc` d1, with its matches, as of
+/// `at`, with `text_as_of` where `then`.
+fn dated(text: &str, at: Option<Position>, then: bool) -> Search {
+    Search {
+        ty: "page".into(),
+        filter: Some("doc = 'd1'".into()),
+        matches: true,
+        text_as_of: then,
+        at: ReadAt {
+            as_of: at,
+            ..ReadAt::default()
+        },
+        ..doc_search(SearchMode::lexical(text))
+    }
+}
+
+/// Each hit's key, and each field it matched with its spans.
+fn matched(h: &Hits) -> String {
+    let hit = |h: &lakelands_api::query::Hit| {
+        let fields = h.matches.iter().map(|(f, m)| {
+            let spans = m.spans.iter().map(|s| format!("{}-{}", s.start, s.end));
+            format!("{f}@{}", spans.collect::<Vec<_>>().join(","))
+        });
+        let fields: Vec<String> = fields.collect();
+        format!("{}:{}", h.record.key.as_str(), fields.join(" "))
+    };
+    h.hits.iter().map(hit).collect::<Vec<_>>().join(" / ")
+}
+
+async fn a_search_with_text_as_of_ranks_the_text_the_records_held_then(store: Store) -> Held {
+    let s = store.as_ref();
+    let page = |text: &str| json!({"doc": "d1", "text": text});
+    let (cover, invoice) = ("Cover letter", "Invoice 4711, total");
+    let l = pages(s, &[("p1", page(cover)), ("p2", page(invoice))]).await?;
+    let before = s.head().await.must("the head")?;
+    // The second ingest swaps the pages' words.
+    l.upsert("page", "p1", page(invoice)).await?;
+    l.upsert("page", "p2", page(cover)).await?;
+    let own = owner(s);
+    let mut wrong = Vec::new();
+    let rows = [
+        (
+            "before, with `text_as_of`",
+            Some(before),
+            true,
+            "p2:text@8-12",
+        ),
+        ("before, without it", Some(before), false, "p1:"),
+        ("at the head", None, false, "p1:text@8-12"),
+    ];
+    for (what, at, then, want) in rows {
+        let got = l.cat.search(&own, dated("4711", at, then)).await;
+        let got = got.must(what)?.data;
+        let said = matched(&got);
+        if said != want {
+            wrong.push(format!("{what}: want {want:?}, got {said:?}"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a search for `4711` in d1, whose two pages swapped their words after `before`, must \
+         find the page that held it at the position it ranks the text of; {}",
+        wrong.join("; ")
+    );
+    Ok(())
+}
+
+/// A page's matches and its scores' bits.
+fn scored(h: &Hits) -> String {
+    let bits = h.hits.iter().map(|h| format!("{:x}", h.score.to_bits()));
+    format!("{} {}", matched(h), bits.collect::<Vec<_>>().join(" "))
+}
+
+/// Every page of `asked`, `k` 1, each its keys, scores' bits and
+/// matches, and the first page's cursor.
+async fn walked(l: &Lake, asked: Search) -> Result<(Vec<String>, Option<Cursor>), Failure> {
+    let (mut said, mut cursor, mut first) = (Vec::new(), None, None);
+    loop {
+        let s = Search {
+            k: 1,
+            cursor: cursor.clone(),
+            ..asked.clone()
+        };
+        let got = l.cat.search(&l.own, s).await.must("a page")?.data;
+        said.push(scored(&got));
+        first = first.or(got.next_cursor.clone());
+        cursor = got.next_cursor;
+        if cursor.is_none() || said.len() > 4 {
+            return Ok((said, first));
+        }
+    }
+}
+
+async fn a_search_with_text_as_of_answers_the_same_at_every_head(store: Store) -> Held {
+    let s = store.as_ref();
+    let page = |doc: &str, text: &str| json!({"doc": doc, "text": text});
+    let rows = [
+        ("p1", page("d1", "Cover letter")),
+        ("p2", page("d1", "Invoice 4711, total")),
+        ("p3", page("d1", "Total due in 30 days")),
+        ("p4", page("d2", "4711 4711 total total")),
+    ];
+    let l = pages(s, &rows).await?;
+    let before = s.head().await.must("the head")?;
+    l.upsert("page", "p1", page("d1", "Invoice 4711, total"))
+        .await?;
+    l.upsert("page", "p2", page("d1", "Cover letter")).await?;
+    let asked = dated("4711 total", Some(before), true);
+    let (first, cursor) = walked(&l, asked.clone()).await?;
+    // p4, which d1's `where` leaves out, moves the scores where it is in.
+    let wide = Search {
+        filter: Some("doc in ('d1', 'd2')".into()),
+        ..asked.clone()
+    };
+    let wide = (l.cat.search(&l.own, wide).await).must("d1 and d2")?.data;
+    let p2 = |h: &Hits| {
+        (h.hits.iter())
+            .find(|h| h.record.key.as_str() == "p2")
+            .map(|h| h.score)
+    };
+    let wide = p2(&wide);
+    ensure!(
+        first.len() == 2
+            && first[0].starts_with("p2:")
+            && first[1].starts_with("p3:")
+            && wide.is_some_and(|w| !first[0].ends_with(&format!(" {:x}", w.to_bits()))),
+        "a search for `4711 total` in d1 as of before, with `text_as_of`, must answer p2, then \
+         p3, a page each, p2 scored over d1's pages alone, not as over d1's and d2's \
+         ({wide:?}); it answered {first:?}"
+    );
+    // More writes to the records it ranks, and one it did not hold.
+    l.upsert("page", "p2", page("d1", "4711 4711 4711 total"))
+        .await?;
+    l.upsert("page", "p3", page("d2", "Total")).await?;
+    l.upsert("page", "p5", page("d1", "4711 total")).await?;
+    let (again, _) = walked(&l, asked.clone()).await?;
+    let next = Search {
+        k: 1,
+        cursor,
+        ..asked
+    };
+    let next = (l.cat.search(&l.own, next).await).must("the cursor's next page")?;
+    let next = scored(&next.data);
+    ensure!(
+        again == first && first.get(1) == Some(&next),
+        "a search with `text_as_of` must answer the same at every head, as must its cursor's \
+         next page: it answered {first:?}, after more writes {again:?}, and its cursor then \
+         {next:?}"
+    );
+    Ok(())
+}
+
+async fn text_as_of_is_refused_where_it_cannot_rank_the_text_then(
+    store: Store,
+    given: Given,
+) -> Held {
+    let page = |doc: &str| json!({"doc": doc, "text": "4711"});
+    let rows = [
+        ("p1", page("d1")),
+        ("p2", page("d1")),
+        ("p3", page("d1")),
+        ("q1", page("d2")),
+        ("q2", page("d2")),
+    ];
+    let l = pages(store.as_ref(), &rows).await?;
+    let before = store.head().await.must("the head")?;
+    l.upsert("page", "q3", page("d2")).await?;
+    // Each `where` names a field `page` does not declare, and the rerank
+    // has no reranker bound: neither is reached.
+    let nowhere = |mut s: Search| {
+        s.filter = s.filter.map(|_| "nope = 'x'".into());
+        s
+    };
+    let needs = |member: &str| Case::TextAsOfNeeds {
+        member: member.into(),
+    };
+    let beside = |member: &str| Case::TextAsOfBeside {
+        member: member.into(),
+    };
+    let then = dated("4711", Some(before), true);
+    let (mut no_where, mut vector, mut rerank) = (then.clone(), then.clone(), then.clone());
+    no_where.filter = None;
+    vector.mode = hybrid("4711", Some(vec![1.0, 0.0]));
+    rerank.rerank = Some(lakelands_api::query::Rerank {
+        top: u32::MAX,
+        text: None,
+    });
+    for (what, asked, want) in [
+        ("without `as_of`", dated("4711", None, true), needs("as_of")),
+        ("without `where`", no_where, needs("where")),
+        ("with a vector axis", vector, beside("vector")),
+        ("with `rerank`", rerank, beside("rerank")),
+    ] {
+        let err = (l.cat.search(&l.own, nowhere(asked)).await).must_fail(what)?;
+        ensure!(
+            refused_on(&err).is_some_and(|(f, _)| f == "text_as_of")
+                && invalid_case(&err) == Some(&want),
+            "a search with `text_as_of` {what} must be refused as invalid naming `text_as_of` \
+             with {want:?}, before its `where` is read; it failed with {err:?}"
+        );
+    }
+    let two = Limits {
+        max_text_as_of: 2,
+        ..crate::conformance::fixture::limits()
+    };
+    let store = (given.relimit)(store, Seams::default(), two).await;
+    let store = store.map_err(|e| Failure::new(format!("reopening with two: {e:?}")))?;
+    let l = Lake::of(store.as_ref());
+    let err = (l.cat.search(&l.own, then.clone()).await)
+        .must_fail("a `where` selecting three pages, past the lake's two")?;
+    ensure!(
+        refused_on(&err).is_some_and(|(f, _)| f == "limits.max_text_as_of")
+            && invalid_case(&err) == Some(&Case::LimitRange { max: 2 }),
+        "a `where` selecting three records at the position read, past the lake's \
+         `limits.max_text_as_of` of 2, must be refused as `limit_range` naming the setting; it \
+         failed with {err:?}"
+    );
+    let d2 = Search {
+        filter: Some("doc = 'd2'".into()),
+        ..then
+    };
+    let got = l.cat.search(&l.own, d2).await.must("two pages of d2")?.data;
+    ensure!(
+        keys(&got) == ["q1", "q2"],
+        "a `where` selecting two records at the position read, three at the head, must be \
+         answered whole under a `limits.max_text_as_of` of 2; it answered {:?}",
+        keys(&got)
+    );
+    let above = Limits {
+        max_text_as_of: Limits::TEXT_AS_OF_CEILING + 1,
+        ..crate::conformance::fixture::limits()
+    };
+    let err = (given.relimit)(store, Seams::default(), above).await;
+    let err = err.err().ok_or_else(|| {
+        Failure::new("a location whose `limits.max_text_as_of` is above 1 000 000 must not be opened; it was")
+    })?;
+    ensure!(
+        matches!(&err, Error::Refused { field: Some(f), .. } if f == "limits.max_text_as_of")
+            && invalid_case(&err)
+                == Some(&Case::LimitRange {
+                    max: Limits::TEXT_AS_OF_CEILING
+                }),
+        "a location whose `limits.max_text_as_of` is above 1 000 000 must be refused at open \
+         as `limit_range`, naming the setting; it failed with {err:?}"
+    );
+    Ok(())
+}
+
+async fn text_as_of_ranks_a_field_only_where_it_is_shown_at_both_positions(store: Store) -> Held {
+    let s = store.as_ref();
+    let page = |doc: &str, state: &str, text: bool| {
+        let mut p = json!({"doc": doc, "state": state, "title": "4711", "text": "4711 total"});
+        _ = (!text).then(|| p.as_object_mut().map(|o| o.remove("text")));
+        p
+    };
+    // `a1` is sealed at the head, `a2` before, `a3` never; d2's `b1` and
+    // `b2` are their twins that never held `text`.
+    let rows = [
+        ("a1", page("d1", "open", true)),
+        ("a2", page("d1", "sealed", true)),
+        ("a3", page("d1", "open", true)),
+        ("b1", page("d2", "open", false)),
+        ("b2", page("d2", "open", false)),
+        ("b3", page("d2", "open", true)),
+    ];
+    let l = pages(s, &rows).await?;
+    let before = s.head().await.must("the head")?;
+    l.upsert("page", "a1", json!({"state": "sealed"})).await?;
+    l.upsert("page", "a2", json!({"state": "open"})).await?;
+    let sealed = json!({"field": "state", "values": ["sealed"], "fields": {"text": "none"}});
+    let grants = json!({"default": "read", "types": {"page": {"hide_where": [sealed]}}});
+    let bea = super::only::holder(s, "bea", grants);
+    let search = |doc: &str| Search {
+        filter: Some(format!("doc = '{doc}'").as_str().into()),
+        ..dated("4711 total", Some(before), true)
+    };
+    let bits = |h: &Hits| h.hits.iter().map(|h| h.score.to_bits()).collect::<Vec<_>>();
+    let got = l
+        .cat
+        .search(&bea, search("d1"))
+        .await
+        .must("bea's search")?
+        .data;
+    let twin = l.cat.search(&bea, search("d2")).await.must("d2")?.data;
+    // A page retired at the head was there at the position.
+    l.retire("page", "a3").await?;
+    let then = l
+        .cat
+        .search(&bea, search("d1"))
+        .await
+        .must("after a3's retiring")?
+        .data;
+    let said = matched(&got);
+    let want = "a3:text@0-4,5-10 title@0-4 / a1:title@0-4 / a2:title@0-4";
+    ensure!(
+        said == want && bits(&got) == bits(&twin) && scored(&then) == scored(&got),
+        "bea, shown `text` on a page only where it is not sealed, must find in d1 as of \
+         before, with `text_as_of`, `a3`'s text and every title, and neither `a1`'s text, \
+         sealed at the head, nor `a2`'s, sealed before, scored as d2's twins that never held \
+         it, and the same after `a3` is retired at the head: want {want:?}, got {said:?}, \
+         scored {:?} against {:?}, then {:?}",
+        bits(&got),
+        bits(&twin),
+        scored(&then)
+    );
+    Ok(())
+}
+
+async fn a_search_with_text_as_of_reads_the_declaration_then(store: Store) -> Held {
+    let s = store.as_ref();
+    let l = Lake::of(s);
+    // `title` is searchable before only, `note` at the head only, and
+    // English is dropped since.
+    let decl = |then: bool| {
+        let text = |name| field(name, StorageKind::Text);
+        let mut fields = vec![text("doc"), text("title"), searchable("text"), text("note")];
+        fields[if then { 1 } else { 3 }].searchable = true;
+        let mut decl = type_decl("page", fields);
+        decl.language = then.then(|| "en".into());
+        decl
+    };
+    l.declare(decl(true)).await?;
+    let page =
+        |text: &str| json!({"doc": "d1", "title": "running", "text": text, "note": "running"});
+    l.upsert("page", "p1", page("running invoices")).await?;
+    l.upsert("page", "p2", page("invoices")).await?;
+    let before = s.head().await.must("the head")?;
+    l.declare(decl(false)).await?;
+    let (mut said, want) = (Vec::new(), "p1:text@0-7");
+    for named in [None, Some(vec!["text".into(), "title".into()])] {
+        let mut s = dated("run", Some(before), true);
+        if let SearchMode::Lexical { fields, .. } = &mut s.mode {
+            *fields = named;
+        }
+        said.push(matched(
+            &l.cat.search(&l.own, s).await.must("the search")?.data,
+        ));
+    }
+    ensure!(
+        said.iter().all(|s| s == want),
+        "a search for `run` as of before, with `text_as_of`, naming no field and naming `text` \
+         and `title`, must stem by the English the type declared then and rank neither `title`, \
+         searchable then alone, nor `note`, searchable at the head alone: want {want:?}, got \
+         {said:?}"
+    );
+    Ok(())
 }

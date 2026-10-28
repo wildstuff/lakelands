@@ -450,6 +450,7 @@ async fn page_clocks(
                     matches: false,
                     at: ReadAt::default(),
                     rerank: None,
+                    text_as_of: false,
                 };
                 let hits = c.search(own, search).await.must("a page of `search`")?.data;
                 (

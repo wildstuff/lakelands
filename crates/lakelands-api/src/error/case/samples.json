@@ -1419,6 +1419,14 @@
    "max": 1
   },
   {
+   "code": "text_as_of_beside",
+   "member": "s"
+  },
+  {
+   "code": "text_as_of_needs",
+   "member": "s"
+  },
+  {
    "code": "text_weight_range"
   },
   {
