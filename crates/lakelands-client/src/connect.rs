@@ -215,6 +215,28 @@ impl Write for Conn {
         }
     }
 
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            Conn::Plain(s) => Pin::new(s).poll_write_vectored(cx, bufs),
+            Conn::Tls(s) => Pin::new(s.as_mut()).poll_write_vectored(cx, bufs),
+            #[cfg(test)]
+            Conn::Duplex(s) => Pin::new(s).poll_write_vectored(cx, bufs),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            Conn::Plain(s) => s.is_write_vectored(),
+            Conn::Tls(s) => s.is_write_vectored(),
+            #[cfg(test)]
+            Conn::Duplex(s) => s.is_write_vectored(),
+        }
+    }
+
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
             Conn::Plain(s) => Pin::new(s).poll_shutdown(cx),
