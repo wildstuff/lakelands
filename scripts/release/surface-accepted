@@ -10,3 +10,4 @@ lakelands-api	trait_method_added	trait method Catalog::dismiss_quarantined
 lakelands-api	trait_method_added	trait method Catalog::quarantined
 lakelands-api	trait_method_added	trait method ProjectionStore::put_quarantined
 lakelands-api	trait_method_added	trait method ProjectionView::quarantined
+lakelands-api	derive_trait_impl_removed	type WriteContext no longer derives Copy
