@@ -11,7 +11,10 @@
 //! rebuilt with its graphs, and its pages are what they were. A lake of
 //! format 19, its log without `frames` and its projection one layout
 //! back, as 0.19.0 left it, is upgraded by the first writer's open
-//! (lakelands#1467).
+//! (lakelands#1467). A log 0.20.0 kept, its `id`, `prev` and `hash` as
+//! text beside `applied`, is read as it is and converted in place by the
+//! first writer's open, once, every event, digest and export as before
+//! (lakelands#1518).
 
 mod common;
 
@@ -182,7 +185,8 @@ async fn a_format_19_lake_an_older_build_laid_out_upgrades_on_the_first_writers_
          DROP TABLE {s}.routes; \
          CREATE TABLE {s}.routes (at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, \
          key TEXT, source TEXT); \
-         UPDATE {s}.meta SET n = 7 WHERE k IN ('folded', 'layout')"
+         UPDATE {s}.meta SET n = 7 WHERE k IN ('folded', 'layout'); {}",
+        as_text(&s)
     );
     let tables = format!(
         "SELECT string_agg(tablename, ' ' ORDER BY tablename COLLATE \"C\") FROM pg_tables \
@@ -225,6 +229,11 @@ async fn a_format_19_lake_an_older_build_laid_out_upgrades_on_the_first_writers_
         unchanged, V0_19_TABLES,
         "a refused upgrade leaves 0.19.0's tables and no other"
     );
+    assert_eq!(
+        tokio::task::block_in_place(|| kept(&url, &schema)),
+        AS_TEXT,
+        "a refused upgrade leaves the log's columns as they were"
+    );
     drop(release.0);
     tokio::task::block_in_place(|| holder.join()).unwrap();
     let store = open(&location, OpenMode::Write).await.unwrap();
@@ -247,6 +256,11 @@ async fn a_format_19_lake_an_older_build_laid_out_upgrades_on_the_first_writers_
         "the upgrade makes `frames`"
     );
     store.verify(None, None).await.unwrap();
+    assert_eq!(
+        tokio::task::block_in_place(|| kept(&url, &schema)),
+        CONVERTED,
+        "the rebuild's swap converts the log"
+    );
     store.close().await.unwrap();
     let store = open(&location, OpenMode::Write).await.unwrap();
     assert_eq!(
@@ -255,6 +269,287 @@ async fn a_format_19_lake_an_older_build_laid_out_upgrades_on_the_first_writers_
         "the next writer's open rebuilds nothing"
     );
     store.close().await.unwrap();
+    common::drop_schema(&url, &schema);
+}
+
+/// The statements that take a lake's log back to the columns a release
+/// before 0.21.0 kept: `id`, `prev` and `hash` as text, no index on `id`,
+/// and `applied` holding each id at its first position.
+fn as_text(s: &str) -> String {
+    format!(
+        "DROP INDEX {s}.log_id; \
+         ALTER TABLE {s}.log ALTER COLUMN id TYPE text USING encode(id, 'hex'), \
+         ALTER COLUMN prev TYPE text USING encode(prev, 'hex'), \
+         ALTER COLUMN hash TYPE text USING encode(hash, 'hex'); \
+         CREATE TABLE {s}.applied (id TEXT PRIMARY KEY, at BIGINT NOT NULL); \
+         INSERT INTO {s}.applied SELECT id, min(position) FROM {s}.log GROUP BY id"
+    )
+}
+
+/// What `kept` answers of a log this build converted.
+const CONVERTED: (&str, bool, bool) = ("bytea bytea bytea", false, true);
+
+/// The types `log` keeps `hash`, `id` and `prev` in, whether `applied` is
+/// there, and whether the index on `log (id)` is.
+fn kept(url: &str, schema: &str) -> (&'static str, bool, bool) {
+    let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
+    let row = client
+        .query_one(
+            "SELECT (SELECT string_agg(format_type(atttypid, NULL), ' ' ORDER BY attname) \
+             FROM pg_attribute WHERE attrelid = to_regclass($1) \
+             AND attname IN ('hash', 'id', 'prev')), \
+             to_regclass($2) IS NOT NULL, to_regclass($3) IS NOT NULL",
+            &[
+                &format!("\"{schema}\".log"),
+                &format!("\"{schema}\".applied"),
+                &format!("\"{schema}\".log_id"),
+            ],
+        )
+        .unwrap();
+    let types = match row.get::<_, String>(0).as_str() {
+        "bytea bytea bytea" => "bytea bytea bytea",
+        "text text text" => "text text text",
+        other => panic!("the log's columns are of no one release: {other}"),
+    };
+    (types, row.get(1), row.get(2))
+}
+
+/// What a log 0.20.0 kept answers of `kept`.
+const AS_TEXT: (&str, bool, bool) = ("text text text", true, false);
+
+/// Every row of `log` and of `segments` as text, the log's hex columns as
+/// the hex they spell whatever they are kept in, and the log's table's
+/// file, which a conversion writes anew.
+fn rows(url: &str, schema: &str) -> (String, String, u32) {
+    let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
+    let s = format!("\"{schema}\"");
+    let (id, prev, hash) = (
+        typed(&mut client, &s, "id"),
+        typed(&mut client, &s, "prev"),
+        typed(&mut client, &s, "hash"),
+    );
+    let log = client
+        .query_one(
+            &format!(
+                "SELECT string_agg(concat_ws(' ', position, segment, fence, \
+                 {id}, {prev}, {hash}, encode(bytes, 'hex')), E'\\n' ORDER BY position) \
+                 FROM {s}.log"
+            ),
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    let segments = client
+        .query_one(
+            &format!(
+                "SELECT string_agg(first || ' ' || coalesce(digest, '-'), ',' ORDER BY first) \
+                 FROM {s}.segments"
+            ),
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    let file = client
+        .query_one(
+            &format!("SELECT relfilenode::int8 FROM pg_class WHERE oid = '{s}.log'::regclass"),
+            &[],
+        )
+        .unwrap()
+        .get::<_, i64>(0);
+    (log, segments, file as u32)
+}
+
+/// `column` of `{s}.log` as the hex it spells, read in its type.
+fn typed(client: &mut postgres::Client, s: &str, column: &str) -> String {
+    let bytes: bool = client
+        .query_one(
+            "SELECT atttypid = 'bytea'::regtype FROM pg_attribute \
+             WHERE attrelid = to_regclass($1) AND attname = $2",
+            &[&format!("{s}.log"), &column],
+        )
+        .unwrap()
+        .get(0);
+    match bytes {
+        true => format!("encode({column}, 'hex')"),
+        false => column.to_owned(),
+    }
+}
+
+/// The files of an export's `log/`, each with its bytes, in order.
+fn exported(location: &Location, dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    let _ = std::fs::remove_dir_all(dir);
+    lakelands_engine_pg::export(location, dir).unwrap();
+    let mut files: Vec<_> = std::fs::read_dir(dir.join("log"))
+        .unwrap()
+        .map(|f| f.unwrap().path())
+        .map(|p| {
+            (
+                p.file_name().unwrap().to_string_lossy().into_owned(),
+                std::fs::read(&p).unwrap(),
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// A log as 0.20.0 kept it, `id`, `prev` and `hash` as text beside
+/// `applied`, under the tables of its schema: its ends and its events are
+/// read as they are, by a reader and by a build ahead. The first writer's
+/// open converts it in place, and every event, every segment's digest and
+/// the export are as they were. A conversion that fails, on an id not of
+/// its form or midway on a `prev` that spells no bytes, leaves the log as
+/// it was, and the next open converts it; the open after that changes
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_log_0_20_0_kept_is_converted_in_place_by_the_first_writers_open() {
+    use lakelands_api::engine::EngineOpener;
+    use lakelands_api::error::{Flaw, Part};
+    use lakelands_api::id::Position;
+    let Some(url) = common::url_or_skip("log of 0.20.0") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let location = common::location(&url, "vectors", &schema);
+    let seams = || Seams {
+        engines: vec![Arc::new(PgOpener)],
+        ..Seams::default()
+    };
+    // Two segments, the first sealed, and the events a writer appends after.
+    let vectors =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/20");
+    lakelands_store::import(location.clone(), seams(), vectors)
+        .await
+        .unwrap();
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("note", vec![sourced("text", Text)]))
+        .await
+        .unwrap();
+    for n in 0..3 {
+        let note = source_record("note", &format!("n{n}"), json!({"text": "kept"}));
+        l.ingest("crm", vec![note]).await.unwrap();
+    }
+    let events = log_events(store.as_ref()).await.unwrap();
+    store.close().await.unwrap();
+    let scratch = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(&schema);
+    let (before, export) = tokio::task::block_in_place(|| {
+        let before = rows(&url, &schema);
+        let export = exported(&location, &scratch.join("before"));
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        let s = format!("\"{schema}\"");
+        client
+            .batch_execute(&format!("DROP TABLE {s}.quarantined; {}", as_text(&s)))
+            .unwrap();
+        (before, export)
+    });
+    assert_eq!(tokio::task::block_in_place(|| kept(&url, &schema)), AS_TEXT);
+    // Read as it is: its ends, by a reader, and by a build ahead.
+    let ends = PgOpener.log_ends(&location).unwrap().unwrap();
+    let (first, last) = (&events[0], events.last().unwrap());
+    assert_eq!(
+        (ends.0.position, &ends.0.id, ends.1.position, &ends.1.hash),
+        (first.position, &first.id, last.position, &last.hash),
+        "the ends"
+    );
+    let reader = open(&location, OpenMode::Read).await.unwrap();
+    assert_eq!(log_events(reader.as_ref()).await.unwrap(), events);
+    reader.close().await.unwrap();
+    lakelands_store::build_ahead(location.clone(), seams())
+        .await
+        .unwrap();
+    assert_eq!(tokio::task::block_in_place(|| kept(&url, &schema)), AS_TEXT);
+    // Two conversions that fail, each leaving the log as it was.
+    let s = format!("\"{schema}\"");
+    let planted = [
+        (
+            format!("UPDATE {s}.log SET id = upper(id) WHERE position = 3"),
+            format!("UPDATE {s}.log SET id = lower(id) WHERE position = 3"),
+        ),
+        (
+            format!("UPDATE {s}.log SET prev = 'zz' || prev WHERE position = 5"),
+            format!("UPDATE {s}.log SET prev = substr(prev, 3) WHERE position = 5"),
+        ),
+    ];
+    for (n, (plant, undo)) in planted.iter().enumerate() {
+        tokio::task::block_in_place(|| {
+            let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+            client.batch_execute(plant).unwrap();
+        });
+        let refused = open(&location, OpenMode::Write).await.err().unwrap();
+        if n == 0 {
+            assert!(
+                matches!(
+                    refused.situation(),
+                    Some(Situation::Damaged {
+                        part: Part::Log,
+                        position: Some(Position(3)),
+                        flaw: Flaw::IdNotOfForm
+                    })
+                ),
+                "an id not of its form is refused where it is: {refused:?}"
+            );
+        }
+        tokio::task::block_in_place(|| {
+            assert_eq!(
+                kept(&url, &schema),
+                AS_TEXT,
+                "a failed conversion leaves the log: {refused:?}"
+            );
+            let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+            client.batch_execute(undo).unwrap();
+        });
+    }
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    let (after, again) = tokio::task::block_in_place(|| {
+        (
+            rows(&url, &schema),
+            exported(&location, &scratch.join("after")),
+        )
+    });
+    assert_eq!(
+        tokio::task::block_in_place(|| kept(&url, &schema)),
+        CONVERTED
+    );
+    // The open appended its `lease_taken`, after every event it found.
+    assert!(after.0.starts_with(&before.0), "every event as before");
+    assert_eq!(after.1, before.1, "every segment's digest as before");
+    let names = |files: &[(String, Vec<u8>)]| files.iter().map(|f| f.0.clone()).collect::<Vec<_>>();
+    assert_eq!(
+        names(&again),
+        names(&export),
+        "the export's files as before"
+    );
+    let (sealed, active) = export.split_at(export.len() - 1);
+    assert_eq!(
+        &again[..sealed.len()],
+        sealed,
+        "the sealed segments' exports as before"
+    );
+    assert!(
+        again[sealed.len()].1.starts_with(&active[0].1),
+        "the active segment's as before"
+    );
+    assert_eq!(
+        log_events(store.as_ref()).await.unwrap()[..events.len()],
+        events[..]
+    );
+    store.verify(None, None).await.unwrap();
+    // The fold marks what it folds, and the log answers it.
+    let l = Lake::of(store.as_ref());
+    let note = source_record("note", "n3", json!({"text": "kept"}));
+    l.ingest("crm", vec![note]).await.unwrap();
+    assert_eq!(l.read("note", "n3").await.unwrap().fields["text"], "kept");
+    store.close().await.unwrap();
+    let first = tokio::task::block_in_place(|| rows(&url, &schema));
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    store.close().await.unwrap();
+    let second = tokio::task::block_in_place(|| rows(&url, &schema));
+    assert_eq!(
+        second.2, first.2,
+        "the open after the conversion rewrites nothing"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
     common::drop_schema(&url, &schema);
 }
 

@@ -78,17 +78,32 @@ pub(crate) struct Names {
     log: Option<String>,
     /// Where the lake's parts are made.
     pub(crate) at: lakelands_api::location::PgTablespaces,
+    /// Which of [`HEX_COLUMNS`] `log` keeps as their bytes, a bit each, as
+    /// the catalogue said at open and after a conversion: shared by every
+    /// copy, and a scratch's with its lake's.
+    bytes: std::sync::Arc<std::sync::atomic::AtomicU8>,
 }
 
 /// The tables of the log and the lease, which a scratch reads in the
 /// lake's schema.
 const LOG_TABLES: [&str; 4] = ["lease", "segments", "log", "frames"];
 
+/// The columns of `log` the store hands as hex digits: `bytea` from
+/// 0.21.0 on, `text` in a log 0.20.0 or before made and not yet converted
+/// (`crate::log::convert`).
+pub(crate) const HEX_COLUMNS: [&str; 3] = ["id", "prev", "hash"];
+
 impl Names {
     /// The tables of the lake `target` names.
     pub(crate) fn of(target: &Target) -> Result<Names> {
         let (schema, log, at) = (target.quoted_schema()?, None, target.tablespaces.clone());
-        Ok(Names { schema, log, at })
+        let bytes = Default::default();
+        Ok(Names {
+            schema,
+            log,
+            at,
+            bytes,
+        })
     }
 
     /// The tables of a scratch in the schema written as `quoted`, beside
@@ -99,6 +114,47 @@ impl Names {
             schema: quoted,
             log: Some(live.schema.clone()),
             at: live.at.clone(),
+            bytes: live.bytes.clone(),
+        }
+    }
+
+    /// Find from the catalogue which of [`HEX_COLUMNS`] `log` keeps as
+    /// bytes: at a handle's open, and after a conversion commits.
+    pub(crate) fn find_bytes(&self, db: &mut Db) -> Result<()> {
+        let kept: Vec<String> = db.column(
+            "SELECT attname::text FROM pg_catalog.pg_attribute WHERE attrelid = to_regclass($1) \
+             AND atttypid = 'bytea'::regtype AND NOT attisdropped",
+            &[&self.t("log")],
+        )?;
+        let bits = (HEX_COLUMNS.iter().enumerate())
+            .filter(|(_, c)| kept.iter().any(|k| k == *c))
+            .fold(0, |bits, (i, _)| bits | 1 << i);
+        self.bytes.store(bits, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Whether `log` keeps `column`, one of [`HEX_COLUMNS`], as bytes.
+    fn in_bytes(&self, column: &str) -> bool {
+        let name = column.rsplit('.').next().unwrap_or(column);
+        let bit = HEX_COLUMNS.iter().position(|c| *c == name);
+        let bit = bit.expect("a column of `log` the store hands as hex");
+        self.bytes.load(std::sync::atomic::Ordering::Relaxed) & 1 << bit != 0
+    }
+
+    /// `column` of `log`, `id`, `prev` or `hash` (perhaps qualified), as
+    /// SQL reads it: the hex digits it spells, whichever type it is kept in.
+    pub(crate) fn hex(&self, column: &str) -> String {
+        match self.in_bytes(column) {
+            true => format!("encode({column}, 'hex')"),
+            false => column.to_owned(),
+        }
+    }
+
+    /// `digits`, an expression of hex digits, as `column` of `log` keeps it.
+    pub(crate) fn kept(&self, column: &str, digits: &str) -> String {
+        match self.in_bytes(column) {
+            true => format!("decode({digits}, 'hex')"),
+            false => digits.to_owned(),
         }
     }
 
@@ -192,10 +248,7 @@ CREATE TABLE IF NOT EXISTS {s}.outputs (
     state TEXT NOT NULL,
     PRIMARY KEY (seam, input, since)
 ){pt};
-{heads}CREATE TABLE IF NOT EXISTS {s}.applied (
-    id TEXT PRIMARY KEY, at BIGINT NOT NULL
-){pt};
-CREATE TABLE IF NOT EXISTS {s}.routes (
+{heads}CREATE TABLE IF NOT EXISTS {s}.routes (
     at BIGINT NOT NULL, kind INTEGER NOT NULL, ty INTEGER, key TEXT, source INTEGER
 ){pt};
 CREATE TABLE IF NOT EXISTS {s}.names (
@@ -285,7 +338,7 @@ CREATE TABLE IF NOT EXISTS {s}.segments (
 );
 CREATE TABLE IF NOT EXISTS {s}.log (
     position BIGINT PRIMARY KEY, segment BIGINT NOT NULL, fence BIGINT NOT NULL,
-    id TEXT NOT NULL, prev TEXT NOT NULL, hash TEXT NOT NULL, bytes BYTEA NOT NULL
+    id BYTEA NOT NULL, prev BYTEA NOT NULL, hash BYTEA NOT NULL, bytes BYTEA NOT NULL
 );
 CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
 CREATE TABLE IF NOT EXISTS {s}.frames (
@@ -326,7 +379,7 @@ pub(crate) const LAYOUT: u64 = 9;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 27] = [
+pub(crate) const LAKE_TABLES: [&str; 26] = [
     "meta",
     "lease",
     "segments",
@@ -338,7 +391,6 @@ pub(crate) const LAKE_TABLES: [&str; 27] = [
     "quarantined",
     "members",
     "outputs",
-    "applied",
     "routes",
     "names",
     "bases",
@@ -364,7 +416,9 @@ pub(crate) const PROJECTION_TABLES: &[&str] = LAKE_TABLES.split_at(5).1;
 /// a layout that drops or renames a table names the old one here, so a
 /// lake that layout made still opens to be rebuilt, and the rebuild's
 /// `clear` or swap drops it (`scratch.rs`).
-pub(crate) const RETIRED_TABLES: &[&str] = &[];
+/// `applied` went with 0.21.0: an applied id is answered from the log's
+/// index on `id` (`view.rs`).
+pub(crate) const RETIRED_TABLES: &[&str] = &["applied"];
 
 /// A history table: its name and the columns naming one thing in it.
 pub(crate) struct History {
@@ -1717,8 +1771,6 @@ pub(crate) struct Buffer {
     quarantined: BTreeMap<(Vec<String>, i64), String>,
     outputs: BTreeMap<(Vec<String>, i64), String>,
     members: BTreeMap<(Vec<String>, i64), bool>,
-    /// Applied ids, each with the first position it was marked at.
-    applied: BTreeMap<String, i64>,
     /// The feed index's rows of the events applied.
     routes: Vec<Route>,
     /// The records whose every state, membership and index row goes,
@@ -1747,7 +1799,7 @@ impl Buffer {
         );
         let dropped =
             self.dropped.len() + self.dropped_outputs.len() + usize::from(self.dropped_bases);
-        records + states + self.members.len() + self.applied.len() + dropped
+        records + states + self.members.len() + self.routes.len() + dropped
     }
 
     /// Every state of a record goes, with its memberships and its index
@@ -1837,8 +1889,8 @@ impl Buffer {
     }
 
     pub(crate) fn applied(&mut self, applied: &Applied) {
+        // The id is the log's at `at`, which answers it (`view.rs`).
         let at = applied.at.0 as i64;
-        self.applied.entry(applied.id.0.clone()).or_insert(at);
         for a in &applied.about {
             let (ty, key) = (a.ty.as_ref().map(|t| t.to_string()), a.key.as_ref());
             let (key, source) = (key.map(|k| k.to_string()), applied.source.clone());
@@ -2032,21 +2084,6 @@ impl Buffer {
         let mut rebuilt = 0;
         for (ty, at) in settings {
             rebuilt += rebuild_sorted(db, names, &ty, at)?;
-        }
-        if !self.applied.is_empty() {
-            let (ids, at): (Vec<&str>, Vec<i64>) = self
-                .applied
-                .iter()
-                .map(|(id, at)| (id.as_str(), *at))
-                .unzip();
-            db.execute(
-                &format!(
-                    "INSERT INTO {} (id, at) SELECT * FROM unnest($1::text[], $2::int8[]) \
-                     ON CONFLICT DO NOTHING",
-                    names.t("applied")
-                ),
-                &[&ids, &at],
-            )?;
         }
         if !self.routes.is_empty() {
             let (mut at, mut kinds, mut tys, mut keys) = (vec![], vec![], vec![], vec![]);

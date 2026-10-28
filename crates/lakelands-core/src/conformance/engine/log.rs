@@ -141,40 +141,65 @@ engine_check!(
 
 engine_check!(
     APPENDED_OUTLIVES_ITS_HANDLE = reopening an_append_that_returned_is_read_by_the_next_handle,
-    "seams, append: an append is durable before it returns, so the events are there, byte for byte, for a handle opened after the writer's handle was dropped without closing"
+    "seams, append, and 086: an append is durable before it returns, so the events are there, byte for byte and with the id, `prev`, `hash` and fence they were handed in with, for a handle opened after the writer's handle was dropped without closing: one event, a framed run, and a run across a seal"
 );
 
 fn an_append_that_returned_is_read_by_the_next_handle(
     engine: &dyn LakeEngine,
     harness: &dyn EngineHarness,
 ) -> Held {
-    let writer = harness
+    let mut writer = harness
         .reopen(engine.lake(), OpenMode::Write)
         .map_err(|e| Failure::new(format!("opening a handle for writing: {e}")))?;
-    let lease = writer.take_lease("the writer").must("taking the lease")?;
-    let events = chain(0, 3, &Digest::zero(), &lease);
-    writer
-        .append(&lease, &events)
-        .must("appending three events")?;
-    // The writer ends without releasing its lease or closing the lake.
-    drop(writer);
-    let next = harness
-        .reopen(engine.lake(), OpenMode::Read)
-        .map_err(|e| Failure::new(format!("opening the next handle: {e}")))?;
-    let read = next
-        .read(Position(0), 10)
-        .must("reading through the next handle")?;
-    ensure!(
-        read == events,
-        "three events were appended and the append returned; the writer's handle was then \
-         dropped without closing, and a handle opened after it reads {} event(s){}",
-        read.len(),
-        if read.len() == events.len() {
-            " whose bytes differ"
-        } else {
-            ""
+    let mut lease = writer.take_lease("the writer").must("taking the lease")?;
+    // One event, a framed run, and a run across a seal (086): each comes
+    // back with the id, `prev`, `hash` and fence it was handed in with.
+    let mut events = chain(0, 1, &Digest::zero(), &lease);
+    for step in ["one event", "a framed run", "a run across a seal"] {
+        let tip = events.last().map(|e| (e.position.0 + 1, e.hash.clone()));
+        let (at, prev) = tip.unwrap_or((0, Digest::zero()));
+        match step {
+            "one event" => writer.append(&lease, &events),
+            "a framed run" => {
+                let (run, _) = framed(20, at, 4, &prev, &lease);
+                writer.append(&lease, &run).map(|()| events.extend(run))
+            }
+            _ => {
+                let first = chain(at, 2, &prev, &lease);
+                let more = chain(at + 2, 2, &first[1].hash, &lease);
+                seal(writer.as_ref(), &lease, &first)
+                    .and_then(|_| writer.append(&lease, &more))
+                    .map(|()| events.extend(first.into_iter().chain(more)))
+            }
         }
-    );
+        .must(&format!("appending {step}"))?;
+        // The writer ends without releasing its lease or closing the lake.
+        drop(writer);
+        let next = harness
+            .reopen(engine.lake(), OpenMode::Read)
+            .map_err(|e| Failure::new(format!("opening the next handle: {e}")))?;
+        let read = next
+            .read(Position(0), 100)
+            .must("reading through the next handle")?;
+        ensure!(
+            read == events,
+            "{step} was appended and the append returned; the writer's handle was then \
+             dropped without closing, and a handle opened after it reads {} event(s){}",
+            read.len(),
+            if read.len() == events.len() {
+                " whose id, prev, hash, fence or bytes differ"
+            } else {
+                ""
+            }
+        );
+        drop(next);
+        writer = harness
+            .reopen(engine.lake(), OpenMode::Write)
+            .map_err(|e| Failure::new(format!("opening the writer again: {e}")))?;
+        lease = writer
+            .take_lease("the writer")
+            .must("taking the lease again")?;
+    }
     Ok(())
 }
 
@@ -891,6 +916,7 @@ fn framed(
         let mut event = json!({
             "body": {"kind": "note", "n": p},
             "fence": fence,
+            "id": format!("{p:032x}"),
             "known_at": "2026-01-01T00:00:00.000000Z",
             "position": p,
             "prev": prev.0,

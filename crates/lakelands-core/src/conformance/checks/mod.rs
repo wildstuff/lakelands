@@ -866,6 +866,7 @@ pub const ALL: &[Check] = &[
     export::IMPORT_UNKNOWN_MEMBER,
     export::IMPORTED_VIEW_CYCLE,
     export::IMPORT_CONTEXT_CAUSE,
+    export::IMPORT_ID_FORM,
     compact::ANSWERS_AS_BEFORE,
     compact::APPENDS_NOTHING,
     compact::AGAIN_AND_ON,

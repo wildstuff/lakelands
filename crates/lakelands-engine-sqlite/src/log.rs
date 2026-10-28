@@ -29,13 +29,17 @@
 //!
 //! **The index.** An append also hands the engine each event's position,
 //! id, `prev`, `hash` and fence beside its bytes, and its frame, and a
-//! read must give them back unchanged without parsing the bytes. They are
-//! kept in `index/<first>.idx`, one JSON line per event — its members and
-//! where its bytes lie — and one commit line closing each append. An
-//! event line names `prev` only at a segment's first event: every other
+//! read must give them back unchanged. They are kept in
+//! `index/<first>.idx`, one JSON line per event — its members and where
+//! its bytes lie — and one commit line closing each append. An event
+//! line names its `id` empty: the event's line holds it on every line, a
+//! frame never, right after its top-level `hash`, whose value the index
+//! line holds, and a read takes it from there
+//! (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
+//! An event line names `prev` only at a segment's first event: every other
 //! one names it empty, and it is the hash on the line before it. A reader
-//! takes an event line that names `prev` anywhere, as an index of an
-//! earlier release wrote every one. A frame has no line of its own: an
+//! takes an event line that names `id` or `prev`, as an index of an
+//! earlier release wrote every one, and a segment may hold lines of both. A frame has no line of its own: an
 //! event's bytes begin where the line before it ends, and where they
 //! begin later, the bytes between are the frame line that covers it, and
 //! each event line after it in its append that names `prev` empty. An
@@ -43,19 +47,23 @@
 //! `prev`, so the engine counts a frame's events without reading its
 //! bytes.
 //!
-//! **An index line has the two shapes 0.19.0 reads.** That release reads
+//! **An index line has the shapes 0.19.0 and 0.20.0 read.** Both read
 //! a lake's index far enough to find its first and last events, and then
-//! judges their format; a line it does not know stops it first, and it
-//! calls the lake damaged
+//! judge their format; a line they do not know stops them first, and
+//! they call the lake damaged
 //! (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-//! A frame found by its gap and a `prev` named empty keep every line in
-//! the shapes it reads, so it reaches its judgment and names the format.
-//! It checks the active segment's last group against its hashes as lines
-//! of its own format, and a line of 20 that shares a frame fails that
-//! check, so it takes such a group for a crash's tail. The store writes
-//! the append that makes a lake, and the one that upgrades it, whole
-//! (`docs/log-format.md` §1.2): where a lake's only events of 20 are
-//! that append, still its last, the group passes and it names 20.
+//! A frame found by its gap and an `id` and a `prev` named empty keep
+//! every line in the eight members they read, so they reach the judgment
+//! and name the format. 0.19.0 checks the active segment's last group
+//! against its hashes as lines of its own format, and a line of 20 that
+//! shares a frame fails that check, so it takes such a group for a
+//! crash's tail. The store writes the append that makes a lake, and the
+//! one that upgrades it, whole (`docs/log-format.md` §1.2): where a
+//! lake's only events of a new format are that append, still its last,
+//! the group passes and it names the format. 0.20.0 judges the ends by
+//! `v` and the last group by `hash`, not by `id`; an event whose `id` it
+//! would take empty is of 21, which it refuses by its format before its
+//! store reads one.
 //!
 //! **All or none.** An append writes its lines to the segment, then its
 //! index lines and the commit line, and syncs the two files at once. Only
@@ -427,17 +435,43 @@ fn events_at(file: &File, entries: Vec<Entry>) -> Result<Vec<CanonicalEvent>> {
             Some(_) => held.clone(),
             None => None,
         };
+        let bytes = read(e.offset, e.len)?;
+        let id = match e.id.is_empty() {
+            true => id_in(&bytes, &e.hash),
+            false => e.id,
+        };
         out.push(CanonicalEvent {
             position,
-            id: EventId(e.id),
+            id: EventId(id),
             prev: Digest(e.prev.unwrap_or_default()),
             hash: Digest(e.hash),
             fence: e.fence,
-            bytes: read(e.offset, e.len)?,
+            bytes,
             frame,
         });
     }
     Ok(out)
+}
+
+/// The `id` an event's line holds, where its index line names it empty.
+/// Canonical order puts it right after the top-level `hash`, whose value
+/// the index line holds; a line where it is not found so, or holds an
+/// escape, is parsed. A line that holds none answers it empty, which the
+/// store's check of the event it restores refuses.
+fn id_in(line: &[u8], hash: &str) -> String {
+    let after = format!("\"hash\":\"{hash}\",\"id\":\"");
+    let at = line
+        .windows(after.len())
+        .position(|w| w == after.as_bytes());
+    let rest = at.map(|at| &line[at + after.len()..]);
+    let id = rest.and_then(|r| r.iter().position(|b| *b == b'"').map(|end| &r[..end]));
+    match id.filter(|id| !id.contains(&b'\\')) {
+        Some(id) => String::from_utf8_lossy(id).into_owned(),
+        None => serde_json::from_slice::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| v.get("id")?.as_str().map(str::to_owned))
+            .unwrap_or_default(),
+    }
 }
 
 /// Gives each frame among `entries` its count: the count at the last
@@ -684,7 +718,8 @@ pub(crate) fn ends(dir: &Path) -> Result<Option<(CanonicalEvent, CanonicalEvent)
 
 /// The lines `events` add to a segment file from byte `offset` on, each
 /// frame's line before its first event's, and their index lines, closed
-/// by one commit line. An event line of the index names `prev` where the
+/// by one commit line. An event line of the index names its `id` empty,
+/// which the event's line holds (module doc), and names `prev` where the
 /// event is its segment's first, at `first`; any other's is the hash of
 /// the event line before it, and the line names it empty but after an
 /// event a frame covers where it is covered by none. A frame's line is
@@ -703,8 +738,8 @@ fn lines_of(events: &[CanonicalEvent], mut offset: u64, first: u64) -> (Vec<u8>,
         let named = position == first || (framed && event.frame.is_none());
         framed = event.frame.is_some();
         let prev = if named { &event.prev.0[..] } else { "" };
-        let (id, hash) = (&event.id.0, &event.hash.0);
-        let line = serde_json::json!(["e", position, fence, offset, len, id, prev, hash]);
+        let hash = &event.hash.0;
+        let line = serde_json::json!(["e", position, fence, offset, len, "", prev, hash]);
         index.extend_from_slice(line.to_string().as_bytes());
         index.push(b'\n');
         offset += len + 1;
