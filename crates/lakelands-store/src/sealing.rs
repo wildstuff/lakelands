@@ -502,7 +502,7 @@ pub fn compose(version: &DataKey, apart: &[DataKey]) -> DataKey {
         return version.clone();
     }
     let mac = |k: &[u8], parts: &[&[u8]]| {
-        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(k).expect("HMAC takes any key");
+        let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(k).expect("HMAC takes any key");
         parts.iter().for_each(|p| m.update(p));
         Zeroizing::new(<[u8; 32]>::from(m.finalize().into_bytes()))
     };
@@ -750,7 +750,7 @@ pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, cipher
     let close = |v: &Value, n: [u8; 12]| {
         let plain = canonical::to_vec(v);
         let sealed = cipher
-            .encrypt(Nonce::from_slice(&n), plain.as_slice())
+            .encrypt(&Nonce::from(n), plain.as_slice())
             .expect("AES-256-GCM-SIV seals any value");
         STANDARD.encode(sealed)
     };
@@ -786,7 +786,7 @@ pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
     let unsealable = || Error::unavailable(Situation::Unsealable { position });
     let opened = |v: &Value, n: [u8; 12]| -> Option<Value> {
         let b = STANDARD.decode(v.as_str()?).ok()?;
-        let plain = cipher.decrypt(Nonce::from_slice(&n), b.as_slice()).ok()?;
+        let plain = cipher.decrypt(&Nonce::from(n), b.as_slice()).ok()?;
         serde_json::from_slice(&plain).ok()
     };
     let at = |f: Option<&str>| place(&source, &event.body, f);
@@ -832,7 +832,7 @@ pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
 /// none links to a value once the key is gone.
 pub fn digest(key: &DataKey, call: &Value) -> Digest {
     let mac = |k: &[u8], parts: &[&[u8]]| {
-        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(k).expect("HMAC takes any key");
+        let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(k).expect("HMAC takes any key");
         parts.iter().for_each(|p| m.update(p));
         Zeroizing::new(<[u8; 32]>::from(m.finalize().into_bytes()))
     };
