@@ -418,11 +418,13 @@ impl<'p> Parser<'p> {
             parts.push(self.part()?);
         }
         if self.is_kw("ON") {
-            let on = match self.is_kw_at(1, "CREATE") {
-                true => Construct::OnCreate,
-                false => Construct::OnMatch,
-            };
-            return Err(outside(on, self.at()));
+            let on = [
+                ("CREATE", Construct::OnCreate),
+                ("MATCH", Construct::OnMatch),
+            ];
+            if let Some((_, on)) = on.into_iter().find(|(kw, _)| self.is_kw_at(1, kw)) {
+                return Err(outside(on, self.at()));
+            }
         }
         let merge = kw == "MERGE";
         Ok(Kind::Put { merge, parts })

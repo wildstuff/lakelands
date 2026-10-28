@@ -188,7 +188,8 @@ pub async fn a_merge_writes_on_the_declared_key_and_a_create_expects_none(
 /// `link` of the pair, either way the arrow points: `MERGE` links it once
 /// however often it is sent, `CREATE` expects no link of the pair, as a
 /// `link` that expects none, and a `MERGE` on a field the link carries
-/// is refused naming it.
+/// is refused naming it, and an end labelled other than the type the relation
+/// reaches is refused as a read's step is.
 pub async fn a_relationship_is_merged_or_created_on_its_pair(
     lake: Arc<dyn LakeStore>,
     door: Arc<dyn Statements>,
@@ -243,6 +244,18 @@ pub async fn a_relationship_is_merged_or_created_on_its_pair(
         field: "since".into(),
     };
     assert_eq!(e.expect_err(on), invalid(case));
+    let reaches = invalid(Case::StepReaches {
+        reached: "firm".into(),
+        ty: "staff".into(),
+        also: None,
+    });
+    for s in [
+        "MATCH (s:staff {key: 'S-1'}), (p:staff {key: 'S-2'}) MERGE (s)-[:works_at]->(p)",
+        "MATCH (s:staff {key: 'S-1'}), (p:staff {key: 'S-2'}) CREATE (p)<-[:works_at]-(s)",
+    ] {
+        let e = said(door, owner, s, json!({})).await;
+        assert_eq!(e.expect_err(s), reaches, "{s}");
+    }
     assert_eq!(
         f.store.head().await.expect("the head"),
         head,
@@ -359,7 +372,8 @@ pub async fn a_change_is_answered_by_its_plan_and_enacted_with_its_id(
 
 /// A relationship named in the `MATCH` is the link its `SET` or `DELETE`
 /// changes: its ends picked by their keys, its fields by its map, and
-/// `DELETE` unlinks, planned and enacted as every change is.
+/// `DELETE` unlinks, planned and enacted as every change is; an end
+/// labelled other than the type the relation reaches is refused.
 pub async fn a_link_is_changed_through_its_relationship(
     lake: Arc<dyn LakeStore>,
     door: Arc<dyn Statements>,
@@ -392,6 +406,24 @@ pub async fn a_link_is_changed_through_its_relationship(
     enacted(moved, json!({"staff": "S-1", "since": 2024}), 1).await;
     let left = "MATCH (c:firm)<-[w:works_at {since: $since}]-(s:staff) DELETE w";
     enacted(left, json!({"since": 2024}), 1).await;
+    let head = f.store.head().await.expect("the head");
+    let reaches = invalid(Case::StepReaches {
+        reached: "firm".into(),
+        ty: "staff".into(),
+        also: None,
+    });
+    for s in [
+        "MATCH (s:staff)-[w:works_at]->(p:staff) SET w.since = 1",
+        "MATCH (p:staff)<-[w:works_at]-(s:staff) DELETE w",
+    ] {
+        let e = said(door, owner, s, json!({})).await;
+        assert_eq!(e.expect_err(s), reaches, "{s}");
+    }
+    assert_eq!(
+        f.store.head().await.expect("the head"),
+        head,
+        "a refusal wrote"
+    );
     let pairs = "MATCH (s:staff)-[:works_at]->(c:firm) RETURN s.key, c.code";
     let want = json!([{"s.key": "S-2", "c.code": "F-1"}]);
     assert_eq!(rows(&f, door, pairs).await, want, "S-1 unlinked");
@@ -661,6 +693,14 @@ pub async fn what_a_write_is_not_sent_with_is_refused_naming_it(
     };
     let e = door.cypher(owner, merge, &none, valid, None).await;
     assert_eq!(e.expect_err("valid at"), member("valid_at"));
+    let page = "MATCH (i:invoice) RETURN i.key ORDER BY i.key LIMIT 1";
+    let page = door.cypher(owner, page, &none, at(None), None).await;
+    let cursor = page.expect("a page")["data"]["next_cursor"].clone();
+    let cursor = serde_json::from_value(cursor).expect("a cursor");
+    let e = door
+        .cypher(owner, merge, &none, at(None), Some(&cursor))
+        .await;
+    assert_eq!(e.expect_err("a cursor"), member("cursor"));
     let e = door.enact(owner, merge, &none, "a-plan").await;
     assert_eq!(e.expect_err("a MERGE has no plan"), member("plan_id"));
     let read = "MATCH (i:invoice) RETURN i.key";

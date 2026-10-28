@@ -48,7 +48,7 @@ pub(crate) enum Op {
     Change {
         ty: TypeName,
         filter: Vec<Expr>,
-        ends: Option<(End, End)>,
+        ends: Option<Box<(End, RelationName, End)>>,
         to: ChangeTo,
     },
 }
@@ -214,7 +214,7 @@ fn put(
             if let Some(r) = p.rels.first() {
                 return Err(outside(Construct::WriteSelection, r.at));
             }
-            bound.push(p.nodes.remove(0));
+            bound.push(Some(p.nodes.remove(0)));
         }
     }
     let mut ends = Vec::new();
@@ -223,12 +223,16 @@ fn put(
             return Err(second(made, node.at));
         }
         let name = node.var.clone().unwrap_or_default();
-        let i = bound.iter().position(|b| b.var.as_deref() == Some(&name));
+        let named = |b: &Option<Node>| b.as_ref().and_then(|b| b.var.as_deref()) == Some(&name);
+        let i = bound.iter().position(named);
         let name = Name { name, at: node.at };
         ends.push(i.ok_or_else(|| unbound(&name))?);
     }
     let mut ends: Vec<End> = (ends.into_iter().rev())
-        .map(|i| end(bound.remove(i)))
+        .map(|i| match bound[i].take() {
+            Some(node) => end(node),
+            None => Err(outside(Construct::WriteSelection, rel.at)),
+        })
         .collect::<Parsed<_>>()?;
     if rel.walk == Walk::Out {
         ends.reverse();
@@ -316,7 +320,11 @@ fn changed(mut matches: Vec<(usize, Match)>, kind: Kind) -> Parsed<(Op, Option<S
             }),
             _ => end(n),
         };
-        let ends = (keyed(from)?, keyed(to)?);
+        let ends = (
+            keyed(from)?,
+            RelationName::from(rel.relation.clone()),
+            keyed(to)?,
+        );
         if ends.0.ty.as_str().is_empty() {
             return Err(Case::CypherStartType { offset: rel.at });
         }
@@ -325,9 +333,12 @@ fn changed(mut matches: Vec<(usize, Match)>, kind: Kind) -> Parsed<(Op, Option<S
         for p in rel.props.map(|(_, p)| p).unwrap_or_default() {
             filter.push(prop(p)?);
         }
-        let relation = RelationName::from(rel.relation);
         let written = rel.var.map(|v| v.name);
-        (link_type_name(&ends.0.ty, &relation), written, Some(ends))
+        (
+            link_type_name(&ends.0.ty, &ends.1),
+            written,
+            Some(Box::new(ends)),
+        )
     };
     let written = match written {
         Some(w) if w == first.name => w,
@@ -450,8 +461,9 @@ pub(crate) async fn run(
             create,
             fields,
         } => {
-            let only = Only::End(from.at);
-            let from_key = keyed(&described(from.ty.clone()).await?, from.map, only)?.0;
+            let d = described(from.ty.clone()).await?;
+            reaches(&d, &relation, &to.ty)?;
+            let from_key = keyed(&d, from.map, Only::End(from.at))?.0;
             let to_key = keyed(&described(to.ty).await?, to.map, Only::End(to.at))?.0;
             if !fields.is_empty() {
                 let ty = link_type_name(&from.ty, &relation);
@@ -477,6 +489,12 @@ pub(crate) async fn run(
             if let ChangeTo::Set(patch) = &to {
                 computed(&described(ty.clone()).await?, patch)?;
             }
+            if let Some((from, relation, to)) = ends.as_deref()
+                && !to.ty.as_str().is_empty()
+            {
+                reaches(&described(from.ty.clone()).await?, relation, &to.ty)?;
+            }
+            let ends = ends.map(|e| (e.0, e.2));
             for (field, end) in ends.into_iter().flat_map(|(f, t)| [(FROM, f), (TO, t)]) {
                 if !end.map.is_empty() {
                     let only = Only::End(end.at);
@@ -553,6 +571,23 @@ fn keyed(
         map.remove(&FieldName::from("key"));
     }
     Ok((RecordKey::from(parts.join(":")), map))
+}
+
+/// Refuses an end labelled other than the type `relation` of the type
+/// `d` describes reaches, as a read's step is refused.
+fn reaches(
+    d: &lakelands_api::describe::TypeDescription,
+    relation: &RelationName,
+    ty: &TypeName,
+) -> Result<()> {
+    match d.relations.iter().find(|r| &r.name == relation) {
+        Some(r) if &r.target != ty => Err(Error::invalid(Case::StepReaches {
+            reached: r.target.clone(),
+            ty: ty.clone(),
+            also: None,
+        })),
+        _ => Ok(()),
+    }
 }
 
 /// Refuses a field of `patch` the lake computes, by the type `d`

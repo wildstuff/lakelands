@@ -1,6 +1,6 @@
 [package]
 name = "lakelands-cypher"
-description = "A read-only subset of openCypher, translated into the one pattern query."
+description = "A subset of openCypher: a read translated into the one pattern query, a write into one call of a typed write door."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
