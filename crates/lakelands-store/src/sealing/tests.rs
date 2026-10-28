@@ -13,10 +13,10 @@ use lakelands_api::{LakeId, Result, SourceId, Timestamp};
 
 use super::{Apart, Ciphers, Keys, List, cipher, digest, open, rotates, seal, turns};
 
-/// The lines of `vectors/20/further.json` that show `shows`.
+/// The lines of `vectors/21/further.json` that show `shows`.
 fn line(shows: &str) -> Event {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/20/further.json");
+        .join("../../docs/log-format/vectors/21/further.json");
     let further: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let entries = further["events"].as_array().unwrap();
     let entry = entries.iter().find(|e| e["shows"] == shows).unwrap();
@@ -61,7 +61,7 @@ fn patch_of(e: &Event) -> &lakelands_api::Patch {
 /// `boxed.json`'s ingest, its members sealed in one box.
 fn boxed() -> Event {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/20/boxed.json");
+        .join("../../docs/log-format/vectors/21/boxed.json");
     let boxed: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     serde_json::from_str(boxed["line"].as_str().unwrap()).unwrap()
 }
@@ -549,6 +549,7 @@ async fn an_ingest_past_its_newest_version_s_day_seals_under_a_new_one() {
             key: id.into(),
             fields: serde_json::from_value(json!({"id": id, "name": id})).unwrap(),
             seen_at: None,
+            resubmits: None,
         };
         let fed = lakelands_api::ingest_all(cat.as_ref(), &owner, &crm, vec![record]);
         fed.await.unwrap();
@@ -710,6 +711,7 @@ async fn an_output_over_an_ingest_sealed_apart_does_not_read_a_leftover_row() {
             key: id.into(),
             fields: serde_json::from_value(fields).unwrap(),
             seen_at: None,
+            resubmits: None,
         };
         let fed = lakelands_api::ingest_all_with(cat.as_ref(), &owner, &crm, opts, vec![record]);
         fed.await.unwrap();
@@ -772,4 +774,35 @@ async fn an_output_over_an_ingest_sealed_apart_does_not_read_a_leftover_row() {
     let done = done.await.unwrap();
     assert_eq!((done.keys.is_empty(), done.apart), (true, a1));
     assert_eq!(loud(), None, "the output dies with the key apart");
+}
+
+/// The vectors' sealed quarantined record opens under their key to its
+/// cell, read where a `record_ingested` carries its box, and sealing the
+/// cell again gives the box the log holds; the same cell of an ingest of
+/// that key and version seals to another box, the nonce being of its own
+/// domain (085).
+#[test]
+fn the_vectors_quarantined_box_opens_and_seals_to_the_same_bytes() {
+    let stored = line("quarantined_sealed");
+    let mut plain = super::lifted(&stored).unwrap();
+    open(&mut plain, &cipher(&key())).unwrap();
+    let EventBody::RecordQuarantined { cells, .. } = &plain.body else {
+        panic!("a quarantined record")
+    };
+    assert_eq!(cells["email"], json!("dan@example.org"));
+    let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+    let mut body = plain.body.clone();
+    seal(&mut body, &mut sealed, &source, &cipher(&key()));
+    let EventBody::RecordQuarantined { sealed: kept, .. } = &stored.body else {
+        panic!("a quarantined record")
+    };
+    assert_eq!(sealed.boxed, kept.as_ref().and_then(|s| s.boxed.clone()));
+    let mut ingest = boxed().body;
+    if let EventBody::RecordIngested { patch, key, .. } = &mut ingest {
+        *patch = serde_json::from_value(json!({"id": "c7", "email": "dan@example.org"})).unwrap();
+        *key = "c7".into();
+    }
+    let mut other = sealed.clone();
+    seal(&mut ingest, &mut other, &source, &cipher(&key()));
+    assert_ne!(other.boxed, sealed.boxed);
 }

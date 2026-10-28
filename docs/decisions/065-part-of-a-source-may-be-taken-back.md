@@ -186,6 +186,19 @@ version: the act names none, and every value it takes is redacted only,
 as the report says. The act does not refuse for it, since redaction is
 always possible; `require: shredded` then refuses it.
 
+### The act reaches the source's quarantined records
+
+From lakelands#1502 (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`):
+the selection takes each version of a quarantined record of the source
+as it takes a `record_ingested`: by its position, the delivery its own
+envelope names, and its `seen_at`. A selected version's cells fold as
+erased, and are shredded where the act destroys a version of the key or
+the apart key that sealed them. The quarantined record closes `removed`
+in the act's append where its last version is selected; otherwise it
+stays open with that version, as a value a later delivery wrote again is
+kept. The preflight and the report count the ones it closes per type
+(`quarantined`).
+
 ### A delivery may be sealed apart
 
 An ingest that asks `sealed_apart` (`IngestOpts`) gives its delivery a

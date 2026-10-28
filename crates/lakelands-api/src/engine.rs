@@ -332,6 +332,11 @@ pub trait ProjectionStore: Send + Sync {
     /// states are kept, so a view before `at` still sees the earlier one.
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()>;
 
+    /// Store a quarantined record's state as of its latest event, at `at`;
+    /// earlier states are kept, as a proposal's are
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    fn put_quarantined(&self, row: &crate::quarantine::Quarantined, at: Position) -> Result<()>;
+
     /// Record whether a record is a member of an object set from `at` on;
     /// earlier membership is kept.
     fn put_membership(
@@ -665,6 +670,14 @@ pub trait ProjectionView {
 
     /// Proposals.
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>>;
+
+    /// The quarantined records `filter` asks for, by their type and key as
+    /// stored, in id order, at most its limit
+    /// ([`crate::quarantine::QuarantineFilter::answer`]).
+    fn quarantined(
+        &self,
+        filter: &crate::quarantine::QuarantineFilter,
+    ) -> Result<Vec<crate::quarantine::Quarantined>>;
 
     /// A page of proposals newest first (lakelands#1063): of `filter`'s
     /// state alone, proposed before `before`, at most `filter.limit`; a

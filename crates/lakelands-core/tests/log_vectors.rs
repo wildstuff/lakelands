@@ -195,7 +195,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 654, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 738, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -397,7 +397,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 74] = [
+const SHOWN: [&str; 86] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -472,10 +472,22 @@ const SHOWN: [&str; 74] = [
     "removed_deliveries",
     "verb_preconditions",
     "proposed_records",
+    "quarantined",
+    "quarantined_again",
+    "quarantined_sealed",
+    "resubmission_lands",
+    "closed_resubmitted",
+    "closed_dismissed",
+    "quarantined_constraint",
+    "lands",
+    "closed_landed",
+    "quarantined_removed",
+    "removes_quarantined",
+    "closed_removed",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 81;
+const LAST: u64 = 93;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -820,6 +832,56 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             if source == "erp" && before.is_none() && keys.is_empty() && apart.is_empty()
                 && matches!(selection, lakelands_api::write::Selection::Deliveries(ds)
                     if ds.iter().map(|d| d.as_str()).eq(["batch-7", "d68"])))
+        }
+        // A quarantined record's id is made over its id, the version
+        // before, its cells, its box and its refusal (log-format §3).
+        "quarantined"
+        | "quarantined_again"
+        | "quarantined_sealed"
+        | "quarantined_constraint"
+        | "quarantined_removed" => {
+            let B::RecordQuarantined {
+                id,
+                version,
+                cells,
+                sealed,
+                refusal,
+                ..
+            } = &event.body
+            else {
+                return false;
+            };
+            let boxed = sealed.as_ref().and_then(|s| s.boxed.as_deref());
+            let made = log::quarantined_id(id, version - 1, cells, boxed, refusal) == event.id;
+            let delivery = event.delivery.as_ref().map(|d| d.as_str());
+            made && match what {
+                "quarantined" => delivery == Some("q-1") && *version == 1,
+                "quarantined_again" => {
+                    delivery == Some("q-2") && id.delivery == "q-1" && *version == 2
+                }
+                "quarantined_sealed" => {
+                    boxed.is_some() && event.sealed.is_none() && !cells.contains_key("email")
+                }
+                "quarantined_constraint" => {
+                    serde_json::to_value(refusal).unwrap()["reason"]["refusal"] == "constraint"
+                }
+                _ => delivery == Some("q-7"),
+            }
+        }
+        "resubmission_lands" | "lands" => matches!(&event.body, B::RecordIngested { key, .. }
+            if key == if what == "lands" { "INV-10" } else { "INV-9" }),
+        "removes_quarantined" => matches!(&event.body, B::ValuesRemoved { selection, .. }
+            if matches!(selection, lakelands_api::write::Selection::Delivery(d) if d == "q-7")),
+        "closed_resubmitted" | "closed_dismissed" | "closed_landed" | "closed_removed" => {
+            use lakelands_api::quarantine::ClosedWhy as W;
+            let want = match what {
+                "closed_resubmitted" => W::Resubmitted,
+                "closed_dismissed" => W::Dismissed,
+                "closed_landed" => W::Landed,
+                _ => W::Removed,
+            };
+            matches!(&event.body, B::QuarantineClosed { why, .. } if *why == want)
+                && event.delivery.is_none()
         }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }
@@ -1270,8 +1332,8 @@ fn lines_of(n: u32) -> Vec<Value> {
 /// The steps from each older format to this release's change no event:
 /// 14 → 15 lets a verb's path read across a reference or a relation's
 /// link (055), which a log of format 14 never declares, and 15 → 16,
-/// 16 → 17, 17 → 18, 18 → 19 and 19 → 20 add forms a log of the format
-/// before never holds.
+/// 16 → 17, 17 → 18, 18 → 19, 19 → 20 and 20 → 21 add forms a log of the
+/// format before never holds.
 /// So every line of each older format's vectors, of every kind they hold,
 /// is read as it was written, `v` included, and decodes into this
 /// release's structs; the kinds each holds are named, so a kind the

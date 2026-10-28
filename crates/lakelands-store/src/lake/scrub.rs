@@ -37,6 +37,7 @@ use lakelands_api::engine::{
 };
 use lakelands_api::event::{Digest, Event, EventBody, EventId};
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
+use lakelands_api::quarantine::{QuarantineFilter, Quarantined};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{FeedFilter, SETTING_TYPE, VIEW_KEPT_SETTING};
@@ -212,6 +213,13 @@ impl ProjectionStore for Scoped {
         }
     }
 
+    fn put_quarantined(&self, row: &Quarantined, at: Position) -> Result<()> {
+        match self.scoped() {
+            true => Ok(()),
+            false => self.inner().put_quarantined(row, at),
+        }
+    }
+
     fn put_membership(
         &self,
         set: &str,
@@ -344,6 +352,10 @@ impl ProjectionView for ScopedView<'_> {
 
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.then(|v| v.proposals(filter))
+    }
+
+    fn quarantined(&self, filter: &QuarantineFilter) -> Result<Vec<Quarantined>> {
+        self.then(|v| v.quarantined(filter))
     }
 
     fn proposals_before(

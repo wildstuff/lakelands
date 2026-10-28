@@ -138,15 +138,25 @@ impl Removal {
     /// it, below its position for a time of the log's clock, of its
     /// delivery, or of one of its set, for those, stating a `seen_at`
     /// before the time for a time the source observed.
+    /// A quarantined record's version is selected so too, read
+    /// [`crate::sealing::lifted`] (085).
     pub(crate) fn selects(&self, e: &Event) -> bool {
-        let ingested = matches!(e.body, EventBody::RecordIngested { .. });
+        let ingested = matches!(
+            e.body,
+            EventBody::RecordIngested { .. } | EventBody::RecordQuarantined { .. }
+        );
         let picked = || match &self.selection {
             Selection::WrittenBefore(_) => self.before.is_some_and(|b| e.position < b),
             Selection::Delivery(d) => e.delivery.as_ref() == Some(d),
             Selection::Deliveries(ds) => {
                 (e.delivery.as_ref()).is_some_and(|d| ds.binary_search(d).is_ok())
             }
-            Selection::SeenBefore(t) => e.seen_at.is_some_and(|s| s < *t),
+            // A quarantined record states its `seen_at` in its payload.
+            Selection::SeenBefore(t) => match &e.body {
+                EventBody::RecordQuarantined { seen_at, .. } => *seen_at,
+                _ => e.seen_at,
+            }
+            .is_some_and(|s| s < *t),
         };
         ingested && e.position < self.at && e.source.as_ref() == Some(&self.source) && picked()
     }
@@ -178,6 +188,11 @@ pub(crate) fn redacted(
         return None;
     }
     let mut plain = e.clone();
+    // A quarantined record's version selected keeps no cell (085).
+    if let EventBody::RecordQuarantined { cells, .. } = &mut plain.body {
+        let cleared = std::mem::take(cells).into_keys().collect();
+        return Some((plain, cleared));
+    }
     let EventBody::RecordIngested { ty, patch, .. } = &mut plain.body else {
         return None;
     };
@@ -252,7 +267,7 @@ fn found(
     (w, view): (&Writer, &dyn ProjectionView),
     (source, selection): (&SourceId, &Selection),
     (at, earlier): (Option<Position>, &[Removal]),
-) -> Result<(RemoveReport, Vec<StoredRecord>)> {
+) -> Result<(RemoveReport, Vec<StoredRecord>, Vec<EventBody>)> {
     let ontology = &w.ontology;
     let head = view.position();
     // `known_at` never falls.
@@ -295,12 +310,24 @@ fn found(
             .collect()
     };
     each_of(lake, view, std::slice::from_ref(source), |_, e| {
-        let EventBody::RecordIngested { ty, key, patch, .. } = &e.body else {
-            return;
-        };
         if e.source.as_ref() != Some(source) {
             return;
         }
+        // A quarantined version is selected as a `record_ingested` is, its
+        // keys inside the act or outside it; it lands no value (085).
+        if let EventBody::RecordQuarantined { sealed, .. } = &e.body {
+            let (now, taken) = (act.selects(e), earlier.iter().any(|r| r.selects(e)));
+            let keys = sealed.iter().flat_map(keys_of);
+            match now || taken {
+                true => inside.extend(keys),
+                false => outside.extend(keys),
+            }
+            events += u64::from(now && !taken);
+            return;
+        }
+        let EventBody::RecordIngested { ty, key, patch, .. } = &e.body else {
+            return;
+        };
         undelivered += u64::from(e.delivery.is_none());
         unseen += u64::from(e.seen_at.is_none());
         let sealed = e.sealed.as_ref();
@@ -528,6 +555,15 @@ fn found(
         }
     }
     let references = crate::purge::report(view, ontology, (source, None), &retire, Vec::new())?;
+    // Its open quarantined records whose last version it selects, each of
+    // which it closes (085); one it selects only an earlier version of
+    // stays open with its last.
+    let why = lakelands_api::quarantine::ClosedWhy::Removed;
+    let (closes, quarantined) =
+        crate::quarantine::act_closes(view, (source, None), why, &mut |q| {
+            let last = lake.read_these(&[q.position])?;
+            Ok(last.first().is_some_and(|e| act.selects(e)))
+        })?;
     let log_events = head.map_or(0, |p| p.0);
     let report = RemoveReport {
         source: source.clone(),
@@ -554,8 +590,9 @@ fn found(
         reclaimed: None,
         reclaim_owed: lake.reclaim_owed(),
         report_id: String::new(),
+        quarantined,
     };
-    Ok((report, retire))
+    Ok((report, retire, closes))
 }
 
 /// The id of the preflight of taking back `selection` of `source`, read
@@ -598,7 +635,7 @@ pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Resul
     let view = lake.engine.view(None)?;
     let w = lake.reading(view.as_ref())?;
     let earlier = acts(lake, view.as_ref())?;
-    let (mut report, _) = found(
+    let (mut report, _, _) = found(
         lake,
         (&w, view.as_ref()),
         (source, selection),
@@ -638,7 +675,7 @@ pub fn run(
             .cloned()
             .collect();
         let of = (Some(act.at), others.as_slice());
-        let (mut report, _) = found(lake, (&w, view.as_ref()), (source, selection), of)?;
+        let (mut report, _, _) = found(lake, (&w, view.as_ref()), (source, selection), of)?;
         report.reclaimed = reclaimed;
         return Ok(report);
     }
@@ -650,7 +687,7 @@ pub fn run(
     // What an earlier act took is not taken again: a repeat that selects
     // nothing more appends nothing.
     let of = (None, earlier.as_slice());
-    let (mut report, retire) = found(lake, (&w, view.as_ref()), (source, selection), of)?;
+    let (mut report, retire, closes) = found(lake, (&w, view.as_ref()), (source, selection), of)?;
     if report.events == 0 {
         return Ok(report);
     }
@@ -680,6 +717,7 @@ pub fn run(
         let body = writes::retirement(&before.ty, &before.key, before.version);
         drafts.extend(d.retiring(&before, Draft::system(now, body))?);
     }
+    drafts.extend(closes.into_iter().map(|c| Draft::system(now, c)));
     drop(view);
     lake.append(&mut w, drafts)?;
     let at = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);

@@ -637,6 +637,7 @@ async fn the_host_operations_that_need_the_lease_are_read_only() {
         key: RecordKey::from("INV-2"),
         fields: patch(&[("amount", json!("120.50"))]),
         seen_at: None,
+        resubmits: None,
     };
     let mut acks = (f.catalog)
         .ingest(&f.cast.importer, &"bank".into(), stream::of(vec![banked]))

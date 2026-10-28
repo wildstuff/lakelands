@@ -348,6 +348,10 @@ pub struct Limits {
     /// and a bound below [`Limits::SEAL_FLOOR`] is read as it
     /// (`docs/decisions/074-a-segment-is-sealed-by-size.md`).
     pub seal_after_bytes: u64,
+    /// The most open quarantined records one source keeps; a refusal past
+    /// it ends the stream, `quarantine_full` beside it
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    pub quarantined_max: u32,
 }
 
 impl Limits {
@@ -384,6 +388,7 @@ impl Default for Limits {
             order_chunk: 10_000,
             forget_rebuild: false,
             seal_after_bytes: 256 << 20,
+            quarantined_max: 10_000,
         }
     }
 }

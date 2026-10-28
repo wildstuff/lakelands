@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS proposals (
     PRIMARY KEY (id, since)
 );
 CREATE INDEX IF NOT EXISTS proposals_newest ON proposals (json_extract(state, '$.position'));
+CREATE TABLE IF NOT EXISTS quarantined (
+    source TEXT NOT NULL, delivery TEXT NOT NULL, ix INTEGER NOT NULL,
+    since INTEGER NOT NULL, until INTEGER,
+    state TEXT NOT NULL,
+    PRIMARY KEY (source, delivery, ix, since)
+);
+CREATE INDEX IF NOT EXISTS quarantined_at ON quarantined
+    (json_extract(state, '$.type'), json_extract(state, '$.key'), until);
 CREATE TABLE IF NOT EXISTS members (
     object_set TEXT NOT NULL, ty TEXT NOT NULL, key TEXT NOT NULL,
     since INTEGER NOT NULL, until INTEGER,
@@ -152,11 +160,12 @@ CREATE TABLE IF NOT EXISTS text_lengths (
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
-pub(crate) const TABLES: [&str; 19] = [
+pub(crate) const TABLES: [&str; 20] = [
     "meta",
     "declarations",
     "records",
     "proposals",
+    "quarantined",
     "members",
     "outputs",
     "applied",
@@ -183,6 +192,7 @@ pub(crate) struct History {
 pub(crate) const DECLARATIONS: History = History::new("declarations", &["ident"]);
 pub(crate) const RECORDS: History = History::new("records", &["ty", "key"]);
 pub(crate) const PROPOSALS: History = History::new("proposals", &["id"]);
+pub(crate) const QUARANTINED: History = History::new("quarantined", &["source", "delivery", "ix"]);
 pub(crate) const MEMBERS: History = History::new("members", &["object_set", "ty", "key"]);
 pub(crate) const OUTPUTS: History = History::new("outputs", &["seam", "input"]);
 

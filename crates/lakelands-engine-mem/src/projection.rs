@@ -25,6 +25,7 @@ use lakelands_api::id::{
     FieldName, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName,
 };
 use lakelands_api::ontology::TypeDecl;
+use lakelands_api::quarantine::{QuarantineId, Quarantined};
 use lakelands_api::query::Edge;
 use lakelands_api::read::Direction;
 use lakelands_api::record::{StoredRecord, Value};
@@ -163,6 +164,8 @@ pub(crate) enum Put {
     DroppedBases,
     /// A proposal's state from `at`.
     Proposal { proposal: Proposal, at: Position },
+    /// A quarantined record's state from `at`.
+    Quarantined { row: Box<Quarantined>, at: Position },
     /// Membership of a record in an object set from `at`.
     Membership {
         set: String,
@@ -199,6 +202,7 @@ impl Put {
             Put::Membership { at, .. }
             | Put::HeadsEnded { at, .. }
             | Put::Proposal { at, .. }
+            | Put::Quarantined { at, .. }
             | Put::Output { at, .. } => *at,
         }
     }
@@ -214,6 +218,10 @@ pub(crate) struct Projection {
     pub(crate) proposals: BTreeMap<ProposalId, History<Proposal>>,
     /// Each proposal's id by its position, newest last (lakelands#1063).
     pub(crate) by_position: BTreeMap<Position, ProposalId>,
+    pub(crate) quarantined: BTreeMap<QuarantineId, History<Quarantined>>,
+    /// Each quarantined record's id by every type and key its rows stood
+    /// at: those a write at a key may close.
+    pub(crate) quarantined_at: BTreeMap<(TypeName, RecordKey), BTreeSet<QuarantineId>>,
     pub(crate) members: BTreeMap<(String, TypeName, RecordKey), History<bool>>,
     pub(crate) outputs: BTreeMap<(String, Digest), History<Value>>,
     pub(crate) applied: BTreeMap<EventId, Position>,
@@ -671,6 +679,14 @@ impl Projection {
                     .entry(proposal.id.clone())
                     .or_default()
                     .put(at, proposal);
+            }
+            Put::Quarantined { row, at } => {
+                let at_key = (row.ty.clone(), row.key.clone());
+                self.quarantined_at
+                    .entry(at_key)
+                    .or_default()
+                    .insert(row.id.clone());
+                (self.quarantined.entry(row.id.clone()).or_default()).put(at, *row);
             }
             Put::Membership {
                 set,

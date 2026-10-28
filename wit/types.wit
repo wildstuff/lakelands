@@ -688,6 +688,15 @@ interface types {
         /// The source this record comes from, where it is not the
         /// call's.
         source: option<source-id>,
+        /// The quarantined record of the same source this one runs again.
+        resubmits: option<resubmits>,
+    }
+
+    /// A quarantined record of a source record's own source, by the
+    /// delivery that first quarantined it and its place there.
+    record resubmits {
+        delivery: delivery-id,
+        index: u64,
     }
 
     // ------------------------------------------------------------------
@@ -802,6 +811,9 @@ interface types {
         /// The most records one of the call's commit windows holds; none
         /// for the lake's `commit-window-events`.
         commit-window: option<u32>,
+        /// Quarantine a record refused by a rule of the record, and go on
+        /// with the stream.
+        quarantine-refused: bool,
     }
 
     record applied {
@@ -980,6 +992,8 @@ interface types {
         records: u32,
         duplicates: u32,
         delivery: option<delivery-id>,
+        /// The stream index of each record the window quarantined.
+        quarantined: list<u64>,
     }
 
     // ------------------------------------------------------------------
@@ -1563,6 +1577,15 @@ interface types {
         verb(verb-name),
         function(string),
         proposal(proposal-id),
+        quarantined(quarantine-id),
+    }
+
+    /// A quarantined record's id: its source, the delivery that first
+    /// quarantined it, and its place in that delivery's stream.
+    record quarantine-id {
+        source: source-id,
+        delivery: delivery-id,
+        index: u64,
     }
 
     /// Why a call was refused. A refusal of `invalid`, `constraint`,
@@ -1624,10 +1647,13 @@ interface types {
     /// stream (from 0), the place of the first record of its window, from
     /// which nothing was written, and the record as its source named it.
     /// A refusal of the ingest itself, before any record, names none.
+    /// A refusal asked to be quarantined past the source's bound names
+    /// the bound, `quarantined-max`, that was full.
     record ingest-error {
         index: option<u64>,
         %from: option<u64>,
         %record: option<record-ref>,
+        quarantine-full: option<u32>,
         error: error,
     }
 
@@ -1690,6 +1716,7 @@ interface types {
         report-id: string,
         set-off: u32,
         max-set-changes: u32,
+        quarantined: list<type-quarantined>,
     }
 
     /// The records a purge takes whose one field with a declared
@@ -1732,6 +1759,12 @@ interface types {
         retired: u32,
     }
 
+    /// The open quarantined records of one type an act on a source closes.
+    record type-quarantined {
+        %type: type-name,
+        quarantined: u64,
+    }
+
     /// What one forgetting of a source erased, or its preflight says it
     /// would: the records and values it erases, the outputs, the records
     /// it retires and those it keeps co-owned, what is computed again,
@@ -1756,6 +1789,7 @@ interface types {
         reclaim-owed: option<string>,
         way: forget-way,
         report-id: string,
+        quarantined: list<type-quarantined>,
     }
 
     /// How a forgetting restates the projection: by a scoped refold of
@@ -1856,6 +1890,7 @@ interface types {
         reclaimed: option<compact-report>,
         reclaim-owed: option<string>,
         report-id: string,
+        quarantined: list<type-quarantined>,
     }
 
     /// A field of a type.
@@ -1885,6 +1920,7 @@ interface types {
         order-chunk: u32,
         forget-rebuild: bool,
         seal-after-bytes: u64,
+        quarantined-max: u32,
     }
 
     record feed-filter {

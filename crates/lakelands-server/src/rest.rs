@@ -43,6 +43,7 @@ use hyper::header::{CONTENT_TYPE, HeaderValue};
 use hyper::{HeaderMap, Method, Request, Response, StatusCode};
 use lakelands_api::error::{Case, Error, Form, Names, Refusal, Said, Situation};
 use lakelands_api::id::{LakeId, Position, SourceId};
+use lakelands_api::quarantine::QuarantineId;
 use lakelands_api::read::POSITION_HEADER;
 use lakelands_api::record::SourceRecord;
 use lakelands_api::seam::FeedFilter;
@@ -229,6 +230,15 @@ const PROPOSALS: [(&str, Kind); 8] = [
     AT[0],
     AT[1],
 ];
+const QUARANTINED: [(&str, Kind); 7] = [
+    ("source", Kind::Text),
+    ("type", Kind::Text),
+    ("delivery", Kind::Text),
+    ("index", Kind::Int),
+    ("state", Kind::Text),
+    ("limit", Kind::Int),
+    ("after", Kind::Json),
+];
 const FEED: [(&str, Kind); 4] = [
     ("from", Kind::Int),
     ("kinds", Kind::List),
@@ -392,6 +402,8 @@ enum Target {
     Door(Route),
     Ingest(SourceId),
     Feed,
+    Quarantined,
+    Dismiss,
 }
 
 fn route(method: &Method, rest: &str) -> Result<Target, Stop> {
@@ -676,6 +688,8 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
         }
         (["ingest", source], Method::POST) => Target::Ingest((*source).into()),
         (["feed"], Method::GET) => Target::Feed,
+        (["quarantined"], Method::GET) => Target::Quarantined,
+        (["quarantined", "dismiss"], Method::POST) => Target::Dismiss,
         _ => return None,
     };
     Some(target)
@@ -730,6 +744,8 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
         Ok(Target::Door(r)) => door(&store, &who, cx, r, req).await,
         Ok(Target::Ingest(source)) => ingest(&store, &who, cx, source, req).await,
         Ok(Target::Feed) => feed(state, &store, &who, req).await,
+        Ok(Target::Quarantined) => quarantined(&store, &who, cx, req).await,
+        Ok(Target::Dismiss) => dismiss(&store, &who, cx, req).await,
         Err(a) => Err(a),
     };
     match answer {
@@ -1090,6 +1106,7 @@ async fn ingest(
             ("delivery", Kind::Text),
             ("sealed_apart", Kind::Flag),
             ("commit_window", Kind::Int),
+            ("quarantine_refused", Kind::Flag),
         ],
         "POST …/ingest/<source>",
     )?;
@@ -1101,6 +1118,7 @@ async fn ingest(
             .get("commit_window")
             .and_then(Value::as_u64)
             .map(|w| u32::try_from(w).unwrap_or(u32::MAX)),
+        quarantine_refused: args.get("quarantine_refused").and_then(Value::as_bool) == Some(true),
     };
     if let Some(ct) = header(req.headers(), CONTENT_TYPE.as_str())
         && ![
@@ -1171,6 +1189,64 @@ async fn ingest(
         }
     });
     Ok(with_position(streamed("application/x-ndjson", rx), head))
+}
+
+// ------------------------------------------------------------ quarantined
+
+/// `GET …/quarantined`: the quarantined records a filter asks for, in id
+/// order (085).
+async fn quarantined(
+    store: &Arc<dyn LakeStore>,
+    who: &Principal,
+    cx: WriteContext,
+    req: Request<Incoming>,
+) -> Result<Answer, Stop> {
+    const LABEL: &str = "GET …/quarantined";
+    let a = query_args(req.uri().query(), &QUARANTINED, LABEL)?;
+    if json_body(req).await?.is_some() {
+        let route = LABEL.into();
+        return Err(invalid(StatusCode::BAD_REQUEST, Case::NoBody { route }));
+    }
+    let filter = doors::args(LABEL, &a).map_err(fault_answer)?;
+    let r = store
+        .catalog(cx)
+        .quarantined(who, filter)
+        .await
+        .map_err(contract)?;
+    Ok(with_position(
+        json_reply(StatusCode::OK, &to_json(&r)),
+        Some(r.position),
+    ))
+}
+
+/// `POST …/quarantined/dismiss`, its body the id: close one as
+/// dismissed (085).
+async fn dismiss(
+    store: &Arc<dyn LakeStore>,
+    who: &Principal,
+    cx: WriteContext,
+    req: Request<Incoming>,
+) -> Result<Answer, Stop> {
+    const LABEL: &str = "POST …/quarantined/dismiss";
+    query_args(req.uri().query(), &[], LABEL)?;
+    let Some(Value::Object(body)) = json_body(req).await? else {
+        let route = LABEL.into();
+        return Err(invalid(
+            StatusCode::BAD_REQUEST,
+            Case::BodyNotObject { route },
+        ));
+    };
+    let id: QuarantineId = doors::args(LABEL, &body).map_err(fault_answer)?;
+    let close = store
+        .catalog(cx)
+        .dismiss_quarantined(who, &id)
+        .await
+        .map_err(contract)?;
+    let at = Some(close.position);
+    Ok(with_position(
+        json_reply(StatusCode::OK, &to_json(&close)),
+        at,
+    ))
 }
 
 // ------------------------------------------------------------------- feed

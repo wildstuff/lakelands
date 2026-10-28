@@ -204,6 +204,9 @@ fn found(
     let events = view.position().map_or(0, |p| p.0);
     let reports = set.iter().zip(taken).map(|(source, t)| {
         let (recomputed, views) = recomputed(ontology, &t.types);
+        // Its open quarantined records, every one of which the act closes
+        // (085).
+        let (_, quarantined) = quarantined(view, source)?;
         let report = ForgetReport {
             source: source.clone(),
             types: t.types,
@@ -224,10 +227,24 @@ fn found(
             reclaim_owed: lake.reclaim_owed(),
             way: ForgetWay::default(),
             report_id: String::new(),
+            quarantined,
         };
-        (report, t.known)
+        Ok((report, t.known))
     });
-    Ok((reports.collect(), retire))
+    Ok((reports.collect::<Result<_>>()?, retire))
+}
+
+/// The closes of `source`'s open quarantined records, every one, and
+/// their count per type.
+fn quarantined(
+    view: &dyn ProjectionView,
+    source: &SourceId,
+) -> Result<(
+    Vec<EventBody>,
+    Vec<lakelands_api::quarantine::TypeQuarantined>,
+)> {
+    let why = lakelands_api::quarantine::ClosedWhy::Forgotten;
+    crate::quarantine::act_closes(view, (source, None), why, &mut |_| Ok(true))
 }
 
 /// What is computed again for a source holding values in `holding`: a
@@ -615,8 +632,10 @@ fn run_of(
     for source in owed {
         let keys = lake.keys.ids(source)?;
         let source = source.clone();
+        let (closes, _) = quarantined(view.as_ref(), &source)?;
         let forgotten = EventBody::SourceForgotten { source, keys };
         drafts.push(Draft::system(now, forgotten));
+        drafts.extend(closes.into_iter().map(|c| Draft::system(now, c)));
     }
     // The retirements land after the `source_forgotten`s, and so does what
     // they cause.

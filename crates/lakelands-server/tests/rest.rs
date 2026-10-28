@@ -858,6 +858,77 @@ async fn an_ingest_line_with_an_unknown_member_is_refused() {
     assert_eq!(store.head().await.unwrap(), head, "nothing was committed");
 }
 
+/// `?quarantine_refused` carries the option to the store: the refused
+/// record is quarantined and the stream goes on; `GET …/quarantined`
+/// lists it by its filter and `POST …/quarantined/dismiss` closes it
+/// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+#[tokio::test]
+async fn a_refused_record_is_quarantined_listed_and_dismissed_over_rest() {
+    let store = rest_lake(Backend::Memory).await;
+    let (addr, task) = serve(store.clone()).await;
+    let lines = |body: &str| -> Vec<serde_json::Value> {
+        let lines = body.lines().filter(|l| !l.is_empty());
+        lines.map(|l| serde_json::from_str(l).unwrap()).collect()
+    };
+    let block = [
+        "POST /lakes/finance/ingest/bank?quarantine_refused&delivery=q1",
+        "authorization: Bearer k-owner",
+        "content-type: application/x-ndjson",
+        r#"{"type":"invoice","key":"INV-Q1","fields":{"amount":"1.00"}}"#,
+        r#"{"type":"invoice","key":"INV-Q2","fields":{"amount":"2.00","status":"x"}}"#,
+        r#"{"type":"invoice","key":"INV-Q3","fields":{"amount":"3.00"}}"#,
+    ];
+    let (status, _, body) = exchange(addr, &block).await;
+    assert_eq!(status, "200", "{body}");
+    let windows = lines(&body);
+    let quarantined: Vec<_> = windows
+        .iter()
+        .flat_map(|w| w["quarantined"].as_array().cloned().unwrap_or_default())
+        .collect();
+    let records: u64 = windows.iter().filter_map(|w| w["records"].as_u64()).sum();
+    assert_eq!((quarantined, records), (vec![json!(1)], 2), "{body}");
+    let id = json!({"source": "bank", "delivery": "q1", "index": 1});
+    let list = |query: &'static str| {
+        let start = format!("GET /lakes/finance/quarantined{query}");
+        async move {
+            let block = [start.as_str(), "authorization: Bearer k-owner"];
+            let (status, _, body) = exchange(addr, &block).await;
+            assert_eq!(status, "200", "{body}");
+            let answer: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+            answer["data"].as_array().cloned().unwrap()
+        }
+    };
+    let open = list("?source=bank&type=invoice&state=open").await;
+    let [q] = open.as_slice() else {
+        panic!("one record is listed: {open:?}");
+    };
+    assert_eq!(
+        (&q["id"], &q["key"], &q["refusal"]["reason"]["refusal"]),
+        (&id, &json!("INV-Q2"), &json!("wrong_door")),
+        "{q}"
+    );
+    assert!(list("?source=web").await.is_empty());
+    let body = id.to_string();
+    let block = [
+        "POST /lakes/finance/quarantined/dismiss",
+        "authorization: Bearer k-owner",
+        body.as_str(),
+    ];
+    let (status, _, body) = exchange(addr, &block).await;
+    assert_eq!(status, "200", "{body}");
+    let closed: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+    assert_eq!(closed["why"], json!("dismissed"), "{body}");
+    assert!(list("?state=open").await.is_empty());
+    assert_eq!(list("?state=closed").await.len(), 1);
+    let block = [
+        "GET /lakes/finance/quarantined",
+        "authorization: Bearer k-clerk",
+    ];
+    let (status, _, body) = exchange(addr, &block).await;
+    assert_eq!(status, "403", "a clerk holds no `ingest`: {body}");
+    task.abort();
+}
+
 /// A window that takes longer than the keep-alive to commit is answered
 /// with an empty line meanwhile, so a client holding the answer to a
 /// silence bound hears the server works; then its line comes, and the

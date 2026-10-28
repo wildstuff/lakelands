@@ -39,6 +39,7 @@ use lakelands_api::engine::{
 use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
+use lakelands_api::quarantine::Quarantined;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 use lakelands_core::engines;
@@ -1145,6 +1146,11 @@ impl ProjectionStore for PgLake {
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         let state = serde_json::to_string(proposal).expect("a proposal serialises");
         self.stage(at, |b| b.proposal(proposal.id.as_str(), at, state))
+    }
+
+    fn put_quarantined(&self, row: &Quarantined, at: Position) -> Result<()> {
+        let state = serde_json::to_string(row).expect("a quarantined record serialises");
+        self.stage(at, |b| b.quarantined(&row.id, at, state))
     }
 
     fn put_membership(

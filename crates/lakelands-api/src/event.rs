@@ -26,7 +26,7 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// format is refused by name, with both numbers, and nothing of it is read
 /// (`docs/log-format.md` §6,
 /// `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-pub const LOG_FORMAT_VERSION: u32 = 20;
+pub const LOG_FORMAT_VERSION: u32 = 21;
 
 /// The oldest log format this release reads: 14, the format of the first
 /// release with real installations (054).
@@ -446,6 +446,48 @@ pub enum EventBody {
         /// Every sealed segment so far, oldest first.
         segments: Vec<SegmentDigest>,
     },
+    /// A record an ingest was refused, quarantined at the call's asking,
+    /// from format 21 on: one version of its id, its envelope naming the
+    /// source and the call's delivery
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    RecordQuarantined {
+        /// The record's type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The key as sent.
+        key: RecordKey,
+        /// The quarantined record's id.
+        id: crate::quarantine::QuarantineId,
+        /// This version, from 1.
+        version: u32,
+        /// The cells as sent, each in its canonical form, those `sealed`
+        /// names left out.
+        cells: Patch,
+        /// What the source's key seals of the cells, in one box.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sealed: Option<Sealed>,
+        /// When the source observed the values.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen_at: Option<crate::Timestamp>,
+        /// Where the values were read from, for a mirror's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upstream: Option<crate::record::Upstream>,
+        /// The refusal its writer would have been answered.
+        refusal: crate::Error,
+    },
+    /// A quarantined record closed, in the append of what closed it, from
+    /// format 21 on (085).
+    QuarantineClosed {
+        /// The quarantined record's id.
+        id: crate::quarantine::QuarantineId,
+        /// Its type, as its last version names it.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// Its key as sent.
+        key: RecordKey,
+        /// Why it closed.
+        why: crate::quarantine::ClosedWhy,
+    },
 }
 
 /// The kinds of one format version: `EventBody::kind` and [`KINDS`] come
@@ -493,6 +535,8 @@ kinds! {
     ObjectSetChanged => "object_set_changed",
     OutputRecorded => "output_recorded",
     Checkpoint => "checkpoint",
+    RecordQuarantined => "record_quarantined",
+    QuarantineClosed => "quarantine_closed",
 }
 
 /// What kind of change fired a trigger (lakelands#1217): the write at the

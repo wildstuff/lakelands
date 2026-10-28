@@ -102,7 +102,10 @@ impl Decide<'_> {
     /// One of the decision's own events.
     pub(crate) fn draft(&self, body: EventBody) -> Draft {
         let e = self.envelope.clone();
-        let ingested = matches!(body, EventBody::RecordIngested { .. });
+        let ingested = matches!(
+            body,
+            EventBody::RecordIngested { .. } | EventBody::RecordQuarantined { .. }
+        );
         let own = self.call.draft(self.at.now, e.origin, body);
         Draft {
             sealed: e.sealed.filter(|_| ingested),
@@ -717,7 +720,10 @@ impl Decide<'_> {
     /// version it uses first, if it is the first use of that version of
     /// its source's key ([`crate::sealing::kept`]).
     fn kept(&self, d: &Draft) -> Result<Option<((String, Digest), Value)>> {
-        let ingested = matches!(d.body, EventBody::RecordIngested { .. });
+        let ingested = matches!(
+            d.body,
+            EventBody::RecordIngested { .. } | EventBody::RecordQuarantined { .. }
+        );
         let (Some(sealed), Some(source), true) = (&d.sealed, d.source.as_ref(), ingested) else {
             return Ok(None);
         };
@@ -726,15 +732,35 @@ impl Decide<'_> {
         crate::sealing::kept(read, used)
     }
 
-    /// A planned record write with what it sets off: its own event, which
-    /// lands next, then the triggers and object-set changes it causes.
-    pub(crate) fn planned(&mut self, plan: RecordPlan) -> Result<Plan> {
-        if let Some((at, list)) = self.kept(&plan.draft)? {
+    /// One of the decision's own events that sets nothing off, landing
+    /// next: a `record_quarantined` stages the first use of its key's
+    /// version and its keys sealed apart as a record's does, and a
+    /// `quarantine_closed` nothing (085).
+    pub(crate) fn alone(&mut self, d: Draft) -> Result<Draft> {
+        let next = self.next;
+        if let Some((at, list)) = self.kept(&d)? {
             self.pending
                 .sealed
                 .entry(at)
                 .or_default()
-                .push((self.next, list));
+                .push((next, list));
+        }
+        if let (Some(sealed), Some(source)) = (&d.sealed, &d.source)
+            && !sealed.apart.is_empty()
+        {
+            self.pending.apart.stage(source, next, &sealed.apart);
+        }
+        self.next = next.next();
+        Ok(d)
+    }
+
+    /// A planned record write with what it sets off: its own event, which
+    /// lands next, then the triggers and object-set changes it causes.
+    pub(crate) fn planned(&mut self, plan: RecordPlan) -> Result<Plan> {
+        let (next, kept) = (self.next, self.kept(&plan.draft)?);
+        if let Some((at, list)) = &kept {
+            let staged = self.pending.sealed.entry(at.clone()).or_default();
+            staged.push((next, list.clone()));
         }
         // Its keys sealed apart are in no log yet: what the append computes
         // after it reads them here (065).
@@ -743,14 +769,25 @@ impl Decide<'_> {
             (&plan.draft.sealed, &plan.draft.source, ingested)
             && !sealed.apart.is_empty()
         {
-            self.pending.apart.stage(source, self.next, &sealed.apart);
+            self.pending.apart.stage(source, next, &sealed.apart);
         }
         let change = match plan.draft.body {
             EventBody::RecordIngested { .. } => ChangeKind::Ingested,
             EventBody::RecordRetired { .. } => self.retiring_as,
             _ => ChangeKind::Upserted,
         };
-        let mut drafts = self.reactions(change, plan.before.as_ref(), &plan.after)?;
+        // A refused one leaves what it staged as it was, so a window that
+        // quarantines it goes on as without it (085).
+        let mut drafts = match self.reactions(change, plan.before.as_ref(), &plan.after) {
+            Ok(drafts) => drafts,
+            Err(e) => {
+                if let Some((at, _)) = kept {
+                    self.pending.sealed.get_mut(&at).and_then(Vec::pop);
+                }
+                self.pending.apart.unstage(next);
+                return Err(e);
+            }
+        };
         drafts.insert(0, plan.draft);
         let after = Some(plan.after);
         Ok(Plan { drafts, after })
@@ -1358,6 +1395,7 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
                 Decided::Drafts(drafts) => {
                     // Its door refused what the seal would, and the batch
                     // opened on a writer that may append.
+                    let drafts = turn.closing(&mut w, drafts)?;
                     let stamped = turn.stamp(&w, drafts);
                     debug_assert!(stamped.is_ok(), "a batched stamp refused");
                     (Told::Events(0..0), Some(stamped?))

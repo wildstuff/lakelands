@@ -1780,7 +1780,7 @@ pub fn layout(lake: &LakeId, found: Option<u64>, wanted: u64) -> Result<()> {
 /// The number a projection stores for each event kind of the format, in
 /// the order the format lists them. A code is never reused or moved: a
 /// kind a later format adds takes the next number.
-pub const KIND_CODES: [(&str, i64); 22] = [
+pub const KIND_CODES: [(&str, i64); 24] = [
     ("lake_created", 1),
     ("lake_upgraded", 2),
     ("lease_taken", 3),
@@ -1803,6 +1803,8 @@ pub const KIND_CODES: [(&str, i64); 22] = [
     ("object_set_changed", 20),
     ("output_recorded", 21),
     ("checkpoint", 22),
+    ("record_quarantined", 23),
+    ("quarantine_closed", 24),
 ];
 
 /// The code of the event kind `kind`, or none for one the format does not

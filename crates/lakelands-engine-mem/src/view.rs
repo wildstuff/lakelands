@@ -21,6 +21,7 @@ use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
+use lakelands_api::quarantine::{QuarantineFilter, QuarantineId, Quarantined};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::FeedFilter;
@@ -275,6 +276,19 @@ impl ProjectionView for MemView {
             engines::proposals(p.proposals.values().filter_map(|h| h.at(at)), filter, |i| {
                 stands(p, at, i)
             })
+        }))
+    }
+
+    fn quarantined(&self, filter: &QuarantineFilter) -> Result<Vec<Quarantined>> {
+        Ok(self.read(|p, at| {
+            let rows = |id: &QuarantineId| p.quarantined.get(id)?.at(at).cloned();
+            match (&filter.ty, &filter.key) {
+                (Some(ty), Some(key)) => {
+                    let ids = p.quarantined_at.get(&(ty.clone(), key.clone()));
+                    filter.answer(ids.into_iter().flatten().filter_map(rows))
+                }
+                _ => filter.answer(p.quarantined.keys().filter_map(rows)),
+            }
         }))
     }
 
