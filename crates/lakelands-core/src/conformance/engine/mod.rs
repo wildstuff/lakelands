@@ -243,6 +243,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::EARLIER_STATES,
     reads::LATER_OUTPUT_HOLDS,
     reads::FIRST_APPLIED,
+    reads::APPLIED_AFTER_CLEAR,
     reads::ROUTES,
     reads::SOURCE_ROUTES,
     reads::PROPOSALS,
@@ -297,10 +298,17 @@ pub fn run_engine_check(harness: &dyn EngineHarness, check: &EngineCheck) -> Hel
 }
 
 /// One event whose canonical bytes are those of `body` with the envelope
-/// members the engine checks, hashed as the log hashes events.
+/// members the engine checks, hashed as the log hashes events. Its line
+/// holds its id, as every event's line does.
 pub fn event(position: u64, prev: &Digest, fence: u64, body: Value) -> CanonicalEvent {
+    event_of(position, &format!("{position:032x}"), prev, fence, body)
+}
+
+/// [`event`] with the id `id`.
+pub fn event_of(position: u64, id: &str, prev: &Digest, fence: u64, body: Value) -> CanonicalEvent {
     let preimage = json!({
         "position": position,
+        "id": id,
         "prev": prev.0,
         "fence": fence,
         "body": body,
@@ -310,7 +318,7 @@ pub fn event(position: u64, prev: &Digest, fence: u64, body: Value) -> Canonical
     whole["hash"] = Value::String(hash.0.clone());
     CanonicalEvent {
         position: Position(position),
-        id: EventId(format!("{position:032x}")),
+        id: EventId(id.to_owned()),
         prev: prev.clone(),
         hash,
         fence,

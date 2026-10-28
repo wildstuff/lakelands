@@ -151,7 +151,7 @@ fn an_open_reads_back_past_every_block_that_holds_no_commit_line() {
 
 #[test]
 fn a_read_from_any_position_answers_the_events_from_it() {
-    const N: u64 = 4500;
+    const N: u64 = 6000;
     let dir = scratch("any-position");
     let engine = open(&dir, OpenMode::Create);
     let lease = engine.take_lease("writer").unwrap();
@@ -210,6 +210,7 @@ fn a_frame_that_covers_part_of_an_append_is_counted_by_its_index() {
             let mut event = json!({
                 "body": {"kind": "note", "n": p},
                 "fence": fence,
+                "id": format!("{p:032x}"),
                 "known_at": "2026-01-01T00:00:00.000000Z",
                 "position": p,
                 "prev": prev.0,

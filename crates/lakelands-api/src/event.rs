@@ -52,6 +52,14 @@ impl Digest {
 #[serde(transparent)]
 pub struct EventId(pub String);
 
+impl EventId {
+    /// Whether it is of the one form an id has: 32 lower-case hex digits.
+    pub fn of_form(&self) -> bool {
+        let b = self.0.as_bytes();
+        b.len() == 32 && b.iter().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+    }
+}
+
 /// A procedure that produced a value: a verb, a function backing, a
 /// derivation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

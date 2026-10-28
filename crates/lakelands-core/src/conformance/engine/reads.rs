@@ -183,7 +183,12 @@ engine_check!(
 
 engine_check!(
     FIRST_APPLIED = the_first_applied_position_is_kept,
-    "seams §ProjectionStore: marking an id applied twice keeps the first position, so a redelivery is recognised where the event first took effect"
+    "seams §ProjectionStore and 086: marking an id applied twice, the log holding two events of it, keeps the first position, so a redelivery is recognised where the event first took effect"
+);
+
+engine_check!(
+    APPLIED_AFTER_CLEAR = after_a_clear_an_id_answers_none_until_the_refold_reaches_it,
+    "086 and seams §ProjectionStore: after a `clear`, an applied id answers none until the refold reaches the position it was applied at, on an engine that answers it from the log too"
 );
 
 engine_check!(
@@ -1737,7 +1742,9 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
     }));
     let key = RecordKey::from("k");
     let ty = TypeName::from("t");
-    let (seen, early) = (EventId("seen".into()), EventId("early".into()));
+    // The ids are those of events the log holds where they are marked.
+    logged(engine, 4, id_at)?;
+    let (seen, early) = (id_at(3), id_at(1));
     fold(engine, 1, |p| {
         p.put_declaration(&v1, 1, None, Position(1))?;
         p.put_membership("big", &ty, &key, true, Position(1))?;
@@ -1821,7 +1828,7 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
     );
     // Many ids in one call: an answer an id, in their order, twice for an
     // id asked twice, none for an id never applied.
-    let ids = [seen.clone(), EventId("never".into()), early, seen];
+    let ids = [seen.clone(), id_at(99), early, seen];
     let (many_then, many_now) = (
         then.applied_many(&ids).must("reading many ids at 2")?,
         now.applied_many(&ids)
@@ -1836,6 +1843,29 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
     let none = now.applied_many(&[]).must("reading no id")?;
     ensure!(none.is_empty(), "no id asked answered {none:?}");
     Ok(())
+}
+
+/// The id of the event at `p` in a log [`logged`] made.
+fn id_at(p: u64) -> EventId {
+    EventId(format!("{p:032x}"))
+}
+
+/// The log holding events 0 to `n - 1`, the one at `p` of the id `id(p)`.
+fn logged(engine: &dyn LakeEngine, n: u64, id: impl Fn(u64) -> EventId) -> Held {
+    let lease = engine.take_lease("conformance").must("taking the lease")?;
+    let mut prev = Digest::zero();
+    let events: Vec<_> = (0..n)
+        .map(|p| {
+            // Position 0 is written before any lease exists, under fence 0.
+            let fence = if p == 0 { 0 } else { lease.fence };
+            let e = super::event_of(p, &id(p).0, &prev, fence, json!({"kind": "note", "n": p}));
+            prev = e.hash.clone();
+            e
+        })
+        .collect();
+    engine
+        .append(&lease, &events)
+        .must("appending the events the projection marks applied")
 }
 
 /// The event `id` applied at `at`, a checkpoint about nothing.
@@ -2081,7 +2111,9 @@ fn the_index_answers_a_sources_positions_in_order_to_its_through(engine: &dyn La
 }
 
 fn the_first_applied_position_is_kept(engine: &dyn LakeEngine) -> Held {
-    let id = EventId("once".into());
+    // The log holds two events of one id, at 2 and at 5.
+    let id = id_at(2);
+    logged(engine, 6, |p| id_at(if p == 5 { 2 } else { p }))?;
     fold(engine, 2, |p| p.mark_applied(&unrouted(&id, 2)))?;
     fold(engine, 5, |p| p.mark_applied(&unrouted(&id, 5)))?;
     let at = view(engine, None)?
@@ -2091,6 +2123,32 @@ fn the_first_applied_position_is_kept(engine: &dyn LakeEngine) -> Held {
         at == Some(Position(2)),
         "an id marked applied at 2 and again at 5 reads as applied at {at:?}; the first \
          position is kept"
+    );
+    Ok(())
+}
+
+fn after_a_clear_an_id_answers_none_until_the_refold_reaches_it(engine: &dyn LakeEngine) -> Held {
+    logged(engine, 4, id_at)?;
+    let marked = |p: &dyn ProjectionStore, from: u64, to: u64| {
+        (from..=to).try_for_each(|at| p.mark_applied(&unrouted(&id_at(at), at)))
+    };
+    fold(engine, 3, |p| marked(p, 1, 3))?;
+    let ids = [id_at(1), id_at(3)];
+    let ask = |what: &str| view(engine, None)?.applied_many(&ids).must(what);
+    let folded = ask("reading the ids folded")?;
+    (engine.projection().clear()).must("clearing the projection")?;
+    let cleared = ask("reading the ids after the clear")?;
+    fold(engine, 2, |p| marked(p, 1, 2))?;
+    let partway = ask("reading the ids refolded through 2")?;
+    fold(engine, 3, |p| marked(p, 3, 3))?;
+    let refolded = ask("reading the ids refolded through 3")?;
+    let (p1, p3) = (Some(Position(1)), Some(Position(3)));
+    let got = [folded, cleared, partway, refolded];
+    let want = [vec![p1, p3], vec![None, None], vec![p1, None], vec![p1, p3]];
+    ensure!(
+        got == want,
+        "the ids of the events at 1 and 3, applied, then cleared, then refolded through 2 and \
+         through 3, read {got:?}; they read {want:?}: none until the refold reaches each"
     );
     Ok(())
 }

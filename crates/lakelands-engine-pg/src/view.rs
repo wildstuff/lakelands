@@ -1394,18 +1394,31 @@ impl ProjectionView for PgView<'_> {
 
     fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
         // One statement for every id: a round trip an id is most of an
-        // ingest window's time on a server.
-        let all: Vec<&str> = ids.iter().map(|id| id.0.as_str()).collect();
+        // ingest window's time on a server. The log's index on `id`
+        // answers it: the least position holding the id, at or before the
+        // view's and no further than the projection had folded in the
+        // same snapshot, so none after a `clear` until the refold reaches
+        // it. An id not of its form is held by no log this build keeps.
+        let all: Vec<&str> = ids
+            .iter()
+            .filter(|id| id.of_form())
+            .map(|id| id.0.as_str())
+            .collect();
         self.single(vec![None; ids.len()], |r| {
             let query = format!(
-                "SELECT id, at FROM {} WHERE id = ANY($1) AND at <= $2",
-                r.names.t("applied")
+                "SELECT i, (SELECT min(position) FROM {log} WHERE id = {id} AND position <= \
+                 least($2, coalesce((SELECT n FROM {meta} WHERE k = 'folded'), -1))) \
+                 FROM unnest($1::text[]) AS i",
+                log = r.names.t("log"),
+                id = r.names.kept("id", "i"),
+                meta = r.names.t("meta"),
             );
             let rows = r.db.query(&query, &[&all, &r.at])?;
-            let held: BTreeMap<String, i64> =
-                (rows.iter()).map(|row| (row.get(0), row.get(1))).collect();
-            let at = |id: &&str| held.get(*id).map(|p| Position(*p as u64));
-            Ok(all.iter().map(at).collect())
+            let held: BTreeMap<String, i64> = (rows.iter())
+                .filter_map(|row| Some((row.get(0), row.get::<_, Option<i64>>(1)?)))
+                .collect();
+            let at = |id: &EventId| held.get(&id.0).map(|p| Position(*p as u64));
+            Ok(ids.iter().map(at).collect())
         })
     }
 

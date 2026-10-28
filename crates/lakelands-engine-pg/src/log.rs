@@ -33,6 +33,15 @@
 //! ahead of it, and nothing but this writer's commits moves it. An append
 //! that fails drops what it carried, and the next reads it again.
 //!
+//! **Ids and hashes as bytes.** `id`, `prev` and `hash` are kept as the
+//! bytes their hex digits spell (`bytea`: 16, 32 and 32), and handed back
+//! as the same lower-case hex; every read takes them in the type the
+//! catalogue gave them at the handle's open ([`Names::hex`]), so the ends
+//! of a log a release before 0.21.0 kept as text, and a build ahead that
+//! reads one, read as before. Such a log is converted in place, once, by
+//! [`convert`], and gains the index on `id` that answers an applied id
+//! (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
+//!
 //! **Synced.** An append's and a seal's commits wait for their flush
 //! whatever the server, the database or the role sets, so an answered
 //! append outlasts a crash, and it flushes the projection commits before
@@ -44,13 +53,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, Frame, Lease};
-use lakelands_api::error::{Act, Case, Doing, Error, Part, Result, Situation};
+use lakelands_api::error::{Act, Case, Doing, Error, Flaw, Part, Result, Situation};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::Position;
 use sha2::{Digest as _, Sha256};
 
 use crate::connect::Db;
-use crate::projection::Names;
+use crate::projection::{HEX_COLUMNS, Names};
 
 /// How an append and a seal begin: synced, whatever the session's default.
 const SYNCED: &str = "BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL synchronous_commit = on";
@@ -66,12 +75,71 @@ pub(crate) fn create(db: &mut Db, names: &Names) -> Result<()> {
     )
 }
 
+/// Convert a log a release before 0.21.0 kept, its `id`, `prev` and
+/// `hash` as text, to this build's, in the caller's transaction, under
+/// the lease and before any append: each column still of type `text`
+/// becomes the bytes it spells, the index on `id` is made where missing,
+/// and `applied` is dropped. It does only what the catalogue shows undone,
+/// so a log converted is untouched; the tables of this build's schema are
+/// made before it, by the writer's open or in the rebuild's transaction,
+/// so a release before refuses the schema before it reads a converted
+/// row. A log holding an id not of its form is refused, naming the first
+/// position holding one, and nothing is converted. Answers whether it
+/// changed anything.
+pub(crate) fn convert(db: &mut Db, names: &Names) -> Result<bool> {
+    let row = db.query_one(
+        "SELECT (SELECT array_agg(attname::text) FROM pg_catalog.pg_attribute \
+         WHERE attrelid = to_regclass($1) AND atttypid = 'text'::regtype \
+         AND attname::text = ANY($2) AND NOT attisdropped), \
+         to_regclass($3) IS NULL, to_regclass($4) IS NOT NULL",
+        &[
+            &names.t("log"),
+            &HEX_COLUMNS.to_vec(),
+            &names.t("log_id"),
+            &names.t("applied"),
+        ],
+    )?;
+    let text = row.get::<_, Option<Vec<String>>>(0).unwrap_or_default();
+    let (unindexed, applied) = (row.get::<_, bool>(1), row.get::<_, bool>(2));
+    if text.is_empty() && !unindexed && !applied {
+        return Ok(false);
+    }
+    // The rewrite takes as long as the log is big: no statement timeout
+    // a host set holds it, past the transaction it runs in.
+    db.batch("SET LOCAL statement_timeout = 0")?;
+    if text.iter().any(|c| c == "id") {
+        let odd = format!(
+            "SELECT min(position) FROM {} WHERE id !~ '^[0-9a-f]{{32}}$'",
+            names.t("log")
+        );
+        if let Some(at) = db.query_one(&odd, &[])?.get::<_, Option<i64>>(0) {
+            let at = Some(Position(at as u64));
+            return Err(lakelands_core::damaged(Part::Log, at, Flaw::IdNotOfForm));
+        }
+    }
+    let (log, space) = (names.t("log"), Names::space(&names.at.log));
+    let mut sql = String::new();
+    if !text.is_empty() {
+        let altered: Vec<String> = (text.iter())
+            .map(|c| format!("ALTER COLUMN {c} TYPE bytea USING decode({c}, 'hex')"))
+            .collect();
+        sql += &format!("ALTER TABLE {log} {};\n", altered.join(", "));
+    }
+    sql += &format!(
+        "CREATE INDEX IF NOT EXISTS log_id ON {log} (id){space};\nDROP TABLE IF EXISTS {};",
+        names.t("applied")
+    );
+    db.batch(&sql)?;
+    Ok(true)
+}
+
 /// The last event's position and hash.
 pub(crate) fn tip(db: &mut Db, names: &Names) -> Result<Option<(Position, Digest)>> {
     Ok(db
         .query_opt(
             &format!(
-                "SELECT position, hash FROM {} ORDER BY position DESC LIMIT 1",
+                "SELECT position, {} FROM {} ORDER BY position DESC LIMIT 1",
+                names.hex("hash"),
                 names.t("log")
             ),
             &[],
@@ -237,9 +305,12 @@ fn add(
     db.execute(
         &format!(
             "INSERT INTO {} (position, segment, fence, id, prev, hash, bytes) \
-             SELECT p, $2, f, i, v, h, b FROM unnest($1::int8[], $3::int8[], $4::text[], \
+             SELECT p, $2, f, {}, {}, {}, b FROM unnest($1::int8[], $3::int8[], $4::text[], \
              $5::text[], $6::text[], $7::bytea[]) AS e(p, f, i, v, h, b)",
-            names.t("log")
+            names.t("log"),
+            names.kept("id", "i"),
+            names.kept("prev", "v"),
+            names.kept("hash", "h"),
         ),
         &[&positions, &segment, &fences, &ids, &prevs, &hashes, &bytes],
     )?;
@@ -296,8 +367,11 @@ pub(crate) fn read(
     }
     let rows = db.query(
         &format!(
-            "SELECT position, fence, id, prev, hash, bytes, to_regclass($3) IS NOT NULL \
+            "SELECT position, fence, {}, {}, {}, bytes, to_regclass($3) IS NOT NULL \
              FROM {} WHERE position >= $1 ORDER BY position LIMIT $2",
+            names.hex("id"),
+            names.hex("prev"),
+            names.hex("hash"),
             names.t("log")
         ),
         &[&from, &i64::from(limit), &names.t("frames")],
@@ -381,9 +455,12 @@ fn each_event(
     };
     db.query_each(
         &format!(
-            "SELECT l.position, l.prev, l.bytes, {frame}, l.id, l.hash, l.fence FROM {} l {join} \
+            "SELECT l.position, {prev}, l.bytes, {frame}, {id}, {hash}, l.fence FROM {} l {join} \
              WHERE l.segment = $1 ORDER BY l.position",
             names.t("log"),
+            prev = names.hex("l.prev"),
+            id = names.hex("l.id"),
+            hash = names.hex("l.hash"),
         ),
         &[&first],
         |r| {
