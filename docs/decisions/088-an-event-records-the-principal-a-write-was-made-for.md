@@ -2,8 +2,7 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1489, for 0.21.0. The operator reviews it on
-the issue; merging it does not accept it. It adds one envelope member
+Decided on lakelands#1489 by the operator (2026-10-28), for 0.21.0. It adds one envelope member
 to log format 21, which 0.21.0 writes for the first time, so it needs no
 step of its own. It extends
 `docs/decisions/021-the-write-context-belongs-to-the-host.md`, whose
