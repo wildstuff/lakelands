@@ -1,0 +1,36 @@
+{
+  "about": "lakelands#1498: a key of fixed bytes, the SHA-256 of `lakelands:sealed-bytes`, and what the store wrote under it with aes-gcm-siv 0.11, sha2 0.10 and hmac 0.12, before the crates that detect the CPU's instructions at run time. The conformance check `a_records_sealed_members_are_sealed_in_one_box` holds every later build to them: the type's schema hash, the ingest's id and `sealed` with its box, and the recorded output's input digest, sealed output and `sealed`. Never edited.",
+  "sources": {
+    "crm": {
+      "keys": [
+        [
+          "kept1",
+          "6ecca126a019e868e0a0a292464064931eff680bb5584aa8f78a21335131a1e1"
+        ]
+      ],
+      "apart": []
+    }
+  },
+  "wrote": [
+    "699404da995e0d7a880aab3108ca09311cf61ccef6332ce98809b840949cc034",
+    [
+      "9b1e087e9b2a29bd1a095bb9ee363405",
+      {
+        "box": "ADXkGm6VFjtf783D/k2+xUXfrCf6ZdO+6+QCj7n0Dwk6iq1iBIQYElMe1nb1SsCldSsynqzl1LE=",
+        "fields": [
+          "email",
+          "name"
+        ],
+        "key": "kept1"
+      }
+    ],
+    [
+      "97a1e9b18b72c19fb88ebf899db9fc2ffe2d8702091220c32400d578397c924d",
+      "r/t0eLG11Cbiiq8Add6qCy54m6/P",
+      {
+        "key": "kept1",
+        "source": "crm"
+      }
+    ]
+  ]
+}
