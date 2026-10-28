@@ -988,7 +988,7 @@ belongs in the suite, not beside one engine:
 **graph communities**
 
 - `communities_answer_the_pinned_partition_of_two_dense_groups_and_a_bridge` — 018 and 026: `communities` over two groups of four, every pair in each linked and one link between them, and a record linked to nothing answers each group as a community and the lone record as one of its own, numbered and ordered as `components` orders them, where `components` answers the groups as one; with no start type the lone record is no community
-- `communities_are_the_same_whatever_order_links_were_written_in_and_seeds_fall_into_pages` — 026: `communities` over 300 records, whose seeds fall in two pages, answers byte for byte the same rows on two lakes whose records and links were written in opposite orders
+- `communities_are_the_same_whatever_order_links_were_written_in_and_seeds_fall_into_pages` — 026: `communities` over the 300 records `page_rank` ranks in any order, whose seeds fall in two pages, answers byte for byte the same rows on two lakes whose records and links were written in opposite orders
 - `a_community_is_connected` — 026: where the integer Louvain leaves `k01`, `k05`, `k08` and `k09` one community though no link joins `k01` and `k09` to `k05` and `k08`, `communities` answers its two connected parts as two communities, every community connected
 - `communities_past_max_graph_nodes_are_refused_too_large` — 018 and the location's limits: `communities` over a graph of more records than `max_graph_nodes` is refused too_large naming the ceiling, nothing partial is answered, and the lake's head does not move
 
