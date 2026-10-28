@@ -5,9 +5,12 @@
 //! with every such key, and taking the delivery back destroys its key and
 //! no version.
 
-use lakelands_api::IngestOpts;
+use std::sync::atomic::AtomicBool;
+
 use lakelands_api::event::Sealed;
 use lakelands_api::id::KeyId;
+use lakelands_api::seam::DataKey;
+use lakelands_api::{IngestOpts, LakeId};
 
 use super::erasable::{Keys, again, first, person, with};
 use super::removed::{Whole, acts, at, erased};
@@ -161,86 +164,8 @@ async fn a_delivery_a_record_names_is_sealed_under_a_key_of_its_own(
     read(&Lake::of(store.as_ref()), "after a rebuild").await
 }
 
-/// The suite's key store, counting its requests for keys apart: the size
-/// of each `create_apart_many`, `None` for each `create_apart` alone. The
-/// first fails while `fails` is set, and the second refuses as unbound
-/// once `alone` is spent.
-#[derive(Default)]
-struct Counted {
-    keys: Arc<Keys>,
-    asked: std::sync::Mutex<Vec<Option<usize>>>,
-    fails: std::sync::atomic::AtomicBool,
-    alone: std::sync::Mutex<Option<usize>>,
-}
-
-impl KeyStore for Counted {
-    fn create(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<KeyId> {
-        self.keys.create(lake, source)
-    }
-    fn key(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-        id: &KeyId,
-    ) -> lakelands_api::Result<Option<lakelands_api::seam::DataKey>> {
-        self.keys.key(lake, source, id)
-    }
-    fn destroy(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<()> {
-        self.keys.destroy(lake, source)
-    }
-    fn ids(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<Vec<KeyId>> {
-        self.keys.ids(lake, source)
-    }
-    fn create_apart(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<KeyId> {
-        crate::lock(&self.asked).push(None);
-        let mut alone = crate::lock(&self.alone);
-        match alone.as_mut() {
-            Some(0) => return Err(Error::unbound(Seam::KeyApart)),
-            Some(n) => *n -= 1,
-            None => {}
-        }
-        self.keys.create_apart(lake, source)
-    }
-    fn create_apart_many(
-        &self,
-        lake: &lakelands_api::LakeId,
-        sources: &[SourceId],
-    ) -> lakelands_api::Result<Vec<KeyId>> {
-        crate::lock(&self.asked).push(Some(sources.len()));
-        if self.fails.load(std::sync::atomic::Ordering::SeqCst) {
-            let lake = "the key store".to_owned();
-            return Err(Error::unavailable(Situation::Busy { lake }));
-        }
-        self.keys.create_apart_many(lake, sources)
-    }
-    fn destroy_apart(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-        id: &KeyId,
-    ) -> lakelands_api::Result<()> {
-        self.keys.destroy_apart(lake, source, id)
-    }
-}
-
 async fn a_window_asks_for_its_keys_apart_in_one_request(store: Store, reopen: Reopen) -> Held {
-    let counted = Arc::new(Counted::default());
+    let counted = Arc::new(FailingApart::default());
     let seams = Seams {
         keys: Some(counted.clone()),
         backings: backing::backings(),
@@ -285,9 +210,7 @@ async fn a_window_asks_for_its_keys_apart_in_one_request(store: Store, reopen: R
         asked == [Some(2)],
         "a window whose keys the call keeps makes no request: {asked:?}"
     );
-    counted
-        .fails
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    counted.fails.store(true, Ordering::SeqCst);
     *crate::lock(&counted.alone) = Some(3);
     let (said, _) = call(2, six("e")).await;
     let refused = matches!(
@@ -306,69 +229,83 @@ async fn a_window_asks_for_its_keys_apart_in_one_request(store: Store, reopen: R
     Ok(())
 }
 
-/// The suite's key store, whose `destroy_apart` fails while `fails` is set.
-struct FailingApart(Arc<Keys>, std::sync::atomic::AtomicBool);
+/// The suite's key store, whose `destroy_apart` and `create_apart_many`
+/// fail while `fails` is set. It counts its requests for keys apart in
+/// `asked`, the size of each `create_apart_many` and `None` for each
+/// `create_apart`, which refuses as unbound once `alone` is spent.
+#[derive(Default)]
+struct FailingApart {
+    keys: Arc<Keys>,
+    fails: AtomicBool,
+    asked: std::sync::Mutex<Vec<Option<usize>>>,
+    alone: std::sync::Mutex<Option<usize>>,
+}
+
+impl FailingApart {
+    fn failed(&self) -> lakelands_api::Result<()> {
+        if self.fails.load(Ordering::SeqCst) {
+            let lake = "the key store".to_owned();
+            return Err(Error::unavailable(Situation::Busy { lake }));
+        }
+        Ok(())
+    }
+}
 
 impl KeyStore for FailingApart {
-    fn create(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<KeyId> {
-        self.0.create(lake, source)
+    fn create(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
+        self.keys.create(lake, source)
     }
     fn key(
         &self,
-        lake: &lakelands_api::LakeId,
+        lake: &LakeId,
         source: &SourceId,
         id: &KeyId,
-    ) -> lakelands_api::Result<Option<lakelands_api::seam::DataKey>> {
-        self.0.key(lake, source, id)
+    ) -> lakelands_api::Result<Option<DataKey>> {
+        self.keys.key(lake, source, id)
     }
-    fn destroy(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<()> {
-        self.0.destroy(lake, source)
+    fn destroy(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<()> {
+        self.keys.destroy(lake, source)
     }
     fn destroy_version(
         &self,
-        lake: &lakelands_api::LakeId,
+        lake: &LakeId,
         source: &SourceId,
         id: &KeyId,
     ) -> lakelands_api::Result<()> {
-        self.0.destroy_version(lake, source, id)
+        self.keys.destroy_version(lake, source, id)
     }
     fn destroys_versions(&self) -> bool {
         true
     }
-    fn ids(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<Vec<KeyId>> {
-        self.0.ids(lake, source)
+    fn ids(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<Vec<KeyId>> {
+        self.keys.ids(lake, source)
     }
-    fn create_apart(
+    fn create_apart(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
+        crate::lock(&self.asked).push(None);
+        match crate::lock(&self.alone).as_mut() {
+            Some(0) => return Err(Error::unbound(Seam::KeyApart)),
+            Some(n) => *n -= 1,
+            None => {}
+        }
+        self.keys.create_apart(lake, source)
+    }
+    fn create_apart_many(
         &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<KeyId> {
-        self.0.create_apart(lake, source)
+        lake: &LakeId,
+        sources: &[SourceId],
+    ) -> lakelands_api::Result<Vec<KeyId>> {
+        crate::lock(&self.asked).push(Some(sources.len()));
+        self.failed()?;
+        self.keys.create_apart_many(lake, sources)
     }
     fn destroy_apart(
         &self,
-        lake: &lakelands_api::LakeId,
+        lake: &LakeId,
         source: &SourceId,
         id: &KeyId,
     ) -> lakelands_api::Result<()> {
-        if self.1.load(std::sync::atomic::Ordering::SeqCst) {
-            let lake = "the key store".to_owned();
-            let situation = lakelands_api::error::Situation::Busy { lake };
-            return Err(Error::unavailable(situation));
-        }
-        self.0.destroy_apart(lake, source, id)
+        self.failed()?;
+        self.keys.destroy_apart(lake, source, id)
     }
 }
 
@@ -1088,9 +1025,11 @@ async fn a_set_of_deliveries_shreds_what_it_takes_whole(store: Store, reopen: Re
 }
 
 async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: Reopen) -> Held {
-    use std::sync::atomic::{AtomicBool, Ordering};
     let keys = Arc::new(Keys::default());
-    let failing = Arc::new(FailingApart(keys.clone(), AtomicBool::new(false)));
+    let failing = Arc::new(FailingApart {
+        keys: keys.clone(),
+        ..FailingApart::default()
+    });
     let seams = || Seams {
         keys: Some(failing.clone()),
         backings: backing::backings(),
@@ -1134,7 +1073,7 @@ async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: 
     };
     let before = store.head().await.must("reading the head")?;
     let late = Selection::Delivery("late".into());
-    failing.1.store(true, Ordering::SeqCst);
+    failing.fails.store(true, Ordering::SeqCst);
     let stopped = store.remove_values(&crm, &late, false, None).await;
     let held = keys.apart(store.lake(), &crm);
     ensure!(
@@ -1152,7 +1091,7 @@ async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: 
     while let Some(window) = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx)).await {
         window.must("`late`'s window after the act")?;
     }
-    failing.1.store(false, Ordering::SeqCst);
+    failing.fails.store(false, Ordering::SeqCst);
     let sealed = seals(store.as_ref(), mark).await?;
     let p3 = sealed
         .iter()
@@ -1258,9 +1197,11 @@ async fn a_delivery_sealed_apart_is_shredded_after_a_crash_and_an_import(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
-    use std::sync::atomic::{AtomicBool, Ordering};
     let keys = Arc::new(Keys::default());
-    let failing = Arc::new(FailingApart(keys.clone(), AtomicBool::new(false)));
+    let failing = Arc::new(FailingApart {
+        keys: keys.clone(),
+        ..FailingApart::default()
+    });
     let seams = || Seams {
         keys: Some(failing.clone()),
         backings: backing::backings(),
@@ -1280,14 +1221,14 @@ async fn a_delivery_sealed_apart_is_shredded_after_a_crash_and_an_import(
     let backup = Arc::new(keys.backup());
     let before = store.head().await.must("reading the head")?;
     let late = Selection::Delivery("late".into());
-    failing.1.store(true, Ordering::SeqCst);
+    failing.fails.store(true, Ordering::SeqCst);
     let stopped = store.remove_values(&crm, &late, false, None).await;
     let held = keys.apart(store.lake(), &crm);
     ensure!(
         stopped.is_err() && made.len() == 1 && held == made,
         "the act whose destroy fails answers {stopped:?}, and the key stays: {made:?}, {held:?}"
     );
-    failing.1.store(false, Ordering::SeqCst);
+    failing.fails.store(false, Ordering::SeqCst);
     let store = again(&given.reopen, store, seams(), "after the stopped act").await?;
     let l = Lake::of(store.as_ref());
     let read = async |l: &Lake, by: &str| {

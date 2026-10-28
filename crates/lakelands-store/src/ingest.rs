@@ -73,6 +73,14 @@ pub type Apart = std::sync::Mutex<BTreeMap<Pair, KeyId>>;
 /// A source and the delivery a record names, none for the call's.
 type Pair = (SourceId, Option<DeliveryId>);
 
+/// The record's own source, else the call's, and the delivery it names.
+fn pair_of(r: &SourceRecord, source: &SourceId) -> Pair {
+    (
+        r.source.as_ref().unwrap_or(source).clone(),
+        r.delivery.clone(),
+    )
+}
+
 /// Decide and append one window, in the call's `delivery` where one is
 /// named or decided already, its values sealed apart too where `apart`
 /// keeps the call's keys; `places` holds each record's place among the
@@ -364,10 +372,7 @@ fn judge(
     let mut quarantined = Vec::new();
     for (i, (r, place)) in records.iter().zip(places).enumerate() {
         let index = first + i as u64;
-        let pair = (
-            r.source.clone().unwrap_or_else(|| source.clone()),
-            r.delivery.clone(),
-        );
+        let pair = pair_of(r, source);
         // The record's own source, else the call's: its event and its id.
         let source = r.source.as_ref().unwrap_or(source);
         let target = resubmitted(&d, (view, &rows), r, source);
@@ -851,10 +856,7 @@ fn ask_apart(
 ) {
     let mut pairs: Vec<Pair> = Vec::new();
     for r in records {
-        let pair = (
-            r.source.clone().unwrap_or_else(|| source.clone()),
-            r.delivery.clone(),
-        );
+        let pair = pair_of(r, source);
         let seals =
             d.at.sight
                 .ty(&r.ty)
