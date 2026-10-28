@@ -25,6 +25,7 @@ use aes_gcm_siv::aead::{Aead, KeyInit};
 use aes_gcm_siv::{Aes256GcmSiv, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use hkdf::{Hkdf, HkdfExtract};
 use hmac::{Hmac, Mac};
 use lakelands_api::engine::{LakeEngine, ProjectionView};
 use lakelands_api::error::{Seam, Situation};
@@ -501,16 +502,15 @@ pub fn compose(version: &DataKey, apart: &[DataKey]) -> DataKey {
     if apart.is_empty() {
         return version.clone();
     }
-    let mac = |k: &[u8], parts: &[&[u8]]| {
-        let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(k).expect("HMAC takes any key");
-        parts.iter().for_each(|p| m.update(p));
-        Zeroizing::new(<[u8; 32]>::from(m.finalize().into_bytes()))
-    };
-    let ikm: Vec<&[u8]> = std::iter::once(&version.0[..])
-        .chain(apart.iter().map(|k| &k.0[..]))
-        .collect();
-    let prk = mac(&[0; 32], &ikm);
-    DataKey(*mac(&*prk, &[b"lakelands:apart:v1".as_slice(), &[1]]))
+    let mut ikm = HkdfExtract::<Sha256>::new(None);
+    std::iter::once(version)
+        .chain(apart)
+        .for_each(|k| ikm.input_ikm(&k.0));
+    let mut key = Zeroizing::new([0; 32]);
+    (ikm.finalize().1)
+        .expand(b"lakelands:apart:v1", &mut *key)
+        .expect("HKDF gives 32 bytes");
+    DataKey(*key)
 }
 
 /// The store's own seam under which the fold keeps the sources the log
@@ -831,17 +831,13 @@ pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
 /// `lakelands:output:v1`), so no digest of plaintext enters the log and
 /// none links to a value once the key is gone.
 pub fn digest(key: &DataKey, call: &Value) -> Digest {
-    let mac = |k: &[u8], parts: &[&[u8]]| {
-        let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(k).expect("HMAC takes any key");
-        parts.iter().for_each(|p| m.update(p));
-        Zeroizing::new(<[u8; 32]>::from(m.finalize().into_bytes()))
-    };
-    let prk = mac(&[0; 32], &[&key.0]);
-    let derived = mac(&*prk, &[b"lakelands:output:v1".as_slice(), &[1]]);
-    Digest(canonical::hex(&*mac(
-        &*derived,
-        &[&canonical::to_vec(call)],
-    )))
+    let mut derived = Zeroizing::new([0; 32]);
+    (Hkdf::<Sha256>::new(None, &key.0))
+        .expand(b"lakelands:output:v1", &mut *derived)
+        .expect("HKDF gives 32 bytes");
+    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&*derived).expect("HMAC takes any key");
+    m.update(&canonical::to_vec(call));
+    Digest(canonical::hex(&m.finalize().into_bytes()))
 }
 
 #[cfg(test)]
