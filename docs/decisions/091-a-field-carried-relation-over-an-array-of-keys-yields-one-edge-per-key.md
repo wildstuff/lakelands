@@ -12,13 +12,16 @@ at all. A host that keeps a list of other records' keys in one field (a
 type that implements several others, a node derived from several
 sources, a learning that cites several earlier ones) walks none of them.
 
-This record needs no log form, no format step and no engine work. The
-edges of a `via` relation are not in the log: every engine derives them
-from the head states and the states at a position, with one function
-(`docs/decisions/031-engines-share-one-rulebook.md`). It extends
+This record needs no log form and no format step. The edges of a `via`
+relation are not in the log: every engine derives them from the head
+states and the states at a position, with one function
+(`docs/decisions/031-engines-share-one-rulebook.md`). The SQLite and
+PostgreSQL engines raise their projection layouts, so that a lake
+0.20.0 left is rebuilt before it answers. It extends
 `docs/decisions/039-a-source-is-retracted-as-one.md`, whose purge report
 counts a reference, and comes into force with the build, which rewrites
-that section where it stands.
+that section where it stands. One question is left to the operator, at
+the end of "What is decided".
 
 ### An array of keys yields one edge per distinct key
 
@@ -67,7 +70,7 @@ A relation's `cardinality` is not judged for a `via` relation, as today:
 a host declares such a relation `one_to_many` or `many_to_many`, and
 `describe` tells it as declared.
 
-### Every reader sees the same edges, and the build changes two places
+### Every reader sees the same edges, and the build changes these places
 
 1. `lakelands_core::engines::links_of`: the field's value is read as one
    key or as an array's distinct string elements, by one function beside
@@ -76,6 +79,10 @@ a host declares such a relation `one_to_many` or `many_to_many`, and
    record counts toward a relation where its `via` field names a purged
    record, alone or as any element, and a record is counted once,
    however many of its keys the purge takes (039 as extended).
+3. The SQLite and PostgreSQL projection layouts (`LAYOUT`, 7 → 8 and
+   9 → 10), below.
+4. The doc of `RelationDecl::via` in `lakelands-api`, which says the
+   field holds a key or an array of keys.
 
 Everything else reads through `links_of` and does not change:
 - the edges each engine keeps for the head: the SQLite and PostgreSQL
@@ -118,24 +125,60 @@ type and key, links by their ends, and no element's place enters either.
 `describe` tells the relation and its `via` field as now. There is no
 WIT change, no catalog change and no new refusal.
 
-### A lake upgraded from format 20 is back-filled by `rebuild`
+### A lake 0.20.0 left is rebuilt by its first writer's open
 
 0.21.0 derives array edges from every state, whatever the format of the
-event that wrote it. An upgrade from format 20 rewrites nothing and
-rebuilds nothing: the 20 → 21 step of `docs/log-format.md` §6 stays as
-it stands, since the fold does not change, and neither engine's
-projection layout moves.
+event that wrote it. The log is rewritten for none of it, and the 20 →
+21 step of `docs/log-format.md` §6 changes no fold. But the edges table
+of a SQLite or PostgreSQL projection that 0.20.0 made holds no edge of
+an array, and each engine answers the head from that table and an
+earlier position through `links_of`. Read as it stands, such a lake
+would answer a walk at the head without an array's edges, and a read as
+of the position before, a rebuild and the purge report with them: a
+projection that differs from its replay, which
+`docs/decisions/001-the-log-is-the-truth.md` calls a bug.
 
-So on a SQLite or PostgreSQL lake upgraded in place, a record whose
-array was written before the upgrade and not since has no edge in the
-head's `edges` table: a walk at the head answers none of its array
-edges, while a read at an earlier position, which derives them from the
-state, and the purge report, which reads the field, do.
-`lakelands rebuild` (or a host's open with `OpenMode::Rebuild`)
-back-fills them, and writing the record again fills its own. A memory lake does not
-outlive its process, and an import replays, so neither has this window.
-`docs/hosting.md`'s notes on upgrading to 0.21.0 say it in one
-sentence. No host lake is known to hold such an array.
+So both engines raise their projection layout: SQLite 7 → 8,
+PostgreSQL 9 → 10, each unchanged since 0.20.0. That is the layout's own
+rule: it is raised whenever a table changes so that a projection made
+before would answer wrongly, not fail. A projection of the layout before
+is not read. A reader's open is refused `projection_layout`, and the
+first writer's open of 0.21.0 rebuilds it from the log under its lease
+and says why, as for any layout step (`docs/hosting.md`, "A projection is
+read only by the layout that made it"). On PostgreSQL the same open
+first converts the log's columns, as
+`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`
+decides. `lakelands build-ahead` with 0.21.0, run while 0.20.0 still
+serves the lake, folds the log beside the projection, so that the open
+folds only the tail
+(`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`). A
+memory lake does not outlive its process, and an import replays, so
+neither needs it. `docs/hosting.md` names 0.21.0 beside 0.16.0 as a
+release whose first writer's open rebuilds the projection, and
+`docs/log-format.md` §6's 20 → 21 line says that the projection is
+rebuilt by the layout, not by the step.
+
+### The one open question: a rebuild at the upgrade
+
+The plan the operator accepted with lakelands#1551 says the upgrade
+rebuilds nothing, and a host runs `rebuild` to back-fill a lake that
+holds arrays already. This record departs from that, for 001: until the
+host runs that rebuild, a lake upgraded in place answers its head
+otherwise than its own replay, and nothing tells the host so. The host
+that asked for this declares such relations, so its lakes are the
+likeliest to hold arrays already.
+
+**Recommended: raise the layouts, as above.** The rebuild's pause is
+what any layout step costs: about 8 s per 100 000 records on SQLite and
+47 s on PostgreSQL, or about 0.1 s after a build ahead.
+
+**If the operator holds to no rebuild,** the layouts stay. The gap is
+then a named exception to 001, stated in 001 and here: on a lake
+upgraded in place, an array written before the upgrade and not since
+has no edge at the head until `lakelands rebuild` runs or the record is
+written again. `docs/hosting.md`'s list "A lake outlives a release"
+says so, and the upgrade checks below open the lake and then run
+`rebuild` instead of relying on the open.
 
 ## Why
 
@@ -145,14 +188,17 @@ learning may sit where this lake never holds it. One edge per element on
 the path the field already carries is what the host needs, and nothing
 else moves: no migration, no second carrier, no write road kept in step.
 
-**It keeps 002.** `docs/decisions/002-determinism-is-the-boundary.md`
-asks that a replay reproduce what the writes gave. The edges are no
+**It keeps 001 and 002.** `docs/decisions/002-determinism-is-the-boundary.md`
+asks that a replay reproduce what the writes gave, and 001 that a
+projection be its replay. The edges are no
 event and no fold state; they are the rulebook's reading of a state the
 log determines. A write under 0.21.0 and a replay under 0.21.0 fold the
 same state and read the same edges from it, so every lake 0.21.0 wrote,
 or imported, answers the same edges live, after a rebuild and after a
 reopen (Check 1). Nothing recorded depends on them (above), so a rebuild
-changes the edges index and no event or record.
+changes the edges index and no event or record. A lake 0.20.0 left has
+its projection rebuilt before it answers (the layouts, above, and
+Check 6).
 
 **Array edges are derived for states of format 20 and before on a
 replay.** A field holds a JSON array the same way in format 20 and 21,
@@ -163,8 +209,7 @@ and every read at a position ask the format of each record's last write,
 code for a difference nobody reads. And it would leave `rebuild` unable
 to back-fill. What a projection held before the upgrade is the earlier
 release's reading, which `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`
-already leaves to the engine and a rebuild
-(`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`).
+leaves to the engine, and the layout makes the engine rebuild it.
 
 ## Rejected
 
@@ -172,11 +217,15 @@ already leaves to the engine and a rebuild
   relation's carrier (`carrier_changed`), a link write refuses a key with
   no record behind it, and the field and the links would hold each edge
   twice, every write road keeping them in step (lakelands#1551).
-- **Rebuilding at the upgrade.** Raising the SQLite and PostgreSQL
-  layouts would have the first writer's open of 0.21.0 rebuild every
-  lake (about 8 s per 100 000 records on SQLite, 47 s on PostgreSQL) to
-  back-fill a field no known lake holds. The host that needs it runs
-  `rebuild`.
+- **A format gate.** Deriving no array edge from a state of format 20
+  or before would keep an upgraded lake equal to its replay without a
+  rebuild. But the gate would hold forever: two records with the same
+  field would link differently, and every derivation would need the
+  format of each record's last write (Why).
+- **A rebuild only where a `json` field carries a relation.** The open
+  could look at the ontology and rebuild only then. That is a second
+  trigger for a rebuild beside the layout, to save a pause that a build
+  ahead already makes short.
 - **Refusing more than one key on a to-one relation.** The store judges
   no `via` relation's cardinality today, on either side. Judging it for
   arrays alone would refuse the host's writes on profiles already
@@ -231,6 +280,21 @@ the relation `cites` to `learning`, `many_to_many`.
    reports `x`, whose array names both, once under `cites`, and does not
    report a record whose array names neither.
 
+6. Per engine, beside the other older-layout rows (SQLite's and
+   PostgreSQL's `older_layout.rs`):
+   `a_lake_0_20_0_left_holding_an_array_answers_its_edges_after_the_first_writers_open`.
+   The test makes a lake with `x` citing `["a", "b"]` and `y` citing `"a"`,
+   then takes it back to what 0.20.0 left: the projection one layout
+   back, its edges table holding `y`'s edge and none of `x`'s, and, on
+   PostgreSQL, its log as 086's row takes it back. A reader's open is
+   refused `projection_layout`, naming both layouts. The first writer's
+   open rebuilds and says why. A walk at the head out of `x`, and into
+   `a` and `b`, then answers the array's edges, the same bytes as a read
+   as of the position before the open and as after `rebuild`. The next
+   writer's open rebuilds nothing. Planted: with the layout left as it
+   was, the walk at the head answers without `x`'s edges, and the test
+   is red.
+
 Unit rows beside `src/`: the function that answers a value's keys, at
 a string, an array with every kind of element and a repeat, an empty
 array and a value of each other kind.
@@ -244,24 +308,33 @@ not move.
 - **Product (core crates), est.: +20 to +50.** `lakelands-core`: the
   keys of a value and `links_of` over them, with the module doc, about
   +15 to +35; `lakelands-store`: the purge report's test, about +5 to
-  +10; `lakelands-api`: the doc of `RelationDecl::via`, about +2 to +5.
-- **Specification (core crates), est.: +320 to +490**, the five checks
-  and the unit rows.
-- **Outside the core:** the sentence in `docs/hosting.md`, and the
-  regenerated `docs/conformance.md`.
-- **Budget rows.** Core product stands at 94 202 of its 94 500 ceiling,
-  and 090's build (+350 to +500, decision record 090 on lakelands#1550)
-  takes it to at most 94 702 under the 95 000 its own row sets; this
-  build's top leaves it at 94 752. It needs no product row. Core
-  specification stands at 173 692, and 090's build (+450 to +650) takes
-  it to at most 174 342 under the 174 500 its row sets; this build's top
-  takes it to 174 832. It needs a specification row of +500: 174 500 →
-  175 000, where 090's build lands first, as 0.21.0's order expects;
-  where this build lands first, the row is 174 000 → 174 500 and 090's
-  moves up by the same. The checks pin the integrity of the answers
-  every engine gives, by the rule of
+  +10; `lakelands-api`: the doc of `RelationDecl::via`, about +2 to +5;
+  the two engines: each `LAYOUT` raised, no line added.
+- **Specification (core crates), est.: +500 to +730**: the five checks
+  and the unit rows, +320 to +490, and Check 6 on two engines, +180 to
+  +240.
+- **Outside the core:** the sentences in `docs/hosting.md` and
+  `docs/log-format.md` §6, and the regenerated `docs/conformance.md`.
+- **Budget rows.** 090 is decided on lakelands#1549 and merged as a
+  record; its build is open, and its cost section sets a product row
+  94 500 → 95 000 and a specification row 174 000 → 174 500, each over
+  the ceiling that 089's build left. Core product stands at 94 202 of
+  94 500. 090's build at its top (+500) takes it to 94 702, under its
+  own row's 95 000, and this build's top to 94 752. **It needs no
+  product row.** Core specification stands at 173 692 of 174 000. 090's
+  build at its top (+650) takes it to 174 342, under its row's
+  174 500, and this build's top to 175 072. **It needs one
+  specification row of +1 000: 174 500 → 175 500**, which holds that
+  top, where 090's build lands first, as 0.21.0's order expects. Where
+  this build lands first, its row is 174 000 → 174 500, which holds
+  174 422, and 090's becomes 174 500 → 175 500. The checks pin the integrity of the answers every engine
+  gives and of a lake across its upgrade, by the rule of
   `docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md`.
 
 ## How it came to be
 
 - Proposed on lakelands#1551, for 0.21.0.
+- Review: a projection that 0.20.0 laid out would answer its head
+  otherwise than its replay. The engines raise their layouts so that
+  the first writer's open rebuilds it, an upgrade check pins that, and
+  the departure from the plan is the one open question.
