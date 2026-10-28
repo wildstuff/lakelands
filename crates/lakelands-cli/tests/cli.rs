@@ -2296,6 +2296,64 @@ fn backup_grows_its_directory_and_restore_makes_the_lake_with_its_keys() {
         "{}",
         check.out
     );
+    // A backup whose last event's `id` is upper-case hex, its hash made
+    // right, chains; `restore --check` refuses it at that position, as a
+    // restore does.
+    let odd = from.root.join("odd-backup");
+    fs::create_dir_all(odd.join("log")).unwrap();
+    for file in fs::read_dir(format!("{dir}/log")).unwrap() {
+        let file = file.unwrap().path();
+        fs::copy(&file, odd.join("log").join(file.file_name().unwrap())).unwrap();
+    }
+    let segment = fs::read_dir(odd.join("log"))
+        .unwrap()
+        .last()
+        .unwrap()
+        .unwrap();
+    let text = fs::read_to_string(segment.path()).unwrap();
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    // The hash is of the event a line restores to (log-format §1.2).
+    let (mut replay, mut before, mut event) = (lakelands_core::log::Lines::default(), None, None);
+    for line in &lines {
+        let value = lakelands_core::log::line_of(line.as_bytes()).unwrap();
+        let after = before
+            .as_ref()
+            .map(|(p, h): &(lakelands_api::Position, String)| (*p, h));
+        let after = after.map(|(p, h)| (p, lakelands_api::event::Digest(h.clone())));
+        let restored = replay.line(value, after.as_ref().map(|(p, h)| (*p, h)));
+        if let Some((value, _)) = restored.unwrap() {
+            before = Some((
+                lakelands_api::Position(value["position"].as_u64().unwrap()),
+                value["hash"].as_str().unwrap().to_owned(),
+            ));
+            event = Some(value);
+        }
+    }
+    let mut event = event.unwrap();
+    event["id"] = event["id"].as_str().unwrap().to_uppercase().into();
+    event.as_object_mut().unwrap().remove("hash");
+    let hash = lakelands_core::canonical::sha256_hex(&event);
+    let mut last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+    last["id"] = event["id"].clone();
+    last["hash"] = hash.into();
+    let last = String::from_utf8(lakelands_core::canonical::to_vec(&last)).unwrap();
+    *lines.last_mut().unwrap() = last;
+    fs::write(segment.path(), lines.join("\n") + "\n").unwrap();
+    let odd = odd.display().to_string();
+    let refused = from.run(&["restore", &odd, "--check"]);
+    let position = format!("damaged at position {now}: its `id` is not 32 lower-case hex");
+    assert_eq!(
+        (refused.code, refused.err.as_str()),
+        (1, ""),
+        "{}",
+        refused.err
+    );
+    assert!(refused.out.contains(&position), "{}", refused.out);
+    assert!(
+        refused.out.contains("the backup is damaged"),
+        "{}",
+        refused.out
+    );
 
     let to = Shell::on("backup-to", Backend::Store);
     to.lake();

@@ -740,7 +740,7 @@ async fn dispatch(
                 engines: engines(),
                 ..root.seams()
             };
-            let imported = commands::import(out, location, seams, &dir).await;
+            let imported = commands::import(out, location, seams, &dir, name == "restore").await;
             if let (Err(_), Some(keyring)) = (&imported, put_back) {
                 keyring.unrestore(&lake)?;
             }
@@ -941,7 +941,12 @@ async fn dispatch(
 fn restore_check(sub: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
     use lakelands_api::error::Situation;
     let dir = PathBuf::from(sub.get_one::<String>("dir").map_or("", String::as_str));
-    let (code, line) = match lakelands_core::export::verify(&dir) {
+    let checked = lakelands_core::export::verify(&dir).and_then(|v| {
+        let lake = commands::exported_lake(&dir).unwrap_or_default();
+        let lake = lakelands_api::LakeId::from(lake);
+        lakelands_store::check_events(&dir, &lake).map(|()| v)
+    });
+    let (code, line) = match checked {
         Ok(v) => (
             0,
             format!(
@@ -958,7 +963,13 @@ fn restore_check(sub: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write) -> 
             let todo = "  what to do: restore from another backup; nothing was changed";
             (
                 1,
-                format!("the backup in {}: {situation}\n{todo}", dir.display()),
+                format!(
+                    "the backup in {}: {}\n{todo}",
+                    dir.display(),
+                    situation
+                        .to_string()
+                        .replacen("the export", "the backup", 1)
+                ),
             )
         }
         Err(e) => {

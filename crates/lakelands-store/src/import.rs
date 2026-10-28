@@ -252,6 +252,28 @@ fn check(
     lake: &LakeId,
     keys: Option<&dyn lakelands_api::seam::KeyStore>,
 ) -> Result<Vec<Digest>> {
+    let (digests, needed) = scan(files, lake)?;
+    for (source, key) in needed {
+        let Some(keys) = keys else {
+            return Err(Error::unbound(lakelands_api::error::Seam::KeyStore));
+        };
+        if keys.key(lake, &source, &key)?.is_none() {
+            return Err(Error::unavailable(Situation::KeyMissing { source, key }));
+        }
+    }
+    Ok(digests)
+}
+
+/// Every event in the export in `dir` checked as an import checks it, for
+/// `lake`, without a key store: what `restore --check` runs after `verify`.
+pub fn check_events(dir: &Path, lake: &LakeId) -> Result<()> {
+    scan(&lakelands_core::export::segment_files(dir)?, lake).map(drop)
+}
+
+type Needed = BTreeSet<(SourceId, lakelands_api::id::KeyId)>;
+
+/// Each file's digest, and the keys the export's sealed values need.
+fn scan(files: &[PathBuf], lake: &LakeId) -> Result<(Vec<Digest>, Needed)> {
     let (mut sealed, mut forgot, mut shredded) =
         (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     let mut fence = 0;
@@ -323,15 +345,7 @@ fn check(
     let needed: BTreeSet<_> = (sealed.into_iter().filter(kept))
         .flat_map(|(s, ks)| ks.into_iter().map(move |k| (s.clone(), k)))
         .collect();
-    for (source, key) in needed {
-        let Some(keys) = keys else {
-            return Err(Error::unbound(lakelands_api::error::Seam::KeyStore));
-        };
-        if keys.key(lake, &source, &key)?.is_none() {
-            return Err(Error::unavailable(Situation::KeyMissing { source, key }));
-        }
-    }
-    Ok(digests)
+    Ok((digests, needed))
 }
 
 /// Import the export in `dir` as a new lake at `location` (module doc).
