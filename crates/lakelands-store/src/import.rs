@@ -264,15 +264,12 @@ fn check(
     Ok(digests)
 }
 
-/// The checks on each event that need no key store, as `restore --check`
-/// runs them: the export in `dir` verified, and every event checked as an
-/// import checks it, for the lake `lake`.
+/// Every event in the export in `dir` checked as an import checks it, for
+/// `lake`, without a key store: what `restore --check` runs after `verify`.
 pub fn check_events(dir: &Path, lake: &LakeId) -> Result<()> {
-    lakelands_core::export::verify(dir)?;
     scan(&lakelands_core::export::segment_files(dir)?, lake).map(drop)
 }
 
-/// The keys an export's sealed values need, by source.
 type Needed = BTreeSet<(SourceId, lakelands_api::id::KeyId)>;
 
 /// Each file's digest, and the keys the export's sealed values need.

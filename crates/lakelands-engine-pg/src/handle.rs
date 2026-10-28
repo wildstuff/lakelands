@@ -657,9 +657,6 @@ fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
         .get(0);
     let lease_table = tables.iter().any(|t| t == "lease");
     let read = columns == if lease_table { 6 } else { 3 };
-    // Tables this build does not know are a later release's where its
-    // log's newest event says a format after this release's: the open
-    // then refuses the format, which names what the operator needs.
     let mut later = || {
         let newest = format!(
             "SELECT bytes FROM {}.log ORDER BY position DESC LIMIT 1",
