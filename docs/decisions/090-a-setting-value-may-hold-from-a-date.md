@@ -68,9 +68,13 @@ the projection stays. A lake needs no rewrite.
 **What a format-21 event carries.** A period is carried by the
 `record_upserted` of `sys.setting` that the write appends. Its fields
 hold `periods` whole, as the store resolved it (below), and never the
-write members `from` or `period`. A reader refuses the following in a
-log of a format before 21, naming the format:
+write members `from` or `period`. A proposed write is the one other
+place: the `write_proposed` event's patch keeps `from` or `period` as
+written, until its accept resolves it (below). A reader refuses the
+following in a log of a format before 21, naming the format:
 - `periods` on a write of `sys.setting`;
+- `from` or `period` in the patch of a `write_proposed` of
+  `sys.setting`;
 - an expression in a `declared` that calls `setting` with two arguments.
 
 ### `setting('key', at)` reads the value in force on a date
@@ -204,7 +208,8 @@ before.
 There is no new door, no new facade method and no new event kind. A
 write of a period is an upsert of `sys.setting`, and its patch carries
 one of two *write members* beside `key` and `value`. The store reads
-them and never stores them:
+them and never stores them on the record; only a proposal's event keeps
+them, as written (Proposals, below):
 
 - **`from: "<date>"` adds a period.** `value` holds from that date until
   the next period, or from then on. The store writes the record's list
@@ -242,6 +247,9 @@ appends nothing:
 |---|---|---|
 | `setting_period_undeclared` | — | only a setting a host declares holds a value from a date |
 | `setting_period_first` | — | a setting's first value holds from the start; write it without `from` |
+
+`setting_period_first` answers `from` on a key with no live record: one
+never written, or retired.
 | `setting_period_held` | `from` (String) | a value already holds from {from}; correct it with `period` |
 | `setting_period_unknown` | `period` (String) | no value of this setting holds from {period}; name `start` or a date one holds from |
 | `setting_periods_named` | — | it holds values from dates; name the one to correct with `period`, `start` for the first, or the date a new one holds from with `from` |
@@ -260,15 +268,22 @@ Two cases are not refusals of a write. They are the expression's
 **Grants.** Each write is judged as any write of `sys.setting` is: by
 the grant on the type, by `only` on its group (063) and by field rights
 on the fields the resolved patch touches (`periods` for a dated period,
-`value` for `start`). Suppose a writer is not told the setting's
+`value` for `start`). This changes what today's grants admit: a
+`periods` field is new, so a grant whose field rights list `value` and
+not `periods` corrects the first value and is refused an add or a
+correction of a dated period, until its holder lists `periods` too. A
+grant with no field rights admits both, as it admits `value` today. Suppose a writer is not told the setting's
 declaration, as a holder of another group is not. It is answered
 `setting_period_undeclared`, whatever it names, as 063 answers it for a
 key nobody declared, so a group guessed right or wrong tells it
 nothing.
 
-**Proposals.** A proposed write keeps `from` or `period` as written. It
+**Proposals.** A proposed write keeps `from` or `period` as written,
+in the patch of its `write_proposed` event: a format-21 form (above). It
 is listed as written and resolved at its accept, against the head
-there.
+there. A pinned proposal's accept is refused once the record changed
+after it, as for any pinned proposal, so only an unpinned one is
+resolved after another write.
 
 **History.** Each write is one `record_upserted`. The record's history
 and a read as of a position tell each list and value, and nothing is
@@ -381,9 +396,10 @@ between the record's two lists.
   - Appendix A, the `setting` declaration's row: its records carry
     `periods` from format 21.
   - Appendix B: `setting` takes one or two arguments.
-  - §6, the step 20 → 21: `periods` on `sys.setting`, the declaration of
-    `sys.setting` one version on at a writer's open, and `setting` with
-    two arguments.
+  - §6, the step 20 → 21: `periods` on `sys.setting`, `from` and
+    `period` in the patch of a `write_proposed` of `sys.setting`, the
+    declaration of `sys.setting` one version on at a writer's open, and
+    `setting` with two arguments.
   - The format-21 vector: a dated setting, its correction, and a
     derived field that reads it with `at`. Where the vector needs a
     reader of its own, it joins lakelands#1534.
@@ -464,10 +480,12 @@ clock's day of every write the suite makes inside one known period.
 1. `settings::SETTING_AT_A_DATE`: the case of lakelands#1549. A
    declared `vat_rate` (`decimal`) holds 0.16 and, from `2026-07-01`,
    0.19, and `invoice` derives `vat = net * setting('vat_rate',
-   supplied_on)`. Invoices supplied on `2026-06-30` and `2026-07-01`
-   hold 16 and 19 on 100, whether written before the period was added
-   or after. A `date_time` `at` of `2026-06-30T23:59:59Z` reads 0.16. A
-   rebuild and a reopen answer the same.
+   supplied_on)`. Invoices supplied on `2026-06-30` and `2026-07-01`,
+   written after the period was added, or written again after it, hold
+   16 and 19 on 100. One supplied on `2026-07-01` and written before the
+   period was added keeps 16 until it is written again (Check 5). A
+   `date_time` `at` of `2026-06-30T23:59:59Z` reads 0.16. A rebuild and
+   a reopen answer the same.
 2. `settings::SETTING_ON_THE_CLOCK`: `rate` holds 1, 2 from
    `2000-01-01` and 3 from `9000-01-01`. A derived field written now
    reads 2. A `find` whose `where` reads `setting('rate')` answers by 1
@@ -496,8 +514,9 @@ clock's day of every write the suite makes inside one known period.
    on a held date, `period` on an unknown date, an undated write on a
    dated record, a patch naming `periods`, both members, and `from` on
    `sort_index.<type>` and on an undeclared key. A first value and a
-   period in one batch land. A proposed add is resolved at its accept,
-   after another add.
+   period in one batch land. An unpinned proposed add is resolved at
+   its accept, after another add; a pinned one is refused there, as any
+   pinned proposal whose record changed.
 7. `host_settings::HOST_SETTING_PERIOD_GRANTS`: a holder of `only
    {group: finance}` on `sys.setting` adds and corrects a period of a
    `finance` setting. For an `operator` setting, it is answered
@@ -516,8 +535,10 @@ clock's day of every write the suite makes inside one known period.
    are refused the same way. A view reading `setting('rate', d)` is kept
    and moves at each add.
 10. `export::SETTING_PERIODS_FROM_21`: a reader refuses `periods` on a
-    `sys.setting` write of format 20, and a `declared` of format 20 that
-    calls `setting` with two arguments, naming the format. The format-21
+    `sys.setting` write of format 20, `from` or `period` in the patch of
+    a `write_proposed` of `sys.setting` of format 20, and a `declared` of
+    format 20 that calls `setting` with two arguments, naming the
+    format. The format-21
     vector carries a dated setting, its correction and a derived field
     reading it with `at`.
 
