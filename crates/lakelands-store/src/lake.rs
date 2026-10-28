@@ -278,8 +278,9 @@ pub struct Lake {
     /// The shapes reads were answered with or a declaring append left, at
     /// most two, each with the positions it holds for: no event among them
     /// ends a range ([`ends_a_range`]). One a declaring append left is
-    /// built at the first read of its position. The lock is held to find
-    /// or put one, never across a build or a read.
+    /// built at the first read of its position. Beside them, where the
+    /// last event that ends a range stands (`ended`, [`Shapes`]). The lock
+    /// is held to find or put one, never across a build or a read.
     shapes: Mutex<Shapes>,
     /// Moved when a rebuild begins and when it ends: a shape built across
     /// either read a projection cleared or half folded, and is not kept.
@@ -862,8 +863,9 @@ impl Lake {
             self.unleased();
         }
         // The head's shape, and where the last event that ends a range
-        // stands, so that a read behind the head finds it; one that cannot
-        // be built is left to the first read, which answers why.
+        // stands, at every catch-up (an open, a lease retaken, a take-over,
+        // a rebuild swapped in), so that a read behind the head finds it;
+        // one that cannot be built is left to the first read, which answers why.
         if let Ok(view) = self.engine.view(None) {
             let _ = self.shape(view.as_ref());
         }

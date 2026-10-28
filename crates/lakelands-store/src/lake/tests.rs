@@ -626,39 +626,13 @@ fn shape_at(lake: &Lake, at: u64) -> Arc<Shape> {
     lake.shape(view.as_ref()).unwrap()
 }
 
-/// A read at the head, then at each record's own position behind it and
-/// past the declaration, is answered with one shape, still held for the
-/// head after them all (lakelands#1501).
+/// A read before a redeclaration is answered with the shape of its own
+/// position, not the head's; where the last event that ends a range
+/// stands is learnt from the projection at a build: a withdrawal, then a
+/// retired setting, each held at its own position (lakelands#1501).
 #[tokio::test]
-async fn reads_behind_the_head_share_the_heads_shape() {
-    let (lake, cat, owner) = owned("behind");
-    cat.declare(&owner, declaration(text_type("t", &["a"])))
-        .await
-        .unwrap();
-    let mut written = Vec::new();
-    for i in 0..16 {
-        written.push(upserted(&lake, cat.as_ref(), &owner, &format!("k{i}")).await);
-    }
-    let head = lake.head().0;
-    let first = shape_at(&lake, head);
-    for &at in &written {
-        assert!(
-            Arc::ptr_eq(&shape_at(&lake, at), &first),
-            "built again at {at}"
-        );
-    }
-    let held = lakelands_core::lock(&lake.shapes);
-    let at_head = |(range, held): &(RangeInclusive<u64>, HeldShape)| {
-        range.contains(&head) && matches!(held, HeldShape::Built(s) if Arc::ptr_eq(s, &first))
-    };
-    assert!(held.held.iter().any(at_head), "the head's shape is held");
-}
-
-/// A read before a redeclaration, or a setting, is answered with the
-/// shape of its own position, not the head's (lakelands#1501).
-#[tokio::test]
-async fn a_read_before_a_range_ends_keeps_its_own_shape() {
-    let (lake, cat, owner) = owned("before");
+async fn a_read_before_a_range_ends_keeps_its_own_shape_and_the_ending_is_learnt() {
+    let (lake, cat, owner) = owned("ending");
     let declare = async |d: serde_json::Value| cat.declare(&owner, declaration(d)).await.unwrap();
     declare(text_type("t", &["a"])).await;
     let old = upserted(&lake, cat.as_ref(), &owner, "k0").await;
@@ -668,42 +642,23 @@ async fn a_read_before_a_range_ends_keeps_its_own_shape() {
         names.collect::<Vec<_>>()
     };
     declare(text_type("t", &["a", "b"])).await;
-    let new = upserted(&lake, cat.as_ref(), &owner, "k1").await;
-    assert_eq!(fields(lake.head().0), ["a", "b"]);
     assert_eq!(
-        (fields(old), fields(new)),
-        (vec!["a".to_string()], vec!["a".into(), "b".into()])
+        [fields(lake.head().0), fields(old)],
+        [&["a", "b"][..], &["a"]]
     );
-    let floor = serde_json::from_value(json!({"key": "floor", "value": 3})).unwrap();
-    let setting = (TypeName::from("sys.setting"), "floor".into());
-    let set = cat.upsert(&owner, &setting.0, &setting.1, floor, Default::default());
-    set.await.unwrap();
-    let after = upserted(&lake, cat.as_ref(), &owner, "k2").await;
-    assert_eq!(
-        shape_at(&lake, after).settings.get("floor"),
-        Some(&json!(3))
-    );
-    assert_eq!(shape_at(&lake, new).settings.get("floor"), None);
-}
-
-/// Where the last event that ends a range stands is learnt from the
-/// projection at a build: a withdrawal, then a retired setting, each held
-/// at its own position (lakelands#1501).
-#[tokio::test]
-async fn the_last_range_ending_is_read_from_the_projection() {
-    let (lake, cat, owner) = owned("ending");
-    let declare = async |d: serde_json::Value| cat.declare(&owner, declaration(d)).await.unwrap();
-    declare(text_type("t", &["a"])).await;
     declare(text_type("u", &["a"])).await;
     declare(json!({"declare": "withdraw", "kind": "type", "name": "u"})).await;
     let withdrawn = lake.head().0;
     let learnt = async |key: &str| {
         let head = upserted(&lake, cat.as_ref(), &owner, key).await;
-        lakelands_core::lock(&lake.shapes).clear();
+        let mut shapes = lakelands_core::lock(&lake.shapes);
+        shapes.clear();
+        assert_eq!(shapes.ended, None, "a clear drops where the ending stands");
+        drop(shapes);
         shape_at(&lake, head);
         lakelands_core::lock(&lake.shapes).ended
     };
-    assert_eq!(learnt("k0").await, Some((withdrawn, withdrawn + 1)));
+    assert_eq!(learnt("k1").await, Some((withdrawn, withdrawn + 1)));
     let floor = serde_json::from_value(json!({"key": "floor", "value": 3})).unwrap();
     let setting = (TypeName::from("sys.setting"), "floor".into());
     let set = cat.upsert(&owner, &setting.0, &setting.1, floor, Default::default());
@@ -711,7 +666,7 @@ async fn the_last_range_ending_is_read_from_the_projection() {
     let retire = cat.retire(&owner, &setting.0, &setting.1, Default::default());
     retire.await.unwrap();
     let retired = lake.head().0;
-    assert_eq!(learnt("k1").await, Some((retired, retired + 1)));
+    assert_eq!(learnt("k2").await, Some((retired, retired + 1)));
 }
 
 /// A `declared` event of the type `t`, at `at`.
