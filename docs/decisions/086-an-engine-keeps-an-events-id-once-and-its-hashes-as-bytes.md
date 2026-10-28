@@ -2,9 +2,8 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1517 and lakelands#1518, for 0.21.0, with
-format 21 (lakelands#1502); the operator reviews it on the issues, and
-merging does not accept it. It amends
+Decided on lakelands#1517 and lakelands#1518 by the operator
+(2026-10-28), for 0.21.0, with format 21 (lakelands#1502). It amends
 `docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`,
 whose index line names `id` empty;
 `docs/decisions/038-a-lake-in-postgresql.md`, whose log keeps `id`,
@@ -170,16 +169,18 @@ writer's open of 0.21.0 on PostgreSQL takes as long as the rewrite, which
   room for 1 000 000 events. The table under Why is rewritten with what
   was measured.
 
-### Left to the review
+### Decided with it, and left to the build
 
-- **An id that is not of its form.** The store makes every id, `prev`
-  and `hash` in lower-case hex, and checks `prev` and `hash` where it
-  reads them, but not `id`: an import of a log another writer made may
-  hold one of another form. PostgreSQL could not keep it as bytes (or
-  would hand back another case). Proposed: the conversion first looks
-  for such an id and refuses, naming its position, leaving the lake as
-  it was; whether the store's read should also hold `id` to §3's form,
-  which adds a flaw to `docs/refusals.md`, is the operator's.
+- **An id that is not of its form** (decided by the operator,
+  2026-10-28). The store makes every id, `prev` and `hash` in
+  lower-case hex, and checks `prev` and `hash` where it reads them, but
+  not `id`: an import of a log another writer made may hold one of
+  another form, which PostgreSQL could not keep as bytes. The
+  conversion first looks for such an id and refuses, naming its
+  position, leaving the lake as it was. An import holds every event's
+  `id` to §3's form on every engine and refuses one that is not, naming
+  its position: a new flaw in `docs/refusals.md`. A read does not
+  check it.
 - **How SQLite finds `id` in a line.** The member after the top-level
   `hash`, whose value the index holds, or a parse of the line; the
   store's `disagrees` catches a wrong one either way. The build measures

@@ -2,8 +2,7 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1528, for 0.21.0; the operator reviews it on
-the issue, and merging does not accept it. It needs no log format of its
+Decided on lakelands#1528 by the operator (2026-10-28), for 0.21.0. It needs no log format of its
 own and no step: it is written in whatever format 0.21.0 writes. It
 extends `docs/decisions/016-two-write-doors-by-origin.md`, whose stream
 carries a delivery per record as it carries a source per record;
