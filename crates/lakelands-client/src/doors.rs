@@ -86,7 +86,7 @@ impl RemoteCatalog {
 
     /// A statement of the openCypher subset over `POST …/cypher`, with its
     /// parameters beside it and never in its text, read at `at` and from
-    /// `cursor`.
+    /// `cursor`, or enacting the plan `plan_id`.
     pub(crate) async fn cypher(
         &self,
         who: &Principal,
@@ -94,6 +94,7 @@ impl RemoteCatalog {
         params: &Params,
         at: ReadAt,
         cursor: Option<&Cursor>,
+        plan_id: Option<&str>,
     ) -> Result<StatementAnswer> {
         let mut body = members(&at, &[]);
         let o = body.as_object_mut().expect("the axes are an object");
@@ -101,6 +102,9 @@ impl RemoteCatalog {
         o.insert("params".into(), json!(params));
         if let Some(cursor) = cursor {
             o.insert("cursor".into(), json!(cursor));
+        }
+        if let Some(id) = plan_id {
+            o.insert("plan_id".into(), json!(id));
         }
         let call = Call::new(Method::POST, "cypher".into()).json(&body);
         self.go(who, call).await

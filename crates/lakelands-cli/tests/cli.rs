@@ -720,6 +720,55 @@ fn query_runs_an_open_cypher_statement_with_its_params() {
     }
 }
 
+/// `query --cypher` with a write statement: a `MERGE` is written at once,
+/// and a `MATCH … SET` prints its plan with what it would change said,
+/// changes nothing, and is enacted by `--plan` with the plan's id.
+#[test]
+fn query_writes_with_an_open_cypher_statement_and_enacts_a_plan() {
+    for backend in BACKENDS {
+        let sh = Shell::on("query-write", backend);
+        sh.lake();
+        assert_eq!(sh.run(&["apply", &sh.fixture()]).code, 0);
+        let store = sh.lakes.lock().unwrap()["finance"].clone();
+        let merged = "MERGE (i:invoice {key: $key}) SET i.status = $status";
+        let args = ["--param", "key=\"INV-1\"", "--param", "status=\"open\""];
+        let put = sh.run(&[&["query", "--cypher", merged][..], &args].concat());
+        assert_eq!((put.code, put.err.as_str()), (0, ""));
+        let put: serde_json::Value = serde_json::from_str(&put.out).unwrap();
+        assert_eq!(put["outcome"], "applied", "{put}");
+
+        let late = "MATCH (i:invoice) WHERE i.status = $status SET i.status = $to";
+        let p = ["--param", "status=\"open\"", "--param", "to=\"late\""];
+        let head = block_on(store.head()).unwrap();
+        let planned = sh.run(&[&["query", "--cypher", late][..], &p].concat());
+        assert_eq!((planned.code, planned.err.as_str()), (0, ""));
+        let plan: serde_json::Value = serde_json::from_str(&planned.out).unwrap();
+        assert_eq!(plan["data"]["records"]["selected"], 1, "{plan}");
+        let said = plan["said"].as_array().expect("said");
+        assert!(
+            said.iter()
+                .any(|s| s.as_str().unwrap().contains("`status`")),
+            "{plan}"
+        );
+        assert_eq!(block_on(store.head()).unwrap(), head, "a plan appended");
+
+        let id = plan["data"]["report_id"].as_str().unwrap();
+        let enact = [&["query", "--cypher", late][..], &p, &["--plan", id]].concat();
+        let done = sh.run(&enact);
+        assert_eq!((done.code, done.err.as_str()), (0, ""));
+        let done: serde_json::Value = serde_json::from_str(&done.out).unwrap();
+        assert_eq!(done["outcome"], "applied", "{done}");
+        let read = sh.run(&[
+            "query",
+            "--cypher",
+            "MATCH (i:invoice) RETURN i.key, i.status",
+        ]);
+        let read: serde_json::Value = serde_json::from_str(&read.out).unwrap();
+        let want = serde_json::json!([{ "i.key": "INV-1", "i.status": "late" }]);
+        assert_eq!(read["data"]["rows"], want, "{read}");
+    }
+}
+
 #[test]
 fn apply_refuses_a_broken_bundle_whole_naming_every_problem() {
     for backend in BACKENDS {

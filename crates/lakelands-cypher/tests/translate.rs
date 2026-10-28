@@ -40,7 +40,7 @@ fn read(statement: &str, given: Value) -> Pattern {
     let Statement::Read(p) = t.statement else {
         panic!("{statement} reads")
     };
-    p
+    *p
 }
 
 #[track_caller]

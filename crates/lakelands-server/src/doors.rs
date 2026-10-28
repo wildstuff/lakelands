@@ -421,12 +421,14 @@ impl<'de> VariantAccess<'de> for Variant {
 /// An argument the catalog checks itself, before it reads anything, even
 /// where the tool's schema does not list it, so that its refusal says
 /// why: a read's `params` on a type that is not a view with parameters is
-/// refused saying the type declares none, and a `key` to a verb on its
-/// type naming the verb.
+/// refused saying the type declares none, a `key` to a verb on its type
+/// naming the verb, and a statement's `plan_id` beside one with no plan.
 fn catalog_answers(door: &Door, argument: &str) -> bool {
     matches!(
         (door, argument),
-        (Door::Find { .. } | Door::Get { .. }, "params") | (Door::Call { .. }, "key")
+        (Door::Find { .. } | Door::Get { .. }, "params")
+            | (Door::Call { .. }, "key")
+            | (Door::Cypher, "plan_id")
     )
 }
 
@@ -674,6 +676,8 @@ pub(crate) async fn run(
                 as_of: Option<Position>,
                 #[serde(default)]
                 valid_at: Option<Timestamp>,
+                #[serde(default)]
+                plan_id: Option<String>,
             }
             let s: S = args(label, &a)?;
             let (as_of, valid_at) = (s.as_of, s.valid_at);
@@ -682,7 +686,13 @@ pub(crate) async fn run(
                 valid_at,
                 clock,
             };
-            let answer = lakelands_cypher::run(c, who, &s.statement, &s.params, at, s.cursor);
+            let (cursor, plan_id) = (s.cursor, s.plan_id);
+            let beside = lakelands_cypher::Beside {
+                at,
+                cursor,
+                plan_id,
+            };
+            let answer = lakelands_cypher::run(c, who, &s.statement, &s.params, beside);
             to_json(&answer.await?)
         }
         Door::Search => {
