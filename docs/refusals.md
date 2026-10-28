@@ -1168,7 +1168,7 @@ Why a lake's declarations cannot all become tools. The store refuses a declarati
 | code | parameters | sentence | about |
 |---|---|---|---|
 | `collision` | `name` (String), `from` (list of NameSource) | the tool name `{name}` would come from {from} | Two declarations produce the same tool name. |
-| `too_long` | `name` (String) | the tool name `{name}` is longer than 64 characters | A tool name would be longer than [`MAX_TOOL_NAME`]. |
+| `too_long` | `name` (String), `from` (NameSource, optional) | the tool name `{name}`[ of {from}] is longer than 64 characters | A tool name would be longer than [`MAX_TOOL_NAME`]; one problem for each declaration it comes from. |
 | `empty` | `from` (NameSource) | {from} gives an empty tool name | A declaration's name has nothing left once made a tool name. |
 
 ## Withdrawn

@@ -176,6 +176,12 @@ every JSON reader on its way, before the store saw it, and is written
 `1e+21`: its digits are not kept. A value that needs its digits is a
 `decimal`.
 
+Where a computed number ends: an expression reads a stored number as a
+decimal, which holds about 7.9e28 (2^96) at most, so a derived number
+(`n * 2`) over a stored `1e21` holds `2e+21`. A stored number beyond
+that, or a result beyond it, is no operand: the derived field holds no
+value.
+
 **The seal.** The rule holds for every event, whatever wrote it. Before
 an append reaches the engine, the store judges each event it sealed: a
 number anywhere in it written as an integer beyond the range, or a

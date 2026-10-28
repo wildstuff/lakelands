@@ -13,7 +13,7 @@
 
 use lakelands_api::ontology::ConstraintDecl;
 
-use crate::conformance::fixture::{doors, get_at, owner};
+use crate::conformance::fixture::{doors, owner};
 use crate::conformance::prelude::*;
 
 check!(
@@ -29,8 +29,8 @@ check!(
 );
 
 check!(
-    HOST_VIEW_KEY = a_host_view_with_a_key_its_records_do_not_carry_is_judged_by_what_they_do,
-    "006 and 018, extended (lakelands#788): a host's vocabulary type passes no `declare`, so its view may hold a `key` that is not its `group_by`, and it is keyed by what its records carry all the same: an ungrouped `sys.` view with `key: [n]` is shown to a reader held from `n` as the same view without `key` is, `get` answers its one record, and each is described with no key; a `sys.` view grouped by `name` with `key: [n]` is shown to that reader too and described keyed by `name`, and is hidden from a reader held from `name`",
+    HOST_TYPE_CHECKED_AT_OPEN = a_host_type_a_declaration_would_refuse_refuses_the_writers_open,
+    "003 and 006, extended (lakelands#835), and seams, SystemVocabulary: a host's type the lake does not hold passes the checks a declaration passes, beside the types before it: a vocabulary with a type whose `key` names no field it declares, with a view keyed by other fields than its `group_by`, with a relation to an undeclared type, and with a view that nothing fills, is refused at the writer's open as invalid, naming the type; nothing is appended, the lake holds none of the vocabulary's types, and the same open without the type succeeds",
     reopens
 );
 
@@ -454,58 +454,84 @@ async fn a_vocabulary_naming_a_reserved_type_refuses_the_writers_open(
     Ok(())
 }
 
-async fn a_host_view_with_a_key_its_records_do_not_carry_is_judged_by_what_they_do(
+async fn a_host_type_a_declaration_would_refuse_refuses_the_writers_open(
     store: Store,
     reopen: Reopen,
 ) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("item", vec![field("name", StorageKind::Text)]))
         .await?;
-    l.upsert("item", "i1", json!({"name": "a"})).await?;
-    let host = |name: &str, key: &[&str], by: &[&str]| {
-        let text = |n: &&str| json!({"name": n, "type": {"kind": "text"}});
-        let mut fields: Vec<_> = by.iter().map(text).collect();
-        fields.push(json!({"name": "n", "type": {"kind": "decimal"}}));
+    let view = |name: &str, key: &[&str]| -> lakelands_api::ontology::TypeDecl {
         let n = json!([{"name": "n", "expr": "count()"}]);
-        let view = json!({"source": "item", "group_by": by, "measures": n});
+        let view = json!({"source": "item", "group_by": ["name"], "measures": n});
+        let fields = json!([{"name": "name", "type": {"kind": "text"}},
+                            {"name": "n", "type": {"kind": "decimal"}}]);
         let v = json!({"name": name, "key": key, "fields": fields, "view": view});
         serde_json::from_value(v).expect("a type reads")
     };
-    let views = vec![
-        host("sys.keyed", &["n"], &[]),
-        host("sys.plain", &[], &[]),
-        host("sys.grouped", &["n"], &["name"]),
+    let mut keyed = type_decl("sys.keyed", vec![field("x", StorageKind::Text)]);
+    keyed.key = vec!["missing".into()];
+    let mut related = type_decl("sys.related", vec![field("x", StorageKind::Text)]);
+    related.relations = serde_json::from_value(json!([{"name": "to", "target": "sys.nowhere"}]))
+        .expect("a relation reads");
+    let bad = [
+        keyed,
+        view("sys.apart", &["n"]),
+        related,
+        // Nothing fills `m`.
+        serde_json::from_value(json!({"name": "sys.unfilled", "key": ["name"],
+            "fields": [{"name": "name", "type": {"kind": "text"}},
+                       {"name": "m", "type": {"kind": "decimal"}}],
+            "view": {"source": "item", "group_by": ["name"],
+                     "measures": [{"name": "n", "expr": "count()"}]}}))
+        .expect("a type reads"),
     ];
-    let seams = Seams {
+    let with = |vocabulary| Seams {
         backings: backing::backings(),
-        vocabulary: Some(backing::vocabulary(views, &[])),
+        vocabulary,
         ..Seams::default()
     };
-    let store = reopen(store, seams)
-        .await
-        .map_err(|e| reopened("of three views", e))?;
-    let cat = doors(store.as_ref());
-    let all = lakelands_api::key::UNGROUPED;
-    // The field its reader is held from, a record's key, and the key the
-    // view is described with where it is shown.
-    for (ty, held, key, shown) in [
-        ("sys.keyed", "n", all, Some(vec![])),
-        ("sys.plain", "n", all, Some(vec![])),
-        ("sys.grouped", "n", "a", Some(vec!["name"])),
-        ("sys.grouped", "name", "a", None),
-    ] {
-        let who = field_access(store.as_ref(), "held", ty, &[(held, Access::None)]);
-        let told = describe_type(cat.as_ref(), &who, ty).await;
-        let one = cat.get(&who, &ty.into(), get_at(key, None)).await;
-        let keyed = told.as_ref().ok().map(|t| &t.access.key);
-        let keyed = keyed.map(|k| k.iter().map(|f| f.as_str()).collect::<Vec<_>>());
+    let mut store = store;
+    for t in bad {
+        let name = t.name.to_string();
+        let before = store.head().await.must("reading the head")?;
+        let sound = type_decl("sys.sound", vec![field("x", StorageKind::Text)]);
+        let vocabulary = backing::vocabulary(vec![sound, t], &[]);
+        match reopen(store.clone(), with(Some(vocabulary))).await {
+            Err(e) if invalid_case(&e).is_some() && format!("{e}").contains(&name) => {}
+            Err(e) => {
+                return Err(Failure::new(format!(
+                    "a vocabulary with `{name}`, which a declaration refuses, is refused at \
+                     the writer's open as invalid, naming the type; it answered {e} ({e:?})"
+                )));
+            }
+            Ok(_) => {
+                return Err(Failure::new(format!(
+                    "a vocabulary with `{name}`, which a declaration refuses, is refused at \
+                     the writer's open; the lake opened"
+                )));
+            }
+        }
+        store = reopen(store.clone(), with(None))
+            .await
+            .map_err(|e| reopened("without the refused type", e))?;
+        let after = store.head().await.must("reading the head")?;
         ensure!(
-            keyed == shown && one.is_ok() == shown.is_some(),
-            "`{ty}`, a view of the host's, is judged by the key its records carry: to a reader \
-             held from `{held}` it is described keyed {shown:?} where it is shown; it is \
-             described {told:?}, and `get` answered {one:?}"
+            after == before.next(),
+            "a refused open appends nothing: the head was {before} before it, and after the \
+             next open (which takes the lease, one event) it is {after}"
         );
+        for ty in ["sys.sound", name.as_str()] {
+            ensure!(
+                !holds(store.as_ref(), ty).await,
+                "a vocabulary with `{name}` was refused; the lake holds `{ty}` all the same"
+            );
+        }
     }
+    let sound = type_decl("sys.sound", vec![field("x", StorageKind::Text)]);
+    reopen(store, with(Some(backing::vocabulary(vec![sound], &[]))))
+        .await
+        .map_err(|e| reopened("of a sound type", e))?;
     Ok(())
 }
 

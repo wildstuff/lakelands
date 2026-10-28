@@ -18,7 +18,9 @@ use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines;
-use lakelands_engine_pg::{PgOpener, few_holders_statements, holding_statements};
+use lakelands_engine_pg::{
+    PgOpener, few_batch_statements, few_holders_statements, holding_statements,
+};
 use postgres::types::ToSql;
 use serde_json::json;
 
@@ -363,7 +365,7 @@ fn keys(page: &[StoredRecord]) -> Vec<RecordKey> {
 /// rows in its order, or the text index's in key order, and no sort.
 ///
 /// The cursor a long page under a text few records hold declares
-/// (lakelands#695) has one plan, at five holders (`rare`) and at the
+/// (lakelands#695), and each batch before it (lakelands#840), have one plan, at five holders (`rare`) and at the
 /// ceiling (`at`, read while exactly `FEW_HOLDERS` hold it), in either
 /// direction: from the text's rows, each holder's order row sought by its
 /// key, sorted once, and each record sought by its key. It never reads a
@@ -386,7 +388,16 @@ fn planned_without_a_sort(url: &str, schema: &str) {
             |text| -> Vec<&(dyn ToSql + Sync)> { vec![&"t", &"w", &few, &"v", text, &after, &key] };
         let holding = holding_statements(&schema).map(|s| (s, many.clone()));
         let [up, down] = few_holders_statements(&schema);
-        let cursors = [&"at", &"rare"].map(|t| [(up.clone(), held(t)), (down.clone(), held(t))]);
+        let [batch_up, batch_down] = few_batch_statements(&schema);
+        let cursors = [&"at", &"rare"].map(|t| {
+            [
+                up.clone(),
+                down.clone(),
+                batch_up.clone(),
+                batch_down.clone(),
+            ]
+            .map(|s| (s, held(t)))
+        });
         (holding.iter().chain(cursors.as_flattened()))
             .map(|(statement, args)| {
                 let explain =
@@ -421,8 +432,8 @@ fn planned_without_a_sort(url: &str, schema: &str) {
                 && sorts == 1
                 && !has("Seq Scan")
                 && !has("never executed"),
-            "the cursor of a page under a text few records hold is not read from the text's \
-             rows, each holder's order row sought by its key, those sorted once, and each \
+            "the cursor or a batch of a page under a text few records hold is not read from \
+             the text's rows, each holder's order row sought by its key, those sorted once, and each \
              record sought by its key:\n{plan:#?}"
         );
     }

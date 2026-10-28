@@ -62,7 +62,7 @@ use handle::PgLake;
 #[doc(hidden)]
 pub use handle::{ANALYZE_AFTER, LAKE_READERS, export};
 #[doc(hidden)]
-pub use view::{few_holders_statements, holding_statements, read_statements};
+pub use view::{few_batch_statements, few_holders_statements, holding_statements, read_statements};
 
 /// The name the engine answers to, in [`LakeEngine::name`] and for
 /// `EngineConfig::Postgres`.
