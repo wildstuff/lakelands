@@ -436,6 +436,7 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert() {
         key: "t1".into(),
         fields: patch(json!({"amount": v})),
         seen_at: None,
+        resubmits: None,
     };
     let deliver = |records: Vec<SourceRecord>| {
         let cat = cat.clone();
@@ -490,6 +491,7 @@ async fn a_second_write_to_a_record_in_one_window_is_folded_over_the_first() {
         key: "a1".into(),
         fields: patch(fields),
         seen_at: None,
+        resubmits: None,
     };
     let deliver = |records: Vec<SourceRecord>| {
         let cat = cat.clone();
@@ -1567,6 +1569,7 @@ async fn an_ingest_that_carries_an_authored_field_is_refused_even_unchanged() {
             key: "t1".into(),
             fields: patch(json!({"note": "x"})),
             seen_at: None,
+            resubmits: None,
         }]
         .into_iter(),
     ));
@@ -2364,6 +2367,7 @@ async fn a_reference_must_name_a_live_record_or_one_earlier_in_the_window() {
             key: "acme".into(),
             fields: patch(json!({"name": "Acme"})),
             seen_at: None,
+            resubmits: None,
         },
         SourceRecord {
             source: None,
@@ -2372,6 +2376,7 @@ async fn a_reference_must_name_a_live_record_or_one_earlier_in_the_window() {
             key: "i".into(),
             fields: patch(json!({"partner": "acme"})),
             seen_at: None,
+            resubmits: None,
         },
     ];
     let s: lakelands_api::SourceStream = Box::pin(Stream(records.into_iter()));
@@ -3226,7 +3231,7 @@ async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
     use lakelands_api::event::{Digest, EventId};
 
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/20/negative/known-at-goes-back/log")
+        .join("../../docs/log-format/vectors/21/negative/known-at-goes-back/log")
         .join(format!("{:020}.jsonl", 0));
     let text = std::fs::read_to_string(&path).unwrap();
     let events: Vec<CanonicalEvent> = text

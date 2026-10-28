@@ -199,6 +199,18 @@ A set of one is the source alone: its report and its id are those of
 `forget_preflight`. The source stays the unit of the key, the event and
 the provenance; only the act is batched.
 
+### The act reaches the source's quarantined records
+
+From lakelands#1502 (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`):
+the act closes every open quarantined record of the source, `forgotten`,
+in its own append, and its preflight and report count them per type
+(`quarantined`). A quarantined record's cells of an erasable field are
+sealed under the source's key, as its landed values would be, so every
+version's sealed cells read as erased in the log from the act on, and
+no answer holds a cell of a forgotten source's quarantined record. A
+plaintext cell stays in the log, as a landed plaintext value of the
+same field does.
+
 ### A lake 0.14.0 writes holds plaintext, and the feature starts where it starts
 
 The feature is a format step: the `sealed` member, the declaration's `erasable`, and `source_forgotten`. From 0.14.0 on, every format step carries its converter (054). A lake 0.14.0 wrote is upgraded and read, and its events keep their bytes, so its values stay plaintext.

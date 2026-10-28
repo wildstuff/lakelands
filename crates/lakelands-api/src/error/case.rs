@@ -1668,6 +1668,8 @@ catalog! {
         SealedApartNotCarried => "this catalog does not carry a delivery sealed apart to the store",
         /// An ingest asked for a commit window of its own through a catalog that does not carry it.
         CommitWindowNotCarried => "this catalog does not carry an ingest's own commit window to the store",
+        /// An ingest asked to quarantine its refused records through a catalog that does not carry it.
+        QuarantineRefusedNotCarried => "this catalog does not carry an ingest's asking to quarantine its refused records to the store",
         /// A trigger's ceiling above the lake's.
         TriggerTooDeep { depth: u32, max: u32 } => "its `max_depth` {depth} is above the lake's `max_reactive_depth` {max}",
         /// A retry that finds no answer of the verb's executor recorded.

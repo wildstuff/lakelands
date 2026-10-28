@@ -29,6 +29,7 @@ pub mod key;
 pub mod location;
 pub mod ontology;
 pub mod principal;
+pub mod quarantine;
 pub mod query;
 pub mod read;
 pub mod record;

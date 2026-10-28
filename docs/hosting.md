@@ -491,6 +491,32 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     read the lake's own figures (lakelands#1152), while each CLI command
     opens a handle of its own and reads the constant. Plan the act's
     window by the measured times all the same.
+  **Quarantining a refused record**
+  (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`):
+  an ingest with `IngestOpts::quarantine_refused` keeps a record
+  refused by a rule of the record, its cells as sent and its refusal,
+  and goes on; `Committed::quarantined` lists the stream index of each.
+  `Catalog::quarantined(who, filter)` lists them by source, type,
+  delivery and state, and `dismiss_quarantined(who, id)` closes one,
+  both under the `ingest` grant. What the host is told:
+  - **name the delivery:** a quarantined record is keyed by its source,
+    its first delivery and its index there, so a host that wants a
+    redelivery to find its rows names the delivery (`?delivery=`, the
+    file or feed item); without one each call is its own. A row sent
+    again under the same delivery and refused the same way appends
+    nothing, whether open or dismissed;
+  - **resubmit** by ingesting the mended record under the same source
+    with `SourceRecord::resubmits` naming the id's delivery and index:
+    the key may be what was mended;
+  - **a dismiss erases nothing:** the log keeps what was sent, in every
+    export and backup, a cell of an erasable field sealed under the
+    source's key and every other cell plaintext; a host that must erase
+    a refused row's cells forgets the source or takes the delivery back,
+    as for a landed one;
+  - **the bound:** `limits.quarantined_max` open quarantined records a
+    source, 10 000 by default; past it a refusal ends the stream with
+    `quarantine_full` beside it. Closed ones keep a row with no cell,
+    unbounded, as retired records do.
   Source ids and record keys stay plaintext in the log, so a lake is
   ready to forget when:
   - **a source id names no person:** an opaque id for a device or a feed,

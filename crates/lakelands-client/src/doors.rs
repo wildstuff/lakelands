@@ -23,6 +23,7 @@ use lakelands_api::id::{
 };
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::Principal;
+use lakelands_api::quarantine::{QuarantineClose, QuarantineFilter, QuarantineId, Quarantined};
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search, StatementAnswer};
 use lakelands_api::read::{CONTEXT_HEADER, PRINCIPAL_HEADER};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
@@ -436,6 +437,25 @@ impl Catalog for RemoteCatalog {
     ) -> Result<Reply<Vec<Proposal>>> {
         let call =
             Call::new(Method::GET, "proposals".into()).query(query_of(&members(&filter, &[])));
+        self.go(who, call).await
+    }
+
+    async fn quarantined(
+        &self,
+        who: &Principal,
+        filter: QuarantineFilter,
+    ) -> Result<Reply<Vec<Quarantined>>> {
+        let call =
+            Call::new(Method::GET, "quarantined".into()).query(query_of(&members(&filter, &[])));
+        self.go(who, call).await
+    }
+
+    async fn dismiss_quarantined(
+        &self,
+        who: &Principal,
+        id: &QuarantineId,
+    ) -> Result<QuarantineClose> {
+        let call = Call::new(Method::POST, "quarantined/dismiss".into()).json(&json!(id));
         self.go(who, call).await
     }
 

@@ -832,6 +832,12 @@ impl ProjectionView for FaultyView<'_> {
         }
         self.0.proposals(filter)
     }
+    fn quarantined(
+        &self,
+        filter: &lakelands_api::quarantine::QuarantineFilter,
+    ) -> Result<Vec<lakelands_api::quarantine::Quarantined>> {
+        self.0.quarantined(filter)
+    }
     fn proposals_before(
         &self,
         filter: &ProposalFilter,
@@ -1053,6 +1059,7 @@ pub async fn an_ingest_window_closes_a_batch(place: &Place, name: &str) {
                 seen_at: None,
                 upstream: None,
                 source: None,
+                resubmits: None,
             };
             let source = SourceId::from("feed");
             let who = owner(&lake, "owner");

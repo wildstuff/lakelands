@@ -1678,6 +1678,9 @@
    "code": "commit_window_not_carried"
   },
   {
+   "code": "quarantine_refused_not_carried"
+  },
+  {
    "code": "trigger_too_deep",
    "depth": 1,
    "max": 1

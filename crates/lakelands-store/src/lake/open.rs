@@ -293,6 +293,7 @@ impl Lake {
                 lease,
                 tip: None,
                 staged: None,
+                closing: BTreeSet::new(),
                 last_known_at: Timestamp(i64::MIN),
                 ontology: Ontology::default().named(),
                 settings: BTreeMap::new(),

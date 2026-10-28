@@ -177,6 +177,10 @@ pub struct SourceRecord {
     /// ingest may carry many sources, each record stamped with its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceId>,
+    /// The quarantined record of the same source this one runs again,
+    /// which it closes once written or counted as a duplicate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resubmits: Option<crate::quarantine::Resubmits>,
 }
 
 /// Where values read from another lake's log came from: that lake, and

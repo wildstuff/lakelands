@@ -47,6 +47,16 @@ impl Unknown {
         &self.message
     }
 
+    /// A case of `code` with no parameter, said by `message`: what a
+    /// reader not shown a refusal's names is told of it (085).
+    pub(crate) fn bare(code: &str, message: String) -> Unknown {
+        Unknown {
+            code: code.into(),
+            params: Map::new(),
+            message,
+        }
+    }
+
     /// Kept with the sentence of the error that carried it, for a set
     /// whose cases carry no sentence of their own.
     pub(super) fn says(&mut self, message: String) {
@@ -694,8 +704,10 @@ catalog! {
         ChangeBefore { v: u32 } => "a `trigger_fired` of format {v} carries `change` or `created`, which format 17 added",
         /// A `trigger_dropped` in a format before the one that added it.
         DroppedBefore { v: u32 } => "an event of format {v} is a `trigger_dropped`, which format 17 added",
-        /// An event other than a `record_ingested` of format 17 on carries `delivery`.
-        DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries",
+        /// An event other than a `record_ingested` of format 17 on, or a `record_quarantined`, carries `delivery`.
+        DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on or a `record_quarantined` carries",
+        /// A `record_quarantined` or a `quarantine_closed` in a format before the one that added it.
+        QuarantinedBefore { kind: String, v: u32 } => "an event of format {v} is a `{kind}`, which format 21 added",
         /// A `values_removed` event in a format before the one that added it.
         RemovedBefore { v: u32 } => "an event of format {v} is a `values_removed`, which format 17 added",
         /// An event of a format before 18 carries `apart`.

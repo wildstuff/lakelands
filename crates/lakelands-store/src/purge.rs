@@ -288,6 +288,7 @@ pub(crate) fn report<'a>(
         references.extend(found.into_iter().map(|f| f.0).filter(|f| f.records > 0));
     }
     references.sort_by(|a, b| (&a.ty, &a.relation).cmp(&(&b.ty, &b.relation)));
+    let (_, quarantined) = closes(view, source, ty)?;
     Ok(PurgeReport {
         source: source.clone(),
         ty: ty.cloned(),
@@ -300,7 +301,23 @@ pub(crate) fn report<'a>(
         report_id: String::new(),
         set_off: 0,
         max_set_changes: 0,
+        quarantined,
     })
+}
+
+/// The closes of the open quarantined records of `source`, of `ty` alone
+/// where one is named, every one of which a purge closes (085), and their
+/// count per type.
+fn closes(
+    view: &dyn ProjectionView,
+    source: &SourceId,
+    ty: Option<&TypeName>,
+) -> Result<(
+    Vec<EventBody>,
+    Vec<lakelands_api::quarantine::TypeQuarantined>,
+)> {
+    let why = lakelands_api::quarantine::ClosedWhy::Purged;
+    crate::quarantine::act_closes(view, (source, ty), why, &mut |_| Ok(true))
 }
 
 /// The id of the preflight of a purge of `source`, from `ty` where one is
@@ -388,8 +405,10 @@ pub fn run(
         unsearched,
     )?;
     let now = lake.clock(&mut w);
-    let (drafts, set_off) = retirements(lake, (&w, view.as_ref()), purged, now, true)?;
+    let (mut drafts, set_off) = retirements(lake, (&w, view.as_ref()), purged, now, true)?;
     (report.set_off, report.max_set_changes) = (set_off, lake.limits.max_set_changes);
+    let (shut, _) = closes(view.as_ref(), source, ty)?;
+    drafts.extend(shut.into_iter().map(|c| Draft::system(now, c)));
     drop(view);
     if !drafts.is_empty() {
         lake.append(&mut w, drafts)?;

@@ -34,6 +34,7 @@ pub mod lake;
 pub mod log;
 mod ontology;
 mod purge;
+mod quarantine;
 mod reads;
 mod record;
 mod rekey;

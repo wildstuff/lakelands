@@ -546,8 +546,29 @@ pub fn erase(event: &mut Event) -> Vec<lakelands_api::FieldName> {
             *output = None;
             Vec::new()
         }
+        // A quarantined record's sealed cells are not there at all (085).
+        EventBody::RecordQuarantined { .. } => sealed.fields,
         _ => Vec::new(),
     }
+}
+
+/// A `record_quarantined` as the fold and the acts read it: its `sealed`
+/// and its `seen_at` on its envelope, where a `record_ingested` carries
+/// them, so that what opens, erases and selects a landed value reaches its
+/// cells too (085); `None` for any other event.
+pub fn lifted(e: &Event) -> Option<Event> {
+    let EventBody::RecordQuarantined {
+        sealed, seen_at, ..
+    } = &e.body
+    else {
+        return None;
+    };
+    let mut l = e.clone();
+    (l.sealed, l.seen_at) = (sealed.clone(), *seen_at);
+    if let EventBody::RecordQuarantined { sealed, .. } = &mut l.body {
+        *sealed = None;
+    }
+    Some(l)
 }
 
 /// The store's own seam under which the fold keeps, for each source, the
@@ -585,6 +606,11 @@ impl Apart {
     /// in the log.
     pub fn stage(&self, source: &SourceId, at: Position, apart: &[KeyId]) {
         lock(&self.0).insert(at, Some((source.clone(), apart.to_vec())));
+    }
+
+    /// Take back what [`Apart::stage`] staged at `at`, for a write refused.
+    pub fn unstage(&self, at: Position) {
+        lock(&self.0).remove(&at);
     }
 }
 
@@ -715,8 +741,10 @@ fn nonce(parts: &[&[u8]]) -> [u8; 12] {
 
 /// The nonce of what a source's key seals in `body`, by its place: a
 /// record's box, from its source, type, key and version before, or, up to
-/// format 19, its member `field` alone; or a recorded output, from its
-/// source, seam and input. No other event holds a sealed value.
+/// format 19, its member `field` alone; a quarantined record's box, from
+/// its source, the word `quarantined`, its id's delivery and index and its
+/// version before (085); or a recorded output, from its source, seam and
+/// input. No other event holds a sealed value.
 fn place(source: &SourceId, body: &EventBody, field: Option<&str>) -> Option<[u8; 12]> {
     let source = source.as_str().as_bytes();
     match body {
@@ -730,6 +758,13 @@ fn place(source: &SourceId, body: &EventBody, field: Option<&str>) -> Option<[u8
                 Some(f) => nonce(&[&parts[..], &[f.as_bytes()]].concat()),
                 None => nonce(&parts),
             })
+        }
+        EventBody::RecordQuarantined { id, version, .. } => {
+            let (index, before) = (id.index.to_string(), version.saturating_sub(1).to_string());
+            let parts = [source, b"quarantined", id.delivery.as_str().as_bytes()];
+            Some(nonce(
+                &[&parts[..], &[index.as_bytes(), before.as_bytes()]].concat(),
+            ))
         }
         EventBody::OutputRecorded { seam, input, .. } => {
             Some(nonce(&[source, seam.as_bytes(), input.0.as_bytes()]))
@@ -753,7 +788,8 @@ pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, cipher
         return;
     };
     match body {
-        EventBody::RecordIngested { patch, .. } => {
+        EventBody::RecordIngested { patch, .. }
+        | EventBody::RecordQuarantined { cells: patch, .. } => {
             let fields = sealed.fields.iter();
             let taken = fields.filter_map(|f| Some((f.to_string(), patch.remove(f)?)));
             sealed.boxed = Some(close(&Value::Object(taken.collect()), n));
@@ -792,7 +828,11 @@ pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
         return Ok(());
     };
     match (&mut event.body, &sealed.boxed) {
-        (EventBody::RecordIngested { patch, .. }, Some(boxed)) => {
+        (
+            EventBody::RecordIngested { patch, .. }
+            | EventBody::RecordQuarantined { cells: patch, .. },
+            Some(boxed),
+        ) => {
             let members = opened(&Value::String(boxed.clone()), whole);
             let Some(Value::Object(members)) = members else {
                 return Err(unsealable());

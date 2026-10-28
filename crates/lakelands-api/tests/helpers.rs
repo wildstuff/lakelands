@@ -9,7 +9,7 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::shape::{schema_hash, shape};
 use serde_json::{Value, json};
 
-const VECTOR: &str = include_str!("../../../docs/log-format/vectors/20/schema-hash.json");
+const VECTOR: &str = include_str!("../../../docs/log-format/vectors/21/schema-hash.json");
 
 /// The log format's schema-hash vector is a view whose conditions are
 /// written as text: the helper hashes it to the digest the vector pins,

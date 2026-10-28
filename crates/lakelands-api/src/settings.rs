@@ -237,6 +237,11 @@ pub const SETTINGS: &[Setting] = &[
         ..location("limits.seal_after_bytes", "268435456")
     },
     Setting {
+        range: "a count; 0 quarantines nothing",
+        says: "The most open quarantined records one source keeps; a refusal an ingest asks to quarantine past it ends the stream, the record's own refusal with `quarantine_full` beside it. Closed ones are not counted.",
+        ..location("limits.quarantined_max", "10000")
+    },
+    Setting {
         range: "KiB",
         says: "SQLite: the writer connection's page cache.",
         ..location("engine.tuning.writer_cache_kb", "65536")

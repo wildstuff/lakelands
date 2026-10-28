@@ -69,6 +69,7 @@ async fn a_window_with_an_applied_id_is_judged_as_each_record_asks() {
         key: key.clone(),
         fields: body(b),
         seen_at: None,
+        resubmits: None,
     };
     let fed = lakelands_api::ingest_all(
         cat.as_ref(),

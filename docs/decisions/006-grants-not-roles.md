@@ -2461,6 +2461,35 @@ before it is proposed, as `propose` judges it. The host places and lifts
 a hold on a retired record too: a key whose retired record is held is
 otherwise closed to every writer without the grant for good.
 
+### A quarantined record is there as a proposal's write is, and its cells are read as their fields
+
+From lakelands#1502 (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`):
+a quarantined record is listed and dismissed by a holder of `ingest`
+(`not_granted` otherwise), and is there to its reader as a proposal's
+write is: not where the reader is not shown its type, not at a key whose
+record is restricted to a reader without `restricted`, and not, to a
+holder of `only`, where the record its cells would leave is not
+admitted. One not there is `not_found`, as one that never was.
+
+- **A cell is read as the field it names**, through every rename since,
+  with the access the reader's grants give that field and `sensitive`'s
+  raise: shown, named in `masked` with its value withheld, or not there
+  nor named where the field is `none`. A cell that names no field of the
+  type, or one a redeclaration removed, is read by the type's default
+  access; one whose field was `sensitive` when it came keeps the raise.
+- **A hiding** lowers a cell where it would lower the field on either
+  record the row touches: where the `G` cell as sent holds one of its
+  values; where the live record at the type and key, at the head, is
+  selected; and where the `G` cell is there but is not a text or
+  reference value. A row whose `G` cell is absent, at a key no live
+  record holds, is not selected.
+- **The refusal** is shown whole to a reader shown every name it holds,
+  and to any other as its kind alone, `error` and the reason's `code`,
+  with `more: true`; a `not_found` is `not_found` alone.
+
+This is the one word of this record for it: a quarantined record is not
+a held one, which here is a restricted record.
+
 ### Some things are still told, on purpose
 
 What remains says a hidden thing exists, and remains on purpose:
