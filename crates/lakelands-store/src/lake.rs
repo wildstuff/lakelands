@@ -82,6 +82,10 @@ pub struct Writer {
     /// ([`crate::writes::write_many`]); cleared whenever the writer is
     /// taken ([`Turn::writer`]).
     pub staged: Option<(Position, Digest)>,
+    /// The quarantined records the appends of a batch of record writes
+    /// closed as landed ([`Lake::closing`]): its later appends close them
+    /// again never; cleared where its batch starts.
+    pub closing: BTreeSet<lakelands_api::quarantine::QuarantineId>,
     /// The last event's `known_at`.
     pub last_known_at: Timestamp,
     /// The ontology at the head.
@@ -187,6 +191,8 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         EventBody::LakeCreated { .. }
         | EventBody::LakeUpgraded { .. }
         | EventBody::LeaseTaken { .. }
+        | EventBody::RecordQuarantined { .. }
+        | EventBody::QuarantineClosed { .. }
         | EventBody::RecordRestricted { .. }
         | EventBody::RecordUnrestricted { .. }
         | EventBody::VerbCalled { .. }
@@ -616,6 +622,7 @@ impl Lake {
             lease: None,
             tip,
             staged: None,
+            closing: BTreeSet::new(),
             last_known_at: wall_clock(),
             ontology: shape.ontology.clone(),
             settings: shape.settings.clone(),
@@ -1841,6 +1848,9 @@ fn reads_a_record(body: &EventBody) -> bool {
         EventBody::OutputRecorded { field, .. } => field.is_some(),
         // Nothing of the projection is changed for these but their mark.
         EventBody::LakeCreated { .. }
+        // A quarantined record's row, which no record reads (085).
+        | EventBody::RecordQuarantined { .. }
+        | EventBody::QuarantineClosed { .. }
         | EventBody::LakeUpgraded { .. }
         | EventBody::LeaseTaken { .. }
         | EventBody::Checkpoint { .. }
@@ -1951,6 +1961,10 @@ pub struct Staged {
     keys: Option<Arc<crate::sealing::Keys>>,
     /// The keys apart this fold read from the log (065).
     pub(crate) apart: crate::sealing::Apart,
+    /// The quarantined records the append wrote, by id, each as it leaves
+    /// them (085).
+    pub(crate) quarantined:
+        BTreeMap<lakelands_api::quarantine::QuarantineId, lakelands_api::quarantine::Quarantined>,
     /// What the write path's run of the hooks overwrote, where it keeps
     /// that ([`crate::kept::Undo`]).
     pub(crate) undo: Option<crate::kept::Undo>,

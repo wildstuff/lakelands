@@ -6,3 +6,7 @@
 # baseline becomes the new tag and the list empties
 # (docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md).
 baseline v0.19.0
+lakelands-api	trait_method_added	trait method Catalog::dismiss_quarantined
+lakelands-api	trait_method_added	trait method Catalog::quarantined
+lakelands-api	trait_method_added	trait method ProjectionStore::put_quarantined
+lakelands-api	trait_method_added	trait method ProjectionView::quarantined

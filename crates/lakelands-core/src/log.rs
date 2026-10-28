@@ -82,6 +82,33 @@ pub fn boxed_ingest_id(
     ])
 }
 
+/// The id of a version of a quarantined record, from format 21
+/// (`docs/log-format.md` §3): SHA-256 under `lakelands:quarantined:v1`
+/// over the source, the id's delivery and index, the version before, the
+/// cells as stored, the box as stored or empty, and the refusal's
+/// canonical bytes. The same cells refused the same way at the same
+/// version seal to the same box, so they keep the id.
+#[doc(hidden)]
+pub fn quarantined_id(
+    id: &lakelands_api::quarantine::QuarantineId,
+    version_before: u32,
+    cells: &Patch,
+    boxed: Option<&str>,
+    refusal: &lakelands_api::Error,
+) -> EventId {
+    let refusal = serde_json::to_value(refusal).unwrap_or_default();
+    id_of(&[
+        b"lakelands:quarantined:v1",
+        id.source.as_str().as_bytes(),
+        id.delivery.as_str().as_bytes(),
+        id.index.to_string().as_bytes(),
+        version_before.to_string().as_bytes(),
+        &canonical::of(cells),
+        boxed.unwrap_or_default().as_bytes(),
+        &canonical::of(&refusal),
+    ])
+}
+
 /// The id of an authored write with an idempotency key: one key from one
 /// writer is one write in the whole lake.
 #[doc(hidden)]
@@ -166,6 +193,9 @@ const APART_FROM: u32 = 18;
 /// The log format that first seals a record's members in one box (083).
 const BOXED_FROM: u32 = 20;
 
+/// The log format that first holds a quarantined record (085).
+const QUARANTINED_FROM: u32 = 21;
+
 /// An event as log format `v` wrote it, its members as the format this
 /// release writes says them, for the release's own structs to read. Its
 /// `v` stays the one it was written in, and its bytes and hash are the
@@ -194,6 +224,9 @@ const BOXED_FROM: u32 = 20;
 ///   form it adds (lakelands#1409): a log of format 19 holds none of them,
 ///   a proposal of a change to the records a condition selects (081) among
 ///   them.
+/// - **20 → 21:** none. Format 21 is 0.21.0's one step, taken before any
+///   form it adds (lakelands#1502): a log of format 20 holds none of them,
+///   a `record_quarantined` and a `quarantine_closed` (085) among them.
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");
@@ -424,8 +457,17 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
         let v = event.v;
         return Some(Flaw::DroppedBefore { v });
     }
+    let quarantine = matches!(
+        event.body,
+        EventBody::RecordQuarantined { .. } | EventBody::QuarantineClosed { .. }
+    );
+    if quarantine && event.v < QUARANTINED_FROM {
+        let (kind, v) = (kind.clone(), event.v);
+        return Some(Flaw::QuarantinedBefore { kind, v });
+    }
+    let quarantined = matches!(event.body, EventBody::RecordQuarantined { .. });
     let ingested = matches!(event.body, EventBody::RecordIngested { .. });
-    if event.delivery.is_some() && (!ingested || event.v < 17) {
+    if event.delivery.is_some() && !quarantined && (!ingested || event.v < 17) {
         let v = event.v;
         return Some(Flaw::DeliveryOn { kind, v });
     }

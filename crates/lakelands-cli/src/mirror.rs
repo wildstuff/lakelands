@@ -1168,6 +1168,7 @@ impl Mirror {
                             key: row.key,
                             fields: patch,
                             seen_at,
+                            resubmits: None,
                         },
                     ));
                 }
@@ -1275,6 +1276,7 @@ impl Mirror {
                     key: key.clone(),
                     fields: patch,
                     seen_at: Some(known_at),
+                    resubmits: None,
                 },
             ));
         }

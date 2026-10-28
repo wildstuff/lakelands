@@ -22,6 +22,7 @@ use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::SqliteTuning;
+use lakelands_api::quarantine::Quarantined;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 use lakelands_core::engines;
@@ -31,7 +32,7 @@ use rusqlite::{Connection, OpenFlags, params};
 
 use crate::lease::{Held, LeaseFile};
 use crate::log::Log;
-use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS};
+use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS, QUARANTINED};
 use crate::scratch::{self, Building, Mark};
 use crate::view::SqliteView;
 use lakelands_api::error::{Case, Detail, Doing, Error, Part, Situation};
@@ -860,6 +861,17 @@ impl ProjectionStore for SqliteLake {
         self.stage(at, |conn, _| {
             PROPOSALS
                 .put(conn, &[&proposal.id.as_str()], at, &state)
+                .map(drop)
+        })
+    }
+
+    fn put_quarantined(&self, row: &Quarantined, at: Position) -> Result<()> {
+        let state = serde_json::to_string(row).expect("a quarantined record serialises");
+        let (source, delivery) = (row.id.source.as_str(), row.id.delivery.as_str());
+        let ix = row.id.index as i64;
+        self.stage(at, |conn, _| {
+            QUARANTINED
+                .put(conn, &[&source, &delivery, &ix], at, &state)
                 .map(drop)
         })
     }

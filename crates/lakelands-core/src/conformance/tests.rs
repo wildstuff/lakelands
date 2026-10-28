@@ -114,6 +114,12 @@ impl Catalog for DownCatalog {
     refuse!(proposals<'life1>(
         who: &'life1 Principal, filter: ProposalFilter
     ) -> Reply<Vec<Proposal>>);
+    refuse!(quarantined<'life1>(
+        who: &'life1 Principal, filter: lakelands_api::quarantine::QuarantineFilter
+    ) -> Reply<Vec<lakelands_api::quarantine::Quarantined>>);
+    refuse!(dismiss_quarantined<'life1, 'life2>(
+        who: &'life1 Principal, id: &'life2 lakelands_api::quarantine::QuarantineId
+    ) -> lakelands_api::quarantine::QuarantineClose);
     refuse!(declare<'life1>(who: &'life1 Principal, declaration: Declaration) -> Outcome);
     refuse!(apply<'life1>(who: &'life1 Principal, declarations: Vec<Declaration>) -> Outcome);
     refuse!(recompute<'life1>(

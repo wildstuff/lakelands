@@ -79,6 +79,8 @@ pub enum Error {
     /// type and key its source sent; and the refusal. On the wire it is
     /// the refusal, its code and shape kept, with `index`, `from` and
     /// `record` beside it; [`Error::unwrapped`] answers the refusal.
+    /// A refusal the call asked to quarantine past the source's bound
+    /// carries `quarantine_full` too (085).
     #[serde(skip)]
     Ingested {
         /// The record's place in the stream.
@@ -89,6 +91,9 @@ pub enum Error {
         record: RecordName,
         /// The refusal.
         error: Box<Error>,
+        /// The bound that was full, where the record was not quarantined
+        /// for it.
+        quarantine_full: Option<crate::quarantine::QuarantineFull>,
     },
     /// An error of a kind this build does not know: a newer lake's.
     #[serde(skip)]
@@ -119,6 +124,7 @@ impl Serialize for Error {
             from,
             record,
             error,
+            quarantine_full,
         } = self
         else {
             return closed::serialize(&Plain(self.clone()), s);
@@ -133,6 +139,12 @@ impl Serialize for Error {
         map.insert("index".into(), Value::from(*index));
         map.insert("from".into(), Value::from(*from));
         map.insert("record".into(), record);
+        if let Some(full) = quarantine_full {
+            map.insert(
+                "quarantine_full".into(),
+                serde_json::json!({"max": full.max}),
+            );
+        }
         map.serialize(s)
     }
 }
@@ -156,6 +168,8 @@ impl<'de> Deserialize<'de> for Error {
             let (index, from) = (place(map.remove("index"))?, place(map.remove("from"))?);
             let record = closed::deserialize(map.remove("record").unwrap_or_default());
             let record = record.map_err(|e: serde_json::Error| custom(e.to_string()))?;
+            let full = map.remove("quarantine_full").map(serde_json::from_value);
+            let quarantine_full = full.transpose().map_err(|e| custom(e.to_string()))?;
             let error = Error::deserialize(Value::Object(map));
             let error = Box::new(error.map_err(|e| custom(e.to_string()))?);
             return Ok(Error::Ingested {
@@ -163,6 +177,7 @@ impl<'de> Deserialize<'de> for Error {
                 from,
                 record,
                 error,
+                quarantine_full,
             });
         }
         let message = map
@@ -244,6 +259,30 @@ impl Error {
             Error::Ingested { error, .. } => error.unwrapped(),
             e => e,
         }
+    }
+
+    /// Its kind alone: its `error` and, for a refusal, its `reason`
+    /// code, with no field, case, place, parameter or record name, as a
+    /// quarantined record's refusal is shown to a reader not shown every
+    /// name it holds (085).
+    pub fn kind_alone(&self) -> Error {
+        let wire = serde_json::to_value(self.unwrapped()).unwrap_or_default();
+        let code = |v: &Value, tag: &str| v[tag].as_str().unwrap_or_default().to_owned();
+        let error = code(&wire, "error");
+        let alone = match self.unwrapped() {
+            Error::Refused { .. } => {
+                let reason = code(&wire["reason"], "refusal");
+                let said = format!("refused: {reason}, its names not shown");
+                Error::refused(None, Refusal::Unknown(Unknown::bare(&reason, said)))
+            }
+            _ => Error::Unknown(Unknown::bare(
+                &error,
+                format!("{error}, its names not shown"),
+            )),
+        };
+        // As the wire reads it back: a kind with no parameter as itself.
+        let read = serde_json::to_value(&alone).and_then(serde_json::from_value);
+        read.unwrap_or(alone)
     }
 
     /// What a refusal of `invalid`, `constraint`, `precondition`,
@@ -555,6 +594,11 @@ pub enum Missing {
         /// Its identifier.
         id: ProposalId,
     },
+    /// A quarantined record (085).
+    Quarantined {
+        /// Its id.
+        id: crate::quarantine::QuarantineId,
+    },
     /// A thing of a kind this build does not know, said by its error's
     /// sentence.
     #[serde(skip)]
@@ -585,6 +629,7 @@ impl fmt::Display for Missing {
             Missing::Verb { name } => write!(f, "there is no verb `{name}`"),
             Missing::Function { name } => write!(f, "there is no function `{name}`"),
             Missing::Proposal { id } => write!(f, "there is no proposal `{id}`"),
+            Missing::Quarantined { id } => write!(f, "there is no quarantined record `{id}`"),
             Missing::Unknown(u) => f.write_str(u.message()),
         }
     }
@@ -598,10 +643,15 @@ impl fmt::Display for Error {
                 from,
                 record,
                 error,
-            } => write!(
-                f,
-                "record {index} of the stream ({record}): {error}; nothing from record {from} on was written"
-            ),
+                quarantine_full,
+            } => {
+                write!(f, "record {index} of the stream ({record}): {error}")?;
+                if let Some(full) = quarantine_full {
+                    let max = full.max;
+                    write!(f, ", not quarantined: its source holds {max} open")?;
+                }
+                write!(f, "; nothing from record {from} on was written")
+            }
             // A refusal of a kind this build does not know is its sentence.
             Error::Refused {
                 reason: reason @ Refusal::Unknown(_),

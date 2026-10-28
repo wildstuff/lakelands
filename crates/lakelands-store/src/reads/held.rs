@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use lakelands_api::engine::{After, Declared, Matched, ProjectionView, Scan};
 use lakelands_api::event::{Digest, EventBody, EventId};
+use lakelands_api::quarantine::{QuarantineFilter, Quarantined};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::FeedFilter;
@@ -303,6 +304,10 @@ impl ProjectionView for HeldNow<'_> {
 
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.then.proposals(filter)
+    }
+
+    fn quarantined(&self, filter: &QuarantineFilter) -> Result<Vec<Quarantined>> {
+        self.then.quarantined(filter)
     }
 
     fn proposals_before(

@@ -62,6 +62,11 @@ pub struct IngestOpts {
     /// (`docs/decisions/016-two-write-doors-by-origin.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_window: Option<u32>,
+    /// Quarantine a record refused by a rule of the record, and go on with
+    /// the stream; off, a refused record ends it
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quarantine_refused: bool,
 }
 
 /// What a write did. A writer never has to know in advance whether its
@@ -1747,6 +1752,9 @@ pub struct Committed {
     /// appended; none before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<DeliveryId>,
+    /// The stream index of each record the window quarantined, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<u64>,
 }
 
 /// How many refused moves a rule's run lists (`RuleRun::refusals`); the
@@ -1865,6 +1873,11 @@ pub struct PurgeReport {
     /// The lake's `max_set_changes`, beside `set_off`.
     #[serde(default)]
     pub max_set_changes: u32,
+    /// Per type, in name order, the source's open quarantined records the
+    /// act closes; types with none are left out
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<crate::quarantine::TypeQuarantined>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1972,6 +1985,11 @@ pub struct ForgetReport {
     /// on the act's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub report_id: String,
+    /// Per type, in name order, the source's open quarantined records the
+    /// act closes; types with none are left out
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<crate::quarantine::TypeQuarantined>,
 }
 
 /// What `LakeStore::forget_sources` erased, or what
@@ -2182,6 +2200,11 @@ pub struct RemoveReport {
     /// on the act's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub report_id: String,
+    /// Per type, in name order, the source's open quarantined records the
+    /// act closes, those whose last version it selects
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<crate::quarantine::TypeQuarantined>,
 }
 
 impl RemoveReport {

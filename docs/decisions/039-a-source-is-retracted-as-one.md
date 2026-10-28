@@ -155,6 +155,15 @@ A host that must take back part of a source, values and not records,
 co-owned ones included, has its own act
 (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
 
+### A purge closes the source's quarantined records
+
+From lakelands#1502 (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`):
+a purge closes every open quarantined record of its source, or of the
+source and the type it names, `purged`, in its own append, and its
+preflight and report count them per type (`quarantined`). A purge
+erases nothing, so their cells stay in the log as its records' values
+do; a closed quarantined record is listed with no cell.
+
 ## Why
 
 A wrong export, a test feed, or a source the lake stops trusting is one

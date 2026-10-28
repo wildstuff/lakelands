@@ -123,6 +123,12 @@ impl ProjectionView for CountingView<'_> {
         self.handed.proposed.fetch_add(all.len(), Ordering::SeqCst);
         Ok(all)
     }
+    fn quarantined(
+        &self,
+        filter: &lakelands_api::quarantine::QuarantineFilter,
+    ) -> Result<Vec<lakelands_api::quarantine::Quarantined>> {
+        self.inner.quarantined(filter)
+    }
     fn proposals_before(
         &self,
         filter: &ProposalFilter,

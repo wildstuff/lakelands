@@ -39,6 +39,7 @@ fn intent(e: &Error) -> &'static str {
             Missing::Verb { .. } => "no such verb",
             Missing::Function { .. } => "no such function",
             Missing::Proposal { .. } => "no such proposal",
+            Missing::Quarantined { .. } => "no such quarantined record open to the caller",
             Missing::Unknown(_) => "a thing a newer lake knows: its message says it",
         },
         Error::Conflict { .. } => "the record moved: retry against its version",

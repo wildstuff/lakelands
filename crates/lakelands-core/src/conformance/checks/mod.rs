@@ -89,6 +89,7 @@ mod proposal_names;
 mod proposals;
 mod provenance;
 mod purge;
+mod quarantine;
 mod query_model;
 mod reached;
 mod reactions;
@@ -285,6 +286,12 @@ pub const ALL: &[Check] = &[
     ingest::UPSTREAM_PER_FIELD,
     ingest::DELIVERY_NAMED,
     ingest::UPSERT_REFUSES_SOURCE_FIELD,
+    quarantine::QUARANTINED_GOES_ON,
+    quarantine::QUARANTINED_WHICH,
+    quarantine::QUARANTINED_SIGHT,
+    quarantine::QUARANTINED_ACTS,
+    quarantine::QUARANTINED_CLOSED,
+    quarantine::QUARANTINED_VERSIONS,
     constraints::CONSTRAINT_HELD_AT_EVERY_DOOR,
     constraints::CONSTRAINT_JUDGED_THROUGH_WHAT_MOVES,
     constraints::CONSTRAINT_TOLD_AT_ACCEPT,
@@ -916,6 +923,7 @@ pub const ALL: &[Check] = &[
     upgrade::FORMAT_17_UPGRADED,
     upgrade::FORMAT_18_UPGRADED,
     upgrade::FORMAT_19_UPGRADED,
+    upgrade::FORMAT_20_UPGRADED,
     upgrade::LAYOUT_REBUILT,
     ahead::BUILT_AHEAD,
     verb_written::VERB_ONLY,

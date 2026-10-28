@@ -118,7 +118,8 @@ earlier in its window, appends nothing; so does a record that would change
 no field — a re-import of unchanged data appends nothing — and both count
 as duplicates. A window with a refused record appends nothing; the
 refusal is the stream's next item and the stream ends there, and the
-caller's own offset says where to resume. The refusal says where that
+caller's own offset says where to resume, unless the delivery asked
+that the record be quarantined (below). The refusal says where that
 is (lakelands#1043): it names the record, by the type and key its source
 sent, its place in the stream (`index`, counted from 0 over every record
 the stream handed out) and the place of the first record of its window
@@ -155,6 +156,28 @@ cost. A window of 0 or above the bound is refused as `limit_range` on
 `commit_window`, naming the bound, before anything is read, and a lake
 whose own `commit_window_events` is above its bound is not opened. The
 size changes only where the store cuts, which no answer turns on.
+
+### A delivery may ask that a refused record be quarantined, and its stream go on
+
+From lakelands#1502
+(`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`):
+an ingest may set `quarantine_refused`, for that call alone. A record
+then refused by a rule of the record, every check of the order below
+from the key's form on but a key holding `0x00`, an outage and a full
+quarantine, is kept as a quarantined record with its cells and its
+refusal, and the stream goes on. The window is decided without it, as
+the host would resume at `from` without it, and its `Committed` lists
+the stream `index` of each record it quarantined. A refusal of the
+call, of the source or of a type not declared, and one past
+`limits.quarantined_max`, ends the stream as without the option; the
+last carries `quarantine_full` beside `index`, `from` and `record`.
+
+A record may name what it `resubmits`, a quarantined record of its
+source by its first delivery and index. It is judged as any record; one
+written or counted as a duplicate closes what it names, and a duplicate
+that does so appends that close and nothing else: the one case where a
+duplicate appends. A redelivery that names no open quarantined record
+appends nothing, as before.
 
 ### A type may be written once by its source
 
@@ -303,6 +326,10 @@ same order (`constraint`, naming `to`). The refusal is
 `linked_already_from` or `linked_already_to`, naming the other link's
 end by one rule. The link found does not depend on which side of the
 cut it stands, so the cut changes no answer, `one_to_one` included.
+Under `quarantine_refused`, a record refused at any of these checks
+from the key's form on is quarantined unless the quarantine of its
+source is full (085), and a record named by `resubmits` that names no
+open quarantined record there to its writer is `not_found`.
 
 ### A door decides over everything the log holds
 

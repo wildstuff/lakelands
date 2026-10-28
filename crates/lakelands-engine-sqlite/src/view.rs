@@ -15,6 +15,7 @@ use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
 use lakelands_api::ontology::TypeDecl;
+use lakelands_api::quarantine::{QuarantineFilter, QuarantineState, Quarantined};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
@@ -1052,6 +1053,43 @@ impl ProjectionView for SqliteView<'_> {
                 |s: String| decode(&s, "a state"),
             )
             .map(Some)
+        })
+    }
+
+    fn quarantined(&self, filter: &QuarantineFilter) -> Result<Vec<Quarantined>> {
+        let open = filter.state.map(|s| i64::from(s == QuarantineState::Open));
+        let after = filter.after.as_ref();
+        let limit = filter.limit.map_or(-1, i64::from);
+        self.read(Vec::new(), |r| {
+            let rows: Vec<Quarantined> = column(
+                r.conn,
+                &format!(
+                    "SELECT state FROM quarantined WHERE {} \
+                     AND (?2 IS NULL OR source = ?2) AND (?3 IS NULL OR delivery = ?3) \
+                     AND (?4 IS NULL OR ix = ?4) \
+                     AND (?5 IS NULL OR json_extract(state, '$.type') = ?5) \
+                     AND (?6 IS NULL OR json_extract(state, '$.key') = ?6) \
+                     AND (?7 IS NULL OR (json_extract(state, '$.closed') IS NULL) = ?7) \
+                     AND (?8 IS NULL OR (source, delivery, ix) > (?8, ?9, ?10)) \
+                     ORDER BY source, delivery, ix LIMIT ?11",
+                    holds_at(1)
+                ),
+                params![
+                    r.at(),
+                    filter.source.as_ref().map(|s| s.as_str()),
+                    filter.delivery.as_ref().map(|d| d.as_str()),
+                    filter.index.map(|i| i as i64),
+                    filter.ty.as_ref().map(|t| t.as_str()),
+                    filter.key.as_ref().map(|k| k.as_str()),
+                    open,
+                    after.map(|a| a.source.as_str()),
+                    after.map(|a| a.delivery.as_str()),
+                    after.map(|a| a.index as i64),
+                    limit,
+                ],
+                |s: String| decode(&s, "a quarantined record"),
+            )?;
+            Ok(filter.answer(rows))
         })
     }
 

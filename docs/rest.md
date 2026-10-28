@@ -120,6 +120,8 @@ key may hold any character.
 | `POST …/search` | search | body: the search tool's arguments |
 | `GET …/describe` | describe the lake | query: `as_of`, `valid_at` |
 | `GET …/describe/<type>` | describe one type | query: `as_of`, `valid_at` |
+| `GET …/quarantined` | quarantined records | query: `source`, `type`, `delivery`, `index`, `state` (`open` or `closed`), `limit`, `after` (an id, as JSON) |
+| `POST …/quarantined/dismiss` | dismiss a quarantined record | body: the id, `source`, `delivery`, `index` |
 | `GET …/proposals` | proposals | query: `state`, `type`, `kind`, `limit`, `order_by`, `cursor`, `as_of`, `valid_at` |
 | `POST …/proposals` | propose | body: `write` (`upsert`, `retire`, `call`, `declare` with `declarations`, `migrate` with `migration`, or `records` with `type`, `where` and `to`), `why` |
 | `POST …/proposals/<id>/accept` | accept | — |
@@ -292,7 +294,12 @@ event, and a window before any event of the call names none
 (`docs/log-format.md` §1.1). `?sealed_apart` seals the call's values
 of erasable fields under a key of their own too, so that taking back
 the delivery shreds it alone
-(`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). `?commit_window=`
+(`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+`?quarantine_refused` keeps a record refused by a rule of the record as
+a quarantined record and goes on; each window's line then lists the
+`index` of each record it quarantined in `quarantined`, and a line may
+name what it `resubmits` (`{"delivery":…,"index":…}`)
+(`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`). `?commit_window=`
 is the most records one of the call's windows holds, between 1 and the
 lake's `limits.commit_window_max`; without it the lake's
 `commit_window_events` applies. Within that bound, where a window is
@@ -316,7 +323,8 @@ refuses ends the ingest with a last line that is its refusal, its own
 `error` code and shape kept, with `index` (its place among the body's
 records, from 0), `from` (the first record of its window: every record
 before it is committed, none from it on) and `record` (its `type` and
-`key`) beside it; send the body again from record `from`, the refused
+`key`) beside it, and `quarantine_full` (`{"max":…}`) where the record
+was refused past `limits.quarantined_max`; send the body again from record `from`, the refused
 one left out or mended. A refused ingest is
 answered even while the body is still arriving: the server reads the
 rest of the body and drops it, for at most fifteen seconds, before it

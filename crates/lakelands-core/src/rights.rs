@@ -938,6 +938,63 @@ impl Sight<'_> {
         Ok(())
     }
 
+    /// What its principal is shown of a quarantined record's `cells`,
+    /// under their names at the head of `decl`, and which it is shown
+    /// masked (085). A cell is read as its field, `sensitive` raising one
+    /// that was so when it came (`sensitive`); one of no field by the
+    /// type's default. A hiding lowers it where it selects the record the
+    /// cells would leave, or `live`, the record at the key: a `G` cell
+    /// that is there and holds no text selects, as no value can be told
+    /// not to.
+    pub fn quarantined_cells(
+        &self,
+        decl: &TypeDecl,
+        cells: &BTreeMap<FieldName, Value>,
+        sensitive: &[FieldName],
+        live: Option<&BTreeMap<FieldName, Value>>,
+    ) -> (BTreeMap<FieldName, Value>, Vec<FieldName>) {
+        let (who, hidings) = (self.who(), self.hidings(&decl.name));
+        let applies = hidings.is_empty() || self.lowering(decl, None).0;
+        let selects = |h: &HiddenWhere| match cells.get(&h.field) {
+            Some(Value::String(v)) => h.values.contains(v),
+            Some(Value::Null) | None => false,
+            Some(_) => true,
+        };
+        let on_live = |h: &HiddenWhere| match live.and_then(|l| l.get(&h.field)) {
+            Some(Value::String(v)) => h.values.contains(v),
+            _ => false,
+        };
+        let picked: Vec<bool> = (hidings.iter())
+            .map(|h| !applies || selects(h) || on_live(h))
+            .collect();
+        let lowered = match picked.contains(&true) {
+            true => self.lowering(decl, Some(picked)).1,
+            false => Lowered::default(),
+        };
+        let (mut shown, mut masked) = (BTreeMap::new(), Vec::new());
+        for (name, value) in cells {
+            let raised = sensitive.contains(name);
+            let access = match decl.field(name) {
+                Some(f) => {
+                    let mut f = f.clone();
+                    f.sensitive |= raised;
+                    let a = field_access(who, decl, &f);
+                    lowered.get(name).map_or(a, |l| a.lowest(*l))
+                }
+                None => match type_access(who, &decl.name) {
+                    Access::None if raised => Access::Masked,
+                    a => a,
+                },
+            };
+            match access {
+                a if a.reads() => _ = shown.insert(name.clone(), value.clone()),
+                Access::Masked => masked.push(name.clone()),
+                _ => {}
+            }
+        }
+        (shown, masked)
+    }
+
     /// Whether its principal's hidings lower `f` of `decl` on some records.
     pub fn lowers_somewhere(&self, decl: &TypeDecl, f: &FieldName) -> bool {
         let all = vec![true; self.hidings(&decl.name).len()];

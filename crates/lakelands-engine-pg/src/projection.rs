@@ -59,6 +59,7 @@ use lakelands_api::engine::{Applied, Choose, Chosen, Declared, TextCounts};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
+use lakelands_api::quarantine::QuarantineId;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
@@ -175,6 +176,12 @@ CREATE TABLE IF NOT EXISTS {s}.proposals (
     PRIMARY KEY (id, since)
 ){pt};
 CREATE INDEX IF NOT EXISTS proposals_newest ON {s}.proposals (((state::jsonb ->> 'position')::int8));
+CREATE TABLE IF NOT EXISTS {s}.quarantined (
+    source TEXT COLLATE \"C\" NOT NULL, delivery TEXT COLLATE \"C\" NOT NULL, ix TEXT NOT NULL,
+    since BIGINT NOT NULL, state TEXT NOT NULL,
+    PRIMARY KEY (source, delivery, ix, since)
+){pt};
+CREATE INDEX IF NOT EXISTS quarantined_at ON {s}.quarantined ((state::jsonb ->> 'type'), (state::jsonb ->> 'key'));
 CREATE TABLE IF NOT EXISTS {s}.members (
     object_set TEXT NOT NULL, ty TEXT NOT NULL, key TEXT NOT NULL,
     since BIGINT NOT NULL, state BOOLEAN NOT NULL,
@@ -319,7 +326,7 @@ pub(crate) const LAYOUT: u64 = 9;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 26] = [
+pub(crate) const LAKE_TABLES: [&str; 27] = [
     "meta",
     "lease",
     "segments",
@@ -328,6 +335,7 @@ pub(crate) const LAKE_TABLES: [&str; 26] = [
     "declarations",
     "records",
     "proposals",
+    "quarantined",
     "members",
     "outputs",
     "applied",
@@ -371,12 +379,21 @@ pub(crate) struct History {
 pub(crate) const DECLARATIONS: History = History::new("declarations", &["ident"], "text", true);
 pub(crate) const RECORDS: History = History::new("records", &["ty", "key"], "text", true);
 pub(crate) const PROPOSALS: History = History::new("proposals", &["id"], "text", false);
+pub(crate) const QUARANTINED: History =
+    History::new("quarantined", &["source", "delivery", "ix"], "text", false);
 pub(crate) const OUTPUTS: History = History::new("outputs", &["seam", "input"], "text", false);
 pub(crate) const MEMBERS: History =
     History::new("members", &["object_set", "ty", "key"], "boolean", false);
 
 /// Every history.
-const HISTORIES: [&History; 5] = [&DECLARATIONS, &RECORDS, &PROPOSALS, &MEMBERS, &OUTPUTS];
+const HISTORIES: [&History; 6] = [
+    &DECLARATIONS,
+    &RECORDS,
+    &PROPOSALS,
+    &QUARANTINED,
+    &MEMBERS,
+    &OUTPUTS,
+];
 
 impl History {
     const fn new(
@@ -1697,6 +1714,7 @@ pub(crate) struct Buffer {
     /// heads are written.
     ended: BTreeSet<String>,
     proposals: BTreeMap<(Vec<String>, i64), String>,
+    quarantined: BTreeMap<(Vec<String>, i64), String>,
     outputs: BTreeMap<(Vec<String>, i64), String>,
     members: BTreeMap<(Vec<String>, i64), bool>,
     /// Applied ids, each with the first position it was marked at.
@@ -1725,7 +1743,7 @@ impl Buffer {
     pub(crate) fn len(&self) -> usize {
         let (records, states) = (
             self.records.len() + self.heads.len() + self.ended.len(),
-            self.proposals.len() + self.outputs.len(),
+            self.proposals.len() + self.quarantined.len() + self.outputs.len(),
         );
         let dropped =
             self.dropped.len() + self.dropped_outputs.len() + usize::from(self.dropped_bases);
@@ -1797,6 +1815,15 @@ impl Buffer {
     pub(crate) fn proposal(&mut self, id: &str, at: Position, state: String) {
         self.proposals
             .insert((vec![id.to_owned()], at.0 as i64), state);
+    }
+
+    pub(crate) fn quarantined(&mut self, id: &QuarantineId, at: Position, state: String) {
+        let ident = vec![
+            id.source.to_string(),
+            id.delivery.to_string(),
+            id.index.to_string(),
+        ];
+        self.quarantined.insert((ident, at.0 as i64), state);
     }
 
     pub(crate) fn output(&mut self, seam: &str, input: &str, at: Position, state: String) {
@@ -1961,6 +1988,7 @@ impl Buffer {
             )?;
         }
         PROPOSALS.put_many(db, names, &self.proposals)?;
+        QUARANTINED.put_many(db, names, &self.quarantined)?;
         OUTPUTS.put_many(db, names, &self.outputs)?;
         MEMBERS.put_many(db, names, &self.members)?;
         let mut latest = Vec::with_capacity(heads.len());

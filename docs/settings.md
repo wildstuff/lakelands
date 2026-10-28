@@ -208,6 +208,13 @@ The active segment's size past which the writer seals it after an append, as `ch
 - **Default:** `268435456`.
 - **Cost:** each seal holds the writer as a `checkpoint` does, about 2 ms a MiB of the segment: the write that crosses 256 MiB waited 0.51 s on SQLite, against 16 ms for a write of 1 MiB; every checkpoint lists each sealed segment, so a small bound makes many seals and long checkpoints.
 
+### `limits.quarantined_max`
+
+The most open quarantined records one source keeps; a refusal an ingest asks to quarantine past it ends the stream, the record's own refusal with `quarantine_full` beside it. Closed ones are not counted.
+
+- **Takes:** a count; 0 quarantines nothing.
+- **Default:** `10000`.
+
 ### `engine.tuning.writer_cache_kb`
 
 SQLite: the writer connection's page cache.

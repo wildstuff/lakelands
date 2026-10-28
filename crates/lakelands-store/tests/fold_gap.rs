@@ -194,6 +194,13 @@ impl ProjectionStore for Failing {
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.inner.projection().put_proposal(proposal, at)
     }
+    fn put_quarantined(
+        &self,
+        row: &lakelands_api::quarantine::Quarantined,
+        at: Position,
+    ) -> Result<()> {
+        self.inner.projection().put_quarantined(row, at)
+    }
     fn put_membership(
         &self,
         set: &str,
