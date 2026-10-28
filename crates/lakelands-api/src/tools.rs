@@ -1399,6 +1399,11 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 json!({"type": "boolean",
                 "description": format!("Answer on each hit the searched fields its text matched, each with the char spans of its first {} matched tokens and their count; needs a text.", crate::query::MATCH_SPANS)}),
             ),
+            (
+                "text_as_of",
+                json!({"type": "boolean",
+                "description": "lexical only: rank by the text the records `where` selects held at `as_of`, not by the head's, so a record that held the words then is found; needs `as_of` and `where`, takes no `rerank`, and is refused past the lake's `limits.max_text_as_of` records, never cut."}),
+            ),
         ]);
         time_axes(&mut p);
         out.push(ToolSpec {

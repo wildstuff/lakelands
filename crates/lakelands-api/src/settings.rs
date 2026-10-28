@@ -190,6 +190,11 @@ pub const SETTINGS: &[Setting] = &[
         ..location("limits.max_rerank_top", "100")
     },
     Setting {
+        range: "a count, at most 1000000",
+        says: "The most records a search with `text_as_of` may rank: one whose `where` selects more at the position it reads is refused, naming this setting, and never cut. 0 turns `text_as_of` off: a search with it whose `where` selects any record is refused. A lake whose location sets more than 1 000 000 is not opened.",
+        ..location("limits.max_text_as_of", "10000")
+    },
+    Setting {
         range: "`true` or `false`",
         says: "Whether the lake chooses an order index itself, for a field a type is ordered by whole at least `limits.order_after_pages` times within `limits.order_window_secs`, beside what `sort_index` names; the host's own `sort_index` for a type always wins. Off, only what the host sets is indexed.",
         cost: "each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records",

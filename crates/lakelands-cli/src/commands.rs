@@ -453,6 +453,26 @@ pub async fn query(
     put(out, v)
 }
 
+/// `search`: a lexical search, at `as_of` and `valid_at` where given, or
+/// the page after `cursor`, printed as the door answers it.
+pub async fn search(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    mut search: lakelands_api::query::Search,
+    (as_of, valid_at, cursor): (Option<Position>, Option<String>, Option<String>),
+) -> Result<(), Failure> {
+    search.at = ReadAt {
+        as_of,
+        valid_at: flag("valid-at", valid_at)?,
+        clock: None,
+    };
+    search.cursor = flag("cursor", cursor)?;
+    let hits = catalog.search(who, search).await.map_err(Failure::from)?;
+    let json = |e: serde_json::Error| Failure::new(e.to_string(), "report it as a bug");
+    put(out, serde_json::to_value(hits).map_err(json)?)
+}
+
 /// The value of `--<name>`, read as its JSON string reads.
 fn flag<T: serde::de::DeserializeOwned>(
     name: &str,

@@ -1422,6 +1422,7 @@ impl Size<'_> {
                     matches: false,
                     at: ReadAt::default(),
                     rerank: None,
+                    text_as_of: false,
                 },
             )
             .await

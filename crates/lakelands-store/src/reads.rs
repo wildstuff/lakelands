@@ -173,6 +173,7 @@ mod proposals;
 mod query;
 mod search;
 mod stage;
+mod text_then;
 
 pub(crate) use edges::{Ends, answered, answered_of};
 use edges::{Reach, Visible, fuse};
@@ -335,11 +336,13 @@ fn own_text_weights(mode: &SearchMode) -> Option<&BTreeMap<FieldName, f64>> {
 }
 
 /// The digest of what decides a search's hits and their order: its mode,
-/// its `where`, `valid_at` and its second stage.
+/// its `where`, `valid_at`, its second stage and whether it ranks the
+/// text at its position.
 fn search_read(s: &Search) -> String {
-    match &s.rerank {
-        None => read_of((&s.mode, &s.filter, s.at.valid_at)),
-        Some(r) => read_of((&s.mode, &s.filter, s.at.valid_at, r)),
+    match (&s.rerank, s.text_as_of) {
+        (None, false) => read_of((&s.mode, &s.filter, s.at.valid_at)),
+        (None, true) => read_of((&s.mode, &s.filter, s.at.valid_at, "text_as_of")),
+        (Some(r), _) => read_of((&s.mode, &s.filter, s.at.valid_at, r)),
     }
 }
 

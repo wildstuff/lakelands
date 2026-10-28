@@ -1390,6 +1390,7 @@ fn lexical(ty: &str, text: &str, fields: Option<Vec<FieldName>>, with_meta: bool
         matches: false,
         at: ReadAt::default(),
         rerank: None,
+        text_as_of: false,
     }
 }
 

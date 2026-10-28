@@ -134,6 +134,7 @@ async fn a_cursor_continues_only_the_answer_it_was_handed_out_for(store: Store) 
         matches: false,
         at: ReadAt::default(),
         rerank: None,
+        text_as_of: false,
     };
     let (alpha, beta) = (TypeName::from("alpha"), TypeName::from("beta"));
     let next = |c: Option<Cursor>, what: &str| {
@@ -304,6 +305,7 @@ async fn a_cursor_continues_only_the_read_it_was_handed_out_for(store: Store) ->
         matches: false,
         at: ReadAt::default(),
         rerank: None,
+        text_as_of: false,
     };
     let query = |cursor, fields: Vec<String>, filter: &str| {
         let mut p = pattern("item", None, Vec::new(), Projection::Rows { fields });

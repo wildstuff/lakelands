@@ -445,6 +445,7 @@ async fn each_record_reads_the_provenance_of_its_own_writes(store: Store, reopen
             matches: false,
             at: read_at(as_of),
             rerank: None,
+            text_as_of: false,
         };
         let hits = cat.search(own, search).await.must("searching the notes")?;
         let hits = hits.data.hits.into_iter();

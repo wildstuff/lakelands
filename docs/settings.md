@@ -143,6 +143,13 @@ The largest `top` a search's `rerank` may ask for; a larger one is refused, nami
 - **Takes:** a count, 1 at least.
 - **Default:** `100`.
 
+### `limits.max_text_as_of`
+
+The most records a search with `text_as_of` may rank: one whose `where` selects more at the position it reads is refused, naming this setting, and never cut. 0 turns `text_as_of` off: a search with it whose `where` selects any record is refused. A lake whose location sets more than 1 000 000 is not opened.
+
+- **Takes:** a count, at most 1000000.
+- **Default:** `10000`.
+
 ### `limits.choose_order_index`
 
 Whether the lake chooses an order index itself, for a field a type is ordered by whole at least `limits.order_after_pages` times within `limits.order_window_secs`, beside what `sort_index` names; the host's own `sort_index` for a type always wins. Off, only what the host sets is indexed.
