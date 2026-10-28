@@ -180,6 +180,7 @@ macro_rules! door_checks {
             a_narrow_writer_cannot_retire,
             a_proposer_sees_only_its_own_proposals,
             ingest_is_content_addressed,
+            a_refused_record_is_quarantined_listed_and_dismissed,
             a_cursor_keeps_its_page_set_while_writes_land,
             a_page_answers_its_total_and_jumps_by_offset,
             a_cursor_continues_only_its_own_answer,
@@ -5839,6 +5840,84 @@ pub async fn ingest_is_content_addressed(store: Arc<dyn LakeStore>) {
         .await
         .err()
         .expect("the clerk may not ingest");
+    assert_eq!(refusal(&e).1, &Refusal::NotGranted);
+}
+
+/// An ingest asking `quarantine_refused` reaches the store whole: the
+/// refused record is quarantined, the stream goes on, and the listing
+/// and the dismiss answer it as the store does
+/// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+pub async fn a_refused_record_is_quarantined_listed_and_dismissed(store: Arc<dyn LakeStore>) {
+    use lakelands_api::quarantine::{ClosedWhy, QuarantineFilter, QuarantineId};
+    let f = setup(store).await;
+    let rec = |k: &str, fields: &[(&str, Value)]| SourceRecord {
+        source: None,
+        upstream: None,
+        ty: ty(INVOICE),
+        key: key(k),
+        fields: patch(fields),
+        seen_at: None,
+        resubmits: None,
+    };
+    let amount = ("amount", json!("1.00"));
+    let records = vec![
+        rec("INV-Q1", std::slice::from_ref(&amount)),
+        rec("INV-Q2", &[amount.clone(), ("nope", json!("x"))]),
+        rec("INV-Q3", &[amount]),
+    ];
+    let opts = lakelands_api::IngestOpts {
+        delivery: Some("q1".into()),
+        quarantine_refused: true,
+        ..Default::default()
+    };
+    let (importer, bank) = (&f.cast.importer, SourceId::from("bank"));
+    let windows =
+        lakelands_api::ingest_all_with(f.catalog.as_ref(), importer, &bank, opts, records)
+            .await
+            .unwrap();
+    let quarantined: Vec<u64> = windows.iter().flat_map(|w| w.quarantined.clone()).collect();
+    let landed: u32 = windows.iter().map(|w| w.records).sum();
+    assert_eq!((quarantined, landed), (vec![1], 2), "{windows:?}");
+    let id = QuarantineId {
+        source: bank.clone(),
+        delivery: "q1".into(),
+        index: 1,
+    };
+    let listed = |state| {
+        let filter = QuarantineFilter {
+            source: Some(bank.clone()),
+            state,
+            ..QuarantineFilter::default()
+        };
+        let catalog = f.catalog.clone();
+        let owner = f.cast.owner.clone();
+        async move { catalog.quarantined(&owner, filter).await.unwrap().data }
+    };
+    let open = listed(None).await;
+    let [q] = open.as_slice() else {
+        panic!("one record is quarantined: {open:?}");
+    };
+    assert_eq!((&q.id, q.key.as_str()), (&id, "INV-Q2"), "{q:?}");
+    assert!(
+        matches!(refusal(&q.refusal).1, Refusal::Invalid(_)),
+        "{q:?}"
+    );
+    let close = f
+        .catalog
+        .dismiss_quarantined(&f.cast.owner, &id)
+        .await
+        .unwrap();
+    assert_eq!(close.why, ClosedWhy::Dismissed);
+    let closed = listed(None).await;
+    assert!(
+        closed.len() == 1 && closed[0].closed.as_ref() == Some(&close),
+        "{closed:?}"
+    );
+    let e = f
+        .catalog
+        .quarantined(&f.cast.clerk, QuarantineFilter::default())
+        .await
+        .expect_err("the clerk holds no `ingest`");
     assert_eq!(refusal(&e).1, &Refusal::NotGranted);
 }
 

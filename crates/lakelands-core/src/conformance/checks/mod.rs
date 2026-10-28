@@ -288,6 +288,8 @@ pub const ALL: &[Check] = &[
     ingest::UPSERT_REFUSES_SOURCE_FIELD,
     quarantine::QUARANTINED_GOES_ON,
     quarantine::QUARANTINED_WHICH,
+    quarantine::QUARANTINED_TABLE,
+    quarantine::QUARANTINED_ENDS,
     quarantine::QUARANTINED_SIGHT,
     quarantine::QUARANTINED_ACTS,
     quarantine::QUARANTINED_CLOSED,

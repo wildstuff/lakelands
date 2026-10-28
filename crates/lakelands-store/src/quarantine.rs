@@ -254,6 +254,20 @@ pub(crate) fn act_closes(
     Ok((closes, counts))
 }
 
+/// The type and key a caller's write door lands `d` at, where it closes
+/// the open rows there as landed: none for the store's own record events.
+pub(crate) fn landing(d: &Draft) -> Option<(TypeName, RecordKey)> {
+    match &d.body {
+        EventBody::RecordUpserted { ty, key, .. } | EventBody::RecordIngested { ty, key, .. }
+            if matches!(d.origin, Origin::Authored | Origin::Source)
+                && d.writer != crate::record::STORE_WRITER =>
+        {
+            Some((ty.clone(), key.clone()))
+        }
+        _ => None,
+    }
+}
+
 impl Lake {
     /// `drafts` with, after them, a `quarantine_closed` for each open
     /// quarantined record at the type and key of a `record_upserted` or
@@ -265,16 +279,6 @@ impl Lake {
         if w.staged.is_none() {
             w.closing.clear();
         }
-        let landing = |d: &Draft| match &d.body {
-            EventBody::RecordUpserted { ty, key, .. }
-            | EventBody::RecordIngested { ty, key, .. }
-                if matches!(d.origin, Origin::Authored | Origin::Source)
-                    && d.writer != crate::record::STORE_WRITER =>
-            {
-                Some((ty.clone(), key.clone()))
-            }
-            _ => None,
-        };
         let Some(now) = drafts
             .iter()
             .find(|d| landing(d).is_some())

@@ -405,8 +405,9 @@ fn next_drains_a_stream_in_order_and_then_ends() {
 }
 
 /// A catalog that carries no delivery id to the store refuses one, rather
-/// than drop it, and so a delivery sealed apart (065) and a commit window
-/// of its own (016); with none, its `ingest_with` is its `ingest`.
+/// than drop it, and so a delivery sealed apart (065), a commit window
+/// of its own (016) and a quarantine (085); with none, its `ingest_with`
+/// is its `ingest`.
 #[test]
 fn a_catalog_that_carries_no_delivery_refuses_one() {
     use lakelands_api::error::Case;
@@ -450,6 +451,17 @@ fn a_catalog_that_carries_no_delivery_refuses_one() {
     let window = block_on(cat.ingest_with(&who, &src, window, super::fixture::stream(vec![])));
     let case = window.err().and_then(|e| e.case().map(|s| s.case.clone()));
     assert_eq!(case, Some(Case::CommitWindowNotCarried));
+    // A quarantine is refused first, whatever else the call asks.
+    let quarantine = IngestOpts {
+        quarantine_refused: true,
+        ..with(Some("batch-8"))
+    };
+    let quarantine =
+        block_on(cat.ingest_with(&who, &src, quarantine, super::fixture::stream(vec![])));
+    let case = quarantine
+        .err()
+        .and_then(|e| e.case().map(|s| s.case.clone()));
+    assert_eq!(case, Some(Case::QuarantineRefusedNotCarried));
 }
 
 /// `requires_unmet` is, by value, the refusal the checks built by hand.

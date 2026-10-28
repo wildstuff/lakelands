@@ -48,7 +48,7 @@ use lakelands_api::record::Origin;
 use lakelands_api::write::{Committed, IngestOpts};
 use lakelands_api::{
     DeliveryId, Error, Missing, Position, Principal, RecordKey, Result, SourceId, SourceRecord,
-    Timestamp,
+    Timestamp, TypeName,
 };
 use lakelands_core::sight::Door;
 
@@ -56,7 +56,7 @@ use crate::exec::{self, Turn};
 use crate::lake::{Lake, Reads, Writer};
 use crate::log::{self, Draft};
 use crate::purge::made_by;
-use crate::quarantine::{close_of, there};
+use crate::quarantine::{close_of, landing, there};
 use crate::sealing::turns;
 use crate::writes::{Call, Decide};
 use lakelands_core::{canonical, links};
@@ -231,6 +231,33 @@ impl Rows<'_> {
         }
         Ok(self.open.get_mut(source).expect("counted"))
     }
+
+    /// The open rows at `at`, of any source, closed as a record lands
+    /// there, as [`Lake::closing`] closes them after the window's append:
+    /// their places under the bound are free to the window's next
+    /// refusal, as to the next window's (085).
+    fn landed(
+        &mut self,
+        view: &dyn ProjectionView,
+        (ty, key): (TypeName, RecordKey),
+    ) -> Result<()> {
+        let at = QuarantineFilter {
+            ty: Some(ty),
+            key: Some(key),
+            state: Some(QuarantineState::Open),
+            ..QuarantineFilter::default()
+        };
+        for q in crate::quarantine::rows(view, &self.rows, &at)? {
+            self.open(view, &q.id.source)?.1 -= 1;
+            let close = QuarantineClose {
+                why: ClosedWhy::Landed,
+                position: q.position,
+            };
+            self.rows
+                .insert(q.id.clone(), crate::quarantine::closed(q, close));
+        }
+        Ok(())
+    }
 }
 
 /// The open quarantined record of `source` the record `r` resubmits,
@@ -333,6 +360,7 @@ fn judge(
         let source = r.source.as_ref().unwrap_or(source);
         let target = resubmitted(&d, (view, &rows), r, source);
         let target = target.map_err(|e| ingested(e, index, first, r))?;
+        let from = drafts.len();
         let judged = (|| {
             let decl = d.at.sight.ty(&r.ty)?;
             crate::writes::untold_setting(&d.at.sight, decl, &r.key)?;
@@ -476,6 +504,12 @@ fn judge(
                     };
                     rows.rows
                         .insert(q.id.clone(), crate::quarantine::closed(q, close));
+                }
+                if rows.asked.is_some() {
+                    let landed: Vec<_> = drafts[from..].iter().filter_map(landing).collect();
+                    landed
+                        .into_iter()
+                        .try_for_each(|at| rows.landed(view, at))?;
                 }
             }
             // A record refused names itself and where its window began,

@@ -192,7 +192,7 @@ async fn a_refused_record_is_quarantined_and_the_stream_goes_on(store: Store) ->
 
 check!(
     QUARANTINED_WHICH = a_refusal_of_the_record_is_quarantined_and_one_of_the_call_ends_the_stream,
-    "085: an empty key, a field not declared, an author's field, a field not granted, a value that does not fit and an empty record at a key not live are each quarantined, the empty key listed as the empty string; a type not declared, a key holding NUL and a writer without `ingest` end the stream as without the option; past `limits.quarantined_max` a `not_granted` and a `constraint` each end it, the last item the record's own refusal with `quarantine_full` and the bound beside it, and a dismiss frees a place under the bound",
+    "085: an empty key, a field not declared, an author's field, a field not granted, a value that does not fit and an empty record at a key not live are each quarantined, the empty key listed as the empty string; a type not declared, a key holding NUL and a writer without `ingest` end the stream as without the option; past `limits.quarantined_max` a `not_granted` and a `constraint` each end it, the last item the record's own refusal with `quarantine_full` and the bound beside it, appending nothing, a resubmission refused again under a full bound is its version 2, and a dismiss frees a place under the bound; under a bound of one, a quarantined record whose key lands earlier in the same window frees its place for a later refusal of that window, at a `commit_window` of 1 and of 256",
     given
 );
 
@@ -329,12 +329,8 @@ async fn a_refusal_of_the_record_is_quarantined_and_one_of_the_call_ends_the_str
             ..IngestOpts::default()
         };
         let without = fed(&l, who, "erp", opts, records).await;
-        let alike = match (&with, &without) {
-            (Err(a), Err(b)) => a.kind_alone() == b.kind_alone(),
-            _ => false,
-        };
         ensure!(
-            alike,
+            with.is_err() && with == without,
             "{what} must end the stream as without the option; with it the delivery \
              answered {with:?}, without it {without:?}"
         );
@@ -374,7 +370,9 @@ async fn a_refusal_of_the_record_is_quarantined_and_one_of_the_call_ends_the_str
     ];
     for (what, record, who, want) in past {
         let records = vec![source_record("invoice", "ok", json!({"amount": 1})), record];
+        let head = store.head().await.must("reading the head")?;
         let got = fed(&l, who, "erp", kept("past"), records).await;
+        head_unmoved(store.as_ref(), head, &format!("{what} past the bound")).await?;
         let ended = match &got {
             Err(Error::Ingested {
                 index: 1,
@@ -411,6 +409,452 @@ async fn a_refusal_of_the_record_is_quarantined_and_one_of_the_call_ends_the_str
     ensure!(
         freed.as_ref().is_ok_and(|w| indexes(w) == [0]),
         "a dismiss must free a place under the bound; the next refusal answered {freed:?}"
+    );
+    // Full again: a new version of an open row takes no place of its own.
+    let y2 = qid("erp", "y2", 0);
+    let other = vec![resubmitting(&y2, inv("k2", json!(1), Some("nope")))];
+    let got = fed(&l, &l.own, "erp", kept("again"), other).await;
+    let q = row_of(&l, &l.own, y2.clone()).await?;
+    ensure!(
+        got.as_ref().is_ok_and(|w| indexes(w) == [0]) && q.is_some_and(|q| q.version == 2),
+        "under a full bound, `y2` refused otherwise must be its version 2; it answered {got:?}"
+    );
+    // A record landing at an open row's key frees its place for the
+    // window's next refusal, and one quarantined in the window and landed
+    // in it frees its own: the same at either window.
+    for (window, p, y) in [(1, "w", "y2"), (256, "x", "y4")] {
+        let what = format!("a delivery at a window of {window} landing where rows are open");
+        let at = qid("erp", y, 0);
+        let row = row_of(&l, &l.own, at.clone()).await?;
+        let key = row.map(|q| q.key.0).unwrap_or_default();
+        let records = vec![
+            inv(&key, json!(1), None),
+            inv(&format!("{p}a"), json!("x"), None),
+            inv(&format!("{p}a"), json!(1), None),
+            inv(&format!("{p}b"), json!("x"), None),
+        ];
+        let opts = IngestOpts {
+            commit_window: Some(window),
+            ..kept(p)
+        };
+        let got = fed(&l, &l.own, "erp", opts, records).await.must(&what)?;
+        let landed = crate::conformance::fixture::committed(&got);
+        let closed = [
+            closed_as(&l, at).await?,
+            closed_as(&l, qid("erp", p, 1)).await?,
+        ];
+        ensure!(
+            landed == (2, 0) && indexes(&got) == [1, 3] && closed == [Some(ClosedWhy::Landed); 2],
+            "{what} answered {got:?}, and closed `{y}` and its own row {closed:?}"
+        );
+    }
+    Ok(())
+}
+
+check!(
+    QUARANTINED_TABLE = each_refusal_of_a_rule_of_the_record_is_quarantined_as_it_is_refused,
+    "085: a field only verbs write, a key that does not split into its key fields, key fields the key disagrees with, a reference to no live record, a required field with no value, a record `only` does not admit, one at a key restricted from its writer, a second record of a type written once and a link past its cardinality are each quarantined with the refusal the stream ends with without the option"
+);
+
+/// The types the table's refusals are of: `acct`, keyed by `bank` and
+/// `no`, `code` required, `owner` naming a `party`, `status` verbs'; a
+/// `party`; `entry`, written once; `deal`, linked to one `party` at most
+/// over `to`; `line`, admitted by `owner`.
+async fn table(l: &Lake) -> Result<(), Failure> {
+    let (text, source) = (json!({"kind": "text"}), "source");
+    l.declare_json(json!({"declare": "type", "name": "party",
+        "fields": [{"name": "name", "type": text, "authority": source}]}))
+        .await?;
+    l.declare_json(
+        json!({"declare": "type", "name": "acct", "key": ["bank", "no"], "fields": [
+        {"name": "bank", "type": text, "authority": source},
+        {"name": "no", "type": text, "authority": source},
+        {"name": "code", "type": text, "authority": source, "required": true},
+        {"name": "owner", "type": {"kind": "reference", "target": "party"}, "authority": source},
+        {"name": "status", "type": text, "authority": "verb", "initial": "open"}]}),
+    )
+    .await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "shut", "on": "acct", "risk": "low",
+        "effect": "write", "set": [{"field": "status", "value": "'shut'"}]}),
+    )
+    .await?;
+    l.declare_json(
+        json!({"declare": "type", "name": "entry", "insert_only": true,
+        "fields": [{"name": "amount", "type": {"kind": "number"}, "authority": source}]}),
+    )
+    .await?;
+    l.declare_json(json!({"declare": "type", "name": "deal",
+        "fields": [{"name": "name", "type": text, "authority": source}],
+        "relations": [{"name": "to", "target": "party", "cardinality": "many_to_one",
+                       "authority": source}]}))
+        .await?;
+    l.declare_json(json!({"declare": "type", "name": "line",
+        "fields": [{"name": "owner", "type": text, "authority": source}]}))
+        .await?;
+    Ok(())
+}
+
+async fn each_refusal_of_a_rule_of_the_record_is_quarantined_as_it_is_refused(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    table(&l).await?;
+    let first = [
+        source_record("party", "p1", json!({"name": "a"})),
+        source_record("party", "p2", json!({"name": "b"})),
+        source_record("party", "r1", json!({"name": "c"})),
+        source_record("deal", "d1", json!({"name": "d"})),
+        source_record("entry", "e1", json!({"amount": 1})),
+        source_record(
+            "sys.link.deal.to",
+            link_key(&"d1".into(), &"p1".into()).as_str(),
+            json!({"from": "d1", "to": "p1"}),
+        ),
+    ];
+    l.ingest("erp", first.to_vec())
+        .await
+        .must("ingesting the table's records")?;
+    restrict(store.as_ref(), "party", "r1", "held").await?;
+    let feeder = holder(
+        store.as_ref(),
+        "feeder",
+        json!({"default": "write", "ingest": true,
+               "types": {"line": {"only": {"owner": "alice"}}}}),
+    );
+    let acct = |key: &str, fields: Value| source_record("acct", key, fields);
+    // The `sys.` row is not met here: every field of `sys.setting` and
+    // `sys.aging_rule` is an author's, so a source's is refused at the door
+    // first, as `wrong_door`, which the table holds already.
+    let rows: [(&str, SourceRecord, &Principal, &str); 9] = [
+        (
+            "a field only verbs write",
+            acct(
+                "b:1",
+                json!({"bank": "b", "no": "1", "code": "c", "status": "x"}),
+            ),
+            &l.own,
+            "verbs_only",
+        ),
+        (
+            "a key that does not split",
+            acct("b", json!({"bank": "b", "no": "2", "code": "c"})),
+            &l.own,
+            "invalid",
+        ),
+        (
+            "key fields the key disagrees with",
+            acct("b:3", json!({"bank": "c", "no": "3", "code": "c"})),
+            &l.own,
+            "invalid",
+        ),
+        (
+            "a reference to no live record",
+            acct(
+                "b:4",
+                json!({"bank": "b", "no": "4", "code": "c", "owner": "ghost"}),
+            ),
+            &l.own,
+            "constraint",
+        ),
+        (
+            "a required field with no value",
+            acct("b:5", json!({"bank": "b", "no": "5"})),
+            &l.own,
+            "constraint",
+        ),
+        (
+            "a record `only` does not admit",
+            source_record("line", "l1", json!({"owner": "bob"})),
+            &feeder,
+            "not_granted",
+        ),
+        (
+            "a record at a key restricted from its writer",
+            source_record("party", "r1", json!({"name": "e"})),
+            &feeder,
+            "not_granted",
+        ),
+        (
+            "a second record of a type written once",
+            source_record("entry", "e1", json!({"amount": 2})),
+            &l.own,
+            "constraint",
+        ),
+        (
+            "a link past its cardinality",
+            source_record(
+                "sys.link.deal.to",
+                link_key(&"d1".into(), &"p2".into()).as_str(),
+                json!({"from": "d1", "to": "p2"}),
+            ),
+            &l.own,
+            "linked_already_from",
+        ),
+    ];
+    for (i, (what, record, who, want)) in rows.into_iter().enumerate() {
+        let plain = IngestOpts {
+            delivery: Some(format!("w{i}").into()),
+            ..IngestOpts::default()
+        };
+        let without = fed(&l, who, "erp", plain, vec![record.clone()]).await;
+        let Err(Error::Ingested { error, .. }) = &without else {
+            return Err(Failure::new(format!(
+                "{what} must end the stream without the option; it answered {without:?}"
+            )));
+        };
+        // The refusal's kind, or the case it names.
+        let named = json!(error).to_string().contains(&format!("\"{want}\""));
+        ensure!(named, "{what} must be refused `{want}`, not {error:?}");
+        let delivery = format!("t{i}");
+        let with = fed(&l, who, "erp", kept(&delivery), vec![record]).await;
+        let q = row_of(&l, &l.own, qid("erp", &delivery, 0)).await?;
+        ensure!(
+            with.as_ref().is_ok_and(|w| indexes(w) == [0])
+                && q.as_ref().is_some_and(|q| q.refusal == **error),
+            "{what} must be quarantined with {error:?}; it answered {with:?} and lists {q:?}"
+        );
+    }
+    Ok(())
+}
+
+check!(
+    QUARANTINED_ENDS = a_refusal_of_the_call_or_its_source_ends_the_stream_as_without_the_option,
+    "085: a context too deep, a `commit_window` out of range, a record's source id ill formed, a source forgotten, a `sys.setting` key its writer is not told, a `seen_at` outside the years 0000 to 9999, an upstream position or a cell beyond 2^53 - 1, a key store not bound, a key missing and an outage each end the stream as without the option, quarantining nothing; a refused record with an erasable cell and no key store ends it as `unbound`",
+    given
+);
+
+/// `records` from `source` by `who` through `cat` with `opts`, with and
+/// without `quarantine_refused`: each answer, which must be one refusal.
+async fn ends_alike(
+    cat: &dyn lakelands_api::Catalog,
+    who: &Principal,
+    (source, opts): (&str, IngestOpts),
+    records: Vec<SourceRecord>,
+    what: &str,
+) -> Result<Error, Failure> {
+    let source = SourceId::from(source);
+    let asked = IngestOpts {
+        quarantine_refused: true,
+        ..opts.clone()
+    };
+    let feed = |opts| lakelands_api::ingest_all_with(cat, who, &source, opts, records.clone());
+    let (with, without) = (feed(asked).await, feed(opts).await);
+    match with {
+        Err(e) if Err(&e) == without.as_ref().map(|_| ()) => Ok(e),
+        _ => Err(Failure::new(format!(
+            "{what} must end the stream as without the option; with it the delivery answered \
+             {with:?}, without it {without:?}"
+        ))),
+    }
+}
+
+async fn a_refusal_of_the_call_or_its_source_ends_the_stream_as_without_the_option(
+    store: Store,
+    given: Given,
+) -> Held {
+    use super::erasable::{person, with};
+    use super::forgotten::{Fails, failing};
+    use lakelands_api::record::Upstream;
+    let l = Lake::of(store.as_ref());
+    l.declare(invoice()).await?;
+    l.declare(person()).await?;
+    let start = store.head().await.must("reading the head")?;
+    let n = |d: &str| IngestOpts {
+        delivery: Some(d.into()),
+        ..IngestOpts::default()
+    };
+    let refused = |key: &str| inv(key, json!(1), Some("nope"));
+    l.ingest("gone", vec![inv("g", json!(1), None)])
+        .await
+        .must("ingesting from `gone`")?;
+    store
+        .forget_source(&"gone".into(), None)
+        .await
+        .must("forgetting `gone`")?;
+    let deep = store.catalog(crate::conformance::fixture::reactive(
+        limits().max_reactive_depth + 1,
+        None,
+    ));
+    let mut big = refused("i1");
+    big.fields.insert("zz".into(), json!(1u64 << 60));
+    let untold = holder(
+        store.as_ref(),
+        "untold",
+        json!({"default": "write", "ingest": true}),
+    );
+    let setting = source_record(
+        lakelands_api::seam::SETTING_TYPE,
+        "key_period.erp",
+        json!({}),
+    );
+    let calls: [(
+        &str,
+        &dyn lakelands_api::Catalog,
+        &Principal,
+        &str,
+        IngestOpts,
+        SourceRecord,
+    ); 8] = [
+        (
+            "a context too deep",
+            deep.as_ref(),
+            &l.own,
+            "erp",
+            n("deep"),
+            refused("d1"),
+        ),
+        (
+            "a `commit_window` out of range",
+            l.cat.as_ref(),
+            &l.own,
+            "erp",
+            IngestOpts {
+                commit_window: Some(0),
+                ..n("window")
+            },
+            refused("w1"),
+        ),
+        (
+            "a record's source id ill formed",
+            l.cat.as_ref(),
+            &l.own,
+            "erp",
+            n("form"),
+            SourceRecord {
+                source: Some("".into()),
+                ..refused("f1")
+            },
+        ),
+        (
+            "a source forgotten",
+            l.cat.as_ref(),
+            &l.own,
+            "gone",
+            n("gone"),
+            refused("g"),
+        ),
+        (
+            "a setting its writer is not told",
+            l.cat.as_ref(),
+            &untold,
+            "erp",
+            n("told"),
+            setting,
+        ),
+        (
+            "a `seen_at` outside the years",
+            l.cat.as_ref(),
+            &l.own,
+            "erp",
+            n("seen"),
+            SourceRecord {
+                seen_at: Some(Timestamp(i64::MAX)),
+                ..refused("s1")
+            },
+        ),
+        (
+            "an upstream position beyond 2^53 - 1",
+            l.cat.as_ref(),
+            &l.own,
+            "erp",
+            n("up"),
+            SourceRecord {
+                upstream: Some(Upstream {
+                    lake: store.lake().clone(),
+                    position: Position(1 << 60),
+                }),
+                ..refused("u1")
+            },
+        ),
+        (
+            "a cell beyond 2^53 - 1",
+            l.cat.as_ref(),
+            &l.own,
+            "erp",
+            n("big"),
+            big,
+        ),
+    ];
+    for (what, cat, who, source, opts, record) in calls {
+        let records = vec![inv(&format!("{source}0"), json!(1), None), record];
+        ends_alike(cat, who, (source, opts), records, what).await?;
+    }
+    // No key store: a refused record with an erasable cell is not sealed.
+    let ada = vec![refused_person("p1", "Ada")];
+    let keyless = fed(&l, &l.own, "crm", kept("keyless"), ada.clone()).await;
+    ensure!(
+        matches!(&keyless, Err(Error::Ingested { error, .. }) if matches!(**error, Error::Unbound { .. })),
+        "a refused record with an erasable cell and no key store answered {keyless:?}"
+    );
+    let bob = source_record("person", "p2", json!({"id": "p2", "name": "Bob"}));
+    let what = "a key store not bound";
+    ends_alike(
+        l.cat.as_ref(),
+        &l.own,
+        ("crm", n("unbound")),
+        vec![bob.clone()],
+        what,
+    )
+    .await?;
+    let (_, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    Lake::of(store.as_ref())
+        .ingest("crm", vec![bob])
+        .await
+        .must("ingesting `p2`")?;
+    let other = Arc::new(super::erasable::Keys::default());
+    let store =
+        super::erasable::again(&given.reopen, store, with(&other), "with another key store")
+            .await?;
+    let l = Lake::of(store.as_ref());
+    let missing = |e: &Error| {
+        let e = match e {
+            Error::Ingested { error, .. } => error,
+            e => e,
+        };
+        matches!(e.situation(), Some(Situation::KeyMissing { .. }))
+    };
+    let cy = source_record("person", "p3", json!({"id": "p3", "name": "Cy"}));
+    let what = "a key missing";
+    let lost = ends_alike(l.cat.as_ref(), &l.own, ("crm", n("lost")), vec![cy], what).await?;
+    let sealed = fed(&l, &l.own, "crm", kept("lost"), ada).await;
+    ensure!(
+        missing(&lost) && sealed.as_ref().err().is_some_and(missing),
+        "a key missing must end the stream as `key_missing`, a refused record's with an \
+         erasable cell too; it answered {lost:?} and {sealed:?}"
+    );
+    let fails: Fails = Arc::default();
+    let store = (given.fault)(store, with(&other), failing(&fails))
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake again through a fault: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let records = vec![inv("o0", json!(1), None), refused("o1")];
+    let mut answers = Vec::new();
+    for asked in [true, false] {
+        fails[8].store(1, Ordering::SeqCst);
+        fails[9].store(1, Ordering::SeqCst);
+        let opts = IngestOpts {
+            quarantine_refused: asked,
+            ..n("out")
+        };
+        answers.push(fed(&l, &l.own, "erp", opts, records.clone()).await);
+    }
+    // Each meets the lease another writer holds, at a fence of its own.
+    let out = |a: &Result<Vec<Committed>, Error>| match a {
+        Err(Error::Unavailable { situation }) => Some(std::mem::discriminant(&**situation)),
+        _ => None,
+    };
+    ensure!(
+        out(&answers[0]).is_some() && out(&answers[0]) == out(&answers[1]),
+        "an outage must end the stream as without the option; it answered {answers:?}"
+    );
+    let after = events_after(store.as_ref(), start).await?;
+    let none = !after
+        .iter()
+        .any(|e| matches!(e.body, EventBody::RecordQuarantined { .. }));
+    ensure!(
+        none,
+        "a refusal of the call or its source quarantined: {after:?}"
     );
     Ok(())
 }
@@ -600,7 +1044,7 @@ async fn a_quarantined_record_is_shown_by_the_sight_of_its_type(store: Store) ->
 
 check!(
     QUARANTINED_ACTS = a_quarantined_record_is_sealed_and_closed_by_the_acts_on_its_source,
-    "085, 058 and 065: an erasable cell is sealed in the log, no plaintext outside its box; `forget_source` closes every quarantined record of the source and no cell of it is answered; `remove_values` by delivery, by time and by `seen_at` closes what it selects; a record first quarantined under `mon` sealed apart, resubmitted under `tue` and refused again, stays open with its `tue` version when `mon` is taken back and closes when `tue` is; a purge closes the source's; a rebuild and an import answer the same quarantined records as the head",
+    "085, 058 and 065: an erasable cell is sealed in the log, no plaintext outside its box; `forget_source` closes every quarantined record of the source and no cell of it is answered; `remove_values` by delivery, by time and by `seen_at` closes what it selects; a record first quarantined under `mon` sealed apart, resubmitted under `tue` and refused again, stays open with its `tue` version when `mon` is taken back and closes when `tue` is; an export, which a verifier without the key reads, holds no plaintext of either version; the reports of `forget_source`, `remove_values` and a purge, preflight and act, count the quarantined records they close by type; a purge of one type of a source closes that type's alone and a purge of the source the rest; a rebuild and an import answer the same quarantined records as the head",
     given
 );
 
@@ -631,6 +1075,7 @@ async fn a_quarantined_record_is_sealed_and_closed_by_the_acts_on_its_source(
     let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
+    l.declare(invoice()).await?;
     let head = store.head().await.must("reading the head")?;
     let apart = IngestOpts {
         sealed_apart: true,
@@ -663,11 +1108,49 @@ async fn a_quarantined_record_is_sealed_and_closed_by_the_acts_on_its_source(
         }),
         ..refused_person("p1", "Ann")
     };
-    let got = fed(&l, &l.own, "crm", kept("tue"), vec![again]).await;
+    let apart = IngestOpts {
+        sealed_apart: true,
+        ..kept("tue")
+    };
+    let got = fed(&l, &l.own, "crm", apart, vec![again]).await;
     ensure!(
         got.as_ref().is_ok_and(|w| indexes(w) == [0]),
         "`p1` resubmitted and refused again answered {got:?}"
     );
+    let boxes: Vec<_> = events_after(store.as_ref(), head)
+        .await?
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::RecordQuarantined { sealed, .. } => sealed.map(|s| s.apart),
+            _ => None,
+        })
+        .collect();
+    ensure!(
+        matches!(boxes.as_slice(), [mon, tue] if !mon.is_empty() && !tue.is_empty() && mon != tue),
+        "`mon` and `tue` must each seal `p1` apart, under keys of their own: {boxes:?}"
+    );
+    // What a verifier without the key reads: the export, every file of it.
+    let dir = given.scratch.join("sealed");
+    let _ = std::fs::remove_dir_all(&dir);
+    crate::export::write(store.as_ref(), &dir)
+        .await
+        .must("exporting")?;
+    for entry in
+        std::fs::read_dir(&dir).map_err(|e| Failure::new(format!("reading the export: {e}")))?
+    {
+        let path = entry
+            .map_err(|e| Failure::new(format!("reading the export: {e}")))?
+            .path();
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        let plain = [&b"Ada"[..], b"Ann"]
+            .iter()
+            .any(|n| bytes.windows(n.len()).any(|w| w == *n));
+        ensure!(
+            !plain,
+            "the export's `{}` holds `p1`'s name in plaintext",
+            path.display()
+        );
+    }
     let take = |selection: Selection| {
         let store = store.clone();
         async move {
@@ -681,11 +1164,27 @@ async fn a_quarantined_record_is_sealed_and_closed_by_the_acts_on_its_source(
     take(Selection::Delivery("mon".into())).await?;
     let q = row_of(&l, &l.own, p1.clone()).await?;
     ensure!(
-        q.as_ref()
-            .is_some_and(|q| q.closed.is_none() && q.version == 2),
-        "taking back `mon` must leave `p1` open at its `tue` version; it lists {q:?}"
+        q.as_ref().is_some_and(|q| q.closed.is_none()
+            && q.version == 2
+            && q.cells.get("name") == Some(&json!("Ann"))),
+        "taking back `mon` must leave `p1` open at its `tue` version, read; it lists {q:?}"
     );
-    take(Selection::Delivery("tue".into())).await?;
+    let tue = Selection::Delivery("tue".into());
+    let one = vec![lakelands_api::quarantine::TypeQuarantined {
+        ty: "person".into(),
+        quarantined: 1,
+    }];
+    let planned = store
+        .remove_values_preflight(&"crm".into(), &tue)
+        .await
+        .must("the preflight of taking back `tue`")?;
+    let taken = take(tue).await?;
+    ensure!(
+        planned.quarantined == one && taken.quarantined == one,
+        "taking back `tue` must count `p1`; its preflight counts {:?}, the act {:?}",
+        planned.quarantined,
+        taken.quarantined
+    );
     let why = closed_as(&l, p1).await?;
     ensure!(
         why == Some(ClosedWhy::Removed),
@@ -717,26 +1216,74 @@ async fn a_quarantined_record_is_sealed_and_closed_by_the_acts_on_its_source(
         "taking back what was written before now left `p3` {p3:?}"
     );
     for source in ["web", "erp"] {
-        let opts = kept(source);
-        fed(&l, &l.own, source, opts, vec![refused_person("x", "Cy")])
+        let records = vec![refused_person("x", "Cy"), inv("i", json!(1), Some("nope"))];
+        fed(&l, &l.own, source, kept(source), records)
             .await
-            .must("quarantining `x`")?;
+            .must("quarantining `x` and `i`")?;
     }
-    store
-        .forget_source(&"web".into(), None)
+    let count = |ty: &str| lakelands_api::quarantine::TypeQuarantined {
+        ty: ty.into(),
+        quarantined: 1,
+    };
+    let both = vec![count("invoice"), count("person")];
+    let (web, erp) = (SourceId::from("web"), SourceId::from("erp"));
+    let planned = store
+        .forget_preflight(&web)
+        .await
+        .must("the preflight of forgetting `web`")?;
+    let forgot = store
+        .forget_source(&web, None)
         .await
         .must("forgetting `web`")?;
-    store
-        .purge_source(&"erp".into(), None, None)
+    ensure!(
+        planned.quarantined == both && forgot.quarantined == both,
+        "forgetting `web` must count its two; its preflight counts {:?}, the act {:?}",
+        planned.quarantined,
+        forgot.quarantined
+    );
+    let person = TypeName::from("person");
+    let planned = store
+        .purge_preflight(&erp, Some(&person))
+        .await
+        .must("the preflight of purging `erp`'s persons")?;
+    let purged = store
+        .purge_source(&erp, Some(&person), None)
+        .await
+        .must("purging `erp`'s persons")?;
+    let alone = [
+        closed_as(&l, qid("erp", "erp", 0)).await?,
+        closed_as(&l, qid("erp", "erp", 1)).await?,
+    ];
+    ensure!(
+        planned.quarantined == [count("person")]
+            && purged.quarantined == [count("person")]
+            && alone == [Some(ClosedWhy::Purged), None],
+        "purging `erp`'s persons must count and close `x` alone; its preflight counts {:?}, \
+         the act {:?}, and `x` and `i` are {alone:?}",
+        planned.quarantined,
+        purged.quarantined
+    );
+    let planned = store
+        .purge_preflight(&erp, None)
+        .await
+        .must("the preflight of purging `erp`")?;
+    let purged = store
+        .purge_source(&erp, None, None)
         .await
         .must("purging `erp`")?;
     let (web, erp) = (
         closed_as(&l, qid("web", "web", 0)).await?,
-        closed_as(&l, qid("erp", "erp", 0)).await?,
+        closed_as(&l, qid("erp", "erp", 1)).await?,
     );
     ensure!(
-        web == Some(ClosedWhy::Forgotten) && erp == Some(ClosedWhy::Purged),
-        "forgetting `web` left its record {web:?}, purging `erp` its {erp:?}"
+        planned.quarantined == [count("invoice")]
+            && purged.quarantined == [count("invoice")]
+            && web == Some(ClosedWhy::Forgotten)
+            && erp == Some(ClosedWhy::Purged),
+        "forgetting `web` left its record {web:?}, purging `erp` its {erp:?}, counted {:?} \
+         and {:?}",
+        planned.quarantined,
+        purged.quarantined
     );
     fed(
         &l,
@@ -941,7 +1488,7 @@ async fn a_quarantined_record_closes_when_it_lands_or_is_dismissed(store: Store)
 
 check!(
     QUARANTINED_VERSIONS = a_quarantined_record_is_versioned_and_read_as_its_type_is_redeclared,
-    "085: the same delivery sent again appends nothing for a row refused the same way, open or dismissed, and makes version 2 of one refused otherwise, reopening a dismissed one; a renamed field's cell is read under its new name; a renamed relation's link records quarantined are listed under its new link type; a removed sensitive field's cell stays masked"
+    "085: the same delivery sent again appends nothing for a row refused the same way, open or dismissed, and makes version 2 of one refused otherwise, reopening a dismissed one; a renamed field's cell is read under its new name; a renamed relation's link records quarantined are listed under its new link type, and a link sent to the link type it had is quarantined as `unclaimed_link_type`; a removed sensitive field's cell stays masked"
 );
 
 async fn a_quarantined_record_is_versioned_and_read_as_its_type_is_redeclared(
@@ -1042,6 +1589,19 @@ async fn a_quarantined_record_is_versioned_and_read_as_its_type_is_redeclared(
     ensure!(
         new.len() == 1 && old.is_empty(),
         "after `fed` is renamed, the link lists under `fed_by` {new:?} and under `fed` {old:?}"
+    );
+    // `fed`'s link type, which no relation carries now.
+    let ends = json!({"from": "d2", "to": "p1"});
+    let link = source_record(lt, link_key(&"d2".into(), &"p1".into()).as_str(), ends);
+    let got = fed(&l, &l.own, "erp", kept("unclaimed"), vec![link]).await;
+    let q = row_of(&l, &l.own, qid("erp", "unclaimed", 0)).await?;
+    let unclaimed = q.as_ref().and_then(refusal).is_some_and(|(_, r)| {
+        matches!(r, Refusal::Invalid(said) if matches!(said.case, Case::UnclaimedLinkType { .. }))
+    });
+    ensure!(
+        got.as_ref().is_ok_and(|w| indexes(w) == [0]) && unclaimed,
+        "a link of `fed`, which no relation carries, must be quarantined as such; it answered \
+         {got:?} and lists {q:?}"
     );
     // `pan`, sensitive, removed: its cell stays masked.
     let pan = FieldDecl {
