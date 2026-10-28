@@ -25,7 +25,7 @@ use aes_gcm_siv::aead::{Aead, KeyInit};
 use aes_gcm_siv::{Aes256GcmSiv, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use hkdf::{Hkdf, HkdfExtract};
+use hkdf::HkdfExtract;
 use hmac::{Hmac, Mac};
 use lakelands_api::engine::{LakeEngine, ProjectionView};
 use lakelands_api::error::{Seam, Situation};
@@ -36,7 +36,7 @@ use lakelands_api::{Error, FieldName, LakeId, Position, Result, SourceId, Value}
 use lakelands_core::canonical;
 use lakelands_core::lock;
 use sha2::{Digest as _, Sha256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The sources' keys an open lake was given, asked of the host's key store
 /// once and never written anywhere: by the writer, which seals and folds,
@@ -502,15 +502,10 @@ pub fn compose(version: &DataKey, apart: &[DataKey]) -> DataKey {
     if apart.is_empty() {
         return version.clone();
     }
-    let mut ikm = HkdfExtract::<Sha256>::new(None);
-    std::iter::once(version)
-        .chain(apart)
-        .for_each(|k| ikm.input_ikm(&k.0));
-    let mut key = Zeroizing::new([0; 32]);
-    (ikm.finalize().1)
-        .expand(b"lakelands:apart:v1", &mut *key)
-        .expect("HKDF gives 32 bytes");
-    DataKey(*key)
+    DataKey(*hkdf(
+        std::iter::once(version).chain(apart),
+        b"lakelands:apart:v1",
+    ))
 }
 
 /// The store's own seam under which the fold keeps the sources the log
@@ -826,15 +821,24 @@ pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
     Ok(())
 }
 
+/// HKDF-SHA-256 with an empty salt over the keys' bytes in order: the
+/// pseudorandom key between is wiped, the key out is wiped when dropped.
+fn hkdf<'a>(ikm: impl IntoIterator<Item = &'a DataKey>, info: &[u8]) -> Zeroizing<[u8; 32]> {
+    let mut extract = HkdfExtract::<Sha256>::new(None);
+    ikm.into_iter().for_each(|k| extract.input_ikm(&k.0));
+    let (mut prk, expand) = extract.finalize();
+    prk.as_mut_slice().zeroize();
+    let mut key = Zeroizing::new([0; 32]);
+    expand.expand(info, &mut *key).expect("HKDF gives 32 bytes");
+    key
+}
+
 /// The digest of a call whose input holds sealed values: HMAC-SHA-256
 /// under a key derived from the source's (HKDF-SHA-256, info
 /// `lakelands:output:v1`), so no digest of plaintext enters the log and
 /// none links to a value once the key is gone.
 pub fn digest(key: &DataKey, call: &Value) -> Digest {
-    let mut derived = Zeroizing::new([0; 32]);
-    (Hkdf::<Sha256>::new(None, &key.0))
-        .expand(b"lakelands:output:v1", &mut *derived)
-        .expect("HKDF gives 32 bytes");
+    let derived = hkdf([key], b"lakelands:output:v1");
     let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&*derived).expect("HMAC takes any key");
     m.update(&canonical::to_vec(call));
     Digest(canonical::hex(&m.finalize().into_bytes()))

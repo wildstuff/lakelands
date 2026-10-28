@@ -421,7 +421,8 @@ async fn a_records_sealed_members_are_sealed_in_one_box(store: Store, reopen: Re
     };
     l.ingest("crm", vec![ada()]).await.must("ingesting p1")?;
     let kept = std::fs::read(&file).map_err(|e| Failure::new(format!("reading {file:?}: {e}")))?;
-    let kept: Value = serde_json::from_slice(&kept).unwrap_or_default();
+    let kept: Value =
+        serde_json::from_slice(&kept).map_err(|e| Failure::new(format!("{file:?}: {e}")))?;
     let wrote: Vec<Value> = (events_after(store.as_ref(), before).await?.iter())
         .filter_map(|e| match &e.body {
             EventBody::Declared { schema_hash, .. } => schema_hash.as_ref().map(|h| json!(h)),

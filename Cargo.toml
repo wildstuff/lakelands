@@ -50,12 +50,13 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 serde_path_to_error = "0.1"
 serde-saphyr = "1.1"
 sha2 = "0.11"
-# A source's values sealed under its key (058).
-aes-gcm-siv = "0.12"
-# Its key schedule wiped when dropped.
+# A source's values sealed under its key (058); the keys each value
+# derives, and the key schedule, wiped when dropped.
+aes-gcm-siv = { version = "0.12", features = ["zeroize"] }
 aes = { version = "0.9", features = ["zeroize"] }
 base64 = "0.22"
-hmac = "0.13"
+# The states keyed by a derived key wiped when dropped.
+hmac = { version = "0.13", features = ["zeroize"] }
 hkdf = "0.13"
 zeroize = "1"
 unicode-normalization = "0.1"

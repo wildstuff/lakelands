@@ -1,5 +1,5 @@
 {
-  "about": "lakelands#1498: a key of fixed bytes, the SHA-256 of `lakelands:sealed-bytes`, and what the store wrote under it with aes-gcm-siv 0.11, sha2 0.10 and hmac 0.12, before the crates that detect the CPU's instructions at run time. The conformance check `a_records_sealed_members_are_sealed_in_one_box` holds every later build to them: the type's schema hash, the ingest's id and `sealed` with its box, and the recorded output's input digest, sealed output and `sealed`. Never edited.",
+  "about": "lakelands#1498: a key of fixed bytes, the SHA-256 of `lakelands:sealed-bytes`, and what the store wrote under it with aes-gcm-siv 0.11, sha2 0.10 and hmac 0.12, before the crates that detect the CPU's instructions at run time. The conformance check `a_records_sealed_members_are_sealed_in_one_box` holds every later build to them: the type's schema hash, the ingest's id and `sealed` with its box, and the recorded output's input digest, sealed output and `sealed`. The sealed bytes are never edited. The schema hash and the id also follow the check's type and the conformance backing: a change to either is checked out on the commit before it, these lines are written again there, and the change carries them. No gate guards this file; the check does.",
   "sources": {
     "crm": {
       "keys": [
