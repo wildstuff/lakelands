@@ -496,3 +496,65 @@ async fn a_masked_authors_declaration_reads_the_shape_the_one_before_left() {
     assert_eq!(fields, ["a", "b", "c", "d", "e", "f"]);
     assert_eq!(builds(&probe), was, "a chain of two read once");
 }
+
+/// A handle opened on a lake that holds its declarations, a writer that
+/// declares nothing new or a reader, reads behind its head with the
+/// head's shape back to the last event that ends a range, a retired
+/// setting here, and builds its own before it (lakelands#1501).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_handle_opened_on_a_declared_lake_reads_behind_its_head_with_its_shape() {
+    let probe = Arc::new(Probe::default());
+    let opener = opener(&probe);
+    let t = || type_of("t", &[("a", Text), ("n", Number)]);
+    let put = async |l: &Lake, k: usize| {
+        let key = format!("k{k}");
+        let up = l.upsert("t", &key, json!({"a": "x", "n": 9}));
+        up.await.unwrap().position()
+    };
+    let (mut written, first) = (Vec::new(), open(&opener, "opened", OpenMode::Create).await);
+    let l = Lake::of(first.as_ref());
+    l.declare(t()).await.unwrap();
+    l.set("floor", json!(5)).await.unwrap();
+    let set = put(&l, 0).await;
+    l.retire("sys.setting", "floor").await.unwrap();
+    for k in 1..9 {
+        written.push(put(&l, k).await);
+    }
+    first.close().await.unwrap();
+    drop(l);
+    let store = open(&opener, "opened", OpenMode::Write).await;
+    let l = Lake::of(store.as_ref());
+    l.declare(t()).await.unwrap();
+    for k in 9..17 {
+        written.push(put(&l, k).await);
+    }
+    let was = builds(&probe);
+    for &at in &written {
+        assert!(shown(&l, "t", Some(at)).await);
+    }
+    assert!(shown(&l, "t", None).await);
+    assert_eq!(builds(&probe), was, "the open built the head's shape");
+    let floor = async |l: &Lake, at| {
+        let find = Find {
+            at: read_at(Some(at)),
+            ..find_where("n > setting('floor')")
+        };
+        let found = l.all_found("t", find).await.unwrap();
+        found.iter().map(|r| r.key.to_string()).collect::<Vec<_>>()
+    };
+    assert_eq!(floor(&l, set).await, ["k0"], "before the retirement");
+    assert!(floor(&l, written[0]).await.is_empty(), "after it");
+    assert_eq!(builds(&probe), was + 1, "one build, before the retirement");
+
+    // A reader's head does not move with the writer's appends: the read
+    // at its next head builds, and what it learns holds behind it.
+    let reader = open(&opener, "opened", OpenMode::Read).await;
+    let r = Lake::of(reader.as_ref());
+    written.push(put(&l, 17).await);
+    let was = builds(&probe);
+    assert!(shown(&r, "t", None).await);
+    for &at in &written {
+        assert!(shown(&r, "t", Some(at)).await);
+    }
+    assert_eq!(builds(&probe), was + 1, "the reader's head, then behind it");
+}

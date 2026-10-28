@@ -157,7 +157,8 @@ impl Lake {
         // A shape holds over what is committed now unless an event ends a
         // range; it is carried only from where it stands, so a fold that
         // began after its range's end (another handle wrote, or a fold failed
-        // and was caught up) leaves it to its own range.
+        // and was caught up) leaves it to its own range. Where the last
+        // event that ends a range stands is carried with it, the same way.
         // An append whose only such events declare leaves what makes the
         // shape after it, the shape before and its declarations, for the
         // first read of its position to build (lakelands#1056).
@@ -165,12 +166,14 @@ impl Lake {
         if let (Some(first), Some(last)) = (events.first(), events.last()) {
             let (first, mut held) = (first.position.0, lakelands_core::lock(&self.shapes));
             let mut ending = events.iter().filter(|e| ends_a_range(&e.body)).peekable();
+            let ended = ending.clone().last().map(|e| e.position.0);
+            held.appended(first, last.position.0, ended);
             if ending.peek().is_none() {
-                for (range, _) in held.iter_mut().filter(|(r, _)| r.end() + 1 == first) {
+                for (range, _) in held.held.iter_mut().filter(|(r, _)| r.end() + 1 == first) {
                     *range = *range.start()..=last.position.0;
                 }
             } else if ending.all(|e| declares(&e)) {
-                let before = held.iter().find(|(r, _)| r.end() + 1 == first);
+                let before = held.held.iter().find(|(r, _)| r.end() + 1 == first);
                 let links = |before: &HeldShape| match before {
                     HeldShape::Built(_) => 1,
                     HeldShape::Left(left) => left.links + 1,
@@ -198,12 +201,7 @@ impl Lake {
                         declared,
                         links: links(before),
                     };
-                    held.sort_by_key(|(range, _)| *range.end());
-                    if held.len() > 1 {
-                        held.remove(0);
-                    }
-                    let at = last.position.0..=last.position.0;
-                    held.push((at, HeldShape::Left(Arc::new(left))));
+                    held.keep(last.position.0, None, HeldShape::Left(Arc::new(left)));
                 }
             }
         }

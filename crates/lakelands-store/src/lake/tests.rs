@@ -538,6 +538,7 @@ async fn a_left_shape_is_the_one_the_projection_makes() {
     declare(text_type("t", &["a", "c"])).await;
     let at = lake.head().0;
     let left = lakelands_core::lock(&lake.shapes)
+        .held
         .iter()
         .any(|(range, held)| range.contains(&at) && matches!(held, HeldShape::Left(_)));
     assert!(left, "the last append left the shape");
@@ -578,7 +579,7 @@ async fn a_chain_of_left_shapes_is_bounded_and_unlinked_in_a_loop() {
             HeldShape::Left(left) if range.contains(&at) => Some(left.links),
             _ => None,
         };
-        held.iter().find_map(left)
+        held.held.iter().find_map(left)
     };
     let head = lake.head().0;
     assert_eq!((held(head - 1), held(head)), (Some(LEFT_LINKS), None));
@@ -603,6 +604,69 @@ async fn a_chain_of_left_shapes_is_bounded_and_unlinked_in_a_loop() {
         .unwrap()
         .join()
         .expect("read and dropped in 64 KiB");
+}
+
+/// Upsert a `t` of text `a` keyed `key`, and answer the head after it.
+async fn upserted(
+    lake: &Lake,
+    cat: &dyn lakelands_api::Catalog,
+    owner: &Principal,
+    key: &str,
+) -> u64 {
+    let fields = serde_json::from_value(json!({"a": key})).unwrap();
+    let (ty, key) = (TypeName::from("t"), key.into());
+    let up = cat.upsert(owner, &ty, &key, fields, Default::default());
+    up.await.unwrap();
+    lake.head().0
+}
+
+/// The shape at `at`.
+fn shape_at(lake: &Lake, at: u64) -> Arc<Shape> {
+    let view = lake.engine.view(Some(Position(at))).unwrap();
+    lake.shape(view.as_ref()).unwrap()
+}
+
+/// A read before a redeclaration is answered with the shape of its own
+/// position, not the head's; where the last event that ends a range
+/// stands is learnt from the projection at a build: a withdrawal, then a
+/// retired setting, each held at its own position (lakelands#1501).
+#[tokio::test]
+async fn a_read_before_a_range_ends_keeps_its_own_shape_and_the_ending_is_learnt() {
+    let (lake, cat, owner) = owned("ending");
+    let declare = async |d: serde_json::Value| cat.declare(&owner, declaration(d)).await.unwrap();
+    declare(text_type("t", &["a"])).await;
+    let old = upserted(&lake, cat.as_ref(), &owner, "k0").await;
+    let fields = |at: u64| {
+        let t = &shape_at(&lake, at).ontology.types[&TypeName::from("t")];
+        let names = t.decl.fields.iter().map(|f| f.name.to_string());
+        names.collect::<Vec<_>>()
+    };
+    declare(text_type("t", &["a", "b"])).await;
+    assert_eq!(
+        [fields(lake.head().0), fields(old)],
+        [&["a", "b"][..], &["a"]]
+    );
+    declare(text_type("u", &["a"])).await;
+    declare(json!({"declare": "withdraw", "kind": "type", "name": "u"})).await;
+    let withdrawn = lake.head().0;
+    let learnt = async |key: &str| {
+        let head = upserted(&lake, cat.as_ref(), &owner, key).await;
+        let mut shapes = lakelands_core::lock(&lake.shapes);
+        shapes.clear();
+        assert_eq!(shapes.ended, None, "a clear drops where the ending stands");
+        drop(shapes);
+        shape_at(&lake, head);
+        lakelands_core::lock(&lake.shapes).ended
+    };
+    assert_eq!(learnt("k1").await, Some((withdrawn, withdrawn + 1)));
+    let floor = serde_json::from_value(json!({"key": "floor", "value": 3})).unwrap();
+    let setting = (TypeName::from("sys.setting"), "floor".into());
+    let set = cat.upsert(&owner, &setting.0, &setting.1, floor, Default::default());
+    set.await.unwrap();
+    let retire = cat.retire(&owner, &setting.0, &setting.1, Default::default());
+    retire.await.unwrap();
+    let retired = lake.head().0;
+    assert_eq!(learnt("k2").await, Some((retired, retired + 1)));
 }
 
 /// A `declared` event of the type `t`, at `at`.
