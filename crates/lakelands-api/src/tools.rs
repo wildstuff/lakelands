@@ -753,7 +753,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             (
                 "cursor",
                 json!({"type": "string",
-                       "description": "The `next_cursor` of the page before, to read the next page: give it with the same `where` and `order_by` the first page was read with."}),
+                       "description": "The `next_cursor` of an earlier answer, for the next page. Send it with the same `where` and `order_by` as the page it came from."}),
             ),
             (
                 "offset",
@@ -1245,9 +1245,12 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "relation": {"type": "string"}, "walk": {"enum": ["out", "in", "both"]},
                     "type": {"type": "string"}, "where": {"type": "string"},
                     "depth": {"type": "object", "properties": {
-                        "min": {"type": "integer", "minimum": 0},
-                        "max": {"type": "integer", "minimum": 0}},
-                        "description": "How many hops the step walks, both members given, as {\"min\": 0, \"max\": 6}. A graph or a path (`to`) whose steps all have `min` 0 is one walk over their relations, in any order; a step with `min` 1 or more makes it a chain, each step walking on from where the one before it stopped."},
+                        "min": {"type": "integer", "minimum": 0,
+                                "description": "The fewest hops; 0 keeps the record the step starts from."},
+                        "max": {"type": "integer", "minimum": 0,
+                                "description": "The most hops, at most the lake's `max_depth`."}},
+                        "required": ["min", "max"],
+                        "description": "How many hops the step takes, `min` to `max`; one hop when left out. Give both members, as {\"min\": 0, \"max\": 6}. A graph or a path (`to`) whose steps all have `min` 0 is one walk over their relations, in any order; a step with `min` 1 or more makes it a chain, each step walking on from where the one before it stopped."},
                     "as": {"type": "string", "description": STEP_BINDING},
                     "from": {"type": "string", "description": STEP_FROM},
                     "join": {"type": "string", "description": STEP_JOIN},
@@ -1266,7 +1269,17 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 json!({"type": "object", "properties": {
                 "as": {"enum": ["rows", "graph", "aggregate", "degree", "components", "reach", "page_rank", "cheapest"],
                        "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first; with no start `type` it grows from every linked record, in every type. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`. `reach` answers rows of `step`, `depth`, `type` and `key`: what each step reaches from what the step before it kept, dead ends included, each record at the first step that reaches it. `page_rank` answers rows of `type`, `key` and `page_rank` over the graph the start reaches, each step in its own direction, highest first, the same on every engine; like `components` it takes steps without `depth`, `where` or `type`, and may leave the start `type` out. `cheapest` needs `to` and one start: rows of `hop`, `type`, `key`, `relation`, `walk` and `cost` along the walk that costs least, a link costing its `weight` field, then the fewest hops."},
-                "fields": {"type": "array", "items": {"type": "string"}},
+                "fields": {"type": "array", "items": {"type": "string"},
+                           "description": "For `rows`: the paths a row holds; every bound name's fields when left out."},
+                "group_by": {"type": "array", "items": {"type": "string"},
+                             "description": "For `aggregate`: the paths a group is told apart by, as a row holds them (`customer.country`)."},
+                "measures": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"},
+                                   "func": {"enum": ["count", "sum", "min", "max", "avg"]},
+                                   "field": {"type": "string"}},
+                    "required": ["name", "func"], "additionalProperties": false},
+                             "description": "For `aggregate`: what each group answers, named."},
                 "weight": {"type": "string", "description": "For `cheapest`: the number or decimal field of every step's link type that a link costs."}}}),
             ),
             (
@@ -1274,7 +1287,11 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 value_order_schema(json!({"type": "string"}), "the rows: a path they hold"),
             ),
             ("limit", json!({"type": "integer", "minimum": 1})),
-            ("cursor", json!({"type": "string"})),
+            (
+                "cursor",
+                json!({"type": "string",
+                       "description": "The `next_cursor` of an earlier answer, for the next page. Send it with the same pattern as the page it came from."}),
+            ),
         ]);
         time_axes(&mut p);
         out.push(ToolSpec {
