@@ -217,12 +217,11 @@ fn after_and_order(dir: Direction, k: u8, key: u8) -> (String, &'static str) {
 /// `holders` names, `$4` and `$5` the field and text they hold, and then
 /// the sort key and key bound to seek past when `from` is set. Many
 /// holders are read in the index's order, each kept where the text index
-/// holds its key; few are read from the text index first, materialized so
-/// that no statistics turn it round, and sorted. The index's rows are cut
+/// holds its key; few are read as [`few_sql`] reads them. The index's rows are cut
 /// at the limit before their records are joined: every row is a head
 /// record's, so the join keeps them all.
 fn sorted_after_sql(
-    [sorted, text, records]: &[String; 3],
+    tables @ [sorted, text, records]: &[String; 3],
     dir: Direction,
     from: bool,
     holders: &engines::Holders<'_>,
@@ -234,25 +233,16 @@ fn sorted_after_sql(
     };
     let (seek, by) = after_and_order(dir, k, key);
     let seek = if from { seek.as_str() } else { "" };
-    let (with, rows) = match holders {
-        Holders::All => (String::new(), format!("{sorted} s WHERE")),
-        Holders::Many(..) => (
-            String::new(),
-            format!(
-                "{sorted} s WHERE EXISTS (SELECT 1 FROM {text} t \
-                 WHERE t.ty = $1 AND t.field = $4 AND md5(t.value) = md5($5) AND t.key = s.key) AND"
-            ),
+    let rows = match holders {
+        Holders::All => format!("{sorted} s WHERE"),
+        Holders::Many(..) => format!(
+            "{sorted} s WHERE EXISTS (SELECT 1 FROM {text} t \
+             WHERE t.ty = $1 AND t.field = $4 AND md5(t.value) = md5($5) AND t.key = s.key) AND"
         ),
-        Holders::Few(..) => (
-            format!(
-                "WITH t AS MATERIALIZED \
-                 (SELECT key FROM {text} WHERE ty = $1 AND field = $4 AND md5(value) = md5($5)) "
-            ),
-            format!("t JOIN {sorted} s ON s.key = t.key WHERE"),
-        ),
+        Holders::Few(..) => return few_sql(tables, dir, seek),
     };
     format!(
-        "{with}SELECT s.sort_key, {RECORD} FROM \
+        "SELECT s.sort_key, {RECORD} FROM \
          (SELECT s.sort_key, s.key FROM {rows} s.ty = $1 AND s.field = $2 {seek} \
           ORDER BY {by} LIMIT $3) s \
          {} ORDER BY {by}",
@@ -267,10 +257,25 @@ fn sorted_after_sql(
 /// index's primary key whatever the statistics say, so the read costs a
 /// seek a holder and never the type's order rows; those sorted once; and
 /// each record sought through its head as the cursor answers it.
-fn few_cursor_sql([sorted, text, records]: &[String; 3], dir: Direction) -> String {
-    let (seek, by) = after_and_order(dir, 6, 7);
+fn few_cursor_sql(tables: &[String; 3], dir: Direction) -> String {
+    let (seek, _) = after_and_order(dir, 6, 7);
     format!(
-        "DECLARE {FEW_CURSOR} NO SCROLL CURSOR FOR WITH t AS MATERIALIZED \
+        "DECLARE {FEW_CURSOR} NO SCROLL CURSOR FOR {}",
+        few_sql(tables, dir, &seek)
+    )
+}
+
+/// The read of a page's few holders, a batch's statement and the cursor's
+/// alike: the text's rows, materialized; each holder's order row sought
+/// by its key, a seek into the order index's primary key whatever the
+/// statistics say, so the read costs a seek a holder and never the type's
+/// order rows; those sorted once and cut at the limit; and each record
+/// sought through its head. `seek` is the condition to continue after a
+/// row, or empty.
+fn few_sql([sorted, text, records]: &[String; 3], dir: Direction, seek: &str) -> String {
+    let (_, by) = after_and_order(dir, 6, 7);
+    format!(
+        "WITH t AS MATERIALIZED \
          (SELECT key FROM {text} WHERE ty = $1 AND field = $4 AND md5(value) = md5($5)) \
          SELECT s.sort_key, {RECORD} FROM \
          (SELECT s.sort_key, s.key FROM t CROSS JOIN LATERAL \
@@ -332,6 +337,17 @@ pub fn holding_statements(schema: &str) -> [String; 3] {
 pub fn few_holders_statements(schema: &str) -> [String; 2] {
     let tables = ["sort_index", "text_index", "records"].map(|t| format!("{schema}.{t}"));
     [Direction::Asc, Direction::Desc].map(|dir| few_cursor_sql(&tables, dir))
+}
+
+/// The statements of a batch of a page under a text few records hold, in
+/// a field's order either way and after a row, in the lake's `schema`,
+/// for the engine's own test of their plans: the cursor's plan
+/// (lakelands#840). Each takes what [`few_holders_statements`]' take.
+pub fn few_batch_statements(schema: &str) -> [String; 2] {
+    let tables = ["sort_index", "text_index", "records"].map(|t| format!("{schema}.{t}"));
+    let field = FieldName::from("f");
+    let few = engines::Holders::Few(&field, "x");
+    [Direction::Asc, Direction::Desc].map(|dir| sorted_after_sql(&tables, dir, true, &few))
 }
 
 /// The statements the view reads records by in the lake's `schema`, as it
