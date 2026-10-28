@@ -949,7 +949,7 @@ pub const ALL: &[Check] = &[
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     vocabulary::TOOL_NAME_REFUSES_OPEN,
-    vocabulary::HOST_VIEW_KEY,
+    vocabulary::HOST_TYPE_CHECKED_AT_OPEN,
     vocabulary::HOST_EXTERNAL_VERB,
     vocabulary::HOST_TYPE_GAINS_A_FIELD,
     vocabulary::HOST_TYPE_RESHAPED_REFUSES_OPEN,
