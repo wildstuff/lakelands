@@ -415,11 +415,8 @@ impl Turn<'_> {
         // appended. A type the lake holds came through a door.
         let mut with = w.ontology.clone();
         for d in types.iter().cloned().map(Declaration::Type) {
-            // A host's type the lake does not hold yet passes the checks
-            // a declaration passes, beside the types before it: what
-            // `declare` refuses from any caller is not declared by the
-            // vocabulary either. One already held is not judged again
-            // (lakelands#835).
+            // A host's type not held yet passes a declaration's checks,
+            // beside the types before it; one held is not judged again.
             if let Declaration::Type(t) = &d
                 && vocabulary.contains(&t.name)
                 && !w.ontology.types.contains_key(&t.name)
