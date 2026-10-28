@@ -151,6 +151,10 @@ fn a_lake_a_later_release_left_is_refused_for_its_format_and_not_touched() {
     let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let unmark = format!("DELETE FROM \"{schema}\".meta WHERE k = 'layout'");
     assert_eq!(db.execute(&unmark, &[]).unwrap(), 1);
+    // And a table of its own, which this build does not know: the format
+    // is what the refusal names, not the table.
+    db.batch_execute(&format!("CREATE TABLE \"{schema}\".later_table (x int)"))
+        .unwrap();
     drop(db);
     let before = held(&url, &schema);
     let another = |e: &lakelands_api::Error| {

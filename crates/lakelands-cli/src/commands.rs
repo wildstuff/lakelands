@@ -1477,6 +1477,7 @@ pub async fn import(
     location: lakelands_api::Location,
     seams: lakelands_api::seam::Seams,
     dir: &Path,
+    restoring: bool,
 ) -> Result<Result<(), Failure>, Failure> {
     if location.engine == lakelands_api::EngineConfig::Memory {
         return Err(Failure::new(
@@ -1507,13 +1508,24 @@ pub async fn import(
                      section of the configuration, and restore with --keys-from the keys file \
                      the backup copied"
                 }
+                _ if restoring => {
+                    "a damaged backup restores nothing: restore from another backup; a failure \
+                     of the target's storage leaves what it wrote, so remove that lake (its \
+                     file or schema) and restore again"
+                }
                 _ => {
                     "a damaged export imports nothing: export the lake again; a failure of the \
                      target's storage leaves what it wrote, so remove that lake (its file or \
                      schema) and import again"
                 }
             };
-            Failure::new(e.to_string(), todo)
+            let said = e.to_string();
+            let said = if restoring {
+                said.replacen("the export", "the backup", 1)
+            } else {
+                said
+            };
+            Failure::new(said, todo)
         })?;
     Ok(put(
         out,

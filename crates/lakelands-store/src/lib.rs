@@ -47,6 +47,6 @@ pub use backing::ExprBacking;
 pub use doors::{
     REACH_POLL, Standing, build_ahead, discard_ahead, import, open, room_ahead, standby, written_in,
 };
-pub use import::Imported;
+pub use import::{Imported, check_events};
 #[doc(hidden)]
 pub use lakelands_core::export;

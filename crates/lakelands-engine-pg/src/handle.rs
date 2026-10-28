@@ -621,7 +621,9 @@ fn read_on<'p, R>(
 enum Shape {
     /// No schema, or one holding no table.
     Empty,
-    /// A lake's tables (some may be added by a later version).
+    /// A lake's tables, or those of a later release's lake: tables this
+    /// build does not know beside a `meta` it reads, whose log is in a
+    /// format after this release's. The open refuses its format.
     Lake,
 }
 
@@ -643,11 +645,7 @@ fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
         .filter(|t| !t.starts_with("vgraph_"))
         .filter(|t| !RETIRED_TABLES.contains(&t.as_str()))
         .collect();
-    if !tables.iter().any(|t| t == "meta") || !foreign.is_empty() {
-        let tables = (!foreign.is_empty()).then(|| foreign.into_iter().collect());
-        let schema = schema.to_owned();
-        return Err(Error::invalid(Case::SchemaNotALake { schema, tables }));
-    }
+    let meta = tables.iter().any(|t| t == "meta");
     // The columns the engine reads must be those it wrote.
     let columns: i64 = db
         .query_one(
@@ -658,7 +656,26 @@ fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
         )?
         .get(0);
     let lease_table = tables.iter().any(|t| t == "lease");
-    if columns != if lease_table { 6 } else { 3 } {
+    let read = columns == if lease_table { 6 } else { 3 };
+    // Tables this build does not know are a later release's where its
+    // log's newest event says a format after this release's: the open
+    // then refuses the format, which names what the operator needs.
+    let mut later = || {
+        let newest = format!(
+            "SELECT bytes FROM {}.log ORDER BY position DESC LIMIT 1",
+            Target::quote(schema)
+        );
+        let bytes: Option<Vec<u8>> = (db.query_opt(&newest, &[]).ok().flatten()).map(|r| r.get(0));
+        let line = bytes.and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+        line.and_then(|l| l["v"].as_u64())
+            .is_some_and(|v| v > u64::from(lakelands_api::event::LOG_FORMAT_VERSION))
+    };
+    if !meta || (!foreign.is_empty() && !(read && later())) {
+        let tables = (!foreign.is_empty()).then(|| foreign.into_iter().collect());
+        let schema = schema.to_owned();
+        return Err(Error::invalid(Case::SchemaNotALake { schema, tables }));
+    }
+    if !read {
         let schema = schema.to_owned();
         return Err(Error::invalid(Case::SchemaMetaForeign { schema }));
     }
