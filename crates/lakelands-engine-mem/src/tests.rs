@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use lakelands_api::Error;
 use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::engine::{After, EngineOpener, LakeEngine, OpenMode, ProjectionStore, Scan};
 use lakelands_api::event::{Digest, EventId};
@@ -14,7 +15,6 @@ use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState, ProposedWrite};
-use lakelands_api::{Error, Refusal};
 use lakelands_core::conformance::engine::reads::{lexical, nearest};
 use serde_json::{Value, json};
 
@@ -253,67 +253,6 @@ fn clear_drops_the_projection_but_keeps_the_log_and_the_lease() {
 }
 
 // ---- views at positions --------------------------------------------------
-
-#[test]
-fn a_view_sees_the_states_valid_at_its_position() {
-    let e = fresh();
-    fold(e.as_ref(), 2, |p| {
-        p.put_record(&record("t", "a", json!({"n": 1}), 1)).unwrap();
-        p.put_record(&record("t", "a", json!({"n": 2}), 2)).unwrap();
-    });
-    fold(e.as_ref(), 5, |p| {
-        p.put_record(&record("t", "a", json!({"n": 3}), 5)).unwrap()
-    });
-    let n = |at: Option<u64>| {
-        e.view(at.map(Position))
-            .unwrap()
-            .get(&"t".into(), &"a".into())
-            .unwrap()
-            .map(|r| r.fields["n"].clone())
-    };
-    assert_eq!(n(Some(0)), None);
-    assert_eq!(n(Some(1)), Some(json!(1)));
-    assert_eq!(n(Some(2)), Some(json!(2)));
-    assert_eq!(n(Some(4)), Some(json!(2)));
-    assert_eq!(n(Some(5)), Some(json!(3)));
-    assert_eq!(n(None), Some(json!(3)));
-}
-
-#[test]
-fn a_view_past_the_folded_position_is_refused_naming_the_head() {
-    let e = fresh();
-    assert!(matches!(
-        e.view(Some(Position(0))),
-        Err(Error::Refused {
-            reason: Refusal::OutOfRange { .. },
-            ..
-        })
-    ));
-    fold(e.as_ref(), 3, |_| {});
-    assert!(e.view(Some(Position(3))).is_ok());
-    let Err(Error::Refused {
-        reason: Refusal::OutOfRange { head },
-        ..
-    }) = e.view(Some(Position(4)))
-    else {
-        panic!("a view past the fold was served");
-    };
-    assert_eq!(head, Position(3));
-}
-
-#[test]
-fn a_view_keeps_its_position_while_the_fold_moves_on() {
-    let e = fresh();
-    fold(e.as_ref(), 1, |p| {
-        p.put_record(&record("t", "a", json!({"n": 1}), 1)).unwrap()
-    });
-    let v = e.view(None).unwrap();
-    fold(e.as_ref(), 2, |p| {
-        p.put_record(&record("t", "a", json!({"n": 2}), 2)).unwrap()
-    });
-    let got = v.get(&"t".into(), &"a".into()).unwrap().unwrap();
-    assert_eq!(got.fields["n"], json!(1));
-}
 
 #[test]
 fn declarations_memberships_proposals_outputs_and_applied_ids_keep_history() {
@@ -698,20 +637,6 @@ fn edges_both_list_each_link_once_a_self_link_included() {
         links(e.as_ref(), "invoice", "i1", None, Walk::Both),
         ["i1>billed_to>c1", "i1>replaces>i1", "i2>replaces>i1"]
     );
-}
-
-#[test]
-fn edges_to_a_retired_record_are_returned() {
-    let e = fresh();
-    graph(e.as_ref());
-    let mut gone = record("customer", "c1", json!({}), 1);
-    gone.retired = true;
-    fold(e.as_ref(), 1, |p| p.put_record(&gone).unwrap());
-    assert_eq!(
-        links(e.as_ref(), "invoice", "i1", Some("billed_to"), Walk::Out),
-        ["i1>billed_to>c1"]
-    );
-    assert_eq!(links(e.as_ref(), "customer", "c1", None, Walk::In).len(), 2);
 }
 
 // ---- full text -----------------------------------------------------------

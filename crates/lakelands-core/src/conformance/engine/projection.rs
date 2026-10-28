@@ -113,6 +113,16 @@ engine_check!(
 );
 
 engine_check!(
+    WITHDRAWAL_IS_A_DECLARATION = a_withdrawal_is_a_declaration_in_force_under_the_same_name,
+    "seams §ProjectionView (lakelands#1503): after a withdrawal is put at a position, `declarations()` answers it, and not the declaration it withdrew, as the one declaration in force under that name, since its own position"
+);
+
+engine_check!(
+    RETIRED_SETTING_POSITION = a_retired_setting_scanned_in_the_past_carries_its_last_change,
+    "seams §ProjectionView (lakelands#1503): a scan with retired records at a view behind the head answers a setting retired by then with `retired` set and the position of the retirement, and a setting retired after it as live at its own earlier position"
+);
+
+engine_check!(
     CLEAR = clear_empties_the_projection_and_the_vector_index,
     "seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log"
 );
@@ -695,6 +705,69 @@ fn a_put_at_the_same_position_replaces_the_state_there(engine: &dyn LakeEngine) 
         one == Some(json!(1)) && two == Some(json!(3)),
         "`a` was put with n = 1 at 1, then twice at 2 (n = 2, then n = 3); it read {one:?} at 1 \
          and {two:?} at 2, where the second put replaced the first"
+    );
+    Ok(())
+}
+
+fn a_withdrawal_is_a_declaration_in_force_under_the_same_name(engine: &dyn LakeEngine) -> Held {
+    let declared = |d: Value| {
+        serde_json::from_value::<Declaration>(d)
+            .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))
+    };
+    let ty = declared(json!({"declare": "type", "name": "t", "fields": []}))?;
+    let withdrawn = declared(json!({"declare": "withdraw", "kind": "type", "name": "t"}))?;
+    fold(engine, 1, |p| p.put_declaration(&ty, 1, None, Position(1)))?;
+    fold(engine, 3, |p| {
+        p.put_declaration(&withdrawn, 2, None, Position(3))
+    })?;
+    let at = |as_of| {
+        view(engine, as_of)?
+            .declarations()
+            .must("reading the declarations")
+    };
+    let (now, then) = (at(None)?, at(Some(Position(2)))?);
+    ensure!(
+        now.len() == 1
+            && now[0].declaration == withdrawn
+            && now[0].since == Position(3)
+            && then.len() == 1
+            && then[0].declaration == ty
+            && then[0].since == Position(1),
+        "after a declaration at 1 and its withdrawal at 3, the declarations in force were \
+         {now:?} at the head and {then:?} at 2; they must be the withdrawal alone, since 3, \
+         and the type alone, since 1"
+    );
+    Ok(())
+}
+
+fn a_retired_setting_scanned_in_the_past_carries_its_last_change(engine: &dyn LakeEngine) -> Held {
+    let ty = TypeName::from("sys.setting");
+    let state = |key: &str, at: u64, retired: bool| {
+        let mut r = record("sys.setting", key, json!({"value": at}), at);
+        (r.retired, r.version) = (retired, Version(if retired { 2 } else { 1 }));
+        r
+    };
+    fold(engine, 1, |p| {
+        p.put_record(&state("floor", 1, false))?;
+        p.put_record(&state("ceiling", 1, false))
+    })?;
+    fold(engine, 3, |p| p.put_record(&state("floor", 3, true)))?;
+    fold(engine, 5, |p| p.put_record(&state("ceiling", 5, true)))?;
+    let scan = lakelands_api::engine::Scan {
+        limit: u32::MAX,
+        retired: true,
+        ..Default::default()
+    };
+    let seen = view(engine, Some(Position(4)))?
+        .scan(&ty, &scan)
+        .must("scanning the settings at 4")?;
+    let seen: Vec<_> = (seen.iter())
+        .map(|r| (r.key.as_str(), r.retired, r.position.0))
+        .collect();
+    ensure!(
+        seen == [("ceiling", false, 1), ("floor", true, 3)],
+        "a scan with retired records at 4 of settings retired at 3 and at 5 answered {seen:?}; \
+         it must answer `ceiling` live at 1 and `floor` retired at 3"
     );
     Ok(())
 }
