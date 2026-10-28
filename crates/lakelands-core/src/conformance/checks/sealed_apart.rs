@@ -5,9 +5,12 @@
 //! with every such key, and taking the delivery back destroys its key and
 //! no version.
 
-use lakelands_api::IngestOpts;
+use std::sync::atomic::AtomicBool;
+
 use lakelands_api::event::Sealed;
 use lakelands_api::id::KeyId;
+use lakelands_api::seam::DataKey;
+use lakelands_api::{IngestOpts, LakeId};
 
 use super::erasable::{Keys, again, first, person, with};
 use super::removed::{Whole, acts, at, erased};
@@ -68,69 +71,241 @@ check!(
     given
 );
 
-/// The suite's key store, whose `destroy_apart` fails while `fails` is set.
-struct FailingApart(Arc<Keys>, std::sync::atomic::AtomicBool);
+check!(
+    APART_PER_DELIVERY = a_delivery_a_record_names_is_sealed_under_a_key_of_its_own,
+    "065, extended (lakelands#1528): one call of `crm` in `page`, sealed apart at a `commit_window` of 2, writes `a` and `b` in `item-1`, `c` in `item-2` and `d` in the call's: three keys apart, `item-1`'s shared by `a` and `b` across two windows; taking `item-1` back with `require_shredded` destroys its key alone, `a` and `b` retired while `c` and `d` read their names, after a writer opened again and a rebuild too",
+    reopens
+);
+
+check!(
+    APART_ASKED_ONCE = a_window_asks_for_its_keys_apart_in_one_request,
+    "065, extended (lakelands#1528): under a key store that counts its requests, six one-record deliveries over two sources sealed apart at a `commit_window` of 6 make one request of six keys and no other, at 2 three requests of two; a window whose keys the call keeps already makes none; where the request fails and `create_apart` refuses `unbound` at the record at index 3, that record is refused with `from` 2 and nothing of its window is appended",
+    reopens
+);
+
+async fn a_delivery_a_record_names_is_sealed_under_a_key_of_its_own(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let crm: SourceId = "crm".into();
+    let p = |k: &str, name: &str, delivery: Option<&str>| SourceRecord {
+        delivery: delivery.map(Into::into),
+        ..source_record("person", k, json!({"id": k, "name": name}))
+    };
+    let records = vec![
+        p("a", "Ada", Some("item-1")),
+        p("c", "Cy", Some("item-2")),
+        p("b", "Bea", Some("item-1")),
+        p("d", "Dee", None),
+    ];
+    let opts = IngestOpts {
+        delivery: Some("page".into()),
+        sealed_apart: true,
+        commit_window: Some(2),
+        ..IngestOpts::default()
+    };
+    let mark = store.head().await.must("reading the head")?;
+    let said = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &crm, opts, records);
+    said.await.must("ingesting three deliveries sealed apart")?;
+    let sealed = seals(store.as_ref(), mark).await?;
+    let of = |k: &str| {
+        let s = sealed.iter().find(|(w, _)| *w == format!("ingest {k}"));
+        s.map(|(_, s)| s.apart.clone()).unwrap_or_default()
+    };
+    let (a, b, c, d) = (of("a"), of("b"), of("c"), of("d"));
+    let made = keys.apart(store.lake(), &crm);
+    ensure!(
+        a.len() == 1
+            && a == b
+            && c.len() == 1
+            && d.len() == 1
+            && a != c
+            && c != d
+            && a != d
+            && made.len() == 3,
+        "`a` and `b` share `item-1`'s key, and `c` and `d` each have one of their own: \
+         {sealed:?}, the key store holding {made:?}"
+    );
+    let item = Selection::Delivery("item-1".into());
+    store
+        .remove_values(&crm, &item, true, None)
+        .await
+        .must("taking `item-1` back, shredded")?;
+    let mut left = keys.apart(store.lake(), &crm);
+    left.sort();
+    let mut want = [c[0].clone(), d[0].clone()];
+    want.sort();
+    ensure!(
+        left == want,
+        "taking `item-1` back destroys {a:?} alone: the key store holds {left:?}"
+    );
+    let read = async |l: &Lake, by: &str| {
+        for k in ["a", "b"] {
+            let r = at(l, "person", k, None).await?;
+            ensure!(r.is_none(), "{by}, `{k}` is retired: {r:?}");
+        }
+        for (k, name) in [("c", "Cy"), ("d", "Dee")] {
+            let r = at(l, "person", k, None).await?;
+            ensure!(
+                r.as_ref()
+                    .is_some_and(|r| r.fields.get("name") == Some(&json!(name))),
+                "{by}, `{k}` reads {name}: {r:?}"
+            );
+        }
+        Ok::<_, Failure>(())
+    };
+    read(&l, "after the act").await?;
+    let store = again(&reopen, store, with(&keys), "after the act").await?;
+    read(&Lake::of(store.as_ref()), "a writer opened again").await?;
+    store.rebuild().await.must("rebuilding")?;
+    read(&Lake::of(store.as_ref()), "after a rebuild").await
+}
+
+async fn a_window_asks_for_its_keys_apart_in_one_request(store: Store, reopen: Reopen) -> Held {
+    let counted = Arc::new(FailingApart::default());
+    let seams = Seams {
+        keys: Some(counted.clone()),
+        backings: backing::backings(),
+        ..Seams::default()
+    };
+    let store = again(&reopen, store, seams, "with a counting key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    // The record `k`, in the delivery `delivery`, of `crm` or `erp`.
+    let p = |k: String, delivery: String, erp: bool| SourceRecord {
+        source: erp.then(|| "erp".into()),
+        delivery: Some(delivery.into()),
+        ..source_record("person", &k, json!({"id": k, "name": "Ada"}))
+    };
+    let six = |at: &str| -> Vec<_> {
+        let each = |i| p(format!("{at}{i}"), format!("{at}-{i}"), i % 2 == 1);
+        (0..6).map(each).collect()
+    };
+    let call = async |window: u32, records: Vec<SourceRecord>| {
+        crate::lock(&counted.asked).clear();
+        let opts = IngestOpts {
+            sealed_apart: true,
+            commit_window: Some(window),
+            ..IngestOpts::default()
+        };
+        let crm = SourceId::from("crm");
+        let said = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &crm, opts, records);
+        (said.await, crate::lock(&counted.asked).clone())
+    };
+    for (window, at, want) in [(6, "a", vec![Some(6)]), (2, "b", vec![Some(2); 3])] {
+        let (said, asked) = call(window, six(at)).await;
+        said.must(&format!("ingesting six deliveries at a window of {window}"))?;
+        ensure!(
+            asked == want,
+            "at a window of {window} the key store is asked {want:?}: {asked:?}"
+        );
+    }
+    let kept = (0..4).map(|i| p(format!("c{i}"), format!("c-{}", i % 2), i % 2 == 1));
+    let (said, asked) = call(2, kept.collect()).await;
+    said.must("ingesting two deliveries over two windows")?;
+    ensure!(
+        asked == [Some(2)],
+        "a window whose keys the call keeps makes no request: {asked:?}"
+    );
+    counted.fails.store(true, Ordering::SeqCst);
+    *crate::lock(&counted.alone) = Some(3);
+    let (said, _) = call(2, six("e")).await;
+    let refused = matches!(
+        &said,
+        Err(Error::Ingested { index: 3, from: 2, error, .. })
+            if matches!(**error, Error::Unbound { .. })
+    );
+    ensure!(
+        refused,
+        "the record at index 3 is refused unbound from 2: {said:?}"
+    );
+    for (k, there) in [("e0", true), ("e1", true), ("e2", false), ("e3", false)] {
+        let r = at(&l, "person", k, None).await?;
+        ensure!(r.is_some() == there, "after the refusal, `{k}` read {r:?}");
+    }
+    Ok(())
+}
+
+/// The suite's key store, whose `destroy_apart` and `create_apart_many`
+/// fail while `fails` is set. It counts its requests for keys apart in
+/// `asked`, the size of each `create_apart_many` and `None` for each
+/// `create_apart`, which refuses as unbound once `alone` is spent.
+#[derive(Default)]
+struct FailingApart {
+    keys: Arc<Keys>,
+    fails: AtomicBool,
+    asked: std::sync::Mutex<Vec<Option<usize>>>,
+    alone: std::sync::Mutex<Option<usize>>,
+}
+
+impl FailingApart {
+    fn failed(&self) -> lakelands_api::Result<()> {
+        if self.fails.load(Ordering::SeqCst) {
+            let lake = "the key store".to_owned();
+            return Err(Error::unavailable(Situation::Busy { lake }));
+        }
+        Ok(())
+    }
+}
 
 impl KeyStore for FailingApart {
-    fn create(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<KeyId> {
-        self.0.create(lake, source)
+    fn create(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
+        self.keys.create(lake, source)
     }
     fn key(
         &self,
-        lake: &lakelands_api::LakeId,
+        lake: &LakeId,
         source: &SourceId,
         id: &KeyId,
-    ) -> lakelands_api::Result<Option<lakelands_api::seam::DataKey>> {
-        self.0.key(lake, source, id)
+    ) -> lakelands_api::Result<Option<DataKey>> {
+        self.keys.key(lake, source, id)
     }
-    fn destroy(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<()> {
-        self.0.destroy(lake, source)
+    fn destroy(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<()> {
+        self.keys.destroy(lake, source)
     }
     fn destroy_version(
         &self,
-        lake: &lakelands_api::LakeId,
+        lake: &LakeId,
         source: &SourceId,
         id: &KeyId,
     ) -> lakelands_api::Result<()> {
-        self.0.destroy_version(lake, source, id)
+        self.keys.destroy_version(lake, source, id)
     }
     fn destroys_versions(&self) -> bool {
         true
     }
-    fn ids(
-        &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<Vec<KeyId>> {
-        self.0.ids(lake, source)
+    fn ids(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<Vec<KeyId>> {
+        self.keys.ids(lake, source)
     }
-    fn create_apart(
+    fn create_apart(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
+        crate::lock(&self.asked).push(None);
+        match crate::lock(&self.alone).as_mut() {
+            Some(0) => return Err(Error::unbound(Seam::KeyApart)),
+            Some(n) => *n -= 1,
+            None => {}
+        }
+        self.keys.create_apart(lake, source)
+    }
+    fn create_apart_many(
         &self,
-        lake: &lakelands_api::LakeId,
-        source: &SourceId,
-    ) -> lakelands_api::Result<KeyId> {
-        self.0.create_apart(lake, source)
+        lake: &LakeId,
+        sources: &[SourceId],
+    ) -> lakelands_api::Result<Vec<KeyId>> {
+        crate::lock(&self.asked).push(Some(sources.len()));
+        self.failed()?;
+        self.keys.create_apart_many(lake, sources)
     }
     fn destroy_apart(
         &self,
-        lake: &lakelands_api::LakeId,
+        lake: &LakeId,
         source: &SourceId,
         id: &KeyId,
     ) -> lakelands_api::Result<()> {
-        if self.1.load(std::sync::atomic::Ordering::SeqCst) {
-            let lake = "the key store".to_owned();
-            let situation = lakelands_api::error::Situation::Busy { lake };
-            return Err(Error::unavailable(situation));
-        }
-        self.0.destroy_apart(lake, source, id)
+        self.failed()?;
+        self.keys.destroy_apart(lake, source, id)
     }
 }
 
@@ -850,9 +1025,11 @@ async fn a_set_of_deliveries_shreds_what_it_takes_whole(store: Store, reopen: Re
 }
 
 async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: Reopen) -> Held {
-    use std::sync::atomic::{AtomicBool, Ordering};
     let keys = Arc::new(Keys::default());
-    let failing = Arc::new(FailingApart(keys.clone(), AtomicBool::new(false)));
+    let failing = Arc::new(FailingApart {
+        keys: keys.clone(),
+        ..FailingApart::default()
+    });
     let seams = || Seams {
         keys: Some(failing.clone()),
         backings: backing::backings(),
@@ -896,7 +1073,7 @@ async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: 
     };
     let before = store.head().await.must("reading the head")?;
     let late = Selection::Delivery("late".into());
-    failing.1.store(true, Ordering::SeqCst);
+    failing.fails.store(true, Ordering::SeqCst);
     let stopped = store.remove_values(&crm, &late, false, None).await;
     let held = keys.apart(store.lake(), &crm);
     ensure!(
@@ -914,7 +1091,7 @@ async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: 
     while let Some(window) = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx)).await {
         window.must("`late`'s window after the act")?;
     }
-    failing.1.store(false, Ordering::SeqCst);
+    failing.fails.store(false, Ordering::SeqCst);
     let sealed = seals(store.as_ref(), mark).await?;
     let p3 = sealed
         .iter()
@@ -1020,9 +1197,11 @@ async fn a_delivery_sealed_apart_is_shredded_after_a_crash_and_an_import(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
-    use std::sync::atomic::{AtomicBool, Ordering};
     let keys = Arc::new(Keys::default());
-    let failing = Arc::new(FailingApart(keys.clone(), AtomicBool::new(false)));
+    let failing = Arc::new(FailingApart {
+        keys: keys.clone(),
+        ..FailingApart::default()
+    });
     let seams = || Seams {
         keys: Some(failing.clone()),
         backings: backing::backings(),
@@ -1042,14 +1221,14 @@ async fn a_delivery_sealed_apart_is_shredded_after_a_crash_and_an_import(
     let backup = Arc::new(keys.backup());
     let before = store.head().await.must("reading the head")?;
     let late = Selection::Delivery("late".into());
-    failing.1.store(true, Ordering::SeqCst);
+    failing.fails.store(true, Ordering::SeqCst);
     let stopped = store.remove_values(&crm, &late, false, None).await;
     let held = keys.apart(store.lake(), &crm);
     ensure!(
         stopped.is_err() && made.len() == 1 && held == made,
         "the act whose destroy fails answers {stopped:?}, and the key stays: {made:?}, {held:?}"
     );
-    failing.1.store(false, Ordering::SeqCst);
+    failing.fails.store(false, Ordering::SeqCst);
     let store = again(&given.reopen, store, seams(), "after the stopped act").await?;
     let l = Lake::of(store.as_ref());
     let read = async |l: &Lake, by: &str| {

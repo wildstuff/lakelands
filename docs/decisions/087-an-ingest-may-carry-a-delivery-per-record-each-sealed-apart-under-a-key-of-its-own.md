@@ -53,8 +53,12 @@ line holds its own `delivery` and `sealed.apart`, as each line of the
 per-item road does today. What changes in `docs/log-format.md` is the
 writer's prose: the delivery is "the id the record or its call named",
 and an ingest sealed apart is given "a key per source and delivery".
-`docs/log-format/vectors/21/` gains one append of two deliveries, each
-sealed apart, which the verifier of 21 reads as it stands.
+A vector of one append of two deliveries, each sealed apart, is owed
+to `docs/log-format/vectors/21/` (lakelands#1534): the verifiers of 21
+cannot read one as they stand, since each line they read is named in
+both and the framed append is one fixed file, so it comes with readers
+of its own. Corrected at the build (lakelands#1528), which said the
+verifier would read it as it stands.
 
 ### A delivery sealed apart has its own key, also where it shares a call and a source
 
@@ -133,7 +137,9 @@ one whose values the log holds, and the fold fails closed on a lost key
 ### `Committed` is unchanged
 
 One `Committed` a window: `position`, `records`, `duplicates`,
-`quarantined` (085) and `delivery`, the call's, answered as before. A
+`quarantined` (085) and `delivery`, the call's, answered as before:
+where the caller names none and every record names its own, the
+store's `d` and position names no event, and is answered all the same. A
 window's records are the next `records + duplicates + quarantined.len()`
 of the stream, so a host acknowledges every delivery whose last record
 the window held when the window answers; a window commits all of them or
@@ -202,11 +208,12 @@ key per pair, the request and its fallback, and the quarantine's place.
   `docs/conformance.md`).
 
 The checks, on every engine:
-1. `ingest::A_DELIVERY_PER_RECORD`: one call in `page` carries `k1`
-   (none), `k2` (`item-2`) and `k3`, `k4` (`item-3`); their events name
-   `page`, `item-2`, `item-3`, `item-3`, alike at a `commit_window` of 1
-   and of 256; `remove_values` of `item-3` takes `k3` and `k4` alone,
-   of `[item-2, item-3]` three, and nothing of `page`; the same record
+1. `ingest::A_DELIVERY_PER_RECORD`: one call in `page` carries `k0`
+   (`page`), `k1` (none), `k2` (`item-2`) and `k3`, `k4` (`item-3`);
+   their events name `page`, `page`, `item-2`, `item-3`, `item-3`, alike
+   at a `commit_window` of 1 and of 256; `remove_values` of `item-3`
+   takes `k3` and `k4` alone, of `[item-2, item-3]` three, of `page`
+   two, and the act on `item-3` nothing of `page`; the same record
    under `item-5` then `item-6` in one call is one event in `item-5` and
    a duplicate; a record naming `d7` or the empty id is refused
    `delivery_id_form` with its `index` and `from`, nothing of its window
@@ -222,7 +229,7 @@ The checks, on every engine:
    whose keys are all kept makes none; a store whose request fails and
    whose `create_apart` refuses `unbound` at the record at index 3
    refuses that record with `from` 2, nothing of its window appended.
-4. `quarantine::A_QUARANTINE_KEYED_BY_DELIVERY`: in `page`, the record
+4. `quarantine::QUARANTINED_BY_DELIVERY`: in `page`, the record
    of `item-4` at stream index 7 is quarantined as `(s, item-4, 0)` and
    `Committed.quarantined` names 7; `item-4` run again at index 2 of
    another call and refused alike is a duplicate of that id.

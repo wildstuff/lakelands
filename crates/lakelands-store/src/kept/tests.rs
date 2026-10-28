@@ -110,6 +110,7 @@ impl Kept {
             key: key.as_str().into(),
             fields: serde_json::from_value(json!({"site": site, "value": value})).expect("a patch"),
             seen_at: None,
+            delivery: None,
             resubmits: None,
         };
         let records = records.into_iter().map(reading).collect();

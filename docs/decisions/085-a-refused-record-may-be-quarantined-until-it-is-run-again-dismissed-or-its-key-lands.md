@@ -39,6 +39,7 @@ same change.
 | the call's `commit_window` | `limit_range` | no: the call's |
 | a source record with a member it does not have | refused as it is read | no: never read whole |
 | the source id's form | `invalid` (`source_id_form`) | no: the source keys the quarantine |
+| the form of a delivery the record names (087) | `invalid` (`delivery_id_form`) | no: the delivery keys the quarantine |
 | the source forgotten, its key store not bound, a key missing | refused, `unbound`, `key_missing` | no: the source's |
 | the type is declared and shown to the writer | `not_found` | no: no type rules its cells |
 | the key's form: empty | `invalid` | yes |
@@ -79,13 +80,17 @@ no more.
 stream: the one the writer would have been answered, kind, reason and
 names.
 
-### A quarantined record is keyed by its source, its first delivery and its place in that stream
+### A quarantined record is keyed by its source, its first delivery and its place in that delivery
 
 Its id is `(source, delivery, index)`: the record's source, the delivery
-of the call that first quarantined it (the caller's, or the store's own,
-016) and the record's `index` there, the place 016 already answers in a
-refusal. That is the file or feed item and the row a host can name
-without the lake. It is never re-keyed: a resubmission keeps the id.
+it was in when first quarantined (the one the record names, else its
+call's: the caller's, or the store's own, 016) and the record's place
+among the call's records of that delivery, from 0 (087). Where a call
+carries one delivery that is the `index` 016 already answers in a
+refusal; where a delivery is one item, its record is at 0 whatever
+call carried it. That is the file or feed item and the row a host can
+name without the lake. It is never re-keyed: a resubmission keeps the
+id. `Committed.quarantined` and a refusal keep the stream `index`.
 
 **Versions.** Each `record_quarantined` is one version of its id, the
 first 1. A record refused under an id already quarantined, by a
@@ -112,14 +117,16 @@ the refusal may be that it does not fit. A host that maps a file's
 columns hands its cells as text, and reads them back as text. The type,
 the key as sent, `seen_at` and `upstream` are kept beside them.
 
-**Each version is an event of its own call.** Its envelope names that
-call's delivery, which is the id's only for the first version: a
+**Each version is an event of its own call.** Its envelope names its
+record's delivery in that call, which is the id's only for the first
+version: a
 resubmission under delivery D2 of a record first quarantined under D1
 writes a version whose envelope names D2 and whose id names D1.
 
 **Sealing.** A cell of a field the type declares `erasable` is sealed
-under the source's key, and under the apart key of the version's own
-call where that call is sealed apart (065), in one box, as a
+under the source's key, and under the apart key of its record's
+delivery in the version's own call where that call is sealed apart
+(065, 087), in one box, as a
 `record_ingested`'s members are (083); every other cell is plaintext,
 as a landed value of that field would be. The box's nonce is of its own
 domain: the source, the word `quarantined`, the id's delivery and index
@@ -497,3 +504,10 @@ of a format step.
 - **Not quarantined** are the refusals the table marks no: those of the
   call, of the source, of a type the lake does not declare, and of a key
   the log cannot hold.
+
+## How it came to be
+
+- Decided and built in 0.21.0 (lakelands#1502).
+- A quarantined record is keyed by its record's delivery and its place
+  among the call's records of that delivery, where an ingest carries a
+  delivery per record (087, lakelands#1528).

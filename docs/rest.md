@@ -288,12 +288,18 @@ does not is the path's. One call so carries the batches of many sources,
 each record's event stamped with its own. The answer is NDJSON too: one line per commit
 window as it becomes durable,
 `{"position":…,"records":…,"duplicates":…,"delivery":…}`. `?delivery=`
-names the call's delivery, which every record's event carries; without
+names the call's delivery, which the event of every record that names
+none carries; without
 it the store names its own, `d` and the position of the call's first
 event, and a window before any event of the call names none
-(`docs/log-format.md` §1.1). `?sealed_apart` seals the call's values
-of erasable fields under a key of their own too, so that taking back
-the delivery shreds it alone
+(`docs/log-format.md` §1.1). A line may name its own `"delivery"`,
+formed as the call's is: its event carries that one, and `?delivery=`
+is the default for a line that names none; the window's line still
+names the call's
+(`docs/decisions/087-an-ingest-may-carry-a-delivery-per-record-each-sealed-apart-under-a-key-of-its-own.md`).
+`?sealed_apart` seals the call's values of erasable fields under a key
+of their own too, one per source and delivery, so that taking back a
+delivery shreds it alone
 (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
 `?quarantine_refused` keeps a record refused by a rule of the record as
 a quarantined record and goes on; each window's line then lists the

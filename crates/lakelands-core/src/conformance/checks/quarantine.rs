@@ -201,6 +201,45 @@ check!(
     "085 and 006: a sensitive cell is masked to a reader without the field's right and shown with it, a `none` cell is not there; a quarantined record of a type not shown, or at a restricted key, is not listed without `restricted`; without `ingest` the listing is `not_granted`; a refusal naming a hidden field is shown as its kind alone, with `more`; a hiding lowers a cell where the `G` cell selects, where the live record at the key selects though the `G` cell does not, and where the `G` cell is a number, and lowers nothing where the `G` cell is absent and no record is live at the key"
 );
 
+check!(
+    QUARANTINED_BY_DELIVERY = a_quarantine_is_keyed_by_its_records_delivery,
+    "085, extended (lakelands#1528): in `page`, the record naming `item-4` at stream index 7 is quarantined as `(s, item-4, 0)`, its window naming 7 in `quarantined`; `item-4` run again at index 2 of another call and refused alike is a duplicate of that id, which stays at its first version"
+);
+
+async fn a_quarantine_is_keyed_by_its_records_delivery(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(invoice()).await?;
+    let item = || SourceRecord {
+        delivery: Some("item-4".into()),
+        ..inv("q", json!(4), Some("nope"))
+    };
+    let mut page: Vec<_> = (0..7)
+        .map(|i| inv(&format!("p{i}"), json!(i), None))
+        .collect();
+    page.push(item());
+    let windows = fed(&l, &l.own, "s", kept("page"), page).await;
+    let windows = windows.must("a page quarantining a record of `item-4`")?;
+    ensure!(
+        indexes(&windows) == [7],
+        "the page's windows name index 7: {windows:?}"
+    );
+    let again = vec![inv("r0", json!(0), None), inv("r1", json!(1), None), item()];
+    let windows = fed(&l, &l.own, "s", kept("page-2"), again).await;
+    let windows = windows.must("`item-4` run again in another call")?;
+    let landed = crate::conformance::fixture::committed(&windows);
+    ensure!(
+        landed == (2, 1) && indexes(&windows).is_empty(),
+        "`item-4` refused alike again is a duplicate: {windows:?}"
+    );
+    let rows = of(&l, "s", "invoice").await?;
+    let ids: Vec<_> = rows.iter().map(|q| (q.id.clone(), q.version)).collect();
+    ensure!(
+        ids == [(qid("s", "item-4", 0), 1)],
+        "the record is quarantined as `(s, item-4, 0)` at its first version: {ids:?}"
+    );
+    Ok(())
+}
+
 /// The kind of a refusal, as the wire names it.
 fn kind(e: &Error) -> String {
     let wire = json!(e);
@@ -1102,6 +1141,7 @@ async fn a_quarantined_record_is_sealed_and_closed_by_the_acts_on_its_source(
         "the owner must be shown `p1`'s name; it lists {shown:?}"
     );
     let again = SourceRecord {
+        delivery: None,
         resubmits: Some(Resubmits {
             delivery: "mon".into(),
             index: 0,
@@ -1351,6 +1391,7 @@ async fn quarantine_at(
 /// `record` resubmitting `id`.
 fn resubmitting(id: &QuarantineId, record: SourceRecord) -> SourceRecord {
     SourceRecord {
+        delivery: None,
         resubmits: Some(Resubmits {
             delivery: id.delivery.clone(),
             index: id.index,

@@ -201,22 +201,36 @@ kept. The preflight and the report count the ones it closes per type
 
 ### A delivery may be sealed apart
 
-An ingest that asks `sealed_apart` (`IngestOpts`) gives its delivery a
-key of its own, outside the source's versions, so that the delivery can
-be shredded alone (lakelands#1214).
+An ingest that asks `sealed_apart` (`IngestOpts`) gives each delivery
+it carries a key of its own, outside the source's versions, so that the
+delivery can be shredded alone (lakelands#1214). An ingest carries the
+call's delivery, and the delivery each record names in its place (087).
 
 - **What it seals under.** Each value of an erasable field is sealed
   under the source's version of its period, as every ingest seals it,
   composed with the delivery's own key: one key derived from both, the
   version first. `sealed` names the version and, in `apart`, the
-  delivery's key. Each ingest call makes one such key per source it
-  writes for, at its first sealed value, so a later delivery under the
-  same id has a key of its own. An ingest that writes no value of an
-  erasable field seals nothing and asks for no key. A call still
-  writing when an act took its delivery back takes a new key for what
-  it writes after the act, which the act did not select. A key made for
-  a call that then appended nothing under it, all duplicates or refused,
-  seals nothing and is destroyed with the source.
+  delivery's key. Each ingest call makes one such key per source and
+  delivery it writes for, before the first window that seals a value of
+  that pair, and keeps it for its every window: two records of one
+  source in one call, each its own delivery, seal under two keys, and a
+  later delivery under the same id has a key of its own. An ingest that
+  writes no value of an erasable field seals nothing and asks for no
+  key. A call still writing when an act took its delivery back takes a
+  new key for what it writes after the act, which the act did not
+  select. A key made for a call that then appended nothing under it,
+  all duplicates or refused, seals nothing and is destroyed with the
+  source.
+- **A window asks for its new keys in one request** (087). Before a
+  window is judged, the store gathers the pairs of its records that
+  would seal a value, whose key the call does not keep yet, and asks
+  `KeyStore::create_apart_many` for all of them at once; a key store
+  that keeps keys durably keeps them with one sync, and its default
+  asks `create_apart` for each. Either answers only once its keys are
+  kept as durably as any key, so they are durable before the append
+  that seals under them. The request is a saving and no answer turns on
+  it: where it fails, or missed a pair, the record that needs a key
+  asks for it alone, and a refusal names that record.
 - **Destroying the apart key takes that delivery alone.** The versions
   before it and after it, and every other delivery in its period, stay
   readable. The key is in no chain, so the prefix rule is untouched, and
@@ -488,3 +502,6 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
 - An output reading the apart keys from the value's own event, and the
   fold no longer keeping a copy of them for each event, accepted with
   083 (lakelands#1413).
+- A key apart per source and delivery, where a record names its own
+  delivery, and a window's new keys asked for in one request (087,
+  lakelands#1528).

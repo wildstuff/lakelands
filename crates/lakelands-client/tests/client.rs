@@ -262,6 +262,7 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
         key: k.into(),
         fields: patch(&[("amount", json!(amount))]),
         seen_at: None,
+        delivery: None,
         resubmits: None,
     };
     let collect = |records: Vec<SourceRecord>| {
@@ -451,6 +452,7 @@ async fn a_poll_over_the_wire_that_matches_nothing_reaches_the_head() {
         key: RecordKey::from(format!("B-{i}").as_str()),
         fields: patch(&[("amount", json!(format!("{i}.00")))]),
         seen_at: None,
+        delivery: None,
         resubmits: None,
     });
     let records = lakelands_door_checks::stream::of(records.collect());
@@ -1063,6 +1065,7 @@ async fn an_ingests_delivery_id_goes_over_the_wire() {
         key: RecordKey::from(key),
         fields: patch(&[("amount", json!("1.00"))]),
         seen_at: None,
+        delivery: None,
         resubmits: None,
     };
     let (bank, who) = (SourceId::from("bank"), &f.cast.importer);

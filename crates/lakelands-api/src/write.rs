@@ -42,14 +42,15 @@ pub struct WriteOpts {
 #[serde(deny_unknown_fields)]
 pub struct IngestOpts {
     /// The delivery its records came in, as the caller names it (a
-    /// vendor's batch id); else the store's own, `d<first position>`.
+    /// vendor's batch id); else the store's own, `d<first position>`. A
+    /// record that names its own delivery is in that one instead.
     /// Not part of a record's ingest id: the same content under another
     /// delivery is a duplicate and stays with the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<DeliveryId>,
     /// Seal the call's values of erasable fields under a key of their own
-    /// too, one per source, outside the source's versions, so that taking
-    /// back the delivery shreds it alone
+    /// too, one per source and delivery, outside the source's versions, so
+    /// that taking back a delivery shreds it alone
     /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
     /// Refused as unbound where the key store makes no such key. Off by
     /// default.
@@ -1749,7 +1750,10 @@ pub struct Committed {
     /// How many records were already in the log and appended nothing.
     pub duplicates: u32,
     /// The call's delivery: the caller's, or the store's once a window
-    /// appended; none before.
+    /// appended; none before. The store's names no event where every
+    /// record named its own. A delivery a record names is not listed:
+    /// the window's records are the next `records + duplicates +
+    /// quarantined.len()` of the stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<DeliveryId>,
     /// The stream index of each record the window quarantined, in order.

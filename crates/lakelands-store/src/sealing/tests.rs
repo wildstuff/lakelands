@@ -549,6 +549,7 @@ async fn an_ingest_past_its_newest_version_s_day_seals_under_a_new_one() {
             key: id.into(),
             fields: serde_json::from_value(json!({"id": id, "name": id})).unwrap(),
             seen_at: None,
+            delivery: None,
             resubmits: None,
         };
         let fed = lakelands_api::ingest_all(cat.as_ref(), &owner, &crm, vec![record]);
@@ -711,6 +712,7 @@ async fn an_output_over_an_ingest_sealed_apart_does_not_read_a_leftover_row() {
             key: id.into(),
             fields: serde_json::from_value(fields).unwrap(),
             seen_at: None,
+            delivery: None,
             resubmits: None,
         };
         let fed = lakelands_api::ingest_all_with(cat.as_ref(), &owner, &crm, opts, vec![record]);

@@ -688,6 +688,8 @@ interface types {
         /// The source this record comes from, where it is not the
         /// call's.
         source: option<source-id>,
+        /// The delivery this record is in, where it is not the call's.
+        delivery: option<delivery-id>,
         /// The quarantined record of the same source this one runs again.
         resubmits: option<resubmits>,
     }
