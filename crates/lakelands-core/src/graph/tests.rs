@@ -73,6 +73,12 @@ impl ProjectionView for View {
     fn proposals(&self, _: &ProposalFilter) -> Result<Vec<Proposal>> {
         unreachable!()
     }
+    fn quarantined(
+        &self,
+        _: &lakelands_api::quarantine::QuarantineFilter,
+    ) -> Result<Vec<lakelands_api::quarantine::Quarantined>> {
+        unreachable!()
+    }
     fn is_member(&self, _: &str, _: &TypeName, _: &RecordKey) -> Result<bool> {
         unreachable!()
     }

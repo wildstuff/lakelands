@@ -751,6 +751,7 @@ impl Desk {
                         key: key.as_str().into(),
                         fields: serde_json::from_value(fields.clone()).unwrap(),
                         seen_at: None,
+                        resubmits: None,
                     })
                     .collect();
                 let s: lakelands_api::SourceStream = Box::pin(Stream(records.into_iter()));

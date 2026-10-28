@@ -51,7 +51,7 @@ same change.
 | the key and the key fields agree (7) | `invalid` | yes |
 | every reference names a live record (8) | `constraint` | yes |
 | every required field holds a value (10) | `constraint` | yes |
-| a `sys.` record is well formed (11) | `invalid` | yes |
+| a `sys.` record is well formed (11) | `invalid` | yes, though no ingest reaches it: every field of a `sys.` type is an author's, so a source's record is refused `wrong_door` first |
 | the record is the writer's (12): another's at the key, or not admitted, to a holder of `only`; a restricted record at the key, to a writer without `restricted` | `not_granted` | yes, and shown by sight (below) |
 | a type written once | `written_once` | yes |
 | a link's cardinality | `linked_already_from`, `linked_already_to` | yes |
@@ -322,7 +322,10 @@ bound was the cause; one that does not reads the refusal as before.
 Nothing of the window is appended, as at any refusal that ends a
 stream. A new version of an id already quarantined is not counted
 against the bound, nor is an open id it reopens where the bound has
-room.
+room. A record that lands at the key of an open quarantined record
+frees its place at once, in its own window: a refusal after it in the
+same window is judged against the bound as if the window had been cut
+between them, so where the store cuts does not change the answer.
 
 **A redeclared type** keeps its quarantined records, and no declaration
 withdraws a type (027 withdraws triggers, verbs, sets and functions), so
@@ -410,9 +413,15 @@ The checks that would pin it, on every engine:
    `quarantine_full` past `limits.quarantined_max` among them, its
    stream's last item the record's own refusal unchanged, a
    `not_granted` and a `constraint` each, with `quarantine_full` and the
-   bound beside it; a dismiss frees a place under the bound. An empty
-   key is quarantined and lists as the empty string; a key holding NUL
-   ends the stream.
+   bound beside it, appending nothing; a resubmission refused again
+   under a full bound is its next version; a dismiss frees a place
+   under the bound, and so does a record landing at the key of an open
+   one earlier in the same window, at a `commit_window` of 1 and of
+   256. An empty key is quarantined and lists as the empty string; a
+   key holding NUL ends the stream. Each yes row is quarantined with
+   the refusal the stream ends with without the option; each no row
+   ends the stream with the same refusal with the option and without,
+   quarantining nothing.
 3. Sight: a sensitive cell is masked to a reader without the field's
    right and shown with it; a `none` cell is not there; a quarantined
    record of a type not shown, or at a restricted key, is not listed
@@ -424,14 +433,17 @@ The checks that would pin it, on every engine:
    number; it lowers nothing where the `G` cell is absent and no record
    is live at the key.
 4. Sealing and acts: an erasable cell is sealed in the log and a
-   verifier without the key sees no plaintext; `forget_source` closes
+   verifier without the key sees no plaintext: an export of the lake,
+   versions sealed apart among it, holds none; `forget_source` closes
    every quarantined record of the source and no cell of it is
    answered; `remove_values` by delivery, by time and by `seen_at`
    closes what it selects; a record first quarantined under D1 sealed
    apart, resubmitted under D2 and refused again, stays open with its
-   D2 version when D1 is taken back and closes when D2 is; a purge
-   closes the source's; a rebuild and an import answer the same
-   quarantined records as the head.
+   D2 version when D1 is taken back and closes when D2 is; a purge of
+   one type of the source closes that type's and a purge of the source
+   the rest; the reports of the three acts, preflight and act, count
+   the quarantined records each closes by type; a rebuild and an import
+   answer the same quarantined records as the head.
 5. Closing: a resubmission lands and closes `resubmitted`, under a
    mended key too; one that is a duplicate appends the close alone; an
    author's `upsert`, an `enact` and another source's ingest at the key
@@ -441,9 +453,12 @@ The checks that would pin it, on every engine:
 6. Versions and redeclaration: the same delivery sent again appends
    nothing for a row refused the same way, open or dismissed, and makes
    version 2 of one refused otherwise, reopening a dismissed one; a
-   renamed field's cell is read under its new name; a renamed type's
-   quarantined records are listed under its new name; a removed
-   sensitive field's cell stays masked.
+   renamed field's cell is read under its new name; a renamed
+   relation's quarantined link records are listed under its new link
+   type, and a link sent to the link type it had is quarantined as
+   `unclaimed_link_type`; a removed sensitive field's cell stays
+   masked. (No declaration renames a type, so a type's own rename is
+   not among them.)
 
 ## Why
 

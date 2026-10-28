@@ -16,6 +16,7 @@ use lakelands_api::engine::{
 use lakelands_api::error::{Act, Case, Error, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
+use lakelands_api::quarantine::Quarantined;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 use lakelands_core::engines;
@@ -307,6 +308,11 @@ impl ProjectionStore for MemoryLake {
             proposal: proposal.clone(),
             at,
         })
+    }
+
+    fn put_quarantined(&self, row: &Quarantined, at: Position) -> Result<()> {
+        let row = Box::new(row.clone());
+        self.stage(Put::Quarantined { row, at })
     }
 
     fn put_membership(

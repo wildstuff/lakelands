@@ -571,6 +571,10 @@ impl Lake {
         e: &Event,
         owes: bool,
     ) -> Result<()> {
+        // A quarantined record's cells are opened, erased and selected as a
+        // landed value is (085).
+        let lifted = crate::sealing::lifted(e);
+        let e = lifted.as_ref().unwrap_or(e);
         let opened;
         // What a forgotten source sealed is erased: its key is destroyed,
         // and the log says it was forgotten. A key gone without that is
@@ -662,8 +666,11 @@ impl Lake {
         // the position of its first use ([`crate::sealing::USED`]). The
         // apart keys of each event a delivery sealed apart are its own, in
         // the log ([`crate::sealing::Apart`]).
-        if let (EventBody::RecordIngested { .. }, Some(sealed), Some(source)) =
-            (&e.body, &kept_seal, &e.source)
+        if let (
+            EventBody::RecordIngested { .. } | EventBody::RecordQuarantined { .. },
+            Some(sealed),
+            Some(source),
+        ) = (&e.body, &kept_seal, &e.source)
         {
             let used = (source, sealed, e.position, e.known_at);
             let read = (&staged.outputs, view, &*self.keys);
@@ -698,6 +705,26 @@ impl Lake {
             | EventBody::VerbCalled { .. }
             | EventBody::TriggerFired { .. }
             | EventBody::TriggerDropped { .. } => {}
+            // A version is its id's row, what is erased of it gone (085).
+            EventBody::RecordQuarantined { .. } => {
+                if let Some(q) = crate::quarantine::version_row(&w.ontology, e) {
+                    projection.put_quarantined(&q, e.position)?;
+                    staged.quarantined.insert(q.id.clone(), q);
+                }
+            }
+            // A close keeps no cell; a close of no row is the log's own,
+            // and folds to its mark alone.
+            EventBody::QuarantineClosed { id, why, .. } => {
+                if let Some(q) = crate::quarantine::row(view, &staged.quarantined, id)? {
+                    let close = lakelands_api::quarantine::QuarantineClose {
+                        why: *why,
+                        position: e.position,
+                    };
+                    let q = crate::quarantine::closed(q, close);
+                    projection.put_quarantined(&q, e.position)?;
+                    staged.quarantined.insert(q.id.clone(), q);
+                }
+            }
             // The act is owed until a rebuild after its keys were
             // destroyed has erased what they sealed, and the reclaim ran.
             EventBody::SourceForgotten { source, .. } => {
@@ -840,6 +867,12 @@ impl Lake {
                 }
                 let step = Migrated::new(&w.ontology, e.position, before, migration, rekeyed)
                     .filling(&w.ontology, e);
+                // A quarantined record's cells and type are named as the
+                // head names them (085).
+                for q in crate::quarantine::renamed(view, staged, migration, &step.types)? {
+                    projection.put_quarantined(&q, e.position)?;
+                    staged.quarantined.insert(q.id.clone(), q);
+                }
                 step.carry(&mut w.owed);
                 self.step(w, view, projection, staged, step)?;
                 // What reads a filled field is computed again, as of this

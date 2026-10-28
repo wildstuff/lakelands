@@ -19,6 +19,7 @@ use crate::id::{
 };
 use crate::ontology::FieldDecl;
 use crate::principal::{Principal, WriteContext};
+use crate::quarantine::{QuarantineClose, QuarantineFilter, QuarantineId, Quarantined};
 use crate::query::{Hits, Pattern, QueryResult, Search};
 use crate::read::{Find, Found, Get, ReadAt, Reply};
 use crate::record::{Patch, Record, SourceRecord};
@@ -201,6 +202,25 @@ pub trait Catalog: Send + Sync {
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>>;
 
+    /// Quarantined records at the head, in id order, each as its reader is
+    /// shown it: there to a holder of `ingest` as a proposal's write is,
+    /// a closed one with no cell
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    async fn quarantined(
+        &self,
+        who: &Principal,
+        filter: QuarantineFilter,
+    ) -> Result<Reply<Vec<Quarantined>>>;
+
+    /// Close a quarantined record as dismissed, erasing nothing. A repeat,
+    /// or one closed otherwise, answers its close and appends nothing; one
+    /// not there to its reader is `not_found` (085).
+    async fn dismiss_quarantined(
+        &self,
+        who: &Principal,
+        id: &QuarantineId,
+    ) -> Result<QuarantineClose>;
+
     /// Add or revise a declaration that does not reshape stored records. One
     /// that is the declaration in force is answered at the head and appends
     /// nothing (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
@@ -311,9 +331,10 @@ pub trait Catalog: Send + Sync {
     /// [`Catalog::ingest`] under `opts`: its records in the delivery
     /// `opts` names, which every `record_ingested` of the call and every
     /// [`Committed`] carries, sealed apart where `opts` asks it, in
-    /// windows of the size it asks. A catalog that does not carry a
-    /// delivery, the seal or the window to the store refuses each, rather
-    /// than drop it.
+    /// windows of the size it asks, its refused records quarantined where
+    /// it asks. A catalog that does not carry a delivery, the seal, the
+    /// window or the quarantine to the store refuses each, rather than
+    /// drop it.
     async fn ingest_with(
         &self,
         who: &Principal,
@@ -322,6 +343,9 @@ pub trait Catalog: Send + Sync {
         records: SourceStream,
     ) -> Result<CommitStream> {
         use crate::error::Case;
+        if opts.quarantine_refused {
+            return Err(crate::Error::invalid(Case::QuarantineRefusedNotCarried));
+        }
         match (opts.delivery, opts.sealed_apart, opts.commit_window) {
             (Some(_), _, _) => Err(crate::Error::invalid(Case::DeliveryNotCarried)),
             (None, true, _) => Err(crate::Error::invalid(Case::SealedApartNotCarried)),

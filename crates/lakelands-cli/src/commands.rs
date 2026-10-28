@@ -766,6 +766,7 @@ async fn csv(
             key: RecordKey::from(cell(key_col)),
             fields,
             seen_at,
+            resubmits: None,
         });
     }
     Ok(out)

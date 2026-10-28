@@ -1395,6 +1395,7 @@ async fn a_backing_is_told_the_write_that_set_its_call_off(store: Store) -> Held
         seen_at: None,
         upstream: None,
         source: None,
+        resubmits: None,
     };
     l.ingest("crm", vec![rec]).await.must("ingesting c2")?;
     let c = causes(token).last().cloned().flatten();

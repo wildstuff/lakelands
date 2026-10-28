@@ -992,7 +992,7 @@ impl<'a> Reader<'a> {
     /// The page a read asks for, at most `max` rows: the lake's
     /// `max_limit`, or for a whole-graph measure, which is computed whole
     /// for every page, its `max_graph_nodes` where that is larger (026).
-    pub(super) fn limit(&self, asked: Option<u32>, measure: bool) -> Result<usize> {
+    pub(crate) fn limit(&self, asked: Option<u32>, measure: bool) -> Result<usize> {
         let limits = &self.lake.limits;
         let max = match measure {
             true => limits.max_limit.max(limits.max_graph_nodes),

@@ -74,6 +74,7 @@ fn records(csv: &str, map: &str) -> Vec<SourceRecord> {
                 seen_at: Some(
                     Timestamp::parse(cells[col(map["seen_at"].as_str().unwrap())]).unwrap(),
                 ),
+                resubmits: None,
             }
         })
         .collect()

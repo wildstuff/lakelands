@@ -26,6 +26,7 @@ use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
 use lakelands_api::ontology::TypeDecl;
+use lakelands_api::quarantine::{QuarantineFilter, QuarantineState, Quarantined};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
@@ -37,7 +38,9 @@ use postgres::types::ToSql;
 
 use crate::connect::Db;
 use crate::handle::PgLake;
-use crate::projection::{self, DECLARATIONS, MEMBERS, Names, PROPOSALS, RECORD, record_at};
+use crate::projection::{
+    self, DECLARATIONS, MEMBERS, Names, PROPOSALS, QUARANTINED, RECORD, record_at,
+};
 
 /// A read view of one lake's projection at one position.
 pub(crate) struct PgView<'a> {
@@ -1225,6 +1228,61 @@ impl ProjectionView for PgView<'_> {
             .map(|row| decode(&row.get::<_, String>(0), "a proposal"))
             .collect::<Result<_>>()
             .map(Some)
+        })
+    }
+
+    fn quarantined(&self, filter: &QuarantineFilter) -> Result<Vec<Quarantined>> {
+        let open = filter.state.map(|s| s == QuarantineState::Open);
+        let after = filter.after.as_ref();
+        let limit = filter.limit.map(i64::from);
+        let (source, delivery) = (
+            filter.source.as_ref().map(|s| s.as_str()),
+            filter.delivery.as_ref().map(|d| d.as_str()),
+        );
+        let ix = filter.index.map(|i| i.to_string());
+        let (ty, key) = (
+            filter.ty.as_ref().map(|t| t.as_str()),
+            filter.key.as_ref().map(|k| k.as_str()),
+        );
+        let after = after.map(|a| (a.source.as_str(), a.delivery.as_str(), a.index as i64));
+        let (a_source, a_delivery, a_ix) =
+            (after.map(|a| a.0), after.map(|a| a.1), after.map(|a| a.2));
+        self.read(Vec::new(), |r| {
+            let rows: Vec<Quarantined> =
+                r.db.query(
+                    &format!(
+                        "SELECT state FROM {} \
+                         WHERE ($5::text IS NULL OR (state::jsonb ->> 'type') = $5) \
+                         AND ($6::text IS NULL OR (state::jsonb ->> 'key') = $6) \
+                         AND ($7::bool IS NULL OR ((state::jsonb -> 'closed') IS NULL) = $7) \
+                         AND ($8::text IS NULL OR (source, delivery, ix::int8) > ($8, $9, $10)) \
+                         ORDER BY source, delivery, ix::int8 LIMIT $11",
+                        QUARANTINED.in_force(
+                            r.names,
+                            1,
+                            "AND ($2::text IS NULL OR source = $2) \
+                             AND ($3::text IS NULL OR delivery = $3) \
+                             AND ($4::text IS NULL OR ix = $4)"
+                        )
+                    ),
+                    &[
+                        &r.at,
+                        &source,
+                        &delivery,
+                        &ix,
+                        &ty,
+                        &key,
+                        &open,
+                        &a_source,
+                        &a_delivery,
+                        &a_ix,
+                        &limit,
+                    ],
+                )?
+                .iter()
+                .map(|row| decode(&row.get::<_, String>(0), "a quarantined record"))
+                .collect::<Result<_>>()?;
+            Ok(filter.answer(rows))
         })
     }
 

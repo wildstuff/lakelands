@@ -23,6 +23,7 @@ impl Lake {
         drafts: Vec<Draft>,
         reads: Reads,
     ) -> Result<Vec<Event>> {
+        let drafts = self.closing(w, drafts)?;
         let stamped = self.stamp(w, drafts)?;
         self.append_stamped(w, stamped, reads)
     }
@@ -117,6 +118,11 @@ impl Lake {
             {
                 let cipher = ciphers.sealed(&self.keys, &source, sealed)?;
                 crate::sealing::seal(&mut d.body, sealed, &source, cipher);
+            }
+            // A quarantined record's box is its payload's, as its `seen_at`
+            // is (085).
+            if let EventBody::RecordQuarantined { sealed, .. } = &mut d.body {
+                *sealed = d.sealed.take();
             }
             let (event, canon, fault) = log::seal_judged(&self.id, position, &prev_hash, fence, d);
             if let Some(case) = fault {

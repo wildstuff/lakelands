@@ -273,6 +273,12 @@ impl ProjectionView for ProbedView<'_> {
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.inner.proposals(filter)
     }
+    fn quarantined(
+        &self,
+        filter: &lakelands_api::quarantine::QuarantineFilter,
+    ) -> Result<Vec<lakelands_api::quarantine::Quarantined>> {
+        self.inner.quarantined(filter)
+    }
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.inner.is_member(set, ty, key)
     }
@@ -543,6 +549,13 @@ impl ProjectionStore for Probed {
     }
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.inner.projection().put_proposal(proposal, at)
+    }
+    fn put_quarantined(
+        &self,
+        row: &lakelands_api::quarantine::Quarantined,
+        at: Position,
+    ) -> Result<()> {
+        self.inner.projection().put_quarantined(row, at)
     }
     fn put_membership(
         &self,

@@ -98,7 +98,7 @@ use migrate::{fits, retarget_values, retargets, stored};
 pub(crate) use plan::Against;
 pub(crate) use plan::When;
 pub(crate) use plan::shown_plan;
-use record::Decide;
+pub(crate) use record::Decide;
 pub(crate) use record::Envelope;
 pub use record::Write;
 pub(crate) use record::{Job, write_many};
@@ -686,7 +686,7 @@ impl Call<'_> {
         }
     }
 
-    fn draft(&self, now: Timestamp, origin: Origin, body: EventBody) -> Draft {
+    pub(crate) fn draft(&self, now: Timestamp, origin: Origin, body: EventBody) -> Draft {
         self.asked().draft(now, origin, body)
     }
 

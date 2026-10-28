@@ -931,6 +931,13 @@ impl ProjectionStore for Reclaims {
     ) -> lakelands_api::Result<()> {
         self.inner.projection().put_proposal(proposal, at)
     }
+    fn put_quarantined(
+        &self,
+        row: &lakelands_api::quarantine::Quarantined,
+        at: Position,
+    ) -> lakelands_api::Result<()> {
+        self.inner.projection().put_quarantined(row, at)
+    }
     fn put_membership(
         &self,
         set: &str,

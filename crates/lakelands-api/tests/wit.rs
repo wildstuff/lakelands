@@ -196,9 +196,12 @@ fn every_door_of_the_crate_is_a_function_of_the_wit_and_no_other() {
         .chain(fns("query"))
         .chain(fns("schema"))
         .collect();
+    // The quarantined records are a person's, worked through the host:
+    // their listing and their dismiss stay off the guest door (085).
+    let mut doors = trait_methods(catalog_rs, "Catalog");
+    doors.retain(|door| !["quarantined", "dismiss_quarantined"].contains(&door.as_str()));
     assert_eq!(
-        catalog,
-        trait_methods(catalog_rs, "Catalog"),
+        catalog, doors,
         "the catalog's doors: the `catalog` resource with `query` and `schema`, against `Catalog`"
     );
     // A door that binds a seam is the host's: the host binds the seams,
@@ -761,6 +764,10 @@ fn forget_report() -> lakelands_api::write::ForgetReport {
         reclaim_owed: Some("busy".into()),
         way: forget_way(),
         report_id: "r".into(),
+        quarantined: vec![lakelands_api::quarantine::TypeQuarantined {
+            ty: "ord".into(),
+            quarantined: 1,
+        }],
     }
 }
 
@@ -815,6 +822,10 @@ fn remove_report() -> lakelands_api::write::RemoveReport {
         reclaimed: Some(compact_report()),
         reclaim_owed: Some("busy".into()),
         report_id: "r".into(),
+        quarantined: vec![lakelands_api::quarantine::TypeQuarantined {
+            ty: "ord".into(),
+            quarantined: 1,
+        }],
     }
 }
 
@@ -1104,6 +1115,10 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 key: "k".into(),
                 fields: [("f".into(), json!(1))].into(),
                 seen_at: Some(t()),
+                resubmits: Some(lakelands_api::quarantine::Resubmits {
+                    delivery: "d1".into(),
+                    index: 1,
+                }),
             }),
         ),
         ("order", members(&order())),
@@ -1158,6 +1173,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 delivery: Some("batch-7".into()),
                 sealed_apart: true,
                 commit_window: Some(1024),
+                quarantine_refused: true,
             }),
         ),
         // The `applied` record is the variant's members beside its tag.
@@ -1268,6 +1284,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 records: 1,
                 duplicates: 0,
                 delivery: Some("d1".into()),
+                quarantined: vec![1],
             }),
         ),
         ("depth", members(&Depth { min: 1, max: 2 })),
@@ -1600,6 +1617,10 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 report_id: "r".into(),
                 set_off: 1,
                 max_set_changes: 2,
+                quarantined: vec![lakelands_api::quarantine::TypeQuarantined {
+                    ty: "ord".into(),
+                    quarantined: 1,
+                }],
             }),
         ),
         ("purge_reference", members(&purge_reference())),
@@ -1671,6 +1692,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 order_chunk: 15,
                 forget_rebuild: true,
                 seal_after_bytes: 16,
+                quarantined_max: 19,
             }),
         ),
         (
@@ -1986,7 +2008,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Missing::Record { .. }
             | Missing::Verb { .. }
             | Missing::Function { .. }
-            | Missing::Proposal { .. } => {}
+            | Missing::Proposal { .. }
+            | Missing::Quarantined { .. } => {}
             // A newer lake's kind, said by its error's message.
             Missing::Unknown(_) => {}
         }
@@ -2004,6 +2027,13 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Missing::Verb { name: "v".into() },
                 Missing::Function { name: "f".into() },
                 Missing::Proposal { id: "p".into() },
+                Missing::Quarantined {
+                    id: lakelands_api::quarantine::QuarantineId {
+                        source: "s".into(),
+                        delivery: "d".into(),
+                        index: 1,
+                    },
+                },
             ],
             Some("kind"),
         ),

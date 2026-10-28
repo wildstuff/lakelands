@@ -17,6 +17,7 @@ use lakelands_api::id::{
 };
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::{Principal, WriteContext};
+use lakelands_api::quarantine::{QuarantineClose, QuarantineFilter, QuarantineId, Quarantined};
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
@@ -380,6 +381,20 @@ impl Catalog for Doors {
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>> {
         self.inner.proposals(who, filter).await
+    }
+    async fn quarantined(
+        &self,
+        who: &Principal,
+        filter: QuarantineFilter,
+    ) -> Result<Reply<Vec<Quarantined>>> {
+        self.inner.quarantined(who, filter).await
+    }
+    async fn dismiss_quarantined(
+        &self,
+        who: &Principal,
+        id: &QuarantineId,
+    ) -> Result<QuarantineClose> {
+        self.inner.dismiss_quarantined(who, id).await
     }
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
         self.inner.declare(who, declaration).await

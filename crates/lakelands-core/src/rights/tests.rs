@@ -617,3 +617,57 @@ fn one_reads_all_whom_no_grant_holds_below_read_and_no_only_bounds() {
         "a type's default, an `only`"
     );
 }
+
+#[test]
+fn a_quarantined_cell_is_read_as_its_field_and_lowered_by_a_hiding_on_either_record() {
+    let mut who = principal(
+        Access::None,
+        &[("amount", Access::Read), ("note", Access::Read)],
+    );
+    let cells =
+        |v: serde_json::Value| -> BTreeMap<FieldName, Value> { serde_json::from_value(v).unwrap() };
+    let sent = cells(json!({"amount": "x", "iban": "DE00", "verdict": "ok", "ghost": 1}));
+    let came = [FieldName::from("verdict"), FieldName::from("ghost")];
+    let (shown, masked) = held(&who).quarantined_cells(&invoice(), &sent, &came, None);
+    assert_eq!(shown.keys().collect::<Vec<_>>(), ["amount"]);
+    assert_eq!(masked, ["ghost", "iban", "verdict"].map(FieldName::from));
+    let (_, masked) = held(&who).quarantined_cells(&invoice(), &sent, &[], None);
+    assert_eq!(
+        masked,
+        [FieldName::from("iban")],
+        "no raise it did not come with"
+    );
+
+    let grant = who
+        .grants
+        .types
+        .get_mut(&TypeName::from("invoice"))
+        .unwrap();
+    grant.hide_where.push(HiddenWhere {
+        field: "note".into(),
+        values: ["secret".to_owned()].into(),
+        fields: [("amount".into(), Access::None)].into(),
+    });
+    let sight = held(&who);
+    let amount = |cells: &BTreeMap<FieldName, Value>, live: Option<&BTreeMap<FieldName, Value>>| {
+        sight
+            .quarantined_cells(&invoice(), cells, &[], live)
+            .0
+            .contains_key("amount")
+    };
+    assert!(!amount(
+        &cells(json!({"amount": "1", "note": "secret"})),
+        None
+    ));
+    assert!(
+        !amount(&cells(json!({"amount": "1", "note": 5})), None),
+        "no text selects"
+    );
+    let live = cells(json!({"note": "secret"}));
+    assert!(!amount(
+        &cells(json!({"amount": "1", "note": "open"})),
+        Some(&live)
+    ));
+    assert!(amount(&cells(json!({"amount": "1"})), None));
+    assert!(amount(&cells(json!({"amount": "1", "note": "open"})), None));
+}
