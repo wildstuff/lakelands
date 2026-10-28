@@ -10,11 +10,11 @@ publish.workspace = true
 
 [dependencies]
 lakelands-api.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 lakelands-engine-mem.workspace = true
 lakelands-store.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

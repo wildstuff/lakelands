@@ -92,18 +92,18 @@ What a REST path segment a client sends names.
 
 ## `Construct`
 
-An openCypher construct outside the subset Lakelands reads, spelt as the statement spells it.
+An openCypher construct outside the subset Lakelands takes, spelt as the statement spells it.
 
 | code | parameters | sentence | about |
 |---|---|---|---|
-| `create` | — | `CREATE` (a write goes through the typed write doors) | A `CREATE` clause. |
-| `merge` | — | `MERGE` (a write goes through the typed write doors) | A `MERGE` clause. |
-| `set` | — | `SET` (a write goes through the typed write doors) | A `SET` clause. |
-| `delete` | — | `DELETE` (a write goes through the typed write doors) | A `DELETE` clause. |
-| `detach_delete` | — | `DETACH DELETE` (a write goes through the typed write doors) | A `DETACH DELETE` clause. |
-| `remove` | — | `REMOVE` (a write goes through the typed write doors) | A `REMOVE` clause. |
-| `foreach` | — | `FOREACH` (a write goes through the typed write doors) | A `FOREACH` clause. |
-| `load_csv` | — | `LOAD CSV` (a write goes through the typed write doors) | A `LOAD CSV` clause. |
+| `create` | — | `CREATE` | A `CREATE` clause. |
+| `merge` | — | `MERGE` | A `MERGE` clause. |
+| `set` | — | `SET` | A `SET` clause. |
+| `delete` | — | `DELETE` | A `DELETE` clause. |
+| `detach_delete` | — | `DETACH DELETE` (a retirement that unlinks is two writes; the plan tells what still names the record) | A `DETACH DELETE` clause. |
+| `remove` | — | `REMOVE` | A `REMOVE` clause. |
+| `foreach` | — | `FOREACH` | A `FOREACH` clause. |
+| `load_csv` | — | `LOAD CSV` | A `LOAD CSV` clause. |
 | `call` | — | `CALL` (a procedure or a subquery) | A procedure call or a `CALL` subquery. |
 | `with` | — | `WITH` | A `WITH` clause. |
 | `union` | — | `UNION` | A `UNION` of statements. |
@@ -137,6 +137,16 @@ An openCypher construct outside the subset Lakelands reads, spelt as the stateme
 | `optional_parts` | — | an `OPTIONAL MATCH` walking from more than one name bound before it (an optional part is one branch from one name) | An `OPTIONAL MATCH` hanging from more than one bound name. |
 | `aggregate_in_expression` | — | an aggregate inside an expression (a measure is one function of one path) | An aggregate inside an expression. |
 | `using` | — | `USING` (an index hint) | A `USING` hint. |
+| `on_create` | — | `ON CREATE` (a door writes one patch, whether the record is there or not) | `ON CREATE`. |
+| `on_match` | — | `ON MATCH` (a door writes one patch, whether the record is there or not) | `ON MATCH`. |
+| `label` | — | a label set or removed (a record's type is declared, never written) | A label set or removed. |
+| `schema` | — | an index or a constraint (the ontology is declared through its own doors) | An index, a constraint or a `DROP`. |
+| `return_beside_write` | — | a `RETURN` beside a write (a write statement answers its door's outcome or its plan) | `RETURN` after a write. |
+| `computed_value` | — | a value computed or read from a record (a write sets values: literals or parameters) | A value written that is computed or read from a record. |
+| `write_selection` | — | a `MATCH` the condition of a change to one type cannot say (a second name, an optional part, a part that must not match, or a link's end not named by its key) | A selection the change's condition cannot say. |
+| `undirected_write` | — | a relationship written or changed without a direction | A relationship written without a direction. |
+| `explain_write` | — | `EXPLAIN` before a write (a `MATCH … SET` sent alone answers its plan) | `EXPLAIN` before a write. |
+| `set_map` | — | a map set on a name (`=` or `+=`; set each property by its path) | A map set on a name. |
 | `order_by_aggregate` | — | `ORDER BY` beside an aggregate (its groups come in one fixed order, by the fields returned beside it: leave `ORDER BY` out) | `ORDER BY` beside an aggregate. |
 
 ## `Act`
@@ -459,17 +469,23 @@ What a refusal is about.
 | `call_takes_field` | `name` (String) | {name}() takes one field name | A call that takes a field name given something else. |
 | `call_takes_quoted` | `name` (String) | {name}() takes a quoted name | A call that takes a quoted name given something else. |
 | `cypher_alias` | `item` (String) | an aggregate or an expression is named with `AS`: `{item} AS <name>` | An aggregate or an expression returned with no name. |
+| `cypher_computed` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is computed by the lake; no statement writes it | A field a statement writes that the lake computes. |
 | `cypher_count` | `item` (String) | `count` counts rows: `count(*)` or `count(<name>)` of a name no optional part binds, not `{item}` | A `count` of what is no row. |
 | `cypher_function` | `name` (String), `offset` (usize) | `{name}()` is no function of Lakelands' expression grammar (at character {offset}) | A function the expression grammar does not have. |
+| `cypher_key_missing` | `type` (TypeName), `field` (FieldName) | a record of `{type}` is keyed by `{field}`, which the statement does not give | A key field a `CREATE` or `MERGE` does not give. |
+| `cypher_member` | `member` (String) | the statement takes no `{member}`: a read takes the axes and a cursor, a `MATCH … SET`, `REMOVE` or `DELETE` the id of its plan, and every other write nothing beside its parameters | A member a statement of its kind does not take. |
+| `cypher_merge_on` | `type` (TypeName), `field` (FieldName) | `MERGE` keys on what keys a record, and `{field}` keys no record of `{type}`: give its key fields alone, or `MATCH` it and `SET` | A `MERGE` on a field that keys no record. |
 | `cypher_order_item` | `item` (String) | `ORDER BY` names a path, as in `a.amount`, not `{item}` | A sort key that is no path. |
-| `cypher_outside` | `construct` (Construct), `offset` (usize) | {construct} is outside the openCypher subset Lakelands reads (at character {offset}) | A construct outside the openCypher subset. |
+| `cypher_outside` | `construct` (Construct), `offset` (usize) | {construct} is outside the openCypher subset Lakelands takes (at character {offset}) | A construct outside the openCypher subset. |
 | `cypher_param_missing` | `name` (ParamName) | the statement reads `${name}`, which is not given | A parameter the statement reads that is not given. |
 | `cypher_param_unused` | `name` (ParamName) | `{name}` is given and the statement does not read it | A parameter given that the statement does not read. |
 | `cypher_param_value` | `name` (ParamName) | `${name}` cannot stand where it is read: an object, a list outside `IN`, a key that is not text, or a limit or skip that is no whole number | A parameter whose value cannot stand where it is read. |
 | `cypher_row_item` | `item` (String) | a row holds paths (`a.amount`) or every bound name (`RETURN *`); `{item}` is neither | A row item that is neither a path nor every bound name. |
+| `cypher_second_write` | `construct` (Construct), `offset` (usize) | {construct} is a second write: a statement is one call of one write door (at character {offset}) | A write after the statement's first, which a second door call would make. |
 | `cypher_skip` | `skip` (u64) | `SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement | A `SKIP` other than 0. |
 | `cypher_start_type` | `offset` (usize) | the first node names its type, as in `(a:invoice)` (at character {offset}) | A first node with no label. |
 | `cypher_too_deep` | `max` (usize), `offset` (usize) | a condition nests at most {max} levels deep: parentheses, `NOT` and a unary `-` each go one deeper (at character {offset}) | A condition nested deeper than the subset reads. |
+| `cypher_tool_writes` | `construct` (Construct), `offset` (usize) | the `cypher` tool reads; {construct} writes, through the typed write tools (at character {offset}) | A write statement sent to the `cypher` tool, which reads. |
 | `cypher_unbound` | `name` (String), `offset` (usize) | `{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset}) | A part that begins at a name nothing bound. |
 | `cypher_whole` | `clause` (String), `offset` (usize) | `{clause}` takes a whole number, written or a parameter (at character {offset}) | A `SKIP` or `LIMIT` given what is no whole number. |
 | `division_by_zero` | — | division by zero | A division by zero. |
@@ -521,7 +537,7 @@ What a refusal is about.
 | `set_of_other_type` | `set` (String), `of` (TypeName), `type` (TypeName) | in_set('{set}') names a set of `{of}`, not of `{type}` | A set of another type named in a filter. |
 | `set_undeclared` | `set` (String) | in_set('{set}') names an object set that is not declared | A set named in a filter that is not declared. |
 | `setting_takes_key` | `value` (Operand) | setting() takes a key, not {value} | A `setting` given what is no key. |
-| `statement_not_parsed` | `why` (Case) | the statement does not parse as the openCypher subset Lakelands reads (`MATCH … RETURN …`): {why} | An openCypher statement that does not parse. |
+| `statement_not_parsed` | `why` (Case) | the statement does not parse as the openCypher subset Lakelands takes (`MATCH … RETURN …`, or one write): {why} | An openCypher statement that does not parse. |
 | `steps_into_reference` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is a reference: a condition reads the record's own fields. Compare the reference's key, or walk to the record it names in a pattern | A path into a reference's members. |
 | `steps_into_scalar` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is no `json` field, and has no members | A path into the members of what has none. |
 | `sum_not_number` | `value` (Operand) | sum() met {value}, which is not a number | A sum of what is no number. |

@@ -683,6 +683,11 @@
    "item": "s"
   },
   {
+   "code": "cypher_computed",
+   "field": "f",
+   "type": "t"
+  },
+  {
    "code": "cypher_count",
    "item": "s"
   },
@@ -690,6 +695,20 @@
    "code": "cypher_function",
    "name": "s",
    "offset": 1
+  },
+  {
+   "code": "cypher_key_missing",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "cypher_member",
+   "member": "s"
+  },
+  {
+   "code": "cypher_merge_on",
+   "field": "f",
+   "type": "t"
   },
   {
    "code": "cypher_order_item",
@@ -717,6 +736,11 @@
    "item": "s"
   },
   {
+   "code": "cypher_second_write",
+   "construct": "create",
+   "offset": 1
+  },
+  {
    "code": "cypher_skip",
    "skip": 1
   },
@@ -727,6 +751,11 @@
   {
    "code": "cypher_too_deep",
    "max": 1,
+   "offset": 1
+  },
+  {
+   "code": "cypher_tool_writes",
+   "construct": "create",
    "offset": 1
   },
   {

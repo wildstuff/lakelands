@@ -6,8 +6,8 @@
 0.21.0 on the parser of the read-only openCypher subset. It amends
 `docs/decisions/018-one-pattern-query.md`, whose "never a write path
 through a query language" becomes "a query language writes only through
-the typed write doors", and comes in force with the issue that builds
-it; until then 018 stands as written.
+the typed write doors", and came in force with the issue that built it,
+lakelands#1513, which amended 018.
 
 ### Every statement is one call of a typed write door
 

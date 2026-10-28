@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use lakelands_api::error::{Case, Construct};
 use lakelands_api::expr::Expr;
 use lakelands_api::query::{Depth, Walk};
-use lakelands_api::{ParamName, Params};
+use lakelands_api::{ParamName, Params, Value};
 
 use crate::lex::{RESERVED, Tok, Token};
 
@@ -32,11 +32,32 @@ pub(crate) struct Clause {
     pub kind: Kind,
 }
 
-/// The clauses of the subset. Updating clauses come between the
-/// reading ones and an optional `RETURN` when the subset takes writes.
+/// The clauses of the subset: reading ones, then a `RETURN` or the
+/// updating ones, which the write translation ([`crate::write`]) tells
+/// apart into the one door call they make.
 pub(crate) enum Kind {
     Match(Match),
     Return(Return),
+    /// `CREATE` or `MERGE` of its parts.
+    Put {
+        merge: bool,
+        parts: Vec<Part>,
+    },
+    /// `SET` of properties, or `REMOVE` of them, each set to null.
+    Set {
+        remove: bool,
+        items: Vec<Assign>,
+    },
+    /// `DELETE` of names.
+    Delete(Vec<Name>),
+}
+
+/// `<name>.<field> = <value>`, or `<name>.<field>` removed.
+pub(crate) struct Assign {
+    pub at: usize,
+    pub name: String,
+    pub field: String,
+    pub value: Value,
 }
 
 /// `[OPTIONAL] MATCH <parts> [WHERE <condition>]`.
@@ -88,14 +109,19 @@ pub(crate) struct Node {
 /// A property of a node's map: its key and value, kept as one, and the
 /// parameter it was if it was one.
 pub(crate) struct Prop {
+    pub at: usize,
     pub key: String,
     pub value: Expr,
     pub names: Vec<Name>,
     pub param: Option<String>,
 }
 
-/// `-[:<relation>*<range>]->`, `<-[…]-` or `-[…]-`.
+/// `-[<var>:<relation>*<range> {<props>}]->`, `<-[…]-` or `-[…]-`; a
+/// read takes no variable and no map, which a write names a link by.
 pub(crate) struct Rel {
+    pub at: usize,
+    pub var: Option<Name>,
+    pub props: Option<(usize, Vec<Prop>)>,
     pub walk: Walk,
     pub relation: String,
     pub depth: Depth,
@@ -140,16 +166,23 @@ pub(crate) struct Parser<'p> {
     pub names: Vec<Name>,
     pub aggregates: Vec<usize>,
     pub absent: Vec<Absent>,
+    /// The first updating clause, once one is read.
+    pub wrote: Option<(Construct, usize)>,
 }
 
-/// Each writing or pipelining clause, by the keyword it begins with.
-const CLAUSES: [(&str, Construct); 13] = [
+/// Each updating clause the subset takes, by its keyword.
+const WRITES: [(&str, Construct); 5] = [
     ("CREATE", Construct::Create),
     ("MERGE", Construct::Merge),
     ("SET", Construct::Set),
-    ("DELETE", Construct::Delete),
-    ("DETACH", Construct::DetachDelete),
     ("REMOVE", Construct::Remove),
+    ("DELETE", Construct::Delete),
+];
+
+/// Each clause outside the subset, by the keyword it begins with.
+const CLAUSES: [(&str, Construct); 9] = [
+    ("DETACH", Construct::DetachDelete),
+    ("DROP", Construct::Schema),
     ("FOREACH", Construct::Foreach),
     ("LOAD", Construct::LoadCsv),
     ("CALL", Construct::Call),
@@ -188,6 +221,7 @@ impl<'p> Parser<'p> {
             names: Vec::new(),
             aggregates: Vec::new(),
             absent: Vec::new(),
+            wrote: None,
         }
     }
 
@@ -295,24 +329,41 @@ impl<'p> Parser<'p> {
         if self.is_kw("PROFILE") {
             return Err(outside(Construct::Profile, self.at()));
         }
-        let explain = self.kw("EXPLAIN");
+        let explain = self.at();
+        let explain = self.kw("EXPLAIN").then_some(explain);
         let mut clauses = Vec::new();
+        let mut writes = false;
         loop {
             let at = self.at();
+            let write = WRITES.iter().find(|(kw, _)| self.is_kw(kw));
             if self.is_kw("MATCH") || (self.is_kw("OPTIONAL") && !clauses.is_empty()) {
                 let optional = self.kw("OPTIONAL");
                 self.expect_kw("MATCH")?;
                 let kind = Kind::Match(self.matching(optional)?);
                 clauses.push(Clause { at, kind });
+            } else if self.is_kw("RETURN") && writes {
+                return Err(outside(Construct::ReturnBesideWrite, at));
             } else if self.is_kw("RETURN") && !clauses.is_empty() {
                 self.bump();
                 let kind = Kind::Return(self.returning()?);
                 clauses.push(Clause { at, kind });
                 break;
+            } else if let Some((kw, construct)) = write {
+                self.wrote.get_or_insert((construct.clone(), at));
+                if let Some(at) = explain {
+                    return Err(outside(Construct::ExplainWrite, at));
+                }
+                self.bump();
+                let kind = self.writing(kw, at)?;
+                clauses.push(Clause { at, kind });
+                writes = true;
+            } else if writes && matches!(self.tok(), Tok::End | Tok::Punct(";")) {
+                break;
             } else {
                 return Err(self.no_clause(clauses.is_empty()));
             }
         }
+        let explain = explain.is_some();
         self.eat(";");
         if !matches!(self.tok(), Tok::End) {
             let construct = match self.toks[self.i - 1].tok {
@@ -339,6 +390,94 @@ impl<'p> Parser<'p> {
             _ if first => self.expected("MATCH"),
             _ => Case::ParseTrailing { offset: at },
         }
+    }
+
+    /// The updating clause `kw`, after its keyword at `at`.
+    fn writing(&mut self, kw: &str, at: usize) -> Result<Kind> {
+        if kw == "DELETE" {
+            let mut names = Vec::new();
+            loop {
+                let at = self.at();
+                let name = self.name(false)?;
+                names.push(Name { name, at });
+                if !self.eat(",") {
+                    return Ok(Kind::Delete(names));
+                }
+            }
+        }
+        if kw == "SET" || kw == "REMOVE" {
+            let remove = kw == "REMOVE";
+            let items = self.assigns(remove)?;
+            return Ok(Kind::Set { remove, items });
+        }
+        if !self.is("(") {
+            return Err(outside(Construct::Schema, at));
+        }
+        let mut parts = vec![self.part()?];
+        while self.eat(",") {
+            parts.push(self.part()?);
+        }
+        if self.is_kw("ON") {
+            let on = match self.is_kw_at(1, "CREATE") {
+                true => Construct::OnCreate,
+                false => Construct::OnMatch,
+            };
+            return Err(outside(on, self.at()));
+        }
+        let merge = kw == "MERGE";
+        Ok(Kind::Put { merge, parts })
+    }
+
+    /// `SET`'s items, or `REMOVE`'s, each set to null.
+    fn assigns(&mut self, remove: bool) -> Result<Vec<Assign>> {
+        let mut items = Vec::new();
+        loop {
+            let at = self.at();
+            let name = self.name(false)?;
+            if self.is(":") {
+                return Err(outside(Construct::Label, self.at()));
+            }
+            if !remove && (self.is("=") || self.is("+")) {
+                return Err(outside(Construct::SetMap, at));
+            }
+            self.expect(".")?;
+            let field = self.name(true)?;
+            let value = match remove {
+                true => Value::Null,
+                false => {
+                    self.expect("=")?;
+                    self.value()?
+                }
+            };
+            items.push(Assign {
+                at,
+                name,
+                field,
+                value,
+            });
+            if !self.eat(",") {
+                return Ok(items);
+            }
+        }
+    }
+
+    /// A value written: a literal, or a parameter of any value; one
+    /// computed or read from a record is refused.
+    pub fn value(&mut self) -> Result<Value> {
+        let at = self.at();
+        if let Tok::Param(p) = self.tok().clone() {
+            let name = ParamName::from(p);
+            let v = self.param(&name)?;
+            if v.is_array() || v.is_object() {
+                self.bump();
+                return Ok(v);
+            }
+        }
+        let w = self.condition()?;
+        if let Some(a) = w.absent.first() {
+            return Err(outside(Construct::Exists, a.at));
+        }
+        literal(&w.expr).ok_or(outside(Construct::ComputedValue, at))
     }
 
     fn matching(&mut self, optional: bool) -> Result<Match> {
@@ -439,6 +578,7 @@ impl<'p> Parser<'p> {
         loop {
             let key = self.name(true)?;
             self.expect(":")?;
+            let at = self.at();
             let param = match self.tok() {
                 Tok::Param(p) if matches!(self.ahead(1), Tok::Punct("," | "}")) => Some(p.clone()),
                 _ => None,
@@ -448,6 +588,7 @@ impl<'p> Parser<'p> {
                 return Err(outside(Construct::Exists, a.at));
             }
             props.push(Prop {
+                at,
                 key,
                 value: w.expr,
                 names: w.names,
@@ -461,14 +602,21 @@ impl<'p> Parser<'p> {
     }
 
     fn rel(&mut self) -> Result<Rel> {
+        let at = self.at();
         let left = self.eat("<");
         self.expect("-")?;
         if !self.is("[") {
             return Err(self.expected("["));
         }
         self.bump();
+        let mut var = None;
         if matches!(self.tok(), Tok::Word(_) | Tok::Quoted(_)) {
-            return Err(outside(Construct::RelationshipVariable, self.at()));
+            let at = self.at();
+            if !matches!(self.ahead(1), Tok::Punct(":")) {
+                return Err(outside(Construct::RelationshipVariable, at));
+            }
+            let name = self.name(false)?;
+            var = Some(Name { name, at });
         }
         self.expect(":")?;
         let relation = self.name(true)?;
@@ -480,9 +628,11 @@ impl<'p> Parser<'p> {
         } else {
             Depth::default()
         };
-        if self.is("{") || matches!(self.tok(), Tok::Param(_)) {
-            return Err(outside(Construct::RelationshipProperties, self.at()));
-        }
+        let props = match self.tok() {
+            Tok::Punct("{") => Some((self.at(), self.props()?)),
+            Tok::Param(_) => return Err(outside(Construct::RelationshipProperties, self.at())),
+            _ => None,
+        };
         self.expect("]")?;
         self.expect("-")?;
         let right = self.eat(">");
@@ -492,6 +642,9 @@ impl<'p> Parser<'p> {
             _ => Walk::Both,
         };
         Ok(Rel {
+            at,
+            var,
+            props,
             walk,
             relation,
             depth,
@@ -654,6 +807,28 @@ impl<'p> Parser<'p> {
         let value = value.ok_or_else(|| Case::CypherParamMissing { name: name.clone() })?;
         self.used.insert(name.clone());
         Ok(value)
+    }
+}
+
+/// The value a literal is, a negative number's too; `None` for any
+/// other expression, or a duration, which a field takes as written.
+pub(crate) fn literal(e: &Expr) -> Option<Value> {
+    use lakelands_api::expr::Literal;
+    match e {
+        Expr::Lit { value } => match value {
+            Literal::Null => Some(Value::Null),
+            Literal::Bool(b) => Some(Value::Bool(*b)),
+            Literal::Number(n) => serde_json::from_str(n).ok(),
+            Literal::Text(t) => Some(Value::String(t.clone())),
+            _ => None,
+        },
+        Expr::Neg { arg } => match &**arg {
+            Expr::Lit {
+                value: Literal::Number(n),
+            } => serde_json::from_str(&format!("-{n}")).ok(),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

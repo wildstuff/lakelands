@@ -276,6 +276,15 @@ impl Session {
         if matches!(spec.door, Door::Subscribe | Door::Unsubscribe) {
             return self.subscription(&spec.door, &spec.name, a).await;
         }
+        if spec.door == Door::Cypher {
+            // The tool reads: a statement that writes is refused by its
+            // first updating clause before it is translated.
+            let statement = a.get("statement").and_then(Value::as_str);
+            if let Some((construct, offset)) = statement.and_then(lakelands_cypher::writes) {
+                let case = Case::CypherToolWrites { construct, offset };
+                return Err(Error::invalid(case).into());
+            }
+        }
         if spec.door != Door::Pin {
             let a = match spec.door {
                 Door::Find { .. }

@@ -11,9 +11,11 @@ aggregates). `neighbors`, `traverse`, `path` and `subgraph` are named
 constructions of it, not doors of their own. Every answer carries its
 position and can be pinned with `as_of` and `valid_at`.
 
-Any later query language a caller writes in (a read-only openCypher or
-GQL subset, for example) is translated into this query. There is never a
-second planner and never a write path through a query language.
+Any later query language a caller writes in (an openCypher or GQL
+subset, for example) is translated into this query. There is never a
+second planner, and a query language writes only through the typed
+write doors: each write statement is one call of a door that exists
+(`docs/decisions/082-a-query-language-writes-only-through-the-typed-write-doors.md`).
 
 ### Too deep is refused, not shortened
 
@@ -736,6 +738,11 @@ used.
   accepted as
   `docs/decisions/082-a-query-language-writes-only-through-the-typed-write-doors.md`
   (lakelands#1404), for 0.21.0.
+- With its build (lakelands#1513), "never a write path through a query
+  language" became "a query language writes only through the typed
+  write doors": the openCypher subset's `CREATE`, `MERGE`, `SET`,
+  `REMOVE` and `DELETE` are each one `upsert`, `link`, or the plan and
+  enact of a change, at REST, the CLI and the client.
 - PageRank and communities were accepted as measures and the cheapest
   walk as a path answered as rows (lakelands#1412); `page_rank` may
   leave its start's type out, as `components` may, and the rule that a

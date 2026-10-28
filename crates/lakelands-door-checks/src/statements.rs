@@ -28,6 +28,10 @@ use serde_json::{Value, json};
 
 use crate::checks::{Fixture, patch, setup};
 
+mod writes;
+
+pub use writes::*;
+
 /// Expands to one `#[test]` per statement check.
 ///
 /// `$new` is called once per check and gives a fresh, empty lake and the
@@ -45,7 +49,16 @@ macro_rules! statement_checks {
             an_explained_statement_answers_its_pattern_and_reads_nothing,
             a_statement_outside_the_subset_is_refused_at_its_offset,
             a_parameter_the_statement_reads_is_given_beside_it,
-            a_statement_nested_past_the_limit_is_refused_where_it_goes_deeper);
+            a_statement_nested_past_the_limit_is_refused_where_it_goes_deeper,
+            a_merge_writes_on_the_declared_key_and_a_create_expects_none,
+            a_relationship_is_merged_or_created_on_its_pair,
+            a_change_is_answered_by_its_plan_and_enacted_with_its_id,
+            a_link_is_changed_through_its_relationship,
+            a_statement_of_two_writes_is_refused_naming_the_second,
+            a_write_the_subset_does_not_take_is_refused_before_a_record_is_read,
+            the_match_of_a_write_reads_as_its_plan_reads,
+            a_written_value_is_its_parameter_never_text,
+            what_a_write_is_not_sent_with_is_refused_naming_it);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -101,6 +114,15 @@ pub trait Statements: Send + Sync {
         at: ReadAt,
         cursor: Option<&Cursor>,
     ) -> Result<Value, Error>;
+
+    /// `statement` with `params`, as `who`, enacting the plan `plan_id`.
+    async fn enact(
+        &self,
+        who: &Principal,
+        statement: &str,
+        params: &Params,
+        plan_id: &str,
+    ) -> Result<Value, Error>;
 }
 
 /// The statement door of a host that holds its lake in process: the
@@ -118,7 +140,29 @@ impl Statements for InProcess {
         cursor: Option<&Cursor>,
     ) -> Result<Value, Error> {
         let c = self.0.as_ref();
-        let answer = lakelands_cypher::run(c, who, statement, params, at, cursor.cloned());
+        let cursor = cursor.cloned();
+        let beside = lakelands_cypher::Beside {
+            at,
+            cursor,
+            plan_id: None,
+        };
+        let answer = lakelands_cypher::run(c, who, statement, params, beside);
+        Ok(serde_json::to_value(answer.await?).expect("an answer is JSON"))
+    }
+
+    async fn enact(
+        &self,
+        who: &Principal,
+        statement: &str,
+        params: &Params,
+        plan_id: &str,
+    ) -> Result<Value, Error> {
+        let c = self.0.as_ref();
+        let beside = lakelands_cypher::Beside {
+            plan_id: Some(plan_id.to_owned()),
+            ..Default::default()
+        };
+        let answer = lakelands_cypher::run(c, who, statement, params, beside);
         Ok(serde_json::to_value(answer.await?).expect("an answer is JSON"))
     }
 }
@@ -616,8 +660,10 @@ pub async fn the_tool_pages_with_the_cursor_beside_the_statement(
     assert_eq!(second["data"].get("next_cursor"), None, "{second}");
 }
 
-/// A statement that writes is refused by the tool naming the clause, at
-/// its offset, as the statement door refuses it, and nothing is written.
+/// A statement that writes is refused by the tool naming its first
+/// updating clause, at its offset, though the statement door takes it:
+/// the tool writes nothing. A construct no door takes is refused by both
+/// as outside the subset.
 pub async fn a_write_statement_is_refused_by_the_tool_naming_it(
     lake: Arc<dyn LakeStore>,
     door: Arc<dyn Statements>,
@@ -628,24 +674,36 @@ pub async fn a_write_statement_is_refused_by_the_tool_naming_it(
     let (owner, none) = (&f.cast.owner, Params::new());
     let head = f.store.head().await.expect("the head");
     for (s, construct) in [
+        ("MATCH (i:invoice) SET i.status = 'paid'", Construct::Set),
+        ("MATCH (i:invoice) REMOVE i.note", Construct::Remove),
+        ("MATCH (i:invoice) DELETE i", Construct::Delete),
+        ("MERGE (i:invoice {key: 'INV-9'})", Construct::Merge),
         (
-            "MATCH (i:invoice) SET i.status = 'paid' RETURN i.key",
-            Construct::Set,
+            "CREATE (i:invoice {key: 'INV-9'}) RETURN i",
+            Construct::Create,
         ),
-        ("CREATE (i:invoice {key: 'INV-9'})", Construct::Create),
-        ("MATCH (i:invoice) DETACH DELETE i", Construct::DetachDelete),
     ] {
         let word = construct.to_string();
-        let first = word.trim_start_matches('`').split('`').next();
-        let offset = s.find(first.expect("a clause")).expect("the clause");
-        let case = Case::CypherOutside { construct, offset };
+        let clause = word.trim_start_matches('`').split('`').next();
+        let offset = s.find(clause.expect("a clause")).expect("the clause");
+        let case = Case::CypherToolWrites { construct, offset };
         let tool = through_tool((tools.as_ref(), &f), owner, s, &none, None).await;
-        assert_eq!(tool.expect_err(s), invalid(case.clone()), "{s}");
-        let at_door = door.cypher(owner, s, &none, at(None), None).await;
-        assert_eq!(at_door.expect_err(s), invalid(case), "{s}");
+        assert_eq!(tool.expect_err(s), invalid(case), "{s}");
     }
+    let s = "MATCH (i:invoice) DETACH DELETE i";
+    let offset = s.find("DETACH").expect("the clause");
+    let construct = Construct::DetachDelete;
+    let case = Case::CypherOutside { construct, offset };
+    let tool = through_tool((tools.as_ref(), &f), owner, s, &none, None).await;
+    assert_eq!(tool.expect_err(s), invalid(case.clone()), "{s}");
+    let at_door = door.cypher(owner, s, &none, at(None), None).await;
+    assert_eq!(at_door.expect_err(s), invalid(case), "{s}");
     let after = f.store.head().await.expect("the head");
     assert_eq!(after, head, "nothing is written");
+    let s = "MERGE (i:invoice {key: 'INV-9'}) SET i.status = 'open'";
+    let at_door = door.cypher(owner, s, &none, at(None), None).await;
+    let at_door = at_door.expect("the statement door writes");
+    assert_eq!(at_door["outcome"], json!("applied"), "{at_door}");
 }
 
 /// `ORDER BY` beside an aggregate is refused in the statement's words,
