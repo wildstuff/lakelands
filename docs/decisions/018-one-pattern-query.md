@@ -363,9 +363,8 @@ they are refused `too_large`, naming the ceiling, for the reason a step
 too deep is refused: a partition or a ranking of part of the graph
 would look like the whole of it.
 
-`page_rank` and `communities` are accepted for 0.20.0 (lakelands#1412);
-`communities` only if its issue is built, and it is the first the round
-cuts.
+`page_rank` and `communities` are accepted (lakelands#1412); `page_rank`
+is built for 0.20.0 and `communities` for 0.21.0 (lakelands#1514).
 
 `page_rank` ranks the graph its starts reach over the steps' relations,
 each walked in its own step's direction (`both` walks a link each way),
@@ -383,7 +382,8 @@ function of the graph and of the records' keys, never of the engine, but
 where two partitions are equally good the keys decide between them, so
 renaming a key may move a record from one community to another.
 
-`components` and `page_rank` alone may leave their start's `type` out.
+`components`, `page_rank` and `communities` alone may leave their
+start's `type` out.
 A host that asks for the components of the graph a set of relations
 spans, across every type that holds such a link, would otherwise ask
 once per type and merge partitions it cannot number by the lake's rule
@@ -743,3 +743,7 @@ used.
 - A cheapest walk judges `path_starts` after its steps and its weight
   fields, where `path` judges it, not before them: several starts are
   known only once a filter start's records are read (lakelands#1422).
+- `communities` was built and, as `components` and `page_rank` may, may
+  leave its start's type out; a step that does not walk `both` is
+  refused `components_both_ways`, whose words now name both measures
+  (lakelands#1514).

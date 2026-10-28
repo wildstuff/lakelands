@@ -51,6 +51,7 @@ mod forgotten;
 mod function_input;
 mod fusion;
 mod graph_cheapest;
+mod graph_communities;
 mod graph_measures;
 mod graph_rank;
 mod graph_steps;
@@ -658,6 +659,10 @@ pub const ALL: &[Check] = &[
     graph_rank::RANK_ANY_ORDER,
     graph_rank::RANK_NO_START,
     graph_rank::RANK_TOO_LARGE,
+    graph_communities::COMMUNITIES_PINNED,
+    graph_communities::COMMUNITIES_ANY_ORDER,
+    graph_communities::COMMUNITY_CONNECTED,
+    graph_communities::COMMUNITIES_TOO_LARGE,
     graph_steps::ROW_DEPTH,
     graph_steps::GRAPH_PAGES,
     graph_steps::GRAPH_BOUND,

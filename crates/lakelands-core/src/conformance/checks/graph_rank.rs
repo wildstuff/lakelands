@@ -161,7 +161,7 @@ async fn page_rank_answers_the_integer_scores_of_a_small_graph_highest_first(sto
 }
 
 /// The records of the larger lake.
-const PAGES: usize = 300;
+pub(super) const PAGES: usize = 300;
 
 /// The source that writes the larger lake.
 const RING: &str = "ring";
@@ -170,7 +170,7 @@ const RING: &str = "ring";
 /// every third jumps 37 on by `jump`, every fiftieth from 7 jumps to
 /// itself, and every seventh `cites` the page 13 times its number on;
 /// the records and the links written in that order, or `reversed`.
-async fn ring(store: &dyn LakeStore, reversed: bool) -> Held {
+pub(super) async fn ring(store: &dyn LakeStore, reversed: bool) -> Held {
     let l = Lake::of(store);
     let by_source = |name: &str| FieldDecl {
         authority: Authority::Source,

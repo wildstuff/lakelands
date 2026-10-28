@@ -187,6 +187,16 @@ pub enum Projection {
         /// The field of every step's link type that a link costs.
         weight: FieldName,
     },
+    /// Communities: one row per record of the graph the start records
+    /// reach over the steps' relations taken both ways, `community`,
+    /// `size`, `type` and `key`, numbered and ordered as `Components`.
+    /// Louvain in integers, records visited by `(type, key)` and a tie to
+    /// the community whose least record is least, each community split
+    /// into its connected parts: the same on every engine. With no start
+    /// type, every record that holds a link it may see over the steps'
+    /// relations is a start. Past the lake's `max_graph_nodes` refused
+    /// `too_large`, never cut (`docs/decisions/026-the-store-walks-the-graph.md`).
+    Communities,
 }
 
 impl<'de> Deserialize<'de> for Projection {
@@ -210,6 +220,7 @@ impl<'de> Deserialize<'de> for Projection {
             Cheapest {
                 weight: FieldName,
             },
+            Communities {},
         }
         Ok(match Wire::deserialize(d)? {
             Wire::Rows { fields } => Projection::Rows { fields },
@@ -220,6 +231,7 @@ impl<'de> Deserialize<'de> for Projection {
             Wire::Reach {} => Projection::Reach,
             Wire::PageRank {} => Projection::PageRank,
             Wire::Cheapest { weight } => Projection::Cheapest { weight },
+            Wire::Communities {} => Projection::Communities,
         })
     }
 }

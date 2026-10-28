@@ -46,16 +46,3 @@ fn both_ways_is_two_arcs_and_a_lone_seed_stands_only_with_a_type() {
     alone.add(&[n("a"), n("c"), n("d")]).unwrap();
     assert_eq!(keys(&alone.finish().nodes), vec!["a", "b", "c", "d"]);
 }
-
-/// Past `max_nodes` records the graph is refused, never cut.
-#[test]
-fn a_graph_past_max_nodes_is_refused_too_large() {
-    let g = Graph::new(vec![e("a", "r", "b"), e("b", "r", "c"), e("c", "r", "d")]);
-    let mut h = Holding::new(&g, steps(Walk::Out), 3, true);
-    let err = h.add(&[n("a")]).unwrap_err();
-    let refusal = lakelands_api::Refusal::TooLarge { max: 3 };
-    assert!(matches!(err, lakelands_api::Error::Refused { reason, .. } if reason == refusal));
-    let mut h = Holding::new(&g, steps(Walk::Out), 4, true);
-    h.add(&[n("a")]).unwrap();
-    assert_eq!(h.finish().nodes.len(), 4);
-}

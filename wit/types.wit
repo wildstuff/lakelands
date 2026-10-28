@@ -1039,8 +1039,8 @@ interface types {
     }
 
     record start {
-        /// Left out only by `components`, which then grows from every
-        /// linked record.
+        /// Left out only by `components`, `page-rank` and `communities`,
+        /// which then grow from every linked record.
         %type: option<type-name>,
         key: option<record-key>,
         where: option<condition>,
@@ -1087,6 +1087,9 @@ interface types {
         page-rank,
         /// The walk to `to` that costs least, a link costing this field.
         cheapest(field-name),
+        /// The communities of the graph the start records reach, in
+        /// integers, each one connected.
+        communities,
     }
 
     record pattern {

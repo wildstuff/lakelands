@@ -101,7 +101,7 @@ impl<'a> Reader<'a> {
         let chain = reaches || p.steps.iter().any(|s| s.depth.min > 0);
         let lenient = match p.project {
             Projection::Graph | Projection::Cheapest { .. } => !chain,
-            _ => matches!(p.project, Projection::Components | Projection::PageRank),
+            _ => measures::untyped_measure(&p.project),
         };
         let last = p.steps.len().saturating_sub(1);
         // A step another walks from reaches one type (080): the next, where

@@ -545,7 +545,7 @@ What a refusal is about.
 | `after_with_aggregate` | — | `after` pages records; an `aggregate` has no pages | An `after` beside an aggregate. |
 | `after_with_cursor` | — | `after` and `cursor` both name where a page starts; give one | An `after` beside a cursor. |
 | `cheapest_needs_to` | — | `cheapest` answers the walk that costs least from the start to one record; name that record with `to` | A `cheapest` walk with no `to`. |
-| `components_both_ways` | `relation` (RelationName) | `components` takes every link both ways; the step over `{relation}` must walk `both` | A `components` step that does not walk both ways. |
+| `components_both_ways` | `relation` (RelationName) | `components` and `communities` take every link both ways; the step over `{relation}` must walk `both` | A `components` or `communities` step that does not walk both ways. |
 | `cursor_foreign` | — | the cursor is not one this lake handed out | A cursor the lake did not hand out. |
 | `cursor_other_door` | `was` (String), `was_ty` (TypeName, optional), `door` (String), `type` (TypeName, optional) | the cursor was handed out for `{was}`[ on `{was_ty}`], not `{door}`[ on `{type}`]; continue it there | A cursor handed out for another door or type. |
 | `cursor_other_order` | — | the cursor was handed out for another order; continue it with the `order_by` its first page was read with | A cursor handed out for another order. |

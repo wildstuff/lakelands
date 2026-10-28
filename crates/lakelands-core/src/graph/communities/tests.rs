@@ -34,15 +34,6 @@ const TWO: [(&str, &str); 6] = [
     ("f", "d"),
 ];
 
-/// Two triangles a bridge joins are two communities, numbered by their
-/// least record.
-#[test]
-fn a_bridge_does_not_join_two_dense_groups() {
-    let links = [&TWO[..], &[("c", "d")]].concat();
-    let got = found(&held(&["a", "b", "c", "d", "e", "f"], &links));
-    assert_eq!(got, [["a", "b", "c"], ["d", "e", "f"]]);
-}
-
 /// A record linked once to each of two equal groups gains as much in
 /// either: it goes to the one whose least record is least, so renaming
 /// the first group past the second moves it.

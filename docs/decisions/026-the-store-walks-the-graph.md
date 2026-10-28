@@ -75,7 +75,12 @@ order (025).
   value.
 - **Communities** move records between groups by the gain in
   modularity, compared as an integer product so that no division is
-  taken, and only where the gain is strictly more than staying; a tie
+  taken: moving record `i`, of degree `k_i`, into a group it has
+  `k_{i,C}` links into and whose degrees sum to `Σ_C` without it gains
+  `2m·k_{i,C} − k_i·Σ_C`, the gain times `2m²`, in `i128`, checked. A
+  link from a record to itself counts twice in its degree. A record
+  moves only where the gain is strictly more than staying, and only
+  into a group it has a link into; a tie
   goes to the group whose least member by type and key is least.
   Records are visited by type and key, sweep after sweep until none
   moves, then the groups are folded into records, linked by the number
@@ -83,7 +88,7 @@ order (025).
   Every move raises a bounded integer, so the method ends without a cap
   on rounds. A group this leaves internally disconnected is then split
   into its connected parts, as components are found, so every community
-  is connected. It is built only if its issue is.
+  is connected (lakelands#1514).
 
 **A measure's page.** A read keeps nothing between calls, and a page in
 the middle of a measure cannot be made from less than the measure: a
@@ -230,3 +235,6 @@ answers identical.
   sum depends on the order links come in, and the cheapest walk joined
   the walks as a relaxation by hops over the neighbourhood it holds
   (lakelands#1412).
+- Communities were built on the graph PageRank holds, its steps walked
+  `both`, and split into connected parts with the components' joins
+  (lakelands#1514).

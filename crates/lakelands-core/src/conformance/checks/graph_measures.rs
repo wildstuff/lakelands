@@ -52,7 +52,7 @@ check!(
 
 check!(
     MEASURE_REFUSALS = a_measure_refuses_depth_where_to_order_by_and_one_way_components,
-    "018: a measure refuses a step `depth`, `where` or `type`, `to`, `order_by`, no step at all, and a `components` step that does not walk `both`, each as invalid in its own words naming the measure, rather than answer less than it seems to, `degree`, `components` and `page_rank` alike (lakelands#924); a step's `join`, `optional`, `absent`, and a `from` that names another record than the start, are refused naming the member and the measure, which reads the steps' relations around its records and binds no name"
+    "018: a measure refuses a step `depth`, `where` or `type`, `to`, `order_by`, no step at all, and a `components` or `communities` step that does not walk `both`, each as invalid in its own words naming the measure, rather than answer less than it seems to, `degree`, `components`, `page_rank` and `communities` alike (lakelands#924); a step's `join`, `optional`, `absent`, and a `from` that names another record than the start, are refused naming the member and the measure, which reads the steps' relations around its records and binds no name"
 );
 
 /// Partners p1..p3; invoices i0..i5 (i0 linked to nothing); `billed_to` by the reference field
@@ -889,10 +889,15 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(store:
     let named = |p: &Projection| match p {
         Projection::Degree => "degree",
         Projection::Components => "components",
+        Projection::Communities => "communities",
         _ => "page_rank",
     };
     let mut cases: Vec<(String, Pattern, Case)> = Vec::new();
-    for project in [Projection::Degree, Projection::PageRank] {
+    for project in [
+        Projection::Degree,
+        Projection::PageRank,
+        Projection::Communities,
+    ] {
         let m = named(&project);
         let base = || one("invoice", "billed_to", Walk::Out, project.clone());
         let measure = || m.to_owned();
@@ -931,13 +936,16 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(store:
     let words = Case::ComponentsBothWays {
         relation: "billed_to".into(),
     };
-    cases.push(("components walking one way".into(), one_way, words));
+    cases.push(("components walking one way".into(), one_way, words.clone()));
+    let one_way = one("invoice", "billed_to", Walk::Out, Projection::Communities);
+    cases.push(("communities walking one way".into(), one_way, words));
     // A pattern's tree members: a measure reads the steps' relations
     // around its records, and binds no name another step could join.
     for project in [
         Projection::Degree,
         Projection::Components,
         Projection::PageRank,
+        Projection::Communities,
     ] {
         for member in ["join", "optional", "absent", "from"] {
             let mut p = measure("invoice", both(), project.clone());
