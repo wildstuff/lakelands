@@ -280,7 +280,10 @@ impl Session {
             // The tool reads: a statement that writes is refused by its
             // first updating clause before it is translated.
             let statement = a.get("statement").and_then(Value::as_str);
-            if let Some((construct, offset)) = statement.and_then(lakelands_cypher::writes) {
+            let params = a.get("params").cloned().map(serde_json::from_value);
+            let params = params.and_then(Result::ok).unwrap_or_default();
+            let wrote = statement.and_then(|s| lakelands_cypher::writes(s, &params));
+            if let Some((construct, offset)) = wrote {
                 let case = Case::CypherToolWrites { construct, offset };
                 return Err(Error::invalid(case).into());
             }

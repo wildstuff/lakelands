@@ -690,6 +690,16 @@ pub async fn a_write_statement_is_refused_by_the_tool_naming_it(
         let tool = through_tool((tools.as_ref(), &f), owner, s, &none, None).await;
         assert_eq!(tool.expect_err(s), invalid(case), "{s}");
     }
+    let s = "MATCH (i:invoice) WHERE i.status = $status SET i.status = 'paid'";
+    let offset = s.find("SET").expect("the clause");
+    let construct = Construct::Set;
+    let case = Case::CypherToolWrites { construct, offset };
+    let tool = through_tool((tools.as_ref(), &f), owner, s, &given("open"), None).await;
+    assert_eq!(
+        tool.expect_err(s),
+        invalid(case),
+        "a parameter read before the write"
+    );
     let s = "MATCH (i:invoice) DETACH DELETE i";
     let offset = s.find("DETACH").expect("the clause");
     let construct = Construct::DetachDelete;

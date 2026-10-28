@@ -63,7 +63,7 @@ pub struct Translated {
 #[non_exhaustive]
 pub enum Statement {
     /// A read: the pattern the host runs.
-    Read(Pattern),
+    Read(Box<Pattern>),
     /// A write: the one door it calls.
     Write(Write),
 }
@@ -103,7 +103,7 @@ pub fn translate(statement: &str, params: &Params) -> Result<Translated> {
         (query.clauses.iter()).any(|c| !matches!(c.kind, Kind::Match(_) | Kind::Return(_)));
     let statement = match writes {
         true => Statement::Write(Write(write::write(query).map_err(refuse)?)),
-        false => Statement::Read(read::pattern(query).map_err(refuse)?),
+        false => Statement::Read(Box::new(read::pattern(query).map_err(refuse)?)),
     };
     if let Some(name) = params.keys().find(|k| !parser.used.contains(*k)) {
         let name = name.clone();
@@ -112,13 +112,12 @@ pub fn translate(statement: &str, params: &Params) -> Result<Translated> {
     Ok(Translated { explain, statement })
 }
 
-/// The first updating clause of `statement` and where it stands, if it
-/// has one before anything that does not parse: so a door that only
-/// reads refuses a write by its clause, whatever else it holds.
-pub fn writes(statement: &str) -> Option<(Construct, usize)> {
+/// The first updating clause of `statement` with `params` and where it
+/// stands, if it has one before anything that does not parse: so a door
+/// that only reads refuses a write by its clause, whatever else it holds.
+pub fn writes(statement: &str, params: &Params) -> Option<(Construct, usize)> {
     let chars: Vec<char> = statement.chars().collect();
-    let params = Params::new();
-    let mut parser = parse::Parser::new(lex::lex(&chars).ok()?, chars, &params);
+    let mut parser = parse::Parser::new(lex::lex(&chars).ok()?, chars, params);
     let _ = parser.query();
     parser.wrote
 }
@@ -167,7 +166,7 @@ pub async fn run(
             }
             return write::run(catalog, who, op, plan_id.as_deref()).await;
         }
-        Statement::Read(pattern) => pattern,
+        Statement::Read(pattern) => *pattern,
     };
     if plan_id.is_some() {
         let member = "plan_id".to_owned();
