@@ -78,7 +78,8 @@ fn a_newer_part_inside_a_known_case_stays_inside_it() {
     assert!(matches!(exchange, Exchange::TimedOut { secs: 2 }));
     let names = json!({"error": "unavailable", "situation": {"code": "tool_names",
         "problems": [{"problem": "too_wide", "message": "too wide"},
-                     {"problem": "too_long", "name": "x"}]}});
+                     {"problem": "too_long", "name": "x",
+                      "from": {"source": "type", "type": "t"}}]}});
     let e: Error = serde_json::from_value(names).unwrap();
     let Some(Situation::ToolNames { problems }) = e.situation() else {
         panic!("{e:?}");
