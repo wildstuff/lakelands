@@ -248,8 +248,8 @@ pub(crate) struct Projection {
     pub(crate) link_ends: BTreeMap<(TypeName, FieldName, String), BTreeSet<RecordKey>>,
     /// Each head link record's entries in `link_ends`.
     link_end_rows: BTreeMap<(TypeName, RecordKey), Vec<(FieldName, String)>>,
-    /// The edges into each record over relations carried by a reference
-    /// field (`engines::links_of` of every head state), by source and
+    /// The edges into each record over relations carried by a field, one
+    /// key or an array (`engines::links_of` of every head state), by source and
     /// relation. A walk `In` over them reads what it reaches.
     pub(crate) in_edges: BTreeMap<(TypeName, RecordKey), BTreeMap<EdgeFrom, Edge>>,
     /// Each head record's entries in `in_edges`: the target and the edge.
