@@ -101,7 +101,8 @@ pub async fn apply_bundle(
     // rules alone declares nothing.
     let what: Vec<String> = bundle.declarations.iter().map(label).collect();
     // A setting whose first value the bundle gives is named once, by the
-    // line that says what became of the value.
+    // line that says what became of the value; one already in force is
+    // named as well, for its position.
     let valued: Vec<bool> = (bundle.declarations.iter())
         .map(|d| {
             let v = serde_json::to_value(d).unwrap_or_default();
@@ -148,7 +149,11 @@ pub async fn apply_bundle(
                 ),
             };
             put(out, header)?;
-            for (i, w) in what.into_iter().enumerate().filter(|(i, _)| !valued[*i]) {
+            for (i, w) in what
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| !valued[*i] || held(*i).is_some())
+            {
                 match held(i) {
                     Some(since) => put(out, format!("  {w}, in force since position {since}"))?,
                     None => put(out, format!("  {w}"))?,

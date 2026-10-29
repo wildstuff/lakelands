@@ -3285,9 +3285,10 @@ fn a_bundle_declares_a_setting_and_gives_its_first_value() {
         );
         let again = sh.run(&["apply", &bundle]);
         assert!(
-            again
-                .out
-                .contains("setting `vat_rate` holds a value already, kept"),
+            again.out.contains("`vat_rate`, in force since position")
+                && again
+                    .out
+                    .contains("setting `vat_rate` holds a value already, kept"),
             "{}",
             again.out
         );
