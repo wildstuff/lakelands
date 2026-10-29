@@ -1182,6 +1182,11 @@ the first release with real installations
   `sys.setting` has no `periods` declares it again, one version on,
   after `lake_upgraded`
   (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+  The step changes no fold. A SQLite or PostgreSQL projection that
+  0.20.0 made is rebuilt at the first writer's open of 0.21.0 all the
+  same, by the engines' layouts and not by the step: it holds no edge
+  of an array of keys, which 0.21.0 reads from every state whatever its
+  format (`docs/decisions/091-a-field-carried-relation-over-an-array-of-keys-yields-one-edge-per-key.md`).
   No other step changes a fold, so the projection stays. A step that
   changes how an event folds says so here, and a writer's open then
   rebuilds the projection.

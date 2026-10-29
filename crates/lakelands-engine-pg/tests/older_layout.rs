@@ -14,7 +14,10 @@
 //! (lakelands#1467). A lake 0.20.0 left, of format 20 with its `id`,
 //! `prev` and `hash` as text beside `applied`, is read as it is and
 //! converted in place by the first writer's open, once, as it upgrades,
-//! every event, digest and export as before (lakelands#1518).
+//! every event, digest and export as before (lakelands#1518). One whose
+//! edges table holds no edge of an array of keys answers them after the
+//! first writer's open, which converts its log and rebuilds
+//! (lakelands#1551).
 
 mod common;
 
@@ -34,7 +37,8 @@ use lakelands_api::read::ReadAt;
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::fixture::{
-    Lake, computed_by, log_events, reads_all, restrict, source_record, sourced, type_decl, vector,
+    Lake, array_walks, computed_by, learnings, log_events, reads_all, restrict, source_record,
+    sourced, type_decl, vector,
 };
 use lakelands_core::engines::Elements;
 use lakelands_engine_pg::PgOpener;
@@ -444,6 +448,96 @@ async fn a_lake_0_20_0_left_is_converted_in_place_by_the_first_writers_open() {
     let second = tokio::task::block_in_place(|| rows(&url, &schema));
     assert_eq!(second.2, first.2, "the next open rewrites nothing");
     let _ = std::fs::remove_dir_all(&scratch);
+    common::drop_schema(&url, &schema);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lake_0_20_0_left_holding_an_array_answers_its_edges_after_the_first_writers_open() {
+    let Some(url) = common::url_or_skip("array edges of 0.20.0") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let s = format!("\"{schema}\"");
+    let location = common::location(&url, "older", &schema);
+    let store = open(&location, OpenMode::Create).await.unwrap();
+    let l = Lake::of(store.as_ref());
+    let cited = [
+        ("a", json!(null)),
+        ("b", json!(null)),
+        ("x", json!(["a", "b"])),
+        ("y", json!("a")),
+    ];
+    learnings(&l, &cited).await.unwrap();
+    let before = store.head().await.unwrap();
+    store.close().await.unwrap();
+    drop((l, store));
+    // 0.20.0 read no array: its edges table holds y's edge and none of x's.
+    let layout = format!("SELECT n FROM {s}.meta WHERE k = 'layout'");
+    let wanted = tokio::task::block_in_place(|| one(&url, &layout));
+    let back = format!(
+        "{}; DELETE FROM {s}.edges WHERE src_key = 'x'; UPDATE {s}.meta SET n = {} WHERE k = 'layout'",
+        as_text(&s),
+        wanted - 1
+    );
+    let edges = tokio::task::block_in_place(|| {
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        client.batch_execute(&back).unwrap();
+        (
+            kept(&url, &schema),
+            one(&url, &format!("SELECT count(*) FROM {s}.edges")),
+        )
+    });
+    assert_eq!(
+        edges,
+        (AS_TEXT.to_owned(), 1),
+        "the log on text, y's edge kept"
+    );
+    let refused = open(&location, OpenMode::Read).await.err().unwrap();
+    assert!(
+        matches!(refused.situation(), Some(Situation::ProjectionLayout { found, wanted: w, .. })
+            if *found == Some(wanted as u64 - 1) && *w == wanted as u64),
+        "a reader's open is refused naming both layouts: {refused:?}"
+    );
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    let why = store.rebuilt_at_open();
+    assert!(
+        why.as_ref()
+            .is_some_and(|w| w.contains(&format!("layout {}", wanted - 1))),
+        "the writer's open says why it rebuilt: {why:?}"
+    );
+    assert_eq!(
+        tokio::task::block_in_place(|| kept(&url, &schema)),
+        CONVERTED
+    );
+    let head = array_walks(store.as_ref(), None).await;
+    assert!(
+        head[0].starts_with("x>a x>b / x a b "),
+        "x's edges at the head: {head:?}"
+    );
+    assert!(
+        head[1].starts_with("x>a y>a / a x y ") && head[2].starts_with("x>b / b x "),
+        "{head:?}"
+    );
+    assert_eq!(
+        array_walks(store.as_ref(), Some(before)).await,
+        head,
+        "as of before the open"
+    );
+    store.rebuild().await.unwrap();
+    assert_eq!(
+        array_walks(store.as_ref(), None).await,
+        head,
+        "after a rebuild"
+    );
+    store.close().await.unwrap();
+    drop(store);
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    assert_eq!(
+        store.rebuilt_at_open(),
+        None,
+        "the next writer's open rebuilds nothing"
+    );
+    store.close().await.unwrap();
     common::drop_schema(&url, &schema);
 }
 

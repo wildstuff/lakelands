@@ -375,7 +375,7 @@ fn heads_sql(s: &str, pt: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 9;
+pub(crate) const LAYOUT: u64 = 10;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.

@@ -6,7 +6,9 @@
 //! a search row for every record (lakelands#1318), no table `bases`
 //! (lakelands#1432), and its mark one layout back. A reader's open is refused naming the layouts; the
 //! writer's open rebuilds it from the log under its lease, saying why,
-//! and the next writer's open rebuilds nothing.
+//! and the next writer's open rebuilds nothing. A lake 0.20.0 left, its
+//! edges table without the edges of an array of keys, answers them after
+//! the first writer's open (lakelands#1551).
 
 use std::sync::Arc;
 
@@ -16,7 +18,9 @@ use lakelands_api::ontology::FieldDecl;
 use lakelands_api::ontology::StorageKind::{Decimal, Text};
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
-use lakelands_core::conformance::fixture::{Lake, computed_by, source_record, sourced, type_decl};
+use lakelands_core::conformance::fixture::{
+    Lake, array_walks, computed_by, learnings, source_record, sourced, type_decl,
+};
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
 
@@ -146,6 +150,82 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
         "only the record with tokens keeps a search row"
     );
     store.close().await.unwrap();
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    assert_eq!(
+        store.rebuilt_at_open(),
+        None,
+        "the next writer's open rebuilds nothing"
+    );
+    store.close().await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lake_0_20_0_left_holding_an_array_answers_its_edges_after_the_first_writers_open() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("older-array-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let location = Location::sqlite("older", &dir);
+    let store = open(&location, OpenMode::Create).await.unwrap();
+    let l = Lake::of(store.as_ref());
+    let cited = [
+        ("a", json!(null)),
+        ("b", json!(null)),
+        ("x", json!(["a", "b"])),
+        ("y", json!("a")),
+    ];
+    learnings(&l, &cited).await.unwrap();
+    let before = store.head().await.unwrap();
+    store.close().await.unwrap();
+    drop((l, store));
+    // 0.20.0 read no array: its edges table holds y's edge and none of x's.
+    let db = || rusqlite::Connection::open(dir.join("projection.db")).unwrap();
+    let wanted: i64 =
+        (db().query_row("SELECT v FROM meta WHERE k = 'layout'", [], |r| r.get(0))).unwrap();
+    let back = format!(
+        "DELETE FROM edges WHERE src_key = 'x'; UPDATE meta SET v = {} WHERE k = 'layout'",
+        wanted - 1
+    );
+    db().execute_batch(&back).unwrap();
+    let edges: i64 = db()
+        .query_row("SELECT count(*) FROM edges", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(edges, 1, "y's edge is kept");
+    let refused = open(&location, OpenMode::Read).await.err().unwrap();
+    assert!(
+        matches!(refused.situation(), Some(Situation::ProjectionLayout { found, wanted: w, .. })
+            if *found == Some(wanted as u64 - 1) && *w == wanted as u64),
+        "a reader's open is refused naming both layouts: {refused:?}"
+    );
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    let why = store.rebuilt_at_open();
+    assert!(
+        why.as_ref()
+            .is_some_and(|w| w.contains(&format!("layout {}", wanted - 1))),
+        "the writer's open says why it rebuilt: {why:?}"
+    );
+    let head = array_walks(store.as_ref(), None).await;
+    assert!(
+        head[0].starts_with("x>a x>b / x a b "),
+        "x's edges at the head: {head:?}"
+    );
+    assert!(
+        head[1].starts_with("x>a y>a / a x y ") && head[2].starts_with("x>b / b x "),
+        "{head:?}"
+    );
+    assert_eq!(
+        array_walks(store.as_ref(), Some(before)).await,
+        head,
+        "as of before the open"
+    );
+    store.rebuild().await.unwrap();
+    assert_eq!(
+        array_walks(store.as_ref(), None).await,
+        head,
+        "after a rebuild"
+    );
+    store.close().await.unwrap();
+    drop(store);
     let store = open(&location, OpenMode::Write).await.unwrap();
     assert_eq!(
         store.rebuilt_at_open(),
