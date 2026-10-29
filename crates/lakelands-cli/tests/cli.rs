@@ -2487,6 +2487,50 @@ fn backup_grows_its_directory_and_restore_makes_the_lake_with_its_keys() {
 }
 
 #[test]
+fn import_without_the_keys_names_the_keyring_and_not_restore_keys_from() {
+    let keyring = r#"{"lakelands": 1, "owner": "owner", "keys": {"keyring": "keys"}}"#;
+    let from = Shell::on("import-keys-from", Backend::Store);
+    from.lake();
+    fs::write(from.root.join("lakelands.json"), keyring).unwrap();
+    from.run(&["apply", &from.fixture()]);
+    let contact =
+        "name: contact\nfields:\n  email: { type: text, authority: source, erasable: true }\n";
+    let applied = from.run(&[
+        "apply",
+        &from.bundle("contact", &[("types/contact.yaml", contact)]),
+    ]);
+    assert_eq!(applied.code, 0, "{}", applied.err);
+    let row =
+        "{\"type\": \"contact\", \"key\": \"c1\", \"fields\": {\"email\": \"ada@example.org\"}}\n";
+    let fed = from.run(&["ingest", &from.file("crm.ndjson", row), "--source", "crm"]);
+    assert_eq!(fed.code, 0, "{}", fed.err);
+    let dir = from.root.join("backup").display().to_string();
+    let keys = from.root.join("backup-keys").display().to_string();
+    let backed = from.run(&["backup", "--to", &dir, "--keys-to", &keys]);
+    assert_eq!(
+        (backed.code, backed.err.as_str()),
+        (0, ""),
+        "{}",
+        backed.out
+    );
+
+    let to = Shell::on("import-keys-to", Backend::Store);
+    to.lake();
+    fs::write(to.root.join("lakelands.json"), keyring).unwrap();
+    let refused = to.run(&["import", &dir]);
+    assert_eq!(refused.code, 1, "{}", refused.err);
+    assert!(
+        refused
+            .err
+            .contains("put the keys file in the keyring's place")
+            && refused.err.contains("import again")
+            && !refused.err.contains("--keys-from"),
+        "{}",
+        refused.err
+    );
+}
+
+#[test]
 fn import_refuses_a_lake_that_holds_events_another_lake_memory_and_a_damaged_export() {
     let from = Shell::on("import-refusals-from", Backend::Store);
     let dir = exported(&from);

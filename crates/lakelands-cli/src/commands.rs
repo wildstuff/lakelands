@@ -1538,9 +1538,15 @@ pub async fn import(
                         Some(lakelands_api::error::Situation::KeyMissing { .. })
                     ) =>
                 {
-                    "the lake's sealed values need its keys: name the keyring in the keys \
-                     section of the configuration, and restore with --keys-from the keys file \
-                     the backup copied"
+                    if restoring {
+                        "the lake's sealed values need its keys: name the keyring in the keys \
+                         section of the configuration, and restore with --keys-from the keys \
+                         file the backup copied"
+                    } else {
+                        "the lake's sealed values need its keys: name the keyring in the keys \
+                         section of the configuration, put the keys file in the keyring's place \
+                         there, and import again"
+                    }
                 }
                 _ if restoring => {
                     "a damaged backup restores nothing: restore from another backup; a failure \
