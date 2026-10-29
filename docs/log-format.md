@@ -246,7 +246,10 @@ refused as no date-time, like any other text the one form cannot write.
 The bound is on what is written as a date-time: a field's value, a
 payload, an `initial`, `seen_at`, a cursor's value, a view's parameter.
 A setting's value is JSON, and a text in it is typed as nothing: it is
-written as it is and bound by nothing here. A
+written as it is and bound by nothing here; from format 21 a period's
+`from` in a setting's `periods` is a `date` in the one form below, while
+the period's value stays JSON
+(`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`). A
 text that an expression only compares or computes with (a literal in a
 `where`, a measure, a constraint, a function) is read as the instant it
 denotes, in whatever year its offset leaves it: that literal is after
@@ -1172,7 +1175,13 @@ the first release with real installations
   a `record_quarantined` and a `quarantine_closed`, the box of a
   quarantined record's cells and its nonce (§1.4), and its id under
   `lakelands:quarantined:v1` (§3)
-  (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+  (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`);
+  and `periods` on `sys.setting`, `from` and `period` in the patch of a
+  `write_proposed` of `sys.setting`, and `setting` with two arguments
+  (Appendix B, lakelands#1549): a writer's open of a lake whose
+  `sys.setting` has no `periods` declares it again, one version on,
+  after `lake_upgraded`
+  (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
   No other step changes a fold, so the projection stays. A step that
   changes how an event folds says so here, and a writer's open then
   rebuilds the projection.
@@ -1281,7 +1290,7 @@ with that declaration's members beside it. Every member not marked
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`), `when_strict` (`false`; from format 17: a field or `previous(f)` its `when` reads absent or null fails the guard as a whole), `on_changes` (none: every kind; from format 17, a list of the kinds of change that fire it, as `trigger_fired`'s `change`) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none), `decided_at` (`write`, which is never written; from format 20, `read`: the set keeps no membership, so no `object_set_changed` names it, and a read's `in_set` evaluates its `where` at the read's clock; a set declared again as `read` ends its members in its `declared`'s append, and one declared again as `write` decides the records there) |
 | `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none), `risk` (`low`; from format 17) |
-| `setting` (from format 17) | `key` and `type` (required; a field's `type`), `unit`, `description`, `group` (none). A host's own key of `sys.setting`; its records of `sys.setting` carry `group` as the store stamps it from this declaration (lakelands#996) |
+| `setting` (from format 17) | `key` and `type` (required; a field's `type`), `unit`, `description`, `group` (none). A host's own key of `sys.setting`; its records of `sys.setting` carry `group` as the store stamps it from this declaration (lakelands#996), and from format 21 `periods`, absent where it holds none: the values the key holds from dates after its first, `value`, which holds from the start, a list of `{ "from", "value" }` strictly ascending by `from` (lakelands#1549) |
 | `withdraw` (from format 17) | `kind` (`trigger`, `verb`, `object_set` or `function`) and `name` (required). The declaration in force of that kind and name, taken out of force (lakelands#1219) |
 
 An **annotation map** (`annotations`) is an object from a key
@@ -1469,7 +1478,10 @@ when the write retires the record, in a trigger's guard only. `created`,
 with no arguments (from format 17): true when the write found no live
 record under its key, a create or a revival, in a trigger's guard only. `param`, with one argument, a parameter's name as a string
 literal: the value the read binds to that parameter of the view, in a
-view's `where` and measures only. `floor`, with
+view's `where` and measures only. `setting`
+takes one argument, a key as a string literal, or from format 21 two:
+the key and `at`, a date or an instant, whose UTC day picks the period
+that holds it (lakelands#1549). `floor`, with
 one argument: the greatest whole number not above it; and `date_bucket`
 with three arguments, the value, a width as a duration literal above
 zero, and the origin: the start of the window of that width holding the

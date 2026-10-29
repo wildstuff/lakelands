@@ -22,6 +22,13 @@ a declaration may call is the log format's concern: the log keeps a
 declaration's expressions, and the format closes the functions they may
 call (`docs/log-format.md` Appendix B).
 
+`setting` takes one argument, a quoted key, or two: the key and `at`,
+any expression, whose UTC day picks the value the key holds on it. An
+`at` that is null answers null, one that is no instant is a misfit, and
+one the kind checker knows to be a boolean, a number or a duration is
+refused where it is written. It is an argument and no new function
+(`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+
 ### In what the fold evaluates, `now()` and `today()` are the event's `known_at`
 
 In anything the fold evaluates (derived fields, constraints, guards),

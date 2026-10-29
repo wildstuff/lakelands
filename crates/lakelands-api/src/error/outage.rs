@@ -712,6 +712,12 @@ catalog! {
         DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on or a `record_quarantined` carries",
         /// A `record_quarantined` or a `quarantine_closed` in a format before the one that added it.
         QuarantinedBefore { kind: String, v: u32 } => "an event of format {v} is a `{kind}`, which format 21 added",
+        /// `periods` written on `sys.setting` before format 21.
+        SettingPeriodsBefore { v: u32 } => "an event of format {v} writes `periods` of `sys.setting`, which format 21 added",
+        /// `from` or `period` proposed for `sys.setting` before format 21.
+        SettingMembersBefore { v: u32 } => "a `write_proposed` of format {v} carries `from` or `period` for `sys.setting`, which format 21 added",
+        /// `setting` read on a date before format 21.
+        SettingAtBefore { v: u32 } => "a `declared` of format {v} calls `setting` with two arguments, which format 21 added",
         /// A `values_removed` event in a format before the one that added it.
         RemovedBefore { v: u32 } => "an event of format {v} is a `values_removed`, which format 17 added",
         /// An event of a format before 18 carries `apart`.

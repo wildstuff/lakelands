@@ -418,12 +418,14 @@ fn setting_records(
     }
 }
 
-/// The settings `records` hold: each live one's `value`, by key.
+/// The settings `records` hold: each live one's `value`, by key, and its
+/// values from dates beside it (090).
 fn settings_of(records: &[StoredRecord]) -> BTreeMap<String, Value> {
-    (records.iter())
-        .filter(|r| !r.retired)
-        .filter_map(|r| Some((r.key.to_string(), r.fields.get("value")?.clone())))
-        .collect()
+    let mut settings = BTreeMap::new();
+    for r in records.iter().filter(|r| !r.retired) {
+        lakelands_api::settings::hold(&mut settings, r.key.as_str(), Some(&r.fields));
+    }
+    settings
 }
 
 /// A shape the lake holds for a range: built, or left by an append whose

@@ -1,27 +1,27 @@
 {
-  "about": "One append of three `record_ingested` of `erp`, positions 94 to 96 after the last event of `further.json`, in the stored form a writer of format 21 writes (log-format §1.2): a frame line holding every member the three share, top-level and one level into `body`, and each event's line holding the rest; none holds `position` or `prev`, which the event before it gives. `events` are the events the lines restore to, canonical, with their hashes; each of `breaks` is the lines of one segment that a reader refuses, at the line `at` (null: at the segment's end), for the flaw it names.",
+  "about": "One append of three `record_ingested` of `erp`, positions 97 to 99 after the last event of `further.json`, in the stored form a writer of format 21 writes (log-format §1.2): a frame line holding every member the three share, top-level and one level into `body`, and each event's line holding the rest; none holds `position` or `prev`, which the event before it gives. `events` are the events the lines restore to, canonical, with their hashes; each of `breaks` is the lines of one segment that a reader refuses, at the line `at` (null: at the segment's end), for the flaw it names.",
   "after": {
-    "position": 93,
-    "hash": "fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf"
+    "position": 96,
+    "hash": "0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7"
   },
   "stored": [
-    "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
-    "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"fdb4b2cb7b6bdfabf3db360f4672780253fe1bf47d582701b0f10d23751e04de\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":21}",
-    "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"723428ab1d49873c78aabbd5ce9b8b059700b36bf4a6ac9bc44ed37530be4e30\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
-    "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"52eb5b6ddbad9a23812cac8b6b4653aa6a83a5d76c931af817d1b372592d1749\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":21}"
+    "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
+    "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"f46b72ace53df18d46f7cb87b69addc9f168211a23eefa82d9a5dc80d27dd0f4\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":21}",
+    "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"dabc2296de17c1ad93e92000216de3f7c04877b7ad036be40acadb46266d7864\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
+    "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"96ccaebee5b91120d19686755d6b45a698050bd9ee0f876e2eb58534567b40aa\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":21}"
   ],
   "events": [
     {
-      "line": "{\"body\":{\"key\":\"INV-4\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"hash\":\"fdb4b2cb7b6bdfabf3db360f4672780253fe1bf47d582701b0f10d23751e04de\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":94,\"prev\":\"fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf\",\"source\":\"erp\",\"v\":21,\"writer\":\"service:importer\"}",
-      "hash": "fdb4b2cb7b6bdfabf3db360f4672780253fe1bf47d582701b0f10d23751e04de"
+      "line": "{\"body\":{\"key\":\"INV-4\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"f46b72ace53df18d46f7cb87b69addc9f168211a23eefa82d9a5dc80d27dd0f4\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":97,\"prev\":\"0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7\",\"source\":\"erp\",\"v\":21,\"writer\":\"service:importer\"}",
+      "hash": "f46b72ace53df18d46f7cb87b69addc9f168211a23eefa82d9a5dc80d27dd0f4"
     },
     {
-      "line": "{\"body\":{\"key\":\"INV-5\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"hash\":\"723428ab1d49873c78aabbd5ce9b8b059700b36bf4a6ac9bc44ed37530be4e30\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":95,\"prev\":\"fdb4b2cb7b6bdfabf3db360f4672780253fe1bf47d582701b0f10d23751e04de\",\"source\":\"erp\",\"v\":21,\"writer\":\"service:importer\"}",
-      "hash": "723428ab1d49873c78aabbd5ce9b8b059700b36bf4a6ac9bc44ed37530be4e30"
+      "line": "{\"body\":{\"key\":\"INV-5\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"dabc2296de17c1ad93e92000216de3f7c04877b7ad036be40acadb46266d7864\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":98,\"prev\":\"f46b72ace53df18d46f7cb87b69addc9f168211a23eefa82d9a5dc80d27dd0f4\",\"source\":\"erp\",\"v\":21,\"writer\":\"service:importer\"}",
+      "hash": "dabc2296de17c1ad93e92000216de3f7c04877b7ad036be40acadb46266d7864"
     },
     {
-      "line": "{\"body\":{\"key\":\"INV-6\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"hash\":\"52eb5b6ddbad9a23812cac8b6b4653aa6a83a5d76c931af817d1b372592d1749\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":96,\"prev\":\"723428ab1d49873c78aabbd5ce9b8b059700b36bf4a6ac9bc44ed37530be4e30\",\"source\":\"erp\",\"v\":21,\"writer\":\"service:importer\"}",
-      "hash": "52eb5b6ddbad9a23812cac8b6b4653aa6a83a5d76c931af817d1b372592d1749"
+      "line": "{\"body\":{\"key\":\"INV-6\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"96ccaebee5b91120d19686755d6b45a698050bd9ee0f876e2eb58534567b40aa\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":99,\"prev\":\"dabc2296de17c1ad93e92000216de3f7c04877b7ad036be40acadb46266d7864\",\"source\":\"erp\",\"v\":21,\"writer\":\"service:importer\"}",
+      "hash": "96ccaebee5b91120d19686755d6b45a698050bd9ee0f876e2eb58534567b40aa"
     }
   ],
   "breaks": [
@@ -29,14 +29,14 @@
       "shows": "frame_in_frame",
       "about": "A frame line stands among the lines the frame before it covers.",
       "after": {
-        "position": 93,
-        "hash": "fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf"
+        "position": 96,
+        "hash": "0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7"
       },
       "stored": [
-        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
         "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":21}",
-        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
-        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d942a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
         "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":21}"
       ],
       "refused": {
@@ -50,13 +50,13 @@
       "shows": "framed_twice",
       "about": "The second event's line holds `body.type`, which its frame holds.",
       "after": {
-        "position": 93,
-        "hash": "fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf"
+        "position": 96,
+        "hash": "0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7"
       },
       "stored": [
-        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
         "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":21}",
-        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"},\"type\":\"invoice\"},\"hash\":\"8f3b35e836d942a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"},\"type\":\"invoice\"},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
         "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":21}"
       ],
       "refused": {
@@ -71,13 +71,13 @@
       "shows": "frame_short",
       "about": "The segment ends after two of the three lines its frame covers.",
       "after": {
-        "position": 93,
-        "hash": "fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf"
+        "position": 96,
+        "hash": "0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7"
       },
       "stored": [
-        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
         "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":21}",
-        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d942a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}"
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}"
       ],
       "refused": {
         "at": null,
@@ -92,13 +92,13 @@
       "shows": "not_a_frame",
       "about": "A line holds `events` and `frame`, and its frame holds `position`, which a frame never holds.",
       "after": {
-        "position": 93,
-        "hash": "fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf"
+        "position": 96,
+        "hash": "0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7"
       },
       "stored": [
-        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":82,\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":82,\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
         "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":21}",
-        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d942a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
         "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":21}"
       ],
       "refused": {
@@ -112,13 +112,13 @@
       "shows": "frame_other",
       "about": "A frame of format 21 covers a full event of format 20.",
       "after": {
-        "position": 93,
-        "hash": "fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf"
+        "position": 96,
+        "hash": "0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7"
       },
       "stored": [
-        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
-        "{\"body\":{\"key\":\"INV-4\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":82,\"prev\":\"1352b1add383ab4b80c309f5e33efee1351e0e76d1318aca64a4b94a6abef72e\",\"source\":\"erp\",\"v\":20,\"writer\":\"service:importer\"}",
-        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d942a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
+        "{\"body\":{\"key\":\"INV-4\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":82,\"prev\":\"1352b1add383ab4b80c309f5e33efee1351e0e76d1318aca64a4b94a6abef72e\",\"source\":\"erp\",\"v\":20,\"writer\":\"service:importer\"}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
         "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":21}"
       ],
       "refused": {
@@ -134,20 +134,20 @@
       "shows": "position",
       "about": "The second event's line holds a `position` that is not the one after the event before it.",
       "after": {
-        "position": 93,
-        "hash": "fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf"
+        "position": 96,
+        "hash": "0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7"
       },
       "stored": [
-        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
         "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":21}",
-        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d942a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"position\":102,\"v\":21}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"position\":102,\"v\":21}",
         "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":21}"
       ],
       "refused": {
         "at": 2,
         "flaw": {
           "code": "position",
-          "expected": 95,
+          "expected": 98,
           "found": 102
         }
       }
@@ -156,13 +156,13 @@
       "shows": "prev_hash",
       "about": "The second event's line holds a `prev` that is not the hash of the event before it.",
       "after": {
-        "position": 93,
-        "hash": "fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf"
+        "position": 96,
+        "hash": "0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7"
       },
       "stored": [
-        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
         "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":21}",
-        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d942a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"v\":21}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"v\":21}",
         "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":21}"
       ],
       "refused": {
@@ -177,9 +177,9 @@
       "about": "The lines stand at a segment's start, and its first event line holds neither `position` nor `prev`.",
       "after": null,
       "stored": [
-        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d94\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
+        "{\"events\":3,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"known_at\":\"2026-10-05T09:00:56.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"source\":\"erp\",\"writer\":\"service:importer\"},\"v\":21}",
         "{\"body\":{\"key\":\"INV-4\",\"patch\":{\"amount\":\"40.00\",\"number\":\"INV-4\"}},\"hash\":\"9b4666987d9ec789adbcb92e8fc8416f65260c2609f8fd626b8c9a52e6fd6a93\",\"id\":\"68a7dd7ddcdc77e54d5a6b7ac0bfcfd7\",\"v\":21}",
-        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d942a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
+        "{\"body\":{\"key\":\"INV-5\",\"patch\":{\"amount\":\"55.50\",\"number\":\"INV-5\"}},\"hash\":\"8f3b35e836d972a4889d3570c0e62d360726a9fd7a4ea229cd37e8ede63093f5\",\"id\":\"b0af0e08153a808824ee637be03f2d8d\",\"v\":21}",
         "{\"body\":{\"key\":\"INV-6\",\"patch\":{\"amount\":\"61.25\",\"number\":\"INV-6\"}},\"hash\":\"aa15cb3595e52a4b691d5ef226f3b51bbdee1cc87fd8a43d82558af0d8c199c9\",\"id\":\"8ae5d2c8af3a246fe318caa6f0524297\",\"v\":21}"
       ],
       "refused": {

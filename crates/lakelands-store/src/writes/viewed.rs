@@ -215,10 +215,8 @@ impl Decide<'_> {
         let was = setting.then(|| settings.clone());
         if setting {
             // As the fold takes it in before its hooks.
-            match after.fields.get("value").filter(|_| !after.retired) {
-                Some(value) => settings.insert(after.key.to_string(), value.clone()),
-                None => settings.remove(after.key.as_str()),
-            };
+            let fields = (!after.retired).then_some(&after.fields);
+            lakelands_api::settings::hold(settings, after.key.as_str(), fields);
         }
         // Inside a job of a batch, whose own undo is open, a refusal puts
         // back this run alone.

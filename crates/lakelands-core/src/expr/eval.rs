@@ -774,8 +774,21 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             let day = 86_400_000_000;
             Val::Time(Timestamp(scope.now().0.div_euclid(day) * day))
         }
+        // The value in force on the day of `at`, else of the clock (090).
         Func::Setting => match &vals[0] {
-            Val::Text(key) => scope.setting(key).map_or(Val::Null, |v| from_json(&v)),
+            Val::Text(key) => {
+                let at = match vals.get(1) {
+                    Some(v) => {
+                        as_time(v).ok_or_else(|| Case::SettingTakesDate { value: operand(v) })?
+                    }
+                    None => scope.now(),
+                };
+                let periods = scope.setting(&lakelands_api::settings::periods_key(key));
+                let value = scope.setting(key);
+                value.map_or(Val::Null, |v| {
+                    from_json(&lakelands_api::settings::in_force(v, periods.as_ref(), at))
+                })
+            }
             other => {
                 return err(Case::SettingTakesKey {
                     value: operand(other),

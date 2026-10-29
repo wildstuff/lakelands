@@ -72,6 +72,23 @@ pub struct SettingValue {
     /// told to a holder of `schema` and to one who may write it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared: Option<crate::write::SettingDecl>,
+    /// Each value a host's setting holds and the day it holds from, in
+    /// order, the first from the start; none for a setting that holds no
+    /// value from a date. `value` is then the one in force on the clock's
+    /// day (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub periods: Vec<SettingPeriod>,
+}
+
+/// One value of a setting and the day it holds from, until the next one's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SettingPeriod {
+    /// The date it holds from; `None` for the first, which holds from the
+    /// start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Its value.
+    pub value: crate::Value,
 }
 
 /// Rights of the principal beyond any one type.

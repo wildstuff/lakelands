@@ -361,6 +361,26 @@ impl Expr {
             || children(self).any(|c| c.calls(funcs))
     }
 
+    /// The keys it reads as `setting('<key>')`, without a date, anywhere in
+    /// it; with `dated`, those it reads as `setting('<key>', <at>)`
+    /// (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+    pub fn settings_read(&self, dated: bool) -> std::collections::BTreeSet<&str> {
+        let mut out = std::collections::BTreeSet::new();
+        if let Expr::Call {
+            func: Func::Setting,
+            args,
+        } = self
+            && let Some(Expr::Lit {
+                value: Literal::Text(key),
+            }) = args.first()
+            && (args.len() == 2) == dated
+        {
+            out.insert(key.as_str());
+        }
+        out.extend(children(self).flat_map(|c| c.settings_read(dated)));
+        out
+    }
+
     /// Whether it reads the clock: calls `now()` or `today()`.
     pub fn reads_clock(&self) -> bool {
         self.calls(&[Func::Now, Func::Today])

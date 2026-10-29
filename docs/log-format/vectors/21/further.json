@@ -516,6 +516,24 @@
       "about": "A `quarantine_closed` of `erp`, `q-7`, 0 as `removed` (085, 065): the `values_removed` at 92 takes back `q-7`, whose only event is the version at 91, and closes it in its append.",
       "line": "{\"body\":{\"id\":{\"delivery\":\"q-7\",\"index\":0,\"source\":\"erp\"},\"key\":\"INV-11\",\"kind\":\"quarantine_closed\",\"type\":\"invoice\",\"why\":\"removed\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf\",\"id\":\"0000000000000000000000000000005d\",\"known_at\":\"2026-10-05T09:00:55.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":93,\"prev\":\"3d18ec3611654245b1c36372ddbb0c63a6c3c60bb5f523cb14b7674f15bfafc9\",\"v\":21,\"writer\":\"system:lakelands\"}",
       "hash": "fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf"
+    },
+    {
+      "shows": "setting_dated",
+      "about": "A `record_upserted` of the `sys.setting` `vat_rate` that adds a period (090, lakelands#1549): a write naming `from: 2027-01-01` and a value, which the store resolves against the head into the whole `periods` it holds; `value`, the first period, holding from the start, is left as it was. A member format 21's `sys.setting` holds and 20's does not.",
+      "line": "{\"body\":{\"key\":\"vat_rate\",\"kind\":\"record_upserted\",\"patch\":{\"periods\":[{\"from\":\"2027-01-01\",\"value\":\"0.21\"}]},\"type\":\"sys.setting\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"67107bb9d31d648864cecb0273b68d54662a6b495d755a49dda08f5f5c8e99ed\",\"id\":\"0000000000000000000000000000005e\",\"known_at\":\"2026-10-05T09:00:55.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":94,\"prev\":\"fb4d131763b812c6adc80616c21eb98708ff6600746c188f590beedfaf13fdcf\",\"v\":21,\"writer\":\"agent:agent\"}",
+      "hash": "67107bb9d31d648864cecb0273b68d54662a6b495d755a49dda08f5f5c8e99ed"
+    },
+    {
+      "shows": "setting_corrected",
+      "about": "The correction of that period: a write naming `period: 2027-01-01` with another value, resolved into `periods` whole again. The log holds the list, never `from` or `period`, so the history of the record tells every list it held.",
+      "line": "{\"body\":{\"key\":\"vat_rate\",\"kind\":\"record_upserted\",\"patch\":{\"periods\":[{\"from\":\"2027-01-01\",\"value\":\"0.2\"}]},\"type\":\"sys.setting\",\"version\":3},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"8cc806ba01bc6109db5d903b831c739e071dd358f16ee25a6fd921bab29bde63\",\"id\":\"0000000000000000000000000000005f\",\"known_at\":\"2026-10-05T09:00:55.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":95,\"prev\":\"67107bb9d31d648864cecb0273b68d54662a6b495d755a49dda08f5f5c8e99ed\",\"v\":21,\"writer\":\"agent:agent\"}",
+      "hash": "8cc806ba01bc6109db5d903b831c739e071dd358f16ee25a6fd921bab29bde63"
+    },
+    {
+      "shows": "setting_at",
+      "about": "A `declared` type `sale` whose derived field `vat` is `net * setting('vat_rate', sold_on)`: a call of `setting` with two arguments, the key and the date whose UTC day picks the period (Appendix B). A form format 21 holds and 20 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"net\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"decimal\"}},{\"authority\":\"authored\",\"name\":\"sold_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date\"}},{\"authority\":\"derived\",\"depends_on\":[\"net\",\"sold_on\"],\"derived\":\"net * setting('vat_rate', sold_on)\",\"name\":\"vat\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"decimal\"}}],\"name\":\"sale\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7\",\"id\":\"00000000000000000000000000000060\",\"known_at\":\"2026-10-05T09:00:55.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":96,\"prev\":\"8cc806ba01bc6109db5d903b831c739e071dd358f16ee25a6fd921bab29bde63\",\"v\":21,\"writer\":\"agent:agent\"}",
+      "hash": "0bed3423463462b3ab18927057465fb0dbf4348e9c17f47258d511315591e5d7"
     }
   ],
   "misplaced": [

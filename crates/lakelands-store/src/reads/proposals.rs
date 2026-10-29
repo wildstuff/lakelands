@@ -567,7 +567,16 @@ impl<'a> Reader<'a> {
                 made.extend(patch.clone());
                 let low = [&before, &made].map(|f| self.sight.lowered(ty, f));
                 let told = |f: &FieldName| low.iter().all(|l| !l.contains_key(f));
-                patch.retain(|field, _| read(ty, field) && then_reads(field) && told(field));
+                // A period's date is told where the periods are (090).
+                let setting = ty.as_str() == lakelands_api::seam::SETTING_TYPE;
+                let field = |f: &FieldName| match ["from", "period"].contains(&f.as_str()) {
+                    true if setting => FieldName::from("periods"),
+                    _ => f.clone(),
+                };
+                patch.retain(|f, _| {
+                    let f = field(f);
+                    read(ty, &f) && then_reads(&f) && told(&f)
+                });
                 let untold = |r: &StoredRecord| r.retired || self.sight.told(r).is_none();
                 let free = stored.is_some_and(|r| untold(&r) && !self.sight.withheld(&r));
                 Ok(admitted && (free || answered(ty, key)?))

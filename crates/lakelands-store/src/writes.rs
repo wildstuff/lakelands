@@ -1654,6 +1654,172 @@ fn stamped(
     Ok(())
 }
 
+/// A write of `sys.setting` as the store writes it, `from` or `period`
+/// resolved against the record `live` holds, as the head and the drafts
+/// so far leave it (090): `from` adds the value from that date into
+/// `periods`, `period` corrects the one from `start` (`value`) or from a
+/// date (`periods`), and neither writes `value`, the first, where no value
+/// holds from a date. Each refusal is said at the setting and names the
+/// member it is about; a writer the declaration is not told is answered
+/// as for a key nobody declared (063). A first dated period is refused
+/// where a kept view or a set decided at the write reads the key without
+/// a date.
+fn dated(
+    (o, settings): (&Ontology, &BTreeMap<String, Value>),
+    decl: &TypeDecl,
+    (key, live): (&RecordKey, Option<&StoredRecord>),
+    told: &dyn Fn(&SettingDecl) -> bool,
+    patch: &Patch,
+) -> Result<Patch> {
+    let refused = |member: &str, case: Case| {
+        let at = vec![Place::Setting {
+            key: key.to_string(),
+        }];
+        Err(Error::invalid_at(
+            &FieldName::from(member),
+            Said { at, case },
+        ))
+    };
+    let mut rest = patch.clone();
+    let (from, period) = (rest.remove("from"), rest.remove("period"));
+    let held = live.and_then(|r| r.fields.get("periods")?.as_array().cloned());
+    if patch.contains_key("periods") {
+        return refused("periods", Case::SettingPeriodsStamped);
+    }
+    let (member, at) = match (from, period) {
+        (None, None) if held.is_some() && patch.contains_key("value") => {
+            return refused("value", Case::SettingPeriodsNamed);
+        }
+        (None, None) => return Ok(rest),
+        (Some(_), Some(_)) => return refused("period", Case::SettingFromOrPeriod),
+        (Some(at), None) => ("from", at),
+        (None, Some(at)) => ("period", at),
+    };
+    let Some(s) = o.settings.get(key.as_str()).filter(|s| told(&s.decl)) else {
+        return refused(member, Case::SettingPeriodUndeclared);
+    };
+    if member == "period" && at == "start" {
+        return Ok(rest);
+    }
+    let day = FieldDecl::of(member, lakelands_api::ontology::StorageKind::Date);
+    let day = check_values(o, decl, &[(member.into(), at.clone())].into(), &[day])?;
+    let day = day.get(member).cloned().unwrap_or(at);
+    let value = match rest.remove("value").filter(|v| !v.is_null()) {
+        Some(v) => judged(o, decl, &s.decl, &v)?,
+        None => {
+            let (ty, field) = (decl.name.clone(), FieldName::from("value"));
+            return Err(Error::constraint(
+                Some(field.clone()),
+                Case::Required { ty, field },
+            ));
+        }
+    };
+    let mut list = held.unwrap_or_default();
+    let new = day.as_str().unwrap_or_default().to_owned();
+    let from_of = |p: &Value| p.get("from").and_then(Value::as_str).map(str::to_owned);
+    let found = list
+        .iter()
+        .position(|p| from_of(p).as_deref() == Some(&new));
+    match (member, found) {
+        ("from", _) if live.is_none() => return refused(member, Case::SettingPeriodFirst),
+        ("from", Some(_)) => return refused(member, Case::SettingPeriodHeld { from: new }),
+        ("from", None) if list.is_empty() => {
+            if let Some(name) = crate::kept::reading_undated(o, settings, key.as_str()) {
+                let key = key.to_string();
+                return refused(member, Case::SettingDatedKept { key, name });
+            }
+            list.push(serde_json::json!({"from": new, "value": value}));
+        }
+        ("from", None) => {
+            let at = list.partition_point(|p| from_of(p).is_some_and(|f| f < new));
+            list.insert(at, serde_json::json!({"from": new, "value": value}));
+        }
+        (_, Some(i)) => list[i]["value"] = value,
+        (_, None) => return refused(member, Case::SettingPeriodUnknown { period: new }),
+    }
+    rest.insert("periods".into(), Value::Array(list));
+    Ok(rest)
+}
+
+/// A write of `view_kept.<view>` with `true` for a view that reads,
+/// without a date, a key holding periods is refused as a view that cannot
+/// be kept is (049), with that reason to a writer shown the view as
+/// declared (090).
+fn kept_dated(
+    (o, settings): (&Ontology, &BTreeMap<String, Value>),
+    key: &str,
+    value: Option<&Value>,
+    shown: &dyn Fn(&TypeName) -> Option<lakelands_api::describe::TypeDescription>,
+) -> Result<()> {
+    let asked = key.strip_prefix(lakelands_api::seam::VIEW_KEPT_SETTING);
+    let Some(ty) = asked.filter(|_| lakelands_api::seam::view_kept(value)) else {
+        return Ok(());
+    };
+    let ty = TypeName::from(ty);
+    let read = o
+        .ty(&ty)
+        .map(|d| crate::kept::undated(o, d))
+        .unwrap_or_default();
+    let dated = |k: &String| settings.contains_key(&lakelands_api::settings::periods_key(k));
+    let Some(read) = read.into_iter().find(dated) else {
+        return Ok(());
+    };
+    let case = match shown(&ty).is_some_and(|s| s.view.is_some()) {
+        true => Case::SettingDatedKept {
+            key: read,
+            name: ty.to_string(),
+        },
+        false => Case::ViewNotKeepable { ty },
+    };
+    let said = Said::from(case).within(Place::Setting {
+        key: key.to_owned(),
+    });
+    Err(Error::refused(
+        Some("key".into()),
+        Refusal::Invalid(Box::new(said)),
+    ))
+}
+
+/// A declaration of a set decided at the write, or of a view the lake
+/// keeps, that reads without a date a key holding periods is refused,
+/// naming it and the key (090).
+fn declared_dated(
+    (o, settings): (&Ontology, &BTreeMap<String, Value>),
+    declarations: &[Declaration],
+) -> Result<()> {
+    let reads = |d: &Declaration| match d {
+        Declaration::ObjectSet(_) => true,
+        Declaration::Type(t) => t.view.is_some(),
+        _ => false,
+    };
+    if !declarations.iter().any(reads) {
+        return Ok(());
+    }
+    let mut after = o.clone();
+    declarations
+        .iter()
+        .for_each(|d| after.put(d.clone(), 0, None));
+    let kept = |t: &TypeDecl| {
+        let asked = format!("{}{}", lakelands_api::seam::VIEW_KEPT_SETTING, t.name);
+        lakelands_api::seam::view_kept(settings.get(&asked))
+    };
+    let dated = |k: &String| settings.contains_key(&lakelands_api::settings::periods_key(k));
+    for d in declarations {
+        let (name, read) = match d {
+            Declaration::ObjectSet(s) => (s.name.clone(), crate::kept::set_undated(&after, s)),
+            Declaration::Type(t) if kept(t) => {
+                (t.name.to_string(), crate::kept::undated(&after, t))
+            }
+            _ => continue,
+        };
+        if let Some(key) = read.into_iter().find(dated) {
+            let said = Said::from(Case::SettingDatedKept { key, name });
+            return Err(Error::invalid(said.within(d.place())));
+        }
+    }
+    Ok(())
+}
+
 /// `o` without each declaration `sent` withdraws that `sees` does not
 /// list: its withdrawal is refused as one of a name not declared, where
 /// the rest of its set is judged, as a read of it answers (024).

@@ -95,14 +95,22 @@ pub fn key_of(change: &ArgMatches) -> String {
     }
 }
 
+/// The member `settings set` names a value's period by, `from` or
+/// `period`, and its date (090).
+pub fn dated(change: &ArgMatches) -> Option<(&'static str, String)> {
+    let named = |m: &'static str| change.get_one::<String>(m).map(|d| (m, d.clone()));
+    named("from").or_else(|| named("period"))
+}
+
 /// `settings set`: writes `raw`, read as JSON or else as a text, to the
-/// lake setting `key`; `settings unset` (`raw` absent) retires it.
+/// lake setting `key`, from a date or as a period's correction where
+/// `dated` names one; `settings unset` (`raw` absent) retires it.
 pub async fn change(
     out: &mut dyn Write,
     catalog: &dyn Catalog,
     who: &Principal,
     key: &str,
-    raw: Option<&str>,
+    raw: Option<(&str, Option<(&str, String)>)>,
 ) -> Result<(), Failure> {
     let (ty, record) = (SETTING_TYPE.into(), key.into());
     let Some(raw) = raw else {
@@ -112,11 +120,21 @@ pub async fn change(
         let at = outcome.position();
         return line(out, format!("retired `{key}` at position {at}"));
     };
+    let (raw, dated) = raw;
     let value = serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_owned()));
-    let patch = [("key".into(), key.into()), ("value".into(), value.clone())].into();
+    let mut patch: lakelands_api::Patch =
+        [("key".into(), key.into()), ("value".into(), value.clone())].into();
+    let from = dated.map(|(member, day)| {
+        patch.insert(member.into(), day.clone().into());
+        format!(" from {day}")
+    });
     let outcome = (catalog.upsert(who, &ty, &record, patch, Default::default())).await?;
     let at = outcome.position();
-    line(out, format!("set `{key}` to {value} at position {at}"))
+    let from = from.unwrap_or_default();
+    line(
+        out,
+        format!("set `{key}` to {value}{from} at position {at}"),
+    )
 }
 
 /// `settings`: one line per listed setting: its key, layer and value,
@@ -190,6 +208,20 @@ pub fn list(
             "host",
             format!("{value} ({group}{kind}{unit})"),
         ));
+        // A dated setting's values, one a line, each from its day (090).
+        for p in &t.periods {
+            let from = p.from.as_deref().unwrap_or("start");
+            let value = p
+                .value
+                .as_str()
+                .map_or_else(|| p.value.to_string(), str::to_owned);
+            let unit = d
+                .unit
+                .as_deref()
+                .map(|u| format!(" {u}"))
+                .unwrap_or_default();
+            rows.push((String::new(), "", format!("from {from}: {value}{unit}")));
+        }
     }
     let tuning = match &location.engine {
         EngineConfig::Sqlite { tuning, .. } => serde_json::to_value(tuning),

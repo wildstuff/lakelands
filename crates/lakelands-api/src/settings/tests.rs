@@ -99,6 +99,7 @@ fn a_setting_is_told_as_its_reader_sees_the_type() {
         value: Some(value),
         default: Value::Null,
         declared: None,
+        periods: Vec::new(),
     };
     let shown = |ty: &str| ty != "secret";
     let reads = |_: &str, f: &str| f != "m";
@@ -256,6 +257,7 @@ fn a_source_s_key_period_overrides_the_lake_s() {
         value: Some(json!("day")),
         default: json!("month"),
         declared: None,
+        periods: Vec::new(),
     };
     let none = |_: &str| false;
     let told = seen(told, &none, &|_: &str, _: &str| false).and_then(|s| s.value);

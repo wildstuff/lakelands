@@ -495,6 +495,7 @@ What a refusal is about.
 | `kind_negates` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it negates {kind} | A negation of what has no negative. |
 | `kind_sides` | `expr` (String), `left` (Kind), `right` (Kind) | `{expr}` has no meaning: its sides are {left} and {right} | Arithmetic over kinds that do not combine. |
 | `kind_takes_number` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it takes a number, not {kind} | A number's function over what is no number. |
+| `kind_takes_date` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it takes a date or an instant, not {kind} | A `setting` read on what is no date or instant. |
 | `minus_no_meaning` | `left` (Operand), `right` (Operand) | {left} minus {right} has no meaning | A difference of what are not two instants. |
 | `no_records_provenance` | — | known_at() and seen_at() read a record's provenance, and no record stands here: a view's records, a query's rows, a value type's constraint and a function's expression carry none | A provenance function where no record stands. |
 | `not_a_number` | `value` (Operand) | {value} is not a number | A number that is not a number. |
@@ -537,6 +538,7 @@ What a refusal is about.
 | `set_of_other_type` | `set` (String), `of` (TypeName), `type` (TypeName) | in_set('{set}') names a set of `{of}`, not of `{type}` | A set of another type named in a filter. |
 | `set_undeclared` | `set` (String) | in_set('{set}') names an object set that is not declared | A set named in a filter that is not declared. |
 | `setting_takes_key` | `value` (Operand) | setting() takes a key, not {value} | A `setting` given what is no key. |
+| `setting_takes_date` | `value` (Operand) | setting() reads the value in force on a date or an instant, not {value} | A `setting` read on a day of what denotes no instant. |
 | `statement_not_parsed` | `why` (Case) | the statement does not parse as the openCypher subset Lakelands takes (`MATCH … RETURN …`, or one write): {why} | An openCypher statement that does not parse. |
 | `steps_into_reference` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is a reference: a condition reads the record's own fields. Compare the reference's key, or walk to the record it names in a pattern | A path into a reference's members. |
 | `steps_into_scalar` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is no `json` field, and has no members | A path into the members of what has none. |
@@ -727,6 +729,14 @@ What a refusal is about.
 | `setting_unlisted` | `prefix` (String) | keys under `{prefix}.` are the store's own settings, and this is none of them | A key under the prefix of the store's own settings that names none of them. |
 | `setting_store_key` | `prefix` (String) | keys under `{prefix}` are the store's own settings; a host declares a key of its own | A host's setting declared under a key the store reads, or under the prefix of one. |
 | `setting_group_stamped` | — | the store writes a setting's group from its declaration; leave `group` out | A write of `sys.setting` naming a group other than the one the store stamps from the setting's declaration. |
+| `setting_period_undeclared` | — | only a setting a host declares holds a value from a date | A value from a date written to a setting no host declares. |
+| `setting_period_first` | — | a setting's first value holds from the start; write it without `from` | A value from a date written to a setting with no live record. |
+| `setting_period_held` | `from` (String) | a value already holds from {from}; correct it with `period` | A value added from a date one already holds from. |
+| `setting_period_unknown` | `period` (String) | no value of this setting holds from {period}; name `start` or a date one holds from | A correction naming a period the setting does not hold. |
+| `setting_periods_named` | — | it holds values from dates; name the one to correct with `period`, `start` for the first, or the date a new one holds from with `from` | An undated write of a setting that holds values from dates. |
+| `setting_periods_stamped` | — | the store writes `periods` from `from` and `period`; leave it out | A write of `sys.setting` naming `periods`. |
+| `setting_from_or_period` | — | a write adds a value `from` a date or corrects one `period`, not both | A write of `sys.setting` naming `from` and `period`. |
+| `setting_dated_kept` | `key` (String), `name` (String) | `{name}` is kept by the fold and reads `{key}` without a date, which holds values from dates, so it would drift at each period's start: read it as setting('{key}', <date>), or decide it at the read | What the fold keeps reading, without a date, a setting that holds values from dates. |
 | `setting_store_group` | — | the group `store` holds the store's own settings; a host's setting is in a group of its own | A host's setting declared into the store's own group. |
 | `setting_reference` | — | a setting holds no reference; keep the record's key as `text` | A host's setting declared to hold a reference, whose record nothing would hold to it. |
 | `setting_weights_shape` | — | it holds an object of `fields` (vector fields and their weights), `text_fields` (searchable text fields and their weights) and `text_weight`, one at least, or null | A `search_weights` setting of the wrong shape. |
@@ -1056,6 +1066,9 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `dropped_before` | `v` (u32) | an event of format {v} is a `trigger_dropped`, which format 17 added | A `trigger_dropped` in a format before the one that added it. |
 | `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on or a `record_quarantined` carries | An event other than a `record_ingested` of format 17 on, or a `record_quarantined`, carries `delivery`. |
 | `quarantined_before` | `kind` (String), `v` (u32) | an event of format {v} is a `{kind}`, which format 21 added | A `record_quarantined` or a `quarantine_closed` in a format before the one that added it. |
+| `setting_periods_before` | `v` (u32) | an event of format {v} writes `periods` of `sys.setting`, which format 21 added | `periods` written on `sys.setting` before format 21. |
+| `setting_members_before` | `v` (u32) | a `write_proposed` of format {v} carries `from` or `period` for `sys.setting`, which format 21 added | `from` or `period` proposed for `sys.setting` before format 21. |
+| `setting_at_before` | `v` (u32) | a `declared` of format {v} calls `setting` with two arguments, which format 21 added | `setting` read on a date before format 21. |
 | `removed_before` | `v` (u32) | an event of format {v} is a `values_removed`, which format 17 added | A `values_removed` event in a format before the one that added it. |
 | `apart_before` | `v` (u32) | an event of format {v} carries `apart`, which format 18 added | An event of a format before 18 carries `apart`. |
 | `boxed_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `sealed.box`, which only a `record_ingested` of format 20 on carries | An event other than a `record_ingested` of format 20 on carries `sealed.box`. |

@@ -718,16 +718,29 @@ fn key_schema(ty: &TypeDescription, writes: bool) -> Value {
     json!({"type": "string", "description": description})
 }
 
-/// The schemas of the fields a principal may write on a type.
+/// The schemas of the fields a principal may write on a type. A setting's
+/// `periods` are written by `from` and `period`, never named (090).
 fn writable_fields(ty: &TypeDescription, lake: &LakeDescription) -> Map<String, Value> {
-    ty.fields
-        .iter()
-        .filter(|f| f.authored_writable())
+    let setting = ty.name.as_str() == crate::seam::SETTING_TYPE;
+    let mut out: Map<String, Value> = (ty.fields.iter())
+        .filter(|f| f.authored_writable() && !(setting && f.name.as_str() == "periods"))
         .map(|f| {
             let s = described(field_schema(&f.ty, lake), f);
             (f.name.to_string(), json!({"anyOf": [s, {"type": "null"}]}))
         })
-        .collect()
+        .collect();
+    if setting
+        && ty
+            .fields
+            .iter()
+            .any(|f| f.name.as_str() == "periods" && f.authored_writable())
+    {
+        out.insert("from".into(), json!({"type": "string", "format": "date",
+            "description": "A date from which `value` holds, a value added to a declared setting."}));
+        out.insert("period".into(), json!({"type": "string",
+            "description": "The value to correct: `start` for the first, or the date one holds from."}));
+    }
+    out
 }
 
 fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSpec>) {

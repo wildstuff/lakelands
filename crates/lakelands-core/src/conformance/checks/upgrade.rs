@@ -510,7 +510,7 @@ async fn settings_grouped(
         .get("group")
         .cloned();
     ensure!(
-        fields == ["key", "value", "group"] && group == Some(serde_json::json!("store")),
+        fields == ["key", "value", "group", "periods"] && group == Some(serde_json::json!("store")),
         "a writer's open of the lake of format {format} declares `{ty}` again with `group` \
          ({fields:?}), and a store's setting written to it is stamped `store` ({group:?})"
     );

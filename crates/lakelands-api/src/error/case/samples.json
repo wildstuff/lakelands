@@ -797,6 +797,11 @@
    "kind": "boolean"
   },
   {
+   "code": "kind_takes_date",
+   "expr": "s",
+   "kind": "boolean"
+  },
+  {
    "code": "minus_no_meaning",
    "left": {
     "kind": "null"
@@ -1005,6 +1010,12 @@
   },
   {
    "code": "setting_takes_key",
+   "value": {
+    "kind": "null"
+   }
+  },
+  {
+   "code": "setting_takes_date",
    "value": {
     "kind": "null"
    }
@@ -1888,6 +1899,34 @@
   },
   {
    "code": "setting_group_stamped"
+  },
+  {
+   "code": "setting_period_undeclared"
+  },
+  {
+   "code": "setting_period_first"
+  },
+  {
+   "code": "setting_period_held",
+   "from": "s"
+  },
+  {
+   "code": "setting_period_unknown",
+   "period": "s"
+  },
+  {
+   "code": "setting_periods_named"
+  },
+  {
+   "code": "setting_periods_stamped"
+  },
+  {
+   "code": "setting_from_or_period"
+  },
+  {
+   "code": "setting_dated_kept",
+   "key": "s",
+   "name": "s"
   },
   {
    "code": "setting_store_group"

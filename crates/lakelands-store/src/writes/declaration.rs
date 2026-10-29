@@ -449,6 +449,7 @@ impl Call<'_> {
         declarations: Vec<Declaration>,
         (now, first, judging): (Timestamp, usize, Judging),
     ) -> Result<Bundled> {
+        super::declared_dated((&w.ontology, &w.settings), &declarations)?;
         let mut drafts = Vec::with_capacity(declarations.len());
         let mut decided = Vec::new();
         // Only a function, or a type the lake holds, computes records again

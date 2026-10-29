@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 93, each
+- `further.json`: the lake's next events, positions 8 to 96, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -194,7 +194,14 @@ The files:
     `lakelands:quarantined:v1` over the id, the version before, the
     cells, the box and the refusal, and is appended nowhere; a
     `forgotten` and a `purged` close end what the source wrote here, and
-    the conformance suite holds them.
+    the conformance suite holds them;
+  - settings from dates, a form 21 holds and 20 does not
+    (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`): the
+    `sys.setting` `vat_rate` of 50 given a period from `2027-01-01`,
+    the store's `periods` whole, never the `from` the write named (94);
+    that period corrected, `periods` whole again (95); and a type `sale`
+    whose derived `vat` reads `setting('vat_rate', sold_on)`, the
+    setting on the record's day (96).
 
   Its `misplaced` holds seven lines that are not of the lake. Each
   stands at its position after the event before it, in the release's
@@ -206,7 +213,7 @@ The files:
   naming another source than its own, and `on_behalf_of` inside
   `context`.
 - `framed.json`: the lake's next append, three `record_ingested` of
-  `erp` at positions 94 to 96, in the stored form a writer of format 21
+  `erp` at positions 97 to 99, in the stored form a writer of format 21
   writes (`docs/log-format.md` §1.2): `stored`, a frame line holding every
   member the three share, top-level and one level into `body`, and each
   event's line holding the rest, none with `position` or `prev`, which
@@ -222,7 +229,7 @@ The files:
   `position` and a `prev` that are not the ones the event before gives,
   and a segment's first event line holding neither.
 - `boxed.json`: the event after the framed append, a `record_ingested`
-  of `hr` at position 97 whose sealed member `email` is sealed in one
+  of `hr` at position 100 whose sealed member `email` is sealed in one
   box (`docs/log-format.md` §1.4): its patch holds `id` alone, and
   `sealed` holds `box`, the base64 of the cipher over the object of the
   members `fields` names, under the vectors' key `1` and the nonce of

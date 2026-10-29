@@ -158,6 +158,18 @@ impl Call<'_> {
                 if ty.as_str() == SETTING_TYPE && !patch.contains_key("group") {
                     checked.remove("group");
                 }
+                // A period is kept as written and resolved at the accept,
+                // against the head there (090).
+                let dated = ["from", "period"].iter().any(|m| patch.contains_key(*m));
+                if ty.as_str() == SETTING_TYPE && dated {
+                    checked.remove("periods");
+                    checked.extend(
+                        patch
+                            .iter()
+                            .filter(|(f, _)| ["from", "period", "value"].contains(&f.as_str()))
+                            .map(|(f, v)| (f.clone(), v.clone())),
+                    );
+                }
                 *patch = checked;
             }
             ProposedWrite::Retire { ty, key, opts } => {
