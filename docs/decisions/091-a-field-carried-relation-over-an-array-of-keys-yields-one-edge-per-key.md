@@ -1,6 +1,6 @@
 # 091 — A field-carried relation over an array of keys yields one edge per key
 
-**Proposed** on lakelands#1551, for 0.21.0. The operator reviews it on the issue; merging it does not accept it.
+Decided on lakelands#1551 by the operator (2026-10-29), for 0.21.0, with the projection layouts raised.
 
 ## What is decided
 
@@ -20,8 +20,7 @@ PostgreSQL engines raise their projection layouts, so that a lake
 0.20.0 left is rebuilt before it answers. It extends
 `docs/decisions/039-a-source-is-retracted-as-one.md`, whose purge report
 counts a reference, and comes into force with the build, which rewrites
-that section where it stands. One question is left to the operator, at
-the end of "What is decided".
+that section where it stands.
 
 ### An array of keys yields one edge per distinct key
 
@@ -158,27 +157,22 @@ release whose first writer's open rebuilds the projection, and
 `docs/log-format.md` §6's 20 → 21 line says that the projection is
 rebuilt by the layout, not by the step.
 
-### The one open question: a rebuild at the upgrade
+### A rebuild at the upgrade, against the earlier plan
 
-The plan the operator accepted with lakelands#1551 says the upgrade
+The plan the operator accepted with lakelands#1551 said the upgrade
 rebuilds nothing, and a host runs `rebuild` to back-fill a lake that
 holds arrays already. This record departs from that, for 001: until the
-host runs that rebuild, a lake upgraded in place answers its head
-otherwise than its own replay, and nothing tells the host so. The host
-that asked for this declares such relations, so its lakes are the
-likeliest to hold arrays already.
+host ran that rebuild, a lake upgraded in place would answer its head
+otherwise than its own replay, and nothing would tell the host so. The
+host that asked for this declares such relations, so its lakes are the
+likeliest to hold arrays already. The operator accepted the departure.
+The rebuild's pause is what any layout step costs: about 8 s per
+100 000 records on SQLite and 47 s on PostgreSQL, or about 0.1 s after a
+build ahead.
 
-**Recommended: raise the layouts, as above.** The rebuild's pause is
-what any layout step costs: about 8 s per 100 000 records on SQLite and
-47 s on PostgreSQL, or about 0.1 s after a build ahead.
-
-**If the operator holds to no rebuild,** the layouts stay. The gap is
-then a named exception to 001, stated in 001 and here: on a lake
-upgraded in place, an array written before the upgrade and not since
-has no edge at the head until `lakelands rebuild` runs or the record is
-written again. `docs/hosting.md`'s list "A lake outlives a release"
-says so, and the upgrade checks below open the lake and then run
-`rebuild` instead of relying on the open.
+Rejected: keep the layouts and name the gap as an exception to 001, with
+`lakelands rebuild` as the host's step. It leaves a lake that answers
+otherwise than its log until someone remembers that step.
 
 ## Why
 
@@ -315,19 +309,12 @@ not move.
   +240.
 - **Outside the core:** the sentences in `docs/hosting.md` and
   `docs/log-format.md` §6, and the regenerated `docs/conformance.md`.
-- **Budget rows.** 090 is decided on lakelands#1549 and merged as a
-  record; its build is open, and its cost section sets a product row
-  94 500 → 95 000 and a specification row 174 000 → 174 500, each over
-  the ceiling that 089's build left. Core product stands at 94 202 of
-  94 500. 090's build at its top (+500) takes it to 94 702, under its
-  own row's 95 000, and this build's top to 94 752. **It needs no
-  product row.** Core specification stands at 173 692 of 174 000. 090's
-  build at its top (+650) takes it to 174 342, under its row's
-  174 500, and this build's top to 175 072. **It needs one
-  specification row of +1 000: 174 500 → 175 500**, which holds that
-  top, where 090's build lands first, as 0.21.0's order expects. Where
-  this build lands first, its row is 174 000 → 174 500, which holds
-  174 422, and 090's becomes 174 500 → 175 500. The checks pin the integrity of the answers every engine
+- **Budget rows.** 090's build has landed (lakelands#1554): core
+  product stands at 94 665 of 95 000, specification at 174 498 of
+  174 500. This build's top takes product to 94 715. **It needs no
+  product row.** Its specification top takes 174 498 to 175 228. **It
+  needs one specification row of +1 000: 174 500 → 175 500**, which
+  holds that top. The checks pin the integrity of the answers every engine
   gives and of a lake across its upgrade, by the rule of
   `docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md`.
 
@@ -336,5 +323,7 @@ not move.
 - Proposed on lakelands#1551, for 0.21.0.
 - Review: a projection that 0.20.0 laid out would answer its head
   otherwise than its replay. The engines raise their layouts so that
-  the first writer's open rebuilds it, an upgrade check pins that, and
-  the departure from the plan is the one open question.
+  the first writer's open rebuilds it, and an upgrade check pins that.
+- Decided by the operator on lakelands#1551 (2026-10-29): accepted, with
+  the layouts raised, so a lake 0.20.0 left is rebuilt by its first
+  writer's open.
