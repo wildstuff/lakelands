@@ -1247,3 +1247,48 @@ async fn a_purge_from_a_type_names_the_link_types_its_relations_carry(store: Sto
     );
     Ok(())
 }
+
+check!(
+    REFERENCES_IN_AN_ARRAY = a_purge_names_a_record_whose_array_names_what_it_takes_once,
+    "039, extended by 091: the preflight and the purge name a live record outside the purge whose `via` field holds an array that names records it takes, once under its relation however many of them it names, and no record whose array names none of them"
+);
+
+async fn a_purge_names_a_record_whose_array_names_what_it_takes_once(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let fields = vec![
+        sourced("text", StorageKind::Text),
+        field("cites", StorageKind::Json),
+    ];
+    let mut learning = type_decl("learning", fields);
+    learning.relations = vec![RelationDecl {
+        cardinality: Cardinality::ManyToMany,
+        via: Some("cites".into()),
+        ..RelationDecl::to("cites", "learning")
+    }];
+    l.declare(learning).await?;
+    let brought = ["a", "b"].map(|k| source_record("learning", k, json!({"text": k})));
+    feed(&l, "crm", brought.into()).await?;
+    // x names both of crm's, w only records the purge leaves.
+    for (key, cites) in [
+        ("c", json!([])),
+        ("x", json!(["a", 7, "b", "a"])),
+        ("w", json!(["c", "zzz"])),
+    ] {
+        l.upsert("learning", key, json!({"cites": cites})).await?;
+    }
+    let want = vec![("learning", "cites", 1, vec!["learning x".to_owned()])];
+    let crm = SourceId::from("crm");
+    let seen = store.purge_preflight(&crm, None);
+    let seen = seen.await.must("the preflight of `crm`")?;
+    let done = purge(store.as_ref(), "crm").await?;
+    for (what, report) in [("preflight", &seen), ("purge", &done)] {
+        let got = referring(report);
+        ensure!(
+            got == want && report.retired == 2,
+            "the {what} of `crm` must take a and b and name x once under `cites`, and not w: \
+             {want:?}; it took {} and named {got:?}",
+            report.retired
+        );
+    }
+    Ok(())
+}

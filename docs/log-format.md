@@ -1182,9 +1182,14 @@ the first release with real installations
   `sys.setting` has no `periods` declares it again, one version on,
   after `lake_upgraded`
   (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
-  No other step changes a fold, so the projection stays. A step that
-  changes how an event folds says so here, and a writer's open then
-  rebuilds the projection.
+  The step changes no fold, nor does any other step, so no step
+  rebuilds the projection. A step that changes how an event folds says
+  so here, and a writer's open then rebuilds the projection. A SQLite
+  or PostgreSQL projection that 0.20.0 made is rebuilt at the first
+  writer's open of 0.21.0 all the same, by the engines' layouts and not
+  by a step: it holds no edge of an array of keys, which 0.21.0 reads
+  from every state whatever its format
+  (`docs/decisions/091-a-field-carried-relation-over-an-array-of-keys-yields-one-edge-per-key.md`).
 - **A writer's open upgrades.** Where the newest event, read under the
   writer's lease, is in an older format the release reads, the open
   appends, right after its `lease_taken`, one `lake_upgraded` from that

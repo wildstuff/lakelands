@@ -17,10 +17,11 @@
 //!   every record with one in either direction, then the record key
 //!   ascending. Values compare by [`cmp_values`]: ranked by kind, then
 //!   compared by the evaluator within a kind.
-//! - **Links.** A relation carried by a reference field (`via`) links a
-//!   record to the record of the relation's target whose key is that
-//!   field's text value; the links into a record are those of every type
-//!   with such a relation to its type.
+//! - **Links.** A relation carried by a field (`via`) links a record to
+//!   the record of the relation's target whose key is that field's text
+//!   value, or, where the field holds an array, to that of each distinct
+//!   string element ([`keys_of`]); the links into a record are those of
+//!   every type with such a relation to its type.
 //! - **Full text.** A type's searchable text fields go through the one
 //!   token pipeline (`crate::stem`), stemmed by the type's language, as
 //!   they stand at the head; a record scores the number of distinct query
@@ -1330,8 +1331,19 @@ impl PlaceKey {
     }
 }
 
+/// The keys a field-carried relation reads in `value`: a string is one
+/// key, an array its distinct string elements in key order, and anything
+/// else, an element that is no string included, none.
+pub fn keys_of(value: &Value) -> BTreeSet<&str> {
+    match value {
+        Value::String(key) => BTreeSet::from([key.as_str()]),
+        Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
 /// The links `record` declares over the relations of `decl` carried by a
-/// reference field, over `relation` or all of them.
+/// field, over `relation` or all of them: one per key of the field.
 pub fn links_of(
     decl: &TypeDecl,
     record: &StoredRecord,
@@ -1340,9 +1352,9 @@ pub fn links_of(
     decl.relations
         .iter()
         .filter(|r| relation.is_none_or(|want| *want == r.name))
-        .filter_map(|r| {
-            let to = record.fields.get(r.via.as_ref()?)?.as_str()?;
-            Some(Edge {
+        .filter_map(|r| Some((r, record.fields.get(r.via.as_ref()?)?)))
+        .flat_map(|(r, value)| {
+            keys_of(value).into_iter().map(|to| Edge {
                 from: (record.ty.clone(), record.key.clone()),
                 relation: r.name.clone(),
                 to: (r.target.clone(), RecordKey::from(to)),
@@ -1354,7 +1366,7 @@ pub fn links_of(
 
 /// The links that point at the record `ty` `key`, over `relation` or all:
 /// from the records of every type in `types` that declares a relation to
-/// `ty` carried by a reference field, `records_of` answering a type's
+/// `ty` carried by a field, `records_of` answering a type's
 /// records at the view's position. The one place that decides which types
 /// can link here and which of their links do.
 pub fn in_links<'a, E>(

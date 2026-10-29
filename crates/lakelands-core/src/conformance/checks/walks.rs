@@ -6,7 +6,7 @@
 use lakelands_api::Value;
 use lakelands_api::query::Depth;
 
-use crate::conformance::fixture::reference;
+use crate::conformance::fixture::{cites, learnings, reference, walked};
 use crate::conformance::prelude::*;
 
 check!(
@@ -1889,6 +1889,304 @@ async fn a_step_over_several_types_reads_the_fields_they_declare_alike(store: St
         wrong.is_empty(),
         "a step over invoices, mail and notes about a partner:\n{}",
         wrong.join("\n")
+    );
+    Ok(())
+}
+
+check!(
+    ARRAY_FIELD_EDGE_PER_KEY = a_field_holding_an_array_of_keys_links_once_to_each_distinct_string,
+    "091: a relation carried by a `json` field that holds an array links its record once to the record of each distinct string element: a repeat links once, a number, `null`, a boolean, a nested array, an object and an empty array none, and a key with no record is walked to nothing, while the field reads back as written; a single string links as before; the same as of after the writes, after a rebuild and after a reopen",
+    reopens
+);
+
+check!(
+    ARRAY_FIELD_REWRITE_MOVES_EDGES = a_rewrite_of_an_array_of_keys_moves_its_edges_at_its_position,
+    "091 and 009: a write that drops a key from the array drops its edge and one that adds a key adds it, at the write's position, a read as of before answering the edges then; the same keys in another order answer the same bytes; a key written later is reached from that position on"
+);
+
+check!(
+    ARRAY_FIELD_EVERY_READER = every_reader_of_the_graph_sees_one_edge_per_key_of_an_array,
+    "091, 018 and 026: over an array reaching three records a rows projection binds three rows, a two-step chain and a shortest path go through an array edge, a degree counts each distinct key once and the components hold the record with those it cites, at the head and at a position alike"
+);
+
+check!(
+    ARRAY_FIELD_HIDDEN_WITH_ITS_FIELD = no_edge_of_an_array_is_walked_where_its_field_is_hidden,
+    "091 and 006: where a hiding lowers the array's field on one record, its holder is answered none of that record's edges, out of it or into what it cites, and every other record's; a reader who sees the field masked is refused the walk not granted, naming it; a reader shown it is answered every edge"
+);
+
+/// The head, then a note written past it, so a read as of it is a read
+/// at a position.
+async fn passed(store: &dyn LakeStore, l: &Lake) -> Result<Position, Failure> {
+    let then = store.head().await.must("reading the head")?;
+    l.upsert("note", "later", json!({"text": "later"})).await?;
+    Ok(then)
+}
+
+/// Where each walk of `want` from its learning answers `who` otherwise.
+async fn walks_from(
+    l: &Lake,
+    who: &Principal,
+    at: Option<Position>,
+    want: &[(&str, Walk, &str)],
+) -> Result<Vec<String>, Failure> {
+    let mut wrong = Vec::new();
+    for (key, walk, want) in want {
+        let (got, _) = walked(l, who, cites(key, *walk, at)).await?;
+        if got != *want {
+            wrong.push(format!(
+                "{walk:?} from {key} at {at:?}: `{got}`, not `{want}`"
+            ));
+        }
+    }
+    Ok(wrong)
+}
+
+async fn a_field_holding_an_array_of_keys_links_once_to_each_distinct_string(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let mixed = json!(["a", "b", "b", 7, null, true, ["c"], {"key": "c"}, "", "ghost"]);
+    let cited = [
+        ("a", Value::Null),
+        ("b", Value::Null),
+        ("c", Value::Null),
+        ("x", mixed.clone()),
+        ("y", json!("a")),
+        ("z", json!([])),
+        ("w", json!(7)),
+    ];
+    learnings(&l, &cited).await?;
+    let want = [
+        ("x", Walk::Out, "x>a x>b / x a b"),
+        ("a", Walk::In, "x>a y>a / a x y"),
+        ("b", Walk::In, "x>b / b x"),
+        ("c", Walk::In, " / c"),
+        ("y", Walk::Out, "y>a / y a"),
+        ("z", Walk::Out, " / z"),
+        ("w", Walk::Out, " / w"),
+    ];
+    let then = passed(store.as_ref(), &l).await?;
+    let mut wrong = walks_from(&l, &l.own, None, &want).await?;
+    wrong.extend(walks_from(&l, &l.own, Some(then), &want).await?);
+    let x = l.read("learning", "x").await?;
+    if x.fields.get("cites") != Some(&mixed) {
+        wrong.push(format!(
+            "x's `cites` reads back {:?}",
+            x.fields.get("cites")
+        ));
+    }
+    store.rebuild().await.must("rebuilding the projection")?;
+    for (when, at) in [("after a rebuild", None), ("as of then", Some(then))] {
+        let w = walks_from(&l, &l.own, at, &want).await?;
+        wrong.extend(w.into_iter().map(|w| format!("{when}: {w}")));
+    }
+    drop(l);
+    let store = reopen(store, Seams::default())
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake again: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let w = walks_from(&l, &l.own, None, &want).await?;
+    wrong.extend(w.into_iter().map(|w| format!("after a reopen: {w}")));
+    ensure!(
+        wrong.is_empty(),
+        "an array of keys links once to the record of each distinct string in it, and to \
+         nothing else: {wrong:#?}"
+    );
+    Ok(())
+}
+
+async fn a_rewrite_of_an_array_of_keys_moves_its_edges_at_its_position(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let cited = [
+        ("a", Value::Null),
+        ("b", Value::Null),
+        ("d", Value::Null),
+        ("x", json!(["a", "b"])),
+    ];
+    learnings(&l, &cited).await?;
+    let before = store.head().await.must("reading the head")?;
+    l.upsert("learning", "x", json!({"cites": ["b", "d"]}))
+        .await?;
+    let mut wrong = walks_from(
+        &l,
+        &l.own,
+        None,
+        &[("x", Walk::Out, "x>b x>d / x b d"), ("a", Walk::In, " / a")],
+    )
+    .await?;
+    let then = [
+        ("x", Walk::Out, "x>a x>b / x a b"),
+        ("a", Walk::In, "x>a / a x"),
+    ];
+    wrong.extend(walks_from(&l, &l.own, Some(before), &then).await?);
+    let wire = async |l: &Lake| -> Result<Vec<String>, Failure> {
+        let mut all = Vec::new();
+        for (key, walk) in [("x", Walk::Out), ("b", Walk::In), ("d", Walk::In)] {
+            let (told, wire) = walked(l, &l.own, cites(key, walk, None)).await?;
+            all.push(format!("{told} {wire}"));
+        }
+        Ok(all)
+    };
+    let ordered = wire(&l).await?;
+    l.upsert("learning", "x", json!({"cites": ["d", "b"]}))
+        .await?;
+    let turned = wire(&l).await?;
+    if turned != ordered {
+        wrong.push(format!("[b, d] answered {ordered:?}, [d, b] {turned:?}"));
+    }
+    l.upsert("learning", "x", json!({"cites": ["d", "b", "ghost"]}))
+        .await?;
+    let unwritten = store.head().await.must("reading the head")?;
+    l.upsert("learning", "ghost", json!({"kind": "open"}))
+        .await?;
+    let ghost = [("x", Walk::Out, "x>b x>d x>ghost / x b d ghost")];
+    wrong.extend(walks_from(&l, &l.own, None, &ghost).await?);
+    let unborn = [("x", Walk::Out, "x>b x>d / x b d")];
+    wrong.extend(walks_from(&l, &l.own, Some(unwritten), &unborn).await?);
+    ensure!(
+        wrong.is_empty(),
+        "a rewrite of an array of keys moves its edges at its position: {wrong:#?}"
+    );
+    Ok(())
+}
+
+async fn every_reader_of_the_graph_sees_one_edge_per_key_of_an_array(store: Store) -> Held {
+    use crate::conformance::fixture::order;
+    let l = Lake::of(store.as_ref());
+    let cited = [
+        ("a", Value::Null),
+        ("b", Value::Null),
+        ("d", Value::Null),
+        ("c", json!(["d"])),
+        ("x", json!(["a", "b", "c", "a"])),
+    ];
+    learnings(&l, &cited).await?;
+    let then = passed(store.as_ref(), &l).await?;
+    let named = |name: &str| Step {
+        named: Some(name.into()),
+        ..step("cites", Walk::Out, 1, 1)
+    };
+    let rows = |steps: Vec<Step>, by: &str| {
+        let fields = vec![by.to_owned()];
+        let mut p = pattern("learning", Some("x"), steps, Projection::Rows { fields });
+        p.order_by = vec![order(by, OrderBy::Value, Direction::Asc)];
+        p
+    };
+    let measure =
+        |walk, project| pattern("learning", None, vec![step("cites", walk, 1, 1)], project);
+    let (degree, components) = (&["key", "degree"][..], &["component", "size", "key"][..]);
+    let asked = [
+        (
+            rows(vec![named("near")], "near.key"),
+            &["near.key"][..],
+            "a b c",
+        ),
+        (
+            rows(vec![named("near"), named("far")], "far.key"),
+            &["far.key"][..],
+            "d",
+        ),
+        (
+            measure(Walk::Out, Projection::Degree),
+            degree,
+            "x:3 c:1 a:0 b:0 d:0",
+        ),
+        (
+            measure(Walk::Both, Projection::Components),
+            components,
+            "0:5:a 0:5:b 0:5:c 0:5:d 0:5:x",
+        ),
+    ];
+    let cell = |row: &BTreeMap<String, Value>, c: &str| match row.get(c) {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => v.to_string(),
+        None => "-".to_owned(),
+    };
+    let mut wrong = Vec::new();
+    for at in [None, Some(then)] {
+        for (p, cols, want) in &asked {
+            let mut p = p.clone();
+            p.at.as_of = at;
+            let what = format!("{p:?}");
+            let QueryResult::Rows { rows, .. } = l.cat.query(&l.own, p).await.must(&what)?.data
+            else {
+                return Err(Failure::new(format!("{what} answered no rows")));
+            };
+            let got: Vec<String> = (rows.iter())
+                .map(|r| {
+                    cols.iter()
+                        .map(|c| cell(r, c))
+                        .collect::<Vec<_>>()
+                        .join(":")
+                })
+                .collect();
+            if got.join(" ") != *want {
+                wrong.push(format!(
+                    "{what} at {at:?}: `{}`, not `{want}`",
+                    got.join(" ")
+                ));
+            }
+        }
+        let mut path = lakelands_api::query::Pattern::path(
+            ("learning".into(), "x".into()),
+            ("learning".into(), "d".into()),
+            vec!["cites".into()],
+            3,
+        );
+        path.at.as_of = at;
+        let (got, _) = walked(&l, &l.own, path).await?;
+        if got != "x>c c>d / x c d" {
+            wrong.push(format!("the path from x to d at {at:?}: `{got}`"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "every reader of the graph sees one edge per distinct key of an array: {wrong:#?}"
+    );
+    Ok(())
+}
+
+async fn no_edge_of_an_array_is_walked_where_its_field_is_hidden(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let cited = [
+        ("a", Value::Null),
+        ("b", Value::Null),
+        ("x", json!(["a", "b"])),
+        ("y", json!("a")),
+    ];
+    learnings(&l, &cited).await?;
+    l.upsert("learning", "x", json!({"kind": "secret"})).await?;
+    let hide = json!({"field": "kind", "values": ["secret"], "fields": {"cites": "none"}});
+    let grants = json!({"default": "read", "types": {"learning": {"hide_where": [hide]}}});
+    let ann = super::only::holder(store.as_ref(), "ann", grants);
+    let told = [
+        ("x", Walk::Out, " / x"),
+        ("a", Walk::In, "y>a / a y"),
+        ("b", Walk::In, " / b"),
+    ];
+    let mut wrong = walks_from(&l, &ann, None, &told).await?;
+    let shown = [
+        ("x", Walk::Out, "x>a x>b / x a b"),
+        ("a", Walk::In, "x>a y>a / a x y"),
+        ("b", Walk::In, "x>b / b x"),
+    ];
+    wrong.extend(walks_from(&l, &l.own, None, &shown).await?);
+    let masked = field_access(
+        store.as_ref(),
+        "mo",
+        "learning",
+        &[("cites", Access::Masked)],
+    );
+    for (key, walk) in [("x", Walk::Out), ("a", Walk::In)] {
+        let got = l.cat.query(&masked, cites(key, walk, None)).await;
+        if !matches!(refused_on(&got), Some(("cites", Refusal::NotGranted))) {
+            wrong.push(format!("masked from `cites`, {walk:?} from {key}: {got:?}"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "an array's edges are walked only by a reader shown its field there: {wrong:#?}"
     );
     Ok(())
 }

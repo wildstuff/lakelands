@@ -231,9 +231,12 @@ pub(crate) fn report<'a>(
             }
         }
     }
+    // A field names a record the purge takes alone or as any element of
+    // its array, and its record is counted once however many it names.
     let inside = |target: &TypeName, v: Option<&Value>| {
-        let key = v.and_then(Value::as_str).map(RecordKey::from);
-        key.is_some_and(|k| taken.contains(&(target, &k)))
+        let keys = v.map(lakelands_core::engines::keys_of).unwrap_or_default();
+        keys.into_iter()
+            .any(|k| taken.contains(&(target, &RecordKey::from(k))))
     };
     let reached = |target: &TypeName| types.iter().any(|t| &t.ty == target);
     let mut references = Vec::new();

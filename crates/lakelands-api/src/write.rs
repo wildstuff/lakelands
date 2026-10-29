@@ -1273,7 +1273,7 @@ fn differing<T: Serialize + Default>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Carrier {
-    /// By a reference field of the record, the relation's `via`.
+    /// By a field of the record, the relation's `via`, one key or an array.
     Via,
     /// By link records, of the relation's link type.
     Links,

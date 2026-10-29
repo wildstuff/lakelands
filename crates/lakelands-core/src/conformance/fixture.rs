@@ -1414,3 +1414,69 @@ pub async fn pause(d: std::time::Duration) {
     })
     .await
 }
+
+/// `learning`, a text `kind` and `cites`, a `json` field carrying the
+/// relation `cites` to `learning`, many to many (091), and a `note` to
+/// move the head by; then each learning, `kind` open, citing what it is
+/// given.
+pub async fn learnings(l: &Lake, cited: &[(&str, Value)]) -> Held {
+    let fields = vec![
+        field("kind", StorageKind::Text),
+        field("cites", StorageKind::Json),
+    ];
+    let mut ty = type_decl("learning", fields);
+    ty.relations = vec![lakelands_api::ontology::RelationDecl {
+        cardinality: lakelands_api::ontology::Cardinality::ManyToMany,
+        via: Some("cites".into()),
+        ..lakelands_api::ontology::RelationDecl::to("cites", "learning")
+    }];
+    l.declare(ty).await?;
+    l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
+        .await?;
+    for (key, cites) in cited {
+        let fields = serde_json::json!({"kind": "open", "cites": cites});
+        l.upsert("learning", key, fields).await?;
+    }
+    Ok(())
+}
+
+/// A walk over `cites` from the learning `key`, at `at` or the head.
+pub fn cites(key: &str, walk: Walk, at: Option<Position>) -> Pattern {
+    let mut p = pattern(
+        "learning",
+        Some(key),
+        vec![step("cites", walk)],
+        Projection::Graph,
+    );
+    p.at.as_of = at;
+    p
+}
+
+/// What `p` answers `who`: its edges as `x>a`, then its nodes' keys, and
+/// its edges as the wire carries them.
+pub async fn walked(l: &Lake, who: &Principal, p: Pattern) -> Result<(String, String), Failure> {
+    let what = format!("{}'s walk {p:?}", who.id);
+    let answer = l.cat.query(who, p).await.must(&what)?.data;
+    let lakelands_api::query::QueryResult::Graph { nodes, edges, .. } = answer else {
+        return Err(Failure::new(format!("{what} answered no graph")));
+    };
+    let ends: Vec<String> = (edges.iter())
+        .map(|e| format!("{}>{}", e.from.1, e.to.1))
+        .collect();
+    let keys: Vec<&str> = nodes.iter().map(|n| n.key.as_str()).collect();
+    let told = format!("{} / {}", ends.join(" "), keys.join(" "));
+    Ok((told, serde_json::to_string(&edges).unwrap_or_default()))
+}
+
+/// What the walks over `cites` out of `x` and into `a` and `b` answer, at
+/// `at` or the head, with the edges as the wire carries them (091).
+pub async fn array_walks(store: &dyn LakeStore, at: Option<Position>) -> Vec<String> {
+    let l = Lake::of(store);
+    let mut told = Vec::new();
+    for (key, walk) in [("x", Walk::Out), ("a", Walk::In), ("b", Walk::In)] {
+        let walk = walked(&l, &l.own, cites(key, walk, at)).await;
+        let (got, wire) = walk.unwrap_or_else(|e| (e.message, String::new()));
+        told.push(format!("{got} {wire}"));
+    }
+    told
+}
