@@ -113,6 +113,17 @@ the upgraded lake, and open it with 0.20.0, which finishes the upgrade.
 The way back to 0.19.0 is a backup taken before the upgrade, restored
 into a lake of its own.
 
+0.21.0 takes the seventh step, to 21: it reads 14 to 21 and writes 21,
+so a 0.20.0 binary refuses its lakes by their number (lakelands#1547).
+
+**0.20.0 on a lake that 0.21.0 upgraded.** On PostgreSQL, 0.20.0 does
+not name format 21 for such a lake: it refuses the schema as one that
+holds tables that are not a lake's (it names `quarantined`), and it
+writes nothing. On SQLite it names format 21. Neither is a way back: do
+not restore a backup over the upgraded lake, and open it with 0.21.0.
+There is no 0.20.1; the way back to 0.20.0 is a backup taken before the
+upgrade, restored into a lake of its own.
+
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
 - **The log is never rewritten.** Each format step from 14 on ships a
@@ -153,7 +164,8 @@ into a lake of its own.
   on, `docs/log-format/lakes/17/`, the lake v0.16.0 made, from that one
   on, `docs/log-format/lakes/18/`, the lake v0.17.0 made, from that one on,
   `docs/log-format/lakes/19/`, the lake v0.18.0 made, from that one on,
-  and `docs/log-format/lakes/20/`, the lake v0.20.0 made, from that one
+  `docs/log-format/lakes/20/`, the lake v0.20.0 made, from that one on,
+  and `docs/log-format/lakes/21/`, the lake v0.21.0 made, from that one
   on. The vectors of each older format are imported and upgraded on
   every engine too.
 

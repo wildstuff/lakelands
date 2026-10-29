@@ -166,9 +166,11 @@ host ran that rebuild, a lake upgraded in place would answer its head
 otherwise than its own replay, and nothing would tell the host so. The
 host that asked for this declares such relations, so its lakes are the
 likeliest to hold arrays already. The operator accepted the departure.
-The rebuild's pause is what any layout step costs: about 8 s per
-100 000 records on SQLite and 47 s on PostgreSQL, or about 0.1 s after a
-build ahead.
+The rebuild's pause is what any layout step costs. Measured on a lake of
+100 000 records, each with an array of keys, the first writer's open took
+19.9 s on SQLite, 59.2 s on PostgreSQL and 68.1 s on PostgreSQL with
+pgvector; the second open took 0.008 s on SQLite and about 0.06 s on
+PostgreSQL.
 
 Rejected: keep the layouts and name the gap as an exception to 001, with
 `lakelands rebuild` as the host's step. It leaves a lake that answers
