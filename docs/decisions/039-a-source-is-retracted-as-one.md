@@ -68,7 +68,10 @@ every retraction (lakelands#473).
   then relation order: how many live records outside the purge refer to
   a record inside it, and the first ten in key order, by type and key
   only. A reference is a relation's `via` field that holds the key of a
-  record the purge takes, or a link record one of whose ends it takes.
+  record the purge takes, alone or as any element of an array of keys
+  (`docs/decisions/091-a-field-carried-relation-over-an-array-of-keys-yields-one-edge-per-key.md`), or a link record one of whose ends it takes. A
+  record is counted once under a relation, however many of its keys the
+  purge takes.
   A restricted record counts; the report is the host's. A retired
   record, a record the purge takes itself, and a relation derived from
   matching values, which stores nothing, do not.
@@ -220,3 +223,6 @@ ingest, because the ingest id carries the version it was written over
 - Corrected at the rewrite (lakelands#817): every purge was said to
   name a type it does not search, where only the purge of a source
   whole does; and a view was said to be named, where it is passed over.
+- Extended by 091 (lakelands#1551): a `via` field that holds an array
+  of keys refers to the record of each key in it, and its record is
+  counted once.

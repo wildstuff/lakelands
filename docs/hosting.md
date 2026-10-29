@@ -829,8 +829,10 @@ moment before, and opens a moment later.
   (`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`), and
   holds the writer that long; the CLI says so
   (`the projection was rebuilt from the log at this open`), and a host
-  reads why from `LakeStore::rebuilt_at_open`. 0.16.0 is such a step
-  for both engines: the first open of 0.16.0 rebuilds the projection,
+  reads why from `LakeStore::rebuilt_at_open`. 0.16.0 and 0.21.0 are
+  such steps for both engines (0.21.0's projection holds an edge for
+  each key of an array a relation's `via` field holds,
+  `docs/decisions/091-a-field-carried-relation-over-an-array-of-keys-yields-one-edge-per-key.md`): the first open of either rebuilds the projection,
   about 8 s per 100 000 records on SQLite and 47 s on
   PostgreSQL (at 1 000 000 records 80 s and 7.5 min; one event a
   record, a release build). `lakelands upgrade` runs that open at a moment
