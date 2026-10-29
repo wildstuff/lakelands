@@ -3274,9 +3274,8 @@ fn a_bundle_declares_a_setting_and_gives_its_first_value() {
         let first = sh.run(&["apply", &bundle]);
         assert_eq!(first.code, 0, "{}", first.err);
         assert!(
-            first
-                .out
-                .contains("setting `vat_rate` given its first value"),
+            first.out.matches("setting").count() == 1
+                && first.out.contains("`vat_rate` given its first value"),
             "{}",
             first.out
         );

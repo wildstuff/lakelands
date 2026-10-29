@@ -163,30 +163,25 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.20.0`.** Lakelands `0.20.0` is the `lakelands` CLI, its
+> **Status: `0.21.0`.** Lakelands `0.21.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (900 checks through the doors and 84 through the
-> engine seam), with 84 decision records and the event log at format
-> version 20, installable from the release. Its budgets: the store
-> facade and engine traits hold 91 of 110 methods, the core crates'
-> product code 91 294 of 92 500 lines and their specification 169 327 of
-> 169 500, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
-> recorded rule (decision 047): the ceilings stand at 92 500 and 169 500,
-> and the ratchet bases at 91 500 and 169 500.
-> Beside what `0.19.0` held, a lexical score is BM25F on every engine
-> (lakelands#1459), the log stores what an append shares once and seals a
-> record's erasable values in one box (lakelands#1440, lakelands#1455),
-> an object set may be decided at the read (lakelands#1437), a field may
-> be hidden by a condition (lakelands#1454), and the openCypher subset is
-> a `cypher` tool beside `query` over MCP and a statement over REST, the
-> CLI and the client (lakelands#1434, lakelands#1451). A condition nests
-> at most 32 levels (lakelands#1439). A writer's open upgrades a lake of
-> format 14, 15, 16, 17, 18 or 19 to 20 by appending; the first writer's
-> open of 0.20.0 also rebuilds each SQLite and PostgreSQL lake's
-> projection (its layout is 9) beside the one it replaces, the log
-> untouched, and the lake of format 20 is kept beside those of the
-> releases before.
+> conformance suite (940 checks through the doors and 87 through the
+> engine seam), with 91 decision records and the event log at format
+> version 21, installable from the release. Its budgets: see
+> `docs/budgets.md` for the ceilings and the ratchet bases.
+> Beside what `0.20.0` held, a refused record may be quarantined until it
+> is run again, dismissed or its key lands (lakelands#1502), an event
+> records the principal a write was made for (lakelands#1489), a search
+> may rank by the text at the position it reads (lakelands#1548), a
+> setting may hold values from dates (lakelands#1554), a delivery may
+> carry a delivery per record (lakelands#1532), communities are found by
+> Louvain (lakelands#1531), and the openCypher subset writes through the
+> typed write doors (lakelands#1536). A writer's open upgrades a lake of
+> format 14 to 20 to 21 by appending; the first writer's open of 0.21.0
+> also rebuilds each SQLite and PostgreSQL lake's projection beside the
+> one it replaces, the log untouched, and the lake of format 21 is kept
+> beside those of the releases before.
 
 ## Try it
 
@@ -310,7 +305,7 @@ The walk's page lists every call and the answer it must give.
 format, per-field provenance, positions on every answer, the engine
 contract and the seams. Each later release built on them; what it adds
 is in its notes on the releases page, and what comes next is on the
-milestones. `0.20.0` built the openCypher subset as an MCP read tool
+milestones. `0.21.0` built quarantine, the principal a write was made for, dated settings, search by the text at a position and communities. `0.20.0` built the openCypher subset as an MCP read tool
 beside `query`, PageRank and the cheapest walk, patterns that branch
 and join, a change planned before it acts, sets decided at the read, a
 field hidden on the records a condition selects, where a lexical hit

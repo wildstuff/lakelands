@@ -135,6 +135,11 @@ The checks, on every engine:
    readers of an exported log live in `export`.) The format-21 vector
    carries the member on the write at position 61 and a context holding
    it among its misplaced lines.
+6. `risky_calls::CALL_PROPOSED_FOR`: `agent:worker` bound for `human:alice`
+   upserts a ticket whose field a function above low computes; the
+   `write_proposed` of its call is written as `agent:worker` for
+   `human:alice`, the reviewer's `write_accepted` names no one, and every
+   event the accept writes as `agent:worker` names `human:alice`.
 
 ## Why
 

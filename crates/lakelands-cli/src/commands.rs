@@ -67,7 +67,7 @@ fn label(d: &Declaration) -> String {
         .as_str()
         .unwrap_or("declaration")
         .replace('_', " ");
-    match v["name"].as_str() {
+    match v["name"].as_str().or_else(|| v["key"].as_str()) {
         Some(name) => format!("{kind} `{name}`"),
         None => kind,
     }
@@ -100,6 +100,15 @@ pub async fn apply_bundle(
     // one append at one position, or refused whole. A bundle of aging
     // rules alone declares nothing.
     let what: Vec<String> = bundle.declarations.iter().map(label).collect();
+    // A setting whose first value the bundle gives is named once, by the
+    // line that says what became of the value.
+    let valued: Vec<bool> = (bundle.declarations.iter())
+        .map(|d| {
+            let v = serde_json::to_value(d).unwrap_or_default();
+            v["declare"] == "setting"
+                && (bundle.settings.iter()).any(|s| s.get("key") == Some(&v["key"]))
+        })
+        .collect();
     if what.is_empty() && !bundle.aging_rules.is_empty() {
         return aging_rules(out, catalog, who, bundle.aging_rules).await;
     }
@@ -139,7 +148,7 @@ pub async fn apply_bundle(
                 ),
             };
             put(out, header)?;
-            for (i, w) in what.into_iter().enumerate() {
+            for (i, w) in what.into_iter().enumerate().filter(|(i, _)| !valued[*i]) {
                 match held(i) {
                     Some(since) => put(out, format!("  {w}, in force since position {since}"))?,
                     None => put(out, format!("  {w}"))?,
