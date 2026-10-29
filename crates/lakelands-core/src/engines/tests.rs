@@ -941,3 +941,21 @@ fn lexical_scores_bm25f_over_the_counts_it_is_handed() {
     );
     assert_eq!(by_store, a);
 }
+
+#[test]
+fn a_value_holds_a_key_or_an_arrays_distinct_strings() {
+    let keys = |v: serde_json::Value| {
+        keys_of(&v)
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let mixed = json!(["b", "a", "b", 7, null, true, ["c"], {"key": "c"}, ""]);
+    assert_eq!(keys(json!("a")), ["a"]);
+    assert_eq!(keys(json!("")), [""]);
+    assert_eq!(keys(mixed), ["", "a", "b"]);
+    assert!(keys(json!([])).is_empty());
+    for other in [json!(7), json!(null), json!(true), json!({"key": "a"})] {
+        assert!(keys(other.clone()).is_empty(), "{other} holds no key");
+    }
+}

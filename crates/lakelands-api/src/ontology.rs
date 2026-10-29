@@ -1076,8 +1076,9 @@ pub struct RelationDecl {
     /// declares a relation of that name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inverse: Option<RelationName>,
-    /// The field of this type that holds the target's key, if the
-    /// relation is carried by a reference field.
+    /// The field of this type that holds the target's key, or a JSON
+    /// array of keys with one link to each distinct one, if the relation
+    /// is carried by a field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<FieldName>,
     /// Fields of the link itself, for a relation carried by link records
