@@ -170,18 +170,19 @@ terrain Lakelands is built for, and where it is not the right tool.
 > engine seam), with 91 decision records and the event log at format
 > version 21, installable from the release. Its budgets: see
 > `docs/budgets.md` for the ceilings and the ratchet bases.
-> Beside what `0.20.0` held (the numbers are issues), a refused record may be quarantined until it
-> is run again, dismissed or its key lands (lakelands#1502), an event
-> records the principal a write was made for (lakelands#1489), a search
-> may rank by the text at the position it reads (lakelands#1541), a
-> setting may hold values from dates (lakelands#1549), a delivery may
-> carry a delivery per record (lakelands#1528), communities are found by
-> Louvain (lakelands#1514), and the openCypher subset writes through the
-> typed write doors (lakelands#1513). A writer's open upgrades a lake of
-> format 14 to 20 to 21 by appending; the first writer's open of 0.21.0
-> also rebuilds each SQLite and PostgreSQL lake's projection beside the
-> one it replaces, the log untouched, and the lake of format 21 is kept
-> beside those of the releases before.
+> Beside what `0.20.0` held (the numbers are issues), a refused record
+> may be quarantined until it is run again, dismissed or its key lands
+> (lakelands#1502), an event records the principal a write was made for
+> (lakelands#1489), a search may rank by the text at the position it
+> reads (lakelands#1541), a setting may hold values from dates
+> (lakelands#1549), a delivery may carry a delivery per record
+> (lakelands#1528), communities are found by Louvain (lakelands#1514),
+> and the openCypher subset writes through the typed write doors
+> (lakelands#1513). A writer's open upgrades a lake of format 14 to 20
+> to 21 by appending; the first writer's open of 0.21.0 also rebuilds
+> each SQLite and PostgreSQL lake's projection beside the one it
+> replaces, the log untouched, and the lake of format 21 is kept beside
+> those of the releases before.
 
 ## Try it
 
