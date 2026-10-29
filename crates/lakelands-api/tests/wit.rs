@@ -23,8 +23,8 @@ use std::path::Path;
 
 use lakelands_api::describe::{
     ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept,
-    SettingValue, SortedWhole, TypeAccess, TypeDescription, TypeLifecycle, TypeLineage, TypeRights,
-    VerbDescription,
+    SettingPeriod, SettingValue, SortedWhole, TypeAccess, TypeDescription, TypeLifecycle,
+    TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::event::ChangeKind;
 use lakelands_api::expr::Condition;
@@ -913,6 +913,16 @@ fn setting_value() -> SettingValue {
         value: Some(serde_json::json!(["due"])),
         default: Value::Null,
         declared: Some(setting_decl()),
+        periods: vec![
+            SettingPeriod {
+                from: None,
+                value: serde_json::json!(16),
+            },
+            SettingPeriod {
+                from: Some("2026-07-01".into()),
+                value: serde_json::json!(19),
+            },
+        ],
     }
 }
 
@@ -1466,6 +1476,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("setting_value", members(&setting_value())),
+        ("setting_period", members(&setting_value().periods[1])),
         (
             "executor_description",
             members(&ExecutorDescription {

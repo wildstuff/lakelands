@@ -1418,7 +1418,13 @@ interface types {
         /// A host's setting's declaration, told to a holder of the schema
         /// grant and to one who may write it.
         declared: option<setting-decl>,
+        /// A host's setting's values from dates, the first from the start;
+        /// empty where it holds none.
+        periods: list<setting-period>,
     }
+
+    /// One value of a setting and the date it holds from, none for the first.
+    record setting-period { %from: option<string>, value: json }
 
     record lake-description {
         lake: lake-id,

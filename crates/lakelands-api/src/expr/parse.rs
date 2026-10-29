@@ -114,7 +114,6 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         Func::KnownAt
         | Func::SeenAt
         | Func::Previous
-        | Func::Setting
         | Func::Param
         | Func::InSet
         | Func::Exists
@@ -130,7 +129,7 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         | Func::Max
         | Func::Avg => (1, Some(1)),
         Func::Count => (0, Some(1)),
-        Func::Round => (1, Some(2)),
+        Func::Round | Func::Setting => (1, Some(2)),
         Func::Contains | Func::StartsWith | Func::Matches => (2, Some(2)),
         Func::DateBucket => (2, Some(3)),
         Func::Substr => (2, Some(3)),

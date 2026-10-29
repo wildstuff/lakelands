@@ -586,6 +586,9 @@ pub fn setting_type() -> TypeDecl {
             // The group the store stamps from the setting's declaration,
             // which a grant's `only` names (063, extended).
             FieldDecl::of("group", StorageKind::Text),
+            // A host's setting's values from dates after the first, which
+            // the store writes from `from` and `period` (090).
+            FieldDecl::of("periods", StorageKind::Json),
         ],
         field_meta: true,
         description: Some(

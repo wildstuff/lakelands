@@ -199,6 +199,9 @@ const QUARANTINED_FROM: u32 = 21;
 /// The log format that first holds `on_behalf_of` (088).
 const ON_BEHALF_OF_FROM: u32 = 21;
 
+/// The log format that first holds a setting's values from dates (090).
+const PERIODS_FROM: u32 = 21;
+
 /// An event as log format `v` wrote it, its members as the format this
 /// release writes says them, for the release's own structs to read. Its
 /// `v` stays the one it was written in, and its bytes and hash are the
@@ -477,6 +480,11 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
         let (kind, v) = (kind.clone(), event.v);
         return Some(Flaw::QuarantinedBefore { kind, v });
     }
+    if event.v < PERIODS_FROM
+        && let Some(flaw) = dated_setting(&event.body, event.v)
+    {
+        return Some(flaw);
+    }
     let quarantined = matches!(event.body, EventBody::RecordQuarantined { .. });
     let ingested = matches!(event.body, EventBody::RecordIngested { .. });
     if event.delivery.is_some() && !quarantined && (!ingested || event.v < 17) {
@@ -484,6 +492,40 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
         return Some(Flaw::DeliveryOn { kind, v });
     }
     (event.upstream.is_some() && !ingested).then_some(Flaw::UpstreamOn { kind })
+}
+
+/// What of a setting's values from dates `body` holds, of format `v`,
+/// before the format that added them (090): `periods` written on
+/// `sys.setting`, `from` or `period` in a proposal of it, and `setting`
+/// read on a date in a declaration.
+fn dated_setting(body: &EventBody, v: u32) -> Option<Flaw> {
+    use lakelands_api::write::ProposedWrite;
+    let setting = |ty: &lakelands_api::TypeName| ty.as_str() == lakelands_api::seam::SETTING_TYPE;
+    match body {
+        EventBody::RecordUpserted { ty, patch, .. }
+        | EventBody::RecordIngested { ty, patch, .. }
+            if setting(ty) && patch.contains_key("periods") =>
+        {
+            Some(Flaw::SettingPeriodsBefore { v })
+        }
+        EventBody::WriteProposed {
+            write: ProposedWrite::Upsert { ty, patch, .. },
+            ..
+        } if setting(ty) && (patch.contains_key("from") || patch.contains_key("period")) => {
+            Some(Flaw::SettingMembersBefore { v })
+        }
+        EventBody::Declared { declaration, .. } => {
+            let conditions = declaration.conditions().into_iter();
+            let dated = |(_, c): (String, &lakelands_api::expr::Condition)| {
+                c.typed().is_ok_and(|e| !e.settings_read(true).is_empty())
+            };
+            conditions
+                .into_iter()
+                .any(dated)
+                .then_some(Flaw::SettingAtBefore { v })
+        }
+        _ => None,
+    }
 }
 
 /// An event body's kind, as the log writes it.

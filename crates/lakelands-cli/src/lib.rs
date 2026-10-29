@@ -581,7 +581,9 @@ fn command() -> Command {
                         .about("Set a lake setting")
                         .arg(Arg::new("key").value_name("KEY").required(true).help("The setting's key"))
                         .arg(Arg::new("value").value_name("VALUE").required(true).help("Its value, as JSON; any other text is taken as a text"))
-                        .arg(Arg::new("type").long("type").value_name("TYPE").help("Set it for this type: the key `<KEY>.<TYPE>`")),
+                        .arg(Arg::new("type").long("type").value_name("TYPE").help("Set it for this type: the key `<KEY>.<TYPE>`"))
+                        .arg(Arg::new("from").long("from").value_name("DATE").conflicts_with("period").help("Add a value that holds from this date, to a setting a host declares"))
+                        .arg(Arg::new("period").long("period").value_name("start|DATE").help("Correct the value that holds from this date, or the first with `start`")),
                 )
                 .subcommand(
                     Command::new("unset")
@@ -957,7 +959,9 @@ async fn dispatch(
             Some((change, of)) => {
                 let key = settings::key_of(of);
                 let raw = (change == "set").then(|| text(of, "value").unwrap_or_default());
-                settings::change(out, catalog.as_ref(), &who, &key, raw.as_deref()).await
+                let dated = (change == "set").then(|| settings::dated(of)).flatten();
+                let raw = raw.as_deref().map(|r| (r, dated));
+                settings::change(out, catalog.as_ref(), &who, &key, raw).await
             }
             None => {
                 let lake = catalog.describe(&who, Default::default()).await?.data;

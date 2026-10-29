@@ -173,7 +173,15 @@ pub fn of(e: &Expr, field: Reads<'_>) -> Result<Option<Kind>, Case> {
                     .flatten()
                     .filter(|k| kinds.get(2) == Some(&Some(*k))),
                 Func::Coalesce => first.filter(|k| kinds.iter().all(|x| x == &Some(*k))),
-                Func::Setting | Func::Param => None,
+                // A setting's value on a day: `at`, where given, is a date
+                // or an instant (090).
+                Func::Setting => match kinds.get(1).copied().flatten() {
+                    Some(kind @ (Boolean | Number | Duration)) => {
+                        return Err(Case::KindTakesDate { expr: expr(), kind });
+                    }
+                    _ => None,
+                },
+                Func::Param => None,
             }
         }
     })

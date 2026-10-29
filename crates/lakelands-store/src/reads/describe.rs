@@ -18,14 +18,21 @@ impl<'a> Reader<'a> {
             e.bound = executors.iter().any(|x| x.name() == e.name);
         }
         // A host's setting is told with its declaration to a holder of
-        // `schema` and to one who may write it (063, extended).
+        // `schema` and to one who may write it (063, extended), with its
+        // values from dates and the one in force on the read's clock (090).
         let host = (self.shape.ontology.settings.values())
             .filter(|e| self.sight.setting_visible(&e.decl))
-            .map(|e| lakelands_api::describe::SettingValue {
-                key: e.decl.key.clone(),
-                value: self.shape.settings.get(&e.decl.key).cloned(),
-                default: lakelands_api::Value::Null,
-                declared: Some(e.decl.clone()),
+            .map(|e| {
+                use lakelands_api::settings::{in_force, periods_key, told_periods};
+                let value = self.shape.settings.get(&e.decl.key);
+                let periods = self.shape.settings.get(&periods_key(&e.decl.key));
+                lakelands_api::describe::SettingValue {
+                    key: e.decl.key.clone(),
+                    value: value.map(|v| in_force(v.clone(), periods, self.now)),
+                    default: lakelands_api::Value::Null,
+                    declared: Some(e.decl.clone()),
+                    periods: told_periods(value, periods),
+                }
             });
         let host: Vec<_> = host.collect();
         if self.sight.who().grants.schema {

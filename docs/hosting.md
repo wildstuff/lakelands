@@ -231,7 +231,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   Lakelands reserves only the types its own fold reads; today those are
   `sys.setting` and `sys.aging_rule`, and the other two are reserved
   ahead of their readers. See `docs/decisions/003-reservation-by-namespace.md`.
-  An expression reads `setting('<key>')` whatever its reader's grant on
+  An expression reads `setting('<key>')`, or `setting('<key>', at)` for
+  the value in force on `at`'s UTC day where the key holds values from
+  dates (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`),
+  whatever its reader's grant on
   `sys.setting`, save a lake setting for a type or a source: a condition
   evaluated at a read reads that as its reader is told it, and one
   judged once for every reader tells what it decides only to a reader

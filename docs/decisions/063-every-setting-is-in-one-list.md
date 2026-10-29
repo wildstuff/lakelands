@@ -295,9 +295,20 @@ again to change and never withdrawn; a bundle declares it in its
   declare into `store`. A declaration that moves a setting to another
   group stamps its record again in the declaration's own append, so no
   record stands in a group its declaration does not name.
+- **It may hold values from dates.** A declared key holds one value
+  from the start and, in `periods`, any later values each from its date,
+  so every day has exactly one. A write naming `from` adds a period and
+  one naming `period` (`start` or a date) corrects one; the store
+  resolves either into `value` or the whole `periods` and never keeps
+  the member, and an undated write is refused once the key holds a
+  period. `setting('<key>', at)` reads the value on the UTC day of
+  `at`, and `setting('<key>')` the value on the day of the expression's
+  clock; a fold reads them as of the event it folds, so a correction
+  reshapes no record already written
+  (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
 - **`describe` tells the declaration** (kind, unit, meaning, group), with
-  the value the lake holds, to a holder of `schema` and to a principal
-  that may write the setting, and to no other reader. The group itself
+  the value the lake holds and its periods, to a holder of `schema` and
+  to a principal that may write the setting, and to no other reader. The group itself
   stands in the log as a field of the record: a reader of `sys.setting`
   reads it under that type's grants, as it reads the value, and finds
   the records of a group by it; only the declaration is withheld.
@@ -316,3 +327,5 @@ a value by its declared kind.
 a writer's open declares the store's own types again, one version on,
 where the lake holds an older form of them, and stamps the settings the
 lake holds with their group in the same append.
+`sys.setting` gained `periods` the same way, from log format 21, and a
+setting holding none reads as it did.

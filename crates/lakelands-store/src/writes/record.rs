@@ -395,6 +395,25 @@ impl Decide<'_> {
         if patch.is_empty() {
             return Err(Error::invalid(Case::PatchEmpty));
         }
+        // A setting's `from` and `period` are resolved first: the grant
+        // judges the fields they write (090).
+        let dated;
+        let patch = match decl.name.as_str() == SETTING_TYPE {
+            true => {
+                let (t, told) = (self.target(decl, key)?, |s: &SettingDecl| {
+                    self.at.sight.setting_visible(s)
+                });
+                dated = super::dated(
+                    (self.ontology, self.at.settings),
+                    decl,
+                    (key, t.live()),
+                    &told,
+                    patch,
+                )?;
+                &dated
+            }
+            false => patch,
+        };
         let patch = self.checked(decl, key, patch)?;
         let t = match reached {
             Some(r) => Target {
@@ -556,6 +575,10 @@ impl Decide<'_> {
         if after.ty.as_str() == SETTING_TYPE && !judged_early {
             let value = after.fields.get("value");
             lakelands_api::seam::check_setting(after.key.as_str(), value, &declared, &shown)?;
+        }
+        if after.ty.as_str() == SETTING_TYPE {
+            let value = after.fields.get("value");
+            super::kept_dated((o, self.at.settings), after.key.as_str(), value, &shown)?;
         }
         // A reference the record computes is judged as a written one, from
         // the record as planned (032). Its key is computed from fields its

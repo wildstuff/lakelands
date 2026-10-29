@@ -234,6 +234,44 @@ fn a_filter_reads_settings_as_of_the_position_read() {
 }
 
 #[test]
+fn a_setting_on_a_date_reads_the_period_that_holds_its_day() {
+    let f = fields(json!({"on": "2026-06-30", "blob": {"a": 1}}));
+    let periods = json!([{"from": "2026-07-01", "value": 19}, {"from": "2027-01-01", "value": 21}]);
+    let mut settings: BTreeMap<String, Value> = [("plain".to_owned(), json!(5))].into();
+    settings.insert("vat".to_owned(), json!(16));
+    settings.insert(lakelands_api::settings::periods_key("vat"), periods);
+    let now = Timestamp::denoted("2026-07-15").unwrap();
+    let scope = RecordScope {
+        fields: &f,
+        meta: None,
+        settings: Some(&settings),
+        now,
+    };
+    let at = |e: &str| eval(&parse(e).unwrap(), &scope);
+    for (e, want) in [
+        ("setting('vat', on)", "16"),
+        ("setting('vat', '2026-07-01')", "19"),
+        ("setting('vat', '2026-07-01T00:00:00Z' - 1s)", "16"),
+        ("setting('vat', '2026-12-31T23:59:59Z')", "19"),
+        ("setting('vat', '2027-01-01')", "21"),
+        ("setting('vat', '9000-01-01')", "21"),
+        ("setting('vat')", "19"),
+        ("setting('plain', '1999-01-01')", "5"),
+    ] {
+        assert_eq!(at(e), Ok(num(want)), "{e}");
+    }
+    assert_eq!(at("setting('vat', missing)"), Ok(Val::Null));
+    assert_eq!(at("setting('gone', on)"), Ok(Val::Null));
+    for e in [
+        "setting('vat', 'soon')",
+        "setting('plain', blob)",
+        "setting('plain', 5)",
+    ] {
+        assert!(matches!(at(e), Err(Case::SettingTakesDate { .. })), "{e}");
+    }
+}
+
+#[test]
 fn a_dotted_path_digs_into_a_json_field_of_the_record() {
     assert!(yes("doc.a = 1", json!({"doc": {"a": 1}})));
     assert!(yes("doc.b is null", json!({"doc": {"a": 1}})));

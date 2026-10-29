@@ -599,6 +599,7 @@ pub fn told(settings: &BTreeMap<String, Value>) -> Vec<SettingValue> {
             value: settings.get(s.key).cloned(),
             default: s.default_value(),
             declared: None,
+            periods: Vec::new(),
         });
     let typed = settings
         .iter()
@@ -608,6 +609,7 @@ pub fn told(settings: &BTreeMap<String, Value>) -> Vec<SettingValue> {
                 value: Some(value.clone()),
                 default: value_of(settings, s, None),
                 declared: None,
+                periods: Vec::new(),
             }),
             _ => None,
         });
@@ -747,3 +749,64 @@ pub fn kept(
 
 #[cfg(test)]
 mod tests;
+
+/// The key under which a map of the lake's settings by key holds, beside a
+/// host's setting, its values from dates after the first: the key and a
+/// NUL, which no record key holds. What hands an expression the lake's
+/// settings hands it both, so `setting('key')` reads the value in force
+/// on a day (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+pub fn periods_key(key: &str) -> String {
+    format!("{key}\0")
+}
+
+/// `settings` with the setting `key` as its record's `fields` hold it:
+/// its value, and beside it its values from dates ([`periods_key`]);
+/// without both where `fields` is `None`, a record retired.
+pub fn hold(
+    settings: &mut BTreeMap<String, Value>,
+    key: &str,
+    fields: Option<&BTreeMap<crate::FieldName, Value>>,
+) {
+    let field = |name: &str| fields.and_then(|f| f.get(name)).filter(|v| !v.is_null());
+    for (k, v) in [
+        (key.to_owned(), field("value")),
+        (periods_key(key), field("periods")),
+    ] {
+        match v {
+            Some(v) => settings.insert(k, v.clone()),
+            None => settings.remove(&k),
+        };
+    }
+}
+
+/// The value in force at `at` of a setting holding `value` from the start
+/// and `periods` from their dates: the last whose `from` is on or before
+/// the day of `at` in UTC (090).
+pub fn in_force(value: Value, periods: Option<&Value>, at: crate::Timestamp) -> Value {
+    let periods = periods.and_then(Value::as_array).into_iter().flatten();
+    let from = |p: &Value| crate::Timestamp::denoted(p.get("from")?.as_str()?).ok();
+    let held = periods
+        .take_while(|p| from(p).is_some_and(|f| f <= at))
+        .last();
+    held.and_then(|p| p.get("value")).cloned().unwrap_or(value)
+}
+
+/// A setting's values from dates, as `describe` tells them: the first from
+/// the start, then each of `periods` (090); none where it holds none.
+pub fn told_periods(
+    value: Option<&Value>,
+    periods: Option<&Value>,
+) -> Vec<crate::describe::SettingPeriod> {
+    let Some(later) = periods.and_then(Value::as_array).filter(|p| !p.is_empty()) else {
+        return Vec::new();
+    };
+    let first = crate::describe::SettingPeriod {
+        from: None,
+        value: value.cloned().unwrap_or(Value::Null),
+    };
+    let dated = later.iter().map(|p| crate::describe::SettingPeriod {
+        from: p.get("from").and_then(Value::as_str).map(str::to_owned),
+        value: p.get("value").cloned().unwrap_or(Value::Null),
+    });
+    std::iter::once(first).chain(dated).collect()
+}

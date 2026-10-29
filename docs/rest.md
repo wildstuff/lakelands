@@ -311,6 +311,13 @@ executor's recorded answer (`"output": null` when it answered `null`);
 while none is recorded it is `409` `unanswered`, and runs nothing
 (`docs/seams.md` §`VerbExecutor`).
 
+A `PUT` of a declared setting, `…/types/sys.setting/records/<key>`,
+carries `from: "<date>"` beside `value` to add a value that holds from
+that date, or `period: "start"` or `period: "<date>"` to correct one,
+never both; it never names `periods`, which the store writes
+(`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`). A
+proposal's `upsert` keeps them as written, resolved at its accept.
+
 A write answers its outcome: `200` with `{"outcome":"applied",…}`, or
 `202` with `{"outcome":"proposed","proposal":…,"why":…}` when it waits
 for review.

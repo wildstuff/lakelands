@@ -945,10 +945,8 @@ impl Lake {
                         }
                     }
                     if ty.as_str() == SETTING_TYPE {
-                        match after.fields.get("value").filter(|_| !after.retired) {
-                            Some(v) => w.settings.insert(key.to_string(), v.clone()),
-                            None => w.settings.remove(key.as_str()),
-                        };
+                        let fields = (!after.retired).then_some(&after.fields);
+                        lakelands_api::settings::hold(&mut w.settings, key.as_str(), fields);
                     }
                     projection.put_record(&after)?;
                     self.index_vectors(&w.ontology, &after)?;

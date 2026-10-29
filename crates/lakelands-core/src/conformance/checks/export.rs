@@ -151,6 +151,12 @@ check!(
 );
 
 check!(
+    SETTING_PERIODS_FROM_21 = a_dated_setting_of_format_20_is_refused_naming_it,
+    "090 (lakelands#1549) and log-format §1.3: a setting's values from dates are of format 21; an export whose last line, of format 20, its hash made right, writes `periods` on `sys.setting`, proposes a write of it with `from`, or declares a call of `setting` on a date, is refused by its verification and its import at that position, naming the format",
+    given
+);
+
+check!(
     IMPORT_ID_FORM = an_import_refuses_an_id_not_of_its_form_naming_its_position,
     "086 and log-format §3: an export whose line carries an `id` that is not 32 lower-case hex digits, its hash made right, is refused on import naming the flaw and the line's position, on every engine, as PostgreSQL keeps an id as its bytes",
     given
@@ -2292,6 +2298,64 @@ async fn a_backup_stopped_among_a_frames_lines_writes_its_run_again_whole(
             "the backup stopped after {what}, run again, restores the lake at its head {want:?}, \
              and it restores {got:?}"
         );
+    }
+    Ok(())
+}
+
+async fn a_dated_setting_of_format_20_is_refused_naming_it(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let scratch = Scratch::new(given.scratch.clone());
+    let l = Lake::of(store.as_ref());
+    let ty = lakelands_api::seam::SETTING_TYPE;
+    super::settings::declared(&l, "rate", "number", json!(1)).await?;
+    let v = 20;
+    for n in 0..3 {
+        let (said, flaw) = match n {
+            0 => {
+                let period = json!({"key": "rate", "from": "2026-07-01", "value": 2});
+                l.upsert(ty, "rate", period).await?;
+                ("a dated setting", Flaw::SettingPeriodsBefore { v })
+            }
+            1 => {
+                let write = ProposedWrite::Upsert {
+                    ty: ty.into(),
+                    key: "rate".into(),
+                    patch: patch(json!({"key": "rate", "from": "2026-08-01", "value": 3})),
+                    opts: Default::default(),
+                };
+                let proposed = l.cat.propose(&l.own, write, "a period".into()).await;
+                proposed.must("proposing a period")?;
+                ("a proposed period", Flaw::SettingMembersBefore { v })
+            }
+            _ => {
+                let at = fixture::derived("at", Number, "setting('rate', due)", &["due"]);
+                let due = fixture::field("due", StorageKind::Date);
+                l.declare(type_decl("dated", vec![due, at])).await?;
+                ("a setting read on a date", Flaw::SettingAtBefore { v })
+            }
+        };
+        let head = store.head().await.must("reading the head")?;
+        let dir = scratch.dir(&format!("dated-{n}"));
+        write(store.as_ref(), &dir).await?;
+        let active = files(&dir)?.pop().unwrap_or_default();
+        let mut lines = lines_of(&dir, &active)?;
+        let last = lines.len() - 1;
+        lines[last] = rehashed(&lines[last], |e| e["v"] = json!(v))?;
+        rewrite(&dir, &active, &lines)?;
+        let verified = export::verify(&dir);
+        let imported = (given.import)(dir, "dated".into(), None, import_seams()).await;
+        let imported = refused(imported, &format!("{said} of format 20"))?;
+        for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
+            ensure!(
+                e.as_ref().and_then(damaged) == Some(&flaw)
+                    && matches!(e.as_ref().and_then(Error::situation),
+                        Some(Situation::Damaged { position: Some(p), .. }) if *p == head),
+                "{door} of an export whose last line is {said} of format 20 is refused at \
+                 {head} as {flaw:?}; it answered {e:?}"
+            );
+        }
     }
     Ok(())
 }

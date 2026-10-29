@@ -195,7 +195,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 743, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 764, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -397,7 +397,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 86] = [
+const SHOWN: [&str; 89] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -484,10 +484,13 @@ const SHOWN: [&str; 86] = [
     "quarantined_removed",
     "removes_quarantined",
     "closed_removed",
+    "setting_dated",
+    "setting_corrected",
+    "setting_at",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 93;
+const LAST: u64 = 96;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -709,6 +712,18 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         "setting_group" => matches!(&event.body, B::RecordUpserted { ty, patch, .. }
             if ty.as_str() == lakelands_api::seam::SETTING_TYPE
                 && patch.get("group").and_then(|g| g.as_str()) == Some("operator")),
+        "setting_dated" | "setting_corrected" => {
+            let value = if what == "setting_dated" {
+                "0.21"
+            } else {
+                "0.2"
+            };
+            let periods = serde_json::json!([{"from": "2027-01-01", "value": value}]);
+            matches!(&event.body, B::RecordUpserted { ty, patch, .. }
+                if ty.as_str() == lakelands_api::seam::SETTING_TYPE
+                    && patch.keys().eq(["periods"]) && patch["periods"] == periods)
+        }
+        "setting_at" => ty.is_some() && line.contains("setting('vat_rate', sold_on)"),
         "delivery" => {
             matches!(&event.body, B::RecordIngested { .. })
                 && event.delivery.as_ref().is_some_and(|d| d == "batch-7")

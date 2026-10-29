@@ -1252,6 +1252,8 @@ catalog! {
         KindSides { expr: String, left: Kind, right: Kind } => "`{expr}` has no meaning: its sides are {left} and {right}",
         /// A number's function over what is no number.
         KindTakesNumber { expr: String, kind: Kind } => "`{expr}` has no meaning: it takes a number, not {kind}",
+        /// A `setting` read on what is no date or instant.
+        KindTakesDate { expr: String, kind: Kind } => "`{expr}` has no meaning: it takes a date or an instant, not {kind}",
         /// A difference of what are not two instants.
         MinusNoMeaning { #[serde(with = "closed")] left: Box<Operand>, #[serde(with = "closed")] right: Box<Operand> } => "{left} minus {right} has no meaning",
         /// A provenance function where no record stands.
@@ -1336,6 +1338,8 @@ catalog! {
         SetUndeclared { set: String } => "in_set('{set}') names an object set that is not declared",
         /// A `setting` given what is no key.
         SettingTakesKey { #[serde(with = "closed")] value: Box<Operand> } => "setting() takes a key, not {value}",
+        /// A `setting` read on a day of what denotes no instant.
+        SettingTakesDate { #[serde(with = "closed")] value: Box<Operand> } => "setting() reads the value in force on a date or an instant, not {value}",
         /// An openCypher statement that does not parse.
         StatementNotParsed { #[serde(with = "closed")] why: Box<Case> } => "the statement does not parse as the openCypher subset Lakelands takes (`MATCH … RETURN …`, or one write): {why}",
         /// A path into a reference's members.
@@ -1804,6 +1808,23 @@ catalog! {
         /// A write of `sys.setting` naming a group other than the one the
         /// store stamps from the setting's declaration.
         SettingGroupStamped => "the store writes a setting's group from its declaration; leave `group` out",
+        /// A value from a date written to a setting no host declares.
+        SettingPeriodUndeclared => "only a setting a host declares holds a value from a date",
+        /// A value from a date written to a setting with no live record.
+        SettingPeriodFirst => "a setting's first value holds from the start; write it without `from`",
+        /// A value added from a date one already holds from.
+        SettingPeriodHeld { from: String } => "a value already holds from {from}; correct it with `period`",
+        /// A correction naming a period the setting does not hold.
+        SettingPeriodUnknown { period: String } => "no value of this setting holds from {period}; name `start` or a date one holds from",
+        /// An undated write of a setting that holds values from dates.
+        SettingPeriodsNamed => "it holds values from dates; name the one to correct with `period`, `start` for the first, or the date a new one holds from with `from`",
+        /// A write of `sys.setting` naming `periods`.
+        SettingPeriodsStamped => "the store writes `periods` from `from` and `period`; leave it out",
+        /// A write of `sys.setting` naming `from` and `period`.
+        SettingFromOrPeriod => "a write adds a value `from` a date or corrects one `period`, not both",
+        /// What the fold keeps reading, without a date, a setting that
+        /// holds values from dates.
+        SettingDatedKept { key: String, name: String } => "`{name}` is kept by the fold and reads `{key}` without a date, which holds values from dates, so it would drift at each period's start: read it as setting('{key}', <date>), or decide it at the read",
         /// A host's setting declared into the store's own group.
         SettingStoreGroup => "the group `store` holds the store's own settings; a host's setting is in a group of its own",
         /// A host's setting declared to hold a reference, whose record

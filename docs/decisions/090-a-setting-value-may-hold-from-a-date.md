@@ -488,10 +488,11 @@ clock's day of every write the suite makes inside one known period.
    none. A lake imported from a format-20 export and opened by a writer
    declares `sys.setting` one version on and writes no other event.
 4. `settings::SETTING_AT_MISFIT`: an `at` that is null answers null. An
-   `at` of the text `soon`, of a number field and of a JSON field
-   clears a derived field and matches no filter, each with
-   `setting_takes_date`, also on a key with no periods. An `at` of a
-   number literal is refused `kind_takes_date` at the declaration.
+   `at` of the text `soon` and of a JSON field clears a derived field
+   and matches no filter, each with `setting_takes_date`, also on a key
+   with no periods. An `at` of a number literal and of a number field,
+   which the kind checker knows to be numbers, is refused
+   `kind_takes_date` at the declaration.
 5. `settings::SETTING_PERIODS_AS_OF_THE_EVENT`: a record written while
    the period from `2026-07-01` held 0.19 keeps 19 after that period is
    corrected to 0.20, live, after a rebuild and after a reopen, and
@@ -505,7 +506,8 @@ clock's day of every write the suite makes inside one known period.
    on a held date, `period` on an unknown date, an undated write on a
    dated record, a patch naming `periods`, both members, and `from` on
    `sort_index.<type>` and on an undeclared key. A first value and a
-   period in one batch land. An unpinned proposed add is resolved at
+   period written one after the other land; a write of `sys.setting`
+   runs alone, never in a batch with another. An unpinned proposed add is resolved at
    its accept, after another add; a pinned one is refused there, as any
    pinned proposal whose record changed.
 7. `host_settings::HOST_SETTING_PERIOD_GRANTS`: a holder of `only

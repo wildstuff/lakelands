@@ -16,7 +16,7 @@ use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{Measure, TypeDecl, ViewDecl};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{VIEW_KEPT_SETTING as SETTING, kept_name, order_name};
-use lakelands_api::write::Declaration;
+use lakelands_api::write::{Declaration, ObjectSetDecl};
 use lakelands_api::{FieldName, Position, RecordKey, Result, Timestamp, TypeName};
 use lakelands_core::expr::aggregate::{Entry, Folds, Grouping, Keeping, KeptFolds, Row};
 use lakelands_core::expr::{self, Place};
@@ -214,6 +214,48 @@ pub(crate) fn names_settings(o: &Ontology, decl: &TypeDecl) -> bool {
 /// fold would keep it.
 pub(crate) fn settings_read(o: &Ontology, decl: &TypeDecl) -> BTreeSet<String> {
     Kept::of(o, decl).map(|k| k.settings).unwrap_or_default()
+}
+
+/// The keys the view `decl`, kept as the fold would keep it, reads as
+/// `setting('<key>')`, without a date.
+pub(crate) fn undated(o: &Ontology, decl: &TypeDecl) -> BTreeSet<String> {
+    let Some(k) = Kept::of(o, decl) else {
+        return BTreeSet::new();
+    };
+    let read = k.sources.iter();
+    let read = read.flat_map(|s| s.filter.iter().chain(s.measures.iter().map(|(_, e)| e)));
+    read.flat_map(|e| e.settings_read(false))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The first view `settings` keeps, then the first set of `o` decided at
+/// the write, that reads `key` without a date: what holds what it decided
+/// until a write moves it, so a period's start would make it drift
+/// (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+pub(crate) fn reading_undated(
+    o: &Ontology,
+    settings: &BTreeMap<String, Value>,
+    key: &str,
+) -> Option<String> {
+    let kept = asking(settings)
+        .filter(|v| lakelands_api::seam::view_kept(settings.get(&format!("{SETTING}{v}"))));
+    let mut views = kept.filter_map(|v| o.ty(&TypeName::from(v)).ok());
+    if let Some(v) = views.find(|d| undated(o, d).contains(key)) {
+        return Some(v.name.to_string());
+    }
+    let mut sets = o.object_sets.values().map(|e| &e.decl);
+    sets.find(|s| set_undated(o, s).contains(key))
+        .map(|s| s.name.clone())
+}
+
+/// The keys the set `s` reads without a date, where it is decided at the
+/// write; none where it is decided at the read.
+pub(crate) fn set_undated(o: &Ontology, s: &ObjectSetDecl) -> BTreeSet<String> {
+    let filter = crate::declare::set_filter(&|n| o.set(n), s, &[]).ok();
+    let filter = filter.filter(|_| !s.at_read());
+    let read = filter.iter().flat_map(|e| e.settings_read(false));
+    read.map(str::to_owned).collect()
 }
 
 /// What a kept record carries beside its group's fields, in [`FOLDS`].

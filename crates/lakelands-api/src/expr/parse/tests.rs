@@ -86,8 +86,36 @@ fn calls_check_their_names_and_arity() {
         "today(1)",
         "known_at(a + 1)",
         "setting(vat_rate)",
+        "setting('vat_rate', d, e)",
     ] {
         assert!(parse(bad).is_err(), "{bad} parsed");
+    }
+}
+
+#[test]
+fn a_setting_on_a_date_takes_no_kind_but_an_instant() {
+    use crate::expr::kind::{Kind, of};
+    use crate::ontology::StorageKind as S;
+    let reads = |f: &[FieldName]| match f[0].as_str() {
+        "n" => Some((S::Number, 1)),
+        "on" => Some((S::Date, 1)),
+        _ => Some((S::Text, 1)),
+    };
+    for at in ["on", "t", "'2026-07-01'", "now() - 1d", "null"] {
+        let e = parse(&format!("setting('rate', {at})")).unwrap();
+        assert_eq!(of(&e, &reads), Ok(None), "{at}");
+    }
+    for (text, kind) in [
+        ("setting('rate', 5)", Kind::Number),
+        ("setting('rate', n)", Kind::Number),
+        ("setting('rate', true)", Kind::Boolean),
+        ("setting('rate', 1d)", Kind::Duration),
+    ] {
+        let expr = text.to_owned();
+        assert_eq!(
+            of(&parse(text).unwrap(), &reads),
+            Err(Case::KindTakesDate { expr, kind })
+        );
     }
 }
 

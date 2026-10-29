@@ -781,3 +781,408 @@ async fn conditions_told(
     told.push(found("bare", "m = 'b'").await);
     Ok((told, fired))
 }
+
+/// Declares the setting `key` of `kind` and sets it to `value`.
+pub(super) async fn declared(l: &Lake, key: &str, kind: &str, value: Value) -> Held {
+    let d = json!({"declare": "setting", "key": key, "type": {"kind": kind}});
+    l.declare_json(d).await?;
+    l.set(key, value).await.map(drop)
+}
+
+check!(
+    SETTING_AT_A_DATE = a_setting_is_read_on_the_day_asked,
+    "090 (lakelands#1549): `setting('key', at)` answers the value of the period that holds `at`'s day: invoices supplied on either side of a period's `from` and written after it was added, or written again, read its two values, one written before it was added keeps the value it read until written again, a `date_time` on the day before reads the first value, and a rebuild and a reopen answer the same",
+    reopens
+);
+
+async fn a_setting_is_read_on_the_day_asked(store: Store, reopen: Reopen) -> Held {
+    let l = Lake::of(store.as_ref());
+    declared(&l, "vat_rate", "decimal", json!("0.16")).await?;
+    let vat = "net * setting('vat_rate', supplied_on)";
+    let fields = vec![
+        field("net", StorageKind::Decimal),
+        field("supplied_on", StorageKind::Date),
+        field("issued", StorageKind::DateTime),
+        derived("vat", StorageKind::Decimal, vat, &["net", "supplied_on"]),
+    ];
+    l.declare(type_decl("invoice", fields)).await?;
+    let issued = "2026-06-30T23:59:59Z";
+    let on = |day: &str| json!({"net": "100", "supplied_on": day, "issued": issued});
+    l.upsert("invoice", "early", on("2026-07-01")).await?;
+    l.upsert("invoice", "again", on("2026-07-01")).await?;
+    let period = json!({"key": "vat_rate", "from": "2026-07-01", "value": "0.19"});
+    l.upsert(lakelands_api::seam::SETTING_TYPE, "vat_rate", period)
+        .await?;
+    l.upsert("invoice", "june", on("2026-06-30")).await?;
+    l.upsert("invoice", "july", on("2026-07-01")).await?;
+    l.upsert("invoice", "again", on("2026-07-01")).await?;
+    let open = vats(store.as_ref()).await?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    let rebuilt = vats(store.as_ref()).await?;
+    let again = reopen(store, Seams::default()).await;
+    let store = again.map_err(|e| Failure::new(format!("opening the lake again failed: {e}")))?;
+    let reopened = vats(store.as_ref()).await?;
+    let want = "again 19, early 16, july 19, june 16; issued at 0.16: 4";
+    ensure!(
+        open == want && rebuilt == want && reopened == want,
+        "`vat_rate` is 0.16 and 0.19 from 2026-07-01; the invoices read `{open}` live, \
+         `{rebuilt}` rebuilt and `{reopened}` reopened, where they read `{want}`"
+    );
+    Ok(())
+}
+
+/// Each invoice's `vat`, and how many a `where` reading the setting on
+/// their `issued` instant finds at 0.16.
+async fn vats(store: &dyn LakeStore) -> Result<String, Failure> {
+    let l = Lake::of(store);
+    let shown = |r: &lakelands_api::Record| {
+        let vat = crate::conformance::fixture::decimal(r.fields.get("vat"));
+        let vat = vat.map(|d| d.normalize().to_string()).unwrap_or_default();
+        format!("{} {vat}", r.key.0)
+    };
+    let all = l.all_found("invoice", Find::default()).await?;
+    let mut all: Vec<String> = all.iter().map(shown).collect();
+    all.sort();
+    let by = find_where("setting('vat_rate', issued) = 0.16");
+    let found = l.all_found("invoice", by).await?.len();
+    Ok(format!("{}; issued at 0.16: {found}", all.join(", ")))
+}
+
+check!(
+    SETTING_ON_THE_CLOCK = a_setting_read_without_a_date_is_read_on_the_clock,
+    "090 (lakelands#1549): `setting('key')` answers the value of the period that holds the clock's day: a derived field written now reads the period in force, and a `where` reading it, as a field computed at the read, answers by each period at a `valid_at` inside it"
+);
+
+async fn a_setting_read_without_a_date_is_read_on_the_clock(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    declared(&l, "rate", "number", json!(1)).await?;
+    let ty = lakelands_api::seam::SETTING_TYPE;
+    for (from, value) in [("2000-01-01", 2), ("9000-01-01", 3)] {
+        let period = json!({"key": "rate", "from": from, "value": value});
+        l.upsert(ty, "rate", period).await?;
+    }
+    let mut read = derived("read", StorageKind::Number, "x + setting('rate')", &["x"]);
+    read.computed_at = Some(lakelands_api::ontology::ComputedAt::Read);
+    let d = derived("d", StorageKind::Number, "x + setting('rate')", &["x"]);
+    let fields = vec![field("x", StorageKind::Number), d, read];
+    l.declare(type_decl("t", fields)).await?;
+    l.upsert("t", "a", json!({"x": 0})).await?;
+    let r = l.read("t", "a").await?;
+    let d = r.fields.get("d").and_then(Value::as_f64);
+    let mut wrong = Vec::new();
+    for (day, want) in [(Some("1999-12-31"), 1), (None, 2), (Some("9000-01-01"), 3)] {
+        let valid_at = day.map(|d| Timestamp::denoted(d).expect("an instant"));
+        for filter in [
+            format!("setting('rate') = {want}"),
+            format!("read = {want}"),
+        ] {
+            let find = Find {
+                filter: Some(filter.as_str().into()),
+                at: ReadAt {
+                    valid_at,
+                    ..ReadAt::default()
+                },
+                ..Find::default()
+            };
+            let n = l.all_found("t", find).await?.len();
+            if n != 1 {
+                wrong.push(format!("`{filter}` at {day:?} found {n}"));
+            }
+        }
+    }
+    ensure!(
+        d == Some(2.0) && wrong.is_empty(),
+        "`rate` is 1, 2 from 2000-01-01 and 3 from 9000-01-01: `d` written now reads {d:?}, \
+         where it reads 2, and a `where` on the setting finds the record by each period's \
+         value at a `valid_at` inside it: {wrong:?}"
+    );
+    Ok(())
+}
+
+check!(
+    SETTING_UNDATED_AS_BEFORE = an_undated_setting_reads_as_before,
+    "090 (lakelands#1549): a setting with no periods answers `setting('k', d)` as `setting('k')` on any day, `describe` tells it no `periods` and its record holds none; a lake of format 20 imported and opened by a writer declares `sys.setting` once more, one version on, and appends no other event of its own",
+    given
+);
+
+async fn an_undated_setting_reads_as_before(store: Store, given: Given) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("t", vec![field("x", StorageKind::Number)]))
+        .await?;
+    l.upsert("t", "a", json!({"x": 1})).await?;
+    declared(&l, "k", "number", json!(5)).await?;
+    let mut wrong = Vec::new();
+    for at in ["'1999-12-31'", "'2026-07-01'", "'9000-01-01'", "now()"] {
+        let same = format!("setting('k', {at}) = setting('k') and setting('k') = 5");
+        if l.all_found("t", find_where(&same)).await?.len() != 1 {
+            wrong.push(at);
+        }
+    }
+    let told = l.describe().await?.settings;
+    let periods = told
+        .into_iter()
+        .find(|s| s.key == "k")
+        .map(|s| s.periods.len());
+    let record = l.read(lakelands_api::seam::SETTING_TYPE, "k").await?;
+    ensure!(
+        wrong.is_empty() && periods == Some(0) && !record.fields.contains_key("periods"),
+        "`k` holds 5 and no periods: `setting('k', d)` differs from `setting('k')` on \
+         {wrong:?}, `describe` tells {periods:?} periods, and the record is {:?}",
+        record.fields
+    );
+    // The kept lake of format 20, imported and opened by a writer.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/20");
+    let lake = lakelands_api::LakeId::from("kept20");
+    let keys = super::erasable::Keys::from_file(&dir.join("keys/kept20.keys.json"), &lake)?;
+    let seams = super::erasable::with(&Arc::new(keys));
+    let imported = (given.import)(dir.clone(), lake, None, seams).await;
+    let imported = imported.map_err(|e| Failure::new(format!("importing lake 20: {e}")))?;
+    // The import opens it for writing: what its release made ends at
+    // the head its answers name.
+    let answers = std::fs::read(dir.join("answers.json")).ok();
+    let answers = answers.and_then(|a| serde_json::from_slice::<Value>(&a).ok());
+    let made = answers.and_then(|a| a["head"].as_u64()).unwrap_or(0) as usize;
+    let ty = lakelands_api::seam::SETTING_TYPE;
+    let setting = |e: &Event| match &e.body {
+        EventBody::Declared {
+            declaration: Declaration::Type(t),
+            version,
+            ..
+        } if t.name.as_str() == ty => Some((
+            *version,
+            t.fields.iter().any(|f| f.name.as_str() == "periods"),
+        )),
+        _ => None,
+    };
+    let log = log_events(imported.store.as_ref()).await?;
+    let (before, after) = log.split_at((made + 1).min(log.len()));
+    let was = before.iter().rev().find_map(setting).map(|(v, _)| v);
+    let own = ["lease_taken", "lake_upgraded"];
+    let tail: Vec<_> = after
+        .iter()
+        .filter(|e| !own.contains(&e.body.kind()))
+        .collect();
+    let kinds: Vec<_> = tail.iter().map(|e| e.body.kind()).collect();
+    let declared = (tail.len() == 1).then(|| setting(tail[0])).flatten();
+    ensure!(
+        declared.is_some() && declared == was.map(|v| (v + 1, true)),
+        "a writer's open of lake 20 appends, beside its lease and upgrade, one `declared` of \
+         `{ty}` with `periods`, one version on from {was:?}: {kinds:?}, {declared:?}"
+    );
+    Ok(())
+}
+
+check!(
+    SETTING_AT_MISFIT = an_at_that_is_no_instant_reads_no_value,
+    "090 (lakelands#1549): an `at` that is null answers null; one that is no instant, a text such as `soon` or a JSON value, is the misfit `setting_takes_date`, on a key with periods and on one with none, so a derived field reading it is cleared and a filter reading it matches nothing; an `at` the checker knows to be a number, a literal or a number field, is refused `kind_takes_date` where it is declared"
+);
+
+async fn an_at_that_is_no_instant_reads_no_value(store: Store) -> Held {
+    use lakelands_api::expr::kind::Kind;
+    let l = Lake::of(store.as_ref());
+    for key in ["rate", "plain"] {
+        declared(&l, key, "number", json!(1)).await?;
+    }
+    let period = json!({"key": "rate", "from": "2000-01-01", "value": 2});
+    l.upsert(lakelands_api::seam::SETTING_TYPE, "rate", period)
+        .await?;
+    let reads = [
+        ("a", "setting('rate', when)"),
+        ("b", "setting('rate', blob)"),
+        ("c", "setting('plain', when)"),
+        ("d", "setting('plain', blob)"),
+    ];
+    let mut fields = vec![
+        field("when", StorageKind::Text),
+        field("blob", StorageKind::Json),
+        field("gone", StorageKind::Date),
+    ];
+    for (name, expr) in reads {
+        fields.push(derived(name, StorageKind::Number, expr, &["when", "blob"]));
+    }
+    l.declare(type_decl("m", fields)).await?;
+    l.upsert("m", "r", json!({"when": "soon", "blob": {"day": 1}}))
+        .await?;
+    let r = l.read("m", "r").await?;
+    let held: Vec<_> = reads.iter().filter_map(|(n, _)| r.fields.get(*n)).collect();
+    let mut matched = Vec::new();
+    for (_, expr) in reads {
+        for filter in [format!("{expr} = 2"), format!("{expr} is null")] {
+            if !l.all_found("m", find_where(&filter)).await?.is_empty() {
+                matched.push(filter);
+            }
+        }
+    }
+    let null = find_where("setting('rate', gone) is null");
+    let null = l.all_found("m", null).await?.len();
+    ensure!(
+        held.iter().all(|v| v.is_null()) && matched.is_empty() && null == 1,
+        "an `at` of `soon` or of a JSON value clears the fields reading it ({held:?}) and \
+         matches no filter ({matched:?}); a null `at` answers null, found {null} times"
+    );
+    // Known to be a number where it is declared.
+    let mut refused = Vec::new();
+    for at in ["5", "n"] {
+        let expr = format!("setting('rate', {at})");
+        let d = derived("d", StorageKind::Number, &expr, &["n"]);
+        let decl = type_decl("bad", vec![field("n", StorageKind::Number), d]);
+        let said = l.try_declare(decl).await;
+        let number = Kind::Number;
+        if !matches!(invalid_case(&said), Some(Case::KindTakesDate { kind, .. }) if *kind == number)
+        {
+            refused.push(format!("{expr}: {said:?}"));
+        }
+    }
+    ensure!(
+        refused.is_empty(),
+        "an `at` known to be a number is refused `kind_takes_date` at the declaration: \
+         {refused:?}"
+    );
+    Ok(())
+}
+
+check!(
+    SETTING_PERIODS_AS_OF_THE_EVENT = a_record_keeps_the_period_of_its_write,
+    "090 (lakelands#1549): a field that read a period keeps what it read after the period is corrected, live, after a rebuild and after a reopen, and reads the correction when written again; a read as of before the correction tells the periods as they stood",
+    reopens
+);
+
+async fn a_record_keeps_the_period_of_its_write(store: Store, reopen: Reopen) -> Held {
+    let l = Lake::of(store.as_ref());
+    declared(&l, "vat_rate", "decimal", json!("0.16")).await?;
+    let ty = lakelands_api::seam::SETTING_TYPE;
+    let period = json!({"key": "vat_rate", "from": "2026-07-01", "value": "0.19"});
+    l.upsert(ty, "vat_rate", period).await?;
+    let vat = "net * setting('vat_rate', supplied_on)";
+    let fields = vec![
+        field("net", StorageKind::Decimal),
+        field("supplied_on", StorageKind::Date),
+        derived("vat", StorageKind::Decimal, vat, &["net", "supplied_on"]),
+    ];
+    l.declare(type_decl("invoice", fields)).await?;
+    let july = json!({"net": "100", "supplied_on": "2026-07-01"});
+    let before = l.upsert("invoice", "july", july.clone()).await?.position();
+    let corrected = json!({"key": "vat_rate", "period": "2026-07-01", "value": "0.20"});
+    l.upsert(ty, "vat_rate", corrected).await?;
+    let vat = async |store: &dyn LakeStore| {
+        let r = Lake::of(store).read("invoice", "july").await?;
+        let d = crate::conformance::fixture::decimal(r.fields.get("vat"));
+        Ok::<_, Failure>(d.map(|d| d.normalize().to_string()))
+    };
+    let live = vat(store.as_ref()).await?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    let rebuilt = vat(store.as_ref()).await?;
+    let again = reopen(store, Seams::default()).await;
+    let store = again.map_err(|e| Failure::new(format!("opening the lake again failed: {e}")))?;
+    let reopened = vat(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("invoice", "july", july).await?;
+    let written = vat(store.as_ref()).await?;
+    let kept = [live, rebuilt, reopened].map(|v| v.unwrap_or_default());
+    ensure!(
+        kept == ["19", "19", "19"] && written.as_deref() == Some("20"),
+        "an invoice written while 0.19 held from 2026-07-01 reads {kept:?} after the period \
+         is corrected to 0.20, live, rebuilt and reopened, and {written:?} written again"
+    );
+    let told = l.cat.describe(&l.own, read_at(Some(before))).await;
+    let told = told.must("describing as of before the correction")?.data;
+    let told = told.settings.into_iter().find(|s| s.key == "vat_rate");
+    let told = told.iter().flat_map(|s| &s.periods);
+    let periods: Vec<_> = told.map(|p| format!("{:?} {}", p.from, p.value)).collect();
+    let want = [r#"None "0.16""#, r#"Some("2026-07-01") "0.19""#];
+    ensure!(
+        periods == want,
+        "as of before the correction, `describe` tells `vat_rate`'s periods {periods:?}, \
+         where they were {want:?}"
+    );
+    Ok(())
+}
+
+check!(
+    SETTING_DATED_NOT_KEPT = what_the_fold_keeps_reads_no_dated_setting_on_the_clock,
+    "090 (lakelands#1549): a key read without a date by a kept view or a set decided at the write takes no first period, refused `setting_dated_kept` naming the view, then the set; a dated key refuses `view_kept` for such a view and the declaration of such a set; a view reading the key on a date is kept and moves at each period added"
+);
+
+async fn what_the_fold_keeps_reads_no_dated_setting_on_the_clock(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    declared(&l, "rate", "number", json!(1)).await?;
+    let fields = vec![
+        field("kind", StorageKind::Text),
+        field("net", StorageKind::Number),
+    ];
+    l.declare(type_decl("line", fields)).await?;
+    let view = |name: &str, rate: &str| {
+        json!({"declare": "type", "name": name, "key": ["kind"],
+            "fields": [{"name": "kind", "type": {"kind": "text"}},
+                {"name": "total", "type": {"kind": "number"}}],
+            "view": {"source": "line", "group_by": ["kind"],
+                "measures": [{"name": "total", "expr": format!("sum(round(net * {rate}))")}]}})
+    };
+    l.declare_json(view("book", "setting('rate')")).await?;
+    l.set("view_kept.book", json!(true)).await?;
+    let hi = object_set_on("hi", "line", "net * setting('rate') > 5");
+    l.declare_as(hi.clone(), "declaring `hi`").await?;
+    l.upsert("line", "a", json!({"kind": "k", "net": 3}))
+        .await?;
+    let ty = lakelands_api::seam::SETTING_TYPE;
+    let add = |from: &str, value: i64| json!({"key": "rate", "from": from, "value": value});
+    let dated = |name: &str| Case::SettingDatedKept {
+        key: "rate".into(),
+        name: name.into(),
+    };
+    let mut wrong = Vec::new();
+    for name in ["book", "hi"] {
+        let head = store.head().await.must("reading the head")?;
+        let said = try_upsert(l.cat.as_ref(), &l.own, ty, "rate", add("2026-07-01", 2)).await;
+        let on_from = matches!(refused_on(&said), Some(("from", _)));
+        if !on_from || invalid_case(&said) != Some(&dated(name)) {
+            wrong.push(format!("naming {name}: {said:?}"));
+        }
+        head_unmoved(store.as_ref(), head, "a first period read on the clock").await?;
+        l.set("view_kept.book", json!(false)).await?;
+    }
+    let withdraw = json!({"declare": "withdraw", "kind": "object_set", "name": "hi"});
+    l.declare_json(withdraw).await?;
+    l.upsert(ty, "rate", add("2026-07-01", 2)).await?;
+    let book = json!({"key": "view_kept.book", "value": true});
+    let kept = try_upsert(l.cat.as_ref(), &l.own, ty, "view_kept.book", book).await;
+    let declared = l.cat.declare(&l.own, hi).await;
+    for (what, said, name) in [
+        ("view_kept", format!("{kept:?}"), "book"),
+        ("hi", format!("{declared:?}"), "hi"),
+    ] {
+        if !said.contains("SettingDatedKept") || !said.contains(&format!("\"{name}\"")) {
+            wrong.push(format!("{what}: {said}"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a key read on the clock by a kept view or a set decided at the write is refused \
+         `setting_dated_kept`, naming each; dated, it refuses `view_kept` and the set's \
+         declaration: {wrong:?}"
+    );
+    // On a date, kept, moving at each period added.
+    let on = "setting('rate', '2026-08-01')";
+    l.declare_json(view("dated", on)).await?;
+    l.set("view_kept.dated", json!(true)).await?;
+    let mut totals = Vec::new();
+    for (from, value) in [(None, 0), (Some("2026-07-15"), 4), (Some("2026-08-01"), 3)] {
+        if let Some(from) = from {
+            l.upsert(ty, "rate", add(from, value)).await?;
+        }
+        let r = l.read("dated", "k").await?;
+        totals.push(r.fields.get("total").and_then(Value::as_f64));
+    }
+    let dated = "dated".into();
+    let told = l
+        .cat
+        .describe_type(&l.own, &dated, Default::default())
+        .await;
+    let told = told.must("describing `dated`")?.data.lifecycle.kept;
+    ensure!(
+        totals == [Some(6.0), Some(12.0), Some(9.0)]
+            && matches!(told, Some(lakelands_api::describe::Kept::Kept)),
+        "a view reading `{on}` is kept ({told:?}) and moves at each period added: {totals:?}"
+    );
+    Ok(())
+}

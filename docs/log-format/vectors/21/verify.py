@@ -531,6 +531,14 @@ SHOWS = {
     "setting_group": shows("a `sys.setting` record carrying the `group` stamped from its declaration")(
         lambda e: e["body"]["kind"] == "record_upserted" and e["body"]["type"] == "sys.setting"
         and e["body"]["patch"].get("group") == "operator"),
+    "setting_dated": shows("a `sys.setting` record holding a period from a date, `periods` whole and no `from` or `period`")(
+        lambda e: e["body"]["kind"] == "record_upserted" and e["body"]["type"] == "sys.setting"
+        and e["body"]["patch"] == {"periods": [{"from": "2027-01-01", "value": "0.21"}]}),
+    "setting_corrected": shows("the correction of a period, `periods` whole again")(
+        lambda e: e["body"]["kind"] == "record_upserted" and e["body"]["type"] == "sys.setting"
+        and e["body"]["patch"] == {"periods": [{"from": "2027-01-01", "value": "0.2"}]}),
+    "setting_at": shows("a declared type whose derived field calls `setting` with a date")(
+        lambda e: "net * setting('vat_rate', sold_on)" in derived(e)),
     "delivery": shows("an ingest in the delivery its caller named, its id made without it")(
         lambda e: e["body"]["kind"] == "record_ingested" and e.get("delivery") == "batch-7" and ingest_id(e) == e["id"]),
     "withdrawn": shows("a declared withdrawal of a trigger, at the version after the one it withdraws")(
