@@ -833,9 +833,11 @@ moment before, and opens a moment later.
   such steps for both engines (0.21.0's projection holds an edge for
   each key of an array a relation's `via` field holds,
   `docs/decisions/091-a-field-carried-relation-over-an-array-of-keys-yields-one-edge-per-key.md`): the first open of either rebuilds the projection,
-  about 8 s per 100 000 records on SQLite and 47 s on
-  PostgreSQL (at 1 000 000 records 80 s and 7.5 min; one event a
-  record, a release build). `lakelands upgrade` runs that open at a moment
+  for a lake of 100 000 records with arrays of keys the
+  upgrade drill measured the first writer's open at 19.9 s on SQLite,
+  59.2 s on PostgreSQL and 68.1 s on PostgreSQL with pgvector, and the
+  second open at 0.008 s and about 0.06 s; a lake of another size or
+  shape is not extrapolated from these. `lakelands upgrade` runs that open at a moment
   the operator picks, also for a lake already in this release's log
   format, and `lakelands upgrade --check` names the layout it found.
 - **Build ahead, and the upgrade folds only the tail.** The upgrade
