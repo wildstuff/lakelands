@@ -1080,8 +1080,35 @@ pub(crate) fn rebuild_sorted(
     }
     // A page of the type at a time, so the pass holds a page, not the type.
     let (mut after, mut rows) = (String::new(), 0);
+    // PROBE (lakelands#848, throwaway): PROBE_848=analyze runs ANALYZE over
+    // the heads first; PROBE_848=explain|analyze prints the plan of some pages.
+    let probe = std::env::var("PROBE_848").unwrap_or_default();
+    if probe == "analyze" {
+        let t0 = std::time::Instant::now();
+        db.batch(&format!("ANALYZE {}, {}", names.t("records_head"), names.t("records")))?;
+        eprintln!("PROBE analyze mid-transaction: {:?}", t0.elapsed());
+    }
+    let mut npage = 0u32;
+    let t_loop = std::time::Instant::now();
     loop {
+        if !probe.is_empty() && [0, 1, 20, 40].contains(&npage) {
+            let q = format!(
+                "EXPLAIN (ANALYZE, BUFFERS) SELECT {RECORD} FROM {} WHERE h.ty = '{}' AND h.key > '{}' ORDER BY h.key LIMIT {}",
+                RECORDS.at_head(names), ty.as_str(), after, REBUILD_PAGE
+            );
+            let t0 = std::time::Instant::now();
+            let plan = db.simple(&q)?;
+            eprintln!("PROBE page {npage} explain ({:?} incl. run):", t0.elapsed());
+            for l in plan.into_iter().flatten() {
+                eprintln!("PROBE   {l}");
+            }
+        }
+        let t_page = std::time::Instant::now();
         let page = head_records_after(db, names, ty, &after, REBUILD_PAGE)?;
+        if !probe.is_empty() {
+            eprintln!("PROBE page {npage} read: {:?} ({} rows)", t_page.elapsed(), page.len());
+        }
+        npage += 1;
         let Some(last) = page.last() else { break };
         after = last.key.to_string();
         let (mut fields, mut keys, mut sort_keys) = (Vec::new(), Vec::new(), Vec::new());
@@ -1104,6 +1131,11 @@ pub(crate) fn rebuild_sorted(
         if (page.len() as i64) < REBUILD_PAGE {
             break;
         }
+    }
+    if !probe.is_empty() {
+        eprintln!("PROBE rebuild loop total: {:?}, {npage} pages", t_loop.elapsed());
+        let stat = db.simple("SELECT name || ' g=' || generic_plans || ' c=' || custom_plans FROM pg_prepared_statements WHERE statement LIKE '%records_head h%' AND statement LIKE '%LIMIT $3%'")?;
+        eprintln!("PROBE prepared plans: {stat:?}");
     }
     set_sorted(db, names, ty, Some(through)).map(|()| rows)
 }

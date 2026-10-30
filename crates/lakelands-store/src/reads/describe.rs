@@ -52,10 +52,12 @@ impl<'a> Reader<'a> {
 
     /// `describe_type`, as `asked` asked it.
     pub fn describe_type(&self, asked: &Principal, ty: &TypeName) -> Result<TypeDescription> {
+        let t0 = std::time::Instant::now();
         let missing = Missing::Type { name: ty.clone() };
         let mut t = (self.sight.describe_type(ty)).ok_or(Error::NotFound { missing })?;
         self.name_sorted(&mut t);
         self.renamed_since(asked, std::slice::from_mut(&mut t))?;
+        lakelands_core::probe::add(&lakelands_core::probe::DESCRIBE_NS, t0);
         Ok(t)
     }
 
@@ -95,6 +97,12 @@ impl<'a> Reader<'a> {
     /// the principal sees and where it is told the setting; and for a view
     /// whether it is kept, as its `view_kept.<type>` setting asks.
     fn name_sorted(&self, t: &mut TypeDescription) {
+        let t0 = std::time::Instant::now();
+        self.name_sorted_inner(t);
+        lakelands_core::probe::add(&lakelands_core::probe::NAME_SORTED_NS, t0);
+    }
+
+    fn name_sorted_inner(&self, t: &mut TypeDescription) {
         let Ok(decl) = self.shape.ontology.ty(&t.name) else {
             return;
         };
@@ -113,7 +121,27 @@ impl<'a> Reader<'a> {
         // What the lake chose by itself, told like the pages it sorted
         // whole: to a holder of `schema` who reads the field, and at the
         // head only, where it is kept (041).
-        let chosen = self.view.chosen(&t.name).ok().filter(|_| self.at_head);
+        let t0 = std::time::Instant::now();
+        // PROBE_MEMO=1 (throwaway): the head's chosen read is memoized per type, never dropped.
+        static MEMO: std::sync::Mutex<Option<std::collections::HashMap<TypeName, lakelands_api::engine::Chosen>>> =
+            std::sync::Mutex::new(None);
+        let chosen = if std::env::var_os("PROBE_MEMO").is_some() && self.at_head {
+            let hit = lakelands_core::lock(&MEMO).as_ref().and_then(|m| m.get(&t.name).cloned());
+            match hit {
+                Some(c) => Some(c),
+                None => {
+                    let c = self.view.chosen(&t.name).ok();
+                    if let Some(c) = &c {
+                        lakelands_core::lock(&MEMO).get_or_insert_default().insert(t.name.clone(), c.clone());
+                    }
+                    c
+                }
+            }
+        } else {
+            self.view.chosen(&t.name).ok().filter(|_| self.at_head)
+        };
+        lakelands_core::probe::add(&lakelands_core::probe::CHOSEN_NS, t0);
+        lakelands_core::probe::inc(&lakelands_core::probe::CHOSEN_N);
         let chosen = chosen.unwrap_or_default();
         let schema = self.sight.who().grants.schema;
         let reads = |f: &&FieldName| schema && self.sight.reads(&t.name, f) && seen(f);
@@ -123,7 +151,9 @@ impl<'a> Reader<'a> {
         // once it is indexed: its pages count every principal's reads and
         // its time grows with records a reader may not be answered
         // (lakelands#1029).
+        let t1 = std::time::Instant::now();
         let tally = lakelands_core::lock(&self.lake.sorted_whole).clone();
+        lakelands_core::probe::add(&lakelands_core::probe::TALLY_NS, t1);
         let schema = self.sight.who().grants.schema;
         let told = |f: &FieldName| {
             schema

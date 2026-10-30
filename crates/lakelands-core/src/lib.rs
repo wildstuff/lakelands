@@ -38,6 +38,7 @@ pub mod graph;
 pub mod links;
 pub mod log;
 pub mod names;
+pub mod probe;
 pub(crate) mod rights;
 #[doc(hidden)]
 pub mod shape;

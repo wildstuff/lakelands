@@ -57,7 +57,14 @@ impl<C> Pool<C> {
     /// size are open, else the first one given back.
     pub fn take(&self, open: impl FnOnce() -> Result<C>) -> Result<Taken<'_, C>> {
         let full = |s: &mut Slots<C>| s.shut || (s.idle.is_empty() && s.taken >= self.size);
-        let waited = self.given.wait_while(lock(&self.slots), full);
+        let t0 = std::time::Instant::now();
+        crate::probe::inc(&crate::probe::POOL_TAKES);
+        let mut g = lock(&self.slots);
+        if full(&mut g) {
+            crate::probe::inc(&crate::probe::POOL_WAITS);
+        }
+        let waited = self.given.wait_while(g, full);
+        crate::probe::add(&crate::probe::POOL_WAIT_NS, t0);
         let mut slots = waited.unwrap_or_else(PoisonError::into_inner);
         slots.taken += 1;
         let (pool, conn) = (self, slots.idle.pop());

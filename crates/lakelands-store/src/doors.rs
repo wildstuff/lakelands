@@ -223,6 +223,7 @@ fn reading<T>(
     // its shape and in its grants, or in neither. A search at the head is
     // read at the position its rankings were read at.
     let head = ranks.flatten();
+    let probe0 = std::time::Instant::now();
     let began = lake.timer();
     let view = lake.engine.view(at.as_of.or(head))?;
     let shape = lake.shape(view.as_ref())?;
@@ -246,6 +247,7 @@ fn reading<T>(
     };
     let mut r = Reader::open(lake, &sight, (at, clock), view, shape.clone())?;
     (r.head, r.held_now) = (at_head, held_now);
+    lakelands_core::probe::add(&lakelands_core::probe::READING_NS, probe0);
     let data = f(&r)?;
     lake.since(Spread::Read, began);
     Ok(Reply {
