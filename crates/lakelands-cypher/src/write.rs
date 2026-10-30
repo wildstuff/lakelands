@@ -443,6 +443,7 @@ pub(crate) async fn run(
     let expect = |create: bool| WriteOpts {
         expected_version: create.then_some(Version(0)),
         idempotency_key: None,
+        defer_computed_fields: false,
     };
     match op {
         Op::Put { node, create, set } => {

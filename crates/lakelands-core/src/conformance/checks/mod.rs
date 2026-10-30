@@ -780,6 +780,8 @@ pub const ALL: &[Check] = &[
     embeddings::EMBED_BESIDE_BACKLOG,
     embeddings::EMBED_ORPHAN_SWEEP,
     embeddings::EMBED_SWEEP_REKEYED,
+    embeddings::EMBED_DEFERRED,
+    embeddings::EMBED_DEFERRED_UPDATE,
     rebuild::INDEXES_AFTER_REBUILD,
     rebuild::ONE_JSON_FORM,
     ingest::DUPLICATE_ACROSS_WINDOWS,

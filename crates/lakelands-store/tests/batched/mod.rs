@@ -315,6 +315,7 @@ impl Writes {
         let opts = WriteOpts {
             expected_version,
             idempotency_key,
+            defer_computed_fields: false,
         };
         (WriteContext::default(), who, write, opts)
     }
@@ -352,6 +353,7 @@ impl Writes {
                     let opts = WriteOpts {
                         expected_version: None,
                         idempotency_key,
+                        defer_computed_fields: false,
                     };
                     (ctx, who, write, opts)
                 };
@@ -720,6 +722,7 @@ pub fn refused(lake: &str, key: &str) -> Asked {
     let opts = WriteOpts {
         expected_version: Some(Version(7)),
         idempotency_key: None,
+        defer_computed_fields: false,
     };
     (ctx, who, write, opts)
 }
@@ -729,6 +732,7 @@ pub fn keyed((ctx, who, write, _): Asked, key: &str) -> Asked {
     let opts = WriteOpts {
         expected_version: None,
         idempotency_key: Some(IdempotencyKey::from(key)),
+        defer_computed_fields: false,
     };
     (ctx, who, write, opts)
 }

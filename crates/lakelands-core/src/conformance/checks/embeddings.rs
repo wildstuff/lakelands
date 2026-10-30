@@ -1721,3 +1721,158 @@ async fn vector_coverage_counts_embedded_and_due_records_at_the_head(store: Stor
     );
     Ok(())
 }
+
+check!(
+    EMBED_DEFERRED = a_write_that_defers_its_computed_fields_answers_before_them,
+    "022, extended: a write made with `defer_computed_fields` answers at its own position while its embedding is being made: there its record reads with its text and a `vec` holding no value and no error, a lexical search finds it at once and a vector search leaves it out without failing; a task of the lake's own then makes the embedding, no later write asked, and the vector search finds it; a write without the option answers with its vector filled",
+    embedding
+);
+
+check!(
+    EMBED_DEFERRED_UPDATE =
+        a_record_written_again_while_its_deferred_embedding_is_made_ends_with_its_latest_text,
+    "022, extended: a record written again with `defer_computed_fields` holds no vector of its earlier text while its new text's embedding is made, and one written again while that embedding is in flight ends with the vector of its latest text, though that vector was recorded before the earlier text's answer",
+    embedding
+);
+
+/// `note`, whose searchable `title` its `vec` embeds.
+fn quays() -> lakelands_api::ontology::TypeDecl {
+    let vec = embedding("vec", 2, &["title"], EMBED_MODEL);
+    type_decl("note", vec![searchable("title"), vec])
+}
+
+/// Upsert `fields` into the note `key` as the owner, its computed fields
+/// deferred.
+async fn deferred(l: &Lake, key: &str, fields: Value) -> Result<Outcome, Failure> {
+    let opts = WriteOpts {
+        defer_computed_fields: true,
+        ..WriteOpts::default()
+    };
+    let (ty, key) = (TypeName::from("note"), RecordKey::from(key));
+    let fut = l.cat.upsert(&l.own, &ty, &key, patch(fields), opts);
+    fut.await
+        .must(&format!("upserting `note` `{key}` deferred"))
+}
+
+/// The keys a search of `note` by `mode` ranks for the owner.
+async fn ranked(l: &Lake, mode: SearchMode) -> Result<Vec<String>, Failure> {
+    let search = Search {
+        ty: "note".into(),
+        ..doc_search(mode)
+    };
+    let got = l
+        .cat
+        .search(&l.own, search)
+        .await
+        .must("searching `note`")?;
+    Ok((got.data.hits.iter())
+        .map(|h| h.record.key.as_str().to_owned())
+        .collect())
+}
+
+/// A lexical search of `note` for "quay", and a vector search along (1, 0).
+fn quay_searches() -> [SearchMode; 2] {
+    let lexical = SearchMode::Lexical {
+        text: "quay".into(),
+        fields: None,
+        text_fields: None,
+    };
+    [lexical, SearchMode::vector("vec", vec![1.0, 0.0])]
+}
+
+async fn a_write_that_defers_its_computed_fields_answers_before_them(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(quays()).await?;
+    let plain = l
+        .upsert("note", "n0", json!({"title": "Plain quay"}))
+        .await?;
+    let note = TypeName::from("note");
+    let got = l
+        .cat
+        .get(&l.own, &note, get_at("n0", Some(plain.position())));
+    let vec = value(&got.await.must("reading `n0` at its answer")?.data, "vec").cloned();
+    ensure!(
+        is_east(&vec),
+        "a write without `defer_computed_fields` answers once its embedding is recorded: \
+         as of its answer `n0`'s `vec` reads (1, 0); it reads {vec:?}"
+    );
+    let text = "held-deferred quay";
+    let at = deferred(&l, "n1", json!({"title": text})).await?.position();
+    let got = l.cat.get(&l.own, &note, get_at("n1", Some(at)));
+    let r = got.await.must("reading `n1` at its answer")?.data;
+    let (vec, error) = (
+        value(&r, "vec"),
+        r.meta.get("vec").and_then(|m| m.error.clone()),
+    );
+    ensure!(
+        value(&r, "title") == Some(&json!(text))
+            && vec.is_none_or(Value::is_null)
+            && error.is_none(),
+        "as of its answer, a deferred write's record reads with its title and a `vec` \
+         holding no value and no error, its embedding held at the backend; it reads \
+         {:?}, `vec` {vec:?}, error {error:?}",
+        value(&r, "title")
+    );
+    let [lexical, along] = quay_searches();
+    let (found, near) = (ranked(&l, lexical).await?, ranked(&l, along.clone()).await?);
+    ensure!(
+        found.contains(&"n1".to_owned()) && near == ["n0"],
+        "while its embedding is made, a lexical search finds `n1` and a vector search ranks \
+         `n0` alone; they ranked {found:?} and {near:?}"
+    );
+    release(text);
+    let c = settled(store.as_ref()).await?;
+    let near = ranked(&l, along).await?;
+    ensure!(
+        c.due == 0
+            && near.contains(&"n1".to_owned())
+            && is_east(&vec_of(store.as_ref(), "n1").await?),
+        "the lake makes a deferred embedding with no later write: `vec` of `n1` reads \
+         (1, 0) and the vector search finds it; {} records wait, it ranked {near:?}",
+        c.due
+    );
+    Ok(())
+}
+
+async fn a_record_written_again_while_its_deferred_embedding_is_made_ends_with_its_latest_text(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(quays()).await?;
+    let (stale, latest) = ("held-stale pier", "north pier");
+    // The latest text's vector is recorded first, by another note.
+    l.upsert("note", "n0", json!({"title": latest})).await?;
+    l.upsert("note", "n1", json!({"title": "Plain pier"}))
+        .await?;
+    deferred(&l, "n1", json!({"title": stale})).await?;
+    let earlier = vec_of(store.as_ref(), "n1").await?;
+    ensure!(
+        earlier.as_ref().is_none_or(Value::is_null),
+        "`n1` written again with its embedding deferred holds no vector of its earlier text \
+         meanwhile; it reads {earlier:?}"
+    );
+    ensure!(
+        came(|| async { embedded(stale) == 1 }).await,
+        "the deferred embedding of `n1` never reached the backend"
+    );
+    let at = deferred(&l, "n1", json!({"title": latest}))
+        .await?
+        .position();
+    release(stale);
+    let recorded = || async { store.head().await.is_ok_and(|h| h > at) };
+    ensure!(
+        came(recorded).await,
+        "the answer for {stale:?} was never recorded"
+    );
+    let got = vec_of(store.as_ref(), "n1").await?;
+    let north = got
+        .as_ref()
+        .and_then(Value::as_array)
+        .map(|a| a.iter().map(Value::as_f64).collect::<Vec<_>>());
+    ensure!(
+        north == Some(vec![Some(0.0), Some(1.0)]),
+        "`n1` ends with the vector of its latest text {latest:?}, (0, 1), not that of \
+         {stale:?}, whose answer was recorded after; it reads {got:?}"
+    );
+    Ok(())
+}

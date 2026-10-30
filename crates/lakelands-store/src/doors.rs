@@ -268,8 +268,13 @@ impl Doors {
         write: writes::Write,
         opts: WriteOpts,
     ) -> Result<Outcome> {
-        self.write_settled(who, move |c| c.record(&write, opts))
-            .await
+        let defer = opts.defer_computed_fields;
+        let (outcome, own) = self
+            .write(who, move |c| owing(|| c.record(&write, opts)))
+            .await?;
+        let own = self.deferred(defer, own);
+        let by = MadeDue::Call { keyed: false };
+        self.handed(who, ((outcome, None), own), by).await
     }
 
     /// What the bound reranker scores a window at, by key. A read: nothing
@@ -400,6 +405,7 @@ impl Doors {
     pub(crate) async fn records(&self, writes: Vec<Asked>) -> Vec<Result<Outcome>> {
         let (mut jobs, mut asked) = (Vec::new(), Vec::new());
         for (context, who, write, opts) in writes {
+            let defer = opts.defer_computed_fields;
             let (answer, rx) = tokio::sync::oneshot::channel();
             let same = same_lake(&self.lake, &who).map(|()| {
                 let who = who.clone();
@@ -411,20 +417,23 @@ impl Doors {
                     answer,
                 });
             });
-            asked.push((who, same.map(|()| rx)));
+            asked.push((who, defer, same.map(|()| rx)));
         }
         if !jobs.is_empty() {
             exec::records(&self.lake, jobs);
         }
         let mut answers = Vec::new();
-        for (who, rx) in asked {
+        for (who, defer, rx) in asked {
             let answer = match rx {
                 Ok(rx) => rx.await.unwrap_or_else(|_| Err(exec::halted(true))),
                 Err(e) => Err(e),
             };
             let by = MadeDue::Call { keyed: false };
             answers.push(match answer {
-                Ok((outcome, own)) => self.handed(&who, ((outcome, None), own), by).await,
+                Ok((outcome, own)) => {
+                    let own = self.deferred(defer, own);
+                    self.handed(&who, ((outcome, None), own), by).await
+                }
                 Err(e) => Err(e),
             });
         }
@@ -441,6 +450,17 @@ impl Doors {
         let asked = (self.context.clone(), who.clone(), write, opts);
         let mut answers = self.records(vec![asked]).await;
         answers.remove(0)
+    }
+
+    /// What a write waits for of what it made due: nothing where it was
+    /// made with `defer_computed_fields`, whose calls a task of the lake's
+    /// own makes ([`crate::backed::apart`]).
+    fn deferred(&self, defer: bool, own: BTreeSet<Position>) -> BTreeSet<Position> {
+        if !defer {
+            return own;
+        }
+        crate::backed::apart(&self.lake, own);
+        BTreeSet::new()
     }
 
     /// Make the calls of backed functions the write made due, and answer
@@ -489,15 +509,22 @@ impl Doors {
     /// hand-out and the recording of the answer, run in a task of its own
     /// that the caller awaits: a caller who goes away, as a request whose
     /// client closed its connection does, does not stop it between the
-    /// call's append and its answer's recording.
-    async fn detached<F>(&self, who: &Principal, by: MadeDue, f: F) -> Result<Outcome>
+    /// call's append and its answer's recording. With `defer`, one that
+    /// hands nothing out waits for none of its calls ([`Self::deferred`]).
+    async fn detached<F>(
+        &self,
+        who: &Principal,
+        (by, defer): (MadeDue, bool),
+        f: F,
+    ) -> Result<Outcome>
     where
         F: FnOnce(&Call<'_>) -> Result<(Outcome, Option<External>)> + Send + 'static,
     {
         let (doors, who) = (self.clone(), who.clone());
         let task = tokio::spawn(async move {
-            let made = doors.write(&who, |c| owing(|| f(c))).await?;
-            doors.handed(&who, made, by).await
+            let ((outcome, external), own) = doors.write(&who, |c| owing(|| f(c))).await?;
+            let own = doors.deferred(defer && external.is_none(), own);
+            doors.handed(&who, ((outcome, external), own), by).await
         });
         task.await.unwrap_or_else(|e| Err(exec::stopped(&e)))
     }
@@ -715,8 +742,9 @@ impl Catalog for Doors {
         let by = MadeDue::Call {
             keyed: opts.idempotency_key.is_some(),
         };
+        let defer = opts.defer_computed_fields;
         let call = move |c: &Call<'_>| c.call(&verb, key.as_ref(), payload, opts);
-        self.detached(who, by, call).await
+        self.detached(who, (by, defer), call).await
     }
 
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
@@ -863,7 +891,7 @@ impl Catalog for Doors {
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         let (p, asked) = (proposal.clone(), who.clone());
         let accept = move |c: &Call<'_>| c.accept(&p, &asked, None);
-        self.detached(who, MadeDue::Accepted, accept).await
+        self.detached(who, (MadeDue::Accepted, false), accept).await
     }
 
     async fn accept_planned(
@@ -874,7 +902,7 @@ impl Catalog for Doors {
     ) -> Result<Outcome> {
         let (p, asked, id) = (proposal.clone(), who.clone(), plan_id.to_owned());
         let accept = move |c: &Call<'_>| c.accept(&p, &asked, Some(&id));
-        self.detached(who, MadeDue::Accepted, accept).await
+        self.detached(who, (MadeDue::Accepted, false), accept).await
     }
 
     async fn reject(

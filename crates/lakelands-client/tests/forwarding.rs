@@ -269,6 +269,7 @@ fn opts(key: Option<&str>) -> WriteOpts {
     WriteOpts {
         expected_version: None,
         idempotency_key: key.map(Into::into),
+        defer_computed_fields: false,
     }
 }
 

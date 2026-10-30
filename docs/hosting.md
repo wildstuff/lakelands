@@ -1506,6 +1506,18 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   `model` clears every vector of the type: until the sweep has embedded
   them again, the type's records are out of vector search, and
   `vector_coverage` counts them due.
+- **A write may answer before its embeddings (`defer_computed_fields`).**
+  `WriteOpts { defer_computed_fields: true, .. }` makes a write answer
+  once it is in the log and folded, at its own position; the lake makes
+  its embeddings and function calls after, in a task of its own, on the
+  same lane and in the same batches as above. Until then the field holds
+  no value and no `error`: `get`, `find` and a lexical search find the
+  record at once, a vector search leaves it out without failing, and no
+  vector of an earlier text shows. A record written again meanwhile ends
+  with the output of its latest text. What the task leaves (the lake
+  closed, a batch failed) is made by later writes as above, or at the
+  next open for embeddings. Off by default; REST, MCP and the client do
+  not carry it. Wait on `vector_coverage` to know the vectors are made.
 - **A text the embedding backend refuses fails alone (lakelands#658).**
   The store sends the texts due for one model in batches of up to 64.
   A backend that answers `Invalid` refuses the request for what it
