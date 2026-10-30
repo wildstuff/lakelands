@@ -14,7 +14,8 @@ wrong. It carries:
 
 A host moves from `0.X.Y` to `0.X.Y+1` without changing its code, its
 configuration or its lakes. Its "Changes a host must make" are none, and
-its log format is the one `0.X.0` writes.
+its log format is the one `0.X.0` writes. The one case where this does
+not hold is an item the operator admits by an exception (below).
 
 A fix takes only what its defect needs. A security fix that cannot be
 made without an item a host sees, such as a new refusal kind, still ships
@@ -66,9 +67,19 @@ tag on `main` while `develop` holds the next minor, is
 
 A host pins Lakelands as `0.X`, so it takes every patch without asking.
 A patch must therefore never ask anything of it: no new code to write,
-no new behaviour to learn, no lake to convert. A fix that waits for a
+no new behaviour to learn, no lake to convert, except in an exception
+the operator names. A fix that waits for a
 minor release waits behind new work it does not need. A security fix,
 above all, ships when it is ready, as `SECURITY.md` promises.
+
+An exception exists because an item can be small, additive and needed
+by a host now, while the minor release that would carry it is a round
+away; making that host wait, or carry a fork, costs more than one named
+line of mechanical source change for the hosts that write the struct out
+in full. The bounds above keep the cost there: a stored lake, the log
+format and every existing answer stay as the patch's `0.X.0` left them,
+so a host that takes the patch and does not use the item changes nothing
+but that line.
 
 ## What it is not
 

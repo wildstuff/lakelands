@@ -310,7 +310,9 @@ The walk's page lists every call and the answer it must give.
 format, per-field provenance, positions on every answer, the engine
 contract and the seams. Each later release built on them; what it adds
 is in its notes on the releases page, and what comes next is on the
-milestones. `0.21.0` built what the status block above lists. `0.20.0`
+milestones. `0.21.0` built what the status block above lists, and
+`0.21.1` fixed lakelands#1572 and added `defer_computed_fields`
+(lakelands#1576). `0.20.0`
 built the openCypher subset as an MCP read tool beside `query`, PageRank
 and the cheapest walk, patterns that branch and join, a change planned
 before it acts, sets decided at the read, a field hidden on the records
