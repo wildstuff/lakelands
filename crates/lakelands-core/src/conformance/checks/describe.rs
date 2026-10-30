@@ -13,6 +13,7 @@
 
 use lakelands_api::describe::{FieldDescription, LakeDescription, TypeDescription};
 use lakelands_api::ontology::{EmbedDecl, FunctionInput, TriggerDecl};
+use lakelands_api::read::Order;
 use lakelands_api::write::{FunctionDecl, ObjectSetDecl};
 
 use crate::conformance::backing::EMBED_MODEL;
@@ -27,7 +28,7 @@ check!(
 
 check!(
     FOLLOWS_WHAT_CHANGES_IT = a_description_at_the_head_follows_what_changes_it,
-    "009 (lakelands#1575): a description at the head, asked after each of many record writes, is never behind a write before it, and the next one after a declaration, a setting or another grant set tells it: the declared field, the order index the setting asks, and, to another grant set, on another id or the same, only what it is shown, the first grant set still told its own; the lake's description tells a type declared between two of them"
+    "009 (lakelands#1575): a description at the head, asked after each of many record writes, is never behind a write before it, and the next one after a declaration, a setting or another grant set tells it: the declared field, the order index the setting asks, and, to another grant set, on another id or the same, only what it is shown, the first grant set still told its own; a page sorted whole between two of them, with no write between, is told by the second, of the type and of the lake alike; the lake's description tells a type declared between two of them"
 );
 
 check!(
@@ -656,6 +657,46 @@ async fn a_description_at_the_head_follows_what_changes_it(store: Store) -> Held
     ensure!(
         fields == ["a", "n", "b"] && at >= declared,
         "the description after `b` is declared at {declared} tells it; it told {fields:?} at {at}"
+    );
+    // A page sorted whole moves no head: the next description tells it.
+    let sort = async || {
+        let order_by = vec![Order {
+            field: "a".into(),
+            by: OrderBy::Value,
+            dir: Direction::Asc,
+        }];
+        let f = Find {
+            order_by,
+            ..Find::default()
+        };
+        l.cat
+            .find(&l.own, &"memo".into(), f)
+            .await
+            .must("a page sorted by `a`")
+    };
+    let whole = |w: Vec<lakelands_api::describe::SortedWhole>| {
+        let w = w.iter().map(|s| format!("{} {}", s.field, s.pages));
+        w.collect::<Vec<_>>().join(",")
+    };
+    let mut pages = Vec::new();
+    for _ in 0..2 {
+        sort().await?;
+        pages.push(whole(
+            describe_type(cat, &l.own, "memo")
+                .await?
+                .lifecycle
+                .sorted_whole,
+        ));
+    }
+    l.describe().await?;
+    sort().await?;
+    let lake = l.describe().await?.types.into_iter();
+    let mut lake = lake.filter(|t| t.name.as_str() == "memo");
+    pages.extend(lake.next().map(|t| whole(t.lifecycle.sorted_whole)));
+    ensure!(
+        pages == ["a 1", "a 2", "a 3"],
+        "a description after each page sorted by `a`, with no write between, tells the pages; \
+         `memo` and the lake told {pages:?}"
     );
     l.upsert("memo", "m0", json!({"b": "y"})).await?;
     l.set("sort_index.memo", json!(["n"])).await?;

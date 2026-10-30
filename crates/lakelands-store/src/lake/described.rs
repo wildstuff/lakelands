@@ -12,6 +12,14 @@
 //! without the lease keeps nothing, since another process appends there
 //! and only the engine's head says what it did.
 //!
+//! A writer that lost its lease without noticing still serves what it
+//! kept, at its own head, until it notices: with no heartbeat on the
+//! lease, it finds out at its next append, fold or regain, where the memo
+//! is dropped. That answer is exact for the position it names, the one
+//! [`super::Lake::head`] answers this handle, though another process may
+//! have declared since, which a `find` from the same handle sees. This
+//! choice is interim until lakelands#1610 settles it.
+//!
 //! What moves without an event is told at each answer: the pages sorted
 //! whole, as this handle tallies them, and a host setting's value in
 //! force on the answer's clock. A description where a view's state told
@@ -122,6 +130,7 @@ impl Lake {
     ) -> Result<Reply<D>, u64> {
         let head = self.head();
         let held = lakelands_core::lock(&self.shapes);
+        // INTERIM: lakelands#1610 — a lease lost unnoticed still serves.
         let ended = held.ended.filter(|_| self.is_writer());
         let fresh = |at: u64| ended.is_some_and(|(from, to)| from <= at && head.0 <= to);
         let kept = (held.described.kept.iter())

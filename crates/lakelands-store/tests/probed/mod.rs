@@ -5,8 +5,8 @@
 //! the lake before each commit, while its transaction is open, and a seal
 //! that hands another digest than the engine took or asks twice; and it
 //! counts the views asked for, the rows its scans hand out by type and
-//! the reads of a kept view's state, and keeps the last record put under each kept name and
-//! key, and the entries of the kept views' orders since the last clear;
+//! the reads of a kept view's state, and keeps the last record put under
+//! each kept name and key, and the entries of the kept views' orders since the last clear;
 //! and it can hand one event of the log out damaged, and the head's view
 //! out at an earlier position, and let a write land just before the
 //! engine answers a `ranked`; and it can panic in a read of a record, in
