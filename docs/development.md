@@ -287,6 +287,13 @@ What a patch may carry, and what makes a release a minor one, is
 A minor release `vX.Y.0` is tagged on `develop`. A fix to it ships as
 `vX.Y.1` on `main`, so that `develop`, which already holds work for the
 next minor, does not ship with it.
+A patch whose items are all on `develop`, while `develop` holds nothing
+else of the next minor, may be released from `develop` instead, as
+`v0.21.1` is. Then the release pull request goes to `develop` and the
+tag goes on its merge commit, as for a minor release; steps 1 to 3 and 5
+to 7 below do not apply. The notes list the pull requests merged since
+`vX.Y.0`, and "Changes a host must make" compares `vX.Y.0` with the new
+tag.
 
 1. **`main` holds `vX.Y.0`.** If it does not yet, a pull request brings
    it there and adds nothing else:
