@@ -213,7 +213,13 @@ async fn step(lake: &Arc<Lake>, ty: &TypeName, step: Choose) -> Result<Option<Re
         if w.lease.is_none() {
             return Err(read_only());
         }
-        t.engine.projection().choose_order(&ty, &step)
+        let chose = t.engine.projection().choose_order(&ty, &step);
+        // What the lake chose is told in a description: a fill moves
+        // neither what it keeps nor what it builds.
+        if !matches!(step, Choose::Fill { .. }) {
+            t.undescribe();
+        }
+        chose
     })
     .await
 }

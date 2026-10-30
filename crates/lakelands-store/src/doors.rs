@@ -341,6 +341,35 @@ impl Doors {
         exec::run(move || reading(&lake, who, at, None, f)).await
     }
 
+    /// A description `f` reads, of `ty` or of the lake where none: at the
+    /// head, the one the writer told `who` and keeps while nothing that
+    /// changes it came since ([`crate::lake::Described`]), else read and
+    /// kept.
+    async fn described<D, F>(
+        &self,
+        who: &Principal,
+        ty: Option<&TypeName>,
+        at: ReadAt,
+        f: F,
+    ) -> Result<Reply<D>>
+    where
+        D: crate::lake::Described,
+        F: FnOnce(&Reader<'_>) -> Result<(D, crate::lake::Answered)> + Send + 'static,
+    {
+        same_lake(&self.lake, who)?;
+        let drops = match (at == ReadAt::default()).then(|| self.lake.described(who, ty)) {
+            Some(Ok(told)) => return Ok(told),
+            Some(Err(drops)) => Some(drops),
+            None => None,
+        };
+        let read = self.read(who, (at, None), f).await?;
+        let (position, (data, answered)) = (read.position, read.data);
+        if let Some(drops) = drops {
+            (self.lake).keep_described((who, ty), (drops, position), &data, answered);
+        }
+        Ok(Reply { position, data })
+    }
+
     /// [`Self::read`] for a read that may rank, given the head when
     /// `ranks`. `f` answers it, or hands back a pull of its rankings that
     /// was read at another position than that head: a write landed between
@@ -679,7 +708,7 @@ impl Catalog for Doors {
 
     async fn describe(&self, who: &Principal, at: ReadAt) -> Result<Reply<LakeDescription>> {
         let asked = who.clone();
-        self.read(who, (at, None), move |r| r.describe(&asked))
+        self.described(who, None, at, move |r| r.describe(&asked))
             .await
     }
 
@@ -689,8 +718,8 @@ impl Catalog for Doors {
         ty: &TypeName,
         at: ReadAt,
     ) -> Result<Reply<TypeDescription>> {
-        let (ty, asked) = (ty.clone(), who.clone());
-        self.read(who, (at, None), move |r| r.describe_type(&asked, &ty))
+        let (named, asked) = (ty.clone(), who.clone());
+        self.described(who, Some(ty), at, move |r| r.describe_type(&asked, &named))
             .await
     }
 

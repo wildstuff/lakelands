@@ -4,8 +4,8 @@
 //! order they came, a commit, a `begin` or a view to refuse, a look at
 //! the lake before each commit, while its transaction is open, and a seal
 //! that hands another digest than the engine took or asks twice; and it
-//! counts the rows its scans hand out by type and the reads of a kept
-//! view's state, and keeps the last record put under each kept name and
+//! counts the views asked for, the rows its scans hand out by type and
+//! the reads of a kept view's state, and keeps the last record put under each kept name and
 //! key, and the entries of the kept views' orders since the last clear;
 //! and it can hand one event of the log out damaged, and the head's view
 //! out at an earlier position, and let a write land just before the
@@ -135,6 +135,8 @@ pub struct Probe {
     pub panic_view: Mutex<Option<usize>>,
     /// Whether the next view asked for as of a position panics.
     pub panic_as_of: std::sync::atomic::AtomicBool,
+    /// How many views were asked for.
+    pub views: AtomicUsize,
 }
 
 impl Probe {
@@ -418,6 +420,7 @@ impl LakeEngine for Probed {
                 },
             ));
         }
+        self.probe.views.fetch_add(1, Ordering::SeqCst);
         let lags = *self.probe.lags.lock().unwrap();
         Ok(Box::new(ProbedView {
             inner: self.inner.view(as_of.or(lags))?,

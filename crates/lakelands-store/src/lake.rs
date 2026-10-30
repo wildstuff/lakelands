@@ -59,11 +59,13 @@ use crate::record;
 
 pub use lakelands_api::seam::{AGING_RULE_TYPE, SETTING_TYPE, aging_rule_type, setting_type};
 mod append;
+mod described;
 mod fold;
 mod open;
 pub(crate) mod scrub;
 mod standby;
 mod verify;
+pub(crate) use described::{Answered, Described};
 pub use fold::Built;
 use fold::{Beside, Migrated, Recomputed, Step, Swapped};
 pub(crate) use fold::{
@@ -442,11 +444,13 @@ enum HeldShape {
 /// after it with no event between them that ends one, learnt from the
 /// projection at a build and carried on by this handle's own appends. A
 /// read anywhere in it has the shape held for `through`, the head's
-/// (lakelands#1501). The ranges and `ended` move together, under one lock.
+/// (lakelands#1501). The ranges and `ended` move together, under one lock,
+/// and so do the descriptions the writer keeps at the head (`described`).
 #[derive(Default)]
 struct Shapes {
     held: Vec<(RangeInclusive<u64>, HeldShape)>,
     ended: Option<(u64, u64)>,
+    described: described::Memo,
 }
 
 impl Shapes {
@@ -483,15 +487,20 @@ impl Shapes {
         self.held.push((range, shape));
     }
 
-    /// Drop every shape, and where a range was last ended: a rebuild or a
-    /// scrub folds the projection again.
+    /// Drop every shape, where a range was last ended and the descriptions
+    /// kept: a rebuild or a scrub folds the projection again.
     fn clear(&mut self) {
         (self.held, self.ended) = (Vec::new(), None);
+        self.described.drop_all();
     }
 
     /// Carry `ended` over an append of `first..=last`: from its last event
-    /// that ends a range, `ending`, or on from where it stands.
+    /// that ends a range, `ending`, dropping the descriptions kept, or on
+    /// from where it stands.
     fn appended(&mut self, first: u64, last: u64, ending: Option<u64>) {
+        if ending.is_some() {
+            self.described.drop_all();
+        }
         self.ended = match (ending, self.ended) {
             (Some(from), _) => Some((from, last)),
             (None, Some((from, to))) if to + 1 == first => Some((from, last)),
@@ -700,7 +709,9 @@ impl Lake {
     fn publish(&self, w: &Writer) {
         self.set_head(w.tip.as_ref().map_or(0, |t| t.0.0));
         let holds = w.lease.is_some() && !w.lost;
-        self.holds_lease.store(holds, Ordering::Release);
+        if self.holds_lease.swap(holds, Ordering::AcqRel) != holds {
+            lakelands_core::lock(&self.shapes).described.drop_all();
+        }
         self.level(Level::Tip, w.tip.as_ref().map_or(0, |t| t.0.0));
         self.level(Level::LeaseHeld, u64::from(holds));
         self.level(Level::LeaseFence, w.lease.as_ref().map_or(0, |l| l.fence));
@@ -756,6 +767,7 @@ impl Lake {
     /// lock, and told the meter, held 0 and its fence 0.
     pub(crate) fn unleased(&self) {
         self.holds_lease.store(false, Ordering::Release);
+        lakelands_core::lock(&self.shapes).described.drop_all();
         self.level(Level::LeaseHeld, 0);
         self.level(Level::LeaseFence, 0);
     }
