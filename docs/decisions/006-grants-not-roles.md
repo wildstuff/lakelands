@@ -2106,6 +2106,51 @@ proposer held `only` on the type, never on what. A reviewer is a reader
 of what it decides, so it decides only what it may read, and what it
 accepts it is answered for as for its own write.
 
+#### A grant may admit a set of values, and refuse a part read as the whole
+
+A grant may hold `only_any` beside `only`: for a field, a set of text
+values. A record is admitted where its field holds one of them, beside
+every pair of `only`, as `only` admits it, at every door above: the
+engine reads under the set as it reads under a pair, as one of several
+values to the same index, and no door filters after the fact. `""` is
+an ordinary value. The set closes as the pair does: it names a `text`
+or `reference` field the holder may read, or the grant is not applied;
+an empty set admits nothing; a field named both in `only` and in
+`only_any` is a grant that cannot be applied, since the two would say
+two things of one field; a rename that joins two names keeps the values
+both sets hold. `describe` tells the holder its sets in `may.only_any`
+(lakelands#1588). A proposal made under a set is accepted only by a
+reviewer whose own pair or set on the field holds every value of it: a
+reviewer of one of the values would otherwise apply a change to records
+of another it does not see.
+
+**Why.** A host often admits a principal to the records of several
+owners, a manager to a team's, and a grant of one value cannot say
+that; a host that filtered above the lake would lose the sums and the
+searches again. A set fails closed for the reason a pair does: a set
+the store guessed at, an empty one read as no restriction or a clash
+with `only` resolved to either side, would admit records the host did
+not name, and the host is told at once instead.
+
+A grant that admits only some records of a type may hold
+`whole_sets_only` there. A read computed over a set of the type's
+records then refuses as invalid, naming the type: a count, `total`, the
+count of the retired, a sum, a group, a pattern's aggregate, and any
+view that reads the type, kept or not, at any depth of its sources. A
+link type whose end the grant narrows is narrowed with it, so a count
+of its links or a view over them refuses alike. A
+read that answers records, `get`, `find` and a search, is answered as
+without it. On a type the grant does not narrow it changes nothing
+(lakelands#1590).
+
+**Why it is opt-in.** A sum over the admitted part is the right answer
+for a holder who knows its grant is a part, its own claims, and the
+store has answered so since the pair was added; turning it off by
+default would refuse reads hosts rely on. Where a figure over a part
+can be mistaken for one over the whole, an agent told "the total is 35"
+reporting it as the team's, the host says so on the grant, and the
+store refuses rather than answering a part as though it were the whole.
+
 #### `only` keeps the reference it names
 
 A reference to a type its principal is not shown is a field it may not
@@ -2634,8 +2679,9 @@ Of a probe:
 
 Of `only`:
 
-- It is not several admitted values for one field, nor a predicate
-  other than equality.
+- It is not a predicate other than equality: several admitted values
+  for one text field are `only_any`'s (above), and nothing else
+  compares.
 - It is not taken from `Principal.id` implicitly.
 - It does not change `restricted`: a record must pass both rules.
 - A reference value naming another's key is shown as a key; the record

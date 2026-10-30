@@ -256,7 +256,7 @@ impl<'a> Reader<'a> {
         // by, whose order is checked there: the engine's own count pages by
         // a last key it does not check.
         let kept = lakelands_api::seam::is_kept_name(&decl.name);
-        let Some(equal) = self.sight.admit(&decl.name).pairs().map(<[_]>::to_vec) else {
+        let Some((equal, equal_any)) = self.sight.admit(&decl.name).scanned() else {
             return Ok(0);
         };
         // A link's ends are judged a page at a time, never by the engine,
@@ -275,6 +275,7 @@ impl<'a> Reader<'a> {
         let scan = Scan {
             filter: filter.cloned(),
             equal,
+            equal_any,
             valid_at: self.valid_at_for(decl),
             retired: self.retired.get(),
             restricted: self.sight.sees_restricted(),
@@ -367,19 +368,19 @@ impl<'a> Reader<'a> {
         let push = filter.filter(|e| !self.store_only(decl, e)).cloned();
         let here = filter.filter(|_| push.is_none());
         let admit = self.sight.admit(&decl.name);
-        let Some(equal) = admit.pairs().map(<[_]>::to_vec) else {
+        let Some((equal, equal_any)) = admit.scanned() else {
             return Ok(Vec::new());
         };
         let mut scan = Scan {
             filter: push,
             equal,
+            equal_any,
             order_by: order.to_vec(),
             after: after.map(|(values, key)| After { values, key }),
             limit: u32::try_from(want).unwrap_or(u32::MAX),
             valid_at: self.valid_at_for(decl),
             retired: self.retired.get(),
             restricted: self.sight.sees_restricted(),
-            ..Default::default()
         };
         let mut out = Vec::new();
         loop {
@@ -601,13 +602,14 @@ impl<'a> Reader<'a> {
         whole: bool,
     ) -> Result<Vec<(StoredRecord, Option<StoredRecord>)>> {
         let admit = self.sight.admit(&stored.name);
-        let (true, Some(pairs)) = (whole, admit.pairs()) else {
+        let (true, Some((pairs, equal_any))) = (whole, admit.scanned()) else {
             return Ok(Vec::new());
         };
         let mut equal = vec![(FieldName::from(kept::DIFFERS), Value::from("1"))];
-        equal.extend(pairs.iter().cloned());
+        equal.extend(pairs);
         let scan = Scan {
             equal,
+            equal_any,
             limit: u32::MAX,
             valid_at: self.valid_at_for(stored),
             restricted: self.sight.sees_restricted(),
