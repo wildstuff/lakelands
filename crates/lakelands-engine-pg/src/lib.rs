@@ -78,8 +78,10 @@ pub(crate) use lakelands_core::lock;
 /// its severity, SQLSTATE and primary message: its `DETAIL`, `HINT`,
 /// `WHERE` and statement position can quote a record's key or values,
 /// which the answer carries to a caller who may not be shown that record
-/// (024). Any other failure says every cause the driver gives.
+/// (024). Any other failure says every cause the driver gives. The
+/// server's lack of disk room is named as that, the operator's to mend.
 pub(crate) fn sql(e: postgres::Error) -> Error {
+    let full = e.code() == Some(&postgres::error::SqlState::DISK_FULL);
     let detail = match e.as_db_error() {
         Some(db) => {
             let (severity, code) = (db.severity(), db.code().code());
@@ -95,6 +97,9 @@ pub(crate) fn sql(e: postgres::Error) -> Error {
             Detail::scrubbed(said)
         }
     };
+    if full {
+        return Error::unavailable(Situation::NoRoom { part: None, detail });
+    }
     let (doing, part) = (Doing::Query, Part::Projection);
     Error::unavailable(Situation::Storage {
         doing,

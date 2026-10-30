@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-api"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "async-trait",
  "futures-core",
@@ -960,7 +960,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-backings"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-cli"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1013,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-client"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-core"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "async-trait",
  "futures-core",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-cypher"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "lakelands-api",
  "lakelands-engine-mem",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-door-checks"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "async-trait",
  "futures-core",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-engine-mem"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "lakelands-api",
  "lakelands-core",
@@ -1099,7 +1099,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-engine-pg"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "lakelands-api",
  "lakelands-core",
@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-engine-sqlite"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "fs4",
  "lakelands-api",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-server"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "lakelands-store"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "aes",
  "aes-gcm-siv",

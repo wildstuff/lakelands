@@ -70,9 +70,14 @@ pub(crate) fn io_error(doing: Doing, part: Part, e: std::io::Error) -> Error {
     lakelands_core::io_failed(doing, part, &e)
 }
 
-/// A failed projection operation, for the host, as [`told`] says it.
+/// A failed projection operation, for the host, as [`told`] says it: one
+/// with no room left on the disk is named as that.
 pub(crate) fn sql(e: rusqlite::Error) -> Error {
     let detail = Detail::scrubbed(told(&e));
+    if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull) {
+        let part = Some(Part::Projection);
+        return Error::unavailable(Situation::NoRoom { part, detail });
+    }
     let (doing, part) = (Doing::Query, Part::Projection);
     Error::unavailable(Situation::Storage {
         doing,

@@ -340,14 +340,29 @@ impl Lake {
 }
 
 impl Turn<'_> {
-    /// What a writer writes once it holds `lease` and has folded the log,
-    /// on its open and on a standby's taking over: the lake's creation,
-    /// the `lease_taken`, an upgrade's step, the types the lake may hold
-    /// and does not, a forgetting a crash left half done, and a seal past
-    /// the bound. Answers whether finishing the forgetting folded the whole
-    /// log again.
+    /// What a writer does once it holds `lease` and has folded the log,
+    /// on its open and on a standby's taking over: it finishes a
+    /// forgetting a crash left half done, then appends the lake's
+    /// creation, the `lease_taken`, an upgrade's step and the types the
+    /// lake may hold and does not, and seals past the bound. Answers
+    /// whether finishing the forgetting folded the whole log again.
+    ///
+    /// Everything else that can refuse the open runs before the append,
+    /// so an open refused before it leaves the log as it was: a lake that
+    /// owed an upgrade still owes it (lakelands#1564). The append is the
+    /// last step that can fail: one that fails says what it left
+    /// (`append_failed`), one whose fold fails after the log took it says
+    /// so (`not_folded`), and the seal after it refuses nothing.
     pub(crate) fn leased(&self, lease: &Lease) -> Result<bool> {
         let mut w = self.writer();
+        // What a crash left of a forgetting is finished first (058).
+        // An owed rebuild refuses the open, since the projection is not
+        // whole without it; a reclaim that fails again stays owed and
+        // is told, never a lock-out (lakelands#1161). It reads the log
+        // as it stands and appends nothing.
+        let rebuilt = self.rebuilds.load(Ordering::SeqCst);
+        self.finish_forgetting(&mut w)?;
+        let refolded = self.rebuilds.load(Ordering::SeqCst) != rebuilt;
         let now = self.clock(&mut w);
         let mut drafts = Vec::new();
         if w.tip.is_none() {
@@ -477,13 +492,6 @@ impl Turn<'_> {
             }
         }
         self.append(&mut w, drafts)?;
-        // What a crash left of a forgetting is finished first (058).
-        // An owed rebuild refuses the open, since the projection is not
-        // whole without it; a reclaim that fails again stays owed and
-        // is told, never a lock-out (lakelands#1161).
-        let rebuilt = self.rebuilds.load(Ordering::SeqCst);
-        self.finish_forgetting(&mut w)?;
-        let refolded = self.rebuilds.load(Ordering::SeqCst) != rebuilt;
         // A segment past the bound from before is sealed here, its
         // checkpoint in the log and the feed (074).
         drop(w);

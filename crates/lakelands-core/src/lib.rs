@@ -69,15 +69,28 @@ pub fn damaged(part: Part, position: Option<Position>, flaw: Flaw) -> Error {
     })
 }
 
-/// The storage failed `doing` to `part`, in the operating system's words.
+/// The storage failed `doing` to `part`, in the operating system's words:
+/// one with no room left is named as that, the operator's to mend.
 #[doc(hidden)]
 pub fn io_failed(doing: Doing, part: Part, e: &std::io::Error) -> Error {
     let detail = Detail::io(e);
+    if no_room(e) {
+        let part = Some(part);
+        return Error::unavailable(Situation::NoRoom { part, detail });
+    }
     Error::unavailable(Situation::Storage {
         doing,
         part,
         detail,
     })
+}
+
+/// Whether `e` says the disk or the volume had no room left, or the
+/// writer's quota of it was spent.
+#[doc(hidden)]
+pub fn no_room(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{QuotaExceeded, StorageFull};
+    matches!(e.kind(), StorageFull | QuotaExceeded)
 }
 
 /// Locks a mutex, carrying on past a panic in another holder: a caller

@@ -381,16 +381,21 @@ know of is not shown to it: it answers as a type that is not declared,
 and so does every type made of it, a link type of its relations and a
 view over it. A key field the principal sees masked still gives its
 value through the key: the field is known, and only its value is
-withheld elsewhere. One it may only write hides the type from its reads
-and shows it to its writes
-(`docs/decisions/092-reading-is-judged-apart-from-writing.md`). A grouped view's records are keyed by its
-`group_by`, and an ungrouped view's one record by no field. A view
-declares no other `key` (018), and one that holds another all the same,
-a host's own type, which passes no `declare`, is judged by its groups
-too: no view is hidden for a field its records do not carry as their
-key. A grouped view's key is judged at its sources too: each key field
-on the view, on its source and on each merge source by position, since
-the key holds their values. It is also the key `describe`, the tools and
+withheld elsewhere. A key field granted `write_only` is one its
+principal may not know of to read, since for reading it is as `none`:
+a record key would hand out its value (lakelands#1572). Only the
+reading side is withheld: the type is hidden from its reads and shown
+to its writes, upsert and retire, since a write names the key and
+answers no value of it
+(`docs/decisions/092-reading-is-judged-apart-from-writing.md`). A
+grouped view's records are keyed by its `group_by`, and an ungrouped
+view's one record by no field. A view declares no other `key` (018),
+and one that holds another all the same, a host's own type, which
+passes no `declare`, is judged by its groups too: no view is hidden for
+a field its records do not carry as their key. A grouped view's key is
+judged at its sources too: each key field on the view, on its source
+and on each merge source by position, since the key holds their values.
+It is also the key `describe`, the tools and
 a listed declaration name. A view's definition shown to a principal
 names no measure of a field it may not know of, as its fields do not. A
 measure that reads such a measure by name, directly or through another,
