@@ -11,17 +11,18 @@ use crate::id::{DeliveryId, FieldName, Position, RecordKey, SourceId, TypeName};
 use crate::record::{Patch, Upstream};
 use crate::time::Timestamp;
 
-/// A quarantined record's id: its source, the delivery of the call that
-/// first quarantined it, and the record's place in that call's stream.
-/// It is never re-keyed; ids order by source, delivery, then place.
+/// A quarantined record's id: its source, the host's run or else the
+/// delivery that first quarantined it, and the host's line or else the
+/// record's place among the call's records of that delivery. It is never
+/// re-keyed; ids order by source, delivery, then index.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuarantineId {
     /// The record's source.
     pub source: SourceId,
-    /// The delivery that first quarantined it.
+    /// The run that quarantined it, else the delivery that first did.
     pub delivery: DeliveryId,
-    /// Its place in that delivery's stream, from 0.
+    /// Its line, else its place in that delivery, from 0.
     pub index: u64,
 }
 
@@ -185,6 +186,47 @@ impl QuarantineFilter {
         rows.truncate(self.limit.map_or(usize::MAX, |l| l as usize));
         rows
     }
+}
+
+/// A record the host refused before any ingest, to be quarantined as one
+/// the lake refused (085, extended): its row as the host would have
+/// ingested it, its cells in `fields`, and the host's refusal.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostRefused {
+    /// The row, its key empty where the host could not form one.
+    pub record: crate::SourceRecord,
+    /// The stable cause code: 1 to 64 bytes of `a`–`z`, `0`–`9` and `_`.
+    pub cause: String,
+    /// The sentence for the operator, which names no cell's value.
+    pub reason: String,
+}
+
+impl fmt::Debug for HostRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let r = &self.record;
+        f.debug_struct("HostRefused")
+            .field("type", &r.ty)
+            .field("key", &r.key)
+            .field("cells", &r.fields.keys().collect::<Vec<_>>())
+            .field("line", &r.line)
+            .field("cause", &self.cause)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What `Catalog::quarantine` did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Quarantining {
+    /// The id the record is quarantined under.
+    pub id: QuarantineId,
+    /// The position of its version; the head, for a duplicate.
+    pub position: Position,
+    /// Whether it was the id's last version refused the same way, and
+    /// appended nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub duplicate: bool,
 }
 
 /// The bound that was full where a refusal past it was not quarantined.

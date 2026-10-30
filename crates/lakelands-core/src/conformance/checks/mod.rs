@@ -93,6 +93,7 @@ mod proposals;
 mod provenance;
 mod purge;
 mod quarantine;
+mod quarantine_host;
 mod query_model;
 mod reached;
 mod reactions;
@@ -301,6 +302,14 @@ pub const ALL: &[Check] = &[
     quarantine::QUARANTINED_ACTS,
     quarantine::QUARANTINED_CLOSED,
     quarantine::QUARANTINED_VERSIONS,
+    quarantine_host::QUARANTINED_BY_HOST,
+    quarantine_host::QUARANTINED_BY_RUN_AND_LINE,
+    quarantine_host::QUARANTINED_ACROSS_CALLS,
+    quarantine_host::QUARANTINED_BY_HOST_NAMES_ITS_LINE,
+    quarantine_host::QUARANTINED_BY_RUN_PLACES,
+    quarantine_host::QUARANTINED_BY_HOST_CLOSES,
+    quarantine_host::QUARANTINED_BY_HOST_PROTECTED,
+    quarantine_host::QUARANTINED_BY_HOST_GRANTED,
     constraints::CONSTRAINT_HELD_AT_EVERY_DOOR,
     constraints::CONSTRAINT_JUDGED_THROUGH_WHAT_MOVES,
     constraints::CONSTRAINT_TOLD_AT_ACCEPT,
@@ -1117,6 +1126,8 @@ pub const ALL: &[Check] = &[
     describe::DESCRIBE_IS_THE_DECLARATION,
     describe::DESCRIBED_AS_SHOWN,
     describe::SCHEMA_TOLD_AS_RECORDED,
+    describe::FOLLOWS_WHAT_CHANGES_IT,
+    describe::FOLLOWS_ANOTHER_WRITER,
     made_of::KEYED_BY_HIDDEN,
     made_of::VIEW_KEY_AT_SOURCES,
     backings::OUTPUT_NOT_A_VALUE,

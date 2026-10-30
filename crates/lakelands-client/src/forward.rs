@@ -41,7 +41,9 @@ use lakelands_api::id::{TypeName, VerbName, Version};
 use lakelands_api::location::{EngineConfig, Limits, Location};
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::Principal;
-use lakelands_api::quarantine::{QuarantineClose, QuarantineFilter, QuarantineId, Quarantined};
+use lakelands_api::quarantine::{
+    HostRefused, QuarantineClose, QuarantineFilter, QuarantineId, Quarantined, Quarantining,
+};
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply, VectorCoverage};
 use lakelands_api::record::{Patch, Record};
@@ -427,6 +429,16 @@ impl Catalog for ForwardingCatalog {
         id: &QuarantineId,
     ) -> Result<QuarantineClose> {
         forward!(self, c => c.dismiss_quarantined(who, id);)
+    }
+
+    async fn quarantine(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: IngestOpts,
+        refused: HostRefused,
+    ) -> Result<Quarantining> {
+        forward!(self, c => c.quarantine(who, source, opts, refused); opts, refused)
     }
 
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {

@@ -816,6 +816,7 @@ async fn csv(
             seen_at,
             delivery: None,
             resubmits: None,
+            line: None,
         });
     }
     Ok(out)

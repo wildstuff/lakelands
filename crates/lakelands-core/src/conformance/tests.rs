@@ -462,6 +462,15 @@ fn a_catalog_that_carries_no_delivery_refuses_one() {
         .err()
         .and_then(|e| e.case().map(|s| s.case.clone()));
     assert_eq!(case, Some(Case::QuarantineRefusedNotCarried));
+    // A record the host refused is not carried either.
+    let refused = lakelands_api::quarantine::HostRefused {
+        record: super::fixture::source_record("invoice", "i1", serde_json::json!({})),
+        cause: "unmapped".into(),
+        reason: "a column maps to no field".into(),
+    };
+    let host = block_on(cat.quarantine(&who, &src, IngestOpts::default(), refused));
+    let case = host.err().and_then(|e| e.case().map(|s| s.case.clone()));
+    assert_eq!(case, Some(Case::HostQuarantineNotCarried));
 }
 
 /// `requires_unmet` is, by value, the refusal the checks built by hand.

@@ -1515,6 +1515,18 @@
    "verb": "v"
   },
   {
+   "cause": "s",
+   "code": "refused_by_host",
+   "reason": "s"
+  },
+  {
+   "code": "host_refusal_form",
+   "max": 1
+  },
+  {
+   "code": "host_line_missing"
+  },
+  {
    "cause": 1,
    "code": "cause_past_head",
    "head": 1
@@ -1752,6 +1764,9 @@
   },
   {
    "code": "quarantine_refused_not_carried"
+  },
+  {
+   "code": "host_quarantine_not_carried"
   },
   {
    "code": "trigger_too_deep",

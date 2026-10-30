@@ -1194,6 +1194,7 @@ pub fn source_record(ty: &str, key: &str, fields: Value) -> SourceRecord {
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     }
 }
 

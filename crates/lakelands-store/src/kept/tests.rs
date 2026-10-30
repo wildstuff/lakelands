@@ -112,6 +112,7 @@ impl Kept {
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         };
         let records = records.into_iter().map(reading).collect();
         let meter = lakelands_api::SourceId::from("meter");

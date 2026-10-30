@@ -13,6 +13,7 @@
 
 use lakelands_api::describe::{FieldDescription, LakeDescription, TypeDescription};
 use lakelands_api::ontology::{EmbedDecl, FunctionInput, TriggerDecl};
+use lakelands_api::read::Order;
 use lakelands_api::write::{FunctionDecl, ObjectSetDecl};
 
 use crate::conformance::backing::EMBED_MODEL;
@@ -23,6 +24,17 @@ check!(
     DESCRIBE_IS_THE_DECLARATION = describe_answers_the_declaration_whole,
     "014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, initial value, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only, without its initial value (050); functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position; a type that is shown is one its principal may find and get, also where every field is masked",
     embedding
+);
+
+check!(
+    FOLLOWS_WHAT_CHANGES_IT = a_description_at_the_head_follows_what_changes_it,
+    "009 (lakelands#1575): a description at the head, asked after each of many record writes, is never behind a write before it, and the next one after a declaration, a setting or another grant set tells it: the declared field, the order index the setting asks, and, to another grant set, on another id or the same, only what it is shown, the first grant set still told its own; a page sorted whole between two of them, with no write between, is told by the second, of the type and of the lake alike; the lake's description tells a type declared between two of them"
+);
+
+check!(
+    FOLLOWS_ANOTHER_WRITER = a_reader_beside_the_writer_describes_its_declaration_at_once,
+    "008 and 009 (lakelands#1575): a handle that holds no lease, beside the writer, describes a type as the writer declared it last, by its first description after the declaration, however often it described the type before; and the writer does too",
+    given
 );
 
 fn described(name: &str, label: &str, kind: StorageKind) -> FieldDecl {
@@ -600,6 +612,157 @@ async fn a_holder_of_schema_is_told_every_definition_but_a_verb(store: Store) ->
         seen == want,
         "to `schema` at `none` and masked on `sec`, then to readers without it, (trigger, set, \
          view, verb, `shout`) are {seen:?}, where {want:?} are due"
+    );
+    Ok(())
+}
+
+/// `memo` with the text `a`, the number `n` and, where `b`, the text `b`.
+fn memo(b: bool) -> TypeDecl {
+    let mut fields = vec![
+        field("a", StorageKind::Text),
+        field("n", StorageKind::Number),
+    ];
+    fields.extend(b.then(|| field("b", StorageKind::Text)));
+    type_decl("memo", fields)
+}
+
+/// The fields `memo`'s description at the head tells `who`, and its
+/// position.
+async fn told(cat: &dyn Catalog, who: &Principal) -> Result<(Vec<String>, Position), Failure> {
+    let d = cat
+        .describe_type(who, &"memo".into(), ReadAt::default())
+        .await;
+    let d = d.must("describing `memo` at the head")?;
+    let fields = d.data.fields.iter().map(|f| f.name.to_string());
+    Ok((fields.collect(), d.position))
+}
+
+async fn a_description_at_the_head_follows_what_changes_it(store: Store) -> Held {
+    let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
+    let cat = l.cat.as_ref();
+    l.declare(memo(false)).await?;
+    for i in 0..20 {
+        let key = format!("m{i}");
+        let wrote = l.upsert("memo", &key, json!({"a": "x", "n": i})).await?;
+        let wrote = wrote.position();
+        let (fields, at) = told(cat, &l.own).await?;
+        ensure!(
+            fields == ["a", "n"] && at >= wrote,
+            "`memo` described after the write at {wrote} tells `a` and `n` at or after it; it \
+             told {fields:?} at {at}"
+        );
+    }
+    let declared = l.declare(memo(true)).await?.position();
+    let (fields, at) = told(cat, &l.own).await?;
+    ensure!(
+        fields == ["a", "n", "b"] && at >= declared,
+        "the description after `b` is declared at {declared} tells it; it told {fields:?} at {at}"
+    );
+    // A page sorted whole moves no head: the next description tells it.
+    let sort = async || {
+        let order_by = vec![Order {
+            field: "a".into(),
+            by: OrderBy::Value,
+            dir: Direction::Asc,
+        }];
+        let f = Find {
+            order_by,
+            ..Find::default()
+        };
+        l.cat
+            .find(&l.own, &"memo".into(), f)
+            .await
+            .must("a page sorted by `a`")
+    };
+    let whole = |w: Vec<lakelands_api::describe::SortedWhole>| {
+        let w = w.iter().map(|s| format!("{} {}", s.field, s.pages));
+        w.collect::<Vec<_>>().join(",")
+    };
+    let mut pages = Vec::new();
+    for _ in 0..2 {
+        sort().await?;
+        pages.push(whole(
+            describe_type(cat, &l.own, "memo")
+                .await?
+                .lifecycle
+                .sorted_whole,
+        ));
+    }
+    l.describe().await?;
+    sort().await?;
+    let lake = l.describe().await?.types.into_iter();
+    let mut lake = lake.filter(|t| t.name.as_str() == "memo");
+    pages.extend(lake.next().map(|t| whole(t.lifecycle.sorted_whole)));
+    ensure!(
+        pages == ["a 1", "a 2", "a 3"],
+        "a description after each page sorted by `a`, with no write between, tells the pages; \
+         `memo` and the lake told {pages:?}"
+    );
+    l.upsert("memo", "m0", json!({"b": "y"})).await?;
+    l.set("sort_index.memo", json!(["n"])).await?;
+    let sorted = describe_type(cat, &l.own, "memo").await?.lifecycle.sorted;
+    ensure!(
+        sorted == [FieldName::from("n")],
+        "the description after `sort_index.memo` is set to `n` tells it sorted; it told {sorted:?}"
+    );
+    let clerk = field_access(s, "clerk", "memo", &[("b", Access::None)]);
+    let as_owner = Principal {
+        id: l.own.id.clone(),
+        ..clerk.clone()
+    };
+    let mut seen = Vec::new();
+    for who in [&clerk, &as_owner, &l.own, &clerk] {
+        l.upsert("memo", "m1", json!({"a": "z"})).await?;
+        seen.push(told(cat, who).await?.0.join(","));
+    }
+    let want = ["a,n", "a,n", "a,n,b", "a,n"];
+    ensure!(
+        seen == want,
+        "described in turn to a reader not shown `b`, to its grants on the owner's id, to the \
+         owner and to the reader again, `memo` tells {seen:?}, where {want:?} are due"
+    );
+    l.describe().await?;
+    l.declare(type_decl("later", vec![field("a", StorageKind::Text)]))
+        .await?;
+    let lake = l.describe().await?;
+    ensure!(
+        lake.types.iter().any(|t| t.name.as_str() == "later"),
+        "the lake described after `later` is declared tells it"
+    );
+    Ok(())
+}
+
+async fn a_reader_beside_the_writer_describes_its_declaration_at_once(
+    store: Store,
+    given: Given,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(memo(false)).await?;
+    let wrote = l.upsert("memo", "m", json!({"a": "x"})).await?.position();
+    let as_is: crate::conformance::Wrap = Arc::new(|inner| inner);
+    let never = Duration::from_secs(3600);
+    let (reader, _standing) = (given.standby)(store.lake().clone(), Seams::default(), never, as_is)
+        .await
+        .map_err(|e| Failure::new(format!("opening a handle beside the writer: {e}")))?;
+    reader
+        .reaches(wrote, Duration::from_secs(30))
+        .await
+        .must("the reader reaching the writer's write")?;
+    let (cat, who) = (doors(reader.as_ref()), owner(reader.as_ref()));
+    for _ in 0..3 {
+        let (fields, _) = told(cat.as_ref(), &who).await?;
+        ensure!(
+            fields == ["a", "n"],
+            "the reader describes `memo` with `a` and `n`; it told {fields:?}"
+        );
+    }
+    l.declare(memo(true)).await?;
+    let (beside, _) = told(cat.as_ref(), &who).await?;
+    let (own, _) = told(l.cat.as_ref(), &l.own).await?;
+    ensure!(
+        beside == ["a", "n", "b"] && own == beside,
+        "after the writer declares `b`, the reader's next description of `memo` tells it, and \
+         the writer's; they told {beside:?} and {own:?}"
     );
     Ok(())
 }

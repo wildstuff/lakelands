@@ -517,6 +517,24 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     file or feed item); without one each call is its own. A row sent
     again under the same delivery and refused the same way appends
     nothing, whether open or dismissed;
+  - **or name the run and the line:** `IngestOpts::run` and each
+    record's `SourceRecord::line` key its quarantined record in place
+    of the delivery and the place, so the same row of the same run is
+    the same record whoever refused it and in whichever call. Name a
+    line wherever a run or a delivery is named: a place counts only
+    one call's rows, so rows of two calls without lines meet at it;
+  - **quarantine what the host refuses:** `Catalog::quarantine(who,
+    source, opts, refused)` (`POST …/quarantined`) keeps a row the host
+    refused before any ingest, with a stable cause code and a sentence
+    for the operator, as a refused record is kept, so its cells stay
+    under the type's protection rather than in the host's own logs. The
+    sentence names no cell's value: it is shown to every reader of the
+    row, as the type's refusals are. Under a named run or delivery the
+    row names its line, or the door refuses it (`host_line_missing`).
+    A `HostRefused`'s debug form names the record's type, key, cell
+    names, line and cause, never a cell's value or the sentence; where a
+    key is itself protected (an IBAN, say), keep that form out of logs
+    as you would the key;
   - **resubmit** by ingesting the mended record under the same source
     with `SourceRecord::resubmits` naming the id's delivery and index:
     the key may be what was mended;
