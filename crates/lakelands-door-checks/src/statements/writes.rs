@@ -146,6 +146,13 @@ pub async fn a_merge_writes_on_the_declared_key_and_a_create_expects_none(
             },
         ),
         (
+            "CREATE (c:firm {code: null})",
+            Case::CypherKeyNull {
+                ty: firm(),
+                field: "code".into(),
+            },
+        ),
+        (
             "MERGE (s:staff {name: 'Ada'})",
             Case::CypherMergeOn {
                 ty: staff(),
@@ -572,6 +579,13 @@ pub async fn a_write_the_subset_does_not_take_is_refused_before_a_record_is_read
         let e = said(door, owner, s, json!({})).await;
         assert_eq!(e.expect_err(s), invalid(case), "{s}");
     }
+    let bare = "MATCH (i:invoice) WHERE f IS NULL SET i.status = 'x'";
+    let case = Case::CypherUnbound {
+        name: "f".into(),
+        offset: bare.find("f IS").expect("f in the statement"),
+    };
+    let e = said(door, owner, bare, json!({})).await;
+    assert_eq!(e.expect_err(bare), invalid(case), "a bare name is no field");
     assert_eq!(
         f.store.head().await.expect("the head"),
         head,

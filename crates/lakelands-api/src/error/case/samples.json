@@ -702,6 +702,11 @@
    "type": "t"
   },
   {
+   "code": "cypher_key_null",
+   "field": "f",
+   "type": "t"
+  },
+  {
    "code": "cypher_member",
    "member": "s"
   },

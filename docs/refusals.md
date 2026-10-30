@@ -473,6 +473,7 @@ What a refusal is about.
 | `cypher_count` | `item` (String) | `count` counts rows: `count(*)` or `count(<name>)` of a name no optional part binds, not `{item}` | A `count` of what is no row. |
 | `cypher_function` | `name` (String), `offset` (usize) | `{name}()` is no function of Lakelands' expression grammar (at character {offset}) | A function the expression grammar does not have. |
 | `cypher_key_missing` | `type` (TypeName), `field` (FieldName) | a record of `{type}` is keyed by `{field}`, which the statement does not give | A key field a `CREATE` or `MERGE` does not give. |
+| `cypher_key_null` | `type` (TypeName), `field` (FieldName) | a record of `{type}` is keyed by `{field}`, which the statement gives as null | A key field a `CREATE` or `MERGE` gives as null. |
 | `cypher_member` | `member` (String) | the statement takes no `{member}`: a read takes the axes and a cursor, a `MATCH … SET`, `REMOVE` or `DELETE` the id of its plan, and every other write nothing beside its parameters | A member a statement of its kind does not take. |
 | `cypher_merge_on` | `type` (TypeName), `field` (FieldName) | `MERGE` keys on what keys a record, and `{field}` keys no record of `{type}`: give its key fields alone, or `MATCH` it and `SET` | A `MERGE` on a field that keys no record. |
 | `cypher_order_item` | `item` (String) | `ORDER BY` names a path, as in `a.amount`, not `{item}` | A sort key that is no path. |

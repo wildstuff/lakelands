@@ -563,6 +563,10 @@ fn keyed(
             Error::invalid(Case::CypherKeyMissing { ty, field })
         };
         let value = map.get(&field).ok_or_else(missing)?;
+        if value.is_null() {
+            let (ty, field) = (ty.clone(), field.clone());
+            return Err(Error::invalid(Case::CypherKeyNull { ty, field }));
+        }
         parts.push(match (writer, value) {
             (true, Value::String(s)) => s.clone(),
             _ => key_component(value).ok_or_else(missing)?,

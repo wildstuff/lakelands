@@ -1208,6 +1208,8 @@ catalog! {
         CypherFunction { name: String, offset: usize } => "`{name}()` is no function of Lakelands' expression grammar (at character {offset})",
         /// A key field a `CREATE` or `MERGE` does not give.
         CypherKeyMissing { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a record of `{ty}` is keyed by `{field}`, which the statement does not give",
+        /// A key field a `CREATE` or `MERGE` gives as null.
+        CypherKeyNull { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a record of `{ty}` is keyed by `{field}`, which the statement gives as null",
         /// A member a statement of its kind does not take.
         CypherMember { member: String } => "the statement takes no `{member}`: a read takes the axes and a cursor, a `MATCH … SET`, `REMOVE` or `DELETE` the id of its plan, and every other write nothing beside its parameters",
         /// A `MERGE` on a field that keys no record.
