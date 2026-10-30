@@ -584,8 +584,8 @@ pub async fn a_write_the_subset_does_not_take_is_refused_before_a_record_is_read
         name: "f".into(),
         offset: bare.find("f IS").expect("f in the statement"),
     };
-    let e = said(door, owner, bare, json!({})).await;
-    assert_eq!(e.expect_err(bare), invalid(case), "a bare name is no field");
+    let e = said(door, owner, bare, json!({})).await.expect_err(bare);
+    assert_eq!(e, invalid(case), "a bare name is no field");
     assert_eq!(
         f.store.head().await.expect("the head"),
         head,

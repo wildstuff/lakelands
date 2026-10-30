@@ -1196,28 +1196,22 @@ fn an_ingest_whose_members_are_in_one_box_follows_the_framed_append() {
     );
 }
 
-/// `apart.json`, one append of two ingests of a source, each in a delivery
-/// of its own and sealed apart under its own key (065, 083), after the
-/// boxed ingest: its events and stored lines hold as `framed.json`'s do,
-/// and the frame leaves each line its `delivery` and its `sealed.apart`
-/// and box.
+/// `apart.json`, one append of two ingests, each in a delivery of its own
+/// and sealed apart under its own key (065, 083), after the boxed ingest:
+/// its lines hold as `framed.json`'s do, and the frame leaves each line
+/// its `delivery` and its `sealed.apart`.
 #[test]
 fn an_append_of_two_deliveries_sealed_apart_is_stored_as_the_writer_frames_it() {
     let apart = read_json("apart.json");
     let last: Event = serde_json::from_str(str_of(&read_json("boxed.json"), "line")).unwrap();
     assert_eq!(the_writers_lines(&apart, &last).len(), 2);
-    let held: Vec<Value> = (apart["stored"].as_array().unwrap()[1..].iter())
+    let held = apart["stored"].as_array().unwrap()[1..].iter();
+    let held: Vec<Value> = held
         .map(|l| serde_json::from_str(l.as_str().unwrap()).unwrap())
         .collect();
-    let (apart_of, delivery) = (
-        |v: &Value| v["sealed"]["apart"].clone(),
-        |v: &Value| v["delivery"].clone(),
-    );
-    assert!(
-        held.iter()
-            .all(|v| !apart_of(v).is_null() && !delivery(v).is_null())
-    );
-    assert!(apart_of(&held[0]) != apart_of(&held[1]) && delivery(&held[0]) != delivery(&held[1]));
+    let own = |v: &Value| (v["sealed"]["apart"].clone(), v["delivery"].clone());
+    let (a, b) = (own(&held[0]), own(&held[1]));
+    assert!(!a.0.is_null() && !a.1.is_null() && a.0 != b.0 && a.1 != b.1);
 }
 
 /// The breaks of `framed.json`, by the code of the flaw each is refused for.
