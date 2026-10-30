@@ -265,6 +265,7 @@ async fn over(
                 name: "overdue_gross".into(),
                 func: AggFunc::Sum,
                 field: Some("gross".into()),
+                by: None,
             }],
             group_by: vec!["partner".into()],
         }),

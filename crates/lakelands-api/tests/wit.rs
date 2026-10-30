@@ -440,6 +440,7 @@ fn agg_measure() -> AggMeasure {
         name: "m".into(),
         func: AggFunc::Sum,
         field: Some("f".into()),
+        by: Some("g".into()),
     }
 }
 
@@ -1841,7 +1842,11 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     );
     units!("direction", Direction, [Asc, Desc]);
     units!("order_by", OrderBy, [Value, KnownAt, SeenAt, Latest]);
-    units!("agg_func", AggFunc, [Count, Sum, Min, Max, Avg]);
+    units!(
+        "agg_func",
+        AggFunc,
+        [Count, Sum, Min, Max, Avg, First, Last]
+    );
     units!(
         "proposal_state",
         ProposalState,

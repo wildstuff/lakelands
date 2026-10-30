@@ -323,6 +323,12 @@ pub enum Func {
     Max,
     /// `avg(field)`: aggregate.
     Avg,
+    /// `first(field, by)`: aggregate, the field's value on the member
+    /// whose `by` comes first.
+    First,
+    /// `last(field, by)`: aggregate, the field's value on the member
+    /// whose `by` comes last.
+    Last,
 }
 
 /// The expressions directly inside `e`, left to right.
@@ -424,7 +430,7 @@ impl Func {
     pub fn is_aggregate(self) -> bool {
         matches!(
             self,
-            Func::Count | Func::Sum | Func::Min | Func::Max | Func::Avg
+            Func::Count | Func::Sum | Func::Min | Func::Max | Func::Avg | Func::First | Func::Last
         )
     }
 }

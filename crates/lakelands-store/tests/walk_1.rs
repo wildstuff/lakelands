@@ -110,6 +110,7 @@ fn overdue_by_partner(as_of: Option<Position>) -> Find {
                 name: "overdue_gross".into(),
                 func: AggFunc::Sum,
                 field: Some("gross".into()),
+                by: None,
             }],
             group_by: vec!["partner".into()],
         }),

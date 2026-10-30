@@ -1187,7 +1187,8 @@ the first release with real installations
   (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
   21 → 22: none. Format 22 is 0.22.0's one step (lakelands#1584), and a
   log of format 21 holds nothing it adds: `context.occasion` (§1.1,
-  `docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+  `docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`),
+  and `first` and `last` (Appendix B, lakelands#1603).
   The step changes no fold, nor does any other step, so no step
   rebuilds the projection. A step that changes how an event folds says
   so here, and a writer's open then rebuilds the projection. A SQLite
@@ -1515,7 +1516,12 @@ read's `where` a set whose own reads across an edge, which is answered
 by its kept membership
 (`docs/decisions/055-a-path-steps-through-a-reference.md`); in an object
 set's `where`, a trigger's `when` and a read's `where` only, a set of
-the record's type, and no set through itself.
+the record's type, and no set through itself. And from format 22
+`first` and `last`, aggregates of two arguments, a value and the value
+its members are ordered by: the first argument on the member whose
+second is the least (`first`) or the greatest (`last`), equal ones
+taken in key order; null where that member's first argument is null
+and where no member's second argument holds a value (lakelands#1603).
 
 **From text to typed form.**
 

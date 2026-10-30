@@ -97,6 +97,8 @@ pub fn func_name(f: Func) -> &'static str {
         Func::Min => "min",
         Func::Max => "max",
         Func::Avg => "avg",
+        Func::First => "first",
+        Func::Last => "last",
     }
 }
 
@@ -131,6 +133,7 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         Func::Count => (0, Some(1)),
         Func::Round | Func::Setting => (1, Some(2)),
         Func::Contains | Func::StartsWith | Func::Matches => (2, Some(2)),
+        Func::First | Func::Last => (2, Some(2)),
         Func::DateBucket => (2, Some(3)),
         Func::Substr => (2, Some(3)),
         Func::If | Func::Replace => (3, Some(3)),

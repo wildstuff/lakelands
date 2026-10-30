@@ -19,12 +19,12 @@ use crate::{FieldName, TypeName};
 /// parameter and reads no clock, nor a field computed at the read, and every aggregate call of its measures
 /// and of its merged sources' is a function of its values: any `count`, a
 /// `sum` or `avg` of what is certainly a number, a `min` or `max` of what
-/// is certainly a number or an instant, and that only under group fields
-/// that are all text or references, of which there is one at least, so
-/// that a group whose extreme left is found again by its fields' values.
-/// Otherwise why not, said at the measure where it is one's: which call,
-/// and what of it. Whether a source that is itself a view is kept is not
-/// said here.
+/// is certainly a number or an instant, a `first` or `last` whose `by` is,
+/// and these only under group fields that are text or references, one at
+/// least, beside which one field may be derived as the `date_bucket` of a
+/// date or an instant of the source ([`bucket`]). Otherwise why not, said
+/// at the measure where it is one's: which call, and what of it. Whether
+/// a source that is itself a view is kept is not said here.
 pub fn keepable<'a>(
     view: &ViewDecl,
     declared: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
@@ -74,7 +74,7 @@ pub fn keepable<'a>(
                 let Expr::Call { func, args } = call else {
                     continue;
                 };
-                folds(*func, print(call), args.first(), fields, group_by).map_err(said)?;
+                folds(*func, print(call), args, fields, group_by).map_err(said)?;
             }
         }
     }
@@ -99,17 +99,22 @@ fn calls<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
 fn folds(
     func: Func,
     call: String,
-    arg: Option<&Expr>,
+    args: &[Expr],
     fields: &[FieldDecl],
     group_by: &[FieldName],
 ) -> Result<(), Case> {
     let declared = |f: &FieldName| fields.iter().find(|d| d.name == *f).map(|d| d.ty.kind);
-    let certain = match (func, arg) {
+    // `first` and `last` are extremes of their `by`, which orders.
+    let extreme = matches!(func, Func::Min | Func::Max | Func::First | Func::Last);
+    let ordered = match func {
+        Func::First | Func::Last => args.get(1),
+        _ => args.first(),
+    };
+    let certain = match (func, ordered) {
         (Func::Count, _) => return Ok(()),
         (_, None) => return Err(Case::KeptNoArgument { call }),
         (_, Some(arg)) => folded_kind(arg, &declared),
     };
-    let extreme = matches!(func, Func::Min | Func::Max);
     match (certain, extreme) {
         (Some(Kind::Number), _) | (Some(Kind::Instant), true) => {}
         (Some(kind), true) => return Err(Case::KeptOrdersKind { call, kind }),
@@ -120,13 +125,18 @@ fn folds(
     if !extreme {
         return Ok(());
     }
-    let other = |f: &&FieldName| {
-        !matches!(
+    let named = |f: &FieldName| {
+        matches!(
             declared(f),
             Some(StorageKind::Text | StorageKind::Reference)
         )
     };
-    match group_by.iter().find(other) {
+    let mut buckets = group_by.iter().filter(|f| bucket(fields, f));
+    let other = (group_by.iter())
+        .find(|f| !named(f) && !bucket(fields, f))
+        .or_else(|| buckets.nth(1))
+        .or_else(|| group_by.first().filter(|_| !group_by.iter().any(named)));
+    match other {
         Some(field) => Err(Case::KeptExtremeGroupedBy {
             call,
             field: field.clone(),
@@ -134,6 +144,30 @@ fn folds(
         None if group_by.is_empty() => Err(Case::KeptExtremeUngrouped { call }),
         None => Ok(()),
     }
+}
+
+/// Whether the source's field `f` is a bucket of time: derived at the
+/// write as `date_bucket` of a date or an instant field, by any unit or
+/// width `date_bucket` takes, so that its value is fixed by the write as a
+/// text field's is.
+fn bucket(fields: &[FieldDecl], f: &FieldName) -> bool {
+    let Some(d) = fields
+        .iter()
+        .find(|d| d.name == *f)
+        .filter(|d| !d.at_read())
+    else {
+        return false;
+    };
+    let Some(Ok(Expr::Call {
+        func: Func::DateBucket,
+        args,
+    })) = d.derived.as_ref().map(|c| c.typed())
+    else {
+        return false;
+    };
+    let time = |p: &FieldName| fields.iter().find(|d| d.name == *p).map(|d| d.ty.kind);
+    matches!(args.first(), Some(Expr::Path { path }) if matches!(
+        path.as_slice(), [p] if matches!(time(p), Some(StorageKind::DateTime | StorageKind::Date))))
 }
 
 /// The kind a fold's argument certainly is among the values it folds. A

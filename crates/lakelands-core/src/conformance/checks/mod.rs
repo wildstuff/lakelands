@@ -48,6 +48,7 @@ mod export;
 mod feed;
 mod fields;
 mod filters;
+mod first_last;
 mod forgotten;
 mod function_input;
 mod fusion;
@@ -497,6 +498,7 @@ pub const ALL: &[Check] = &[
     view_kept::KEPT_POSITIONS,
     view_kept::KEPT_RUNS,
     view_kept::KEPT_ORDER,
+    view_kept::KEPT_BUCKETS,
     keys::KEY_AND_KEY_FIELDS_AGREE,
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
@@ -635,6 +637,7 @@ pub const ALL: &[Check] = &[
     aggregates::EMPTY_AGGREGATE,
     aggregates::COUNT_IS_THE_WALK,
     aggregates::SETTING_IN_A_GROUP_KEY,
+    first_last::BY_ORDER,
     aggregates::PATTERN_AGGREGATE_READS_PATHS,
     date_bucket::GROUPS,
     date_bucket::WHERE,

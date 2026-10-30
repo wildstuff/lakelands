@@ -799,7 +799,7 @@ impl Build {
             };
             let one = args.first();
             let measure = match (func, one) {
-                (lakelands_api::expr::Func::Count, None) => (AggFunc::Count, None),
+                (lakelands_api::expr::Func::Count, None) => (AggFunc::Count, None, None),
                 (lakelands_api::expr::Func::Count, Some(Expr::Path { path }))
                     if path.len() == 1 =>
                 {
@@ -807,7 +807,7 @@ impl Build {
                     if self.slots[slot].optional {
                         return Err(Case::CypherCount { item: item.text });
                     }
-                    (AggFunc::Count, None)
+                    (AggFunc::Count, None, None)
                 }
                 (lakelands_api::expr::Func::Count, _) => {
                     return Err(Case::CypherCount { item: item.text });
@@ -817,9 +817,20 @@ impl Build {
                         lakelands_api::expr::Func::Sum => AggFunc::Sum,
                         lakelands_api::expr::Func::Min => AggFunc::Min,
                         lakelands_api::expr::Func::Max => AggFunc::Max,
+                        lakelands_api::expr::Func::First => AggFunc::First,
+                        lakelands_api::expr::Func::Last => AggFunc::Last,
                         _ => AggFunc::Avg,
                     };
-                    (func, Some(dotted(path)))
+                    // `first` and `last` order by a second path.
+                    let by = match args.get(1) {
+                        Some(Expr::Path { path }) if path.len() > 1 => Some(dotted(path)),
+                        None => None,
+                        Some(_) => {
+                            let at = item.aggregates[0];
+                            return Err(outside(Construct::AggregateInExpression, at));
+                        }
+                    };
+                    (func, Some(dotted(path)), by)
                 }
                 _ => {
                     let at = item.aggregates[0];
@@ -830,6 +841,7 @@ impl Build {
                 name,
                 func: measure.0,
                 field: measure.1,
+                by: measure.2,
             });
         }
         Ok(Aggregate { measures, group_by })

@@ -62,6 +62,13 @@ check!(
     given
 );
 
+check!(
+    KEPT_BUCKETS =
+        a_kept_first_and_last_answer_as_their_twins_in_a_view_grouped_by_a_bucket_of_time,
+    "049, extended (lakelands#1603, lakelands#1605): a view grouped by a text field and an hour derived by `date_bucket` is kept, its `min`, `max`, `first(v, at)` and `last(v, at)` answering as their twins, read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own, while members arrive, two tie on `at`, one has no `at` and one no value, a bucket's first, last and least member is retired, a member moves to the next hour and an earlier one arrives, a holder's value changes and another's goes null, a holder leaves after another member's value changed, and a bucket's last member leaves, `describe_type` saying `kept` after each; `first` and `last` of a text by a decimal are kept in a view grouped by text alone, and by a date under a week bucket of it; declared again grouped by two buckets, by a bucket alone, or with a `first` that orders by a text, a kept view cannot be kept, and answers as its twin, until it is declared as it was",
+    given
+);
+
 const SHAPES: &str = r#"
     type line g:text n:decimal
     type credit g:text n:decimal
@@ -449,6 +456,80 @@ const ORDERS: &str = r#"
     put line g {"g": "x", "n": "4"}
 "#;
 
+const BUCKETS: &str = r#"
+    declare {"declare": "type", "name": "reading", "fields": [{"name": "meter", "type": {"kind": "text"}}, {"name": "at", "type": {"kind": "date_time"}}, {"name": "v", "type": {"kind": "decimal"}}, {"name": "note", "type": {"kind": "text"}}, {"name": "hour", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')", "depends_on": ["at"]}, {"name": "day", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'day')", "depends_on": ["at"]}, {"name": "on", "type": {"kind": "date"}}, {"name": "week", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(on, 'week')", "depends_on": ["on"]}]}
+    view hourly = reading by meter:text hour:date_time | low:decimal=min(v); high:decimal=max(v); opened:decimal=first(v, at); closed:decimal=last(v, at); c:number=count()
+    view noted = reading by meter:text | least:text=first(note, v); most:text=last(note, v)
+    view weekly = reading by meter:text week:date_time | early:text=first(note, on); late:text=last(note, on); c:number=count()
+    row a view by a meter and its hour is made over the readings
+    put reading r1 {"meter": "m1", "at": "2026-01-01T00:10:00Z", "v": "5", "note": "a"}
+    put reading r2 {"meter": "m1", "at": "2026-01-01T00:50:00Z", "v": "2", "note": "b"}
+    put reading r3 {"meter": "m1", "at": "2026-01-01T01:20:00Z", "v": "7", "note": "c"}
+    put reading r4 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "1", "note": "d"}
+    put reading r5 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "3", "note": "e"}
+    put reading r6 {"meter": "m1", "v": "9", "note": "f"}
+    put reading r7 {"meter": "m1", "at": "2026-01-01T00:30:00Z", "note": "g"}
+    put reading d1 {"meter": "m1", "on": "2026-01-07", "note": "p"}
+    put reading d2 {"meter": "m1", "on": "2026-01-05", "note": "q"}
+    put reading d3 {"meter": "m1", "on": "2026-01-12", "note": "s"}
+    set view_kept.hourly true
+    set view_kept.noted true
+    set view_kept.weekly true
+    says hourly kept
+    says noted kept
+    says weekly kept
+    read hourly noted weekly
+    is hourly m1:2026-01-01T00%3A00%3A00.000000Z 2,5,5,2,3; m1:2026-01-01T01%3A00%3A00.000000Z 7,7,7,7,1; m2:2026-01-01T00%3A00%3A00.000000Z 1,3,1,1,2
+    is noted m1 b,f; m2 d,e
+    row a bucket's first, last and least member is retired, one moves to the next hour and an earlier one arrives
+    retire reading r2
+    says hourly kept
+    put reading r1 {"at": "2026-01-01T01:05:00Z"}
+    put reading r8 {"meter": "m2", "at": "2026-01-01T00:05:00Z", "v": "4", "note": "h"}
+    put reading r5 {"v": "0"}
+    says hourly kept
+    read hourly noted
+    is hourly m1:2026-01-01T00%3A00%3A00.000000Z -,-,-,-,1; m1:2026-01-01T01%3A00%3A00.000000Z 5,7,5,7,2; m2:2026-01-01T00%3A00%3A00.000000Z 0,4,4,1,3
+    row a holder's value changes, another's goes null, and a holder leaves after a member's value changed
+    put reading r8 {"v": "5"}
+    put reading r4 {"v": null}
+    put reading r5 {"v": "2"}
+    put reading d2 {"note": "r"}
+    says hourly kept
+    is hourly m1:2026-01-01T00%3A00%3A00.000000Z -,-,-,-,1; m1:2026-01-01T01%3A00%3A00.000000Z 5,7,5,7,2; m2:2026-01-01T00%3A00%3A00.000000Z 2,5,5,-,3
+    retire reading r4
+    retire reading d2
+    says hourly kept
+    says weekly kept
+    is hourly m1:2026-01-01T00%3A00%3A00.000000Z -,-,-,-,1; m1:2026-01-01T01%3A00%3A00.000000Z 5,7,5,7,2; m2:2026-01-01T00%3A00%3A00.000000Z 2,5,5,2,2
+    read hourly noted weekly
+    row a bucket's last member leaves
+    retire reading r7
+    retire reading r3
+    retire reading r1
+    says hourly kept
+    says noted kept
+    read hourly noted
+    row a view grouped by two buckets, one by a bucket alone and one whose first orders by a text are declared
+    view hourly = reading by meter:text hour:date_time day:date_time | low:decimal=min(v); high:decimal=max(v); opened:decimal=first(v, at); closed:decimal=last(v, at); c:number=count()
+    says hourly cannot be kept
+    view hourly = reading by hour:date_time | low:decimal=min(v); high:decimal=max(v); opened:decimal=first(v, at); closed:decimal=last(v, at); c:number=count()
+    says hourly cannot be kept
+    view noted = reading by meter:text | least:text=first(note, note); most:text=last(note, v)
+    says noted cannot be kept
+    put reading r10 {"meter": "m2", "at": "2026-01-01T03:00:00Z", "v": "2", "note": "j"}
+    read hourly noted
+    view hourly = reading by meter:text hour:date_time | low:decimal=min(v); high:decimal=max(v); opened:decimal=first(v, at); closed:decimal=last(v, at); c:number=count()
+    view noted = reading by meter:text | least:text=first(note, v); most:text=last(note, v)
+    says hourly kept
+    says noted kept
+    then
+    row the lake goes on after it
+    put reading r9 {"meter": "m2", "at": "2026-01-01T02:00:00Z", "v": "6", "note": "i"}
+    retire reading r5
+    put reading d1 {"on": "2026-01-06"}
+"#;
+
 /// Each check's function: its table, run by [`twin`].
 macro_rules! tables {
     ($($run:ident = $table:ident,)*) => {$(
@@ -463,6 +544,7 @@ tables! {
     a_kept_view_answers_as_its_twin_at_every_position_and_under_every_setting = POSITIONS,
     a_kept_extreme_answers_as_its_twin_when_a_run_or_a_re_key_moves_its_holders = RUNS,
     a_kept_view_answers_every_ordered_page_from_its_order_index_as_its_twin_computes = ORDERS,
+    a_kept_first_and_last_answer_as_their_twins_in_a_view_grouped_by_a_bucket_of_time = BUCKETS,
 }
 
 /// A view of a table, declared as `name` and as `name_twin`.

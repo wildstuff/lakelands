@@ -3,6 +3,7 @@
 //! `docs/decisions/014-four-doors-per-type-one-name-generator.md`).
 
 use lakelands_api::error::Naming;
+use lakelands_api::read::AggMeasure;
 use lakelands_api::tools::Door;
 use lakelands_api::write::Outcome;
 
@@ -19,7 +20,7 @@ check!(
 
 check!(
     BUILT_FROM_HIDDEN = a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field,
-    "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows (where a projected hidden one is refused as for an undeclared field, lakelands#752) and describe, which shows a definition only where every field it names is read; a filter, an order or an aggregate over them is refused naming them, as not granted where they are masked and as for an undeclared field where they are hidden",
+    "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows (where a projected hidden one is refused as for an undeclared field, lakelands#752) and describe, which shows a definition only where every field it names is read; a filter, an order, an aggregate over them or a `first` of another field by them (lakelands#1603) is refused naming them, as not granted where they are masked and as for an undeclared field where they are hidden",
     embedding
 );
 
@@ -320,10 +321,18 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
             ..Find::default()
         };
         let sum: fn(&str) -> Find = |n| aggregate(vec![agg("s", AggFunc::Sum, Some(n))]);
+        let first: fn(&str) -> Find = |n| {
+            let by = Some(n.into());
+            aggregate(vec![AggMeasure {
+                by,
+                ..agg("o", AggFunc::First, Some("k"))
+            }])
+        };
         let probes = [
             ("a filter on `g`", "g", filter),
             ("an order by `h`", "h", ordered),
             ("a sum of `g`", "g", sum),
+            ("a first of `k` by `h`", "h", first),
         ];
         for (what, name, find) in probes {
             let r = cat.find(&who, &"emp".into(), find(name)).await;

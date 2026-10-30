@@ -739,6 +739,7 @@ pub fn agg(name: &str, func: AggFunc, field: Option<&str>) -> AggMeasure {
         name: FieldName::from(name),
         func,
         field: field.map(FieldName::from),
+        by: None,
     }
 }
 
