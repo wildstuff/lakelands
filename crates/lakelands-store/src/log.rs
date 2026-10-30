@@ -161,9 +161,10 @@ pub(crate) fn unsealed(
     let mut context = d.context;
     // Whom the write is for goes with its writer, in the envelope: an
     // event the store writes as itself names none, and `context` never
-    // carries it (088).
-    let on_behalf_of =
-        (context.on_behalf_of.take()).filter(|_| d.writer != crate::record::STORE_WRITER);
+    // carries it. Nor does such an event carry the host's occasion (088).
+    let own = d.writer == crate::record::STORE_WRITER;
+    let on_behalf_of = (context.on_behalf_of.take()).filter(|_| !own);
+    context.occasion = context.occasion.filter(|_| !own);
     Event {
         upstream: d.upstream,
         v: LOG_FORMAT_VERSION,

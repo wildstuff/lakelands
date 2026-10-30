@@ -126,6 +126,7 @@ fn reaction(cause: Position, depth: u32) -> WriteContext {
         depth,
         cause: Some(cause),
         on_behalf_of: None,
+        occasion: None,
     }
 }
 

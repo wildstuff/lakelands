@@ -492,6 +492,7 @@ fn crossing(depth: u32) -> WriteContext {
         depth,
         cause: None,
         on_behalf_of: None,
+        occasion: None,
     }
 }
 

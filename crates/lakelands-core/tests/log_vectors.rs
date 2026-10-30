@@ -755,6 +755,7 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         "slip_write" => {
             matches!(&event.body, B::RecordUpserted { ty, made: true, .. } if ty.as_str() == "slip")
                 && event.on_behalf_of.as_deref() == Some("human:reader")
+                && event.context.occasion.as_deref() == Some("live")
         }
         "fired_change" => {
             matches!(&event.body, B::TriggerFired { trigger, change: Some(ChangeKind::Upserted), created: Some(true), .. }

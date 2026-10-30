@@ -1035,6 +1035,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 origin: WriteOrigin::Reactive,
                 depth: 1,
                 on_behalf_of: Some("human:b".into()),
+                occasion: Some("live".into()),
             }),
         ),
         ("field_type", members(&field_type())),

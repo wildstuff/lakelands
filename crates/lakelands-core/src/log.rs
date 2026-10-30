@@ -199,6 +199,9 @@ const QUARANTINED_FROM: u32 = 21;
 /// The log format that first holds `on_behalf_of` (088).
 const ON_BEHALF_OF_FROM: u32 = 21;
 
+/// The log format that first holds `context.occasion` (088).
+const OCCASION_FROM: u32 = 22;
+
 /// The log format that first holds a setting's values from dates (090).
 const PERIODS_FROM: u32 = 21;
 
@@ -233,6 +236,8 @@ const PERIODS_FROM: u32 = 21;
 /// - **20 → 21:** none. Format 21 is 0.21.0's one step, taken before any
 ///   form it adds (lakelands#1502): a log of format 20 holds none of them,
 ///   a `record_quarantined` and a `quarantine_closed` (085) among them.
+/// - **21 → 22:** none. Format 22 is 0.22.0's one step (lakelands#1584): a
+///   log of format 21 holds no `context.occasion` (088).
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");
@@ -350,7 +355,8 @@ fn padded(b: &str) -> bool {
 /// Why an event carries a member where it never sits, if it does:
 /// `cause` inside `context`, since a host's cause is the envelope's
 /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); and
-/// `on_behalf_of` inside `context`, or on an event of a format before 21
+/// `on_behalf_of` inside `context`, or on an event of a format before 21,
+/// and `context.occasion` before 22
 /// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`); and
 /// `upstream` on any kind but `record_ingested`, since only a source's
 /// record is read from another lake (`docs/log-format.md` §1.1); and the
@@ -384,6 +390,10 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if event.on_behalf_of.is_some() && event.v < ON_BEHALF_OF_FROM {
         let v = event.v;
         return Some(Flaw::OnBehalfOfBefore { v });
+    }
+    if event.context.occasion.is_some() && event.v < OCCASION_FROM {
+        let v = event.v;
+        return Some(Flaw::OccasionBefore { v });
     }
     if let EventBody::OutputRecorded {
         output, output_at, ..

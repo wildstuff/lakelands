@@ -93,6 +93,69 @@ grants no wider than the person's
 (`docs/decisions/006-grants-not-roles.md`). The store has no other way to
 know them.
 
+### The host may say why it wrote (format 22)
+
+Extended on lakelands#1584, for 0.22.0, which takes format 22 for it.
+A host ingests a source's records for three reasons: **live**, the
+records just arrived; **caught up**, they arrived while the host took
+nothing in and are written later, many at once; and **again**, the host
+writes records it wrote before because the way it maps the source
+changed, and the values now differ. To the store all three are one
+`ingest`, and a reaction reads the same envelope each time. A rule that
+acts outside the lake, sending a mail or filing a payment, then acts on
+a record caught up after weeks, or on a due date only mapped again, as
+if it had just arrived. The host wants to act at once on a live write
+and hold the act for a person to confirm on the other two.
+
+No member the event has can say so. `delivery` names the batch, and a
+take-back selects by it: a host that put the reason there would split
+one batch into several deliveries, and a take-back of the batch would
+no longer reach the versions written again. `origin` names the kind of
+writer, and all three are the same writer at the same door. `seen_at`
+and `known_at` are clocks: a record seen a month ago and learned of only
+now is live, and "again" is no matter of time at all.
+
+`WriteContext.occasion: Option<String>`, serde default and skipped when
+`None`, is the host's word for why it made the write, such as `live`,
+`caught-up` or `again`. WIT's `write-context` gains
+`occasion: option<string>`. It is the host's as the rest of the context
+is: a door carries it only where it carries `on_behalf_of`, and no
+caller of a door sets it.
+
+- **It stays in `context`.** Unlike `on_behalf_of` it is not about a
+  principal, so it does not move to the envelope: every event written
+  as the writer carries it in `context` as given, and an event written
+  as `system:lakelands` carries none. A reaction finds the occasion on
+  the write it reacts to, by its cause, and names it again on its own
+  write if the host wants a chain to keep it. A write that names none
+  appends events without the member, byte for byte what they were
+  before it.
+- **An accepted proposal's writes carry the proposer's occasion.** The
+  `write_proposed` carries the proposer's, and so do the writes the
+  accept makes, as they are written as the proposer and for whom it
+  wrote; the `write_accepted` is the accepter's act and carries the
+  accepter's.
+- **Its form is checked, nothing else.** An occasion that is empty,
+  longer than 128 bytes or holds a control character is refused
+  `invalid` (`occasion_form`) at `occasion`, before anything is
+  appended.
+- **The store records it and judges nothing by it.** No right, fold,
+  duplicate or trigger reads it, and no refusal but its form's. It is
+  not a delivery: a record written again with the same values under
+  another occasion is still a duplicate and appends nothing, as a
+  retried ingest is. It is not a clock: when the values were seen is
+  `seen_at`, and when they were written is the position.
+- **It is held in clear.** Forgetting a source or erasing a field does
+  not reach it, so a host keeps personal data out of it: it names a
+  reason, not a person or a value.
+- **Format 22.** A reader refuses `context.occasion` on an event of a
+  format before 22, naming it, so a lake written by 0.22.0 is not
+  opened by 0.21.x again.
+
+The checks: `context::OCCASION_RECORDED` (with the duplicate under
+`again`), `context::OCCASION_FORM`, `export::OCCASION_FROM_22` and
+`proposals::ACCEPTED_FOR_THE_PROPOSER` (the proposer's occasion on the writes of an accept).
+
 ### What it takes to build
 
 Estimated from the nearest shipped sibling, the host's `cause` in the
@@ -172,4 +235,5 @@ given a step of its own.
   was made for, beside `authority: writer`
   (`docs/decisions/084-a-field-holds-the-writer-that-made-its-record.md`),
   is not part of this; it waits until a host asks for it.
-- **Not a filter.** No door finds events or records by it.
+- **Not a filter.** No door finds events or records by it, nor by an
+  occasion.

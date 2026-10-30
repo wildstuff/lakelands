@@ -140,6 +140,10 @@ interface types {
         /// in the envelope's `on_behalf_of` of the events written as the
         /// writer, and is recorded, never trusted.
         on-behalf-of: option<string>,
+        /// The host's word for why the write was made; it lands in the
+        /// `context` of the events written as the writer, and is
+        /// recorded, never judged.
+        occasion: option<string>,
     }
 
     // ------------------------------------------------------------------
