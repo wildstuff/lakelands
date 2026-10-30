@@ -393,8 +393,10 @@ record's history), without them a key in any type (`docs/seams.md`
 §`ChangeFeed`). Each event's `id` is
 its position, its `event` its kind, its `data` the event as JSON; a
 reaction the batch names `overruled` carries the comment `: overruled`
-in its frame, after its `id`, which a reader that does not know the
-mark skips as it skips every comment
+in its frame, after its `id`, and every event the comment
+`: append <position>`, the last position of the append that wrote it
+(the batch's `appends`, `docs/seams.md` §`ChangeFeed`), each of which a
+reader that does not know the mark skips as it skips every comment
 (`docs/decisions/004-the-change-feed-is-the-log.md`). A
 reconnecting client sends `Last-Event-ID` and resumes after it. Each
 time the stream catches up at a position it has not named before, it

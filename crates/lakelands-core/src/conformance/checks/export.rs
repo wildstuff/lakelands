@@ -29,8 +29,8 @@ check!(
 );
 
 check!(
-    FRAMED_COPY = an_export_frames_the_runs_that_share_known_at_and_imports_byte_for_byte,
-    "log-format §4.2: an export frames each run of two to 1000 consecutive events that share `known_at` and holds the others whole, every event line holding its `position` and only its file's first its `prev`; imported into a fresh lake, which restores each event and appends it as a writer does, it answers the head and verify as the lake it came from and exports the same files byte for byte",
+    FRAMED_COPY = an_export_frames_each_append_and_imports_byte_for_byte,
+    "log-format §4.2 and 083, extended (lakelands#1540): an export frames each append of two or more events the feed tells, whole, and holds the others whole, every event line holding its `position` and only its file's first its `prev`; imported into a fresh lake, which restores each event and appends each frame as one append, it answers the head and verify as the lake it came from, its feed tells the same appends, and it exports the same files byte for byte",
     given
 );
 
@@ -1970,16 +1970,37 @@ fn copy_lines(dir: &Path, file: &str) -> Result<(Vec<CopyLine>, Vec<u64>), Failu
     Ok((out, frames))
 }
 
+/// The last position of the append of each event of `store`'s log, by
+/// its position, as the feed tells it.
+async fn append_ends(store: &dyn LakeStore) -> Result<BTreeMap<Position, Position>, Failure> {
+    let (feed, mut from, mut ends) = (store.feed(), Position::GENESIS, BTreeMap::new());
+    loop {
+        let batch = feed.poll(from, &FeedFilter::default(), 100).await;
+        let batch = batch.must(&format!("polling the feed from {from}"))?;
+        if batch.events.is_empty() {
+            return Ok(ends);
+        }
+        for e in &batch.events {
+            ends.insert(
+                e.position,
+                batch.append_of(e.position).unwrap_or(e.position),
+            );
+        }
+        from = batch.next;
+    }
+}
+
 /// Fails unless `dir`'s files hold their events in a copy's stored form
-/// (log-format §4.2), and some frame among them.
-fn copy_form(dir: &Path) -> Held {
+/// (log-format §4.2), each append `ends` tells framed, and some frame
+/// among them.
+fn copy_form(dir: &Path, ends: &BTreeMap<Position, Position>) -> Held {
     let mut framed = false;
     for file in files(dir)? {
         let (lines, frames) = copy_lines(dir, &file)?;
         framed |= !frames.is_empty();
         ensure!(
-            frames.iter().all(|n| (2..=1000).contains(n)),
-            "each frame of {file} covers two to 1000 events, and they cover {frames:?}"
+            frames.iter().all(|n| *n >= 2),
+            "each frame of {file} covers two events or more, and they cover {frames:?}"
         );
         for (i, l) in lines.iter().enumerate() {
             let at = &l.event["position"];
@@ -1992,13 +2013,16 @@ fn copy_form(dir: &Path) -> Held {
         }
         for pair in lines.windows(2) {
             let (a, b) = (&pair[0], &pair[1]);
-            let shared = a.event["known_at"] == b.event["known_at"];
+            let end = |l: &CopyLine| {
+                let at = l.event["position"].as_u64().map(Position);
+                at.and_then(|at| ends.get(&at)).copied()
+            };
+            let shared = end(a).is_some() && end(a) == end(b);
             let together = a.frame.is_some() && a.frame == b.frame;
-            let full = a.frame.is_some_and(|f| frames[f] == 1000);
             ensure!(
-                together == shared || (shared && full && a.frame != b.frame),
-                "in {file} the events at {} and {} are in one frame where they share `known_at`, \
-                 and only then, and they are framed {:?} and {:?}",
+                together == shared,
+                "in {file} the events at {} and {} are in one frame where the feed tells them of \
+                 one append, and only then, and they are framed {:?} and {:?}",
                 a.event["position"],
                 b.event["position"],
                 a.frame,
@@ -2032,7 +2056,7 @@ async fn ingested(store: &dyn LakeStore) -> Held {
     Ok(())
 }
 
-async fn an_export_frames_the_runs_that_share_known_at_and_imports_byte_for_byte(
+async fn an_export_frames_each_append_and_imports_byte_for_byte(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
@@ -2040,7 +2064,8 @@ async fn an_export_frames_the_runs_that_share_known_at_and_imports_byte_for_byte
     ingested(store.as_ref()).await?;
     let from = scratch.dir("from");
     write(store.as_ref(), &from).await?;
-    copy_form(&from)?;
+    let ends = append_ends(store.as_ref()).await?;
+    copy_form(&from, &ends)?;
     let imported = (given.import)(from.clone(), store.lake().clone(), None, import_seams());
     let imported = imported
         .await
@@ -2060,6 +2085,11 @@ async fn an_export_frames_the_runs_that_share_known_at_and_imports_byte_for_byte
         got.hash.0,
         want.through,
         want.hash.0
+    );
+    let told = append_ends(imported.as_ref()).await?;
+    ensure!(
+        told == ends,
+        "the imported lake's feed tells the appends the lake's tells, {ends:?}; it tells {told:?}"
     );
     let again = scratch.dir("again");
     write(imported.as_ref(), &again).await?;

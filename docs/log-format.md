@@ -967,14 +967,17 @@ first event is `lake_created`; every later one's is a `checkpoint`.
 **A copy of the log writes a form of its own** (083, in force from
 lakelands#1433; a copy made before it wrote every line as a full event,
 a form a reader reads alike). An export and a backup read the log through the
-feed, which answers events, not lines, and tells no append's end. They
-frame each run of two or more, and at most 1 000, consecutive events of
-one segment that share `known_at`, each run as long as those bounds let
-it be, with the members all of the run share, and every event line they
-write holds its `position`; `prev` stands only on a segment's first
-event line. An import restores
-the events and appends them as any writer does, so its lake holds the
-writer's form (§1.2). Each copy's digests are its log's, and every
+feed, which answers events, not lines, and names where each append ends.
+They frame each append of two or more events whole, with the members
+all of it share, and every event line they write holds its `position`;
+`prev` stands only on a segment's first event line. A copy made before
+lakelands#1540 framed each run of two or more, and at most 1 000,
+consecutive events that shared `known_at`, and is read alike. An import
+restores the events and appends each frame as one append, and each
+event no frame covers as one of its own, as any writer does, so its
+lake holds the writer's form (§1.2) and its feed names the appends the
+copy framed. A copy holds one append at a time, so what it holds
+follows the lake's largest append. Each copy's digests are its log's, and every
 checkpoint it holds stays true.
 
 Sealing the active segment ends it at its last event and starts a new one

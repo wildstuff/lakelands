@@ -1306,12 +1306,14 @@ async fn feed(
 }
 
 /// An event as one SSE frame, with the comment `: overruled` where its
-/// batch names it overruled (065).
-fn frame(e: &lakelands_api::event::Event, overruled: bool) -> Bytes {
+/// batch names it overruled (065) and `: append <position>`, the last
+/// position of its append (083).
+fn frame(e: &lakelands_api::event::Event, overruled: bool, append: Option<Position>) -> Bytes {
     let data = serde_json::to_string(&to_json(e)).expect("JSON prints");
     let (at, kind) = (e.position.0, e.body.kind());
     let mark = if overruled { ": overruled\n" } else { "" };
-    format!("id: {at}\n{mark}event: {kind}\ndata: {data}\n\n").into()
+    let end = append.map_or_else(String::new, |p| format!(": append {}\n", p.0));
+    format!("id: {at}\n{mark}{end}event: {kind}\ndata: {data}\n\n").into()
 }
 
 /// Send the feed from `from` on, then wait for more, until the client

@@ -413,20 +413,20 @@ async fn the_feed_streams_the_log_and_resumes_on(backend: Backend) {
         "{reply}"
     );
     let mut events = events.unwrap();
-    // Each event's bytes: its position, its kind, and the event as the
-    // lake's own feed holds it, as JSON.
+    // Each event's bytes: its position, the end of its append, its kind,
+    // and the event as the lake's own feed holds it, as JSON.
     let log = store
         .feed()
         .poll(Position(0), &FeedFilter::default(), 1000)
         .await
-        .unwrap()
-        .events;
+        .unwrap();
     let mut seen = Vec::new();
     while seen.last() != Some(&head) {
         let (id, _, _, raw) = events.next().await;
-        let e = &log[id as usize];
+        let e = &log.events[id as usize];
         let expected = format!(
-            "id: {id}\nevent: {}\ndata: {}\n\n",
+            "id: {id}\n: append {}\nevent: {}\ndata: {}\n\n",
+            log.append_of(e.position).unwrap().0,
             e.body.kind(),
             serde_json::to_value(e).unwrap()
         );
@@ -494,8 +494,9 @@ async fn solo_frames(
         for e in &b.events {
             let data = serde_json::to_value(e).unwrap();
             frames.push(format!(
-                "id: {}\nevent: {}\ndata: {data}\n\n",
+                "id: {}\n: append {}\nevent: {}\ndata: {data}\n\n",
                 e.position.0,
+                b.append_of(e.position).unwrap().0,
                 e.body.kind()
             ));
         }

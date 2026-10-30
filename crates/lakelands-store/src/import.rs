@@ -35,12 +35,14 @@
 //! event is carried.
 //!
 //! **Then the events, as they are.** Each file's events are restored from
-//! its lines and frames (`docs/log-format.md` §1.2) and appended as any
-//! writer appends them: a batch is one append, framed as the store frames
-//! one, so the stored form is the new lake's own and only the events are
-//! the export's. The first file's events go to
-//! `LakeEngine::import` in batches of at most [`BATCH`] bytes, an event
-//! larger than that alone. Each later file starts with its `checkpoint`:
+//! its lines and frames (`docs/log-format.md` §1.2) and appended as the
+//! lake it came from appended them: each frame of the export is one
+//! append, and each event no frame covers one of its own, framed as the
+//! store frames one, so the imported lake's feed tells the same appends
+//! (083) and the stored form is the new lake's own. The first file's
+//! events go to `LakeEngine::import` in batches of at most [`BATCH`]
+//! bytes, each append whole, one larger than that alone, so what an
+//! import holds follows the copy's largest append. Each later file starts with its `checkpoint`:
 //! its first batch is handed to `LakeEngine::seal_segment`, which closes
 //! the segment before it and begins the next with that batch in one step,
 //! once the digest the engine takes of that segment, over its restored
@@ -96,30 +98,59 @@ fn weight(event: &CanonicalEvent) -> usize {
     event.bytes.len() + event.id.0.len() + event.prev.0.len() + event.hash.0.len()
 }
 
-/// Hands `events` on in batches of at most `limit` bytes by [`weight`]: a
-/// batch is handed before the event that would take it over, so only an
-/// event heavier than `limit` makes a larger one, and goes alone.
+/// Hands `appends` on in batches of at most `limit` bytes by [`weight`],
+/// each append whole: a batch is handed before the append that would take
+/// it over, so only an append heavier than `limit` makes a larger one,
+/// and goes alone.
 fn batched(
-    events: impl Iterator<Item = Result<CanonicalEvent>>,
+    appends: impl Iterator<Item = Result<Vec<CanonicalEvent>>>,
     limit: usize,
     hand: &mut dyn FnMut(&[CanonicalEvent]) -> Result<()>,
 ) -> Result<()> {
     let (mut batch, mut weighed) = (Vec::new(), 0);
-    for event in events {
-        let event = event?;
-        let weighs = weight(&event);
+    for append in appends {
+        let append = append?;
+        let weighs: usize = append.iter().map(weight).sum();
         if !batch.is_empty() && weighed + weighs > limit {
             hand(&batch)?;
             batch.clear();
             weighed = 0;
         }
         weighed += weighs;
-        batch.push(event);
+        batch.extend(append);
     }
     if batch.is_empty() {
         return Ok(());
     }
     hand(&batch)
+}
+
+/// The appends of a file's `events`, each the events one frame of the
+/// export covers or one event no frame covers, framed as the store's
+/// writer frames an append: an import keeps the appends the lake it came
+/// from wrote, as its feed tells them (083).
+fn appends(
+    mut events: impl Iterator<Item = Result<(CanonicalEvent, Position)>>,
+) -> impl Iterator<Item = Result<Vec<CanonicalEvent>>> {
+    std::iter::from_fn(move || {
+        let mut append = Vec::new();
+        for event in events.by_ref() {
+            let (event, end) = match event {
+                Ok(read) => read,
+                Err(e) => return Some(Err(e)),
+            };
+            let last = event.position >= end;
+            append.push(event);
+            if last {
+                break;
+            }
+        }
+        if append.is_empty() {
+            return None;
+        }
+        lakelands_core::log::frame_append(&mut append);
+        Some(Ok(append))
+    })
 }
 
 /// What an import made.
@@ -198,11 +229,15 @@ struct Sealed {
     apart: Vec<lakelands_api::id::KeyId>,
 }
 
+/// An event of an export as [`events`] reads it.
+type Read = (CanonicalEvent, Envelope, Position);
+
 /// Each event of `path`, restored from its line and its frame
 /// (`docs/log-format.md` §1.2), as the event the store would append, its
 /// bytes the event's canonical bytes and framed by none, with its
-/// envelope, in order.
-fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, Envelope)>> + '_> {
+/// envelope and the last position its frame covers, its own where none
+/// covers it, in order.
+fn events(path: &Path) -> Result<impl Iterator<Item = Result<Read>> + '_> {
     let file = fs::File::open(path).map_err(|e| io(Doing::Open, path, e))?;
     let (mut lines, mut before) = (
         lakelands_core::log::Lines::default(),
@@ -232,7 +267,8 @@ fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, En
             bytes: lakelands_core::canonical::to_vec(&value),
             frame: None,
         };
-        Ok(Some((stored, e)))
+        let end = Position(e.position.0 + lines.left());
+        Ok(Some((stored, e, end)))
     });
     Ok(read.filter_map(Result::transpose))
 }
@@ -283,7 +319,7 @@ fn scan(files: &[PathBuf], lake: &LakeId) -> Result<(Vec<Digest>, Needed)> {
         // (§4.2), hashed as they are read, so a segment is never held whole.
         let mut hasher = Sha256::new();
         for event in events(path)? {
-            let (stored, event) = event?;
+            let (stored, event, _) = event?;
             hasher.update(&stored.bytes);
             hasher.update(b"\n");
             if event.lake != *lake {
@@ -434,17 +470,16 @@ fn carry(
         // with the seal of the one before, whose digest is checked against
         // that file's before anything is sealed.
         let mut seals = i > 0;
-        // Each batch is an append, framed as the store's writer frames one.
+        // Each batch holds whole appends, each framed as the store's
+        // writer frames one.
         let mut hand = |batch: &[CanonicalEvent]| -> Result<()> {
-            let mut batch = batch.to_vec();
-            lakelands_core::log::frame_append(&mut batch);
             if !std::mem::take(&mut seals) {
-                return engine.import(lease, &batch);
+                return engine.import(lease, batch);
             }
             let before = &digests[i - 1];
             let sealed = engine.seal_segment(lease, true, &mut |sealed| {
                 if &sealed.digest == before {
-                    return Ok(batch.clone());
+                    return Ok(batch.to_vec());
                 }
                 let (engine, file) = (sealed.digest.0.clone(), before.0.clone());
                 let flaw = Flaw::DigestDiffers { engine, file };
@@ -454,8 +489,8 @@ fn carry(
                 .map(drop)
                 .ok_or_else(|| lakelands_core::damaged(Part::Log, None, Flaw::NothingToSeal))
         };
-        let read = events(path)?.map(|event| event.map(|(event, _)| event));
-        batched(read, BATCH, &mut |batch| {
+        let read = events(path)?.map(|event| event.map(|(event, _, end)| (event, end)));
+        batched(appends(read), BATCH, &mut |batch| {
             hand(batch).map_err(|e| stopped(path, reached, e))?;
             reached = batch.last().expect("not empty").position.next();
             Ok(())

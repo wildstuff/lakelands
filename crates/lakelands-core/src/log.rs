@@ -826,6 +826,12 @@ impl Lines {
         Ok(Some((event, whole)))
     }
 
+    /// How many lines after the event last restored the frame covering it
+    /// still covers: 0 at a frame's last event and at one no frame covers.
+    pub fn left(&self) -> u64 {
+        self.left
+    }
+
     /// Refuses a segment that ends among the lines a frame covers.
     pub fn end(&self) -> std::result::Result<(), Flaw> {
         match self.left {
@@ -999,6 +1005,16 @@ pub fn frame_fault(events: &[CanonicalEvent]) -> Result<()> {
         .filter(|(_, left)| *left > 0);
     }
     Ok(())
+}
+
+/// The last position of the append that wrote `stored`: where the frame
+/// covering it ends, else its own, since the store's writer frames every
+/// append of two or more events (§1.2, 083). An append left whole, and a
+/// line of a format before the writer framed, reads as one of its own.
+pub fn append_end(stored: &CanonicalEvent) -> Position {
+    stored.frame.as_ref().map_or(stored.position, |f| {
+        Position(f.first.0 + u64::from(f.events.max(1)) - 1)
+    })
 }
 
 #[cfg(test)]

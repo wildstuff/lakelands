@@ -207,7 +207,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   same way; subscribing again with other keys tells at most one change
   of the old ones that was already on its way. A notification names
   the position, kind, type, key and the changed fields it is shown, never
-  a value. A trigger's firing or an object set's change is told only to
+  a value, and as `append` the last position of the append that wrote
+  it that the session is told, so a session gathers what one append
+  changed whatever its `known_at` and its delivery read, and holds it
+  whole once the change at that position arrives (083). An append's
+  changes are sent once the pump has read past its end. A trigger's firing or an object set's change is told only to
   a principal who reads every field of the type in full, since its
   condition may read any of them. That rule sends less than one that
   asks only for the fields the condition reads, never more; a
