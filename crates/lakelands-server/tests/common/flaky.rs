@@ -36,6 +36,8 @@ use lakelands_api::{Catalog, LakeStore};
 pub struct Faults {
     pub head: AtomicUsize,
     pub poll: AtomicUsize,
+    /// Non zero: a poll tells all it reads as one append.
+    pub one_append: AtomicUsize,
     pub get: AtomicUsize,
     pub behind: AtomicUsize,
     pub first_window_millis: AtomicU64,
@@ -116,7 +118,16 @@ struct Feed {
 impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
         fail(&self.faults.poll)?;
-        self.inner.poll(from, filter, limit).await
+        let mut batch = self.inner.poll(from, filter, limit).await?;
+        if self.faults.one_append.load(Ordering::SeqCst) != 0 {
+            batch.appends = batch
+                .events
+                .last()
+                .map(|e| e.position)
+                .into_iter()
+                .collect();
+        }
+        Ok(batch)
     }
     async fn ack(&self, consumer: &str, through: Position) -> Result<()> {
         self.inner.ack(consumer, through).await

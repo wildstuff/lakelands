@@ -226,3 +226,11 @@ format fixes.
   members of one event still share one.
 - **Not a compression of the log.** Every line is still canonical JSON a
   reader parses without a codec.
+
+## A known limit
+
+The deliverer sends the end of an append in a header, but it sends only
+the events it delivers (`trigger_fired` and `object_set_changed`). An
+append that ends with an event the deliverer does not send, such as a
+`record_ingested` whose trigger did not fire, is seen complete by a
+receiver only when a later append is delivered.

@@ -1756,6 +1756,32 @@ async fn a_lake_that_fails_for_a_moment_delays_a_notification_and_loses_none() {
     }
 }
 
+/// An append that changes a record and then declares is told in its own
+/// order: the change, then `tools/list_changed` (083). The feed reads
+/// both as one append, as a migration's is.
+#[tokio::test]
+async fn a_declaration_after_a_change_of_its_append_is_told_after_it() {
+    use std::sync::atomic::Ordering;
+    let inner = common::lake_on(Backend::Memory).await;
+    let faults = Arc::new(flaky::Faults::default());
+    let store: Arc<dyn LakeStore> = Arc::new(flaky::Store {
+        inner: inner.clone(),
+        faults: faults.clone(),
+    });
+    let mut s = Stdio::open(store, common::owner()).await;
+    s.call("subscribe", json!({"kinds": ["record_upserted"]}))
+        .await;
+    faults.one_append.store(1, Ordering::SeqCst);
+    faults.poll.store(1_000, Ordering::SeqCst);
+    write(inner.as_ref(), "invoice", "O-1", json!({"status": "open"})).await;
+    declare_memo(inner.as_ref()).await;
+    faults.poll.store(0, Ordering::SeqCst);
+    let told = s.next(|m| m.get("method").is_some()).await;
+    assert_eq!(told["method"], "notifications/lakelands/changed", "{told}");
+    let then = s.next(|m| m.get("method").is_some()).await;
+    assert_eq!(then["method"], "notifications/tools/list_changed");
+}
+
 /// Each change told costs one read, the record at its position; what a
 /// type shows the principal is read once and kept until a declaration
 /// changes it, and the next change after a redeclaration is shown with

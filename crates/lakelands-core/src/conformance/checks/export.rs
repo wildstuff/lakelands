@@ -2337,14 +2337,42 @@ async fn a_backup_stopped_among_a_frames_lines_writes_its_run_again_whole(
         .position(|l| l.frame == Some(frame))
         .unwrap_or(0);
     let frame_line = first + frame;
-    for (kept, what) in [(0, "its frame line"), (2, "two of its lines")] {
+    for (kept, what) in [
+        (0, "its frame line"),
+        (2, "two of its lines"),
+        (usize::MAX, "an append an earlier release framed in two"),
+    ] {
         let (dir, export) = (
             scratch.dir(&format!("stopped-{kept}")),
             scratch.dir(&format!("export-{kept}")),
         );
         copied(&whole, &dir)?;
-        let end = feeds[frame_line + kept];
-        let torn = [&bytes[..end], b"{\"body\":{".as_slice()].concat();
+        let torn = match kept {
+            usize::MAX => {
+                // The append's frame as an earlier release wrote it: two,
+                // the second begun inside the append.
+                let events: Vec<Value> = lines
+                    .iter()
+                    .filter(|l| l.frame == Some(frame))
+                    .map(|l| l.event.clone())
+                    .collect();
+                let at = events.len() / 2;
+                let mut torn = bytes[..feeds[frame_line - 1]].to_vec();
+                for part in [&events[..at], &events[at..]] {
+                    let (frame, lines) = crate::log::stored_form(part, |_, _| (true, false));
+                    for line in frame.into_iter().chain(lines) {
+                        torn.extend(line);
+                        torn.push(b'\n');
+                    }
+                }
+                torn
+            }
+            _ => [
+                &bytes[..feeds[frame_line + kept]],
+                b"{\"body\":{".as_slice(),
+            ]
+            .concat(),
+        };
         fs::write(dir.join(&last), torn).map_err(|e| Failure::new(format!("tearing: {e}")))?;
         let run = backup(s, &dir).await?;
         ensure!(
