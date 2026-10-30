@@ -693,13 +693,15 @@ impl Call<'_> {
             .map(|f| f.name.clone())
             .collect();
         let shape = record::Plans::default().get(&after, &m.to);
-        let told =
-            |c: &record::Constraint| (c.reads.iter()).all(|f| sees.reads_both(&before, m, f));
-        for c in shape
-            .constraints
-            .iter()
-            .filter(|c| c.walked.is_some() && !c.fed.is_disjoint(&moved))
-        {
+        // Judged, and granted, by the part a walk judges alone (lakelands#1552).
+        let told = |c: &record::Constraint| {
+            let reads = c.walked.as_ref().map_or(&c.reads, |w| &w.reads);
+            reads.iter().all(|f| sees.reads_both(&before, m, f))
+        };
+        let reaches = |c: &&record::Constraint| {
+            (c.walked.as_ref()).is_some_and(|w| !w.fed.is_disjoint(&moved))
+        };
+        for c in shape.constraints.iter().filter(reaches) {
             granted(!c.decl.at_ingest.refuses() || told(c))?;
         }
         let untold: BTreeSet<&ConstraintName> = (shape.constraints.iter())

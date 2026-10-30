@@ -116,8 +116,11 @@ that write. Nothing judges it again: not a write of another record of
 the series, which may land before an earlier one and leave a later one
 lower, nor a walk, nor a migration. A walk and a migration's preflight
 judge the rest of the condition: each conjunct that reads neither the
-clock nor `preceding`. A constraint with no such conjunct is judged by
-no walk and lists no breach. A write of the record that moves nothing
+clock nor `preceding`, and only these decide which walk reaches it and
+what its author must read: an author masked from the field a clock
+term is compared with may still walk a field the rest reads. A
+constraint with no such conjunct is judged by no walk, grants none and
+lists no breach. A write of the record that moves nothing
 the constraint reads is not judged by it either, so a record dated
 ahead before the constraint was added takes every such write.
 

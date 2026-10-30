@@ -24,6 +24,16 @@ check!(
     "059, extended (lakelands#1552): a constraint each of whose parts reads the clock or the record before it is judged by no walk and grants none: over records a write would find breaking it, a value type's renames in a field it reads are granted to one masked from another field it reads and list no breach, as if it were not declared, and a migration that renames a field it reads lists none and is lossless"
 );
 
+check!(
+    WALK_JUDGES_THE_REST = a_walk_judges_what_reads_neither_clock_nor_preceding,
+    "059, extended (lakelands#1552): of a constraint some of whose parts read the clock or the record before it, a walk and a migration judge the rest and grant by the fields the rest reads: a migration that adds `stand >= 0 and datum <= today()` over a record of `stand` -1 dated ahead lists that record breaking it and is lossy, and under `phase != 'x' and datum <= today()` a value type's renames in `phase` are granted to one masked from `datum`"
+);
+
+check!(
+    PRECEDING_SERIES_CHOSEN = the_record_before_is_chosen_in_its_series,
+    "059, extended (lakelands#1552): `preceding(stand, at, line, site)`, matched on a text and a reference, reads among records of `at` tied the first by key; a record of another `line` or `site` is no predecessor; `upsert_preflight` answers `constraint_broken` as `upsert` does; a retired record is passed over; a write that moves a record into another series is judged against the record before it there; and a restricted record is passed over for a writer not granted `restricted`, though not for one granted it"
+);
+
 /// Today's date, `YYYY-MM-DD`, and the day after the next, by the wall
 /// clock: still ahead if the check runs past midnight.
 fn days() -> (String, String) {
@@ -440,6 +450,138 @@ async fn a_walk_judges_nothing_only_a_write_judges(store: Store) -> Held {
         walked.breaches.is_empty() && migrated.breaches.is_empty() && migrated.lossless,
         "a walk granted to one masked from `datum` and a migration under constraints only a \
          write judges list no breach: {walked:?}, {migrated:?}"
+    );
+    Ok(())
+}
+
+async fn a_walk_judges_what_reads_neither_clock_nor_preceding(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let ebb = |open: &str| json!({"name": "ebb", "kind": "text", "one_of": [open, "x"]});
+    let mut declared = ebb("open");
+    declared["declare"] = json!("value_type");
+    l.declare_json(declared).await?;
+    let mixed = |constraints: Value| {
+        json!({"declare": "type", "name": "mixed", "key": ["no"],
+            "fields": [{"name": "no", "type": {"kind": "text"}},
+                       {"name": "datum", "type": {"kind": "date"}},
+                       {"name": "stand", "type": {"kind": "number"}},
+                       {"name": "phase", "type": {"kind": "text", "value_type": "ebb"}}],
+            "constraints": constraints})
+    };
+    l.declare_json(mixed(json!([]))).await?;
+    let r = json!({"datum": "2999-01-01", "stand": -1, "phase": "open"});
+    l.upsert("mixed", "X-1", r).await?;
+    // A migration judges `stand >= 0` of it.
+    let rest = json!([{"name": "rest", "holds": "stand >= 0 and datum <= today()"}]);
+    let preview = l
+        .cat
+        .migrate(&l.own, Migration::to(decl(mixed(rest))?))
+        .await;
+    let preview = preview.must("previewing a migration adding `rest`")?.data;
+    let listed = |b: &lakelands_api::write::Breach| {
+        let keys: Vec<&str> = b.sample_keys.iter().map(|k| k.as_str()).collect();
+        b.constraint.as_str() == "rest" && b.records == 1 && keys == ["X-1"]
+    };
+    ensure!(
+        !preview.lossless && preview.breaches.len() == 1 && preview.breaches.iter().all(listed),
+        "a migration adding `stand >= 0 and datum <= today()` over X-1 lists it: {preview:?}"
+    );
+    // A walk in `phase` reads `phase` of it, not `datum`.
+    let kept = json!([{"name": "kept", "holds": "phase != 'x' and datum <= today()"}]);
+    l.migrate(decl(mixed(kept))?).await?;
+    let mut masked = field_access(
+        store.as_ref(),
+        "masked",
+        "mixed",
+        &[("datum", Access::Masked)],
+    );
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
+    let to = serde_json::from_value(ebb("shut")).map_err(|e| Failure::new(e.to_string()))?;
+    let renamed = lakelands_api::write::ValueTypeMigration {
+        to,
+        renames: vec![("open".into(), "shut".into())],
+    };
+    let walked = l.cat.migrate_value_type(&masked, renamed).await;
+    let walked = walked.must("a value type's renames in `phase` by one masked from `datum`")?;
+    ensure!(
+        walked.data.breaches.is_empty(),
+        "the renames leave `phase != 'x'` held: {walked:?}"
+    );
+    Ok(())
+}
+
+async fn the_record_before_is_chosen_in_its_series(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let cat = l.cat.as_ref();
+    l.declare_json(typed(
+        "site",
+        &["id"],
+        &[("id", "text"), ("name", "text")],
+        json!([]),
+    ))
+    .await?;
+    for id in ["A", "B"] {
+        l.upsert("site", id, json!({"name": id})).await?;
+    }
+    let before = "preceding(stand, at, line, site)";
+    let rise = json!([{"name": "rise", "holds": format!("{before} is null or stand >= {before}")}]);
+    l.declare_json(json!({"declare": "type", "name": "tick", "key": ["no"],
+        "fields": [{"name": "no", "type": {"kind": "text"}},
+                   {"name": "line", "type": {"kind": "text"}},
+                   {"name": "site", "type": {"kind": "reference", "target": "site"}},
+                   {"name": "at", "type": {"kind": "number"}},
+                   {"name": "stand", "type": {"kind": "number"}}],
+        "constraints": rise}))
+        .await?;
+    let tick = |line: &str, site: &str, at: f64, stand: i64| json!({"line": line, "site": site, "at": at, "stand": stand});
+    let put = |who: &Principal, no: &str, fields: Value| {
+        let (who, no) = (who.clone(), no.to_string());
+        async move { try_upsert(cat, &who, "tick", &no, fields).await }
+    };
+    let own = &l.own;
+    // Tied at 1: T-1 comes first by key.
+    put(own, "T-1", tick("L", "A", 1.0, 50)).await.must("T-1")?;
+    put(own, "T-2", tick("L", "A", 1.0, 10)).await.must("T-2")?;
+    let tied = put(own, "T-3", tick("L", "A", 2.0, 20)).await;
+    let (t, k) = ("tick".into(), "T-3".into());
+    let sent = patch(tick("L", "A", 2.0, 20));
+    let judged = store.upsert_preflight(own, Default::default(), &t, &k, sent, None);
+    let judged = judged.await;
+    put(own, "T-4", tick("L", "B", 2.0, 5))
+        .await
+        .must("another site's")?;
+    put(own, "T-5", tick("M", "A", 2.0, 5))
+        .await
+        .must("another line's")?;
+    l.retire("tick", "T-1").await?;
+    put(own, "T-3", tick("L", "A", 2.0, 20))
+        .await
+        .must("past a retired record")?;
+    let moved = put(own, "T-4", json!({"site": "A"})).await;
+    ensure!(
+        [&tied, &moved]
+            .iter()
+            .all(|a| broken(a).as_deref() == Some("rise"))
+            && broken(&judged).as_deref() == Some("rise"),
+        "the first of a tie by key, `upsert_preflight` and a move into another series are \
+         judged: {tied:?}, {judged:?}, {moved:?}"
+    );
+    // T-6 restricted, above T-3.
+    put(own, "T-6", tick("L", "A", 3.0, 90)).await.must("T-6")?;
+    restrict(store.as_ref(), "tick", "T-6", "kept").await?;
+    let plain = super::only::holder(store.as_ref(), "plain", json!({"default": "write"}));
+    put(&plain, "T-7", tick("L", "A", 4.0, 30))
+        .await
+        .must("past a restricted record its writer is not granted")?;
+    let boss = super::only::holder(
+        store.as_ref(),
+        "boss",
+        json!({"default": "write", "restricted": true}),
+    );
+    let held = put(&boss, "T-8", tick("L", "A", 3.5, 25)).await;
+    ensure!(
+        broken(&held).as_deref() == Some("rise"),
+        "one granted `restricted` is judged against a restricted record: {held:?}"
     );
     Ok(())
 }

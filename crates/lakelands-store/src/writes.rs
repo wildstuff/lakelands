@@ -210,10 +210,13 @@ impl Walked {
         let plan = crate::record::Plans::default().get(o, decl);
         // What only a write judges, the clock and the record before, no
         // walk judges, nor grants by.
-        let reaches =
-            |c: &crate::record::Constraint| c.walked.is_some() && !c.fed.is_disjoint(moving);
-        let reads =
-            |c: &crate::record::Constraint| c.reads.iter().all(|f| sight.reads_from(&decl.name, f));
+        let reaches = |c: &crate::record::Constraint| {
+            (c.walked.as_ref()).is_some_and(|w| !w.fed.is_disjoint(moving))
+        };
+        let reads = |c: &crate::record::Constraint| {
+            let reads = c.walked.as_ref().map_or(&c.reads, |w| &w.reads);
+            reads.iter().all(|f| sight.reads_from(&decl.name, f))
+        };
         for c in (plan.constraints.iter()).filter(|c| reaches(c) && c.decl.at_ingest.refuses()) {
             granted(judging.tells() || reads(c))?;
         }
@@ -260,7 +263,7 @@ impl Walked {
                 continue;
             };
             // What only the write judges, a walk does not judge again.
-            let Some(holds) = c.walked.as_ref().filter(|_| c.reads.iter().any(moved)) else {
+            let Some(walk) = c.walked.as_ref().filter(|w| w.reads.iter().any(moved)) else {
                 continue;
             };
             let scope = WriteScope {
@@ -272,7 +275,7 @@ impl Walked {
                 preceding: None,
                 now,
             };
-            if !expr::holds(holds, &scope).unwrap_or(false) {
+            if !expr::holds(&walk.holds, &scope).unwrap_or(false) {
                 *all += 1;
                 *records += u64::from(self.held || !was.restricted);
                 if first.len() < 5 && shown(was)? {
