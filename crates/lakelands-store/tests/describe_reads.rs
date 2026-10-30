@@ -17,7 +17,7 @@ use lakelands_api::describe::TypeDescription;
 use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::seam::Seams;
-use lakelands_api::{Access, LakeStore, Location, Position, Principal, ReadAt, Reply};
+use lakelands_api::{Access, FieldName, LakeStore, Location, Position, Principal, ReadAt, Reply};
 use lakelands_core::conformance::fixture::{Lake, field_access, read_at, type_of};
 use lakelands_engine_mem::MemoryOpener;
 use probed::{Probe, ProbedOpener};
@@ -155,6 +155,24 @@ async fn what_changes_a_description_is_told_by_the_next() {
         (vec!["a", "n", "b"], 0),
         "the first principal"
     );
+    // A grant that admits a set of values is another principal too, and so
+    // is one with another set.
+    let mut sets = Vec::new();
+    for values in [["x", "y"], ["x", "z"], ["x", "y"]] {
+        let mut narrow = clerk.clone();
+        let t = narrow.grants.types.entry("t".into()).or_default();
+        let set = values.map(String::from).into_iter().collect();
+        t.only_any.insert("a".into(), set);
+        let (d, views) = described(&l, &probe, &narrow, head()).await;
+        let told = d.data.may.only_any.get(&FieldName::from("a")).cloned();
+        sets.push((
+            told.unwrap_or_default().into_iter().collect::<Vec<_>>(),
+            views,
+        ));
+    }
+    let set = |v: [&str; 2], n| (v.map(String::from).to_vec(), n);
+    let want = [set(["x", "y"], 1), set(["x", "z"], 1), set(["x", "y"], 0)];
+    assert_eq!(sets, want, "a grant's sets of values, each told as granted");
     // A description as of a position reads it, every time.
     for _ in 0..2 {
         let (d, views) = described(&l, &probe, &own, read_at(Some(declared))).await;
