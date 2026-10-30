@@ -352,6 +352,11 @@ pub async fn pump(
         }
         let (generation, subscription, next, declared) = watch.snapshot();
         if held.generation != generation {
+            // A new subscription re-reads the changes; a declaration is
+            // not re-read, so its notification goes now.
+            if !held.send_tools(&queue).await {
+                return;
+            }
             held = Held {
                 generation,
                 ..Held::default()
@@ -429,7 +434,7 @@ pub async fn pump(
                     match held.end {
                         // In the append's order, after the changes before it.
                         Some(_) => {
-                            held.shown.push((e.position, Value::Null));
+                            held.shown.push((e.position, Held::TOOLS));
                             None
                         }
                         None => Some(Queued {
@@ -499,6 +504,28 @@ struct Held {
 }
 
 impl Held {
+    /// The marker of a `tools/list_changed` among the changes.
+    const TOOLS: Value = Value::Null;
+
+    /// Queue the held `tools/list_changed`, dropping the changes.
+    async fn send_tools(&mut self, queue: &mpsc::Sender<Queued>) -> bool {
+        let tools = self.shown.iter().filter(|(_, p)| *p == Self::TOOLS);
+        for _ in tools {
+            let message = json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
+            if queue
+                .send(Queued {
+                    generation: None,
+                    message,
+                })
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Queue the held changes; false when the queue is gone.
     async fn send(&mut self, queue: &mpsc::Sender<Queued>) -> bool {
         self.end = None;

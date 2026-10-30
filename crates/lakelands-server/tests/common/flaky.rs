@@ -38,6 +38,8 @@ pub struct Faults {
     pub poll: AtomicUsize,
     /// Non zero: a poll tells all it reads as one append.
     pub one_append: AtomicUsize,
+    /// How many milliseconds a `get` takes.
+    pub get_millis: AtomicU64,
     pub get: AtomicUsize,
     pub behind: AtomicUsize,
     pub first_window_millis: AtomicU64,
@@ -308,6 +310,8 @@ impl Catalog for Doors {
     }
     async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
         self.faults.gets.fetch_add(1, Ordering::SeqCst);
+        let wait = self.faults.get_millis.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(wait)).await;
         fail(&self.faults.get)?;
         behind(&self.faults.behind, get.at.as_of)?;
         self.inner.get(who, ty, get).await
