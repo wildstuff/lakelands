@@ -3,6 +3,8 @@
 //! `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
 //! `docs/decisions/004-the-change-feed-is-the-log.md`).
 
+use lakelands_api::principal::WriteContext;
+
 use super::only::{alice, claim_with, claims, de, holder};
 use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{doors, owner, read, reviewer};
@@ -35,7 +37,7 @@ check!(
 
 check!(
     ACCEPTED_FOR_THE_PROPOSER = an_accepted_write_names_whom_its_proposer_wrote_for,
-    "088 (lakelands#1489): `agent:a`, bound for `human:alice`, proposes an upsert, and `human:bob`, bound for no one, accepts it; `write_accepted` names `human:bob` and no `on_behalf_of`, and the upsert names `agent:a` for `human:alice`, as the proposer wrote it"
+    "088 (lakelands#1489): `agent:a`, bound for `human:alice`, proposes an upsert, and `human:bob`, bound for no one, accepts it; `write_accepted` names `human:bob` and no `on_behalf_of`, and the upsert names `agent:a` for `human:alice`, as the proposer wrote it; and (lakelands#1584) the `write_proposed` carries the proposer's occasion, `caught-up`, while the `write_accepted` and the upsert carry the accepter's, `confirmed`, the write being made at the accept"
 );
 
 check!(
@@ -1830,7 +1832,7 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
 }
 
 async fn an_accepted_write_names_whom_its_proposer_wrote_for(store: Store) -> Held {
-    let l = ledger(store.as_ref()).await?;
+    ledger(store.as_ref()).await?;
     let agent = principal(store.as_ref(), PrincipalKind::Agent, "a", Grants::owner());
     let bob = principal(
         store.as_ref(),
@@ -1842,28 +1844,37 @@ async fn an_accepted_write_names_whom_its_proposer_wrote_for(store: Store) -> He
             ..Grants::default()
         },
     );
-    let for_alice = store.catalog(super::context::made_for("human:alice"));
+    let for_alice = store.catalog(WriteContext {
+        occasion: Some("caught-up".into()),
+        ..super::context::made_for("human:alice")
+    });
     let write =
         json!({"write": "upsert", "type": "invoice", "key": "i", "patch": {"status": "held"}});
     let proposed = for_alice
         .propose(&agent, de(write), "for alice".into())
         .await;
     let (at, id) = proposal(&proposed.must("`agent:a` proposing for alice")?)?;
-    l.cat
+    (store.catalog(super::context::on_occasion("confirmed")))
         .accept(&bob, &id)
         .await
         .must("`human:bob` accepting")?;
     let events = events_from(store.as_ref(), at).await?;
     let named = |is: fn(&EventBody) -> bool| {
-        (events.iter().find(|e| is(&e.body)))
-            .map(|e| (e.writer.as_str(), e.on_behalf_of.as_deref()))
+        (events.iter().find(|e| is(&e.body))).map(|e| {
+            let occasion = e.context.occasion.as_deref();
+            (e.writer.as_str(), e.on_behalf_of.as_deref(), occasion)
+        })
     };
+    let proposed = named(|b| matches!(b, EventBody::WriteProposed { .. }));
     let accepted = named(|b| matches!(b, EventBody::WriteAccepted { .. }));
     let upserted = named(|b| matches!(b, EventBody::RecordUpserted { .. }));
     ensure!(
-        accepted == Some(("human:bob", None)) && upserted == Some(("agent:a", Some("human:alice"))),
-        "the acceptance names `human:bob` for no one and the upsert `agent:a` for \
-         `human:alice`: {accepted:?}, {upserted:?}"
+        proposed == Some(("agent:a", Some("human:alice"), Some("caught-up")))
+            && accepted == Some(("human:bob", None, Some("confirmed")))
+            && upserted == Some(("agent:a", Some("human:alice"), Some("confirmed"))),
+        "the proposal names `agent:a` for `human:alice` under `caught-up`, the acceptance \
+         `human:bob` for no one and the upsert `agent:a` for `human:alice`, both under \
+         `confirmed`: {proposed:?}, {accepted:?}, {upserted:?}"
     );
     Ok(())
 }

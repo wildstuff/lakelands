@@ -29,7 +29,7 @@ check!(
 
 check!(
     OCCASION_RECORDED = an_ingest_under_an_occasion_records_it_in_each_events_context,
-    "088, extended (lakelands#1584): `service:mailer` ingests two records of `reading`, on which a trigger fires, under the occasion `caught-up`; each `record_ingested` the feed hands a reader carries `caught-up` in its `context`, the `trigger_fired` they set off carries none, and an ingest naming none appends a `record_ingested` whose `context` holds no `occasion`, its hash the one its canonical bytes give"
+    "088, extended (lakelands#1584): `service:mailer` ingests two records of `reading`, on which a trigger fires, under the occasion `caught-up`; each `record_ingested` the feed hands a reader carries `caught-up` in its `context`, the `trigger_fired` they set off carries none, and an ingest naming none appends a `record_ingested` whose `context` holds no `occasion`, its hash the one its canonical bytes give; `r1` ingested again with the same values under `again` is a duplicate and appends nothing, the occasion being no part of the record's id"
 );
 
 check!(
@@ -182,7 +182,7 @@ async fn an_on_behalf_of_not_of_its_form_is_refused(store: Store) -> Held {
 }
 
 /// A direct context naming `occasion`.
-fn on_occasion(occasion: &str) -> WriteContext {
+pub(super) fn on_occasion(occasion: &str) -> WriteContext {
     WriteContext {
         occasion: Some(occasion.into()),
         ..WriteContext::default()
@@ -246,7 +246,17 @@ async fn an_ingest_under_an_occasion_records_it_in_each_events_context(store: St
         "an ingest naming no occasion appends a `record_ingested` whose `context` holds no \
          `occasion` and whose hash is its canonical bytes': {line}"
     );
-    Ok(())
+    let head = store.head().await.must("reading the head")?;
+    let again = store.catalog(on_occasion("again"));
+    let fed = vec![source_record("reading", "r1", json!({"value": 1}))];
+    let said = ingest(again.as_ref(), &mailer, "meter", fed).await;
+    let said = said.must("ingesting `r1` again with the same values")?;
+    let duplicates: u32 = said.iter().map(|c| c.duplicates).sum();
+    ensure!(
+        duplicates == 1,
+        "`r1` ingested again with the same values under `again` is a duplicate: {said:?}"
+    );
+    head_unmoved(store.as_ref(), head, "a duplicate under another occasion").await
 }
 
 async fn an_occasion_not_of_its_form_is_refused(store: Store) -> Held {
