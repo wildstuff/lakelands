@@ -42,6 +42,8 @@ pub(crate) mod code {
     pub const INVALID_PARAMS: i64 = -32602;
     /// The server failed.
     pub const INTERNAL: i64 = -32603;
+    /// A bound of the HTTP door's is reached; `data` is the refusal.
+    pub const BOUNDED: i64 = -32000;
 }
 
 /// A JSON-RPC error response.

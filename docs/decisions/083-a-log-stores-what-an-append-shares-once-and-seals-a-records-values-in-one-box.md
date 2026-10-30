@@ -58,20 +58,77 @@ restores them: a reader cannot see where an append ended, and need not.
   exactly the members they all share, and writes `position` and `prev`
   only on a segment's first event line. An append of one event has no
   frame.
-- **An export and a backup** read the log through the feed, which
-  answers events and tells no append's end, on any engine and through a
-  feed in front of the store. They frame each run of two or more, and at
-  most 1 000, consecutive events of one segment that share `known_at`,
-  and every event line they write holds its `position`, so a backup run
-  restores its last event from that line, its frame and the line before
-  it alone.
-- **An import** restores the events and appends them as any writer
-  does.
+- **An export and a backup** read the log through the feed, on any
+  engine and through a feed in front of the store. They frame each append
+  of two or more events whole, where the feed says it ends (below), and
+  every event line they write holds its `position`, so a backup run
+  restores its last event from that line, its frame and the lines back
+  to that frame alone. Until lakelands#1540 they framed each run of two
+  or more, and at most 1 000, consecutive events of one segment that
+  shared `known_at`; such a copy is still read alike.
+- **An import** restores the events and appends each frame of the copy
+  as one append, and each event no frame covers as one of its own, as
+  any writer appends them.
 - **The store frames, the engine keeps.** The store canonicalises and
   frames; the engine keeps the stored form unchanged and hands it back
   unchanged, and the store restores and verifies it. The suite checks
   through the seam, on every engine, that the stored form comes back as
   it went in and that a digest is over the restored bytes.
+
+### The feed says where each append ends, read from the frames the log holds
+
+Extended on lakelands#1540, for 0.22.0, proposed. A consumer that acts on
+a whole write, the firings of one ingest or the events of one call, has
+to know where that write ends; `known_at` and a delivery's name do not
+tell it, since the clock may read the same for two appends and a caller
+may name two ingests alike.
+
+- **`FeedBatch.appends`** lists the last position of each append that
+  wrote one of the batch's events, in order, and `append_of` answers an
+  event's. It is read from the stored form: where a frame covers an
+  event, its append ends at the frame's last event; where none does, at
+  the event itself. The writer frames every append of two or more
+  events, so that is the append. The format does not change and nothing
+  is stored twice.
+- **The end, not the start, on the batch, not on the event.** An append's
+  first position on each event would tell a consumer which events go
+  together, but not when it holds all of them: it learns that only from
+  an event of the next append, which may come much later. The end says
+  it at once, once `next` passes it, and holds alike when a filter
+  admits only some of the append's events and when a page cuts through
+  it. On the batch it is no member of the hashed event, so no event's
+  bytes change.
+- **Every door carries it**: the store's `poll`, the REST feed as a
+  `: append <position>` comment line before each event, the MCP watch
+  notification as `append`, and the deliverer as the `Lakelands-Append`
+  header. The feed and the deliverer are read by one who reads the
+  whole lake or by the operator's own receiver. A watch session may be
+  told only some of an append, so its `append` is the last position of
+  the append it is told, and the session is sent the append's changes
+  once the pump has read past its end. An event it is not told of, such
+  as a firing whose condition reads a field masked from it (024), moves
+  no mark: told the end, it would learn that the write it was told of
+  set off something it is not told. A receiver that sees no `next`
+  holds an append whole once the event at its end arrives, or one of a
+  later append.
+- **Where it is not exact.** An append of a format before 20, or of 20
+  before lakelands#1433, has no frame, and each of its events reads as
+  an append of its own; so does each event of the append that creates
+  or upgrades a lake, which is stored whole. A lake imported before
+  lakelands#1540 reads each import batch of up to 512 KiB as one append.
+- **A copy keeps the marks.** The export frames by the feed's appends
+  and the import appends each frame as one, so the imported lake's feed
+  tells the appends the lake it came from told, and exports the same
+  files again. A copy made before lakelands#1540 framed runs that share
+  `known_at`; imported, each of those runs is one append. An export
+  holds one append at a time, and an import hands one append whole to
+  the engine, however large: what a copy holds follows the lake's
+  largest append, as its writer held it once, and no longer the 1 000
+  events a frame was capped at.
+- **A mirror does not.** It ingests what it reads into a lake of its
+  own, in windows of its own, and each record names the lake and
+  position it came from in `upstream`; its appends are its own writes,
+  and their ends are its own.
 
 ### A record event's sealed members are sealed in one box
 
@@ -128,11 +185,12 @@ format fixes.
   only this format and its document.
 - **A digest over the restored events lets a copy be made from what the
   feed answers.** A digest over the file's bytes would hold only for the
-  form the writer chose, so a copy would have to rebuild that form, and
-  the feed tells no append's end. Carrying the frames through the feed
-  would change the seam and every wire the feed crosses; reading the
-  engine's lines for a copy would give up a backup through a feed in
-  front of the store. Over the restored events, the digest is what it
+  form the writer chose, so a copy would have to rebuild that form.
+  Carrying the frames through the feed would change the seam and every
+  wire the feed crosses; reading the engine's lines for a copy would
+  give up a backup through a feed in front of the store. The append ends
+  the feed now names are one number per append, not the frame's
+  members, and a copy frames by them in a form of its own. Over the restored events, the digest is what it
   was for every lake of 19, and any form that restores the events is the
   log.
 - **A box costs one tag a record, not one a field.** Each sealed member

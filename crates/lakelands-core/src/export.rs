@@ -25,9 +25,10 @@
 //! no directory holding anything beside `log/` and `export.json`
 //! (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
 //!
-//! Each file holds its events in a copy's stored form (§4.2): runs of
-//! consecutive events that share `known_at`, framed, every event line
-//! holding its `position`, and `prev` only on the file's first.
+//! Each file holds its events in a copy's stored form (§4.2): each append
+//! of two or more events, as the feed tells its end, framed whole, every
+//! event line holding its `position`, and `prev` only on the file's
+//! first.
 //!
 //! [`verify`] reads only `log/`, a line at a time, each event restored
 //! from its line and its frame: canonical lines, consecutive positions, the hash chain from 64 zeros, every checkpoint
@@ -52,9 +53,6 @@ use crate::canonical;
 
 /// How many events the export reads from the feed at a time.
 const PAGE: u32 = 1_000;
-
-/// How many events one run of a copy frames at most (§4.2).
-const RUN: usize = 1_000;
 
 /// One segment file of an export.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,9 +137,10 @@ struct Segment {
     last: Position,
     out: BufWriter<File>,
     digest: Sha256,
-    /// The run not yet written: consecutive events that share `known_at`.
+    /// The run not yet written: the events of one append, and the last
+    /// position of that append.
     run: Vec<Value>,
-    known_at: Option<lakelands_api::Timestamp>,
+    end: Option<Position>,
 }
 
 impl Segment {
@@ -159,19 +158,20 @@ impl Segment {
             out: BufWriter::new(out),
             digest: Sha256::new(),
             run: Vec::new(),
-            known_at: None,
+            end: None,
         })
     }
 
-    fn line(&mut self, event: &Event) -> Result<()> {
+    /// Takes `event`, of the append that ends at `end`.
+    fn line(&mut self, event: &Event, end: Position) -> Result<()> {
         let bytes = canonical::of(event);
         self.digest.update(&bytes);
         self.digest.update(b"\n");
         self.last = event.position;
-        if self.known_at != Some(event.known_at) || self.run.len() >= RUN {
+        if self.end != Some(end) {
             self.flush()?;
         }
-        self.known_at = Some(event.known_at);
+        self.end = Some(end);
         let value = serde_json::from_slice(&bytes).expect("an event's canonical bytes are JSON");
         self.run.push(value);
         Ok(())
@@ -243,7 +243,12 @@ async fn copy(
         if batch.events.is_empty() {
             break;
         }
-        for event in batch.events {
+        let ends: Vec<Position> = batch
+            .events
+            .iter()
+            .map(|e| batch.append_of(e.position).unwrap_or(e.position))
+            .collect();
+        for (event, end) in batch.events.into_iter().zip(ends) {
             if event.position > through {
                 break 'feed;
             }
@@ -260,7 +265,7 @@ async fn copy(
                 open = Some(Segment::start(dir, event.position)?);
             }
             if let Some(segment) = open.as_mut() {
-                segment.line(&event)?;
+                segment.line(&event, end)?;
             }
             hash = event.hash;
             next = next.next();
@@ -399,32 +404,51 @@ struct Tail {
     cut: u64,
 }
 
-/// The end of the file at `path`, read from its last lines; `None` where
-/// it holds no whole event line.
+/// The end of the file at `path`, read from its last lines, as many as
+/// reach back to the frame of the last event line; `None` where it holds
+/// no whole event line. A frame holds `lake`, which every event of one
+/// lake shares, so a line that holds it is one no frame covers.
 fn tail(path: &Path) -> Result<Option<Tail>> {
-    let mut lines = last_lines(path, RUN + 2)?;
     let parsed = |bytes: &[u8]| serde_json::from_slice::<Value>(bytes).ok();
-    while lines
-        .last()
-        .is_some_and(|(_, l)| parsed(l).is_some_and(|v| crate::log::is_frame(&v)))
-    {
-        lines.pop();
-    }
-    let Some((at, last)) = lines.last() else {
-        return Ok(None);
+    let mut n = 64;
+    let (lines, framed) = loop {
+        let mut lines = last_lines(path, n)?;
+        let whole = lines.len() < n;
+        while lines
+            .last()
+            .is_some_and(|(_, l)| parsed(l).is_some_and(|v| crate::log::is_frame(&v)))
+        {
+            lines.pop();
+        }
+        let Some((_, last)) = lines.last() else {
+            match whole {
+                true => return Ok(None),
+                false => {
+                    n *= 2;
+                    continue;
+                }
+            }
+        };
+        if parsed(last).is_some_and(|v| v.get("lake").is_some()) {
+            break (lines, None);
+        }
+        let framed = lines
+            .iter()
+            .enumerate()
+            .rev()
+            .skip(1)
+            .find_map(|(i, (at, l))| {
+                let frame = parsed(l).filter(crate::log::is_frame)?;
+                Some((i, *at, crate::log::Framed::of(frame).ok()))
+            });
+        if framed.is_some() || whole {
+            break (lines, framed);
+        }
+        n *= 2;
     };
+    let (at, last) = lines.last().expect("an event line is held");
     let line = parsed(last).unwrap_or_default();
     let position = Position(line["position"].as_u64().unwrap_or(u64::MAX));
-    let framed = lines
-        .iter()
-        .enumerate()
-        .rev()
-        .skip(1)
-        .take(RUN)
-        .find_map(|(i, (at, l))| {
-            let frame = parsed(l).filter(crate::log::is_frame)?;
-            Some((i, *at, crate::log::Framed::of(frame).ok()))
-        });
     let after = |i: usize| (lines.len() - 1 - i) as u64;
     let (frame, run, cut) = match framed {
         Some((i, begins, Some(f))) if after(i) <= f.events => {

@@ -322,6 +322,7 @@ said_by_display!(
     KeyId => nothing,
     Timestamp => nothing,
     super::Detail,
+    super::Requests => nothing,
 );
 
 /// Write a template with its parameters.

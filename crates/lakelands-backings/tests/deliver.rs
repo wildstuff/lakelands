@@ -231,7 +231,7 @@ async fn fired_triggers_go_in_log_order_as_the_feed_holds_them_signed_over_the_r
     assert!(!format!("{d:?}").contains("s3cret"));
     d.round(store.as_ref()).await.unwrap();
 
-    let fired = store
+    let batch = store
         .feed()
         .poll(
             Position::GENESIS,
@@ -243,15 +243,15 @@ async fn fired_triggers_go_in_log_order_as_the_feed_holds_them_signed_over_the_r
             100,
         )
         .await
-        .unwrap()
-        .events;
+        .unwrap();
+    let fired = &batch.events;
     assert_eq!(fired.len(), 2, "i1 overdue, i3 paid");
     let want: Vec<String> = fired
         .iter()
         .map(|e| String::from_utf8(lakelands_core::canonical::of(e)).unwrap())
         .collect();
     assert_eq!(f.bodies(), want, "the feed's bytes, in log order");
-    for (request, event) in f.requests().iter().zip(&fired) {
+    for (request, event) in f.requests().iter().zip(fired) {
         assert!(request.starts_with("POST /hooks/lakelands HTTP/1.1\r\n"));
         assert_eq!(header(request, "lakelands-lake"), Some(lake.as_str()));
         assert_eq!(
@@ -263,6 +263,14 @@ async fn fired_triggers_go_in_log_order_as_the_feed_holds_them_signed_over_the_r
             Some(event.id.0.as_str())
         );
         assert_eq!(header(request, "lakelands-attempt"), Some("1"));
+        // The firing is appended with the write that set it off: its
+        // append ends at it.
+        let end = batch.append_of(event.position).unwrap();
+        assert_eq!(
+            header(request, "lakelands-append"),
+            Some(end.0.to_string().as_str())
+        );
+        assert!(end >= event.position);
         let body = &request[request.find("\r\n\r\n").unwrap() + 4..];
         let want = format!("sha256={}", hmac_sha256(b"s3cret", body.as_bytes()));
         assert_eq!(header(request, "lakelands-signature"), Some(want.as_str()));

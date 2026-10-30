@@ -278,6 +278,16 @@ impl From<Error> for Failure {
                     "open it with a release that reads log format {found}; restoring it would not help, it is not damaged"
                 )
             }
+            // A bound of the door's: the lake is as it was.
+            Error::Unavailable { situation }
+                if matches!(
+                    **situation,
+                    Situation::RateBound { .. } | Situation::InFlightBound { .. }
+                ) =>
+            {
+                "nothing was read or written: wait the seconds `Retry-After` says, then send the request again"
+                    .to_owned()
+            }
             Error::Unavailable { .. } => {
                 "wait and retry, or check that no other process holds the lake".to_owned()
             }

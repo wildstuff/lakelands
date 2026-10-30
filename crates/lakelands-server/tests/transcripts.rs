@@ -167,6 +167,7 @@ async fn streamable_http_answers_byte_for_byte_on(backend: Backend) {
         workers: None,
         metrics: None,
         hosts: Vec::new(),
+        bounds: Default::default(),
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();
@@ -240,6 +241,7 @@ async fn sessions_end_idle_are_replaced_and_never_orphaned_on(backend: Backend) 
                 workers: None,
                 metrics: None,
                 hosts: Vec::new(),
+                bounds: Default::default(),
             };
             let server = serve_http(config, resolver, open).await.unwrap();
             let addr = server.local_addr().unwrap();

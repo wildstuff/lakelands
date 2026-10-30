@@ -61,6 +61,7 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, mpsc};
 
+use crate::bounds::{Bounds, Connection, Gate, Held, Limit, Over};
 use crate::watch::{QUEUE, Queued};
 
 use crate::resolver::{Entry, HostEntry, same_key};
@@ -71,9 +72,6 @@ use crate::session::{PROTOCOL_VERSIONS, Session, code, error};
 pub const SESSION_HEADER: &str = "mcp-session-id";
 /// The header a client names its protocol version in after `initialize`.
 pub const VERSION_HEADER: &str = "mcp-protocol-version";
-/// The largest request body read whole, by either transport; a REST
-/// ingest body is streamed instead.
-pub(crate) const MAX_BODY: usize = 4 << 20;
 
 /// The HTTP door's configuration: the `server` section of the root's
 /// `lakelands.json`.
@@ -122,6 +120,10 @@ pub struct HttpConfig {
     /// None, and no call is forwarded here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<HostEntry>,
+    /// What one connection and one principal may spend of the door
+    /// ([`Bounds`]). Absent, the defaults.
+    #[serde(default)]
+    pub bounds: Bounds,
 }
 
 impl HttpConfig {
@@ -209,6 +211,9 @@ struct Slot {
     stream: Mutex<Arc<Notify>>,
     watch: Arc<crate::watch::Watch>,
     pump: tokio::task::JoinHandle<()>,
+    /// The principal the session was initialized as, whose bounds its
+    /// requests count against.
+    who: Principal,
 }
 
 impl Slot {
@@ -299,6 +304,7 @@ pub(crate) struct State {
     pub(crate) resolver: Arc<dyn PrincipalResolver>,
     pub(crate) open: Arc<LakeOpener>,
     pub(crate) hosts: Vec<HostEntry>,
+    pub(crate) gate: Arc<Gate>,
     sessions: Mutex<HashMap<String, Arc<Slot>>>,
 }
 
@@ -327,6 +333,7 @@ pub async fn serve_http(
             resolver,
             open,
             hosts: config.hosts,
+            gate: Gate::new(config.bounds),
             sessions: Mutex::new(HashMap::new()),
         }),
     })
@@ -349,9 +356,11 @@ impl HttpServer {
             let (stream, _) = self.listener.accept().await?;
             let state = self.state.clone();
             tokio::spawn(async move {
+                // A connection's count lives as long as it does.
+                let connection = Arc::new(Connection::new());
                 let service = hyper::service::service_fn(move |req| {
-                    let state = state.clone();
-                    async move { Ok::<_, Infallible>(handle(&state, req).await) }
+                    let (state, connection) = (state.clone(), connection.clone());
+                    async move { Ok::<_, Infallible>(bounded(&state, &connection, req).await) }
                 });
                 // A connection that fails affects only itself.
                 let _ = hyper::server::conn::http1::Builder::new()
@@ -409,6 +418,8 @@ pub(crate) enum Turn {
     NotGranted(&'static str, &'static str),
     /// The request cannot be read as it is.
     Invalid(Case),
+    /// A bound of the door's is reached: answered with `Retry-After`.
+    Bounded(Over),
 }
 
 impl Turned {
@@ -416,19 +427,49 @@ impl Turned {
         Turned { status, why }
     }
 
-    /// Said as MCP says it.
+    /// Said as MCP says it, before the request's id is known.
     fn to_mcp(&self) -> Response<Full<Bytes>> {
+        self.to_mcp_as(Value::Null)
+    }
+
+    /// Said as MCP says it, as the answer to the request `id`. A request
+    /// that cannot be read, or that a bound refused, is a JSON-RPC error
+    /// whose `data` is the refusal as REST says it, so its code reads the
+    /// same.
+    fn to_mcp_as(&self, id: Value) -> Response<Full<Bytes>> {
         match &self.why {
-            Turn::NotGranted(what, _) => refuse(self.status, code::INVALID_REQUEST, what),
+            Turn::NotGranted(what, _) => {
+                respond(self.status, Some(&error(id, code::INVALID_REQUEST, *what)))
+            }
             Turn::Invalid(case) => {
                 let code = match case {
                     Case::BodyNotJson { .. } => code::PARSE,
                     _ => code::INVALID_REQUEST,
                 };
-                refuse(self.status, code, &case.to_string())
+                let mut v = error(id, code, case.to_string());
+                v["error"]["data"] = crate::rest::invalid_json(case.clone());
+                respond(self.status, Some(&v))
+            }
+            Turn::Bounded(over) => {
+                let (e, data) = crate::rest::bounded_json(over);
+                let mut v = error(id, code::BOUNDED, e.to_string());
+                v["error"]["data"] = data;
+                retry_after(respond(self.status, Some(&v)), over)
             }
         }
     }
+
+    /// A request over one of `gate`'s bounds.
+    fn bounded(over: Over) -> Turned {
+        Turned::new(StatusCode::TOO_MANY_REQUESTS, Turn::Bounded(over))
+    }
+}
+
+/// An answer to a request over a bound, with the seconds to wait.
+pub(crate) fn retry_after<B>(mut r: Response<B>, over: &Over) -> Response<B> {
+    r.headers_mut()
+        .insert("retry-after", HeaderValue::from(over.retry_after));
+    r
 }
 
 /// Let a request in: its `Origin`, if any, is allowed, and it presents an
@@ -459,36 +500,36 @@ pub(crate) fn admit(state: &State, h: &HeaderMap) -> std::result::Result<String,
         })
 }
 
-/// The principal a key stands for in a lake.
+/// The principal a key stands for in a lake, and the request counted
+/// against its bounds.
 pub(crate) async fn resolve(
     state: &State,
     lake: &LakeId,
     key: String,
-) -> std::result::Result<Principal, Turned> {
-    state
-        .resolver
-        .resolve(lake, &Credential::ApiKey(key))
-        .await
-        .map_err(|_| {
-            Turned::new(
-                StatusCode::UNAUTHORIZED,
-                Turn::NotGranted(
-                    "the key is not known for this lake",
-                    "send the key the lake's owner gave you",
-                ),
-            )
-        })
+) -> std::result::Result<(Principal, Held), Turned> {
+    let who = (state.resolver.resolve(lake, &Credential::ApiKey(key)).await).map_err(|_| {
+        Turned::new(
+            StatusCode::UNAUTHORIZED,
+            Turn::NotGranted(
+                "the key is not known for this lake",
+                "send the key the lake's owner gave you",
+            ),
+        )
+    })?;
+    let held = state.gate.principal(&who).map_err(Turned::bounded)?;
+    Ok((who, held))
 }
 
-/// The principal a host forwards a call for, by the id it names, and the
-/// write context it carries: only for a lake and a principal the host
-/// may forward for, and only one the resolver knows for the lake.
+/// The principal a host forwards a call for, by the id it names, the
+/// write context it carries, and the request counted against the
+/// principal's bounds: only for a lake and a principal the host may
+/// forward for, and only one the resolver knows for the lake.
 pub(crate) async fn forwarded(
     state: &State,
     host: &HostEntry,
     lake: &LakeId,
     h: &HeaderMap,
-) -> std::result::Result<(Principal, WriteContext), Turned> {
+) -> std::result::Result<(Principal, WriteContext, Held), Turned> {
     let bad = |case| Turned::new(StatusCode::BAD_REQUEST, Turn::Invalid(case));
     let principal = header(h, PRINCIPAL_HEADER).ok_or_else(|| bad(Case::NoForwardedPrincipal))?;
     let context = match header(h, CONTEXT_HEADER) {
@@ -512,7 +553,8 @@ pub(crate) async fn forwarded(
         principal: principal.to_owned(),
     };
     let who = (state.resolver.resolve(lake, &credential).await).map_err(|_| refused())?;
-    Ok((who, context))
+    let held = state.gate.principal(&who).map_err(Turned::bounded)?;
+    Ok((who, context, held))
 }
 
 /// A header of the link between hosts, sent with a principal's key: it
@@ -534,11 +576,14 @@ pub(crate) fn no_link_headers(h: &HeaderMap) -> std::result::Result<(), Turned> 
 }
 
 /// A JSON body, read whole: its media type, when named, is JSON, and it
-/// is no larger than [`MAX_BODY`]. `None` when it is empty.
+/// is no larger than `most`, the door's [`Bounds::body_bytes`]. `None`
+/// when it is empty.
 pub(crate) async fn read_json(
-    h: &HeaderMap,
+    parts: &hyper::http::request::Parts,
     body: Incoming,
+    most: Limit,
 ) -> std::result::Result<Option<Value>, Turned> {
+    let h = &parts.headers;
     if let Some(ct) = header(h, CONTENT_TYPE)
         && !ct.starts_with("application/json")
     {
@@ -547,7 +592,11 @@ pub(crate) async fn read_json(
             Turn::Invalid(Case::BodyMediaType),
         ));
     }
-    let bytes = match Limited::new(body, MAX_BODY).collect().await {
+    let most = match most {
+        Limit::At(n) => usize::try_from(n.get()).unwrap_or(usize::MAX),
+        Limit::Off => usize::MAX,
+    };
+    let bytes = match Limited::new(body, most).collect().await {
         Ok(b) => b.to_bytes(),
         Err(_) => {
             return Err(Turned::new(
@@ -586,16 +635,32 @@ impl State {
     /// The session a caller names, if it exists and is theirs. Another
     /// key's session is answered as unknown, so its existence does not
     /// leak.
-    fn session(&self, id: &str, lake: &LakeId, key: &str) -> Option<Arc<Slot>> {
-        let slot = self
-            .sessions()
-            .get(id)
+    fn owned(&self, id: &str, lake: &LakeId, key: &str) -> std::result::Result<Arc<Slot>, Refusal> {
+        (self.sessions().get(id))
             .filter(|s| s.owned_by(lake, key))
-            .cloned()?;
+            .cloned()
+            .ok_or_else(|| Box::new(unknown_session()))
+    }
+
+    /// The [`State::owned`] session, and the request counted against its
+    /// principal's bounds; a refusal answers the JSON-RPC `request` id.
+    fn session(
+        &self,
+        id: &str,
+        lake: &LakeId,
+        key: &str,
+        request: Value,
+    ) -> std::result::Result<(Arc<Slot>, Held), Refusal> {
+        let slot = self.owned(id, lake, key)?;
+        let held = (self.gate.principal(&slot.who))
+            .map_err(|o| Box::new(Turned::bounded(o).to_mcp_as(request)))?;
         *slot.last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-        Some(slot)
+        Ok((slot, held))
     }
 }
+
+/// An MCP refusal, made before anything of the request was done.
+type Refusal = Box<Response<Full<Bytes>>>;
 
 fn unknown_session() -> Response<Full<Bytes>> {
     refuse(
@@ -635,21 +700,46 @@ async fn probe(state: &State, req: &Request<Incoming>, ready: bool) -> Answer {
     r.map(BodyExt::boxed)
 }
 
-async fn handle(state: &State, req: Request<Incoming>) -> Answer {
+/// Every request, through the door's bounds
+/// (`docs/decisions/095-the-http-door-bounds-what-one-caller-spends.md`):
+/// counted by its connection here, before anything is read, and by its
+/// principal where the door resolves one. A request over a bound is answered in its transport's
+/// envelope. A probe is not counted: an orchestrator that polls health
+/// on a busy connection must not see the process as down.
+async fn bounded(state: &State, connection: &Connection, req: Request<Incoming>) -> Answer {
     let path = req.uri().path().to_owned();
-    match path.as_str() {
-        "/livez" => return probe(state, &req, false).await,
-        "/readyz" => return probe(state, &req, true).await,
-        _ => {}
+    let mcp = is_mcp(&path);
+    let probe = matches!(path.as_str(), "/livez" | "/readyz");
+    if !probe && let Err(over) = state.gate.connection(connection) {
+        let t = Turned::bounded(over);
+        return match mcp {
+            true => t.to_mcp().map(BodyExt::boxed),
+            false => crate::rest::refused(t),
+        };
     }
-    // `/lakes/<id>/mcp` is MCP; every other path under a lake is REST.
+    handle(state, req, &path, mcp).await
+}
+
+/// Whether a path is MCP's: `/lakes/<id>/mcp`, or anything not under a
+/// lake that is not a probe; every other path under a lake is REST.
+fn is_mcp(path: &str) -> bool {
     match path.strip_prefix("/lakes/") {
-        Some(rest)
-            if rest.contains('/') && !rest.split_once('/').is_some_and(|(_, r)| r == "mcp") =>
-        {
+        Some(rest) => !rest.contains('/') || rest.split_once('/').is_some_and(|(_, r)| r == "mcp"),
+        None => !matches!(path, "/livez" | "/readyz"),
+    }
+}
+
+async fn handle(state: &State, req: Request<Incoming>, path: &str, mcp: bool) -> Answer {
+    match path {
+        "/livez" => probe(state, &req, false).await,
+        "/readyz" => probe(state, &req, true).await,
+        _ if mcp => self::mcp(state, req).await,
+        _ => {
+            let rest = path
+                .strip_prefix("/lakes/")
+                .expect("a REST path is under a lake");
             crate::rest::handle(state, req, rest).await
         }
-        _ => mcp(state, req).await,
     }
 }
 
@@ -686,14 +776,16 @@ async fn mcp(state: &State, req: Request<Incoming>) -> Answer {
                 )
                 .map(BodyExt::boxed);
             };
-            match state.session(&id, &lake, &key) {
-                Some(_) => {
+            // Ending a session is not counted against its principal: one
+            // at its bounds can still give back what it holds.
+            match state.owned(&id, &lake, &key) {
+                Ok(_) => {
                     if let Some(slot) = state.sessions().remove(&id) {
                         slot.end();
                     }
                     respond(StatusCode::NO_CONTENT, None)
                 }
-                None => unknown_session(),
+                Err(r) => *r,
             }
         }
         _ => {
@@ -733,8 +825,9 @@ fn stream(state: &State, lake: &LakeId, key: &str, req: &Request<Incoming>) -> A
     };
     // Only the session's own key opens its stream; another key's session is
     // answered as unknown, as for every request.
-    let Some(slot) = state.session(id, lake, key) else {
-        return unknown_session().map(BodyExt::boxed);
+    let (slot, _held) = match state.session(id, lake, key, Value::Null) {
+        Ok(s) => s,
+        Err(r) => return (*r).map(BodyExt::boxed),
     };
     let resume = match header(h, "last-event-id").map(str::trim) {
         None => None,
@@ -856,7 +949,7 @@ async fn post(
     }
     let session_id = header(req.headers(), SESSION_HEADER).map(str::to_owned);
     let (parts, body) = req.into_parts();
-    let msg = match read_json(&parts.headers, body).await {
+    let msg = match read_json(&parts, body, state.gate.bounds.body_bytes).await {
         Ok(Some(v)) => v,
         Ok(None) => {
             return refuse(
@@ -877,8 +970,18 @@ async fn post(
     let id = msg.get("id").cloned();
 
     if msg.get("method").and_then(Value::as_str) == Some("initialize") {
-        let who = match resolve(state, &lake, key.clone()).await {
+        let (who, _held) = match resolve(state, &lake, key.clone()).await {
             Ok(p) => p,
+            // A principal's bound answers the request; a key not known,
+            // as before, no id.
+            Err(
+                t @ Turned {
+                    why: Turn::Bounded(_),
+                    ..
+                },
+            ) => {
+                return t.to_mcp_as(id.unwrap_or(Value::Null));
+            }
             Err(t) => return t.to_mcp(),
         };
         let store = match (state.open)(&lake) {
@@ -891,7 +994,7 @@ async fn post(
                 );
             }
         };
-        let mut session = Session::new(store, who, true);
+        let mut session = Session::new(store, who.clone(), true);
         let answers = session.handle(msg).await;
         let answer = answers.first();
         let mut r = respond(StatusCode::OK, answer);
@@ -920,6 +1023,7 @@ async fn post(
                     stream: Mutex::new(Arc::new(Notify::new())),
                     watch,
                     pump,
+                    who,
                 }),
             );
             r.headers_mut().insert(
@@ -937,8 +1041,10 @@ async fn post(
             "name the session in Mcp-Session-Id, or initialize one",
         );
     };
-    let Some(slot) = state.session(&sid, &lake, &key) else {
-        return unknown_session();
+    let request = id.clone().unwrap_or(Value::Null);
+    let (slot, _held) = match state.session(&sid, &lake, &key, request) {
+        Ok(s) => s,
+        Err(r) => return *r,
     };
     let answers = slot.session.lock().await.handle(msg).await;
     // The response to this request; notifications wait for a stream.

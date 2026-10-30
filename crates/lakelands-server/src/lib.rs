@@ -25,6 +25,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bounds;
 pub(crate) mod doors;
 pub mod http;
 pub(crate) mod hub;
@@ -36,6 +37,7 @@ pub mod session;
 pub mod stdio;
 pub mod watch;
 
+pub use bounds::{Bounds, Limit};
 pub use http::{
     Health, HttpConfig, HttpServer, LakeOpener, Readiness, WORKERS_MOST, runtime, serve_http,
 };

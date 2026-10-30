@@ -233,6 +233,15 @@ How a call of a verb that reaches outside the lake, whose executor's answer is h
 | `other_key` | — | sent again under its key, the call answers it | Sent again under its key, the call is answered. |
 | `propose` | — | accepted again, the proposal answers it | Accepted again, the proposal is answered. |
 
+## `Per`
+
+What a bound on the requests of a network door counts by.
+
+| code | parameters | sentence | about |
+|---|---|---|---|
+| `connection` | — | connection | One connection. |
+| `principal` | — | principal | One principal. |
+
 ## `Tls`
 
 A TLS setup that failed, on the side of the lake's own connection.
@@ -1153,6 +1162,8 @@ Why the lake cannot answer now. Retrying may help; the sentence says what the op
 | `read_only` | `lake` (String, optional), `leased_elsewhere` (bool) | [lake `{lake}`\|this lake] is open read-only here[{?leased_elsewhere}; another process holds its writer lease\|[{?lake}; open it for writing to take the lease]] | The lake is open read-only here; whether another process holds its writer lease. |
 | `no_lake` | `lake` (String), `schema` (String, optional) | there is no lake `{lake}` [in the schema `{schema}`\|where its location says]; open it with `create` to make it | There is no lake where the location says, in the schema looked in where the engine keeps one per lake. |
 | `not_served` | `lake` (String) | this server serves no lake `{lake}` | This server serves no lake of the name. |
+| `rate_bound` | `per` (Per), `most` (Requests), `retry_after` (u64) | this {per} sent more than its bound of {most} a second; nothing was done: wait {retry_after} s and send it again | A connection or a principal sent more requests in a second than the server's bound on its rate. |
+| `in_flight_bound` | `most` (Requests) | the principal has its bound of {most} being answered at once; nothing was done: send it again once one is answered | A principal has as many requests being answered as the server's bound lets one have at once. |
 | `unmade` | `part` (Part) | this engine did not create what is there: {part} is missing | A part every lake of this engine has is missing: something else made what is there. |
 | `no_projection` | `lake` (String) | lake `{lake}` has no projection yet; open it for writing first | The lake has no projection yet. |
 | `projection_layout` | `lake` (String), `found` (u64, optional), `wanted` (u64) | lake `{lake}`'s projection [has layout {found}\|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild` | The lake's projection was laid out by another build: nothing reads it, and a rebuild makes it anew from the log. |
@@ -1273,8 +1284,9 @@ its own sentence. The other types:
 - **text** (`String`), a **name** (`TypeName`, `FieldName`, `RelationName`,
   `VerbName`, `ParamName`, `TriggerName`, `ConstraintName`,
   `PreconditionName`, `ValueTypeName`, `LakeId`, `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
-- a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`) or
-  a **position** (`Position`): a JSON number;
+- a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`), a
+  **position** (`Position`) or a **count of requests** (`Requests`, said
+  "1 request", "2 requests"): a JSON number;
 - an **instant** (`Timestamp`): an RFC 3339 string in UTC; a
   **proposal's identifier** (`ProposalId`): a string;
 - a **field's type** (`FieldType`): an object as a declaration writes

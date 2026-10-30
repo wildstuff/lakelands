@@ -3065,9 +3065,10 @@ fn members_of<'de, T: serde::Deserialize<'de>>() -> &'static [&'static str] {
 fn the_root_s_settings_are_the_list_s() {
     use lakelands_api::settings::{BINDINGS, Layer, SETTINGS};
     use std::collections::BTreeSet;
-    let sections: [(&str, &[&str]); 12] = [
+    let sections: [(&str, &[&str]); 13] = [
         ("", members_of::<lakelands_cli::Config>()),
         ("server", members_of::<lakelands_server::HttpConfig>()),
+        ("server.bounds", members_of::<lakelands_server::Bounds>()),
         (
             "server.metrics",
             members_of::<lakelands_server::MetricsConfig>(),
@@ -3321,6 +3322,10 @@ server.session_idle_secs                root      not configured: lakelands.json
 server.feed_poll_millis                 root      not configured: lakelands.json has no `server`
 server.feed_floor_millis                root      not configured: lakelands.json has no `server`
 server.workers                          root      not configured: lakelands.json has no `server`
+server.bounds.connection_rate           root      not configured: lakelands.json has no `server.bounds`
+server.bounds.principal_rate            root      not configured: lakelands.json has no `server.bounds`
+server.bounds.principal_in_flight       root      not configured: lakelands.json has no `server.bounds`
+server.bounds.body_bytes                root      not configured: lakelands.json has no `server.bounds`
 server.metrics.bind                     root      not configured: lakelands.json has no `server.metrics`
 aging.utc_offset                        root      not configured: lakelands.json has no `aging`
 aging.check_secs                        root      not configured: lakelands.json has no `aging`

@@ -1416,19 +1416,23 @@ impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
         let (lake, filter) = (self.lake.clone(), filter.clone());
         exec::run(move || {
-            let (mut events, mut next, head) = polled(&lake, from, &filter, limit)?;
+            let (read, mut next, head) = polled(&lake, from, &filter, limit)?;
+            let (mut events, mut ends): (Vec<_>, Vec<_>) = read.into_iter().unzip();
             // A reaction the projection cannot decide yet, while a rebuild
             // runs, is left to the next poll with what follows it.
             let (overruled, cut) = crate::writes::overruled(&lake, &events)?;
             if let Some(cut) = cut {
                 events.retain(|e| e.position < cut);
+                ends.truncate(events.len());
                 next = cut;
             }
+            ends.dedup();
             Ok(FeedBatch {
                 events,
                 next,
                 head,
                 overruled,
+                appends: ends,
             })
         })
         .await
@@ -1453,14 +1457,18 @@ impl ChangeFeed for Feed {
     }
 }
 
-/// The events of one poll from `from` that `filter` admits, the position
-/// to poll from next and the head.
+/// An event with the last position of its append.
+type Ended = (lakelands_api::event::Event, Position);
+
+/// The events of one poll from `from` that `filter` admits, each with the
+/// last position of its append, the position to poll from next and the
+/// head.
 fn polled(
     lake: &Lake,
     from: Position,
     filter: &FeedFilter,
     limit: u32,
-) -> Result<(Vec<lakelands_api::event::Event>, Position, Position)> {
+) -> Result<(Vec<Ended>, Position, Position)> {
     // A handle without the lease reads as far as the writer has folded.
     let head = match lake.is_writer() {
         true => lake.head(),
@@ -1486,9 +1494,9 @@ fn polled(
         let room = want.min(FEED_EXAMINED as usize) as u32;
         let m = view.matching(filter, next, p, room)?;
         read = m.positions.len();
-        for e in lake.read_these(&m.positions)? {
+        for (e, end) in lake.read_these_ended(&m.positions)? {
             if feed::admits(filter, e.body.kind(), &feed::about(&e.body)) {
-                events.push(e);
+                events.push((e, end));
             }
         }
         if let Some(through) = m.through {
@@ -1506,17 +1514,17 @@ fn polled(
     let last = Position(next.0.saturating_add(bound).saturating_sub(1)).min(head);
     'read: while bound > 0 && next <= last && events.len() < want {
         let room = (last.0 - next.0 + 1).min(want.clamp(64, 1024) as u64);
-        let batch = lake.read_events(next, room as u32)?;
+        let batch = lake.read_ended(next, room as u32)?;
         if batch.is_empty() {
             break;
         }
-        for e in batch {
+        for (e, end) in batch {
             if e.position > last {
                 break 'read;
             }
             next = e.position.next();
             if feed::admits(filter, e.body.kind(), &feed::about(&e.body)) {
-                events.push(e);
+                events.push((e, end));
                 if events.len() >= want {
                     break 'read;
                 }

@@ -102,6 +102,7 @@ fn a_feed_that_cannot_wait_answers_at_once() {
                 next: from.max(head.next()),
                 head,
                 overruled: Vec::new(),
+                appends: Vec::new(),
             })
         }
         async fn ack(&self, _: &str, _: Position) -> lakelands_api::Result<()> {

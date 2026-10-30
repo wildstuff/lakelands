@@ -1749,6 +1749,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 next: Position(1),
                 head: Position(1),
                 overruled: vec![Position(1)],
+                appends: vec![Position(1)],
             }),
         ),
     ];

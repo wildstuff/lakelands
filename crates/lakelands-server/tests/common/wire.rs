@@ -33,6 +33,7 @@ pub async fn serve(store: Arc<dyn LakeStore>, resolver: Arc<StaticResolver>) -> 
         workers: None,
         metrics: None,
         hosts: Vec::new(),
+        bounds: Default::default(),
     };
     let server = serve_http(config, resolver, open).await.unwrap();
     let addr = server.local_addr().unwrap();

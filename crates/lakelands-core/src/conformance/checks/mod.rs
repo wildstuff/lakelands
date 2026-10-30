@@ -493,6 +493,8 @@ pub const ALL: &[Check] = &[
     feed::OBJECT_SET_CHANGES,
     feed::HIDDEN_TRIGGER,
     feed::PAGED_FROM_NEXT,
+    feed::APPEND_ENDS,
+    feed::APPEND_DELIVERIES,
     retire::RETIRE_NEEDS_EVERY_FIELD,
     retire::READABLE_BEFORE_RETIREMENT,
     ingest::REVERT_IS_A_CHANGE,
