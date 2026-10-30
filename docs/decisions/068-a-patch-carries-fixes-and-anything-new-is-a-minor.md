@@ -41,9 +41,12 @@ the item, and does not carry over to the next patch.
 
 An exception admits only additive, opt-in items that a host who does not
 use them never sees. Such an item does not change the log format, the
-projection layout or any existing answer. "Changes a host must make"
-stays none, and the release notes name each such item under a heading of
-its own.
+projection layout or any existing answer. An exception may require at
+most a mechanical source change that the release notes name exactly,
+such as a new field in a public options struct a host writes out in
+full. It never changes a stored lake, the log format or an existing
+answer. The release notes name each such item under a heading of its
+own.
 
 `0.21.1` is the first such release. Its one item is
 `defer_computed_fields` (lakelands#1576), which an embedding host needs,
