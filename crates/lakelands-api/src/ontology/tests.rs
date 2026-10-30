@@ -148,8 +148,6 @@ fn a_constraint_reads_its_record_alone_as_declare_judges_it() {
         ("next.n > 1", Beyond::Path),
         ("in_set('s')", Beyond::InSet),
         ("setting('cap') = 'x'", Beyond::Setting),
-        ("now() > now()", Beyond::Clock),
-        ("today() = today()", Beyond::Clock),
         ("exists(next)", Beyond::Exists),
         (
             "late",
@@ -168,7 +166,7 @@ fn a_constraint_reads_its_record_alone_as_declare_judges_it() {
         ("next.n > 1 and in_set('s')", Beyond::Path),
         ("in_set('s') and setting('cap') = 'x'", Beyond::InSet),
         ("setting('cap') = 'x' and now() > now()", Beyond::Setting),
-        ("now() > now() and exists(next)", Beyond::Clock),
+        ("now() > now() and exists(next)", Beyond::Exists),
         ("exists(next) and late", Beyond::Exists),
         (
             "late and nope",
@@ -184,8 +182,17 @@ fn a_constraint_reads_its_record_alone_as_declare_judges_it() {
         "doubled > 0",
         "known_at(n) > seen_at(n)",
         "changed(n) or previous(n) < n",
+        "known_at(n) <= now() + 1d",
     ] {
         assert_eq!(reach(holds), Ok(()), "{holds}");
+    }
+    for holds in [
+        "now() > now()",
+        "today() = today()",
+        "n > 0 or now() > '2027-01-01'",
+    ] {
+        let told = matches!(reach(holds), Err(Case::ClockNotCompared { .. }));
+        assert!(told, "{holds}");
     }
     assert!(
         matches!(reach("nope > 0"), Err(Case::UnknownField { ty, field })

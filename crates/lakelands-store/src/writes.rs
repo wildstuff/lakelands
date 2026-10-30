@@ -208,7 +208,10 @@ impl Walked {
         (sight, judging): (&Sight<'_>, Judging),
     ) -> Result<Walked> {
         let plan = crate::record::Plans::default().get(o, decl);
-        let reaches = |c: &crate::record::Constraint| !c.fed.is_disjoint(moving);
+        // What only a write judges, the clock and the record before, no
+        // walk judges, nor grants by.
+        let reaches =
+            |c: &crate::record::Constraint| c.walked.is_some() && !c.fed.is_disjoint(moving);
         let reads =
             |c: &crate::record::Constraint| c.reads.iter().all(|f| sight.reads_from(&decl.name, f));
         for c in (plan.constraints.iter()).filter(|c| reaches(c) && c.decl.at_ingest.refuses()) {
@@ -256,18 +259,20 @@ impl Walked {
             let Some((records, all, first)) = b.as_mut().filter(|_| !is.retired) else {
                 continue;
             };
-            if !c.reads.iter().any(moved) {
+            // What only the write judges, a walk does not judge again.
+            let Some(holds) = c.walked.as_ref().filter(|_| c.reads.iter().any(moved)) else {
                 continue;
-            }
+            };
             let scope = WriteScope {
                 after: &is.fields,
                 before: Some(&is.fields),
                 retiring: false,
                 meta: Some(&is.meta),
                 settings: Some(&w.settings),
+                preceding: None,
                 now,
             };
-            if !expr::holds(&c.holds, &scope).unwrap_or(false) {
+            if !expr::holds(holds, &scope).unwrap_or(false) {
                 *all += 1;
                 *records += u64::from(self.held || !was.restricted);
                 if first.len() < 5 && shown(was)? {
@@ -531,6 +536,24 @@ pub struct Pending {
 }
 
 impl Pending {
+    /// The records of `ty` this append has written so far.
+    pub(crate) fn of_type<'p>(
+        &'p self,
+        ty: &'p TypeName,
+    ) -> impl Iterator<Item = &'p StoredRecord> + 'p {
+        let from = (ty.clone(), RecordKey::from(""));
+        let of = self
+            .records
+            .range(from..)
+            .take_while(move |((t, _), _)| t == ty);
+        of.map(|(_, r)| r)
+    }
+
+    /// Whether this append has written the record of `ty` at `key`.
+    pub(crate) fn holds(&self, ty: &TypeName, key: &RecordKey) -> bool {
+        self.records.contains_key(&(ty.clone(), key.clone()))
+    }
+
     /// A record as this append leaves it, or as the projection holds it.
     pub fn record(
         &self,

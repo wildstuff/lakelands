@@ -15,7 +15,9 @@ index.
 - the fields a derived relation matches at either end (044);
 - those a set's condition, or a view's `where` over the type, compares
   to a text at the top level (`field = 'text'`, alone or as an `and`
-  term).
+  term);
+- the fields its constraints' `preceding` matches on, so a write reads
+  one series of the type, never the type (059).
 
 **The setting adds others.** The `sys.setting` record
 `lookup_index.<type>` holds a JSON array of text fields, as
@@ -136,3 +138,5 @@ on every engine.
   (lakelands#1098).
 - A key of one text field is read by key, and the index keeps no rows
   for it (lakelands#1318).
+- A field a constraint's `preceding` matches on is looked up
+  (lakelands#1552).

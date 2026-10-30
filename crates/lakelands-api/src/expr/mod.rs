@@ -56,6 +56,10 @@
 //! evaluated; an absent key is null. `param('name')` is the value a read
 //! binds to the view parameter of that name; only a view's `where` and
 //! `measures` may call it, since only a view declares parameters.
+//! `preceding(f, by, match…)` is `f` on the record of the same type
+//! before this one in the series its `match` fields name, ordered by
+//! `by`; only a constraint may call it, since only the write judging one
+//! reads the series (`docs/decisions/059-a-type-declares-its-constraints.md`).
 //!
 //! **Durations.** The difference of two instants is a duration. A
 //! duration divided by a duration is a number, so the days between two
@@ -81,10 +85,11 @@
 //!
 //! # Determinism
 //!
-//! Derived fields, constraints and guards are evaluated by the fold and
-//! must reproduce on replay (`docs/decisions/002-determinism-is-the-boundary.md`).
+//! Derived fields and guards are evaluated by the fold and must
+//! reproduce on replay (`docs/decisions/002-determinism-is-the-boundary.md`).
 //! In them, `now()` and `today()` mean the `known_at` of the event being
-//! folded, never the clock of the process replaying it. In a read, they
+//! folded, never the clock of the process replaying it. A constraint is
+//! judged by the write alone, and its clock is the write's. In a read, they
 //! mean the read's clock: the instant `valid_at` names, else as of a
 //! position the `known_at` of its event, else the time of the read
 //! (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
@@ -247,6 +252,13 @@ pub enum Func {
     /// `previous(field)`: in a guard, the field's value before the write
     /// (null for a record the write creates).
     Previous,
+    /// `preceding(field, by, match, …)`: in a constraint, `field` of the
+    /// live record of the type, other than the one written, that holds
+    /// this record's values in every matched field and whose `by` is the
+    /// greatest below this record's, the first in key order among ties;
+    /// null where none is, or where this record's `by` or a matched field
+    /// is null.
+    Preceding,
     /// `setting('key')`: the value of the lake's `sys.setting` record with
     /// that key, as it stood at the position being read or folded.
     Setting,
@@ -379,6 +391,92 @@ impl Expr {
         }
         out.extend(children(self).flat_map(|c| c.settings_read(dated)));
         out
+    }
+
+    /// What of it a walk judges: its parts as an `and` holds them, those
+    /// that are the write's alone to judge left out, the clock and
+    /// `preceding`; `None` where no part is left.
+    pub fn walked(&self) -> Option<Expr> {
+        let write = [Func::Now, Func::Today, Func::Preceding];
+        let mut args: Vec<Expr> = (self.conjuncts().into_iter())
+            .filter(|e| !e.calls(&write))
+            .cloned()
+            .collect();
+        match args.len() {
+            0 => None,
+            1 => args.pop(),
+            _ => Some(Expr::And { args }),
+        }
+    }
+
+    /// The series each `preceding` in it reads, its `by` and then its
+    /// matched fields, each once, with every field it reads there.
+    pub fn series(
+        &self,
+    ) -> std::collections::BTreeMap<Vec<FieldName>, std::collections::BTreeSet<FieldName>> {
+        let mut out = std::collections::BTreeMap::new();
+        if let Expr::Call {
+            func: Func::Preceding,
+            args,
+        } = self
+        {
+            let field = |a: &Expr| match a {
+                Expr::Path { path } => path.first().cloned(),
+                _ => None,
+            };
+            if let Some(read) = args.iter().map(field).collect::<Option<Vec<_>>>() {
+                let fields: &mut std::collections::BTreeSet<_> =
+                    out.entry(read[1..].to_vec()).or_default();
+                fields.extend(read);
+            }
+        }
+        for (series, fields) in children(self).flat_map(Expr::series) {
+            out.entry(series).or_default().extend(fields);
+        }
+        out
+    }
+
+    /// Whether every `now()` and `today()` in it is a clock term, the call
+    /// with or without a duration literal added or taken away, on one side
+    /// of a comparison whose other side reads a field and no clock.
+    pub fn clock_compared(&self) -> bool {
+        fn term(e: &Expr) -> bool {
+            let duration = |e: &Expr| {
+                matches!(
+                    e,
+                    Expr::Lit {
+                        value: Literal::Duration(_)
+                    }
+                )
+            };
+            match e {
+                Expr::Call { func, .. } => matches!(func, Func::Now | Func::Today),
+                Expr::Arith {
+                    arith: ArithOp::Add | ArithOp::Sub,
+                    lhs,
+                    rhs,
+                } if duration(rhs) => term(lhs),
+                Expr::Arith {
+                    arith: ArithOp::Add,
+                    lhs,
+                    rhs,
+                } if duration(lhs) => term(rhs),
+                _ => false,
+            }
+        }
+        let record = |e: &Expr| !e.reads_clock() && !e.fields_read().is_empty();
+        match self {
+            Expr::Cmp { lhs, rhs, .. }
+                if (term(lhs) && record(rhs)) || (term(rhs) && record(lhs)) =>
+            {
+                true
+            }
+            Expr::Call {
+                func: Func::Now | Func::Today,
+                ..
+            } => false,
+            e => children(e).all(Expr::clock_compared),
+        }
     }
 
     /// Whether it reads the clock: calls `now()` or `today()`.

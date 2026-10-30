@@ -152,11 +152,13 @@ pub fn order(ty: &TypeDecl) -> Result<Vec<(FieldName, Expr)>, Said> {
     Ok(out)
 }
 
-/// What the record does not decide: the lake's settings, the clock, and
-/// when a value was learned or seen. [`bare`] evaluates without them.
+/// What the record does not decide: the lake's settings, the clock, the
+/// record before it, and when a value was learned or seen. [`bare`]
+/// evaluates without them.
 const OUTSIDE: &[Func] = &[
     Func::Now,
     Func::Today,
+    Func::Preceding,
     Func::KnownAt,
     Func::SeenAt,
     Func::Setting,
@@ -224,6 +226,7 @@ fn alone(after: &BTreeMap<FieldName, Value>) -> WriteScope<'_> {
         retiring: false,
         meta: None,
         settings: None,
+        preceding: None,
         now: Timestamp(0),
     }
 }
@@ -300,8 +303,8 @@ pub fn stuck(
 /// key, so a constraint counts only where it breaks whatever the key holds:
 /// one that reads no key field (through the derived ones), or one joining
 /// by `and` a part that reads none and breaks, whose fields are that
-/// part's. A part a setting or the clock decides is judged by the create's
-/// own write. `ty` is as for [`fixed`].
+/// part's. A part a setting, the clock or the record before decides is
+/// judged by the create's own write. `ty` is as for [`fixed`].
 #[doc(hidden)]
 pub fn breaks<'t>(
     ty: &'t TypeDecl,
@@ -396,6 +399,7 @@ pub fn apply(
             retiring: false,
             meta: ty.field_meta.then_some(&*meta),
             settings: write.settings,
+            preceding: None,
             now: write.now,
         };
         let value = match decl.at_read() {
@@ -439,6 +443,7 @@ pub fn at_read(
             retiring: false,
             meta: Some(&record.meta),
             settings: Some(settings),
+            preceding: None,
             now,
         };
         match computed(decl, &expr, value_types, &scope) {

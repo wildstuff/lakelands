@@ -87,10 +87,13 @@ pub struct Plan {
 
 /// A type's constraint as the write path judges it: parsed, with the
 /// fields it reads and those whose write moves them, through derived
-/// fields and fields cleared when their inputs change.
+/// fields and fields cleared when their inputs change. `walked` is what
+/// a walk judges of it, without what only the write can judge, the
+/// write's clock and the record before it; `None` where nothing is left.
 pub(crate) struct Constraint {
     pub(crate) decl: lakelands_api::ontology::ConstraintDecl,
     pub(crate) holds: Expr,
+    pub(crate) walked: Option<Expr>,
     pub(crate) reads: BTreeSet<FieldName>,
     pub(crate) fed: BTreeSet<FieldName>,
 }
@@ -111,7 +114,8 @@ impl Plan {
         let derived = derive::order(&decl);
         let computed = derived.as_deref().unwrap_or_default();
         let constraints = (decl.constraints.iter()).filter_map(|c| {
-            let holds = crate::declare::typed(&c.holds, lakelands_core::expr::Place::Guard).ok()?;
+            let place = lakelands_core::expr::Place::Constraint;
+            let holds = crate::declare::typed(&c.holds, place).ok()?;
             let reads = lakelands_core::derive::reads(&holds);
             // What moves a field it reads: a derived field's inputs, and
             // those of a field the fold clears when they change, to the
@@ -134,6 +138,7 @@ impl Plan {
             let decl = c.clone();
             Some(Constraint {
                 decl,
+                walked: holds.walked(),
                 holds,
                 reads,
                 fed,

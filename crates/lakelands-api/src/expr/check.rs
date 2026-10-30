@@ -14,13 +14,16 @@ use crate::error::Case;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Place {
-    /// Over one record, outside a write: a filter, a constraint.
+    /// Over one record, outside a write: a filter.
     Record,
     /// Over one record in a write: a derived field, where `changed` and
     /// `previous` have meaning.
     Write,
     /// A trigger's guard: a write, where `retired` has meaning as well.
     Guard,
+    /// A type's constraint: a guard's, where `preceding` has meaning as
+    /// well.
+    Constraint,
     /// Over a group of records: a view measure, where aggregates have
     /// meaning.
     Group,
@@ -82,6 +85,8 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
         Expr::Call { func, args } => {
             let name = func_name(*func).to_owned();
             let (min, max) = arity(*func);
+            // A constraint is a guard, with `preceding` beside.
+            let guard = matches!(place, Place::Guard | Place::Constraint);
             if args.len() < min || max.is_some_and(|m| args.len() > m) {
                 return Err(Case::CallArity {
                     name,
@@ -93,6 +98,14 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                 {
                     return Err(Case::CallTakesField { name });
                 }
+                Func::Preceding
+                    if !args
+                        .iter()
+                        .all(|a| matches!(a, Expr::Path { path } if path.len() == 1)) =>
+                {
+                    return Err(Case::CallTakesField { name });
+                }
+                Func::Preceding if place != Place::Constraint => return Err(Case::PrecedingHere),
                 Func::Setting | Func::Param | Func::InSet if quoted(args.first()).is_none() => {
                     return Err(Case::CallTakesQuoted { name });
                 }
@@ -111,12 +124,12 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                         return Err(Case::BucketArguments);
                     }
                 }
-                Func::Previous | Func::Changed if !matches!(place, Place::Write | Place::Guard) => {
+                Func::Previous | Func::Changed if !(guard || place == Place::Write) => {
                     return Err(Case::OnlyInWrite { name });
                 }
-                Func::Retired if place != Place::Guard => return Err(Case::RetiredOnlyInGuard),
-                Func::Created if place != Place::Guard => return Err(Case::CreatedOnlyInGuard),
-                Func::Exists if !matches!(place, Place::Verb | Place::Guard) => {
+                Func::Retired if !guard => return Err(Case::RetiredOnlyInGuard),
+                Func::Created if !guard => return Err(Case::CreatedOnlyInGuard),
+                Func::Exists if !(guard || place == Place::Verb) => {
                     return Err(Case::ExistsHere);
                 }
                 Func::Exists if !matches!(args.first(), Some(Expr::Path { path }) if path.len() == 1) =>

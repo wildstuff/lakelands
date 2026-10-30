@@ -108,6 +108,20 @@
    "constraint": "c"
   },
   {
+   "code": "clock_not_compared",
+   "constraint": "c"
+  },
+  {
+   "code": "preceding_unlooked",
+   "constraint": "c",
+   "field": "f"
+  },
+  {
+   "code": "preceding_unordered",
+   "constraint": "c",
+   "field": "f"
+  },
+  {
    "code": "constraint_reads_beyond",
    "constraint": "c",
    "reads": {
@@ -781,6 +795,9 @@
   },
   {
    "code": "exists_here"
+  },
+  {
+   "code": "preceding_here"
   },
   {
    "code": "in_set_here"

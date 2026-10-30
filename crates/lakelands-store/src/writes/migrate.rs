@@ -698,7 +698,7 @@ impl Call<'_> {
         for c in shape
             .constraints
             .iter()
-            .filter(|c| !c.fed.is_disjoint(&moved))
+            .filter(|c| c.walked.is_some() && !c.fed.is_disjoint(&moved))
         {
             granted(!c.decl.at_ingest.refuses() || told(c))?;
         }
@@ -707,9 +707,11 @@ impl Call<'_> {
             .map(|c| &c.decl.name)
             .collect();
         // Each constraint `to` declares: the live records it would leave
-        // breaking it, as converted and filled (lakelands#1119).
+        // breaking it, as converted and filled (lakelands#1119), judged
+        // without what only a write judges, its clock and the record
+        // before it (lakelands#1552).
         let parse =
-            |c: &ConstraintDecl| declare::typed(&c.holds, Eval::Guard).map_err(Error::invalid);
+            |c: &ConstraintDecl| declare::typed(&c.holds, Eval::Constraint).map_err(Error::invalid);
         // The records told of (a held one only to a holder of
         // `restricted`, 062), the first keys, and whether any breaks it.
         type Breaking<'c> = (
@@ -720,7 +722,9 @@ impl Call<'_> {
             bool,
         );
         let breaking = (m.to.constraints.iter()).filter(|c| !untold.contains(&c.name));
-        let breaking = breaking.map(|c| Ok((c, parse(c)?, 0, Vec::new(), false)));
+        let breaking =
+            breaking.map(|c| Ok(parse(c)?.walked().map(|e| (c, e, 0, Vec::new(), false))));
+        let breaking = breaking.filter_map(Result::transpose);
         let mut breaking: Vec<Breaking<'_>> = breaking.collect::<Result<_>>()?;
         // A live record counted against each, as the migration leaves it.
         let tally = |breaking: &mut Vec<Breaking<'_>>, r: &StoredRecord, is: &StoredRecord| {
@@ -730,6 +734,7 @@ impl Call<'_> {
                 retiring: false,
                 meta: Some(&is.meta),
                 settings: Some(&w.settings),
+                preceding: None,
                 now: judged_at,
             };
             for (_, e, records, samples, any) in breaking.iter_mut() {

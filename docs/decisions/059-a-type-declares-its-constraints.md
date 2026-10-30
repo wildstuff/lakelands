@@ -26,11 +26,15 @@ optional field says what it holds when the field is absent:
 The constraints are not in the schema hash. Like `insert_only`, they
 judge writes and leave a record's shape alone.
 
-### A constraint reads its record alone
+### A constraint reads its record, the write's clock and the record before it
 
 A constraint reads:
 - the record's own fields, as stored or as computed at the write;
-- `previous(f)` and `changed(f)`, so a transition can be ruled.
+- `previous(f)` and `changed(f)`, so a transition can be ruled;
+- the write's clock, `now()` or `today()`, compared with the record
+  (lakelands#1556);
+- `preceding(f, by, match…)`, the record before this one in a series
+  of its type (lakelands#1552).
 
 The declaration refuses `constraint_reads_beyond`, naming the
 constraint and what it reads, when the condition reads something that
@@ -38,13 +42,75 @@ can change without a write of the record:
 - a path through a reference;
 - an object set (`in_set`) or `exists`;
 - a setting;
-- the clock;
 - a field computed at the read;
 - a field computed outside the store: an embedding, or a function a
   backing serves.
 
 Anything else would make a record break a constraint with no write to
-refuse, and an answer that changes with the clock cannot be held.
+refuse.
+
+### The clock a constraint reads is the write's
+
+`datum <= today()` says that no reading is dated ahead of the day it
+is written. Its answer changes with the clock, so it cannot be held of
+a record as it rests; it can be held of a write. The clock a constraint
+reads is the write's instant, the one a field computed at the write
+reads, and the constraint judges that write and no other.
+
+The clock appears only as a clock term, `now()` or `today()`, alone or
+with a duration added or taken away, on one side of a comparison whose
+other side reads a field of the record and not the clock. Anywhere else
+it would decide a write by the clock alone, `today() > '2027-01-01'`
+under `or` as much as `now() > now()`, so the declaration refuses it
+`clock_not_compared`, naming the constraint.
+
+### `preceding` reads the record before this one in a series
+
+A meter's readings rise; a ledger's balance moves from the last one.
+Such a rule reads a record other than the one written, and only one:
+the record before it in a series of its type. `preceding(stand, datum,
+meter)` is the value of `stand` on the live record of the type, other
+than this one, that holds this record's value in each matched field
+(`meter`; one or more) and whose `by` field (`datum`) is the greatest
+below this record's; among records with the same `by`, the first in
+key order, as every read of the lake orders. It is null where none is,
+where this record's `by` or a matched field is null, or where that
+record's field is. Every argument names a field of the type, and there
+are three or more.
+
+`preceding` is a constraint's alone: anywhere else, a filter, a guard,
+a derived field, it is refused `preceding_here`. The declaration refuses
+a series it cannot read cheaply: a matched field that is not text or a
+reference, which no exact-text index keeps, `preceding_unlooked`, and a
+`by` field the lake does not sort, `preceding_unordered`, each naming
+the constraint and the field. A field matched on is looked up, so an
+engine keeps the index for it from the declaration on (057, extended):
+the write reads one series, never the type.
+
+The write reads the series in its own decision, under the writer's
+lock, at the head with what the same append has written laid over it.
+Two readings of one meter in one delivery are judged in their order,
+the second against the first, and of two writers the later is judged
+against the earlier one's reading. The record before is the one the
+writer's own `find` would answer first: a record it is not answered,
+withheld by `only` or restricted without the grant, is passed over, and
+so is one whose `by` or a matched field a hiding lowers, so neither a
+refusal nor which record is read tells of a value the writer cannot
+see. A field the constraint reads there that a hiding lowers on that
+record is read as one the writer may not read, and the write is
+`not_granted`, as for the record it writes.
+
+### Only the write judges its clock and the record before it
+
+What the write's clock and the record before it decide was decided by
+that write. Nothing judges it again: not a write of another record of
+the series, which may land before an earlier one and leave a later one
+lower, nor a walk, nor a migration. A walk and a migration's preflight
+judge the rest of the condition: each conjunct that reads neither the
+clock nor `preceding`. A constraint with no such conjunct is judged by
+no walk and lists no breach. A write of the record that moves nothing
+the constraint reads is not judged by it either, so a record dated
+ahead before the constraint was added takes every such write.
 
 ### Every write door judges a write that moves what a constraint reads
 
@@ -106,8 +172,8 @@ refused `initial_breaks`, or `no_initial_breaks` where a field has no
 `initial`, naming the field verbs write that the constraint reads
 (lakelands#1130, lakelands#1169). A constraint that an ingest admits a
 breach of is taken. A condition that reads a setting or the clock,
-itself or through a field computed from one, is not decided by the
-record, so it is the write's to judge, here and in what `describe_type`
+itself or through a field computed from one, or the record before it,
+is not decided by the record, so it is the write's to judge, here and in what `describe_type`
 tells below; a condition beside it under `and` that the record decides
 is still judged.
 

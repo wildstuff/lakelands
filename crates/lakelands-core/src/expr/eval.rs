@@ -86,6 +86,13 @@ pub trait Scope {
         None
     }
 
+    /// In a constraint: `field` of the record before this one in the
+    /// series `series` names, its `by` and then its matched fields. `None`
+    /// where none is or the field is absent.
+    fn preceding(&self, _series: &[FieldName], _field: &FieldName) -> Option<Value> {
+        None
+    }
+
     /// Whether this is a guard over a write (`changed`, `previous`).
     fn in_write(&self) -> bool {
         false
@@ -191,9 +198,16 @@ pub struct WriteScope<'a> {
     pub meta: Option<&'a BTreeMap<FieldName, FieldMeta>>,
     /// The lake's settings, by key.
     pub settings: Option<&'a BTreeMap<String, Value>>,
+    /// In a constraint, the record before this one in each series it
+    /// reads, as the write resolved it; none where it found none.
+    pub preceding: Option<&'a Preceding>,
     /// The `known_at` of the event being folded.
     pub now: Timestamp,
 }
+
+/// The records before a written one, by series: its `by` and then its
+/// matched fields, as `preceding` names them.
+pub type Preceding = BTreeMap<Vec<FieldName>, BTreeMap<FieldName, Value>>;
 
 impl Scope for WriteScope<'_> {
     fn value(&self, path: &[FieldName]) -> Option<Value> {
@@ -202,6 +216,11 @@ impl Scope for WriteScope<'_> {
 
     fn previous(&self, field: &FieldName) -> Option<Value> {
         self.before.and_then(|b| b.get(field)).cloned()
+    }
+
+    fn preceding(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
+        let record = self.preceding?.get(series)?;
+        record.get(field).filter(|v| !v.is_null()).cloned()
     }
 
     fn in_write(&self) -> bool {
@@ -411,6 +430,9 @@ impl Scope for Strict<'_> {
     }
     fn previous(&self, field: &FieldName) -> Option<Value> {
         self.noted(self.inner.previous(field))
+    }
+    fn preceding(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
+        self.noted(self.inner.preceding(series, field))
     }
     fn in_write(&self) -> bool {
         self.inner.in_write()
@@ -728,6 +750,18 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             };
             return Ok(Val::Bool(!same));
         }
+        Func::Preceding => {
+            let named = |a: &Expr| match a {
+                Expr::Path { path } if path.len() == 1 => Some(path[0].clone()),
+                _ => None,
+            };
+            let named: Option<Vec<FieldName>> = args.iter().map(named).collect();
+            let Some((field, series)) = named.as_deref().and_then(<[_]>::split_first) else {
+                return err(Case::CallTakesField { name: name.into() });
+            };
+            let found = scope.preceding(series, field);
+            return Ok(found.map_or(Val::Null, |v| from_json(&v)));
+        }
         Func::Retired => {
             if !scope.in_write() {
                 return err(Case::RetiredOnlyInGuard);
@@ -868,6 +902,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         | Func::KnownAt
         | Func::SeenAt
         | Func::Previous
+        | Func::Preceding
         | Func::Changed
         | Func::Retired
         | Func::Created

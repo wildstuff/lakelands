@@ -435,7 +435,9 @@ impl Decide<'_> {
     /// creates and sends, and the derived fields those feed, never by a
     /// value: one who does not read every field a judged constraint reads
     /// is not granted the write, whether it would hold or not. A source's
-    /// window does not judge a constraint that admits at ingest.
+    /// window does not judge a constraint that admits at ingest. It reads
+    /// the write's clock and, through `preceding`, the record before this
+    /// one in a series, which only the write judges (lakelands#1552).
     fn constraints_hold(
         &self,
         decl: &TypeDecl,
@@ -443,6 +445,7 @@ impl Decide<'_> {
         after: &StoredRecord,
         sent: &[FieldName],
     ) -> Result<()> {
+        use std::collections::btree_map::Entry;
         let plan = self.plans.get(self.ontology, decl);
         // A field a hiding lowers on the record, before or after, is read
         // as one its grant does not let it read (006).
@@ -453,6 +456,7 @@ impl Decide<'_> {
             let told = low.iter().flatten().all(|l| !l.contains_key(f));
             told && fields.any(|d| self.at.sight.field_access(decl, d).reads())
         };
+        let mut preceding = expr::Preceding::new();
         for c in &plan.constraints {
             let admits = matches!(self.door, Door::Source) && !c.decl.at_ingest.refuses();
             if admits || (live.is_some() && !sent.iter().any(|f| c.fed.contains(f))) {
@@ -464,12 +468,27 @@ impl Decide<'_> {
             if before.is_some() && !c.reads.iter().any(moved) {
                 continue;
             }
+            // The record before this one in each series it reads, read
+            // once; a field it reads there that a hiding lowers is one its
+            // writer may not read.
+            for (series, read) in c.holds.series() {
+                let fields = match preceding.entry(series) {
+                    Entry::Occupied(o) => o.into_mut(),
+                    Entry::Vacant(v) => {
+                        let found = self.preceding(decl, after, v.key())?;
+                        v.insert(found.map(|r| r.fields).unwrap_or_default())
+                    }
+                };
+                let low = self.at.sight.lowered(&decl.name, fields);
+                granted(read.iter().all(|f| !low.contains_key(f)))?;
+            }
             let scope = WriteScope {
                 after: &after.fields,
                 before,
                 retiring: false,
                 meta: Some(&after.meta),
                 settings: Some(self.at.settings),
+                preceding: Some(&preceding),
                 now: self.at.now,
             };
             if !expr::holds(&c.holds, &scope).unwrap_or(false) {
@@ -484,6 +503,101 @@ impl Decide<'_> {
             }
         }
         Ok(())
+    }
+
+    /// The live record of `decl` before `after` in `series`, its `by` and
+    /// then its matched fields, as its writer's `find` would answer it
+    /// (lakelands#1552): of those that hold `after`'s matched values
+    /// exactly, the one whose `by` is the greatest below `after`'s, the
+    /// first by key among ties, read at the head with what this append
+    /// wrote laid over it. A record its writer is not answered, or whose
+    /// `by` or a matched field a hiding lowers, is passed over, so which
+    /// one is chosen tells no value its writer may not read. None where
+    /// `after`'s `by` or a matched field is null.
+    fn preceding(
+        &self,
+        decl: &TypeDecl,
+        after: &StoredRecord,
+        series: &[FieldName],
+    ) -> Result<Option<StoredRecord>> {
+        use lakelands_api::engine::{After, Scan};
+        use lakelands_core::engines::{Place, cmp_places};
+        let value = |f: &FieldName| after.fields.get(f).filter(|v| !v.is_null()).cloned();
+        let Some(((by, here), equal)) = (series.split_first())
+            .and_then(|(by, m)| {
+                Some((
+                    (by, value(by)?),
+                    m.iter().map(|f| Some((f.clone(), value(f)?))),
+                ))
+            })
+            .and_then(|(b, m)| Some((b, m.collect::<Option<Vec<_>>>()?)))
+        else {
+            return Ok(None);
+        };
+        let order_by = vec![lakelands_api::read::Order {
+            field: by.clone(),
+            by: Default::default(),
+            dir: lakelands_api::read::Direction::Desc,
+        }];
+        let below = |r: &StoredRecord| {
+            let at = r.fields.get(by).filter(|v| !v.is_null());
+            at.is_some_and(|v| lakelands_core::expr::order::cmp_values(v, &here).is_lt())
+        };
+        let matches = |r: &StoredRecord| equal.iter().all(|(f, v)| r.fields.get(f) == Some(v));
+        let fits = |r: &StoredRecord| {
+            let shown = || {
+                let low = self.at.sight.lowered(&decl.name, &r.fields);
+                series.iter().all(|f| !low.contains_key(f))
+            };
+            r.key != after.key
+                && !r.retired
+                && below(r)
+                && matches(r)
+                && self.at.sight.answers(&decl.name, r)
+                && shown()
+        };
+        let pending = self.pending.of_type(&decl.name);
+        let mut best = (pending.filter(|r| fits(r)).cloned()).min_by(|a, b| {
+            let (a, b) = (Place::of(a, &order_by), Place::of(b, &order_by));
+            cmp_places(&a, &b, &order_by)
+        });
+        // The head's, a page at a time from just below `after`, past what
+        // this append holds and what its writer is not answered.
+        let held = self
+            .pending
+            .of_type(&decl.name)
+            .filter(|r| matches(r))
+            .count();
+        let mut scan = Scan {
+            equal: equal.clone(),
+            order_by: order_by.clone(),
+            limit: u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
+            after: Some(After {
+                values: vec![here.clone()],
+                key: RecordKey::from(""),
+            }),
+            ..crate::lake::every(false)
+        };
+        loop {
+            let page = self.at.view.scan(&decl.name, &scan)?;
+            let found = (page.iter()).find(|r| !self.pending.holds(&decl.name, &r.key) && fits(r));
+            if let Some(r) = found {
+                let head = Place::of(r, &order_by);
+                let kept = best.as_ref().map(|b| Place::of(b, &order_by));
+                if kept.is_none_or(|b| cmp_places(&head, &b, &order_by).is_lt()) {
+                    best = Some(r.clone());
+                }
+                return Ok(best);
+            }
+            match page.last() {
+                Some(last) if page.len() as u64 >= u64::from(scan.limit) => {
+                    let values = vec![last.fields.get(by).cloned().unwrap_or(Value::Null)];
+                    let key = last.key.clone();
+                    scan.after = Some(After { values, key });
+                }
+                _ => return Ok(best),
+            }
+        }
     }
 
     /// The rest of a record write, authored or from a source (`ingest`),

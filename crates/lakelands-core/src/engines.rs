@@ -316,7 +316,8 @@ pub fn key_lookup(decl: Option<&TypeDecl>, scan: &Scan) -> Option<BTreeSet<Strin
 /// setting's value: those its declarations look its records up by (its
 /// key, but a [`text_key`], its references, the fields a derived relation
 /// matches at either end, those a set's condition or a view's `where` over
-/// it compares to a text at the top level) and those the setting names
+/// it compares to a text at the top level, those a constraint's
+/// `preceding` matches its series on) and those the setting names
 /// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
 /// `None`, every field, for a name no type declares: a view's kept records.
 pub fn looked_up<'a>(
@@ -352,6 +353,12 @@ pub fn looked_up<'a>(
         }
     }
     let t = own?;
+    let typed = t.constraints.iter().filter_map(|c| c.holds.typed().ok());
+    out.extend(
+        typed
+            .flat_map(|e| e.series().into_keys())
+            .flat_map(|s| s.into_iter().skip(1)),
+    );
     let refs = t
         .fields
         .iter()
