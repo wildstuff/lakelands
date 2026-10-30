@@ -1517,6 +1517,7 @@ async fn a_write_only_key_field_is_not_handed_out_by_record_keys(store: Store) -
             "sekrit"
         )
     ));
+    table.extend(key_side_doors(&l, &who).await?);
     eprintln!("WRITE_ONLY_KEY PROBE\n{}", table.join("\n"));
     ensure!(
         !table.iter().any(|r| r.ends_with("LEAKS")),
@@ -1524,6 +1525,37 @@ async fn a_write_only_key_field_is_not_handed_out_by_record_keys(store: Store) -
         table.join("\n")
     );
     Ok(())
+}
+
+/// The proposal listing and an aggregate grouped by the key, read by `who`
+/// (a holder of `k: write_only` on `patient`, given the review grant), as
+/// the table's rows. The server's watch asks the same `describe_type`.
+async fn key_side_doors(l: &Lake, who: &Principal) -> Result<Vec<String>, Failure> {
+    let cat = l.cat.as_ref();
+    let write = ProposedWrite::Upsert {
+        ty: "patient".into(),
+        key: "sekrit".into(),
+        patch: patch(json!({"name": "Bo"})),
+        opts: Default::default(),
+    };
+    let proposed = cat.propose(&l.own, write, "why".into()).await;
+    let Outcome::Proposed { .. } = proposed.must("proposing a write")? else {
+        return Err(Failure::new("a proposed upsert must wait"));
+    };
+    let mut who = who.clone();
+    who.grants.review = true;
+    let listed = cat.proposals(&who, ProposalFilter::default()).await;
+    let by: Aggregate = serde_json::from_value(json!({
+        "measures": [{"name": "n", "func": "count"}],
+        "group_by": [{"name": "g", "expr": "k"}]}))
+    .map_err(|e| Failure::new(format!("reading the aggregate: {e}")))?;
+    let mut find = aggregate(Vec::new());
+    find.aggregate = Some(by);
+    let grouped = cat.find(&who, &"patient".into(), find).await;
+    Ok(vec![
+        format!("patient | proposal listing | {}", told(listed, "sekrit")),
+        format!("patient | aggregate by k | {}", told(grouped, "sekrit")),
+    ])
 }
 
 /// A lexical search of `ty` for `text`, five hits a page, in `fields` or

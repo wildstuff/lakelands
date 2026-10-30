@@ -779,11 +779,12 @@ pub(crate) fn type_shown<'a>(
     who: &Principal,
 ) -> bool {
     // A type keyed by a field its principal may not know of is not shown:
-    // every record key would hand out that field's value. A view's key is
-    // judged where its values come from too (lakelands#782).
+    // every record key would hand out that field's value, and a field
+    // granted `write_only` is not known for reading (lakelands#1572). A
+    // view's key is judged where its values come from too (lakelands#782).
     let known = |t: &TypeDecl, key: &[FieldName]| {
         let mut key = t.fields.iter().filter(|f| key.contains(&f.name));
-        key.all(|f| field_access(who, t, f) != Access::None)
+        key.all(|f| field_access(who, t, f).appears())
     };
     let own = |t: &TypeDecl| {
         let fields = &mut t.fields.iter();

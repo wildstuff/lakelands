@@ -376,9 +376,11 @@ that reads a view is granted something of each of its sources.
 holds their values. So a type keyed by a field its principal may not
 know of is not shown to it: it answers as a type that is not declared,
 and so does every type made of it, a link type of its relations and a
-view over it. A key field the principal sees masked or may only write
-still gives its value through the key: the field is known, and only its
-value is withheld elsewhere. A grouped view's records are keyed by its
+view over it. A key field the principal sees masked still gives its
+value through the key: the field is known, and only its value is
+withheld elsewhere. A field granted `write_only` is a field its
+principal may not know of for this rule, since for reading it is as
+`none`: a record key would hand out its value (lakelands#1572). A grouped view's records are keyed by its
 `group_by`, and an ungrouped view's one record by no field. A view
 declares no other `key` (018), and one that holds another all the same,
 a host's own type, which passes no `declare`, is judged by its groups
