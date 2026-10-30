@@ -33,6 +33,16 @@ check!(
 );
 
 check!(
+    QUARANTINED_BY_HOST_NAMES_ITS_LINE = a_record_the_host_refused_under_a_run_names_its_line,
+    "085, extended: a record the host refused with no line under run `r`, under a named delivery, or naming its own delivery, is refused `invalid` (`host_line_missing`) at member `line` and appends nothing, so two rows never share `(erp, r, 0)`"
+);
+
+check!(
+    QUARANTINED_BY_RUN_PLACES = a_run_counts_the_places_of_its_rows,
+    "085, extended: one call under run `r` of two records with no line, of two deliveries and both refused, lists `(erp, r, 0)` and `(erp, r, 1)`, each at version 1 and its own key"
+);
+
+check!(
     QUARANTINED_BY_HOST_CLOSES = a_record_the_host_refused_lives_as_one_the_lake_refused,
     "085, extended: of three records the host refused, one dismissed closes `dismissed` and sent again is a duplicate, one whose key a re-run lands closes `landed`, and one a resubmission names closes `resubmitted`"
 );
@@ -145,6 +155,63 @@ async fn a_record_the_host_refused_is_quarantined(store: Store) -> Held {
     );
     let after = events_after(store.as_ref(), head).await?;
     ensure!(after.is_empty(), "the refused calls appended {after:?}");
+    Ok(())
+}
+
+async fn a_record_the_host_refused_under_a_run_names_its_line(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(invoice()).await?;
+    let head = store.head().await.must("reading the head")?;
+    let delivered = IngestOpts {
+        delivery: Some("file".into()),
+        ..IngestOpts::default()
+    };
+    let own = SourceRecord {
+        delivery: Some("file".into()),
+        ..inv("pc", json!(3), None)
+    };
+    let asked = [
+        ("under a run", run("r"), inv("pa", json!(1), None)),
+        ("under a delivery", delivered, inv("pb", json!(2), None)),
+        ("naming its delivery", IngestOpts::default(), own),
+    ];
+    for (what, opts, record) in asked {
+        let got = host(&l, &l.own, opts, refused(record, None)).await;
+        let at = got.as_ref().err().and_then(|e| {
+            let said = e.case()?;
+            Some((said.case.clone(), said.at.clone()))
+        });
+        let line = Place::Member {
+            path: "line".into(),
+        };
+        ensure!(
+            at == Some((Case::HostLineMissing, vec![line])),
+            "a record with no line {what} answered {got:?}"
+        );
+    }
+    let after = events_after(store.as_ref(), head).await?;
+    ensure!(after.is_empty(), "the refused calls appended {after:?}");
+    Ok(())
+}
+
+async fn a_run_counts_the_places_of_its_rows(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(invoice()).await?;
+    let of_delivery = |key: &str, delivery: &str| SourceRecord {
+        delivery: Some(delivery.into()),
+        ..inv(key, json!(1), Some("nope"))
+    };
+    let two = vec![of_delivery("qa", "x"), of_delivery("qb", "y")];
+    let got = fed(&l, &l.own, "erp", run("r"), two)
+        .await
+        .must("the call under run `r`")?;
+    ensure!(indexes(&got) == [0, 1], "the call answered {got:?}");
+    let want = vec![
+        (qid("erp", "r", 0), "qa".to_owned(), 1),
+        (qid("erp", "r", 1), "qb".to_owned(), 1),
+    ];
+    let rows = ids(&l).await?;
+    ensure!(rows == want, "the call lists {rows:?}");
     Ok(())
 }
 

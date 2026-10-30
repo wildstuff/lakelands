@@ -747,8 +747,8 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
         Ok(Target::Ingest(source)) => ingest(&store, &who, cx, source, req).await,
         Ok(Target::Feed) => feed(state, &store, &who, req).await,
         Ok(Target::Quarantined) => quarantined(&store, &who, cx, req).await,
-        Ok(Target::Dismiss) => dismiss(&store, &who, cx, req, DISMISS).await,
-        Ok(Target::Quarantine) => dismiss(&store, &who, cx, req, QUARANTINE).await,
+        Ok(Target::Dismiss) => dismiss(&store, &who, cx, req).await,
+        Ok(Target::Quarantine) => quarantine(&store, &who, cx, req).await,
         Err(a) => Err(a),
     };
     match answer {
@@ -1224,8 +1224,42 @@ async fn quarantined(
     ))
 }
 
-const DISMISS: &str = "POST …/quarantined/dismiss";
-const QUARANTINE: &str = "POST …/quarantined";
+/// The body of a `POST` that takes no query, an object read as `T`.
+async fn object_body<T: serde::de::DeserializeOwned>(
+    req: Request<Incoming>,
+    label: &'static str,
+) -> Result<T, Stop> {
+    query_args(req.uri().query(), &[], label)?;
+    let Some(Value::Object(body)) = json_body(req).await? else {
+        let route = label.into();
+        return Err(invalid(
+            StatusCode::BAD_REQUEST,
+            Case::BodyNotObject { route },
+        ));
+    };
+    doors::args(label, &body).map_err(fault_answer)
+}
+
+/// `POST …/quarantined/dismiss`, its body the id: close one as
+/// dismissed (085).
+async fn dismiss(
+    store: &Arc<dyn LakeStore>,
+    who: &Principal,
+    cx: WriteContext,
+    req: Request<Incoming>,
+) -> Result<Answer, Stop> {
+    let id: QuarantineId = object_body(req, "POST …/quarantined/dismiss").await?;
+    let close = store
+        .catalog(cx)
+        .dismiss_quarantined(who, &id)
+        .await
+        .map_err(contract)?;
+    let at = Some(close.position);
+    Ok(with_position(
+        json_reply(StatusCode::OK, &to_json(&close)),
+        at,
+    ))
+}
 
 /// What `POST …/quarantined` takes: the source, the call's options and
 /// the host's refusal.
@@ -1238,36 +1272,25 @@ struct HostQuarantine {
     refused: lakelands_api::quarantine::HostRefused,
 }
 
-/// `POST …/quarantined/dismiss`, its body the id: close one as
-/// dismissed; `POST …/quarantined`, its body a [`HostQuarantine`]:
-/// quarantine a record the host refused (085).
-async fn dismiss(
+/// `POST …/quarantined`, its body a [`HostQuarantine`]: quarantine a
+/// record the host refused (085, extended).
+async fn quarantine(
     store: &Arc<dyn LakeStore>,
     who: &Principal,
     cx: WriteContext,
     req: Request<Incoming>,
-    label: &'static str,
 ) -> Result<Answer, Stop> {
-    query_args(req.uri().query(), &[], label)?;
-    let Some(Value::Object(body)) = json_body(req).await? else {
-        let route = label.into();
-        return Err(invalid(
-            StatusCode::BAD_REQUEST,
-            Case::BodyNotObject { route },
-        ));
-    };
-    let catalog = store.catalog(cx);
-    let (answer, at) = if label == DISMISS {
-        let id: QuarantineId = doors::args(label, &body).map_err(fault_answer)?;
-        let close = (catalog.dismiss_quarantined(who, &id).await).map_err(contract)?;
-        (to_json(&close), close.position)
-    } else {
-        let q: HostQuarantine = doors::args(label, &body).map_err(fault_answer)?;
-        let done = catalog.quarantine(who, &q.source, q.opts, q.refused).await;
-        let done = done.map_err(contract)?;
-        (to_json(&done), done.position)
-    };
-    Ok(with_position(json_reply(StatusCode::OK, &answer), Some(at)))
+    let q: HostQuarantine = object_body(req, "POST …/quarantined").await?;
+    let done = store
+        .catalog(cx)
+        .quarantine(who, &q.source, q.opts, q.refused)
+        .await
+        .map_err(contract)?;
+    let at = Some(done.position);
+    Ok(with_position(
+        json_reply(StatusCode::OK, &to_json(&done)),
+        at,
+    ))
 }
 
 // ------------------------------------------------------------------- feed

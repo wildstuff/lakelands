@@ -89,8 +89,9 @@ type Quarantine = (bool, Option<DeliveryId>, Option<Error>);
 /// Decide and append one window, in the call's `delivery` where one is
 /// named or decided already, its values sealed apart too where `apart`
 /// keeps the call's keys; `places` holds each record's place among the
-/// call's records of its delivery. It answers too the id of each record
-/// it quarantined or found quarantined so already.
+/// call's records of its delivery, or of the run where one is named. It
+/// answers too the id of each record it quarantined or found
+/// quarantined so already.
 fn window(
     lake: &Turn<'_>,
     who: &Principal,
@@ -982,6 +983,7 @@ pub fn run(
     let apart = opts.sealed_apart.then(|| Arc::new(Apart::default()));
     let quarantine = opts.quarantine_refused;
     let run = opts.run;
+    let by_run = run.is_some();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Committed>>(4);
     let lakes = lake.limits.commit_window_events;
     let size = opts.commit_window.unwrap_or(lakes).max(1) as usize;
@@ -1015,9 +1017,12 @@ pub fn run(
             let (a, context, r) = (apart.clone(), context.clone(), run.clone());
             let first = next;
             next += batch.len() as u64;
+            // A place counts the records its id is keyed under: the
+            // run's, where one is named, else its delivery's.
             let at = (batch.iter())
                 .map(|r| {
-                    let place = places.entry(r.delivery.clone()).or_default();
+                    let keyed = if by_run { None } else { r.delivery.clone() };
+                    let place = places.entry(keyed).or_default();
                     *place += 1;
                     *place - 1
                 })
@@ -1070,6 +1075,14 @@ pub async fn host(
     if !cause_formed || !reason_formed {
         let path = if cause_formed { "reason" } else { "cause" }.to_owned();
         let said = Said::from(Case::HostRefusalForm { max });
+        return Err(Error::invalid(said.within(Place::Member { path })));
+    }
+    // A call of one record has it at place 0 always: under a named run or
+    // delivery only its line keys it apart from the run's other rows.
+    let named = opts.run.is_some() || opts.delivery.is_some() || record.delivery.is_some();
+    if named && record.line.is_none() {
+        let path = "line".to_owned();
+        let said = Said::from(Case::HostLineMissing);
         return Err(Error::invalid(said.within(Place::Member { path })));
     }
     let said = Box::new(Said::from(Case::RefusedByHost { cause, reason }));

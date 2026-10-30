@@ -123,7 +123,9 @@ record's still, so taking back a delivery reaches its versions as
 before; the id names the run. A resubmission keeps the id it names.
 A place counts only its call's records, so two calls of one delivery
 both have a record at 0: a host that sends one delivery in many calls
-names each record's line.
+names each record's line. Under a run, a place counts the call's
+records of every delivery, since the run keys them all: two records of
+two deliveries are two rows of the run, not both its row 0.
 
 ### The host may quarantine a record it refused itself
 
@@ -138,6 +140,12 @@ sentence for the operator, which names no cell's value. The record is
 not ingested and no rule of its type judges it; its refusal is
 `declined`, case `refused_by_host`, with the cause and the sentence. A
 cause or sentence not of that form is `invalid`, `host_refusal_form`.
+A call of the door holds one record, at place 0 always, so under a
+named run or delivery its place would make every row of the run one
+record, each the last's next version: there the record names its
+line, else it is `invalid`, `host_line_missing`, at member `line`.
+With neither named it is keyed under the store's own delivery, its
+call's alone, as an ingest's record with none is.
 
 What keeps an ingest's refusal from quarantine keeps the host's (the
 table above, marked no): the call, the `ingest` grant, the source and

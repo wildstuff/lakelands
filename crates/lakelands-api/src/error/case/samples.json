@@ -1524,6 +1524,9 @@
    "max": 1
   },
   {
+   "code": "host_line_missing"
+  },
+  {
    "cause": 1,
    "code": "cause_past_head",
    "head": 1
