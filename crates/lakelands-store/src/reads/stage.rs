@@ -42,6 +42,8 @@ pub struct Window {
     pub truncated: bool,
     /// What the first stage searched, which the stage's pages mark by.
     pub marking: Option<Marking>,
+    /// Why its vector did not rank, where its text alone did.
+    pub unranked: Option<lakelands_api::query::Unranked>,
 }
 
 /// A second stage's order and what its first page said: the keys of the
@@ -59,7 +61,7 @@ pub struct Staged {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     marking: Option<Marking>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) unranked: Option<lakelands_api::query::Unranked>,
+    unranked: Option<lakelands_api::query::Unranked>,
 }
 
 impl Staged {
@@ -84,7 +86,7 @@ impl Staged {
             axes,
             truncated: window.truncated,
             marking: window.marking.clone(),
-            unranked: None,
+            unranked: window.unranked.clone(),
         }
     }
 }
@@ -113,6 +115,8 @@ pub(super) struct First {
     pub skipped: usize,
     /// What the first stage searched, where its hits may be marked.
     pub marking: Option<Marking>,
+    /// Why its vector did not rank, where its text alone did.
+    pub unranked: Option<lakelands_api::query::Unranked>,
 }
 
 impl Reader<'_> {
@@ -190,6 +194,7 @@ impl Reader<'_> {
             axes: first.axes.clone(),
             truncated: first.hits.len() > top,
             marking: first.marking.clone(),
+            unranked: first.unranked.clone(),
         }))
     }
 

@@ -97,6 +97,7 @@ impl<'a> Reader<'a> {
             read,
             skipped: offset,
             marking,
+            unranked: None,
         })
     }
 

@@ -575,9 +575,10 @@ no text fields and a text weight of 0 are both refused.
   `model_without_vector`, by its shape alone, before any field is judged
   for the caller; over a vector field no model fills it is
   `search_needs_vector`, over a field that holds no vectors
-  `search_not_vector`, after the caller's rights; all before any call; a bound backend of another model or length is `Unbound`, naming
-  both. With no backend bound it is `Unbound`, and a backend that fails
-  makes it unavailable: it has no other leg to answer through.
+  `search_not_vector`, after the caller's rights; all before any call.
+  A bound backend of another model or length is `Unbound`, naming both.
+  With no backend bound it is `Unbound`, and a backend that fails makes
+  it unavailable: it has no other leg to answer through.
 - **A pattern's start does not take it** (`start_needs_vector`). A
   pattern's read makes no embedding call, and its rows have no member that
   could say a vector was not made. A start brings its vector.
@@ -619,7 +620,22 @@ protected: a caller never mistakes one ranking for the other.
   ranking. A cursor of an answer its vector ranked carries none, and its
   page asks the backend again; where that fails the page is
   unavailable, since its text alone would continue another order than
-  the pages before it.
+  the pages before it. Where no backend is bound, a page whose cursor
+  carries none ranks by its text and says so, as the first page would,
+  so a cursor handed out before the marker, of an answer its text
+  ranked, goes on as it did. A cursor of an answer its vector ranked
+  names that vector in the read it continues, and a page without it is
+  another read (`cursor_other_read`).
+- **The read writes the marker.** The search door hands its read why the
+  vector was not made, and the read puts it in its answer and in the
+  cursor it hands out, once, as a second stage's order is handed. With no
+  backend bound the door makes no read of its own to judge the search
+  first: there is no call to spare, and the read judges it.
+- **A cursor's marker is the caller's own.** A cursor is not signed; one
+  that carries a marker it was not handed changes only how its caller's
+  own pages say they ranked, never what a record shows. The read takes a
+  marker only from a cursor of its own read, of a hybrid search without a
+  vector.
 - **A second stage ranks the text's window,** says `lexical + rerank`,
   and every page repeats `unranked`, as it repeats the first stage's
   `ranked_by` (067).

@@ -53,7 +53,8 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::principal::{Access, Renamed, TypeGrants};
 use lakelands_api::query::{
-    Axis, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
+    Axis, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Unranked,
+    Walk,
 };
 use lakelands_api::read::{
     After as ReadAfter, AggFunc, Aggregate, Find, Found, Get, Group, Order, OrderBy, Params, ReadAt,
@@ -141,6 +142,9 @@ pub struct Reader<'a> {
     /// The second stage of a search or of a pattern's start, as the door
     /// handed it and as this read decided it.
     second: RefCell<stage::Second>,
+    /// Why the door made no query vector for a hybrid search, as it handed
+    /// it ([`Self::unmade`]).
+    unmade: RefCell<Option<Unmade>>,
     /// The settings at the read's position, read once.
     settings: OnceCell<BTreeMap<String, Value>>,
     /// The settings as its reader is told them, where that is not whole
@@ -326,7 +330,7 @@ struct CursorState {
     /// For a hybrid search its text alone ranked: why, which every page
     /// repeats and ranks by (025).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    unranked: Option<lakelands_api::query::Unranked>,
+    unranked: Option<Unranked>,
 }
 
 /// The weights a lexical or hybrid search gives its text fields itself.
@@ -398,22 +402,39 @@ fn unbound(ty: &TypeName, p: &lakelands_api::ontology::ViewParam, unbound: bool)
     }
 }
 
-/// Why the vector leg of the read `c` continues did not rank, where `c`
-/// is a cursor of `s` as it is asked, its query vector not made: of a
-/// page its text alone ranked (025).
-pub(crate) fn unranked_of(c: &Cursor, s: &Search) -> Option<lakelands_api::query::Unranked> {
-    if !matches!(s.mode, SearchMode::Hybrid { vector: None, .. }) {
-        return None;
-    }
-    let state = resume(c, "search", Some(&s.ty), &Params::new()).ok()?;
-    state.unranked.filter(|_| state.of == search_read(s))
+/// Whether `c`, a cursor of `s`, a hybrid search without a vector, is of
+/// a page its text alone ranked, which the read it continues ranks so to
+/// its end (025). The read judges the cursor its own.
+pub(crate) fn text_alone(c: &Cursor, s: &Search) -> bool {
+    matches!(s.mode, SearchMode::Hybrid { vector: None, .. })
+        && resume(c, "search", Some(&s.ty), &Params::new()).is_ok_and(|st| st.unranked.is_some())
 }
 
-/// `c`, a cursor of a page its text alone ranked, carrying why.
-pub(crate) fn carrying(c: &Cursor, unranked: &lakelands_api::query::Unranked) -> Result<Cursor> {
-    let mut state = decode(c)?;
-    state.unranked = Some(unranked.clone());
-    Ok(encode(&state))
+/// Why the door made no query vector for a hybrid search.
+#[derive(Clone)]
+pub(crate) enum Unmade {
+    /// No embedding backend is bound: the read names the field's model.
+    Unbound,
+    /// The bound backend failed, as this says.
+    Failed(Error),
+}
+
+/// The refusal of a search whose query vector `ty.field`, declared so,
+/// needs an embedding backend, where `bound` is bound instead, or none.
+pub(crate) fn embedding_unbound(
+    ty: &TypeName,
+    field: &FieldName,
+    declared: Option<&FieldDecl>,
+    bound: Option<lakelands_api::error::Bound>,
+) -> Error {
+    let embed = declared.and_then(|f| Some((f.embed.as_ref()?, f.ty.dimensions)));
+    Error::unbound(lakelands_api::error::Seam::Embedding {
+        model: embed.map(|e| e.0.model.clone()).unwrap_or_default(),
+        dimensions: embed.and_then(|e| e.1).unwrap_or(0),
+        ty: ty.clone(),
+        field: field.to_string(),
+        bound,
+    })
 }
 
 /// Refuse a cursor handed out for another read through the same door:
@@ -699,6 +720,7 @@ impl<'a> Reader<'a> {
             members: RefCell::default(),
             past: RefCell::default(),
             second: RefCell::default(),
+            unmade: RefCell::default(),
             settings: OnceCell::new(),
             told: OnceCell::new(),
         })

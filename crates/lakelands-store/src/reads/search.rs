@@ -162,6 +162,7 @@ impl<'a> Reader<'a> {
             read,
             skipped,
             marking,
+            unranked,
         } = first;
         let more = hits.len() + skipped > offset + k;
         let mut page: Vec<Hit> = (hits.into_iter()).skip(offset - skipped).take(k).collect();
@@ -179,7 +180,7 @@ impl<'a> Reader<'a> {
                 of: read,
                 now: Some(self.now),
                 stage: None,
-                unranked: None,
+                unranked: unranked.clone(),
             })
         });
         Ok(Ok(Hits {
@@ -188,8 +189,25 @@ impl<'a> Reader<'a> {
             truncated: false,
             next_cursor,
             axes,
-            unranked: None,
+            unranked,
         }))
+    }
+
+    /// Hand the read why the door made no query vector for its hybrid
+    /// search, which its answer and every cursor carry (025).
+    pub(crate) fn unmade(&self, why: Unmade) {
+        *self.unmade.borrow_mut() = Some(why);
+    }
+
+    /// Why the query vector of `s`, a hybrid search, was not made, if the
+    /// door said ([`Self::unmade`]).
+    fn unranked(&self, s: &Search, ranks: &Ranks) -> Option<Unranked> {
+        let field = s.mode.vectors().first()?.0.clone();
+        let why = match self.unmade.borrow().clone()? {
+            Unmade::Failed(why) => why,
+            Unmade::Unbound => embedding_unbound(&s.ty, &field, ranks.fields.get(&field), None),
+        };
+        Some(Unranked { field, why })
     }
 
     /// The first stage of a search: the hits it ranks this read may see,
@@ -233,13 +251,21 @@ impl<'a> Reader<'a> {
             .filter_map(|(n, f)| Some((f.name.clone(), *by_field.get(n.as_str())?)))
             .collect();
         let search_read = search_read(s);
-        let offset = match &s.cursor {
+        let (offset, carried_unranked) = match &s.cursor {
             Some(c) => {
                 let state = resume(c, "search", Some(&s.ty), &Params::new())?;
                 same_read(&state, &search_read)?;
-                state.offset as usize
+                (state.offset as usize, state.unranked)
             }
-            None => 0,
+            None => (0, None),
+        };
+        // A hybrid search whose query vector the lake did not make ranks by
+        // its text and says why, as its first page did (025).
+        let unranked = match s.mode {
+            SearchMode::Hybrid { vector: None, .. } => {
+                carried_unranked.or_else(|| self.unranked(s, &ranks))
+            }
+            _ => None,
         };
         let k = s.k.max(1) as usize;
         // One more than the page (or the second stage's window), to know
@@ -399,6 +425,7 @@ impl<'a> Reader<'a> {
             read: search_read,
             skipped,
             marking,
+            unranked,
         }))
     }
 

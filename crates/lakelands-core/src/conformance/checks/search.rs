@@ -414,7 +414,7 @@ check!(
 check!(
     HYBRID_WITHOUT_BACKEND =
         a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_so,
-    "the embedding seam (docs/seams.md) and 025: with no embedding backend bound, a hybrid search that brings no vector over a field a model fills ranks by its text alone, its answer and its one axis say it ranked lexically, and its `unranked` names the field and the backend that is not bound",
+    "the embedding seam (docs/seams.md) and 025: with no embedding backend bound, a hybrid search that brings no vector over a field a model fills ranks by its text alone, its answer and its one axis say it ranked lexically, and its `unranked` names the field and the backend that is not bound, on every page",
     reopens
 );
 
@@ -911,6 +911,36 @@ async fn a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_
         got.ranked_by,
         got.unranked
     );
+    // Its later pages rank so too, and repeat why.
+    let (cat, own) = (doors(store.as_ref()), owner(store.as_ref()));
+    let mut pages: Vec<Hits> = Vec::new();
+    let mut cursor = None;
+    let both = |cursor| Search {
+        k: 1,
+        cursor,
+        ..doc_search(over_e("quayside harbour"))
+    };
+    for _ in 0..2 {
+        let page = cat.search(&own, both(cursor)).await;
+        let page = page
+            .must("a page of a hybrid search, no backend bound")?
+            .data;
+        cursor = page.next_cursor.clone();
+        pages.push(page);
+    }
+    ensure!(
+        pages
+            .iter()
+            .all(|p| p.ranked_by == "lexical" && p.unranked == got.unranked)
+            && pages.iter().flat_map(keys).count() == 2,
+        "with no embedding backend bound, every page of a hybrid search without a vector \
+         must rank by its text alone and name the field and the backend in `unranked`; \
+         the pages answered {:?}",
+        pages
+            .iter()
+            .map(|p| (keys(p).join(","), p.ranked_by.clone(), p.unranked.clone()))
+            .collect::<Vec<_>>()
+    );
     Ok(())
 }
 
@@ -1151,7 +1181,7 @@ async fn a_hybrid_search_whose_query_the_lake_cannot_embed_ranks_by_its_text_and
 
 check!(
     VECTOR_BY_TEXT = a_vector_search_may_bring_text_the_lake_embeds_with_the_fields_model,
-    "025, extended (lakelands#1567): a vector search over a field a model fills may bring `text` in place of `vector`: the lake embeds it in one call with the field's model and answers, page for page, what the same search bringing that vector answers, a second stage asking its own text as there; over a vector field no model fills it is refused as invalid naming the field, beside a `vector` or a `model` it is refused, with an `also` vector of another length too, and as a pattern's start it is refused, none of them asking the backend; with no backend bound it is unbound",
+    "025, extended (lakelands#1567): a vector search over a field a model fills may bring `text` in place of `vector`: the lake embeds it in one call with the field's model and answers, page for page, beside an `also` vector and through a second stage of its own text, what the same search bringing that vector answers; over a field that holds no vectors or a vector field no model fills it is refused as invalid naming the field, beside a `vector` or a `model` it is refused, with an `also` vector of another length too, and as a pattern's start it is refused, none of them asking the backend; with no backend bound, or one of another model, it is unbound",
     reopens
 );
 
@@ -1210,8 +1240,65 @@ async fn a_vector_search_may_bring_text_the_lake_embeds_with_the_fields_model(
             .collect::<Vec<_>>(),
         embed_calls() - before
     );
+    // Beside an `also` vector, and with a second stage of its own text, it
+    // answers what the same search bringing the vector answers.
+    store
+        .bind_rerank(backing::reranker())
+        .must("binding the reranker")?;
+    let also = |vector: Vec<f32>, text: Option<&str>| SearchMode::Vector {
+        field: "e".into(),
+        vector,
+        text: text.map(Into::into),
+        weight: None,
+        also: vec![lakelands_api::query::VectorTerm {
+            field: "v".into(),
+            vector: vec![0.0, 1.0],
+            weight: None,
+            model: None,
+        }],
+        model: None,
+    };
+    let staged = |mode| Search {
+        rerank: Some(lakelands_api::query::Rerank {
+            top: 2,
+            text: Some(text.into()),
+        }),
+        ..doc_search(mode)
+    };
+    let alike = [
+        (
+            "beside an `also` vector",
+            doc_search(also(Vec::new(), Some(text))),
+            doc_search(also(brought.clone(), None)),
+        ),
+        (
+            "with a second stage of its own text",
+            staged(SearchMode::embedded(text, "e")),
+            staged(SearchMode::vector("e", brought.clone())),
+        ),
+    ];
+    let (before, mut unlike) = (embed_calls(), Vec::new());
+    for (what, by_text, by_vector) in alike {
+        let t = cat.search(own, by_text).await.must(what)?.data;
+        let v = cat.search(own, by_vector).await.must(what)?.data;
+        if (&t.hits, &t.ranked_by, &t.axes) != (&v.hits, &v.ranked_by, &v.axes) {
+            unlike.push(format!("{what}: {} against {}", t.ranked_by, v.ranked_by));
+        }
+    }
+    ensure!(
+        unlike.is_empty() && embed_calls() == before + 2,
+        "a vector search bringing text must rank beside an `also` vector, and through a \
+         second stage of its own text, as the same search bringing the vector, in one call \
+         each; it did not: {unlike:?}, with {} calls",
+        embed_calls() - before
+    );
     let before = embed_calls();
     let refusals = [
+        (
+            "over `body`, which holds no vectors",
+            doc_search(SearchMode::embedded(text, "body")),
+            json!({"code": "search_not_vector", "field": "body"}),
+        ),
         (
             "over `v`, which no model fills",
             doc_search(SearchMode::embedded(text, "v")),
@@ -1301,6 +1388,29 @@ async fn a_vector_search_may_bring_text_the_lake_embeds_with_the_fields_model(
         "with no embedding backend bound, a vector search over `e` bringing text must be \
          unbound, naming the field; it answered {:?}",
         got.map(|r| r.data.ranked_by)
+    );
+    let other = backing::embedder_as("another-model", 2);
+    let store = reopen(store, with_embedder(Some(other)))
+        .await
+        .map_err(|e| reopen_failed("with a backend of another model", e))?;
+    let before = embed_calls();
+    let got = doors(store.as_ref())
+        .search(
+            &owner(store.as_ref()),
+            doc_search(SearchMode::embedded(text, "e")),
+        )
+        .await;
+    let named = |seam: &Seam| {
+        matches!(seam, Seam::Embedding { field, bound: Some(b), .. }
+            if field == "e" && b.model == "another-model")
+    };
+    ensure!(
+        matches!(&got, Err(Error::Unbound { seam }) if named(seam)) && embed_calls() == before,
+        "with a backend of another model bound, a vector search over `e` bringing text must \
+         be unbound, naming the field and the model bound, asking it nothing; it answered \
+         {:?} with {} calls",
+        got.map(|r| r.data.ranked_by),
+        embed_calls() - before
     );
     Ok(())
 }
