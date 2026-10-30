@@ -173,12 +173,12 @@ pub(crate) fn seen(
     who: Principal,
 ) -> Result<(Principal, Option<usize>, Option<writes::Shown>)> {
     let none = Vec::<lakelands_api::engine::Declared>::new();
-    let (mut sight, mut followed) = lake.sight(who.clone(), None, None, &none)?;
+    let (mut sight, mut followed) = lake.sight(who.clone(), (None, false), None, &none)?;
     let head = || lake.engine.view(None).and_then(|v| lake.shape(v.as_ref()));
     let head = sight.hides_some().then(head).transpose()?;
     if let Some(head) = &head {
         let renames = Some(&head.renames[..]);
-        (sight, followed) = lake.sight(who.clone(), None, renames, head.as_ref())?;
+        (sight, followed) = lake.sight(who.clone(), (None, false), renames, head.as_ref())?;
     }
     let shown = head.as_ref().map(|head| writes::Shown {
         asked: who,
@@ -237,7 +237,7 @@ fn reading<T>(
     let renames = at.as_of.is_none().then_some(&shape.renames[..]);
     // A reference to a type it is not shown is a field it may not know of,
     // by the types the read reads (024, extended).
-    let (sight, _) = lake.sight(who, at.as_of, renames, shape.as_ref())?;
+    let (sight, _) = lake.sight(who, (at.as_of, true), renames, shape.as_ref())?;
     // A record held now is not there at any position to a reader without
     // the grant, and one released since is (006, extended).
     let held_now = at.as_of.is_some() && !sight.sees_restricted();

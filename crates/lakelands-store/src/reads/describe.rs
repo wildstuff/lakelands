@@ -70,7 +70,8 @@ impl<'a> Reader<'a> {
         let view = self.lake.engine.view(None)?;
         let shape = self.lake.shape(view.as_ref())?;
         let list = &shape.renames;
-        let (head, _) = (self.lake).sight(asked.clone(), None, Some(list), shape.as_ref())?;
+        let (head, _) =
+            (self.lake).sight(asked.clone(), (None, true), Some(list), shape.as_ref())?;
         // One at the position itself is told: the link type stands there
         // under its old name, and its links walk by the new one.
         let since = list.iter().filter(|r| r.at >= self.position);
@@ -960,11 +961,12 @@ impl<'a> Reader<'a> {
         let mut probed = probed.ok_or_else(|| Error::refused(None, Refusal::NotGranted))?;
         // The computation at a valid time filters the source by its
         // valid-time fields besides, which `describe` does not judge by: it
-        // probes those its reader may know of (024, lakelands#881). Kept
-        // records are filtered by none.
+        // probes those its reader may know of (024, lakelands#881), unless
+        // its grant dates the source by them unread (092). Kept records are
+        // filtered by none.
         if read && self.valid_at.is_some() {
             let timed = lakelands_core::valid_time::bounds(&source);
-            probed.extend(timed.filter(|n| self.knows(&source, n)).cloned());
+            probed.extend(timed.filter(|n| self.probes_bound(&source, n)).cloned());
         }
         // The probe is the view's own, so its refusal names nothing of the
         // source to a reader `describe` withholds the definition from (024).

@@ -220,7 +220,12 @@ impl<'a> Head<'a> {
     ) -> Result<Head<'a>> {
         let view: Rc<dyn ProjectionView + 'a> = Rc::from(lake.engine.view(head)?);
         let shape = lake.shape(view.as_ref())?;
-        let sight = lake.sight(who.clone(), None, Some(&shape.renames), shape.as_ref())?;
+        let sight = lake.sight(
+            who.clone(),
+            (None, true),
+            Some(&shape.renames),
+            shape.as_ref(),
+        )?;
         let who = sight.0.who().clone();
         let since = Rc::new(held::Since::new(lake, view.as_ref(), at)?);
         Ok(Head {
@@ -1047,9 +1052,9 @@ impl<'a> Reader<'a> {
         let decl = self.sight.ty(ty)?;
         // A read at a valid time filters on the type's valid-time fields,
         // so it probes them as a `where` on them would (024): those it is
-        // shown.
+        // shown, unless its grant dates the type by them unread (092).
         if self.valid_at.is_some() {
-            let timed = valid_time::bounds(decl).filter(|n| self.knows(decl, n));
+            let timed = valid_time::bounds(decl).filter(|n| self.probes_bound(decl, n));
             self.sight.check_probe(decl, timed)?;
         }
         Ok(decl)
@@ -1061,17 +1066,33 @@ impl<'a> Reader<'a> {
         !f.is_some_and(|f| self.sight.field_access(decl, f) == lakelands_api::Access::None)
     }
 
+    /// Whether a read at a valid time dates `decl`'s records by its bound
+    /// `name`: one the reader may know of, or any where its grant on the
+    /// type says `dates_by_hidden_valid_time`, the field withheld from the
+    /// answer all the same
+    /// (`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
+    fn dates_by(&self, decl: &TypeDecl, name: &FieldName) -> bool {
+        self.sight.dates_unread(&decl.name) || self.knows(decl, name)
+    }
+
+    /// Whether a read at a valid time probes `decl`'s bound `name`: one it
+    /// may know of, where its grant does not date the type by it unread.
+    fn probes_bound(&self, decl: &TypeDecl, name: &FieldName) -> bool {
+        !self.sight.dates_unread(&decl.name) && self.knows(decl, name)
+    }
+
     /// The read's valid time for `decl`, as `describe` shows it to the
     /// reader (024, extended): `valid_at` where it is shown each bound. A
     /// bound over a field it may not know of is not named, so it is
     /// dropped: the other is read as a condition on the record instead,
-    /// and with neither the type reads as one with no valid time.
+    /// and with neither the type reads as one with no valid time. A grant
+    /// that dates the type by its bounds unread keeps both (092).
     fn valid_for(&self, decl: &TypeDecl) -> (Option<Timestamp>, Option<Expr>) {
         let (Some(t), Some(from)) = (self.valid_at, &decl.valid_from) else {
             return (self.valid_at, None);
         };
         let to = decl.valid_to.as_ref();
-        let shown = |n: &FieldName| self.knows(decl, n);
+        let shown = |n: &FieldName| self.dates_by(decl, n);
         // Built, never parsed: a field may be named as a keyword is.
         let path = |f: &FieldName| {
             Box::new(Expr::Path {
