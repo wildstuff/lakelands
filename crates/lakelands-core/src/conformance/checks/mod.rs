@@ -1123,6 +1123,8 @@ pub const ALL: &[Check] = &[
     describe::DESCRIBE_IS_THE_DECLARATION,
     describe::DESCRIBED_AS_SHOWN,
     describe::SCHEMA_TOLD_AS_RECORDED,
+    describe::FOLLOWS_WHAT_CHANGES_IT,
+    describe::FOLLOWS_ANOTHER_WRITER,
     made_of::KEYED_BY_HIDDEN,
     made_of::VIEW_KEY_AT_SOURCES,
     backings::OUTPUT_NOT_A_VALUE,

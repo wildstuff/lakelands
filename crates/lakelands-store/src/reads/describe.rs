@@ -2,13 +2,15 @@
 //! kept state a read of a type is made over.
 
 use super::*;
+use crate::lake::Answered;
 
 impl<'a> Reader<'a> {
-    /// `describe`, as `asked` asked it.
-    pub fn describe(&self, asked: &Principal) -> Result<LakeDescription> {
+    /// `describe`, as `asked` asked it, and what it tells at its answer.
+    pub(crate) fn describe(&self, asked: &Principal) -> Result<(LakeDescription, Answered)> {
         let mut lake = self.sight.describe(&self.lake.id);
+        let mut answered = Answered::default();
         for t in &mut lake.types {
-            self.name_sorted(t);
+            self.name_sorted(t, &mut answered);
         }
         self.renamed_since(asked, &mut lake.types)?;
         // Whether the host binds a verb's executor is the binding now, at
@@ -23,18 +25,19 @@ impl<'a> Reader<'a> {
         let host = (self.shape.ontology.settings.values())
             .filter(|e| self.sight.setting_visible(&e.decl))
             .map(|e| {
-                use lakelands_api::settings::{in_force, periods_key, told_periods};
-                let value = self.shape.settings.get(&e.decl.key);
-                let periods = self.shape.settings.get(&periods_key(&e.decl.key));
-                lakelands_api::describe::SettingValue {
+                use lakelands_api::settings::{periods_key, told_periods};
+                let value = self.shape.settings.get(&e.decl.key).cloned();
+                let periods = self.shape.settings.get(&periods_key(&e.decl.key)).cloned();
+                let told = lakelands_api::describe::SettingValue {
                     key: e.decl.key.clone(),
-                    value: value.map(|v| in_force(v.clone(), periods, self.now)),
+                    value: None,
                     default: lakelands_api::Value::Null,
                     declared: Some(e.decl.clone()),
-                    periods: told_periods(value, periods),
-                }
+                    periods: told_periods(value.as_ref(), periods.as_ref()),
+                };
+                (told, (value, periods))
             });
-        let host: Vec<_> = host.collect();
+        let (host, values): (Vec<_>, Vec<_>) = host.unzip();
         if self.sight.who().grants.schema {
             // A setting of a type it is not shown is told as were the type
             // absent, one naming fields of a type whole or not at all, and
@@ -46,17 +49,27 @@ impl<'a> Reader<'a> {
                 .filter_map(|s| lakelands_api::settings::seen(s, &shown, &|_, _| true))
                 .collect();
         }
+        let first = lake.settings.len();
+        answered.host = (first..).zip(values).map(|(i, (v, p))| (i, v, p)).collect();
         lake.settings.extend(host);
-        Ok(lake)
+        answered.tell(self.lake, &mut lake, self.now);
+        Ok((lake, answered))
     }
 
-    /// `describe_type`, as `asked` asked it.
-    pub fn describe_type(&self, asked: &Principal, ty: &TypeName) -> Result<TypeDescription> {
+    /// `describe_type`, as `asked` asked it, and what it tells at its
+    /// answer.
+    pub(crate) fn describe_type(
+        &self,
+        asked: &Principal,
+        ty: &TypeName,
+    ) -> Result<(TypeDescription, Answered)> {
         let missing = Missing::Type { name: ty.clone() };
         let mut t = (self.sight.describe_type(ty)).ok_or(Error::NotFound { missing })?;
-        self.name_sorted(&mut t);
+        let mut answered = Answered::default();
+        self.name_sorted(&mut t, &mut answered);
         self.renamed_since(asked, std::slice::from_mut(&mut t))?;
-        Ok(t)
+        answered.tell(self.lake, &mut t, self.now);
+        Ok((t, answered))
     }
 
     /// Tell each type described as of a position the names it bore from
@@ -94,9 +107,12 @@ impl<'a> Reader<'a> {
     /// for and the vector fields it asks an index for, as its
     /// `sort_index.<type>` and `vector_index.<type>` settings ask, of those
     /// the principal sees and where it is told the setting; and for a view
-    /// whether it is kept, as its `view_kept.<type>` setting asks.
-    fn name_sorted(&self, t: &mut TypeDescription) {
+    /// whether it is kept, as its `view_kept.<type>` setting asks. The
+    /// fields told the pages sorted whole by go to `answered`, which tells
+    /// those pages at the answer.
+    fn name_sorted(&self, t: &mut TypeDescription, answered: &mut Answered) {
         let Ok(decl) = self.shape.ontology.ty(&t.name) else {
+            answered.whole.push(Vec::new());
             return;
         };
         let seen = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
@@ -124,8 +140,6 @@ impl<'a> Reader<'a> {
         // once it is indexed: its pages count every principal's reads and
         // its time grows with records a reader may not be answered
         // (lakelands#1029).
-        let tally = lakelands_core::lock(&self.lake.sorted_whole).clone();
-        let schema = self.sight.who().grants.schema;
         let told = |f: &FieldName| {
             schema
                 && self.sight.reads(&t.name, f)
@@ -133,14 +147,10 @@ impl<'a> Reader<'a> {
                 && !chosen.kept.contains(f)
                 && !chosen.building.contains(f)
         };
-        t.lifecycle.sorted_whole = (tally.into_iter())
-            .filter(|((ty, f), _)| *ty == t.name && told(f))
-            .map(|((_, field), (pages, micros))| SortedWhole {
-                field,
-                pages,
-                millis: micros / 1000,
-            })
-            .collect();
+        let fields = decl.fields.iter().map(|f| &f.name);
+        answered
+            .whole
+            .push(fields.filter(|f| told(f)).cloned().collect());
         let setting = set(core_engines::vector_index_key(&t.name));
         t.lifecycle.indexed = core_engines::indexed_fields(decl, setting);
         t.lifecycle.indexed.retain(seen);
@@ -168,6 +178,7 @@ impl<'a> Reader<'a> {
                 && self.probe_view(view, false).is_ok()
             {
                 let face = usize::from(self.sight.sees_restricted());
+                answered.read_state = true;
                 t.lifecycle.kept = Some(match self.kept_read(&t.name, view, face) {
                     Ok(Some((_, 0))) => Kept::Kept,
                     Ok(Some((_, not_exact))) => Kept::Computed {

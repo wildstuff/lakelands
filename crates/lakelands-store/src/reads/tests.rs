@@ -138,6 +138,9 @@ fn only_a_reads_open_reads_the_wall_clock() {
         // The wall clock itself (its two names), a writer's first clock,
         // and a draft's stamp.
         ("store/lake.rs", 4),
+        // A description kept at the head told again: the clock a read at
+        // the head takes in `Reader::open`.
+        ("store/lake/described.rs", 1),
         // `Reader::open`: a read at the head.
         ("store/reads.rs", 1),
         // A write's clock, never before the last `known_at`.
