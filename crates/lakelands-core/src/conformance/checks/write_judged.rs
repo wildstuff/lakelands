@@ -4,7 +4,7 @@
 //! lakelands#1552, lakelands#1556). Every write door judges it; no walk
 //! judges it again.
 
-use lakelands_api::write::Outcome;
+use lakelands_api::write::{Breach, MigrationReport, Outcome, ValueTypeMigration};
 
 use crate::conformance::fixture::{Answer, ingest, reviewer, source_record};
 use crate::conformance::prelude::*;
@@ -34,8 +34,17 @@ check!(
     "059, extended (lakelands#1552): `preceding(stand, at, line, site)`, matched on a text and a reference, reads among records of `at` tied the first by key; a record of another `line` or `site` is no predecessor; `upsert_preflight` answers `constraint_broken` as `upsert` does; a retired record is passed over; a write that moves a record into another series is judged against the record before it there; and a restricted record is passed over for a writer not granted `restricted`, though not for one granted it"
 );
 
-/// Today's date, `YYYY-MM-DD`, and the day after the next, by the wall
-/// clock: still ahead if the check runs past midnight.
+/// A door's answer.
+type Answered = lakelands_api::Result<Outcome>;
+
+/// Whether each answer is refused breaking the constraint `name`.
+macro_rules! all_broken {
+    ($name:expr, $($a:expr),+) => {
+        [$(broken(&$a)),+].iter().all(|c| c.as_deref() == Some($name))
+    };
+}
+
+/// Today's date and the day after the next: still ahead past midnight.
 fn days() -> (String, String) {
     const DAY: i64 = 86_400_000_000;
     let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
@@ -46,137 +55,141 @@ fn days() -> (String, String) {
 
 /// The constraint a refusal says is broken, if it says one is.
 fn broken(a: &impl Answer) -> Option<String> {
-    match reason(a) {
-        Some(Refusal::Constraint(said)) => match &said.case {
-            Case::ConstraintBroken { constraint, .. } => Some(constraint.to_string()),
-            _ => None,
-        },
-        _ => None,
+    if let Some(Refusal::Constraint(said)) = reason(a)
+        && let Case::ConstraintBroken { constraint, .. } = &said.case
+    {
+        return Some(constraint.to_string());
     }
+    None
 }
 
-/// The type `ty` keyed by `key`, its fields of `kind`s, which every
-/// door writes, its constraints `constraints`.
-fn typed(ty: &str, key: &[&str], fields: &[(&str, &str)], constraints: Value) -> Value {
-    let fields: Vec<Value> = (fields.iter())
-        .map(|(n, k)| json!({"name": n, "type": {"kind": k}, "authority": "shared"}))
-        .collect();
-    json!({"declare": "type", "name": ty, "key": key, "fields": fields, "constraints": constraints})
+/// The type `ty` keyed by `key`, its fields `name:kind=of` (`of` a target or a value type;
+/// `text` where no kind is named), which every door writes, its constraints `c`.
+fn typed(ty: &str, key: &[&str], fields: &str, c: Value) -> Value {
+    let field = |f: &str| {
+        let (n, k) = f.split_once(':').unwrap_or((f, "text"));
+        let kind = match k.split_once('=') {
+            Some(("reference", to)) => json!({"kind": "reference", "target": to}),
+            Some((k, vt)) => json!({"kind": k, "value_type": vt}),
+            None => json!({"kind": k}),
+        };
+        json!({"name": n, "type": kind, "authority": "shared"})
+    };
+    let fields: Vec<Value> = fields.split(' ').map(field).collect();
+    json!({"declare": "type", "name": ty, "key": key, "fields": fields, "constraints": c})
+}
+
+/// The value type `name` of the texts `open` and `x`.
+fn one_of(name: &str, open: &str) -> Value {
+    json!({"declare": "value_type", "name": name, "kind": "text", "one_of": [open, "x"]})
+}
+
+/// The declaration `json` describes, made.
+async fn declare(l: &Lake, json: Value) -> Held {
+    l.declare_json(json).await.map(drop)
 }
 
 /// The declaration `json` describes, answered as it came.
-async fn try_declare(l: &Lake, json: Value) -> Result<lakelands_api::Result<Outcome>, Failure> {
-    let d: Declaration = serde_json::from_value(json)
-        .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
+async fn try_declare(l: &Lake, json: Value) -> Result<Answered, Failure> {
+    let d = serde_json::from_value(json).map_err(|e| Failure::new(e.to_string()))?;
     Ok(l.cat.declare(&l.own, d).await)
 }
 
-/// The type a declaration's JSON describes.
-fn decl(mut json: Value) -> Result<TypeDecl, Failure> {
+/// What a declaration's JSON describes.
+fn decl<T: serde::de::DeserializeOwned>(mut json: Value) -> Result<T, Failure> {
     json.as_object_mut().map(|o| o.remove("declare"));
-    serde_json::from_value(json).map_err(|e| Failure::new(format!("the type does not read: {e}")))
+    serde_json::from_value(json).map_err(|e| Failure::new(format!("it does not read: {e}")))
 }
 
-/// `who` proposes an upsert of `fields` at `key` of `ty`; its proposal.
-async fn propose(l: &Lake, ty: &str, key: &str, fields: Value) -> Result<ProposalId, Failure> {
+/// The report of a migration of a type to the declaration `json`.
+async fn preview(l: &Lake, json: Value) -> Result<MigrationReport, Failure> {
+    let to = Migration::to(decl(json)?);
+    let report = l.cat.migrate(&l.own, to).await;
+    Ok(report.must("previewing a migration")?.data)
+}
+
+/// The owner's upsert of `fields` at `key` of `ty`, landed.
+async fn up(l: &Lake, ty: &str, key: &str, fields: Value) -> Held {
+    l.upsert(ty, key, fields).await.map(drop)
+}
+
+/// The owner's proposal of an upsert of `fields` at `key` of `ty`.
+async fn proposed(l: &Lake, ty: &str, key: &str, fields: Value) -> Result<Answered, Failure> {
     let w = json!({"write": "upsert", "type": ty, "key": key, "patch": fields});
     let w = serde_json::from_value(w).map_err(|e| Failure::new(e.to_string()))?;
-    match l.cat.propose(&l.own, w, "read".into()).await {
+    Ok(l.cat.propose(&l.own, w, "read".into()).await)
+}
+
+/// The owner's proposal of `fields` at `key` of `ty`, proposed.
+async fn propose(l: &Lake, ty: &str, key: &str, fields: Value) -> Result<ProposalId, Failure> {
+    match proposed(l, ty, key, fields).await? {
         Ok(Outcome::Proposed { proposal, .. }) => Ok(proposal),
-        other => Err(Failure::new(format!(
-            "a proposal must be proposed: {other:?}"
-        ))),
+        other => Err(Failure::new(format!("not proposed: {other:?}"))),
     }
 }
 
-/// A verb on `ty` named `verb`, called on `key`.
-async fn call(l: &Lake, verb: &str, key: &str) -> lakelands_api::Result<Outcome> {
-    let key = RecordKey::from(key);
-    let payload = crate::conformance::fixture::patch(json!({}));
-    l.cat
-        .call(
-            &l.own,
-            &verb.into(),
-            Some(&key),
-            payload,
-            Default::default(),
-        )
-        .await
+/// A verb named `verb`, called on `key`.
+async fn call(l: &Lake, verb: &str, key: &str) -> Answered {
+    let (verb, key) = (verb.into(), RecordKey::from(key));
+    let (none, opts) = (patch(json!({})), Default::default());
+    l.cat.call(&l.own, &verb, Some(&key), none, opts).await
+}
+
+/// `open` renamed `shut` in `vt` by one masked from `datum` of `ty`; what it finds breaking.
+async fn masked_rename(l: &Lake, s: &Store, ty: &str, vt: &str) -> Result<Vec<Breach>, Failure> {
+    let mut masked = field_access(s.as_ref(), "masked", ty, &[("datum", Access::Masked)]);
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
+    let to = decl(one_of(vt, "shut"))?;
+    let renames = vec![("open".into(), "shut".into())];
+    let m = ValueTypeMigration { to, renames };
+    let walked = l.cat.migrate_value_type(&masked, m).await;
+    let walked = walked.must("a value type's renames by one masked")?;
+    Ok(walked.data.breaches)
 }
 
 async fn a_constraint_compares_the_record_with_the_write_s_clock(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
     let (today, later) = days();
-    let fields = [("no", "text"), ("datum", "date"), ("note", "text")];
     let ahead = json!([{"name": "not_ahead", "holds": "datum <= today()"}]);
-    l.declare_json(typed("reading", &["no"], &fields, ahead.clone()))
-        .await?;
+    let of = |ty: &str, c: &Value| typed(ty, &["no"], "no datum:date note", c.clone());
+    declare(&l, of("reading", &ahead)).await?;
     // Refused anywhere but as a clock term compared with a field.
     for holds in [
         "today() > '2027-01-01' or datum <= today()",
         "now() > now()",
         "today() > datum - datum + '2027-01-01'",
     ] {
-        let c = json!([{"name": "c", "holds": holds}]);
-        let a = try_declare(&l, typed("odd", &["no"], &fields, c)).await?;
+        let a = try_declare(&l, of("odd", &json!([{"name": "c", "holds": holds}]))).await?;
         ensure!(
             matches!(invalid_case(&a), Some(Case::ClockNotCompared { .. })),
             "`{holds}` is refused `clock_not_compared`: {a:?}"
         );
     }
-    l.declare_as(
-        write_verb("ahead", "reading", "datum", &format!("'{later}'")),
-        "a verb",
-    )
-    .await?;
+    let verb = write_verb("ahead", "reading", "datum", &format!("'{later}'"));
+    l.declare_as(verb, "a verb").await?;
     let soon = try_upsert(cat, &l.own, "reading", "R-1", json!({"datum": later})).await;
-    l.upsert("reading", "R-2", json!({"datum": today})).await?;
-    let fed = source_record("reading", "R-3", json!({"datum": later}));
-    let fed = ingest(cat, &l.own, "meter", vec![fed]).await;
-    let called = call(&l, "ahead", "R-2").await;
-    let w = json!({"write": "upsert", "type": "reading", "key": "R-4", "patch": {"datum": later}});
-    let w = serde_json::from_value(w).map_err(|e| Failure::new(e.to_string()))?;
-    let proposed = cat.propose(&l.own, w, "ahead".into()).await;
-    let said = [
-        &broken(&soon),
-        &broken(&fed),
-        &broken(&called),
-        &broken(&proposed),
-    ];
-    ensure!(
-        said.iter().all(|c| c.as_deref() == Some("not_ahead")),
-        "a write dated ahead is refused `not_ahead` at upsert, ingest, a verb and a \
-         proposal: {soon:?}, {fed:?}, {called:?}, {proposed:?}"
-    );
-    let today_proposed = propose(&l, "reading", "R-5", json!({"datum": today})).await?;
-    let accepted = cat
-        .accept(&reviewer(store.as_ref(), false), &today_proposed)
-        .await;
+    up(&l, "reading", "R-2", json!({"datum": today})).await?;
+    let fed = vec![source_record("reading", "R-3", json!({"datum": later}))];
+    let fed = ingest(cat, &l.own, "meter", fed).await;
+    let verb = call(&l, "ahead", "R-2").await;
+    let prop = proposed(&l, "reading", "R-4", json!({"datum": later})).await?;
+    let p = propose(&l, "reading", "R-5", json!({"datum": today})).await?;
+    let accepted = cat.accept(&reviewer(store.as_ref(), false), &p).await;
     accepted.must("an accept of a reading dated today")?;
-    // A record dated ahead, put there before the constraint: a migration
-    // adds it losslessly, and a write that leaves `datum` is not judged.
-    let dated = [("no", "text"), ("datum", "date"), ("note", "text")];
-    l.declare_json(typed("late", &["no"], &dated, json!([])))
-        .await?;
-    l.upsert("late", "L-1", json!({"datum": "2999-01-01"}))
-        .await?;
-    let to = Migration::to(decl(typed("late", &["no"], &dated, ahead.clone()))?);
-    let preview = cat
-        .migrate(&l.own, to)
-        .await
-        .must("previewing the migration")?;
-    ensure!(
-        preview.data.breaches.is_empty() && preview.data.lossless,
-        "a migration adding `not_ahead` over a record dated ahead lists no breach: {preview:?}"
-    );
-    l.migrate(decl(typed("late", &["no"], &dated, ahead))?)
-        .await?;
-    l.upsert("late", "L-1", json!({"note": "kept"})).await?;
+    // Dated ahead before the constraint: a write leaving `datum` is not judged.
+    declare(&l, of("late", &json!([]))).await?;
+    up(&l, "late", "L-1", json!({"datum": "2999-01-01"})).await?;
+    let report = preview(&l, of("late", &ahead)).await?;
+    l.migrate(decl(of("late", &ahead))?).await?;
+    up(&l, "late", "L-1", json!({"note": "kept"})).await?;
     let moved = try_upsert(cat, &l.own, "late", "L-1", json!({"datum": "2998-01-01"})).await;
+    let clean = report.breaches.is_empty() && report.lossless;
     ensure!(
-        broken(&moved).as_deref() == Some("not_ahead"),
-        "a write that moves `datum` is judged: {moved:?}"
+        all_broken!("not_ahead", soon, fed, verb, prop, moved) && clean,
+        "a write dated ahead is refused `not_ahead` at upsert, ingest, a verb and a proposal, \
+         a migration adding it over a record dated ahead lists no breach, and a write that \
+         moves `datum` is judged: {soon:?}, {fed:?}, {verb:?}, {prop:?}, {report:?}, {moved:?}"
     );
     // A walk that computes the field it reads again does not judge it.
     let day = |derived: &str| {
@@ -187,8 +200,8 @@ async fn a_constraint_compares_the_record_with_the_write_s_clock(store: Store) -
                         "derived": derived, "depends_on": ["datum"]}],
             "constraints": [{"name": "due_past", "holds": "due <= now()"}]})
     };
-    l.declare_json(day("datum")).await?;
-    l.upsert("walked", "W-1", json!({"datum": today})).await?;
+    declare(&l, day("datum")).await?;
+    up(&l, "walked", "W-1", json!({"datum": today})).await?;
     let again = try_declare(&l, day("datum + 36500d")).await?;
     again.must("a declaration that computes `due` again past the clock")?;
     Ok(())
@@ -197,51 +210,33 @@ async fn a_constraint_compares_the_record_with_the_write_s_clock(store: Store) -
 async fn a_constraint_reads_the_record_before_it_in_its_series(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
-    let fields = [
-        ("meter", "text"),
-        ("datum", "date"),
-        ("stand", "number"),
-        ("hand", "text"),
-        ("note", "text"),
-    ];
     let rule = "preceding(stand, datum, meter) is null or stand >= preceding(stand, datum, meter)";
     let lower = json!([{"name": "never_lower", "holds": rule}]);
-    l.declare_json(typed(
-        "reading",
-        &["meter", "datum"],
-        &fields,
-        lower.clone(),
-    ))
-    .await?;
+    let fields = "meter datum:date stand:number hand note";
+    let reading = typed("reading", &["meter", "datum"], fields, lower.clone());
+    declare(&l, reading).await?;
     // Refused: matched on a number, ordered by JSON, read in a `find`.
-    let odd = [("meter", "number"), ("datum", "json"), ("stand", "number")];
+    let odd = "meter:number datum:json stand:number";
     for (holds, matched) in [
         ("preceding(stand, stand, meter) is null", "meter"),
         ("preceding(stand, datum, stand) is null", "stand"),
     ] {
         let c = json!([{"name": "c", "holds": holds}]);
-        let a = try_declare(&l, typed("odd", &["stand"], &odd, c)).await?;
+        let a = try_declare(&l, typed("odd", &["stand"], odd, c)).await?;
         let right = matches!(invalid_case(&a),
             Some(Case::PrecedingUnlooked { field, .. }) if field.as_str() == matched);
         ensure!(right, "`{holds}` matched on a number is refused: {a:?}");
     }
-    let json_by = [("meter", "text"), ("datum", "json"), ("stand", "number")];
     let c = json!([{"name": "c", "holds": "preceding(stand, datum, meter) is null"}]);
-    let a = try_declare(&l, typed("odd", &["meter"], &json_by, c)).await?;
+    let by_json = typed("odd", &["meter"], "meter datum:json stand:number", c);
+    let a = try_declare(&l, by_json).await?;
+    let unordered = matches!(invalid_case(&a), Some(Case::PrecedingUnordered { field, .. }) if field.as_str() == "datum");
+    let q = find_where("preceding(stand, datum, meter) > 0");
+    let found = cat.find(&l.own, &"reading".into(), q).await;
     ensure!(
-        matches!(invalid_case(&a), Some(Case::PrecedingUnordered { field, .. }) if field.as_str() == "datum"),
-        "a series ordered by JSON is refused `preceding_unordered`: {a:?}"
-    );
-    let found = cat
-        .find(
-            &l.own,
-            &"reading".into(),
-            find_where("preceding(stand, datum, meter) > 0"),
-        )
-        .await;
-    ensure!(
-        matches!(invalid_case(&found), Some(Case::PrecedingHere)),
-        "a `preceding` in a `find` is refused `preceding_here`: {found:?}"
+        unordered && matches!(invalid_case(&found), Some(Case::PrecedingHere)),
+        "a series ordered by JSON is refused `preceding_unordered`, and a `preceding` in a \
+         `find` `preceding_here`: {a:?}, {found:?}"
     );
     let own = &l.own;
     let put = |m: &str, d: &str, stand: i64| {
@@ -249,197 +244,115 @@ async fn a_constraint_reads_the_record_before_it_in_its_series(store: Store) -> 
         let fields = json!({"meter": m, "datum": d, "stand": stand, "hand": "a"});
         async move { try_upsert(cat, own, "reading", &key, fields).await }
     };
-    put("M1", "2026-01-01", 10)
-        .await
-        .must("the first reading")?;
+    let ok = |m: &str, d: &str, stand: i64, what: &'static str| {
+        let put = put(m, d, stand);
+        async move { put.await.must(what).map(drop) }
+    };
+    ok("M1", "2026-01-01", 10, "the first reading").await?;
     let low = put("M1", "2026-02-01", 5).await;
-    put("M1", "2026-02-01", 20).await.must("a higher reading")?;
-    put("M2", "2026-03-01", 1).await.must("another meter's")?;
-    put("M1", "2026-01-15", 12)
-        .await
-        .must("a backdated reading higher than the one before it")?;
+    ok("M1", "2026-02-01", 20, "a higher reading").await?;
+    ok("M2", "2026-03-01", 1, "another meter's").await?;
+    ok("M1", "2026-01-15", 12, "a backdated one higher").await?;
     let backdated = put("M1", "2026-01-20", 11).await;
-    // Put above the reading after it: a write of that one that moves
-    // nothing the constraint reads is not judged.
-    put("M1", "2026-01-25", 25)
-        .await
-        .must("a reading above the one after it")?;
-    l.upsert("reading", "M1:2026-02-01", json!({"note": "read"}))
-        .await?;
-    l.declare_as(write_verb("zero", "reading", "stand", "0"), "a verb")
-        .await?;
+    // Above the next: a write of that one moving nothing read is not judged.
+    ok("M1", "2026-01-25", 25, "one above the next").await?;
+    up(&l, "reading", "M1:2026-02-01", json!({"note": "read"})).await?;
+    let zero = write_verb("zero", "reading", "stand", "0");
+    l.declare_as(zero, "a verb").await?;
     let called = call(&l, "zero", "M1:2026-02-01").await;
     let one = |d: &str, stand: i64| {
         let fields = json!({"meter": "M3", "datum": d, "stand": stand});
         source_record("reading", &format!("M3:{d}"), fields)
     };
-    let fed = ingest(
-        cat,
-        &l.own,
-        "meter",
-        vec![one("2026-01-01", 10), one("2026-01-02", 5)],
-    )
-    .await;
-    // Proposed above the reading before it, accepted after a higher one
-    // lands between.
+    let two = vec![one("2026-01-01", 10), one("2026-01-02", 5)];
+    let fed = ingest(cat, &l.own, "meter", two).await;
+    // Proposed above the reading before, accepted after a higher one lands.
     let fields = json!({"meter": "M1", "datum": "2026-03-01", "stand": 25, "hand": "a"});
     let proposal = propose(&l, "reading", "M1:2026-03-01", fields).await?;
-    put("M1", "2026-02-15", 30)
-        .await
-        .must("a reading between")?;
-    let accepted = cat
-        .accept(&reviewer(store.as_ref(), false), &proposal)
-        .await;
-    let said = [
-        broken(&low),
-        broken(&backdated),
-        broken(&called),
-        broken(&fed),
-        broken(&accepted),
-    ];
+    ok("M1", "2026-02-15", 30, "a reading between").await?;
+    let rev = reviewer(store.as_ref(), false);
+    let accepted = cat.accept(&rev, &proposal).await;
     ensure!(
-        said.iter().all(|c| c.as_deref() == Some("never_lower")),
+        all_broken!("never_lower", low, backdated, called, fed, accepted),
         "a reading below the one before it is refused `never_lower` at upsert, backdated, \
-         at a verb, within one delivery and at an accept: {said:?} {low:?}, {backdated:?}, \
+         at a verb, within one delivery and at an accept: {low:?}, {backdated:?}, \
          {called:?}, {fed:?}, {accepted:?}"
     );
-    // Accepted after a higher reading the reviewer is not answered lands
-    // between: passed over, as the proposer is answered it.
-    put("M9", "2026-01-01", 10).await.must("a reading of M9")?;
+    // A higher reading between that the reviewer is not answered: passed over.
+    ok("M9", "2026-01-01", 10, "a reading of M9").await?;
     let fields = json!({"meter": "M9", "datum": "2026-02-01", "stand": 20, "hand": "a"});
     let proposal = propose(&l, "reading", "M9:2026-02-01", fields).await?;
     let unseen = json!({"meter": "M9", "datum": "2026-01-10", "stand": 60, "hand": "r"});
-    l.upsert("reading", "M9:2026-01-10", unseen).await?;
-    let blind = super::only::holder(
-        store.as_ref(),
-        "blind",
-        json!({"default": "read", "review": true, "types": {"reading": {"only": {"hand": "a"}}}}),
-    );
+    up(&l, "reading", "M9:2026-01-10", unseen).await?;
+    let r =
+        json!({"default": "read", "review": true, "types": {"reading": {"only": {"hand": "a"}}}});
+    let blind = super::only::holder(store.as_ref(), "blind", r);
     let past = cat.accept(&blind, &proposal).await;
     past.must("an accept past a reading its reviewer is not answered")?;
-    // A writer `only` hand `b` is not answered hand `a`'s readings; the
-    // owner, after it, is judged against its reading.
-    let b = super::only::holder(
-        store.as_ref(),
-        "b",
-        json!({"default": "write", "types": {"reading": {"only": {"hand": "b"}}}}),
-    );
+    // A writer `only` hand `b` passes hand `a`'s; the owner is judged by it.
+    let grants = json!({"default": "write", "types": {"reading": {"only": {"hand": "b"}}}});
+    let b = super::only::holder(store.as_ref(), "b", grants);
     let fields = json!({"meter": "M1", "datum": "2026-04-01", "stand": 40, "hand": "b"});
     let past = try_upsert(cat, &b, "reading", "M1:2026-04-01", fields).await;
     past.must("a reading below one its writer is not answered")?;
     let after = put("M1", "2026-04-02", 35).await;
-    ensure!(
-        broken(&after).as_deref() == Some("never_lower"),
-        "a second writer is judged against the first's reading: {after:?}"
-    );
     // A predecessor, hand `b`'s, whose `stand` is hidden from its writer.
     let hide = json!({"field": "hand", "values": ["b"], "fields": {"stand": "none"}});
-    let h = super::only::holder(
-        store.as_ref(),
-        "h",
-        json!({"default": "write", "types": {"reading": {"hide_where": [hide]}}}),
-    );
+    let grants = json!({"default": "write", "types": {"reading": {"hide_where": [hide]}}});
+    let h = super::only::holder(store.as_ref(), "h", grants);
     let fields = json!({"meter": "M1", "datum": "2026-05-01", "stand": 99, "hand": "c"});
     let hidden = try_upsert(cat, &h, "reading", "M1:2026-05-01", fields).await;
-    ensure!(
-        matches!(reason(&hidden), Some(Refusal::NotGranted)),
-        "a predecessor whose `stand` is hidden makes the write not granted: {hidden:?}"
-    );
-    // Twins but for a hidden `datum`, below the write's or above it: each
-    // is passed over, and both writes are judged against the reading
-    // before them that their writer reads.
-    let gauge = [
-        ("no", "text"),
-        ("meter", "text"),
-        ("datum", "date"),
-        ("stand", "number"),
-        ("hand", "text"),
-    ];
-    l.declare_json(typed("gauge", &["no"], &gauge, lower.clone()))
-        .await?;
+    // A predecessor whose `datum` is hidden, before the write or after, is passed over.
+    let gauge = "no meter datum:date stand:number hand";
+    declare(&l, typed("gauge", &["no"], gauge, lower.clone())).await?;
     let hide = json!({"field": "hand", "values": ["z"], "fields": {"datum": "none"}});
-    let g = super::only::holder(
-        store.as_ref(),
-        "g",
-        json!({"default": "write", "types": {"gauge": {"hide_where": [hide]}}}),
-    );
+    let grants = json!({"default": "write", "types": {"gauge": {"hide_where": [hide]}}});
+    let g = super::only::holder(store.as_ref(), "g", grants);
     let mut twins = Vec::new();
     for (m, z) in [("G1", "2026-01-10"), ("G2", "2026-03-10")] {
         let y = json!({"meter": m, "datum": "2026-01-01", "stand": 50, "hand": "a"});
-        l.upsert("gauge", &format!("{m}y"), y).await?;
+        up(&l, "gauge", &format!("{m}y"), y).await?;
         let z = json!({"meter": m, "datum": z, "stand": 60, "hand": "z"});
-        l.upsert("gauge", &format!("{m}z"), z).await?;
+        up(&l, "gauge", &format!("{m}z"), z).await?;
         let w = json!({"meter": m, "datum": "2026-02-01", "stand": 10, "hand": "c"});
         twins.push(try_upsert(cat, &g, "gauge", &format!("{m}w"), w).await);
     }
-    ensure!(
-        twins
-            .iter()
-            .all(|t| broken(t).as_deref() == Some("never_lower")),
-        "a predecessor whose `datum` is hidden is passed over, wherever it lies: {twins:?}"
-    );
     // A migration that adds it over a series that breaks it.
-    let plain = [("meter", "text"), ("datum", "date"), ("stand", "number")];
-    l.declare_json(typed("walked", &["meter", "datum"], &plain, json!([])))
-        .await?;
-    l.upsert("walked", "M1:2026-01-01", json!({"stand": 10}))
-        .await?;
-    l.upsert("walked", "M1:2026-01-02", json!({"stand": 5}))
-        .await?;
-    let to = Migration::to(decl(typed("walked", &["meter", "datum"], &plain, lower))?);
-    let preview = cat
-        .migrate(&l.own, to)
-        .await
-        .must("previewing the migration")?;
+    let plain = "meter datum:date stand:number";
+    declare(&l, typed("walked", &["meter", "datum"], plain, json!([]))).await?;
+    up(&l, "walked", "M1:2026-01-01", json!({"stand": 10})).await?;
+    up(&l, "walked", "M1:2026-01-02", json!({"stand": 5})).await?;
+    let report = preview(&l, typed("walked", &["meter", "datum"], plain, lower)).await?;
+    let clean = report.breaches.is_empty() && report.lossless;
+    let not_granted = matches!(reason(&hidden), Some(Refusal::NotGranted));
     ensure!(
-        preview.data.breaches.is_empty() && preview.data.lossless,
-        "a migration adding `never_lower` over a falling series lists no breach: {preview:?}"
+        all_broken!("never_lower", after, twins[0], twins[1]) && not_granted && clean,
+        "a second writer is judged against the first's reading, a predecessor whose `stand` is \
+         hidden makes the write not granted, one whose `datum` is hidden is passed over, and a \
+         migration adding `never_lower` over a falling series lists no breach: {after:?}, \
+         {hidden:?}, {twins:?}, {report:?}"
     );
     Ok(())
 }
 
 async fn a_walk_judges_nothing_only_a_write_judges(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
-    let tide = |open: &str| json!({"name": "tide", "kind": "text", "one_of": [open, "done"]});
-    let mut declared = tide("open");
-    declared["declare"] = json!("value_type");
-    l.declare_json(declared).await?;
-    let kept = |meter: &str, constraints: Value| {
-        json!({"declare": "type", "name": "kept", "key": ["no"],
-            "fields": [{"name": "no", "type": {"kind": "text"}},
-                       {"name": meter, "type": {"kind": "text"}},
-                       {"name": "datum", "type": {"kind": "date"}},
-                       {"name": "stand", "type": {"kind": "number"}},
-                       {"name": "phase", "type": {"kind": "text", "value_type": "tide"}}],
-            "constraints": constraints})
-    };
+    declare(&l, one_of("tide", "open")).await?;
+    let rest = "datum:date stand:number phase:text=tide";
+    let kept = |meter: &str, c: Value| typed("kept", &["no"], &format!("no {meter} {rest}"), c);
     let rules = |meter: &str| {
-        let before = format!("preceding(stand, datum, {meter})");
-        json!([{"name": "dated", "holds": "phase = 'done' or datum <= today()"},
-               {"name": "lower",
-                "holds": format!("phase = 'done' or {before} is null or stand >= {before}")}])
+        let b = format!("preceding(stand, datum, {meter})");
+        json!([{"name": "dated", "holds": "phase = 'x' or datum <= today()"},
+               {"name": "lower", "holds": format!("phase = 'x' or {b} is null or stand >= {b}")}])
     };
     // Dated ahead and falling, put there before the constraints.
-    l.declare_json(kept("meter", json!([]))).await?;
+    declare(&l, kept("meter", json!([]))).await?;
     for (no, datum, stand) in [("K-1", "2999-01-01", 10), ("K-2", "2999-02-01", 5)] {
         let r = json!({"meter": "A", "datum": datum, "stand": stand, "phase": "open"});
-        l.upsert("kept", no, r).await?;
+        up(&l, "kept", no, r).await?;
     }
     l.migrate(decl(kept("meter", rules("meter")))?).await?;
-    let mut masked = field_access(
-        store.as_ref(),
-        "masked",
-        "kept",
-        &[("datum", Access::Masked)],
-    );
-    (masked.grants.schema, masked.grants.restricted) = (true, true);
-    let to = serde_json::from_value(tide("shut")).map_err(|e| Failure::new(e.to_string()))?;
-    let renamed = lakelands_api::write::ValueTypeMigration {
-        to,
-        renames: vec![("open".into(), "shut".into())],
-    };
-    let walked = l.cat.migrate_value_type(&masked, renamed).await;
-    let walked = walked.must("a value type's renames in `phase`")?.data;
+    let walked = masked_rename(&l, &store, "kept", "tide").await?;
     let m = Migration {
         renames: vec![("meter".into(), "serial".into())],
         ..Migration::to(decl(kept("serial", rules("serial")))?)
@@ -447,7 +360,7 @@ async fn a_walk_judges_nothing_only_a_write_judges(store: Store) -> Held {
     let migrated = l.cat.migrate(&l.own, m).await;
     let migrated = migrated.must("a migration renaming `meter`")?.data;
     ensure!(
-        walked.breaches.is_empty() && migrated.breaches.is_empty() && migrated.lossless,
+        walked.is_empty() && migrated.breaches.is_empty() && migrated.lossless,
         "a walk granted to one masked from `datum` and a migration under constraints only a \
          write judges list no breach: {walked:?}, {migrated:?}"
     );
@@ -456,56 +369,28 @@ async fn a_walk_judges_nothing_only_a_write_judges(store: Store) -> Held {
 
 async fn a_walk_judges_what_reads_neither_clock_nor_preceding(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
-    let ebb = |open: &str| json!({"name": "ebb", "kind": "text", "one_of": [open, "x"]});
-    let mut declared = ebb("open");
-    declared["declare"] = json!("value_type");
-    l.declare_json(declared).await?;
-    let mixed = |constraints: Value| {
-        json!({"declare": "type", "name": "mixed", "key": ["no"],
-            "fields": [{"name": "no", "type": {"kind": "text"}},
-                       {"name": "datum", "type": {"kind": "date"}},
-                       {"name": "stand", "type": {"kind": "number"}},
-                       {"name": "phase", "type": {"kind": "text", "value_type": "ebb"}}],
-            "constraints": constraints})
-    };
-    l.declare_json(mixed(json!([]))).await?;
+    declare(&l, one_of("ebb", "open")).await?;
+    let fields = "no datum:date stand:number phase:text=ebb";
+    let mixed = |c: Value| typed("mixed", &["no"], fields, c);
+    declare(&l, mixed(json!([]))).await?;
     let r = json!({"datum": "2999-01-01", "stand": -1, "phase": "open"});
-    l.upsert("mixed", "X-1", r).await?;
+    up(&l, "mixed", "X-1", r).await?;
     // A migration judges `stand >= 0` of it.
     let rest = json!([{"name": "rest", "holds": "stand >= 0 and datum <= today()"}]);
-    let preview = l
-        .cat
-        .migrate(&l.own, Migration::to(decl(mixed(rest))?))
-        .await;
-    let preview = preview.must("previewing a migration adding `rest`")?.data;
-    let listed = |b: &lakelands_api::write::Breach| {
+    let report = preview(&l, mixed(rest)).await?;
+    let listed = |b: &Breach| {
         let keys: Vec<&str> = b.sample_keys.iter().map(|k| k.as_str()).collect();
         b.constraint.as_str() == "rest" && b.records == 1 && keys == ["X-1"]
     };
-    ensure!(
-        !preview.lossless && preview.breaches.len() == 1 && preview.breaches.iter().all(listed),
-        "a migration adding `stand >= 0 and datum <= today()` over X-1 lists it: {preview:?}"
-    );
+    let lists = !report.lossless && matches!(&report.breaches[..], [b] if listed(b));
     // A walk in `phase` reads `phase` of it, not `datum`.
     let kept = json!([{"name": "kept", "holds": "phase != 'x' and datum <= today()"}]);
     l.migrate(decl(mixed(kept))?).await?;
-    let mut masked = field_access(
-        store.as_ref(),
-        "masked",
-        "mixed",
-        &[("datum", Access::Masked)],
-    );
-    (masked.grants.schema, masked.grants.restricted) = (true, true);
-    let to = serde_json::from_value(ebb("shut")).map_err(|e| Failure::new(e.to_string()))?;
-    let renamed = lakelands_api::write::ValueTypeMigration {
-        to,
-        renames: vec![("open".into(), "shut".into())],
-    };
-    let walked = l.cat.migrate_value_type(&masked, renamed).await;
-    let walked = walked.must("a value type's renames in `phase` by one masked from `datum`")?;
+    let walked = masked_rename(&l, &store, "mixed", "ebb").await?;
     ensure!(
-        walked.data.breaches.is_empty(),
-        "the renames leave `phase != 'x'` held: {walked:?}"
+        lists && walked.is_empty(),
+        "a migration adding `stand >= 0 and datum <= today()` over X-1 lists it, and the \
+         renames leave `phase != 'x'` held: {report:?}, {walked:?}"
     );
     Ok(())
 }
@@ -513,26 +398,14 @@ async fn a_walk_judges_what_reads_neither_clock_nor_preceding(store: Store) -> H
 async fn the_record_before_is_chosen_in_its_series(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
-    l.declare_json(typed(
-        "site",
-        &["id"],
-        &[("id", "text"), ("name", "text")],
-        json!([]),
-    ))
-    .await?;
+    declare(&l, typed("site", &["id"], "id name", json!([]))).await?;
     for id in ["A", "B"] {
-        l.upsert("site", id, json!({"name": id})).await?;
+        up(&l, "site", id, json!({"name": id})).await?;
     }
     let before = "preceding(stand, at, line, site)";
     let rise = json!([{"name": "rise", "holds": format!("{before} is null or stand >= {before}")}]);
-    l.declare_json(json!({"declare": "type", "name": "tick", "key": ["no"],
-        "fields": [{"name": "no", "type": {"kind": "text"}},
-                   {"name": "line", "type": {"kind": "text"}},
-                   {"name": "site", "type": {"kind": "reference", "target": "site"}},
-                   {"name": "at", "type": {"kind": "number"}},
-                   {"name": "stand", "type": {"kind": "number"}}],
-        "constraints": rise}))
-        .await?;
+    let ticks = "no line site:reference=site at:number stand:number";
+    declare(&l, typed("tick", &["no"], ticks, rise)).await?;
     let tick = |line: &str, site: &str, at: f64, stand: i64| json!({"line": line, "site": site, "at": at, "stand": stand});
     let put = |who: &Principal, no: &str, fields: Value| {
         let (who, no) = (who.clone(), no.to_string());
@@ -543,45 +416,30 @@ async fn the_record_before_is_chosen_in_its_series(store: Store) -> Held {
     put(own, "T-1", tick("L", "A", 1.0, 50)).await.must("T-1")?;
     put(own, "T-2", tick("L", "A", 1.0, 10)).await.must("T-2")?;
     let tied = put(own, "T-3", tick("L", "A", 2.0, 20)).await;
-    let (t, k) = ("tick".into(), "T-3".into());
-    let sent = patch(tick("L", "A", 2.0, 20));
+    let (t, k, sent) = ("tick".into(), "T-3".into(), patch(tick("L", "A", 2.0, 20)));
     let judged = store.upsert_preflight(own, Default::default(), &t, &k, sent, None);
     let judged = judged.await;
-    put(own, "T-4", tick("L", "B", 2.0, 5))
-        .await
-        .must("another site's")?;
-    put(own, "T-5", tick("M", "A", 2.0, 5))
-        .await
-        .must("another line's")?;
+    // Another site's, another line's.
+    for (no, line, site) in [("T-4", "L", "B"), ("T-5", "M", "A")] {
+        put(own, no, tick(line, site, 2.0, 5)).await.must(no)?;
+    }
     l.retire("tick", "T-1").await?;
-    put(own, "T-3", tick("L", "A", 2.0, 20))
-        .await
-        .must("past a retired record")?;
+    put(own, "T-3", tick("L", "A", 2.0, 20)).await.must("T-3")?;
     let moved = put(own, "T-4", json!({"site": "A"})).await;
-    ensure!(
-        [&tied, &moved]
-            .iter()
-            .all(|a| broken(a).as_deref() == Some("rise"))
-            && broken(&judged).as_deref() == Some("rise"),
-        "the first of a tie by key, `upsert_preflight` and a move into another series are \
-         judged: {tied:?}, {judged:?}, {moved:?}"
-    );
     // T-6 restricted, above T-3.
     put(own, "T-6", tick("L", "A", 3.0, 90)).await.must("T-6")?;
     restrict(store.as_ref(), "tick", "T-6", "kept").await?;
     let plain = super::only::holder(store.as_ref(), "plain", json!({"default": "write"}));
-    put(&plain, "T-7", tick("L", "A", 4.0, 30))
-        .await
-        .must("past a restricted record its writer is not granted")?;
-    let boss = super::only::holder(
-        store.as_ref(),
-        "boss",
-        json!({"default": "write", "restricted": true}),
-    );
+    let past = put(&plain, "T-7", tick("L", "A", 4.0, 30)).await;
+    past.must("past a restricted record its writer is not granted")?;
+    let grants = json!({"default": "write", "restricted": true});
+    let boss = super::only::holder(store.as_ref(), "boss", grants);
     let held = put(&boss, "T-8", tick("L", "A", 3.5, 25)).await;
     ensure!(
-        broken(&held).as_deref() == Some("rise"),
-        "one granted `restricted` is judged against a restricted record: {held:?}"
+        all_broken!("rise", tied, judged, moved, held),
+        "the first of a tie by key, `upsert_preflight`, a move into another series and one \
+         granted `restricted` against a restricted record are judged: {tied:?}, {judged:?}, \
+         {moved:?}, {held:?}"
     );
     Ok(())
 }
