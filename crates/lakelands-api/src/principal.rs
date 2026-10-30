@@ -202,6 +202,16 @@ pub struct TypeGrants {
     /// (`006 § A field may be hidden on only the records a condition selects`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hide_where: Vec<HiddenWhere>,
+    /// A read at a valid time dates this type's records by their stored
+    /// `valid_from` and `valid_to` also where this principal holds them at
+    /// `none` or `masked`; the fields stay withheld from every answer as
+    /// their access says. Answers across dates narrow a hidden date down,
+    /// and this grant consents to that. Without it, such a read probes the
+    /// bounds as a filter would. Held through a type's renames, it holds
+    /// only where the grant under every name the type has borne says it
+    /// (`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dates_by_hidden_valid_time: bool,
 }
 
 /// A hiding: on a record whose `field` holds one of `values`, compared as
@@ -402,6 +412,7 @@ impl Grants {
                 unite(&mut own.writes_only, f.clone(), v);
             }
             (own.hide_where).extend(others.iter().flat_map(|t| t.hide_where.iter().cloned()));
+            own.dates_by_hidden_valid_time &= others.iter().all(|t| t.dates_by_hidden_valid_time);
             own
         };
         // For each name borne at `at`: when it was taken, and the entry.

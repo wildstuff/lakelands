@@ -992,6 +992,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         writes_only: [("w".into(), json!("a"))].into(),
                         verbs: ["v".into()].into(),
                         hide_where: vec![hidden_where()],
+                        dates_by_hidden_valid_time: true,
                     },
                 )]
                 .into(),
@@ -1011,6 +1012,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     writes_only: [("w".into(), json!("a"))].into(),
                     verbs: ["v".into()].into(),
                     hide_where: vec![hidden_where()],
+                    dates_by_hidden_valid_time: true,
                 }),
                 &[],
                 &["type"],

@@ -1284,10 +1284,30 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   field of them: each with its key, its version and the names of the
   fields it sees masked. A key made of fields holds their values, so a
   type keyed by a field its principal may not know of is not shown to
-  it; holding a key field at `none` hides the type. A principal that is
-  not to list a type's records is granted nothing of the type. See
-  `docs/decisions/006-grants-not-roles.md`, "A type keyed by a field its principal
-  may not know of is not shown".
+  it; holding a key field at `none` hides the type. To a read, a key
+  field it may only write hides the type too, and the principal still
+  writes it. A principal that is not to list a type's records is granted
+  nothing of the type. See `docs/decisions/006-grants-not-roles.md`, "A
+  type keyed by a field its principal may not know of is not shown", and
+  `docs/decisions/092-reading-is-judged-apart-from-writing.md`.
+- **A grant that writes a type and reads none of it hides the type from
+  every read.** A principal whose grants on a type are `write_only` and
+  `none`, or whose key field on it is `write_only`, upserts and proposes
+  it, and `describe` lists it for those writes with `may.find` and
+  `may.get` false. Every read door, a walk, a view and the proposals
+  listing included, answers the type as one that is not declared. A
+  write answers as it does for anyone. See
+  `docs/decisions/092-reading-is-judged-apart-from-writing.md`, "A type a
+  principal may write and not read is not declared to a read".
+- **A read at a valid time dates by a bound its reader does not read
+  only where the grant says so.** Without the grant, a read at `valid_at`
+  is refused `not_granted` for a masked bound and reads as without one
+  where the bound is hidden. With `dates_by_hidden_valid_time` on the
+  principal's grant of the type, the read is answered the records valid
+  then, by their stored bounds, and the bounds stay withheld. Answers
+  across dates narrow a bound down, and the grant accepts that for its
+  type. See `docs/decisions/092-reading-is-judged-apart-from-writing.md`,
+  "A grant may date a read by a valid time its reader does not read".
 - **One writer per lake.** A lake has one writing process at a time,
   held by a lease; one process may write many lakes. See
   `docs/decisions/008-one-writer-per-lake.md`.

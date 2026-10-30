@@ -953,20 +953,25 @@ impl Lake {
     /// and how many entries of the list they were followed through:
     /// `head`'s, the list of a read's shape at the head, or the list read.
     /// The list is asked only for one whose grants name a type: a grant
-    /// that is only a default follows a link type's rename too.
+    /// that is only a default follows a link type's rename too. A read
+    /// door's sight is made `reading` (`Sight::reading`).
     pub(crate) fn sight<'o>(
         &self,
         who: Principal,
-        at: Option<Position>,
+        (at, reading): (Option<Position>, bool),
         head: Option<&[Renamed]>,
         force: &'o dyn InForce,
     ) -> Result<(Sight<'o>, Option<usize>)> {
+        let make = match reading {
+            true => Sight::reading,
+            false => Sight::new,
+        };
         if who.grants.types.is_empty() {
-            return Ok((Sight::new(who, &[], at, force), None));
+            return Ok((make(who, &[], at, force), None));
         }
         let read = head.is_none().then(|| self.renames(None)).transpose()?;
         let list = head.or(read.as_deref()).unwrap_or_default();
-        Ok((Sight::new(who, list, at, force), Some(list.len())))
+        Ok((make(who, list, at, force), Some(list.len())))
     }
 
     /// The log from a position, a page at a time, opened and checked: a

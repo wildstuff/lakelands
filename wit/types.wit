@@ -97,6 +97,9 @@ interface types {
         verbs: list<verb-name>,
         /// Fields lowered on only the records a condition selects.
         hide-where: list<hidden-where>,
+        /// A read at a valid time dates the type's records by their
+        /// stored bounds also where the principal may not read them.
+        dates-by-hidden-valid-time: bool,
     }
 
     /// Fields lowered on the records whose `field` holds one of `values`;

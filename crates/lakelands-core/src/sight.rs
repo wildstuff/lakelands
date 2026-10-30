@@ -14,7 +14,14 @@
 //! follows its reader's grants itself, to the position an entry was
 //! proposed at. What is shown depends on nothing else a read asks for: a
 //! valid time filters records, and the read that filters by it probes its
-//! fields.
+//! fields, or, where its grant says so, dates them by bounds it does not
+//! read.
+//!
+//! A read and a write are judged apart
+//! (`docs/decisions/092-reading-is-judged-apart-from-writing.md`): a read
+//! door makes its sight with [`Sight::reading`], which holds at `none`
+//! each type a write is shown and a read is not, so every read door answers
+//! it as undeclared by the one judgement the others ask.
 
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
@@ -75,6 +82,13 @@ pub struct Sight<'o> {
     who: Cow<'o, Principal>,
     pub(crate) force: &'o dyn InForce,
     hidden: Vec<(TypeName, FieldName)>,
+    /// Of a reading sight that holds a type a write is shown at `none`,
+    /// the principal as a write to such a type sees it, which `describe`
+    /// answers it by (092).
+    writer: Option<Box<Principal>>,
+    /// Whether it is a read's: a shape judged before it stands is judged
+    /// as a read is ([`Self::would_show`]).
+    reading: bool,
     /// Each type asked for, judged once.
     shown: RefCell<BTreeMap<TypeName, bool>>,
     /// The value types a use of which it is shown, found in one pass.
@@ -100,10 +114,44 @@ impl<'o> Sight<'o> {
             who: Cow::Owned(who),
             force,
             hidden,
+            writer: None,
+            reading: false,
             shown: RefCell::default(),
             used: OnceCell::new(),
             lowerings: RefCell::default(),
         }
+    }
+
+    /// The sight of a read door's `who` over `force`, as [`Self::new`]
+    /// makes a write's, and each type a write is shown and a read is not,
+    /// keyed by a field it may only write or with no field it reads, held
+    /// at `none`, with every reference to it, so that every read door
+    /// answers it as a type that is not declared
+    /// (`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
+    pub fn reading(
+        who: Principal,
+        renames: &[Renamed],
+        at: Option<Position>,
+        force: &'o dyn InForce,
+    ) -> Sight<'o> {
+        let mut sight = Sight::new(who, renames, at, force);
+        sight.reading = true;
+        let mut who = sight.who.clone().into_owned();
+        let Some(more) = rights::hide_unread_types(&mut who, force) else {
+            return sight;
+        };
+        sight.writer = Some(Box::new(rights::writing_unread(&sight.who, &who, force)));
+        sight.hidden.extend(more);
+        sight.who = Cow::Owned(who);
+        sight
+    }
+
+    /// The sight `describe` answers a type a write is shown and its read is
+    /// not by: each field of such a type its principal may write is
+    /// `write_only`, every other one it may not know of (092).
+    pub(crate) fn writing(&self) -> Option<Sight<'_>> {
+        let writer = self.writer.as_deref()?;
+        Some(Sight::held(writer, self.force))
     }
 
     /// The sight of `who` as it stands, over `force`: of a principal a
@@ -116,6 +164,8 @@ impl<'o> Sight<'o> {
             who: Cow::Borrowed(who),
             force,
             hidden: Vec::new(),
+            writer: None,
+            reading: false,
             shown: RefCell::default(),
             used: OnceCell::new(),
             lowerings: RefCell::default(),
@@ -140,7 +190,7 @@ impl<'o> Sight<'o> {
         let known = self.shown.borrow().get(name).copied();
         let t = self.force.ty(name).filter(|t| {
             known.unwrap_or_else(|| {
-                let shown = describe::type_shown(t, &|n| self.force.ty(n), &self.who);
+                let shown = describe::type_shown(t, &|n| self.force.ty(n), &self.who, false);
                 self.shown.borrow_mut().insert(name.clone(), shown);
                 shown
             })
@@ -150,13 +200,14 @@ impl<'o> Sight<'o> {
     }
 
     /// Whether its principal would be shown `t` once it stood in force
-    /// under its name: a proposed shape is judged before it is.
+    /// under its name: a proposed shape is judged before it is, by a
+    /// reading sight as a read is (092).
     pub fn would_show(&self, t: &TypeDecl) -> bool {
         let find = |n: &TypeName| match n == &t.name {
             true => Some(t),
             false => self.force.ty(n),
         };
-        describe::type_shown(t, &find, &self.who)
+        describe::type_shown(t, &find, &self.who, self.reading)
     }
 
     /// Whether its principal reads `field` of `ty`: a field the type
@@ -165,6 +216,13 @@ impl<'o> Sight<'o> {
         let t = self.ty(ty).ok();
         let f = t.and_then(|t| Some((t, t.field(field)?)));
         f.is_some_and(|(t, f)| rights::field_access(&self.who, t, f).reads())
+    }
+
+    /// Whether a read at a valid time dates the records of `ty` by its
+    /// bounds where its principal may not read them: its grant on the type
+    /// says `dates_by_hidden_valid_time` (092).
+    pub fn dates_unread(&self, ty: &TypeName) -> bool {
+        (self.who.grants.types.get(ty)).is_some_and(|g| g.dates_by_hidden_valid_time)
     }
 
     /// Whether `r` is held from its principal: a restricted record, to
