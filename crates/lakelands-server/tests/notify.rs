@@ -257,7 +257,7 @@ async fn told_what_it_may_see(backend: Backend) {
     assert_eq!(
         got,
         changed(
-            json!({"lake": "finance", "position": p, "kind": "record_upserted",
+            json!({"lake": "finance", "position": p, "append": p, "kind": "record_upserted",
                        "type": "invoice", "key": "INV-1", "fields": ["note", "status"]})
         ),
         "{backend:?}"
@@ -288,7 +288,7 @@ async fn told_what_it_may_see(backend: Backend) {
     assert_eq!(
         s.change().await,
         changed(
-            json!({"lake": "finance", "position": p, "kind": "record_upserted",
+            json!({"lake": "finance", "position": p, "append": p, "kind": "record_upserted",
                        "type": "memo", "key": "M-1", "fields": ["text"]})
         ),
         "{backend:?}"
@@ -310,7 +310,7 @@ async fn told_what_it_may_see(backend: Backend) {
     assert_eq!(
         s.change().await,
         changed(
-            json!({"lake": "finance", "position": p, "kind": "record_retired",
+            json!({"lake": "finance", "position": p, "append": p, "kind": "record_retired",
                        "type": "invoice", "key": "INV-2"})
         ),
         "{backend:?}"
@@ -573,10 +573,14 @@ async fn a_setting_s_changes_are_told_as_of_its_twin_without_what_is_not_told() 
         }
         // The retirement is the first change of its kind either twin tells.
         let retirement = retired.change().await;
-        // Positions differ between the twins: what each change says.
+        // Positions differ between the twins: what each change says, and
+        // how far past it its append reaches.
         let said = |m: &Value| {
             let mut p = m["params"].clone();
-            p.as_object_mut().unwrap().remove("position");
+            let o = p.as_object_mut().unwrap();
+            let at = o.remove("position").unwrap().as_u64().unwrap();
+            let end = o["append"].as_u64().unwrap();
+            o.insert("append".into(), json!(end - at));
             p
         };
         told.push((
@@ -715,6 +719,7 @@ async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandl
         workers: None,
         metrics: None,
         hosts: Vec::new(),
+        bounds: Default::default(),
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();
@@ -1092,11 +1097,14 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
         .await;
         // The owner is told of the write, the firing, the firing dropped
         // and the set change.
-        let mut told = Vec::new();
+        let (mut told, mut ends) = (Vec::new(), std::collections::BTreeSet::new());
         while told.len() < 4 {
             let m = owner.change().await;
             told.push(m["params"]["kind"].as_str().unwrap().to_owned());
+            ends.insert(m["params"]["append"].as_u64());
         }
+        // All four are the write's one append (083).
+        assert_eq!(ends.len(), 1, "{backend:?}: {ends:?}");
         told.sort();
         assert_eq!(
             told,
@@ -1109,13 +1117,18 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
             "{backend:?}"
         );
         // The watcher, who may not read `secret`, is told of the write's
-        // `status` only; of a partner, which it is not shown, it is told
-        // neither the firing nor the drop; the next thing it is told is a
-        // later write.
+        // `status` only, and its append ends there: what it is not told
+        // of the append moves no mark (083). Of a partner, which it is not
+        // shown, it is told neither the firing nor the drop; the next
+        // thing it is told is a later write.
         let m = watcher.change().await;
         assert_eq!(
-            (&m["params"]["kind"], &m["params"]["position"]),
-            (&json!("record_upserted"), &json!(p)),
+            (
+                &m["params"]["kind"],
+                &m["params"]["position"],
+                &m["params"]["append"]
+            ),
+            (&json!("record_upserted"), &json!(p), &json!(p)),
             "{backend:?}: {m}"
         );
         write(store.as_ref(), "partner", "P-1", json!({"name": "Acme"})).await;

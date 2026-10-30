@@ -159,7 +159,8 @@ impl Call<'_> {
             else {
                 unreachable!("a find without an aggregate answers records")
             };
-            let holds = |r: &Record| only.iter().all(|(f, v)| r.fields.get(f) == Some(v));
+            let pairs = lakelands_core::sight::Admit::Only(only.clone().into_iter().collect());
+            let holds = |r: &Record| pairs.holds(&r.fields);
             out.extend(rows.into_iter().filter(holds));
             if out.len() > max as usize {
                 return Err(Error::refused(

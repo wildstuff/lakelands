@@ -1193,7 +1193,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
 
     out.push(ToolSpec {
         name: SUBSCRIBE.into(),
-        description: "Be told of changes without polling: from `from` on (by default, from now), this session is sent a `notifications/lakelands/changed` for every change of a record it may read, of the kinds, types and keys asked (by default every kind, every type it may read when the change happens, and every record). A notification names the position, the kind, the type, the key and the changed fields it may read; never a value. Subscribing again replaces the subscription; it ends with the session.".into(),
+        description: "Be told of changes without polling: from `from` on (by default, from now), this session is sent a `notifications/lakelands/changed` for every change of a record it may read, of the kinds, types and keys asked (by default every kind, every type it may read when the change happens, and every record). A notification names the position, the last position of the append that wrote it that this session is told (`append`), the kind, the type, the key and the changed fields it may read; never a value. Subscribing again replaces the subscription; it ends with the session.".into(),
         input_schema: obj(
             props([
                 (

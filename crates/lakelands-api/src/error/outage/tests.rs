@@ -26,6 +26,34 @@ fn a_case_is_written_with_its_sentence_and_read_back() {
     assert_eq!(serde_json::from_value::<Error>(wire).unwrap(), e);
 }
 
+/// A bound on a caller says its own sentence, with no word of the lake in
+/// front, and counts its requests in the number they are; it is still
+/// `unavailable`, and its count is a number on the wire.
+#[test]
+fn a_bound_on_a_caller_says_only_its_own_sentence() {
+    let rate = Error::unavailable(Situation::RateBound {
+        per: Per::Connection,
+        most: Requests(1),
+        retry_after: 1,
+    });
+    assert_eq!(
+        rate.to_string(),
+        "this connection sent more than its bound of 1 request a second; nothing was done: wait 1 s and send it again"
+    );
+    let busy = Error::unavailable(Situation::InFlightBound { most: Requests(2) });
+    assert_eq!(
+        busy.to_string(),
+        "the principal has its bound of 2 requests being answered at once; nothing was done: send it again once one is answered"
+    );
+    let wire = serde_json::to_value(&busy).unwrap();
+    assert_eq!(
+        (&wire["error"], &wire["situation"]["most"]),
+        (&json!("unavailable"), &json!(2))
+    );
+    assert_eq!(wire["message"], json!(busy.to_string()));
+    assert_eq!(serde_json::from_value::<Error>(wire).unwrap(), busy);
+}
+
 /// A code this build does not know is read as `Unknown`, keeping its
 /// code, parameters and sentence, and written back as it came.
 #[test]

@@ -17,7 +17,8 @@
 //!   once per event of the kinds it asked for ([`CHANGE_KINDS`] by
 //!   default) from its position on, when the principal may `get` the
 //!   record at the event's position (at the position before, for a
-//!   retirement). It names the position, the kind, the type, the key and,
+//!   retirement). It names the position, the last position of its append
+//!   the session is told (083), the kind, the type, the key and,
 //!   for a write, the changed fields the principal is shown (masked ones
 //!   by name, hidden ones not at all); a write with none left is not
 //!   sent. Never a value. The write that made the record (its event says
@@ -344,11 +345,18 @@ pub async fn pump(
     // subscription leaves its hub for its own, joining it as every
     // follower joins.
     let mut follow: Option<(u64, Vec<String>, crate::hub::Follow)> = None;
+    let mut held = Held::default();
     'poll: loop {
         if queue.is_closed() {
             return;
         }
         let (generation, subscription, next, declared) = watch.snapshot();
+        if held.generation != generation {
+            held = Held {
+                generation,
+                ..Held::default()
+            };
+        }
         let mut kinds: Vec<String> = vec![
             "declared".into(),
             "migrated".into(),
@@ -406,6 +414,9 @@ pub async fn pump(
             if watch.generation() != generation {
                 continue 'poll;
             }
+            if held.end.is_some_and(|end| e.position > end) && !held.send(&queue).await {
+                return;
+            }
             if matches!(
                 e.body.kind(),
                 "declared" | "migrated" | "value_type_migrated"
@@ -425,10 +436,17 @@ pub async fn pump(
                 kind => match &subscription {
                     Some(s) if e.position >= next && reads_kind(s, kind) => {
                         match view.of(e, s).await {
-                            Seen::Shown(params) => Some(Queued {
-                                generation: Some(generation),
-                                message: json!({"jsonrpc": "2.0", "method": CHANGED, "params": params}),
-                            }),
+                            Seen::Shown(params) => match batch.append_of(e.position) {
+                                Some(end) => {
+                                    held.end = Some(end);
+                                    held.shown.push((e.position, params));
+                                    None
+                                }
+                                None => Some(Queued {
+                                    generation: Some(generation),
+                                    message: json!({"jsonrpc": "2.0", "method": CHANGED, "params": params}),
+                                }),
+                            },
                             Seen::Hidden => None,
                             Seen::Retry => {
                                 // Not past this event: read it again.
@@ -448,9 +466,53 @@ pub async fn pump(
             }
             watch.advance(generation, e.position.next());
         }
+        if held.end.is_some_and(|end| batch.next > end) && !held.send(&queue).await {
+            return;
+        }
         let to = batch.next.max(from);
         watch.advance(generation, to);
         view_at = Some(to);
+    }
+}
+
+/// The changes a session is shown of the append the pump is reading,
+/// held until it reads past the append's end. Each then names the last
+/// of them as its `append` (083), so an event of the append the
+/// principal is not told of, such as a firing whose condition reads a
+/// field masked from it, moves no mark it is told.
+#[derive(Default)]
+struct Held {
+    /// The subscription the changes were made for.
+    generation: u64,
+    /// The end of the append, while a change of it is held.
+    end: Option<Position>,
+    /// Each change's position and its notification's parameters.
+    shown: Vec<(Position, Value)>,
+}
+
+impl Held {
+    /// Queue the held changes; false when the queue is gone.
+    async fn send(&mut self, queue: &mpsc::Sender<Queued>) -> bool {
+        self.end = None;
+        let last = self.shown.last().map(|(at, _)| at.0);
+        for (_, mut params) in std::mem::take(&mut self.shown) {
+            if let Some(p) = params.as_object_mut() {
+                p.insert("append".into(), json!(last));
+            }
+            let message = json!({"jsonrpc": "2.0", "method": CHANGED, "params": params});
+            let generation = Some(self.generation);
+            if queue
+                .send(Queued {
+                    generation,
+                    message,
+                })
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
     }
 }
 

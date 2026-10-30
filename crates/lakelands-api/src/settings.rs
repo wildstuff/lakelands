@@ -307,6 +307,26 @@ pub const SETTINGS: &[Setting] = &[
         ..root("server.workers", "null")
     },
     Setting {
+        range: "requests a second, or \"off\"",
+        says: "The most requests the HTTP door takes from one connection in a second, all at once or spread over it; a request over it is answered `429` with `Retry-After`.",
+        ..root("server.bounds.connection_rate", "1000")
+    },
+    Setting {
+        range: "requests a second, or \"off\"",
+        says: "The most requests the HTTP door takes from one principal in a second, over all its connections; a request over it is answered `429` with `Retry-After`.",
+        ..root("server.bounds.principal_rate", "1000")
+    },
+    Setting {
+        range: "a count above zero, or \"off\"",
+        says: "The most requests of one principal the HTTP door answers at once; one more is answered `429` with `Retry-After`.",
+        ..root("server.bounds.principal_in_flight", "128")
+    },
+    Setting {
+        range: "bytes, or \"off\"",
+        says: "The largest body the HTTP door reads whole, for MCP and REST, a larger one answered `413`; an ingest body is streamed, and only its lines are bounded.",
+        ..root("server.bounds.body_bytes", "4194304")
+    },
+    Setting {
         range: "an address and port",
         says: "Where `serve` answers `GET /metrics` in the Prometheus text format, apart from the door; absent, it measures nothing and listens for none.",
         cost: "a write on the memory engine took 22.6 µs measured against 22.3 µs unmeasured with one caller, and 12.6 µs either way with sixteen; on SQLite the difference is inside a commit's noise; a scrape reads each lake's counters and takes nothing from its writer",

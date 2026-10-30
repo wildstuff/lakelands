@@ -1565,6 +1565,21 @@ matches nothing, one record's history and its checkpoints):
   tells none of them, the deliverer posts none, and the REST feed marks
   each with the comment `: overruled` (`docs/rest.md`)
   (suite: `REMOVED_FIRED`, `FORGOTTEN_FIRED`).
+- `appends`: the last position of each append that wrote one of
+  `events`, in order; `append_of` answers an event's. An append is a
+  write and its consequences, or one window of an ingest (§4.1 of
+  `docs/log-format.md`): a consumer that gathers what one append wrote,
+  such as the firings of one window's records, groups by it, whatever
+  `known_at` reads and however the caller named its deliveries, and
+  holds all of it once a batch's `next` passes the end. It is read from
+  the frames the log stores, so it costs no read and no byte more; an
+  event of a format before 20, or of the append that begins a lake's
+  format, stands as an append of its own
+  (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`;
+  suite: `APPEND_ENDS`, `APPEND_DELIVERIES`). The REST feed marks
+  each event with the comment `: append <position>`, the MCP pump names
+  as `append` the last position of the append the session is told, and
+  the deliverer as the header `Lakelands-Append`.
 
 The consumer keeps the position it has read up to. The store's own feed
 keeps no consumer state, and its `ack` is accepted and does nothing; `ack` exists for feeds
@@ -1615,6 +1630,8 @@ writer.
   headers:
   - `Lakelands-Lake` and `Lakelands-Position` (together the dedup key),
     `Lakelands-Event` (the event id) and `Lakelands-Attempt` (from 1);
+  - `Lakelands-Append`, the last position of the append that wrote the
+    event (`appends` above);
   - with `secret_file`, `Lakelands-Signature: sha256=<hex>`, the
     HMAC-SHA256 of the body's bytes.
 

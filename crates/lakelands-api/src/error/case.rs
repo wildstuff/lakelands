@@ -322,6 +322,7 @@ said_by_display!(
     KeyId => nothing,
     Timestamp => nothing,
     super::Detail,
+    super::Requests => nothing,
 );
 
 /// Write a template with its parameters.
@@ -1487,6 +1488,13 @@ catalog! {
             #[serde(rename = "type")]
             ty: TypeName,
         } => "the grant's `hide_where` on `{ty}` cannot be applied here; the host's grants need fixing",
+        /// A read that computes over a set of records (a view over them, an
+        /// aggregate, a count) of a type the reader's grant admits only some
+        /// records of and holds `whole_sets_only` on.
+        WholeSetNeeded {
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "this read needs every record of `{ty}`; you may read only some of them",
         /// An order by a field computed at the read.
         OrderAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`order_by` names `{field}` of `{ty}`, which is computed at the read; order by a stored field it is computed from",
         /// An order by a value or a time that names no field.

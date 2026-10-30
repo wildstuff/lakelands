@@ -101,6 +101,9 @@ fn advice(case: &Case) -> Option<String> {
         Case::BodyTooLarge => "send a smaller body; many records go through ingest",
         Case::ExportNotEmpty => "export into an empty or new directory",
         Case::BackupOtherLog { .. } => "back up into a new directory, or this lake's own backup",
+        Case::WholeSetNeeded { .. } => {
+            "read the records you are admitted one by one, or ask the lake's owner for a grant that admits every record of the type or does not hold `whole_sets_only`"
+        }
         _ => return None,
     };
     Some(todo.to_owned())
@@ -274,6 +277,16 @@ impl From<Error> for Failure {
                 format!(
                     "open it with a release that reads log format {found}; restoring it would not help, it is not damaged"
                 )
+            }
+            // A bound of the door's: the lake is as it was.
+            Error::Unavailable { situation }
+                if matches!(
+                    **situation,
+                    Situation::RateBound { .. } | Situation::InFlightBound { .. }
+                ) =>
+            {
+                "nothing was read or written: wait the seconds `Retry-After` says, then send the request again"
+                    .to_owned()
             }
             Error::Unavailable { .. } => {
                 "wait and retry, or check that no other process holds the lake".to_owned()

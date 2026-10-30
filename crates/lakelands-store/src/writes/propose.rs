@@ -279,7 +279,10 @@ impl Call<'_> {
                 // accept writes no record its proposer could not (006).
                 let writes = d.at.sight.writes(d.at.sight.ty(ty)?);
                 for (f, v) in writes.pairs().ok_or_else(Error::not_granted)? {
-                    granted(only.get(f).is_none_or(|held| held == v))?;
+                    granted(
+                        only.get(f)
+                            .is_none_or(|held| lakelands_core::sight::Admit::inside(v, held)),
+                    )?;
                     only.insert(f.clone(), v.clone());
                 }
                 **plan = planned.plan;
@@ -399,12 +402,9 @@ impl Call<'_> {
             // proposal's pairs or within them (081).
             // So with its `writes_only` (006).
             ProposedWrite::Records { ty, only, .. } => {
-                let admit = sees.admit(ty);
-                let within =
-                    |p: &[(FieldName, Value)]| p.iter().all(|(f, v)| only.get(f) == Some(v));
-                let writes = |t: &TypeDecl| sees.writes(t).pairs().is_some_and(within);
+                let writes = |t: &TypeDecl| sees.writes(t).within(only);
                 let writes = !sees.holds_writes_only() || o.ty(ty).is_ok_and(writes);
-                return granted(admit.pairs().is_some_and(within) && writes);
+                return granted(sees.admit(ty).within(only) && writes);
             }
             _ => return granted(false),
         };

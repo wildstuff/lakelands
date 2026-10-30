@@ -207,7 +207,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   same way; subscribing again with other keys tells at most one change
   of the old ones that was already on its way. A notification names
   the position, kind, type, key and the changed fields it is shown, never
-  a value. A trigger's firing or an object set's change is told only to
+  a value, and as `append` the last position of the append that wrote
+  it that the session is told, so a session gathers what one append
+  changed whatever its `known_at` and its delivery read, and holds it
+  whole once the change at that position arrives (083). An append's
+  changes are sent once the pump has read past its end. A trigger's firing or an object set's change is told only to
   a principal who reads every field of the type in full, since its
   condition may read any of them. That rule sends less than one that
   asks only for the fields the condition reads, never more; a
@@ -1721,6 +1725,22 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   lakelands#1373 gives them. SQLite was the same on both, bound by its
   durable commit (about 10 ms on that machine's disk), and the memory
   engine within 7 %.
+- **The bounds of the HTTP door (lakelands#1523).** The `server`
+  section's `bounds` hold what one caller may spend of the door: the
+  requests a second per connection (`connection_rate`, 1000 unless set)
+  and per principal over all its connections (`principal_rate`, 1000),
+  the requests of one principal answered at once
+  (`principal_in_flight`, 128), and the largest body read whole
+  (`body_bytes`, 4 MiB). Each takes `"off"` for none, for a host whose
+  proxy bounds its callers already. A request over a rate or in flight
+  is answered `429` with `Retry-After` and `unavailable` with
+  `rate_bound` or `in_flight_bound`, a body over the size `413` with
+  `body_too_large`; nothing of it is read or written. An ingest holds
+  its principal's slot until its last window is committed. Over MCP the
+  body is read before the principal is counted, so an MCP request spends
+  its read, up to `body_bytes`, before a principal's bound refuses it.
+  `/livez` and `/readyz` are not counted. MCP over stdio is not bounded
+  (`docs/decisions/095-the-http-door-bounds-what-one-caller-spends.md`).
 - **Connections on PostgreSQL (lakelands#1324).** A process holds two
   connections for a lake it writes, `lakelands <schema>` in
   `pg_stat_activity`, a third while a graph of its vector index is
