@@ -19,13 +19,14 @@ use lakelands_api::ontology::{
     Authority, EmbedDecl, FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl, ViewParam,
 };
 use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Depth, Pattern, Projection, Start, Step, Walk};
+use lakelands_api::query::{Depth, Pattern, Projection, Search, SearchMode, Start, Step, Walk};
 use lakelands_api::read::{AggFunc, AggMeasure, Direction, Order, OrderBy};
+use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Access, Catalog, Committed, Error, FieldName, Find, Found, Get, Grants, LakeStore, Outcome,
     Params, Patch, Position, Principal, PrincipalKind, ReadAt, Record, RecordKey, Refusal,
-    SourceId, SourceRecord, SourceStream, TypeName, Value, WriteContext, WriteOpts,
+    SourceId, SourceRecord, SourceStream, TypeName, Value, Version, WriteContext, WriteOpts,
 };
 use rust_decimal::Decimal;
 
@@ -817,6 +818,22 @@ pub fn step(relation: &str, walk: Walk) -> Step {
     }
 }
 
+/// A search of `ty` by `mode` for `k` hits at the head, nothing else asked.
+pub fn searched(ty: impl Into<TypeName>, mode: SearchMode, k: u32) -> Search {
+    Search {
+        ty: ty.into(),
+        mode,
+        k,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        matches: false,
+        at: ReadAt::default(),
+        rerank: None,
+        text_as_of: false,
+    }
+}
+
 /// A pattern from the records of `ty`, or the one at `key`, over `steps`,
 /// answering `project`; no filter, order, limit or time axis.
 pub fn pattern(ty: &str, key: Option<&str>, steps: Vec<Step>, project: Projection) -> Pattern {
@@ -1181,6 +1198,27 @@ pub fn decimal(v: Option<&Value>) -> Option<Decimal> {
 /// An exact decimal from a literal the check itself writes.
 pub fn dec(s: &str) -> Decimal {
     Decimal::from_str(s).unwrap_or_default()
+}
+
+/// A record as an engine holds it: its first version, made and last
+/// written at `at`, with no meta, neither retired nor restricted.
+pub fn stored_record(
+    ty: impl Into<TypeName>,
+    key: impl Into<RecordKey>,
+    fields: std::collections::BTreeMap<FieldName, Value>,
+    at: u64,
+) -> StoredRecord {
+    StoredRecord {
+        ty: ty.into(),
+        key: key.into(),
+        version: Version(1),
+        fields,
+        meta: Default::default(),
+        position: Position(at),
+        made: Position(at),
+        retired: false,
+        restricted: false,
+    }
 }
 
 /// One record from a source.

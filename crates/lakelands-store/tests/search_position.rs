@@ -25,7 +25,7 @@ use lakelands_api::write::{Migration, WriteOpts};
 use lakelands_api::{Access, Cursor, LakeStore, Location, Position, Principal, PrincipalKind};
 use lakelands_core::conformance::fixture::{
     Lake, doors, field, field_access, field_writer, owner, patch, pattern, principal, read_at,
-    restrict, searchable, step, type_decl, vector,
+    restrict, searchable, searched, step, type_decl, vector,
 };
 use lakelands_engine_mem::MemoryOpener;
 use probed::{Probe, ProbedOpener};
@@ -99,16 +99,10 @@ async fn search_of(
 ) -> lakelands_api::Result<Searched> {
     let (k, filter, cursor) = page;
     let s = Search {
-        ty: ty.into(),
-        mode: mode.clone(),
-        k,
         cursor,
         filter: filter.map(Into::into),
-        with_meta: false,
-        matches: false,
-        text_as_of: false,
         at: read_at(at),
-        rerank: None,
+        ..searched(ty, mode.clone(), k)
     };
     let got = doors(store).search(who, s).await?;
     let scored = |h: &lakelands_api::query::Hit| {
@@ -596,16 +590,10 @@ async fn a_write_inside_a_reranked_searchs_window_read_loses_no_scored_hit() {
         .await;
     });
     let search = |cursor| Search {
-        ty: "keyed".into(),
-        mode: SearchMode::lexical("invoice overdue"),
-        k: 1,
         cursor,
-        filter: None,
-        with_meta: false,
-        matches: false,
-        text_as_of: false,
         at: read_at(None),
         rerank: Some(lakelands_api::query::Rerank { top: 3, text: None }),
+        ..searched("keyed", SearchMode::lexical("invoice overdue"), 1)
     };
     let own = owner(store.as_ref());
     let (mut got, mut cursor) = (Vec::new(), None);

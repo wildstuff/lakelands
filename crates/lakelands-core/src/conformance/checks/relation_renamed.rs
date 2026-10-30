@@ -1112,16 +1112,8 @@ async fn the_vectors_of_moved_links_are_found_under_the_new_link_type(store: Sto
     link_ok_over(&l, "lv", "i1", "p1", json!({"v": [1.0, 0.0]})).await?;
     let nearest = |ty: &'static str| {
         let search = Search {
-            ty: ty.into(),
-            mode: SearchMode::vector("v", vec![1.0, 0.0]),
-            k: 3,
-            cursor: None,
-            filter: None,
-            with_meta: false,
-            matches: false,
             at: Default::default(),
-            rerank: None,
-            text_as_of: false,
+            ..searched(ty, SearchMode::vector("v", vec![1.0, 0.0]), 3)
         };
         let (cat, own) = (l.cat.clone(), l.own.clone());
         async move { cat.search(&own, search).await.map(|r| r.data.hits.len()) }

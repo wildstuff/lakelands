@@ -53,16 +53,10 @@ pub(super) async fn told(
     let mode = SearchMode::lexical("secret");
     let (k, cursor, filtered, at) = (5, None, None, read_at(as_of));
     let search = Search {
-        ty: ty.into(),
-        mode,
-        k,
         cursor,
         filter: filtered,
-        with_meta: false,
-        matches: false,
         at,
-        rerank: None,
-        text_as_of: false,
+        ..searched(ty, mode, k)
     };
     let mut told = Vec::new();
     let mut answer = |door, text: lakelands_api::Result<String>| {

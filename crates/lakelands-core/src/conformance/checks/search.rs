@@ -833,16 +833,7 @@ async fn two_embedded_docs(store: &dyn LakeStore) -> Result<Lake, Failure> {
 
 /// A hybrid search for `text` over the embedding `e`, without a vector.
 fn over_e(text: &str) -> SearchMode {
-    SearchMode::Hybrid {
-        text: text.into(),
-        field: "e".into(),
-        vector: None,
-        fields: None,
-        text_fields: None,
-        weight: None,
-        text_weight: None,
-        model: None,
-    }
+    SearchMode::hybrid(text, "e")
 }
 
 pub(super) fn doc_search(mode: SearchMode) -> Search {

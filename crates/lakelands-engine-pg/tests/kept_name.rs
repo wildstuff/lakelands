@@ -21,10 +21,11 @@ mod common;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode, Scan};
 use lakelands_api::event::Digest;
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
+use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{kept_name, order_name};
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_pg::{PgOpener, read_statements};
 use postgres::types::ToSql;
 use serde_json::json;
@@ -43,17 +44,12 @@ const UNANALYSED: u64 = 2_000;
 const SEAM: &str = "sys:kept";
 
 fn state(ty: &TypeName, key: &str, at: u64) -> StoredRecord {
-    StoredRecord {
-        ty: ty.clone(),
-        key: RecordKey::from(key),
-        version: Version(1),
-        fields: serde_json::from_value(json!({"n": at})).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
-        made: Position(at),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(
+        ty.clone(),
+        key,
+        serde_json::from_value(json!({"n": at})).unwrap(),
+        at,
+    )
 }
 
 /// The plan of each statement the engine names for a kept name, at the

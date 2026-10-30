@@ -432,20 +432,9 @@ async fn each_record_reads_the_provenance_of_its_own_writes(store: Store, reopen
         let found = l.all_found("note", find).await?;
         doors.extend(found.into_iter().map(|r| ("`find`", r)));
         let search = Search {
-            ty: TypeName::from("note"),
-            mode: SearchMode::Lexical {
-                text: "one two".into(),
-                fields: None,
-                text_fields: None,
-            },
-            k: 10,
-            cursor: None,
-            filter: None,
             with_meta: true,
-            matches: false,
             at: read_at(as_of),
-            rerank: None,
-            text_as_of: false,
+            ..searched("note", SearchMode::lexical("one two"), 10)
         };
         let hits = cat.search(own, search).await.must("searching the notes")?;
         let hits = hits.data.hits.into_iter();

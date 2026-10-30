@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 
 use lakelands_api::Location;
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
-use lakelands_api::record::StoredRecord;
+use lakelands_api::id::Position;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
 
@@ -28,17 +28,12 @@ fn fold(engine: &dyn LakeEngine, n: u64, at: u64) {
     p.begin().unwrap();
     for i in 0..n {
         let fields = json!({"text": format!("record {i}, with text enough to fill pages {}", "x".repeat(200))});
-        p.put_record(&StoredRecord {
-            ty: TypeName::from("note"),
-            key: RecordKey::from(format!("n{i}")),
-            version: Version(1),
-            fields: serde_json::from_value(fields).unwrap(),
-            meta: Default::default(),
-            position: Position(at),
-            made: Position(at),
-            retired: false,
-            restricted: false,
-        })
+        p.put_record(&stored_record(
+            "note",
+            format!("n{i}"),
+            serde_json::from_value(fields).unwrap(),
+            at,
+        ))
         .unwrap();
     }
     p.commit(Position(at)).unwrap();

@@ -3,9 +3,10 @@ pub(super) mod fixture;
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
+use crate::conformance::fixture::stored_record;
 use lakelands_api::engine::{Declared, Scan};
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{Position, Version};
+use lakelands_api::id::Position;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Proposal, ProposalFilter};
 
@@ -17,15 +18,9 @@ fn node(t: &str, k: &str) -> Node {
 
 fn stored(key: &str, retired: bool, restricted: bool) -> StoredRecord {
     StoredRecord {
-        ty: TypeName::new("n"),
-        key: RecordKey::new(key),
-        version: Version(1),
-        fields: BTreeMap::new(),
-        meta: BTreeMap::new(),
-        position: Position(0),
-        made: Position(0),
         retired,
         restricted,
+        ..stored_record(TypeName::new("n"), RecordKey::new(key), BTreeMap::new(), 0)
     }
 }
 

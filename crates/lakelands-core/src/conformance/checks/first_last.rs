@@ -9,7 +9,7 @@ use crate::conformance::prelude::*;
 
 check!(
     BY_ORDER = a_first_and_a_last_answer_what_a_find_ordered_by_their_by_answers_first,
-    "018, extended (lakelands#1603): `first(f, by)` and `last(f, by)` answer `f` of the member whose `by` is the least and the greatest, ties broken by key order, null where that member's `f` is null and where no member has a `by`; a `find` grouped by a text field and a named `date_bucket` hour answers, in each group, for `first` and `last` of a decimal and of a text by an instant and by a decimal, and for `min` and `max` beside them, what a `find` of the group's members with a `by`, ordered by it ascending and descending with a `limit` of 1, answers, at a pinned position after later writes and at the head, and ungrouped too; `first` without `by` or without a field, and `by` on `max` and on `count`, are refused, naming the call, and a `by` the type does not declare as an unknown field",
+    "018, extended (lakelands#1603): `first(f, by)` and `last(f, by)` answer `f` of the member whose `by` is the least and the greatest, ties broken by key order, null where that member's `f` is null and where no member has a `by`; a `find` grouped by a text field and a named `date_bucket` hour answers, in each group, for `first` and `last` of a decimal and of a text by an instant and by a decimal, and for `min` and `max` beside them, what a `find` of the group's members with a `by`, ordered by it ascending and descending with a `limit` of 1, answers, at a pinned position after later writes and at the head, and ungrouped too, and a pattern's aggregate over the readings alone answers, by their paths, what that `find` answers, equal `by`s taken in key order there too; `first` without `by` or without a field, and `by` on `max` and on `count`, are refused, naming the call, and a `by` the type does not declare as an unknown field",
     given
 );
 
@@ -66,6 +66,7 @@ async fn a_first_and_a_last_answer_what_a_find_ordered_by_their_by_answers_first
     let mut wrong = Vec::new();
     for (as_of, grouped) in [(Some(pinned), true), (None, true), (Some(pinned), false)] {
         wrong.extend(compared(&l, as_of, grouped).await?);
+        wrong.extend(walked(&l, as_of, grouped).await?);
     }
     ensure!(
         wrong.is_empty(),
@@ -124,19 +125,65 @@ async fn a_first_and_a_last_answer_what_a_find_ordered_by_their_by_answers_first
     Ok(())
 }
 
-/// A find of `measures`, grouped by meter and hour or by nothing.
-fn aggregated(measures: Vec<Value>, grouped: bool) -> Find {
-    let hour = json!({"name": "hour", "expr": format!("date_bucket(at, 1h, '{ORIGIN}')")});
+/// The aggregate of `measures`, grouped by meter and hour or by nothing,
+/// its fields named under `path` (`reading.` in a pattern's rows).
+fn grouping(measures: Vec<Value>, grouped: bool, path: &str) -> Value {
+    let hour = format!("date_bucket({path}at, 1h, '{ORIGIN}')");
     let by = if grouped {
-        json!(["meter", hour])
+        json!([format!("{path}meter"), {"name": "hour", "expr": hour}])
     } else {
         json!([])
     };
-    let aggregate = json!({"measures": measures, "group_by": by});
+    json!({"measures": measures, "group_by": by})
+}
+
+/// A find of `measures`, grouped by meter and hour or by nothing.
+fn aggregated(measures: Vec<Value>, grouped: bool) -> Find {
     Find {
-        aggregate: serde_json::from_value(aggregate).ok(),
+        aggregate: serde_json::from_value(grouping(measures, grouped, "")).ok(),
         ..Find::default()
     }
+}
+
+/// The measures, their fields named under `path`.
+fn measured(path: &str) -> Vec<Value> {
+    let measures = MEASURES.map(|(name, func, field, by)| {
+        let by = matches!(func, "first" | "last").then(|| format!("{path}{by}"));
+        json!({"name": name, "func": func, "field": format!("{path}{field}"), "by": by})
+    });
+    measures.to_vec()
+}
+
+/// Groups as `<by> => <values>`, sorted.
+fn told(rows: &[lakelands_api::read::Group]) -> Vec<String> {
+    let mut told: Vec<String> = (rows.iter())
+        .map(|g| format!("{:?} => {:?}", Vec::from_iter(g.by.values()), g.values))
+        .collect();
+    told.sort();
+    told
+}
+
+/// Where a pattern over the readings alone and the find disagree, as
+/// of `as_of`: equal `by`s are taken in key order in both.
+async fn walked(l: &Lake, as_of: Option<Position>, grouped: bool) -> Result<Vec<String>, Failure> {
+    let a = grouping(measured("reading."), grouped, "reading.");
+    let a = serde_json::from_value(a).map_err(|e| Failure::new(format!("the aggregate: {e}")))?;
+    let mut p = pattern("reading", None, Vec::new(), Projection::Aggregate(a));
+    p.at.as_of = as_of;
+    let QueryResult::Groups { rows } = l.cat.query(&l.own, p).await.must("a pattern")?.data else {
+        return Err(Failure::new("a pattern's aggregate answered no groups"));
+    };
+    let mut find = aggregated(measured(""), grouped);
+    find.at.as_of = as_of;
+    let found = l.cat.find(&l.own, &TypeName::from("reading"), find).await;
+    let Found::Groups { rows: found } = found.must("finding the readings")?.data else {
+        return Err(Failure::new("an aggregate answered records, not groups"));
+    };
+    let (walked, found) = (told(&rows), told(&found));
+    Ok((walked != found)
+        .then(|| format!("a pattern as of {as_of:?} answers {walked:?}, a find {found:?}"))
+        .into_iter()
+        .collect())
 }
 
 /// Where the grouped find and the ordered finds disagree, as of `as_of`.
@@ -145,11 +192,7 @@ async fn compared(
     as_of: Option<Position>,
     grouped: bool,
 ) -> Result<Vec<String>, Failure> {
-    let measures = MEASURES.map(|(name, func, field, by)| {
-        let by = matches!(func, "first" | "last").then_some(by);
-        json!({"name": name, "func": func, "field": field, "by": by})
-    });
-    let mut find = aggregated(measures.to_vec(), grouped);
+    let mut find = aggregated(measured(""), grouped);
     find.at.as_of = as_of;
     let ty = TypeName::from("reading");
     let found = l.cat.find(&l.own, &ty, find).await;

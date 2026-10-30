@@ -149,16 +149,9 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
              and answers `invoice.overdue` true for each; {when} it answers {shown}"
         );
         let search = Search {
-            ty: "invoice".into(),
-            mode: SearchMode::lexical("late"),
-            k: 5,
-            cursor: None,
             filter: Some("overdue".into()),
-            with_meta: false,
-            matches: false,
             at: read_at(as_of),
-            rerank: None,
-            text_as_of: false,
+            ..searched("invoice", SearchMode::lexical("late"), 5)
         };
         let hits = c.search(own, search).await.must("searching what is late")?;
         let hit = hits.data.hits.first().map(|h| &h.record);

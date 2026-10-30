@@ -65,7 +65,7 @@ check!(
 check!(
     KEPT_BUCKETS =
         a_kept_first_and_last_answer_as_their_twins_in_a_view_grouped_by_a_bucket_of_time,
-    "049, extended (lakelands#1603, lakelands#1605): a view grouped by a text field and an hour derived by `date_bucket` is kept, its `min`, `max`, `first(v, at)` and `last(v, at)` answering as their twins, read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own, while members arrive, two tie on `at`, one has no `at` and one no value, a bucket's first, last and least member is retired, a member moves to the next hour and an earlier one arrives, a holder's value changes and another's goes null, a holder leaves after another member's value changed, and a bucket's last member leaves, `describe_type` saying `kept` after each; `first` and `last` of a text by a decimal are kept in a view grouped by text alone, and by a date under a week bucket of it; declared again grouped by two buckets, by a bucket alone, or with a `first` that orders by a text, a kept view cannot be kept, and answers as its twin, until it is declared as it was",
+    "049, extended (lakelands#1603, lakelands#1605): a view grouped by a text field and an hour derived by `date_bucket` is kept, its `min`, `max`, `first(v, at)` and `last(v, at)` answering as their twins, read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own, while members arrive, two tie on `at`, one has no `at` and one no value, a bucket's first, last and least member is retired, a member moves to the next hour and an earlier one arrives, a holder's value changes and another's goes null, a holder leaves after another member's value changed, and a bucket's last member leaves, `describe_type` saying `kept` after each; `first` and `last` of a text by a decimal are kept in a view grouped by text alone, and by a date under a week bucket of it; a boolean, a JSON value, an expression and a value ordered by itself are carried as their twins carry them, through holders retired and moved; declared again grouped by two buckets, by a bucket alone, or with a `first` that orders by a text, a kept view cannot be kept, and answers as its twin, until it is declared as it was",
     given
 );
 
@@ -457,16 +457,17 @@ const ORDERS: &str = r#"
 "#;
 
 const BUCKETS: &str = r#"
-    declare {"declare": "type", "name": "reading", "fields": [{"name": "meter", "type": {"kind": "text"}}, {"name": "at", "type": {"kind": "date_time"}}, {"name": "v", "type": {"kind": "decimal"}}, {"name": "note", "type": {"kind": "text"}}, {"name": "hour", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')", "depends_on": ["at"]}, {"name": "day", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'day')", "depends_on": ["at"]}, {"name": "on", "type": {"kind": "date"}}, {"name": "week", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(on, 'week')", "depends_on": ["on"]}]}
+    declare {"declare": "type", "name": "reading", "fields": [{"name": "meter", "type": {"kind": "text"}}, {"name": "at", "type": {"kind": "date_time"}}, {"name": "v", "type": {"kind": "decimal"}}, {"name": "note", "type": {"kind": "text"}}, {"name": "ok", "type": {"kind": "boolean"}}, {"name": "d", "type": {"kind": "json"}}, {"name": "hour", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')", "depends_on": ["at"]}, {"name": "day", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'day')", "depends_on": ["at"]}, {"name": "on", "type": {"kind": "date"}}, {"name": "week", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(on, 'week')", "depends_on": ["on"]}]}
     view hourly = reading by meter:text hour:date_time | low:decimal=min(v); high:decimal=max(v); opened:decimal=first(v, at); closed:decimal=last(v, at); c:number=count()
     view noted = reading by meter:text | least:text=first(note, v); most:text=last(note, v)
     view weekly = reading by meter:text week:date_time | early:text=first(note, on); late:text=last(note, on); c:number=count()
+    view carried = reading by meter:text hour:date_time | sure:boolean=first(ok, at); kept:json=last(d, at); twice:decimal=last(v * 2, at); least:decimal=first(v, v)
     row a view by a meter and its hour is made over the readings
-    put reading r1 {"meter": "m1", "at": "2026-01-01T00:10:00Z", "v": "5", "note": "a"}
-    put reading r2 {"meter": "m1", "at": "2026-01-01T00:50:00Z", "v": "2", "note": "b"}
+    put reading r1 {"meter": "m1", "at": "2026-01-01T00:10:00Z", "v": "5", "note": "a", "ok": true, "d": {"x": 1}}
+    put reading r2 {"meter": "m1", "at": "2026-01-01T00:50:00Z", "v": "2", "note": "b", "ok": false, "d": [2, "b"]}
     put reading r3 {"meter": "m1", "at": "2026-01-01T01:20:00Z", "v": "7", "note": "c"}
-    put reading r4 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "1", "note": "d"}
-    put reading r5 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "3", "note": "e"}
+    put reading r4 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "1", "note": "d", "d": 1.5}
+    put reading r5 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "3", "note": "e", "ok": false, "d": "e"}
     put reading r6 {"meter": "m1", "v": "9", "note": "f"}
     put reading r7 {"meter": "m1", "at": "2026-01-01T00:30:00Z", "note": "g"}
     put reading d1 {"meter": "m1", "on": "2026-01-07", "note": "p"}
@@ -475,10 +476,12 @@ const BUCKETS: &str = r#"
     set view_kept.hourly true
     set view_kept.noted true
     set view_kept.weekly true
+    set view_kept.carried true
     says hourly kept
     says noted kept
     says weekly kept
-    read hourly noted weekly
+    says carried kept
+    read hourly noted weekly carried
     is hourly m1:2026-01-01T00%3A00%3A00.000000Z 2,5,5,2,3; m1:2026-01-01T01%3A00%3A00.000000Z 7,7,7,7,1; m2:2026-01-01T00%3A00%3A00.000000Z 1,3,1,1,2
     is noted m1 b,f; m2 d,e
     row a bucket's first, last and least member is retired, one moves to the next hour and an earlier one arrives
@@ -488,7 +491,8 @@ const BUCKETS: &str = r#"
     put reading r8 {"meter": "m2", "at": "2026-01-01T00:05:00Z", "v": "4", "note": "h"}
     put reading r5 {"v": "0"}
     says hourly kept
-    read hourly noted
+    says carried kept
+    read hourly noted carried
     is hourly m1:2026-01-01T00%3A00%3A00.000000Z -,-,-,-,1; m1:2026-01-01T01%3A00%3A00.000000Z 5,7,5,7,2; m2:2026-01-01T00%3A00%3A00.000000Z 0,4,4,1,3
     row a holder's value changes, another's goes null, and a holder leaves after a member's value changed
     put reading r8 {"v": "5"}
@@ -509,7 +513,8 @@ const BUCKETS: &str = r#"
     retire reading r1
     says hourly kept
     says noted kept
-    read hourly noted
+    says carried kept
+    read hourly noted carried
     row a view grouped by two buckets, one by a bucket alone and one whose first orders by a text are declared
     view hourly = reading by meter:text hour:date_time day:date_time | low:decimal=min(v); high:decimal=max(v); opened:decimal=first(v, at); closed:decimal=last(v, at); c:number=count()
     says hourly cannot be kept

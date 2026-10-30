@@ -236,32 +236,18 @@ async fn answers(
             }
         }
         let search = Search {
-            ty: TypeName::from("invoice"),
-            mode: SearchMode::lexical("lake note"),
-            k: 20,
-            cursor: None,
-            filter: None,
             with_meta: true,
-            matches: false,
             at,
-            rerank: None,
-            text_as_of: false,
+            ..searched("invoice", SearchMode::lexical("lake note"), 20)
         };
         out.push((
             format!("a lexical search at {p}"),
             said(cat.search(own, search).await),
         ));
         let vector = Search {
-            ty: TypeName::from("note"),
-            mode: SearchMode::vector("vec", vec![1.0, 0.0]),
-            k: 20,
-            cursor: None,
-            filter: None,
             with_meta: true,
-            matches: false,
             at,
-            rerank: None,
-            text_as_of: false,
+            ..searched("note", SearchMode::vector("vec", vec![1.0, 0.0]), 20)
         };
         out.push((
             format!("a vector search at {p}"),

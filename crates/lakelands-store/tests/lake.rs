@@ -25,7 +25,7 @@ use lakelands_api::{
     Error, Get, Grants, LakeStore, Location, Patch, Position, Principal, PrincipalKind, ReadAt,
     Refusal, SourceRecord, WriteContext, WriteOpts,
 };
-use lakelands_core::conformance::fixture::invalid_case;
+use lakelands_core::conformance::fixture::{invalid_case, searched};
 use lakelands_engine_mem::MemoryOpener;
 use serde_json::json;
 
@@ -1661,20 +1661,9 @@ async fn a_filtered_search_pulls_until_its_page_is_full() {
         .unwrap();
     }
     let search = |cursor| Search {
-        ty: "doc".into(),
-        mode: SearchMode::Lexical {
-            text: "apple".into(),
-            fields: None,
-            text_fields: None,
-        },
-        k: 3,
         cursor,
         filter: Some(Condition::from("n >= 295")),
-        with_meta: false,
-        matches: false,
-        text_as_of: false,
-        at: ReadAt::default(),
-        rerank: None,
+        ..searched("doc", SearchMode::lexical("apple"), 3)
     };
     let first = cat.search(&o, search(None)).await.unwrap().data;
     assert_eq!(
@@ -1747,30 +1736,7 @@ async fn a_hybrid_search_embeds_its_text_through_the_bound_backend() {
     .await
     .unwrap();
     let hits = cat
-        .search(
-            &o,
-            Search {
-                ty: "doc".into(),
-                mode: SearchMode::Hybrid {
-                    text: "apple".into(),
-                    field: "e".into(),
-                    vector: None,
-                    fields: None,
-                    text_fields: None,
-                    weight: None,
-                    text_weight: None,
-                    model: None,
-                },
-                k: 5,
-                cursor: None,
-                filter: None,
-                with_meta: false,
-                matches: false,
-                text_as_of: false,
-                at: ReadAt::default(),
-                rerank: None,
-            },
-        )
+        .search(&o, searched("doc", SearchMode::hybrid("apple", "e"), 5))
         .await
         .unwrap()
         .data;
@@ -2658,22 +2624,7 @@ async fn search_finds_a_restricted_record_only_with_the_grant() {
         .restrict(&"doc".into(), &"d".into(), "hold".into())
         .await
         .unwrap();
-    let search = || Search {
-        ty: "doc".into(),
-        mode: SearchMode::Lexical {
-            text: "apple".into(),
-            fields: None,
-            text_fields: None,
-        },
-        k: 5,
-        cursor: None,
-        filter: None,
-        with_meta: false,
-        matches: false,
-        text_as_of: false,
-        at: ReadAt::default(),
-        rerank: None,
-    };
+    let search = || searched("doc", SearchMode::lexical("apple"), 5);
     let with = cat.search(&o, search()).await.unwrap().data;
     assert_eq!(with.hits.len(), 1, "the restricted grant finds it");
     let reader = Principal {
@@ -2915,30 +2866,7 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
     assert!(!r.fields.contains_key("vec"), "{r:?}");
     assert!(other.calls.lock().unwrap().is_empty());
     let got = cat
-        .search(
-            &o,
-            Search {
-                ty: "doc".into(),
-                mode: SearchMode::Hybrid {
-                    text: "apple".into(),
-                    field: "vec".into(),
-                    vector: None,
-                    fields: None,
-                    text_fields: None,
-                    weight: None,
-                    text_weight: None,
-                    model: None,
-                },
-                k: 5,
-                cursor: None,
-                filter: None,
-                with_meta: false,
-                matches: false,
-                text_as_of: false,
-                at: ReadAt::default(),
-                rerank: None,
-            },
-        )
+        .search(&o, searched("doc", SearchMode::hybrid("apple", "vec"), 5))
         .await;
     match got {
         Err(e) if e.seam().is_some() => {
@@ -2959,30 +2887,7 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
     let store = open_with(&lake, wider.clone(), OpenMode::Write).await;
     let cat = store.catalog(WriteContext::default());
     let got = cat
-        .search(
-            &o,
-            Search {
-                ty: "doc".into(),
-                mode: SearchMode::Hybrid {
-                    text: "apple".into(),
-                    field: "vec".into(),
-                    vector: None,
-                    fields: None,
-                    text_fields: None,
-                    weight: None,
-                    text_weight: None,
-                    model: None,
-                },
-                k: 5,
-                cursor: None,
-                filter: None,
-                with_meta: false,
-                matches: false,
-                text_as_of: false,
-                at: ReadAt::default(),
-                rerank: None,
-            },
-        )
+        .search(&o, searched("doc", SearchMode::hybrid("apple", "vec"), 5))
         .await;
     assert!(
         matches!(

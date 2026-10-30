@@ -125,6 +125,8 @@ fn folds(
     if !extreme {
         return Ok(());
     }
+    // INTERIM: lakelands#1614 — the next holder is sought by the group's
+    // digest, whatever its fields' kinds; this rule goes when that lands.
     let named = |f: &FieldName| {
         matches!(
             declared(f),
@@ -146,6 +148,7 @@ fn folds(
     }
 }
 
+// INTERIM: lakelands#1614.
 /// Whether the source's field `f` is a bucket of time: derived at the
 /// write as `date_bucket` of a date or an instant field, by any unit or
 /// width `date_bucket` takes, so that its value is fixed by the write as a

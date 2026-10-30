@@ -473,7 +473,12 @@ position, and `last` what the same `find` descending finds: the
 opening and closing reading of a meter in an hour is one read, not one
 for each group. A measure of `find` names `by` beside its `field`; a
 `first` or `last` without either is refused, as is a `by` on any other
-function, naming the call.
+function, naming the call. A pattern's aggregate answers them over its
+rows' paths, `first(reading.v, reading.at)`, and Cypher's
+`first(x.v, x.at)` is that aggregate. Over a pattern of its start type
+alone, started by no search, equal `by`s are taken in key order, as a
+`find` takes them; over the rows of a walk or of a search's hits they
+are taken in the order the rows come, which nothing fixes.
 
 ### A view declares the fields it computes and no other, and its `key` names its `group_by`
 

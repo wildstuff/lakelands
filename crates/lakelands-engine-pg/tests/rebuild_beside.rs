@@ -16,6 +16,7 @@ use lakelands_api::id::{Position, RecordKey, TypeName, Version};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::{Error, Location};
 use lakelands_core::conformance::engine::chain;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_pg::PgOpener;
 
 /// Set to a lake's schema, the child this test binary runs as.
@@ -30,15 +31,8 @@ fn fold(engine: &dyn LakeEngine, key: &str, through: u64) {
     let p = engine.projection();
     p.begin().unwrap();
     p.put_record(&StoredRecord {
-        ty: TypeName::from("t"),
-        key: RecordKey::from(key),
         version: Version(through),
-        fields: Default::default(),
-        meta: Default::default(),
-        position: Position(through),
-        made: Position(through),
-        retired: false,
-        restricted: false,
+        ..stored_record("t", key, Default::default(), through)
     })
     .unwrap();
     p.commit(Position(through)).unwrap();

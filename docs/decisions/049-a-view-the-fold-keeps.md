@@ -37,8 +37,10 @@ would have to reproduce one.
   (below), which a bucket serves as a text does, since the write fixes
   its value. One bucket and not two: a view by meter and hour answers
   what is asked of readings, and a second bucket is the same time cut
-  twice; other kinds wait for a case that asks for them. A view over a
-  view is kept while that view is.
+  twice; other kinds wait for a case that asks for them. The rule is
+  interim: since the seek works whatever the group fields' kinds, whether
+  an extreme may be kept under any group field the write fixes is open
+  in lakelands#1614. A view over a view is kept while that view is.
 - **Under a name no type can bear.** A view's kept records are put under
   `sys:kept.<view>`, which holds a character no type name may. No write,
   link, walk, preflight or fold reaches them by a type's name: a

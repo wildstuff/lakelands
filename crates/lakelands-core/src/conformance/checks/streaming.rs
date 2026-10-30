@@ -1403,27 +1403,7 @@ impl Size<'_> {
         let got = doors(store)
             .search(
                 &self.own,
-                Search {
-                    ty: TypeName::from(TY),
-                    mode: SearchMode::Hybrid {
-                        text: note(SOUGHT),
-                        field: "vec".into(),
-                        vector: None,
-                        fields: None,
-                        text_fields: None,
-                        weight: None,
-                        text_weight: None,
-                        model: None,
-                    },
-                    k: K,
-                    cursor: None,
-                    filter: None,
-                    with_meta: false,
-                    matches: false,
-                    at: ReadAt::default(),
-                    rerank: None,
-                    text_as_of: false,
-                },
+                searched(TY, SearchMode::hybrid(note(SOUGHT), "vec"), K),
             )
             .await
             .must(&format!("a hybrid search for the note of `{sought}`"))?

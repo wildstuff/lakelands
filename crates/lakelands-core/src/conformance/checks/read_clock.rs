@@ -441,16 +441,8 @@ async fn page_clocks(
             }
             _ => {
                 let search = Search {
-                    ty: "bill".into(),
-                    mode: SearchMode::lexical("bill"),
-                    k: 1,
                     cursor,
-                    filter: None,
-                    with_meta: false,
-                    matches: false,
-                    at: ReadAt::default(),
-                    rerank: None,
-                    text_as_of: false,
+                    ..searched("bill", SearchMode::lexical("bill"), 1)
                 };
                 let hits = c.search(own, search).await.must("a page of `search`")?.data;
                 (
