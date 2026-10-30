@@ -875,6 +875,7 @@ pub async fn a_stale_expected_version_is_a_conflict(store: Arc<dyn LakeStore>) {
     let expect = |v| WriteOpts {
         expected_version: Some(Version(v)),
         idempotency_key: None,
+        defer_computed_fields: false,
     };
     let p = || patch(&[("status", json!("open"))]);
     let o = c
@@ -906,6 +907,7 @@ pub async fn a_retried_idempotency_key_answers_the_first_outcome(store: Arc<dyn 
     let opts = WriteOpts {
         expected_version: None,
         idempotency_key: Some("retry-1".into()),
+        defer_computed_fields: false,
     };
     let (invoice, k) = (ty(INVOICE), key("INV-1"));
     let write = || {
@@ -11512,6 +11514,7 @@ pub async fn a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown(
     let keyed = |k: &str| WriteOpts {
         expected_version: None,
         idempotency_key: Some(k.into()),
+        defer_computed_fields: false,
     };
     let (vault, r1, seal) = (ty("vault"), key("r1"), "seal".into());
     let code = || patch(&[("code", json!("r1"))]);

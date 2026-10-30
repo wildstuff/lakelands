@@ -168,6 +168,7 @@ async fn a_retry_after_the_writer_went_away_answers_the_first_outcome(
     let keyed = || WriteOpts {
         expected_version: None,
         idempotency_key: Some(IdempotencyKey::from("lost-1")),
+        defer_computed_fields: false,
     };
     let note = TypeName::from("note");
     let first = (l.cat)

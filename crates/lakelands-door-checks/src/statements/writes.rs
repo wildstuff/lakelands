@@ -46,6 +46,7 @@ fn create() -> WriteOpts {
     WriteOpts {
         expected_version: Some(Version(0)),
         idempotency_key: None,
+        defer_computed_fields: false,
     }
 }
 

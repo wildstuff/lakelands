@@ -35,6 +35,18 @@ pub struct WriteOpts {
     /// recorded in the log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<IdempotencyKey>,
+    /// Answer once the write is in the log and folded, at its own
+    /// position, and make the calls its computed fields (an embedding
+    /// included) are due in a task of the lake's own after. Until then
+    /// such a field holds no value and no `error`, as a waiting one does:
+    /// a lexical or structured read finds the record, a vector ranking
+    /// leaves it out. Off by default: the write answers once they are
+    /// recorded. A call that hands an external verb to its executor
+    /// waits as without it, and so does a write through a network door,
+    /// which does not carry it
+    /// (`docs/decisions/022-functions-are-declarations.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_computed_fields: bool,
 }
 
 /// Options an `ingest` takes.

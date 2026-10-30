@@ -2497,6 +2497,7 @@ async fn a_version_from_before_a_retirement_never_applies_after_it() {
     let expecting = |v: u64| lakelands_api::write::WriteOpts {
         expected_version: Some(lakelands_api::Version(v)),
         idempotency_key: None,
+        defer_computed_fields: false,
     };
     cat.upsert(
         &o,

@@ -811,6 +811,9 @@ interface types {
     record write-opts {
         expected-version: option<version>,
         idempotency-key: option<idempotency-key>,
+        /// Answer once the write is folded; its computed fields are
+        /// made after, by the lake.
+        defer-computed-fields: bool,
     }
 
     /// Options an `ingest` takes.
