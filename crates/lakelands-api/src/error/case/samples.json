@@ -1515,6 +1515,15 @@
    "verb": "v"
   },
   {
+   "cause": "s",
+   "code": "refused_by_host",
+   "reason": "s"
+  },
+  {
+   "code": "host_refusal_form",
+   "max": 1
+  },
+  {
    "cause": 1,
    "code": "cause_past_head",
    "head": 1

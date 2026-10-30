@@ -647,6 +647,7 @@ async fn the_host_operations_that_need_the_lease_are_read_only() {
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let mut acks = (f.catalog)
         .ingest(&f.cast.importer, &"bank".into(), stream::of(vec![banked]))

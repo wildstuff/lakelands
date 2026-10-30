@@ -717,6 +717,9 @@ interface types {
         delivery: option<delivery-id>,
         /// The quarantined record of the same source this one runs again.
         resubmits: option<resubmits>,
+        /// The record's line in its run: with the run, the key of its
+        /// quarantined record, so that sending it again replaces it.
+        line: option<u64>,
     }
 
     /// A quarantined record of a source record's own source, by the
@@ -844,6 +847,9 @@ interface types {
         /// Quarantine a record refused by a rule of the record, and go on
         /// with the stream.
         quarantine-refused: bool,
+        /// The run the records are lines of, for a quarantined record's
+        /// key in place of the delivery.
+        run: option<delivery-id>,
     }
 
     record applied {

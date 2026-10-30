@@ -551,6 +551,7 @@ async fn an_ingest_past_its_newest_version_s_day_seals_under_a_new_one() {
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         };
         let fed = lakelands_api::ingest_all(cat.as_ref(), &owner, &crm, vec![record]);
         fed.await.unwrap();
@@ -714,6 +715,7 @@ async fn an_output_over_an_ingest_sealed_apart_does_not_read_a_leftover_row() {
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         };
         let fed = lakelands_api::ingest_all_with(cat.as_ref(), &owner, &crm, opts, vec![record]);
         fed.await.unwrap();

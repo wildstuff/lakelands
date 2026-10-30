@@ -189,6 +189,11 @@ pub struct SourceRecord {
     /// which it closes once written or counted as a duplicate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resubmits: Option<crate::quarantine::Resubmits>,
+    /// The record's ordinal in its delivery, as the host counts it, which
+    /// keys it when quarantined in place of its place among the call's
+    /// records: the same `(run, line)` again is the same quarantined record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u64>,
 }
 
 /// Where values read from another lake's log came from: that lake, and

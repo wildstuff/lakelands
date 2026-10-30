@@ -19,7 +19,9 @@ use crate::id::{
 };
 use crate::ontology::FieldDecl;
 use crate::principal::{Principal, WriteContext};
-use crate::quarantine::{QuarantineClose, QuarantineFilter, QuarantineId, Quarantined};
+use crate::quarantine::{
+    HostRefused, QuarantineClose, QuarantineFilter, QuarantineId, Quarantined, Quarantining,
+};
 use crate::query::{Hits, Pattern, QueryResult, Search};
 use crate::read::{Find, Found, Get, ReadAt, Reply};
 use crate::record::{Patch, Record, SourceRecord};
@@ -220,6 +222,20 @@ pub trait Catalog: Send + Sync {
         who: &Principal,
         id: &QuarantineId,
     ) -> Result<QuarantineClose>;
+
+    /// Quarantine a record the host refused before any ingest, as a
+    /// record the lake refused is quarantined, under `opts`' delivery,
+    /// seal and run: its cells sealed and shown as its type's, and its
+    /// life after the same. It is not judged by the type's rules; what
+    /// keeps a refused record from quarantine refuses it, as a one-record
+    /// stream's record. Needs the `ingest` grant (085, extended).
+    async fn quarantine(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: IngestOpts,
+        refused: HostRefused,
+    ) -> Result<Quarantining>;
 
     /// Add or revise a declaration that does not reshape stored records. One
     /// that is the declaration in force is answered at the head and appends

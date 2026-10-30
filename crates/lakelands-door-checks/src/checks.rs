@@ -5810,6 +5810,7 @@ pub async fn ingest_is_content_addressed(store: Arc<dyn LakeStore>) {
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let feed = || async {
         let mut acks = f
@@ -5848,8 +5849,8 @@ pub async fn ingest_is_content_addressed(store: Arc<dyn LakeStore>) {
 }
 
 /// An ingest asking `quarantine_refused` reaches the store whole: the
-/// refused record is quarantined, the stream goes on, and the listing
-/// and the dismiss answer it as the store does
+/// refused record is quarantined, the stream goes on, and the listing,
+/// the dismiss and the host's own quarantine answer it as the store does
 /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
 pub async fn a_refused_record_is_quarantined_listed_and_dismissed(store: Arc<dyn LakeStore>) {
     use lakelands_api::quarantine::{ClosedWhy, QuarantineFilter, QuarantineId};
@@ -5863,6 +5864,7 @@ pub async fn a_refused_record_is_quarantined_listed_and_dismissed(store: Arc<dyn
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let amount = ("amount", json!("1.00"));
     let records = vec![
@@ -5924,6 +5926,42 @@ pub async fn a_refused_record_is_quarantined_listed_and_dismissed(store: Arc<dyn
         .await
         .expect_err("the clerk holds no `ingest`");
     assert_eq!(refusal(&e).1, &Refusal::NotGranted);
+    let refused = lakelands_api::quarantine::HostRefused {
+        record: SourceRecord {
+            line: Some(7),
+            ..rec("INV-Q4", &[("amount", json!("x"))])
+        },
+        cause: "unmapped".into(),
+        reason: "a column maps to no field".into(),
+    };
+    let opts = lakelands_api::IngestOpts {
+        run: Some("r1".into()),
+        ..Default::default()
+    };
+    let (h, o) = (&refused, &opts);
+    let host = |who| f.catalog.quarantine(who, &bank, o.clone(), h.clone());
+    let first = host(importer).await.unwrap();
+    let again = host(importer).await.unwrap();
+    let at = QuarantineId {
+        source: bank.clone(),
+        delivery: "r1".into(),
+        index: 7,
+    };
+    assert!(
+        first.id == at && !first.duplicate && again.duplicate,
+        "{first:?} {again:?}"
+    );
+    let by_host = listed(None).await;
+    assert!(
+        matches!(refusal(&by_host[1].refusal).1, Refusal::Declined(_)),
+        "{by_host:?}"
+    );
+    let e = f
+        .catalog
+        .quarantine(&f.cast.clerk, &bank, opts, refused)
+        .await
+        .expect_err("the clerk holds no `ingest`");
+    assert_eq!(refusal(&e).1, &Refusal::NotGranted);
 }
 
 /// A record ingested with `upstream`, the lake and position its values
@@ -5944,6 +5982,7 @@ pub async fn an_ingested_upstream_is_answered_per_field(store: Arc<dyn LakeStore
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let mut acks = f
         .catalog
@@ -7106,6 +7145,7 @@ pub async fn a_feed_poll_examines_at_most_the_bound(store: Arc<dyn LakeStore>) {
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     });
     let (bank, records) = ("bank".into(), stream::of(records.collect()));
     let ingested = f.catalog.ingest(&f.cast.importer, &bank, records).await;
@@ -7467,6 +7507,7 @@ pub async fn ingest_judges_a_record_around_its_duplicate_test(store: Arc<dyn Lak
                 seen_at: None,
                 delivery: None,
                 resubmits: None,
+                line: None,
             };
             let fed = lakelands_api::ingest_all(c.as_ref(), &who, &"feed".into(), vec![r]).await;
             fed.map_err(|e| e.unwrapped().clone())
@@ -8227,6 +8268,7 @@ pub async fn key_components_and_source_ids_use_each_values_one_form(store: Arc<d
                 seen_at: None,
                 delivery: None,
                 resubmits: None,
+                line: None,
             };
             let mut acks = cat
                 .ingest(&owner, &"gauge".into(), stream::of(vec![record]))
@@ -8700,6 +8742,7 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         },
         SourceRecord {
             source: None,
@@ -8710,6 +8753,7 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         },
     ];
     let mut commits = c
@@ -8781,6 +8825,7 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let fed = |to: &str| {
         let window = stream::of(vec![witness(to)]);
@@ -9429,6 +9474,7 @@ pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stal
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let mut acks = c
         .ingest(own, &"crm".into(), stream::of(vec![p1]))
@@ -9542,6 +9588,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
                     seen_at: None,
                     delivery: None,
                     resubmits: None,
+                    line: None,
                 })
                 .collect();
             let mut acks = c
@@ -9608,6 +9655,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let mut acks = c
         .ingest(own, &"crm".into(), stream::of(vec![clear]))
@@ -9638,6 +9686,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
                 seen_at: None,
                 delivery: None,
                 resubmits: None,
+                line: None,
             };
             let mut acks = c
                 .ingest(&own, &src.into(), stream::of(vec![rec]))
@@ -9696,6 +9745,7 @@ async fn purge_lake(store: &Arc<dyn LakeStore>) -> (Arc<dyn Catalog>, Principal)
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         };
         let mut acks = c
             .ingest(&own, &source.into(), stream::of(vec![record]))
@@ -10770,6 +10820,7 @@ async fn write_doors(
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         };
         let acks = c.ingest(who, &"bank".into(), stream::of(vec![rec])).await;
         let mut acks = acks.expect("one with the grant feeds");
@@ -11271,6 +11322,7 @@ pub async fn a_record_event_says_whether_it_made_the_record(store: Arc<dyn LakeS
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     });
     let fed = c.ingest(&f.cast.importer, &bank, stream::of(twice.into()));
     let acks = stream::collect(&mut fed.await.unwrap()).await;
@@ -11374,6 +11426,7 @@ pub async fn a_required_field_is_judged_over_the_record_whole(store: Arc<dyn Lak
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         };
         let mut acks = (c
             .ingest(&own, &"erp".into(), stream::of(vec![record]))
@@ -11468,6 +11521,7 @@ pub async fn a_field_that_declares_initial_makes_no_owner(store: Arc<dyn LakeSto
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         };
         let acks = c.ingest(&own, &erp, stream::of(vec![record])).await;
         stream::collect(&mut acks.expect("the stream opens"))
@@ -13722,6 +13776,7 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let fed = lakelands_api::ingest_all(c.as_ref(), alice, &"feed".into(), vec![fed]).await;
     let tagged = patch(&[("tag", json!("y"))]);

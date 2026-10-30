@@ -1610,6 +1610,11 @@ catalog! {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             reason: Option<super::Detail>,
         } => "the host declined the call of `{verb}`[ ({reason})]: it did not run, and a retry under the same idempotency key answers the same",
+        /// A record the host refused before any ingest, quarantined with
+        /// the host's stable cause code and its sentence for the operator.
+        RefusedByHost { cause: String, reason: String } => "the host refused the record as `{cause}`: {reason}",
+        /// A host's refusal whose cause or reason is not of its form.
+        HostRefusalForm { max: usize } => "a host's refusal names a cause of 1 to 64 bytes of `a` to `z`, `0` to `9` and `_`, and a reason that is not empty, is at most {max} bytes and holds no control character",
         /// A host's cause past the head.
         CausePastHead { cause: Position, head: Option<Position> } => "the cause {cause} is past the lake's head [{head}|(none)]",
         /// A host's `on_behalf_of` that is not a principal the store may

@@ -80,6 +80,11 @@ pub struct IngestOpts {
     /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quarantine_refused: bool,
+    /// The host's intake run, of a delivery id's form, which keys the
+    /// call's quarantined records in place of their delivery; each
+    /// record's `line` keys it in place of its place (085, extended).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<DeliveryId>,
 }
 
 /// What a write did. A writer never has to know in advance whether its

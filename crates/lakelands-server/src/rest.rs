@@ -404,6 +404,7 @@ enum Target {
     Feed,
     Quarantined,
     Dismiss,
+    Quarantine,
 }
 
 fn route(method: &Method, rest: &str) -> Result<Target, Stop> {
@@ -690,6 +691,7 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
         (["feed"], Method::GET) => Target::Feed,
         (["quarantined"], Method::GET) => Target::Quarantined,
         (["quarantined", "dismiss"], Method::POST) => Target::Dismiss,
+        (["quarantined"], Method::POST) => Target::Quarantine,
         _ => return None,
     };
     Some(target)
@@ -745,7 +747,8 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
         Ok(Target::Ingest(source)) => ingest(&store, &who, cx, source, req).await,
         Ok(Target::Feed) => feed(state, &store, &who, req).await,
         Ok(Target::Quarantined) => quarantined(&store, &who, cx, req).await,
-        Ok(Target::Dismiss) => dismiss(&store, &who, cx, req).await,
+        Ok(Target::Dismiss) => dismiss(&store, &who, cx, req, DISMISS).await,
+        Ok(Target::Quarantine) => dismiss(&store, &who, cx, req, QUARANTINE).await,
         Err(a) => Err(a),
     };
     match answer {
@@ -1107,6 +1110,7 @@ async fn ingest(
             ("sealed_apart", Kind::Flag),
             ("commit_window", Kind::Int),
             ("quarantine_refused", Kind::Flag),
+            ("run", Kind::Text),
         ],
         "POST …/ingest/<source>",
     )?;
@@ -1119,6 +1123,7 @@ async fn ingest(
             .and_then(Value::as_u64)
             .map(|w| u32::try_from(w).unwrap_or(u32::MAX)),
         quarantine_refused: args.get("quarantine_refused").and_then(Value::as_bool) == Some(true),
+        run: args.get("run").and_then(Value::as_str).map(Into::into),
     };
     if let Some(ct) = header(req.headers(), CONTENT_TYPE.as_str())
         && ![
@@ -1219,34 +1224,50 @@ async fn quarantined(
     ))
 }
 
+const DISMISS: &str = "POST …/quarantined/dismiss";
+const QUARANTINE: &str = "POST …/quarantined";
+
+/// What `POST …/quarantined` takes: the source, the call's options and
+/// the host's refusal.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostQuarantine {
+    source: SourceId,
+    #[serde(default)]
+    opts: lakelands_api::IngestOpts,
+    refused: lakelands_api::quarantine::HostRefused,
+}
+
 /// `POST …/quarantined/dismiss`, its body the id: close one as
-/// dismissed (085).
+/// dismissed; `POST …/quarantined`, its body a [`HostQuarantine`]:
+/// quarantine a record the host refused (085).
 async fn dismiss(
     store: &Arc<dyn LakeStore>,
     who: &Principal,
     cx: WriteContext,
     req: Request<Incoming>,
+    label: &'static str,
 ) -> Result<Answer, Stop> {
-    const LABEL: &str = "POST …/quarantined/dismiss";
-    query_args(req.uri().query(), &[], LABEL)?;
+    query_args(req.uri().query(), &[], label)?;
     let Some(Value::Object(body)) = json_body(req).await? else {
-        let route = LABEL.into();
+        let route = label.into();
         return Err(invalid(
             StatusCode::BAD_REQUEST,
             Case::BodyNotObject { route },
         ));
     };
-    let id: QuarantineId = doors::args(LABEL, &body).map_err(fault_answer)?;
-    let close = store
-        .catalog(cx)
-        .dismiss_quarantined(who, &id)
-        .await
-        .map_err(contract)?;
-    let at = Some(close.position);
-    Ok(with_position(
-        json_reply(StatusCode::OK, &to_json(&close)),
-        at,
-    ))
+    let catalog = store.catalog(cx);
+    let (answer, at) = if label == DISMISS {
+        let id: QuarantineId = doors::args(label, &body).map_err(fault_answer)?;
+        let close = (catalog.dismiss_quarantined(who, &id).await).map_err(contract)?;
+        (to_json(&close), close.position)
+    } else {
+        let q: HostQuarantine = doors::args(label, &body).map_err(fault_answer)?;
+        let done = catalog.quarantine(who, &q.source, q.opts, q.refused).await;
+        let done = done.map_err(contract)?;
+        (to_json(&done), done.position)
+    };
+    Ok(with_position(json_reply(StatusCode::OK, &answer), Some(at)))
 }
 
 // ------------------------------------------------------------------- feed

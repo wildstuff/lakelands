@@ -1172,6 +1172,7 @@ impl Mirror {
                             seen_at,
                             delivery: None,
                             resubmits: None,
+                            line: None,
                         },
                     ));
                 }
@@ -1281,6 +1282,7 @@ impl Mirror {
                     seen_at: Some(known_at),
                     delivery: None,
                     resubmits: None,
+                    line: None,
                 },
             ));
         }

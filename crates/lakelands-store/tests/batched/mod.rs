@@ -1065,6 +1065,7 @@ pub async fn an_ingest_window_closes_a_batch(place: &Place, name: &str) {
                 source: None,
                 delivery: None,
                 resubmits: None,
+                line: None,
             };
             let source = SourceId::from("feed");
             let who = owner(&lake, "owner");

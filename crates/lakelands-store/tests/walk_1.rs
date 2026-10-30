@@ -76,6 +76,7 @@ fn records(csv: &str, map: &str) -> Vec<SourceRecord> {
                 ),
                 delivery: None,
                 resubmits: None,
+                line: None,
             }
         })
         .collect()

@@ -396,6 +396,15 @@ impl Catalog for Doors {
     ) -> Result<QuarantineClose> {
         self.inner.dismiss_quarantined(who, id).await
     }
+    async fn quarantine(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: lakelands_api::IngestOpts,
+        refused: lakelands_api::quarantine::HostRefused,
+    ) -> Result<lakelands_api::quarantine::Quarantining> {
+        self.inner.quarantine(who, source, opts, refused).await
+    }
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
         self.inner.declare(who, declaration).await
     }

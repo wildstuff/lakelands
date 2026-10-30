@@ -109,6 +109,53 @@ again, is judged against the id's last version:
 A host that wants a redelivery to find its quarantined records names
 the delivery; without one, each call is its own.
 
+### A host's run and line key a quarantined record where it names them
+
+A host that reads files knows each row by the run that read it and the
+row's line, and can name that pair before it asks the lake anything.
+`IngestOpts::run`, of a delivery id's form, takes the delivery's place
+in the id of every record the call quarantines, and
+`SourceRecord::line`, at most 2^53 − 1, takes the record's place; each
+where given. The same pair is the same quarantined record, whichever
+door quarantined it and in whichever call: sent again it is judged
+against the id's last version as above. The envelope's delivery is the
+record's still, so taking back a delivery reaches its versions as
+before; the id names the run. A resubmission keeps the id it names.
+A place counts only its call's records, so two calls of one delivery
+both have a record at 0: a host that sends one delivery in many calls
+names each record's line.
+
+### The host may quarantine a record it refused itself
+
+A host refuses rows before the lake sees them: a column it cannot map,
+a file it cannot read past. Kept beside the lake, their cells escape
+the type's protection as above. `Catalog::quarantine(who, source, opts,
+refused)` quarantines one under the source with `opts`' delivery, seal
+and run, as an ingest's quarantined record: its row as the host would
+have sent it, its type and key, its cells, and the host's refusal, a
+stable cause code of 1 to 64 bytes of `a`–`z`, `0`–`9` and `_` and a
+sentence for the operator, which names no cell's value. The record is
+not ingested and no rule of its type judges it; its refusal is
+`declined`, case `refused_by_host`, with the cause and the sentence. A
+cause or sentence not of that form is `invalid`, `host_refusal_form`.
+
+What keeps an ingest's refusal from quarantine keeps the host's (the
+table above, marked no): the call, the `ingest` grant, the source and
+the delivery or run's form, a type not shown, a source forgotten or
+its key store not bound, a key holding NUL, the bound; each refuses the
+call in the wrapper 016 gives a refused record, at index 0, and appends
+nothing. Its cells are sealed, shown and closed as any quarantined
+record's: listed, dismissed, closed `landed` by a record landing at its
+key and `resubmitted` by a resubmission, and reached by the acts on its
+source. The answer is its id, the position of its version, and whether
+it was a duplicate. The door is the host's, worked through the host
+like the listing; it stays off the guest door.
+
+Two lists, one of refusals the lake made and one the host made, were
+weighed and not taken: a person works one queue, a run's rows are
+found under one pair whoever refused them, and a second store would
+need its own sealing, sight and erasure.
+
 ### A quarantined record keeps its cells as given, sealed as its landed values would be
 
 **The cells** are the record's members as it sent them, each value in
@@ -511,3 +558,6 @@ of a format step.
 - A quarantined record is keyed by its record's delivery and its place
   among the call's records of that delivery, where an ingest carries a
   delivery per record (087, lakelands#1528).
+- The host's door, and the run and line that key a record
+  (lakelands#1596). Each writes only from what a caller newly names; the
+  stored shape is unchanged, and the log stays at format 22.

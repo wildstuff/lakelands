@@ -753,6 +753,7 @@ impl Desk {
                         seen_at: None,
                         delivery: None,
                         resubmits: None,
+                        line: None,
                     })
                     .collect();
                 let s: lakelands_api::SourceStream = Box::pin(Stream(records.into_iter()));
