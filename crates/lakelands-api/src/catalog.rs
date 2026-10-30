@@ -228,14 +228,19 @@ pub trait Catalog: Send + Sync {
     /// seal and run: its cells sealed and shown as its type's, and its
     /// life after the same. It is not judged by the type's rules; what
     /// keeps a refused record from quarantine refuses it, as a one-record
-    /// stream's record. Needs the `ingest` grant (085, extended).
+    /// stream's record. Needs the `ingest` grant (085, extended). A
+    /// catalog that does not carry it to the store refuses it, `invalid`.
     async fn quarantine(
         &self,
         who: &Principal,
         source: &SourceId,
         opts: IngestOpts,
         refused: HostRefused,
-    ) -> Result<Quarantining>;
+    ) -> Result<Quarantining> {
+        let _ = (who, source, opts, refused);
+        let case = crate::error::Case::HostQuarantineNotCarried;
+        Err(crate::Error::invalid(case))
+    }
 
     /// Add or revise a declaration that does not reshape stored records. One
     /// that is the declaration in force is answered at the head and appends
