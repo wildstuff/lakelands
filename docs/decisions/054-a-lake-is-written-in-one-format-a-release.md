@@ -124,6 +124,12 @@ not restore a backup over the upgraded lake, and open it with 0.21.0.
 There is no 0.20.1; the way back to 0.20.0 is a backup taken before the
 upgrade, restored into a lake of its own.
 
+0.22.0 takes the eighth step, to 22: it reads 14 to 22 and writes 22,
+so a 0.21.x binary refuses its lakes by their number. The step adds one
+member, `context.occasion` (088, lakelands#1584). The way back to
+0.21.x is a backup taken before the upgrade, restored into a lake of its
+own.
+
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
 - **The log is never rewritten.** Each format step from 14 on ships a

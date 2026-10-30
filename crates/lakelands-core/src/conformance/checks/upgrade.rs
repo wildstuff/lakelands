@@ -55,6 +55,12 @@ check!(
 );
 
 check!(
+    FORMAT_21_UPGRADED = a_lake_of_format_21_is_upgraded_and_read,
+    "054 and log-format §6 (lakelands#1584): the vectors of format 21, as v0.21.0 shipped them, imported on this engine, keep every event as it was written, `v` 21 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 21 to the format this release writes, and every later event in that format; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`",
+    given
+);
+
+check!(
     FORMAT_15_UPGRADED = a_lake_of_format_15_is_upgraded_and_read,
     "054 and log-format §6 (lakelands#1096): the vectors of format 15, as v0.14.0 shipped them, imported on this engine, keep every event as it was written, `v` 15 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 15 to the format this release writes, and every later event in that format; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`",
     given
@@ -93,6 +99,10 @@ by_format!(
 
 async fn a_lake_of_format_20_is_upgraded_and_read(store: Store, given: Given) -> Held {
     vectors_upgraded(store, given, 20).await
+}
+
+async fn a_lake_of_format_21_is_upgraded_and_read(store: Store, given: Given) -> Held {
+    vectors_upgraded(store, given, 21).await
 }
 
 /// The vectors of the older format `old`, imported, upgraded and read.
@@ -208,7 +218,7 @@ check!(
 
 check!(
     LAKE_21_READ = the_lake_of_format_21_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.21.0 made through its doors (`docs/log-format/lakes/21/`), in format 21, imported on this engine, is read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, the link records of its relation and the counts of its view among them, a setting of two periods, and a person of a source whose values are sealed in one box; the members of its object set; the walk over its relation; and its sealed values read whole with the file keyring's file it ships, each with its provenance, while a forgotten source's read as erased; the lake holds what format 21 adds to 20 (a record quarantined and its close, a write made for a person, the periods of a dated setting added and corrected, and the SQLite engine's index lines that name no `id` and no `prev`, which `vectors-kept` pins), beside the frames, the sealed boxes and the erasure of 20; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
+    "054 (lakelands#962): the lake v0.21.0 made through its doors (`docs/log-format/lakes/21/`), in format 21, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, the link records of its relation and the counts of its view among them, a setting of two periods, and a person of a source whose values are sealed in one box; the members of its object set; the walk over its relation; and its sealed values read whole with the file keyring's file it ships, each with its provenance, while a forgotten source's read as erased; the lake holds what format 21 adds to 20 (a record quarantined and its close, a write made for a person, the periods of a dated setting added and corrected, and the SQLite engine's index lines that name no `id` and no `prev`, which `vectors-kept` pins), beside the frames, the sealed boxes and the erasure of 20; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
     given
 );
 

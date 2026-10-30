@@ -15,7 +15,7 @@ check!(
 
 check!(
     HOST_SETTING_GROUP = a_declared_setting_is_written_by_its_group,
-    "063, extended (lakelands#996): the store stamps a setting's `group` from its declaration, `store` on its own settings (`sort_index.<type>`), and a write naming another is refused, naming `group`; a reader of `sys.setting` reads the group as a field and finds by it; a holder of `only {group: operator}` on `sys.setting` writes a setting of that group and is answered on one of another group as in a twin lake where nobody declared it: a value, a value the other setting's kind refuses, and a group guessed right or wrong; a declaration that moves a setting to another group stamps its record again in its own append, after which the holder is refused it as in that twin and is told its declaration no more; a proposal to create a key accepted after its declaration moved it is stamped with the group then, and is listed with no group; `describe` tells a setting's declaration to a holder of `schema` and to one who may write it, and to no other reader",
+    "063, extended (lakelands#996): the store stamps a setting's `group` from its declaration, `store` on its own settings (`sort_index.<type>`), and a write naming another is refused, naming `group`; a reader of `sys.setting` reads the group as a field and finds by it; a holder of `only {group: operator}` on `sys.setting` writes a setting of that group and is answered on one of another group as in a twin lake where nobody declared it: a value, a value the other setting's kind refuses, and a group guessed right or wrong; a declaration that moves a setting to another group stamps its record again in its own append, after which the holder is refused it as in that twin and is told its declaration no more; a proposal to create a key accepted after its declaration moved it is stamped with the group then, and is listed with no group; `describe` tells a setting's declaration to a holder of `schema` and to one who may write it, a holder of an `only_any` set of groups too (lakelands#1588), and to no other reader",
     given
 );
 
@@ -266,6 +266,12 @@ async fn a_declared_setting_is_written_by_its_group(store: Store, given: Given) 
         d.must("describing to operator").map(|d| told(d.data))
     };
     let theirs = told_to(&operator).await?;
+    // A holder of a set of groups is told the declarations of each
+    // (lakelands#1588).
+    let groups = json!({"default": "write", "only_any": {"group": ["operator", "system"]}});
+    let types = json!({ lakelands_api::seam::SETTING_TYPE: groups });
+    let groups = holder(s, "groups", json!({"default": "read", "types": types}));
+    let sets = told_to(&groups).await?;
     let none = told(
         l.cat
             .describe(&reader, Default::default())
@@ -278,9 +284,10 @@ async fn a_declared_setting_is_written_by_its_group(store: Store, given: Given) 
         ("vat_rate".to_owned(), Some("operator".to_owned())),
     ];
     ensure!(
-        owner == both && theirs == both[1..] && none.is_empty(),
+        owner == both && theirs == both[1..] && sets == both && none.is_empty(),
         "`describe` tells the owner, who holds `schema`, both declarations ({owner:?}), the \
-         holder of `operator` `vat_rate`'s alone ({theirs:?}), and a reader none ({none:?})"
+         holder of `operator` `vat_rate`'s alone ({theirs:?}), the holder of both groups both \
+         ({sets:?}), and a reader none ({none:?})"
     );
     // Moved to another group: stamped again in the declaration's append.
     let head = store.head().await.must("reading the head")?;

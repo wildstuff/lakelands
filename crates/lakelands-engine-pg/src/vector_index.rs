@@ -1227,7 +1227,8 @@ pub(crate) fn nearest(
         return Ok(Vec::new());
     }
     let scan = seen.map(|(s, _)| s);
-    let streamed = !exact_asked && scan.is_none_or(|s| s.equal.is_empty());
+    let streamed =
+        !exact_asked && scan.is_none_or(|s| s.equal.is_empty() && s.equal_any.is_empty());
     let restricted = scan.is_none_or(|s| s.restricted);
     let table = (v.zip(unit_text(query)).filter(|_| streamed)).and_then(|(v, unit)| {
         let table = pick(&graphs, ty.as_str(), restricted, query.len())?;

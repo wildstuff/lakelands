@@ -74,6 +74,16 @@ fn reading_everything_needs_every_grant_to_read_and_restricted() {
         !only.reads_everything(),
         "the feed is every owner's records"
     );
+    let mut set = reader.clone();
+    let owners = TypeGrants {
+        only_any: [("owner".into(), ["alice".to_owned()].into())].into(),
+        ..TypeGrants::default()
+    };
+    set.types.insert("claim".into(), owners);
+    assert!(
+        !set.reads_everything(),
+        "the feed is every owner's records, outside a set too"
+    );
     let mut hiding = reader.clone();
     let hidden = HiddenWhere {
         field: "doc".into(),
@@ -177,6 +187,63 @@ fn a_verb_grant_stays_with_the_type_name_it_is_given_under() {
     // verbs are its own, never the other's.
     assert_eq!(at(Some(Position(3)), "invoice"), ["pay"]);
     assert_eq!(at(None, "bill"), ["send"]);
+}
+
+#[test]
+fn a_set_follows_renames_and_two_names_admit_only_what_both_sets_hold() {
+    let list = [
+        Renamed {
+            at: Position(3),
+            ty: "claim".into(),
+            renames: vec![("owner".into(), "holder".into())],
+            to: None,
+        },
+        Renamed {
+            at: Position(5),
+            ty: "expense".into(),
+            renames: Vec::new(),
+            to: Some("claim".into()),
+        },
+    ];
+    let set = |f: &str, values: &[&str], whole| TypeGrants {
+        only_any: [(f.into(), values.iter().map(|v| (*v).to_owned()).collect())].into(),
+        whole_sets_only: whole,
+        ..TypeGrants::default()
+    };
+    let mut g = Grants::default();
+    g.types
+        .insert("claim".into(), set("holder", &["alice", "bob"], false));
+    g.types
+        .insert("expense".into(), set("owner", &["bob", "carol"], true));
+    let at = |p| {
+        let mut g = g.clone();
+        g.follow(&list, p);
+        let t = g
+            .types
+            .get(&TypeName::from("claim"))
+            .cloned()
+            .unwrap_or_default();
+        let any = t.only_any.into_iter();
+        let any: Vec<(String, Vec<String>)> = any
+            .map(|(f, v)| (f.to_string(), v.into_iter().collect()))
+            .collect();
+        (any, t.whole_sets_only)
+    };
+    let said = |f: &str, v: &[&str], whole| {
+        let v = v.iter().map(|v| (*v).to_owned()).collect();
+        (vec![(f.to_owned(), v)], whole)
+    };
+    assert_eq!(
+        at(Some(Position(2))),
+        said("owner", &["alice", "bob"], false)
+    );
+    assert_eq!(
+        at(Some(Position(4))),
+        said("holder", &["alice", "bob"], false)
+    );
+    // The expense type became `claim`: a record is admitted only where
+    // both grants admit it, and either name asking for whole sets holds.
+    assert_eq!(at(None), said("holder", &["bob"], true));
 }
 
 #[test]

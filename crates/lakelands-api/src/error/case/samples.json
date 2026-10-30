@@ -1285,6 +1285,10 @@
    "type": "t"
   },
   {
+   "code": "whole_set_needed",
+   "type": "t"
+  },
+  {
    "code": "order_at_read",
    "field": "f",
    "type": "t"
@@ -1518,6 +1522,10 @@
   {
    "code": "on_behalf_of_form",
    "value": "s"
+  },
+  {
+   "code": "occasion_form",
+   "max": 1
   },
   {
    "code": "changed_since_proposed",

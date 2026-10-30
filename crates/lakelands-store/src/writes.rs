@@ -47,7 +47,7 @@ use lakelands_api::ontology::{
     Assignment, Authority, ConstraintDecl, EmbedDecl, FieldDecl, RelationDecl, Risk, TriggerDecl,
     TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
 };
-use lakelands_api::principal::WriteContext;
+use lakelands_api::principal::{OCCASION_MAX_BYTES, WriteContext};
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
@@ -432,7 +432,9 @@ pub(crate) fn granted(ok: bool) -> Result<()> {
 /// whose `on_behalf_of` is not a principal the write may be made for:
 /// `human`, `agent` or `service` with an id that is neither empty nor
 /// holds a NUL, and not `who` itself, since one fact is recorded one way
-/// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+/// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`),
+/// or whose `occasion` is empty, longer than [`OCCASION_MAX_BYTES`] or
+/// holds a control character: its shape is judged, never its meaning (088).
 /// Every write door calls it first, before any other check and before it
 /// takes the writer, so every door refuses it alike. It reads nothing. A
 /// host's `cause` is checked where the write appends, under the writer:
@@ -442,6 +444,14 @@ pub fn check_context(lake: &Lake, context: &WriteContext, who: &Principal) -> Re
     let max = lake.limits.max_reactive_depth;
     if context.depth > max {
         return Err(Error::refused(None, Refusal::TooDeep { max }));
+    }
+    if let Some(o) = &context.occasion
+        && (o.is_empty() || o.len() > OCCASION_MAX_BYTES || o.chars().any(char::is_control))
+    {
+        let case = Case::OccasionForm {
+            max: OCCASION_MAX_BYTES,
+        };
+        return Err(Error::invalid_at(&"occasion".into(), case));
     }
     let Some(value) = &context.on_behalf_of else {
         return Ok(());

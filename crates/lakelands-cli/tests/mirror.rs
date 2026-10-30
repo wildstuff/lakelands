@@ -1796,6 +1796,7 @@ async fn a_copy_crosses_at_its_source_depth_and_a_chain_past_the_targets_ceiling
                 depth,
                 cause: None,
                 on_behalf_of: None,
+                occasion: None,
             });
             let owner = owner(two.crm.as_ref());
             async move {
@@ -1856,6 +1857,7 @@ async fn a_copy_crosses_at_its_source_depth_and_a_chain_past_the_targets_ceiling
             depth: 9,
             cause: None,
             on_behalf_of: None,
+            occasion: None,
         });
         deep.retire(
             &owner(two.crm.as_ref()),

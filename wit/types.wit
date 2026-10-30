@@ -89,6 +89,9 @@ interface types {
         /// Only the records whose fields hold these values are the
         /// principal's to read; it writes nothing that reaches the type.
         only: list<field-value>,
+        /// Beside `only`, only the records whose field holds one of its
+        /// values are the principal's to read; an empty set admits none.
+        only-any: list<field-values>,
         /// Only the records whose fields hold these values are the
         /// principal's to write; it reads what its other grants give.
         writes-only: list<field-value>,
@@ -100,6 +103,15 @@ interface types {
         /// A read at a valid time dates the type's records by their
         /// stored bounds also where the principal may not read them.
         dates-by-hidden-valid-time: bool,
+        /// Where `only` or `only-any` narrows the type, a view over it,
+        /// an aggregate and a count are refused.
+        whole-sets-only: bool,
+    }
+
+    /// One field and the text values it may hold.
+    record field-values {
+        field: field-name,
+        values: list<string>,
     }
 
     /// Fields lowered on the records whose `field` holds one of `values`;
@@ -140,6 +152,10 @@ interface types {
         /// in the envelope's `on_behalf_of` of the events written as the
         /// writer, and is recorded, never trusted.
         on-behalf-of: option<string>,
+        /// The host's word for why the write was made; it lands in the
+        /// `context` of the events written as the writer, and is
+        /// recorded, never judged.
+        occasion: option<string>,
     }
 
     // ------------------------------------------------------------------
@@ -1263,6 +1279,9 @@ interface types {
         /// The values the principal's grant admits records by; empty
         /// where it admits every record.
         only: list<field-value>,
+        /// Beside `only`, the values one of which each field named holds
+        /// on a record the principal's grant admits.
+        only-any: list<field-values>,
         /// The values the principal's grant admits records to write by;
         /// empty where it may write every record it reads.
         writes-only: list<field-value>,

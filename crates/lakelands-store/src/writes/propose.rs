@@ -279,7 +279,10 @@ impl Call<'_> {
                 // accept writes no record its proposer could not (006).
                 let writes = d.at.sight.writes(d.at.sight.ty(ty)?);
                 for (f, v) in writes.pairs().ok_or_else(Error::not_granted)? {
-                    granted(only.get(f).is_none_or(|held| held == v))?;
+                    granted(
+                        only.get(f)
+                            .is_none_or(|held| lakelands_core::sight::Admit::inside(v, held)),
+                    )?;
                     only.insert(f.clone(), v.clone());
                 }
                 **plan = planned.plan;
@@ -399,12 +402,9 @@ impl Call<'_> {
             // proposal's pairs or within them (081).
             // So with its `writes_only` (006).
             ProposedWrite::Records { ty, only, .. } => {
-                let admit = sees.admit(ty);
-                let within =
-                    |p: &[(FieldName, Value)]| p.iter().all(|(f, v)| only.get(f) == Some(v));
-                let writes = |t: &TypeDecl| sees.writes(t).pairs().is_some_and(within);
+                let writes = |t: &TypeDecl| sees.writes(t).within(only);
                 let writes = !sees.holds_writes_only() || o.ty(ty).is_ok_and(writes);
-                return granted(admit.pairs().is_some_and(within) && writes);
+                return granted(sees.admit(ty).within(only) && writes);
             }
             _ => return granted(false),
         };
@@ -669,13 +669,14 @@ impl Call<'_> {
         };
         let accepted_at = position_after(&w, 0);
         let mut drafts = vec![accepted];
-        // Whom the proposer wrote for goes with it, never the accepter's
-        // (088).
-        let made_for = proposed_for(self.lake, &p)?;
+        // Whom the proposer wrote for, and its occasion, go with it, never
+        // the accepter's (088); the `write_accepted` keeps the accepter's.
+        let (made_for, occasion) = proposed_for(self.lake, &p)?;
         let as_accepted = |mut d: Draft| {
             if d.origin == Origin::Authored {
                 d.writer = p.proposer.clone();
                 d.context.on_behalf_of = made_for.clone();
+                d.context.occasion = occasion.clone();
             }
             d.cause = d.cause.or(Some(accepted_at));
             d
@@ -690,7 +691,7 @@ impl Call<'_> {
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         d.at.sight = Sight::held(&proposer, &w.ontology);
         (d.envelope.writer, d.envelope.cause) = (Some(p.proposer.clone()), Some(accepted_at));
-        d.envelope.on_behalf_of = made_for.clone();
+        (d.envelope.on_behalf_of, d.envelope.occasion) = (made_for.clone(), occasion.clone());
         // What the write leaves is judged by the reviewer's pairs too: a
         // holder of `only` accepts no write that takes a record out of its
         // reach, as it writes none (051). A refusal of the plan is told as
@@ -905,6 +906,7 @@ impl Call<'_> {
                 let envelope = Envelope {
                     writer: Some(p.proposer.clone()),
                     on_behalf_of: made_for.clone(),
+                    occasion: occasion.clone(),
                     cause: Some(accepted_at),
                     ..Envelope::of(Origin::Authored)
                 };
@@ -1225,12 +1227,15 @@ fn clock(w: &Writer) -> Timestamp {
     crate::lake::wall_clock().max(w.last_known_at)
 }
 
-/// Whom the proposer of `p` acted for, as its `write_proposed` names it
-/// (088).
-fn proposed_for(lake: &Lake, p: &lakelands_api::write::Proposal) -> Result<Option<String>> {
+/// Whom the proposer of `p` acted for and under which occasion, as its
+/// `write_proposed` names them (088).
+fn proposed_for(
+    lake: &Lake,
+    p: &lakelands_api::write::Proposal,
+) -> Result<(Option<String>, Option<String>)> {
     let stored = lake.engine.read(p.position, 1)?;
     match stored.first().map(log::open).transpose()? {
-        Some(e) if e.position == p.position => Ok(e.on_behalf_of),
-        _ => Ok(None),
+        Some(e) if e.position == p.position => Ok((e.on_behalf_of, e.context.occasion)),
+        _ => Ok((None, None)),
     }
 }

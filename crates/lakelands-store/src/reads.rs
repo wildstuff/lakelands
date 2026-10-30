@@ -1148,11 +1148,16 @@ impl<'a> Reader<'a> {
     }
 
     /// The type a read door names, as [`Self::visible_type`], refused where
-    /// its reader's `only` on it, or a hiding, cannot be applied (051, 006).
+    /// its reader's `only` on it, or a hiding, cannot be applied (051, 006),
+    /// and a view over a type its reader may read only part of under
+    /// `whole_sets_only` (006).
     fn named_type(&self, ty: &TypeName) -> Result<&TypeDecl> {
         let decl = self.visible_type(ty)?;
         self.sight.check_only(decl)?;
         self.sight.check_hidings(decl)?;
+        if decl.view.is_some() {
+            self.sight.check_whole_set(ty)?;
+        }
         Ok(decl)
     }
 

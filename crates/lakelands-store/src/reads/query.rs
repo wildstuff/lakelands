@@ -693,6 +693,11 @@ impl<'a> Reader<'a> {
         let row = self.row_shape(&names, &shaped, &shared);
         let mut over_rows = None;
         if let Projection::Aggregate(a) = &p.project {
+            // Over the set of every type a name binds, as `find`'s (006).
+            let all = several.iter().flatten().flat_map(|(_, all)| all);
+            for t in types.iter().chain(all) {
+                self.sight.check_whole_set(t)?;
+            }
             let (a, read) = aggregate::over_rows(a, &bound).map_err(Error::invalid)?;
             for (n, f) in read {
                 paths.extend(typed(&n, f)?);

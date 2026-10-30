@@ -25,6 +25,9 @@ pub(crate) struct Envelope {
     /// Whom `writer` acts for, where `writer` is set: at an accept, the
     /// proposer's (088).
     pub on_behalf_of: Option<String>,
+    /// The occasion `writer` wrote under, where `writer` is set: at an
+    /// accept, the proposer's (088).
+    pub occasion: Option<String>,
     /// The event they follow from.
     pub cause: Option<Position>,
     /// The procedure that produced their values.
@@ -48,6 +51,7 @@ impl Envelope {
             origin,
             writer: None,
             on_behalf_of: None,
+            occasion: None,
             cause: None,
             procedure: None,
             id: None,
@@ -114,6 +118,7 @@ impl Decide<'_> {
         // Whom the write is for goes with its writer (088).
         if e.writer.is_some() {
             own.context.on_behalf_of = e.on_behalf_of;
+            own.context.occasion = e.occasion;
         }
         Draft {
             sealed: e.sealed.filter(|_| ingested),

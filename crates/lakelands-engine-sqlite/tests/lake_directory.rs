@@ -220,7 +220,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         (next - 1, prev.as_str())
     );
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/21/verify.py");
+        .join("../../docs/log-format/vectors/22/verify.py");
     let run = match std::process::Command::new("python3")
         .arg(&script)
         .arg(&dir)

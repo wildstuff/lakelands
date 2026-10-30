@@ -184,6 +184,14 @@ pub struct TypeGrants {
     /// within a lake (`docs/decisions/051-a-grant-may-admit-only-some-records.md`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub only: BTreeMap<FieldName, crate::Value>,
+    /// Only the records whose field holds one of its text values, for each
+    /// field named here, are this principal's to read, beside every pair of
+    /// `only`, as `only` admits them: a value not listed is not admitted,
+    /// and an empty set admits none. A field named here and in `only` is a
+    /// grant that cannot be applied (`006 § A grant may admit a set of
+    /// values, and refuse a part read as the whole`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub only_any: BTreeMap<FieldName, BTreeSet<String>>,
     /// Only the records whose fields hold all these text values are this
     /// principal's to write, each pair valid as one of `only` is; it reads
     /// what its other grants give; empty, every record it may read
@@ -212,6 +220,14 @@ pub struct TypeGrants {
     /// (`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dates_by_hidden_valid_time: bool,
+    /// Where `only` or `only_any` narrows this type, a read that computes
+    /// over a set of its records (a view over it, an aggregate, a count)
+    /// is refused rather than answered from the admitted part; a read of
+    /// the admitted records themselves is answered. Nothing where the type
+    /// is not narrowed (`006 § A grant may admit a set of values, and refuse
+    /// a part read as the whole`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole_sets_only: bool,
 }
 
 /// A hiding: on a record whose `field` holds one of `values`, compared as
@@ -256,6 +272,7 @@ impl Grants {
                 t.default.is_none_or(Access::reads)
                     && t.fields.values().all(|a| a.reads())
                     && t.only.is_empty()
+                    && t.only_any.is_empty()
                     && t.hide_where.is_empty()
             })
     }
@@ -277,6 +294,7 @@ impl Grants {
         let named = |t: &(&TypeName, &mut TypeGrants)| {
             !t.1.fields.is_empty()
                 || !t.1.only.is_empty()
+                || !t.1.only_any.is_empty()
                 || !t.1.writes_only.is_empty()
                 || !t.1.hide_where.is_empty()
         };
@@ -322,6 +340,11 @@ impl Grants {
                     for to in borne(&name) {
                         unite(pairs, to, &value);
                     }
+                }
+            }
+            for (name, values) in std::mem::take(&mut held.only_any) {
+                for to in borne(&name) {
+                    unite_any(&mut held.only_any, to, &values);
                 }
             }
             for h in std::mem::take(&mut held.hide_where) {
@@ -411,6 +434,10 @@ impl Grants {
             for (f, v) in others.iter().flat_map(|t| &t.writes_only) {
                 unite(&mut own.writes_only, f.clone(), v);
             }
+            for (f, v) in others.iter().flat_map(|t| &t.only_any) {
+                unite_any(&mut own.only_any, f.clone(), v);
+            }
+            own.whole_sets_only |= others.iter().any(|t| t.whole_sets_only);
             (own.hide_where).extend(others.iter().flat_map(|t| t.hide_where.iter().cloned()));
             own.dates_by_hidden_valid_time &= others.iter().all(|t| t.dates_by_hidden_valid_time);
             own
@@ -461,6 +488,13 @@ fn unite(only: &mut BTreeMap<FieldName, crate::Value>, f: FieldName, v: &crate::
     }
 }
 
+/// Adds a set of `only_any`: two names that become one admit the values
+/// both list, never the wider of the two.
+fn unite_any(any: &mut BTreeMap<FieldName, BTreeSet<String>>, f: FieldName, v: &BTreeSet<String>) {
+    let held = any.entry(f).or_insert_with(|| v.clone());
+    held.retain(|s| v.contains(s));
+}
+
 /// Where a write comes from, as the host sees it. Set by the server or
 /// the host, never by a caller: it is not part of any public door.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -476,7 +510,7 @@ pub enum WriteOrigin {
 }
 
 /// The host's context for a write: its origin, how deep in a chain of
-/// reactions it sits, and whom it is made for. The store refuses a
+/// reactions it sits, whom it is made for and why. The store refuses a
 /// reactive write deeper than the lake's configured ceiling, so a trigger
 /// cannot feed itself forever.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -503,7 +537,18 @@ pub struct WriteContext {
     /// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<String>,
+    /// The host's word for why the write was made, such as `live`,
+    /// `caught-up` or `again`, from log format 22. Recorded, not judged:
+    /// the store neither reads nor derives it. It lands in the `context` of
+    /// each event the write appends under its writer; an event the store
+    /// writes as itself names none
+    /// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occasion: Option<String>,
 }
+
+/// The most bytes a context's `occasion` may hold.
+pub const OCCASION_MAX_BYTES: usize = 128;
 
 #[cfg(test)]
 mod tests;
