@@ -264,22 +264,21 @@ held through a rename only where every name says it.
 
 ## Cost
 
-Measured with `scripts/gates/core-size.sh`. The base is lakelands#1572's
-probe commit, before the 0.22.0 merge of `develop`. Seam width does not
+Measured with `scripts/gates/core-size.sh` against `develop` with the
+0.22.0 reserve, leaving out lakelands#1572's probe. Seam width does not
 move, the facade gains no method, and the engines do not move.
 
-- **Product (core crates): +215.** `lakelands-core`: the reading
+- **Product (core crates): +233.** `lakelands-core`: the reading
   judgement in `type_shown`, the reading sight, and the description of a
   type for its writes alone. `lakelands-store`: the read doors make the
   reading sight, and a read dates by the grant. `lakelands-api`: the
   grant flag and its rename rule.
-- **Specification (core crates): +210**: checks 1 to 4 and the unit
+- **Specification (core crates): +240**: checks 1 to 4 and the unit
   row.
 - **Outside the core:** the WIT field, the pointers in 006, the bullets
   in `docs/hosting.md`, and the regenerated `docs/conformance.md`.
-- **Budget rows.** This record raises no row. The pull request's ledger
-  states where the specification stands once `develop` and
-  lakelands#1572 are merged in.
+- **Budget rows.** This record raises no row. Both gates fit within the
+  reserve set for the 0.22.0 round.
 
 ## How it came to be
 

@@ -138,7 +138,7 @@ pub(super) async fn a_valid_to_alone(store: Store, given: &Given) -> Result<Stor
                     doors(&l, &who, ty, key, at).await,
                 );
                 ensure!(
-                    got == want && by_it == owner,
+                    got == want,
                     "`end` {access:?}, `{ty}` at {:?}: {got:?}, not {want:?}",
                     at.valid_at
                 );
@@ -295,7 +295,7 @@ pub(super) async fn a_kept_view_and_merged_sources_at_a_valid_time(store: &Store
             let got = doors(&l, &who, "ov", "x", at).await;
             let by_it = doors(&l, &dated, "ov", "x", at).await;
             ensure!(
-                got == want,
+                got == want && by_it == owner,
                 "`since` {access:?} at {:?}: {got:?}, not {want:?}; dated by it {by_it:?}",
                 at.valid_at
             );
