@@ -590,8 +590,12 @@ fn prepare(plan: &Plan, root: &Path) -> Result<Option<String>, String> {
         workers: None,
         metrics: None,
         hosts: Vec::new(),
-        // The load measures the store, not the door's bounds.
-        bounds: lakelands_server::Bounds::OFF,
+        // The load measures the store, so no rate or in-flight bound
+        // refuses its callers; its caps probe the body bound's default.
+        bounds: lakelands_server::Bounds {
+            body_bytes: lakelands_server::Bounds::default().body_bytes,
+            ..lakelands_server::Bounds::OFF
+        },
     })
     .unwrap();
     std::fs::write(&file, serde_json::to_vec_pretty(&config).unwrap())

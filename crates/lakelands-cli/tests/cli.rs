@@ -3282,6 +3282,10 @@ server.session_idle_secs                root      not configured: lakelands.json
 server.feed_poll_millis                 root      not configured: lakelands.json has no `server`
 server.feed_floor_millis                root      not configured: lakelands.json has no `server`
 server.workers                          root      not configured: lakelands.json has no `server`
+server.bounds.connection_rate           root      not configured: lakelands.json has no `server.bounds`
+server.bounds.principal_rate            root      not configured: lakelands.json has no `server.bounds`
+server.bounds.principal_in_flight       root      not configured: lakelands.json has no `server.bounds`
+server.bounds.body_bytes                root      not configured: lakelands.json has no `server.bounds`
 server.metrics.bind                     root      not configured: lakelands.json has no `server.metrics`
 aging.utc_offset                        root      not configured: lakelands.json has no `aging`
 aging.check_secs                        root      not configured: lakelands.json has no `aging`
