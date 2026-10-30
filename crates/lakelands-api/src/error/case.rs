@@ -922,8 +922,8 @@ catalog! {
         /// A type naming two constraints alike.
         ConstraintNamedTwice { constraint: ConstraintName } => "two constraints are named `{constraint}`",
         /// A constraint whose `now()` or `today()` is no clock term on one
-        /// side of a comparison with the record.
-        ClockNotCompared { constraint: ConstraintName } => "constraint `{constraint}` reads the clock other than as `now()` or `today()`, with or without a duration added or taken away, on one side of a comparison whose other side reads the record and no clock; the rule is fixed and only the write's instant moves",
+        /// side of a comparison with a field.
+        ClockNotCompared { constraint: ConstraintName } => "constraint `{constraint}` reads the clock other than as `now()` or `today()`, with or without a duration added or taken away, on one side of a comparison whose other side is a field, with or without a duration added or taken away; the rule is fixed and only the write's instant moves",
         /// A `preceding` whose matched field the exact-text index cannot
         /// keep.
         PrecedingUnlooked { constraint: ConstraintName, field: FieldName } => "constraint `{constraint}` matches its preceding record on `{field}`, which is not text or a reference",

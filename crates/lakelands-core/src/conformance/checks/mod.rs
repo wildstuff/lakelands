@@ -312,6 +312,7 @@ pub const ALL: &[Check] = &[
     constraints::CONSTRAINT_BROKEN_IN_THE_PREFLIGHT,
     write_judged::CLOCK_JUDGED_AT_THE_WRITE,
     write_judged::PRECEDING_JUDGED_AT_THE_WRITE,
+    write_judged::WALK_JUDGES_NO_WRITE_PART,
     upsert_preflight::UPSERT_JUDGED_AS_WRITTEN,
     upsert_preflight::UPSERT_JUDGED_ON_WHAT_IT_MAKES,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,

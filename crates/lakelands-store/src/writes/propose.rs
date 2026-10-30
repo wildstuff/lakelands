@@ -690,6 +690,7 @@ impl Call<'_> {
         // the acceptance before their record is computed.
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         d.at.sight = Sight::held(&proposer, &w.ontology);
+        d.at.reviewer = Some(Sight::held(self.who, &w.ontology));
         (d.envelope.writer, d.envelope.cause) = (Some(p.proposer.clone()), Some(accepted_at));
         (d.envelope.on_behalf_of, d.envelope.occasion) = (made_for.clone(), occasion.clone());
         // What the write leaves is judged by the reviewer's pairs too: a

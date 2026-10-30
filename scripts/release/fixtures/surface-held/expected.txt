@@ -1,7 +1,8 @@
-The host surface against v0.1.0: 3 addition(s), 1 deprecated removal(s), 4 change(s) the list names.
+The host surface against v0.1.0: 4 addition(s), 1 deprecated removal(s), 4 change(s) the list names.
 
 Refused:
 - `lakelands-api`: NAME in crates/lakelands-api/src/two.rs (pub_module_level_const_missing): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list
+- `lakelands-api`: Order::Desc moved from position 0 to 1 (partial_ord_enum_variants_reordered): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list
 - `lakelands-api`: enum Shape (enum_marked_non_exhaustive): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list
 - `lakelands-api`: field Shape.wider (struct_field_type_changed): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list
 - `lakelands-api`: variant Order::Desc 0 -> 1 (enum_no_repr_variant_discriminant_changed): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list

@@ -21,9 +21,6 @@ pub enum Place {
     Write,
     /// A trigger's guard: a write, where `retired` has meaning as well.
     Guard,
-    /// A type's constraint: a guard's, where `preceding` has meaning as
-    /// well.
-    Constraint,
     /// Over a group of records: a view measure, where aggregates have
     /// meaning.
     Group,
@@ -33,6 +30,9 @@ pub enum Place {
     /// A verb's `requires`, preconditions and set values, and an object
     /// set's `where`: like `Record`, and `exists` has meaning.
     Verb,
+    /// A type's constraint: a guard's, where `preceding` has meaning as
+    /// well.
+    Constraint,
 }
 
 impl Condition {

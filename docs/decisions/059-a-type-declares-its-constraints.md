@@ -59,9 +59,11 @@ reads, and the constraint judges that write and no other.
 
 The clock appears only as a clock term, `now()` or `today()`, alone or
 with a duration added or taken away, on one side of a comparison whose
-other side reads a field of the record and not the clock. Anywhere else
-it would decide a write by the clock alone, `today() > '2027-01-01'`
-under `or` as much as `now() > now()`, so the declaration refuses it
+other side is a field of the record, alone or with a duration added or
+taken away, and nothing else. Anywhere else it could decide a write by
+the clock alone: `today() > '2027-01-01'` under `or` as much as
+`now() > now()`, and `today() > datum - datum + '2027-01-01'`, which
+names a field and reads none of its value. The declaration refuses each
 `clock_not_compared`, naming the constraint.
 
 ### `preceding` reads the record before this one in a series
@@ -99,6 +101,13 @@ refusal nor which record is read tells of a value the writer cannot
 see. A field the constraint reads there that a hiding lowers on that
 record is read as one the writer may not read, and the write is
 `not_granted`, as for the record it writes.
+
+At accept the write is the proposer's, and the reviewer is told what it
+decides. The record before is therefore one both are answered: a record
+either of them is not answered, or whose `by` or a matched field a
+hiding lowers for either, is passed over, and a field the constraint
+reads there that a hiding lowers for either makes the accept
+`not_granted`. A refusal never tells of a record to the one it is told.
 
 ### Only the write judges its clock and the record before it
 

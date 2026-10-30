@@ -860,7 +860,7 @@ impl TypeDecl {
     /// `exists`, a field computed at the read or one computed outside the
     /// lake (an embedding, or a field of a function whose backing is not
     /// `expr`), the first of these that holds — where it reads the clock
-    /// other than as a clock term compared with the record, where it reads
+    /// other than as a clock term compared with a field, where it reads
     /// a field the type does not declare, and where a `preceding` matches
     /// on a field that is not text or a reference or orders by one of a
     /// kind with no order. `function` names the declared functions. A

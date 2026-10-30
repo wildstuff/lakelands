@@ -11,12 +11,17 @@ use crate::conformance::prelude::*;
 
 check!(
     CLOCK_JUDGED_AT_THE_WRITE = a_constraint_compares_the_record_with_the_write_s_clock,
-    "059, extended (lakelands#1556): a constraint `datum <= today()` reads the write's clock; a write dated ahead is refused `constraint_broken` at `upsert`, at `ingest`, at a verb's write and at a proposal, and one dated today lands, also at an accept; a write that does not move `datum` is not judged, a migration that adds the constraint over a record dated ahead lists no breach and is lossless, and a declaration that computes the field it reads again is not refused for it; `now()` or `today()` other than as a clock term on one side of a comparison whose other side reads the record, as in `today() > '2027-01-01' or datum <= today()` or `now() > now()`, is refused `clock_not_compared`"
+    "059, extended (lakelands#1556): a constraint `datum <= today()` reads the write's clock; a write dated ahead is refused `constraint_broken` at `upsert`, at `ingest`, at a verb's write and at a proposal, and one dated today lands, also at an accept; a write that does not move `datum` is not judged, a migration that adds the constraint over a record dated ahead lists no breach and is lossless, and a declaration that computes the field it reads again is not refused for it; `now()` or `today()` other than as a clock term on one side of a comparison whose other side is a field, either with or without a duration literal added or taken away, as in `today() > '2027-01-01' or datum <= today()`, `now() > now()` or `today() > datum - datum + '2027-01-01'`, is refused `clock_not_compared`"
 );
 
 check!(
     PRECEDING_JUDGED_AT_THE_WRITE = a_constraint_reads_the_record_before_it_in_its_series,
-    "059 and 057, extended (lakelands#1552): `preceding(stand, datum, meter)` reads `stand` of the live record of the same `meter` whose `datum` is the greatest below this one's, null where none is; a reading lower than it is refused `constraint_broken` at `upsert`, at a verb's write, at `ingest`, where the second of one delivery is judged against the first, and at an accept, against the head then; the first reading, a higher one, another meter's and a backdated one higher than the reading before it land; a write that moves nothing it reads is not judged, though the reading before it is now higher; a predecessor its writer is not answered, or whose `datum` or `meter` is hidden from it, is passed over, a field it reads hidden on it makes the write `not_granted`, and a second writer is judged against the first's reading; a series matched on a number is refused `preceding_unlooked`, one ordered by a JSON value `preceding_unordered`, a `preceding` in a `find` `preceding_here`, and a migration that adds the constraint lists no breach"
+    "059 and 057, extended (lakelands#1552): `preceding(stand, datum, meter)` reads `stand` of the live record of the same `meter` whose `datum` is the greatest below this one's, null where none is; a reading lower than it is refused `constraint_broken` at `upsert`, at a verb's write, at `ingest`, where the second of one delivery is judged against the first, and at an accept, against the head then, past a reading the reviewer is not answered; the first reading, a higher one, another meter's and a backdated one higher than the reading before it land; a write that moves nothing it reads is not judged, though the reading before it is now higher; a predecessor its writer is not answered, or whose `datum` or `meter` is hidden from it, is passed over, a field it reads hidden on it makes the write `not_granted`, and a second writer is judged against the first's reading; a series matched on a number is refused `preceding_unlooked`, one ordered by a JSON value `preceding_unordered`, a `preceding` in a `find` `preceding_here`, and a migration that adds the constraint lists no breach"
+);
+
+check!(
+    WALK_JUDGES_NO_WRITE_PART = a_walk_judges_nothing_only_a_write_judges,
+    "059, extended (lakelands#1552): a constraint each of whose parts reads the clock or the record before it is judged by no walk and grants none: over records a write would find breaking it, a value type's renames in a field it reads are granted to one masked from another field it reads and list no breach, as if it were not declared, and a migration that renames a field it reads lists none and is lossless"
 );
 
 /// Today's date, `YYYY-MM-DD`, and the day after the next, by the wall
@@ -97,10 +102,11 @@ async fn a_constraint_compares_the_record_with_the_write_s_clock(store: Store) -
     let ahead = json!([{"name": "not_ahead", "holds": "datum <= today()"}]);
     l.declare_json(typed("reading", &["no"], &fields, ahead.clone()))
         .await?;
-    // Refused anywhere but as a clock term compared with the record.
+    // Refused anywhere but as a clock term compared with a field.
     for holds in [
         "today() > '2027-01-01' or datum <= today()",
         "now() > now()",
+        "today() > datum - datum + '2027-01-01'",
     ] {
         let c = json!([{"name": "c", "holds": holds}]);
         let a = try_declare(&l, typed("odd", &["no"], &fields, c)).await?;
@@ -287,6 +293,20 @@ async fn a_constraint_reads_the_record_before_it_in_its_series(store: Store) -> 
          at a verb, within one delivery and at an accept: {said:?} {low:?}, {backdated:?}, \
          {called:?}, {fed:?}, {accepted:?}"
     );
+    // Accepted after a higher reading the reviewer is not answered lands
+    // between: passed over, as the proposer is answered it.
+    put("M9", "2026-01-01", 10).await.must("a reading of M9")?;
+    let fields = json!({"meter": "M9", "datum": "2026-02-01", "stand": 20, "hand": "a"});
+    let proposal = propose(&l, "reading", "M9:2026-02-01", fields).await?;
+    let unseen = json!({"meter": "M9", "datum": "2026-01-10", "stand": 60, "hand": "r"});
+    l.upsert("reading", "M9:2026-01-10", unseen).await?;
+    let blind = super::only::holder(
+        store.as_ref(),
+        "blind",
+        json!({"default": "read", "review": true, "types": {"reading": {"only": {"hand": "a"}}}}),
+    );
+    let past = cat.accept(&blind, &proposal).await;
+    past.must("an accept past a reading its reviewer is not answered")?;
     // A writer `only` hand `b` is not answered hand `a`'s readings; the
     // owner, after it, is judged against its reading.
     let b = super::only::holder(
@@ -364,6 +384,62 @@ async fn a_constraint_reads_the_record_before_it_in_its_series(store: Store) -> 
     ensure!(
         preview.data.breaches.is_empty() && preview.data.lossless,
         "a migration adding `never_lower` over a falling series lists no breach: {preview:?}"
+    );
+    Ok(())
+}
+
+async fn a_walk_judges_nothing_only_a_write_judges(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let tide = |open: &str| json!({"name": "tide", "kind": "text", "one_of": [open, "done"]});
+    let mut declared = tide("open");
+    declared["declare"] = json!("value_type");
+    l.declare_json(declared).await?;
+    let kept = |meter: &str, constraints: Value| {
+        json!({"declare": "type", "name": "kept", "key": ["no"],
+            "fields": [{"name": "no", "type": {"kind": "text"}},
+                       {"name": meter, "type": {"kind": "text"}},
+                       {"name": "datum", "type": {"kind": "date"}},
+                       {"name": "stand", "type": {"kind": "number"}},
+                       {"name": "phase", "type": {"kind": "text", "value_type": "tide"}}],
+            "constraints": constraints})
+    };
+    let rules = |meter: &str| {
+        let before = format!("preceding(stand, datum, {meter})");
+        json!([{"name": "dated", "holds": "phase = 'done' or datum <= today()"},
+               {"name": "lower",
+                "holds": format!("phase = 'done' or {before} is null or stand >= {before}")}])
+    };
+    // Dated ahead and falling, put there before the constraints.
+    l.declare_json(kept("meter", json!([]))).await?;
+    for (no, datum, stand) in [("K-1", "2999-01-01", 10), ("K-2", "2999-02-01", 5)] {
+        let r = json!({"meter": "A", "datum": datum, "stand": stand, "phase": "open"});
+        l.upsert("kept", no, r).await?;
+    }
+    l.migrate(decl(kept("meter", rules("meter")))?).await?;
+    let mut masked = field_access(
+        store.as_ref(),
+        "masked",
+        "kept",
+        &[("datum", Access::Masked)],
+    );
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
+    let to = serde_json::from_value(tide("shut")).map_err(|e| Failure::new(e.to_string()))?;
+    let renamed = lakelands_api::write::ValueTypeMigration {
+        to,
+        renames: vec![("open".into(), "shut".into())],
+    };
+    let walked = l.cat.migrate_value_type(&masked, renamed).await;
+    let walked = walked.must("a value type's renames in `phase`")?.data;
+    let m = Migration {
+        renames: vec![("meter".into(), "serial".into())],
+        ..Migration::to(decl(kept("serial", rules("serial")))?)
+    };
+    let migrated = l.cat.migrate(&l.own, m).await;
+    let migrated = migrated.must("a migration renaming `meter`")?.data;
+    ensure!(
+        walked.breaches.is_empty() && migrated.breaches.is_empty() && migrated.lossless,
+        "a walk granted to one masked from `datum` and a migration under constraints only a \
+         write judges list no breach: {walked:?}, {migrated:?}"
     );
     Ok(())
 }

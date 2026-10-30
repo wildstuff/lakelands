@@ -438,9 +438,10 @@ impl Expr {
 
     /// Whether every `now()` and `today()` in it is a clock term, the call
     /// with or without a duration literal added or taken away, on one side
-    /// of a comparison whose other side reads a field and no clock.
+    /// of a comparison whose other side is a field, with or without a
+    /// duration literal added or taken away, and nothing else.
     pub fn clock_compared(&self) -> bool {
-        fn term(e: &Expr) -> bool {
+        fn shifted(e: &Expr, base: fn(&Expr) -> bool) -> bool {
             let duration = |e: &Expr| {
                 matches!(
                     e,
@@ -450,24 +451,34 @@ impl Expr {
                 )
             };
             match e {
-                Expr::Call { func, .. } => matches!(func, Func::Now | Func::Today),
                 Expr::Arith {
                     arith: ArithOp::Add | ArithOp::Sub,
                     lhs,
                     rhs,
-                } if duration(rhs) => term(lhs),
+                } if duration(rhs) => base(lhs),
                 Expr::Arith {
                     arith: ArithOp::Add,
                     lhs,
                     rhs,
-                } if duration(lhs) => term(rhs),
-                _ => false,
+                } if duration(lhs) => base(rhs),
+                e => base(e),
             }
         }
-        let record = |e: &Expr| !e.reads_clock() && !e.fields_read().is_empty();
+        let term = |e: &Expr| {
+            shifted(e, |e| {
+                matches!(
+                    e,
+                    Expr::Call {
+                        func: Func::Now | Func::Today,
+                        ..
+                    }
+                )
+            })
+        };
+        let field = |e: &Expr| shifted(e, |e| matches!(e, Expr::Path { .. }));
         match self {
             Expr::Cmp { lhs, rhs, .. }
-                if (term(lhs) && record(rhs)) || (term(rhs) && record(lhs)) =>
+                if (term(lhs) && field(rhs)) || (term(rhs) && field(lhs)) =>
             {
                 true
             }

@@ -69,6 +69,9 @@ pub(crate) struct At<'a> {
     /// What the judged principal is shown, made once under the lock: the
     /// caller, or at an accept the proposer.
     pub sight: Sight<'a>,
+    /// At an accept, what the reviewer is shown: the record before a
+    /// constraint's is one both are answered (lakelands#1552).
+    pub reviewer: Option<Sight<'a>>,
     /// The view it reads.
     pub view: &'a dyn ProjectionView,
     /// The settings in force.
@@ -78,6 +81,14 @@ pub(crate) struct At<'a> {
     /// The most steps a path across an edge may take: the lake's
     /// `max_depth`.
     pub depth: u32,
+}
+
+impl<'a> At<'a> {
+    /// The sights a record read for a judgement must be answered in: the
+    /// judged principal's, and at an accept the reviewer's.
+    pub fn sights(&self) -> impl Iterator<Item = &Sight<'a>> {
+        std::iter::once(&self.sight).chain(&self.reviewer)
+    }
 }
 
 /// What one write is decided in, from the writer's lock to its append: the
@@ -479,8 +490,10 @@ impl Decide<'_> {
                         v.insert(found.map(|r| r.fields).unwrap_or_default())
                     }
                 };
-                let low = self.at.sight.lowered(&decl.name, fields);
-                granted(read.iter().all(|f| !low.contains_key(f)))?;
+                granted(self.at.sights().all(|s| {
+                    let low = s.lowered(&decl.name, fields);
+                    read.iter().all(|f| !low.contains_key(f))
+                }))?;
             }
             let scope = WriteScope {
                 after: &after.fields,
@@ -512,7 +525,8 @@ impl Decide<'_> {
     /// first by key among ties, read at the head with what this append
     /// wrote laid over it. A record its writer is not answered, or whose
     /// `by` or a matched field a hiding lowers, is passed over, so which
-    /// one is chosen tells no value its writer may not read. None where
+    /// one is chosen tells no value its writer may not read; at an accept,
+    /// one either the proposer or the reviewer is not. None where
     /// `after`'s `by` or a matched field is null.
     fn preceding(
         &self,
@@ -545,29 +559,25 @@ impl Decide<'_> {
         };
         let matches = |r: &StoredRecord| equal.iter().all(|(f, v)| r.fields.get(f) == Some(v));
         let fits = |r: &StoredRecord| {
-            let shown = || {
-                let low = self.at.sight.lowered(&decl.name, &r.fields);
-                series.iter().all(|f| !low.contains_key(f))
+            let shown = |s: &Sight<'_>| {
+                let low = s.lowered(&decl.name, &r.fields);
+                s.answers(&decl.name, r) && series.iter().all(|f| !low.contains_key(f))
             };
             r.key != after.key
                 && !r.retired
                 && below(r)
                 && matches(r)
-                && self.at.sight.answers(&decl.name, r)
-                && shown()
+                && self.at.sights().all(shown)
         };
-        let pending = self.pending.of_type(&decl.name);
-        let mut best = (pending.filter(|r| fits(r)).cloned()).min_by(|a, b| {
+        let values: Vec<Value> = equal.iter().map(|(_, v)| v.clone()).collect();
+        let pending = self.pending.in_series(&decl.name, series, &values);
+        let held = pending.len();
+        let mut best = (pending.into_iter().filter(|r| fits(r)).cloned()).min_by(|a, b| {
             let (a, b) = (Place::of(a, &order_by), Place::of(b, &order_by));
             cmp_places(&a, &b, &order_by)
         });
         // The head's, a page at a time from just below `after`, past what
         // this append holds and what its writer is not answered.
-        let held = self
-            .pending
-            .of_type(&decl.name)
-            .filter(|r| matches(r))
-            .count();
         let mut scan = Scan {
             equal: equal.clone(),
             order_by: order_by.clone(),
@@ -802,7 +812,7 @@ impl Decide<'_> {
             ..Draft::system(now, body)
         };
         let at = (after.ty.clone(), after.key.clone());
-        let prior = self.pending.records.insert(at.clone(), after.clone());
+        let prior = self.pending.put(at.clone(), Some(after.clone()));
         let mut own = BTreeMap::new();
         let mut far = Vec::new();
         let decided = (|| {
@@ -830,10 +840,7 @@ impl Decide<'_> {
             self.viewed(change, (before, after), &mut far)
         })();
         if let Err(e) = decided {
-            match prior {
-                Some(p) => self.pending.records.insert(at, p),
-                None => self.pending.records.remove(&at),
-            };
+            self.pending.put(at, prior);
             return Err(e);
         }
         self.pending.members.extend(own);
@@ -1085,6 +1092,7 @@ impl<'a> Asked<'a> {
             plans,
             at: At {
                 sight,
+                reviewer: None,
                 view,
                 settings,
                 now,

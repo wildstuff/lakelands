@@ -4,9 +4,9 @@
 # scripts/release/surface-accepted, every change `cargo semver-checks`
 # finds in the host crates is refused, unless
 # - it grows the surface: a variant or a variant's field added, a field
-#   added to a struct a host may build, a variant's number moved where
-#   the same enum gained a variant; no deprecation can come before an
-#   addition;
+#   added to a struct a host may build, a variant's number or its place
+#   in a derived order moved where the same enum gained a variant; no
+#   deprecation can come before an addition;
 # - it removes an item the release already marked `#[deprecated]`;
 # - or it is a line of the list (the crate, the lint and the item), a
 #   change the release's notes name.
@@ -33,9 +33,10 @@ CRATES=(lakelands-api lakelands-client lakelands-core lakelands-store
     lakelands-engine-mem lakelands-engine-sqlite lakelands-engine-pg)
 LIST=scripts/release/surface-accepted
 GROWS='^(enum_variant_added|enum_struct_variant_field_added|enum_tuple_variant_field_added|constructible_struct_adds_field)$'
-# A variant's number moved: an addition only where the same enum gained a
-# variant in the same run; a reorder alone is a change.
-MOVED=enum_no_repr_variant_discriminant_changed
+# A variant's number or its place in a derived order moved: an addition
+# only where the same enum gained a variant in the same run; a reorder
+# alone is a change.
+MOVED='^(enum_no_repr_variant_discriminant_changed|partial_ord_enum_variants_reordered)$'
 
 mode=check
 case "${1:-}" in
@@ -79,7 +80,7 @@ deprecated() {
 # its file (`NAME in crates/.../lib.rs`), so two of one name stay apart.
 findings() {
     awk -v crate="$1" '
-        /^--- failure / { lint = $3; sub(/:$/, "", lint); next }
+        /^--- (failure|warning) / { lint = $3; sub(/:$/, "", lint); next }
         /^Failed in:/ { inside = 1; next }
         inside && /^  / {
             item = $0; sub(/^  /, "", item); at = ""; file = ""
@@ -133,7 +134,7 @@ trap 'rm -f "$all" "$out" "$used"' EXIT
 gained="$(awk -F '\t' '$2 == "enum_variant_added" { e = $3; sub(/^variant /, "", e); sub(/:.*/, "", e); print $1 "\t" e }' "$all")"
 while IFS=$'\t' read -r crate lint item at; do
     if [[ "$lint" =~ $GROWS ]]; then grown=$((grown + 1)); continue; fi
-    if [ "$lint" = "$MOVED" ]; then
+    if [[ "$lint" =~ $MOVED ]]; then
         e="${item#variant }"; e="${e%%::*}"
         if grep -Fxq -- "$crate"$'\t'"$e" <<<"$gained"; then grown=$((grown + 1)); continue; fi
     fi

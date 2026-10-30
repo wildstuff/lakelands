@@ -182,7 +182,8 @@ fn a_constraint_reads_its_record_alone_as_declare_judges_it() {
         "doubled > 0",
         "known_at(n) > seen_at(n)",
         "changed(n) or previous(n) < n",
-        "known_at(n) <= now() + 1d",
+        "n <= now() + 1d",
+        "today() - 2d < n + 1d",
     ] {
         assert_eq!(reach(holds), Ok(()), "{holds}");
     }
@@ -190,6 +191,9 @@ fn a_constraint_reads_its_record_alone_as_declare_judges_it() {
         "now() > now()",
         "today() = today()",
         "n > 0 or now() > '2027-01-01'",
+        "today() > n - n + '2027-01-01'",
+        "known_at(n) <= now() + 1d",
+        "now() > now() - 1d",
     ] {
         let told = matches!(reach(holds), Err(Case::ClockNotCompared { .. }));
         assert!(told, "{holds}");
