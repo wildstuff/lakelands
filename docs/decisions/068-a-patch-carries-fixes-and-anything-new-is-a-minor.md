@@ -33,6 +33,24 @@ A minor release `0.X.0` carries everything else:
 A release that holds one such change is a minor release, whatever else
 it holds.
 
+### An exception is the operator's decision, named per release
+
+A release may carry an item that is new, as a patch, only if the
+operator decides so for that release. The decision names the release and
+the item, and does not carry over to the next patch.
+
+An exception admits only additive, opt-in items that a host who does not
+use them never sees. Such an item does not change the log format, the
+projection layout or any existing answer. "Changes a host must make"
+stays none, and the release notes name each such item under a heading of
+its own.
+
+`0.21.1` is the first such release. Its one item is
+`defer_computed_fields` (lakelands#1576), which an embedding host needs,
+and its epic is lakelands#1527. An item that would change the log format
+is never such an exception: lakelands#1584 was moved to `0.22.0` for that
+reason, because a `0.21.0` binary could not have read its events.
+
 ### Milestones follow the rule
 
 A fix is planned for the next patch of the newest minor release; new

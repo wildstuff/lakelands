@@ -163,7 +163,7 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.21.0`.** Lakelands `0.21.0` is the `lakelands` CLI, its
+> **Status: `0.21.1`.** Lakelands `0.21.1` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
 > conformance suite (945 checks through the doors and 87 through the
@@ -179,7 +179,11 @@ terrain Lakelands is built for, and where it is not the right tool.
 > (lakelands#1528), communities are found by Louvain (lakelands#1514),
 > and the openCypher subset writes through the typed write doors
 > (lakelands#1513). A writer's open upgrades a lake of format 14 to 20
-> to 21 by appending; the first writer's open of 0.21.0 also rebuilds
+> to 21 by appending; 0.21.1 is a patch of 0.21.0: it fixes a type keyed
+> by a write-only field being hidden from reading (lakelands#1572) and,
+> by the operator's exception (decision 068), adds
+> `defer_computed_fields` (lakelands#1576). The first writer's open of
+> 0.21.0 also rebuilds
 > each SQLite and PostgreSQL lake's projection beside the one it
 > replaces, the log untouched, and the lake of format 21 is kept beside
 > those of the releases before.
