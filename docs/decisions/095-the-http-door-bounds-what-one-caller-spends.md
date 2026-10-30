@@ -125,9 +125,9 @@ retrying may help". It is answered `429`, not the `503` that other
 caller's own volume and not the server's state. `Retry-After` tells a
 client how long to wait without having to read the body.
 
-The bounds are on unless the operator says otherwise. An operator who
-puts a door on a network should not have to know about bounds to get
-them. The defaults sit well above what an agent sends, and a host that
+The bounds are on unless the operator says otherwise; the operator
+decided so on 2026-10-30, with the defaults above. An operator who puts
+a door on a network should not have to know about bounds to get them. The defaults sit well above what an agent sends, and a host that
 sets nothing sees no change. `"off"` is there for a host whose own
 proxy already bounds its callers.
 
