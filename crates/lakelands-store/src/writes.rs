@@ -2287,7 +2287,12 @@ impl Call<'_> {
         }
         if let Some(s) = &self.shown
             && s.versions != w.ontology.versions()
-            && (self.lake.sight(s.asked.clone(), None, None, &w.ontology)?.0).hidden() != s.hidden
+            && (self
+                .lake
+                .sight(s.asked.clone(), (None, false), None, &w.ontology)?
+                .0)
+                .hidden()
+                != s.hidden
         {
             return Err(Error::unavailable(Situation::TypesMoved));
         }

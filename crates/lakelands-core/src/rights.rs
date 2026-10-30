@@ -1419,8 +1419,9 @@ pub(crate) fn hide_unshown_references(
     }
     let (types, find) = (force.types(), &|n: &TypeName| force.ty(n));
     loop {
-        let unshown =
-            |ty: &TypeName| find(ty).is_some_and(|d| !crate::describe::type_shown(d, find, who));
+        let unshown = |ty: &TypeName| {
+            find(ty).is_some_and(|d| !crate::describe::type_shown(d, find, who, false))
+        };
         let mut more = Vec::new();
         for t in &types {
             let (only, _) = only(who, &t.name, find);
@@ -1457,6 +1458,84 @@ pub(crate) fn hide_unshown_references(
         }
         hidden.extend(more);
     }
+}
+
+/// `who` as a read sees the lake (092): each type a write is shown and a
+/// read is not, keyed by a field it may only write or granted nothing of
+/// it but writes, held at `none`, every field by name, so that every read
+/// door answers it as a type that is not declared, and each reference to
+/// it is held at `none` in turn ([`hide_unshown_references`]), to a fixed
+/// point. Only a `write_only` grant parts the two, so one who holds none
+/// is left as it is. Asked of `who` once [`hide_unshown_references`] has
+/// held it; answers `None` where no type is so held, and otherwise the
+/// references hidden besides, in order.
+pub(crate) fn hide_unread_types(
+    who: &mut Principal,
+    force: &dyn crate::sight::InForce,
+) -> Option<Vec<(TypeName, FieldName)>> {
+    if !writes_blind(who) {
+        return None;
+    }
+    let (types, find) = (force.types(), &|n: &TypeName| force.ty(n));
+    let mut hidden: Option<Vec<_>> = None;
+    loop {
+        let shown = |d, reading| crate::describe::type_shown(d, find, who, reading);
+        let unread: Vec<&TypeDecl> = (types.iter().copied())
+            .filter(|d| shown(d, false) && !shown(d, true))
+            .collect();
+        if unread.is_empty() {
+            return hidden;
+        }
+        for t in unread {
+            let grants = who.grants.types.entry(t.name.clone()).or_default();
+            grants.default = Some(Access::None);
+            for f in &t.fields {
+                grants.fields.insert(f.name.clone(), Access::None);
+            }
+        }
+        let more = hide_unshown_references(who, force);
+        hidden.get_or_insert_default().extend(more);
+    }
+}
+
+/// Whether `who` holds a `write_only` grant, to the lake, a type or a
+/// field: only such a grant shows a type to a write and not to a read.
+pub(crate) fn writes_blind(who: &Principal) -> bool {
+    let (g, blind) = (&who.grants, |a: &Access| *a == Access::WriteOnly);
+    let typed =
+        |t: &TypeGrants| t.default.as_ref().is_some_and(blind) || t.fields.values().any(blind);
+    blind(&g.default) || g.types.values().any(typed)
+}
+
+/// `who` as a write to a type a read is not shown sees it (092): each
+/// field of each such type it may write held `write_only`, every other at
+/// `none`, so its description names what it may write and nothing it
+/// reads; a view, which no one writes, wholly at `none`. `read` is `who`
+/// as a read sees the lake.
+pub(crate) fn writing_unread(
+    who: &Principal,
+    read: &Principal,
+    force: &dyn crate::sight::InForce,
+) -> Principal {
+    let mut out = who.clone();
+    let find = &|n: &TypeName| force.ty(n);
+    for t in force.types() {
+        let shown = |p| crate::describe::type_shown(t, find, p, false);
+        if !shown(who) || shown(read) {
+            continue;
+        }
+        // No one writes a view, so one a read is not shown is not there.
+        let writes = |f: &FieldDecl| who.grants.access(&t.name, &f.name).writes();
+        let write_side = |f: &FieldDecl| match t.view.is_none() && writes(f) {
+            true => Access::WriteOnly,
+            false => Access::None,
+        };
+        let fields = t.fields.iter().map(|f| (f.name.clone(), write_side(f)));
+        let grants = out.grants.types.entry(t.name.clone()).or_default();
+        grants.default = Some(Access::None);
+        grants.fields = fields.collect();
+    }
+    out
 }
 
 /// Whether `who` may not know of some field: only a `none` its grants

@@ -25,8 +25,11 @@
 //! transaction. A rebuild is a refold after `clear`, which starts the
 //! count again, so it is analysed as a fresh load is: after its first
 //! `ANALYZE_AFTER` records, and a lake smaller than that is left to
-//! PostgreSQL's own. Analysis changes no answer, only a plan; a failed
-//! one leaves the commit as it is.
+//! PostgreSQL's own. The one analysis inside the transaction is before an
+//! order index's rebuild, once the transaction has put `ANALYZE_AFTER`
+//! records: the rebuild pages over the heads they wrote, which would
+//! otherwise be planned as an empty table. Analysis changes no answer,
+//! only a plan; a failed one after the commit leaves the commit as it is.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -456,7 +459,7 @@ impl PgLake {
         }
         let (page, mut db) = (std::mem::take(&mut t.buffer), self.projecting(writing)?);
         let (types, asked, touched) = (&mut t.types, &mut t.asked, &mut t.touched);
-        t.put += page.write(&mut db, &self.names, types, asked, touched)?;
+        t.put += page.write(&mut db, &self.names, types, asked, touched, t.put)?;
         Ok(())
     }
 
@@ -1052,7 +1055,14 @@ impl ProjectionStore for PgLake {
         // entries of what it touched.
         let mut left = false;
         let written = buffer
-            .write(&mut db, &self.names, &mut types, &mut asked, &mut touched)
+            .write(
+                &mut db,
+                &self.names,
+                &mut types,
+                &mut asked,
+                &mut touched,
+                put,
+            )
             .and_then(|rebuilt| {
                 if relook.any() {
                     let read = || projection::head_declarations(&mut db, &self.names);

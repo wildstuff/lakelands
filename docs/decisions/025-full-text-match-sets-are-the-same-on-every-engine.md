@@ -478,16 +478,18 @@ ranks by, so every hit scored `NaN`.
   vector search that names no other field, a field named twice), before
   the principal's rights: "`v`'s vector has no direction: every
   component is 0", or "has a component that is not a finite number".
-- **A vector the embedding backend makes for a hybrid search is held to
-  the same rule,** and one without a direction makes the search
-  unavailable, as a backend that fails does: the caller did not write
-  it.
+- **A vector the embedding backend makes for a search is held to the
+  same rule,** and one without a direction is the backend's failure, as
+  a backend that fails is: the caller did not write it
+  (`§ A hybrid search whose query the lake cannot embed ranks by its
+  text, and says why`).
 
-A query vector is always the caller's: the store makes no model call of
-its own accord. A hybrid search without one, over a field a model
-fills, has its text embedded by the bound backend, or falls back to its
-text where none is bound. So a vector with no direction is the caller's
-mistake, and a refusal that names the field says so. An axis that
+A query vector is the caller's, or made of the caller's words: the
+store makes no model call of its own accord. A hybrid search without
+one, or a vector search that brings `text`, over a field a model fills,
+has its text embedded by the bound backend. So a vector the caller
+brings with no direction is the caller's mistake, and a refusal that
+names the field says so. An axis that
 ranked nothing would answer no hits for a lone search, which reads as
 "nothing is near". The rule is exact: a cosine over finite 32-bit
 floats, summed in doubles, neither overflows nor underflows.
@@ -509,9 +511,10 @@ name its `model`.
   so `model` is not judged; the field's axis names it, as it names it
   wherever it was given.
 - **A vector without `model`** is ranked as before.
-- **A hybrid search that brings no `vector`** takes no `model`: the
-  lake makes that vector of the field's own model, so a `model` there
-  names nothing the caller brought. It is refused by the search's shape
+- **A hybrid search that brings no `vector`, and a vector search that
+  brings `text`,** take no `model`: the lake makes that vector of the
+  field's own model, so a `model` there names nothing the caller
+  brought. It is refused by the search's shape
   alone (`model_without_vector`), with the other misfits and before any
   field is judged for the caller, so the answer tells nothing of the
   field.
@@ -531,7 +534,8 @@ one of other dimensions it spent the call and was then refused.
   is not of kind `vector` is refused as invalid on that field, naming
   its kind (`search_not_vector`). The caller named a ranking, and an
   answer that drops it says something the store did not do.
-- **A hybrid search without a vector reads a field a model fills.** Over
+- **A hybrid search without a vector reads a field a model fills,** and
+  so does a vector search that brings `text`. Over
   a vector field without `embed` it is refused as invalid on that field
   (`search_needs_vector`), whether or not a backend is bound: the fault
   is in the request read against the declaration, not in the host's
@@ -541,8 +545,104 @@ one of other dimensions it spent the call and was then refused.
   call.** A hidden field answers as an absent one and a masked one as
   not granted, as lakelands#741 orders them; a refused search costs no
   call. A field declared with `embed` keeps its comparison with the
-  bound backend and its fallback to the text where none is bound, and a
-  caller's vector over a plain vector field is ranked by the one cosine.
+  bound backend, and a caller's vector over a plain vector field is
+  ranked by the one cosine.
+
+### A vector search may bring words, and the lake embeds them with the field's model
+
+A host that wanted a pure cosine ranking over a field the lake embeds
+had to embed the query itself, through a second route to a model
+configured apart from the one that made the field's vectors, and the
+two could drift. A hybrid search could not drop its text: a search of
+no text fields and a text weight of 0 are both refused.
+
+- **A vector search brings `vector` or `text`, not both**
+  (`vector_with_text`). With `text`, over a field declared with `embed`,
+  the lake embeds it in one call through the bound backend, the path a
+  hybrid search's text takes, with the field's model as the head
+  declares it, and ranks it as the same search bringing that vector:
+  under the same rights, with the same `also`, weights, index, cursor
+  and second stage, whose `rerank.text` it needs as a vector search
+  does (067).
+- **It is a member of the vector search, not a mode of its own.** The
+  ranking is the vector search's in every rule; only where its vector
+  comes from differs, and the door makes the vector before the read, so
+  the read ranks exactly what a caller's vector would. A mode of its own
+  would restate every rule of the vector search for one member, and a
+  host reads the vector search it knew with the member absent.
+- **Its refusals are those of a hybrid search without a vector.** Beside
+  a `vector` it is `vector_with_text` and beside a `model`
+  `model_without_vector`, by its shape alone, before any field is judged
+  for the caller; over a vector field no model fills it is
+  `search_needs_vector`, over a field that holds no vectors
+  `search_not_vector`, after the caller's rights; all before any call.
+  A bound backend of another model or length is `Unbound`, naming both.
+  With no backend bound it is `Unbound`, and a backend that fails makes
+  it unavailable: it has no other leg to answer through.
+- **A pattern's start does not take it** (`start_needs_vector`). A
+  pattern's read makes no embedding call, and its rows have no member that
+  could say a vector was not made. A start brings its vector.
+
+### A hybrid search whose query the lake cannot embed ranks by its text, and says why
+
+A hybrid search whose vector the backend failed to make was refused
+whole, so that one query never ranked differently by the network's
+weather. An embedding server is often down together with everything
+around it, and then a keyword search that worked answered nothing;
+every host rebuilt the floor itself, catching the refusal and searching
+again by text, with a ranking it had to describe on its own. The
+answer now says which ranking it is, which keeps what the old rule
+protected: a caller never mistakes one ranking for the other.
+
+- **A hybrid search without a vector whose vector the lake cannot make
+  ranks by its text alone:** where no backend is bound, and where the
+  bound backend cannot be reached, fails or refuses, whatever error it
+  answers, or answers a vector without a direction or other than one
+  vector. It is the default, with no member to ask for it: a host that
+  wants the refusal reads the answer's marker as one.
+- **The answer names the leg in `unranked`:** its vector field, `field`,
+  and the error its query vector met, `why`: `Unbound` naming the model
+  where no backend is bound, `Unavailable` naming the backend and what
+  it answered where it failed. `ranked_by` says `lexical`, and `axes`
+  lists the lexical axis alone, its own score kept
+  (`§ Several rankings are fused by weighted reciprocal rank, among the
+  hits the read may see`). A search whose vector ranked has no
+  `unranked`.
+- **A bound backend of another model or length stays a refusal**
+  (`Unbound`, naming both): that is a configuration to fix, not
+  weather, and no ranking answers it. The search is judged for its
+  caller before any call, as before.
+- **A vector search has no other leg:** one whose `text` cannot be
+  embedded is refused, as above.
+- **Every page of an answer its text alone ranked is ranked so.** Its
+  cursor carries `unranked`, and a later page asks the backend nothing
+  and repeats it, though the backend is up again: the pages are of one
+  ranking. A cursor of an answer its vector ranked carries none, and its
+  page asks the backend again; where that fails the page is
+  unavailable, since its text alone would continue another order than
+  the pages before it. Where no backend is bound, a page whose cursor
+  carries none ranks by its text and says so, as the first page would,
+  so a cursor handed out before the marker, of an answer its text
+  ranked, goes on as it did. A cursor of an answer its vector ranked
+  names that vector in the read it continues, and a page without it is
+  another read (`cursor_other_read`).
+- **The read writes the marker.** The search door hands its read why the
+  vector was not made, and the read puts it in its answer and in the
+  cursor it hands out, once, as a second stage's order is handed. With no
+  backend bound the door makes no read of its own to judge the search
+  first: there is no call to spare, and the read judges it.
+- **A cursor's marker is the caller's own.** A cursor is not signed; one
+  that carries a marker it was not handed changes only how its caller's
+  own pages say they ranked, never what a record shows. The read takes a
+  marker only from a cursor of its own read, of a hybrid search without a
+  vector.
+- **A second stage ranks the text's window,** says `lexical + rerank`,
+  and every page repeats `unranked`, as it repeats the first stage's
+  `ranked_by` (067).
+- **As of an earlier position the same holds:** the head's model makes
+  the vector (`§ A search at an earlier position ranks by the head`),
+  and where it cannot, the text alone ranks, by the head, as any search
+  at that position does.
 
 ### A field the lake asks an index for answers the index's set, and says so
 
@@ -1109,3 +1209,11 @@ Of an index asked for:
   `where` may rank by the text at the position it reads, `text_as_of`;
   without it a search at an earlier position ranks by the head, as
   before.
+- Extended (lakelands#1567): a vector search may bring `text` the lake
+  embeds with the field's model, as a member of the vector search; a
+  pattern's start does not take it.
+- Extended (lakelands#1566): a hybrid search whose query the lake cannot
+  embed ranks by its text and names the leg in `unranked`, where a
+  failing backend made it unavailable; a backend of another model stays
+  a refusal. Both extend the rules 046 held, which moved here at
+  lakelands#817.

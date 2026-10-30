@@ -827,7 +827,8 @@ def stamp(n):
     refused for its one reason alone, and so is
     `negative/known-at-goes-back`. The framed append of `framed.json` is
     restamped after them and its stored lines written again; its breaks
-    move to format `n`. `negative/another-format` is written
+    move to format `n`, and the ingest of `boxed.json` and the append of
+    `apart.json` after it. `negative/another-format` is written
     from the first segment, its last event in format `n - 1`. No id
     moves: an id is random or made from members that leave `v` out, and
     `main` recomputes them after this. Last, `FORMAT` in this file's
@@ -896,6 +897,21 @@ def stamp(n):
     event = restamp(json.loads(boxed["line"]), n, appended[-1]["hash"])
     boxed["line"], boxed["hash"] = canonical(event).decode("utf-8"), event["hash"]
     path.write_text(json.dumps(boxed, indent=2, ensure_ascii=False) + "\n", "utf-8")
+
+    # The append of two deliveries sealed apart follows the boxed ingest.
+    path = HERE / "apart.json"
+    pair = json.loads(path.read_text("utf-8"))
+    other = set(pair) - {"about", "after", "stored", "events"}
+    if other:
+        sys.exit(f"FAIL apart.json: --stamp does not know the members {sorted(other)}")
+    pair["after"] = {"position": event["position"], "hash": event["hash"]}
+    pair_events = []
+    for entry in pair["events"]:
+        e = restamp(json.loads(entry["line"]), n, (pair_events or [event])[-1]["hash"])
+        pair_events.append(e)
+        entry["line"], entry["hash"] = canonical(e).decode("utf-8"), e["hash"]
+    pair["stored"] = [line.decode("utf-8") for line in writer_form(pair_events)]
+    path.write_text(json.dumps(pair, indent=2, ensure_ascii=False) + "\n", "utf-8")
 
     expected = json.loads((HERE / "expected.json").read_text("utf-8"))
     for want in expected["events"]:
@@ -1075,6 +1091,41 @@ def main():
     check(event["body"]["kind"] == "record_ingested" and box_form(event),
           "boxed.json: its box holds the members `sealed` names, none of them in the patch")
     check(ingest_id(event) == event["id"], f"boxed.json: ingest id {event['id']}, under `lakelands:ingest:v2`")
+
+    # One append of two ingests of a source, each in a delivery of its own
+    # and sealed apart, after the boxed ingest: the stored form holds
+    # what the two share in its frame and leaves each its `delivery` and
+    # its `sealed.apart` and box; the lines restore to the events.
+    pair = json.loads((HERE / "apart.json").read_text("utf-8"))
+    after = pair["after"]
+    check(after == {"position": event["position"], "hash": event["hash"]}, f"apart.json: it follows position {event['position']}")
+    pair_events = []
+    for entry in pair["events"]:
+        e = json.loads(entry["line"])
+        pos, last = e["position"], (pair_events or [event])[-1]
+        check(canon(e, lambda why: check(False, f"apart.json at {pos}: {why}")) == entry["line"].encode("utf-8")
+              and e["v"] == FORMAT, f"apart.json at {pos}: the event is canonical, in format {FORMAT}")
+        check(pos == last["position"] + 1 and e["prev"] == last["hash"], f"apart.json at {pos}: it follows position {last['position']}")
+        check(sha(canonical({k: v for k, v in e.items() if k != "hash"})) == e["hash"] == entry["hash"],
+              f"apart.json at {pos}: hash {entry['hash'][:12]}…")
+        check(e["body"]["kind"] == "record_ingested" and box_form(e) and len(e["sealed"]["apart"]) == 1
+              and e["sealed"]["key"] == "1" and ingest_id(e) == e["id"],
+              f"apart.json at {pos}: sealed apart in one box, its ingest id under `lakelands:ingest:v2`")
+        pair_events.append(e)
+    one, two = pair_events
+    check(one["source"] == two["source"] and one["delivery"] != two["delivery"]
+          and one["sealed"]["apart"] != two["sealed"]["apart"] and one["sealed"]["key"] == two["sealed"]["key"],
+          "apart.json: one source, a delivery each, one version of its key and a key apart each")
+    stored = [line.encode("utf-8") for line in pair["stored"]]
+    check(stored == writer_form(pair_events),
+          "apart.json: the stored lines are the writer's: a frame holding what both share, each line its own `delivery` and `sealed.apart`")
+    check(all("delivery" in json.loads(line) and "apart" in json.loads(line)["sealed"] for line in stored[1:])
+          and "delivery" not in json.loads(stored[0])["frame"] and "apart" not in json.loads(stored[0])["frame"].get("sealed", {}),
+          "apart.json: neither the delivery nor the key apart is in the frame")
+    check(refusal(stored, after) is None, "apart.json: the stored lines read after the event before them")
+    got = list(restored(stored, lambda ok, why: ok or check(False, f"apart.json: {why}"), (after["position"], after["hash"])))
+    check([canonical(e) for e in got] == [e["line"].encode("utf-8") for e in pair["events"]],
+          "apart.json: the stored lines restore to the events, byte for byte")
 
     for n, want in [(1e21, "1e+21"), (1e-7, "1e-7"), (0.000001, "0.000001"), (333333333.3333333, "333333333.3333333"),
                     (-0.0, "0"), (9007199254740992.0, "9007199254740992"), (5e-324, "5e-324")]:

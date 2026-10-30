@@ -548,6 +548,7 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
         search(SearchMode::Vector {
             field: "v".into(),
             vector: vec![1.0, 0.0],
+            text: None,
             weight: None,
             also: Vec::new(),
             model: None,
@@ -567,12 +568,15 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     let store = lake_with(format!("http://127.0.0.1:{port}/v1/embeddings")).await;
     let cat = store.catalog(WriteContext::default());
     let own = owner(store.as_ref());
-    match cat.search(&own, search(hybrid("quayside"))).await {
-        Err(Error::Unavailable { situation }) => {
+    // A hybrid search ranks by its text alone and says why (025).
+    let got = cat.search(&own, search(hybrid("quayside"))).await;
+    let why = got.as_ref().ok().and_then(|r| r.data.unranked.as_ref());
+    match why.map(|u| &u.why) {
+        Some(Error::Unavailable { situation }) => {
             let message = situation.to_string();
             assert!(message.contains("cannot be connected to"), "{message}");
             assert!(!message.contains("quayside"), "{message}");
         }
-        other => panic!("expected the search to be unavailable, got {other:?}"),
+        _ => panic!("expected the search to rank lexically and say why, got {got:?}"),
     }
 }

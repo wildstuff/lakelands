@@ -8,8 +8,8 @@ use lakelands_core::engines::Counts;
 impl<'a> Reader<'a> {
     /// What `search` refuses before it ranks: the type its principal is
     /// shown, a view, a misfit, the fields it probes, the `where`. A
-    /// hybrid search's text is embedded only once this answers (024): one
-    /// refused calls nothing, and names no model.
+    /// search's text the lake embeds is embedded only once this answers
+    /// (024): one refused calls nothing, and names no model.
     pub fn searched<'s>(&self, s: &'s Search) -> Result<Searched<'s>> {
         let decl = self.named_type(&s.ty)?.clone();
         // A view's records are computed on read and no index holds them, so
@@ -42,9 +42,9 @@ impl<'a> Reader<'a> {
             None => Box::new(self.sight.searched_fields(&decl)),
         };
         let ranks = self.ranks(&decl, vector_fields.iter().copied().chain(texts))?;
-        // A vector ranking reads a vector field, and a hybrid search without
-        // a vector reads one a model fills: one that cannot is refused
-        // before any embedding is asked for (lakelands#743). A field the
+        // A vector ranking reads a vector field, and a search whose query
+        // vector the lake makes reads one a model fills: one that cannot is
+        // refused before any embedding is asked for (lakelands#743). A field the
         // head does not show its reader holds no vectors, and no model fills
         // it. A read that ranks nothing, a second stage's, judges none: the
         // read of its window did (067).
@@ -60,11 +60,7 @@ impl<'a> Reader<'a> {
                 return Err(Error::invalid_at(field, case));
             }
         }
-        if let SearchMode::Hybrid {
-            field,
-            vector: None,
-            ..
-        } = &s.mode
+        if let Some((field, _)) = s.mode.embeds()
             && ranked
             && declared(field).is_none_or(|f| f.embed.is_none())
         {
@@ -74,9 +70,12 @@ impl<'a> Reader<'a> {
             return Err(Error::invalid_at(field, case));
         }
         // A query vector is judged by the field's declared length, never by
-        // a stored vector, which another may own (024).
-        let embedded = matches!(&s.mode, SearchMode::Hybrid { vector: None, .. });
-        for (field, v, _) in vectors.iter().filter(|_| !embedded) {
+        // a stored vector, which another may own (024). One the lake makes
+        // is not the caller's: the first field's, where the lake makes it.
+        let embedded = s.mode.embeds().is_some();
+        let brought = vectors.iter().enumerate();
+        let brought = brought.filter(|(i, v)| !(embedded && *i == 0 && v.1.is_empty()));
+        for (_, (field, v, _)) in brought {
             if let Some(d) = declared(field).and_then(|f| f.ty.dimensions)
                 && v.len() != d as usize
             {
@@ -163,6 +162,7 @@ impl<'a> Reader<'a> {
             read,
             skipped,
             marking,
+            unranked,
         } = first;
         let more = hits.len() + skipped > offset + k;
         let mut page: Vec<Hit> = (hits.into_iter()).skip(offset - skipped).take(k).collect();
@@ -180,6 +180,7 @@ impl<'a> Reader<'a> {
                 of: read,
                 now: Some(self.now),
                 stage: None,
+                unranked: unranked.clone(),
             })
         });
         Ok(Ok(Hits {
@@ -188,7 +189,25 @@ impl<'a> Reader<'a> {
             truncated: false,
             next_cursor,
             axes,
+            unranked,
         }))
+    }
+
+    /// Hand the read why the door made no query vector for its hybrid
+    /// search, which its answer and every cursor carry (025).
+    pub(crate) fn unmade(&self, why: Unmade) {
+        *self.unmade.borrow_mut() = Some(why);
+    }
+
+    /// Why the query vector of `s`, a hybrid search, was not made, if the
+    /// door said ([`Self::unmade`]).
+    fn unranked(&self, s: &Search, ranks: &Ranks) -> Option<Unranked> {
+        let field = s.mode.vectors().first()?.0.clone();
+        let why = match self.unmade.borrow().clone()? {
+            Unmade::Failed(why) => why,
+            Unmade::Unbound => embedding_unbound(&s.ty, &field, ranks.fields.get(&field), None),
+        };
+        Some(Unranked { field, why })
     }
 
     /// The first stage of a search: the hits it ranks this read may see,
@@ -232,13 +251,21 @@ impl<'a> Reader<'a> {
             .filter_map(|(n, f)| Some((f.name.clone(), *by_field.get(n.as_str())?)))
             .collect();
         let search_read = search_read(s);
-        let offset = match &s.cursor {
+        let (offset, carried_unranked) = match &s.cursor {
             Some(c) => {
                 let state = resume(c, "search", Some(&s.ty), &Params::new())?;
                 same_read(&state, &search_read)?;
-                state.offset as usize
+                (state.offset as usize, state.unranked)
             }
-            None => 0,
+            None => (0, None),
+        };
+        // A hybrid search whose query vector the lake did not make ranks by
+        // its text and says why, as its first page did (025).
+        let unranked = match s.mode {
+            SearchMode::Hybrid { vector: None, .. } => {
+                carried_unranked.or_else(|| self.unranked(s, &ranks))
+            }
+            _ => None,
         };
         let k = s.k.max(1) as usize;
         // One more than the page (or the second stage's window), to know
@@ -259,9 +286,7 @@ impl<'a> Reader<'a> {
         }
         let ranked_by = match (&s.mode, indexed) {
             (SearchMode::Lexical { .. }, _) => "lexical",
-            (SearchMode::Hybrid { .. }, _) if by_text => {
-                "lexical (no query vector and no embedding backend)"
-            }
+            (SearchMode::Hybrid { .. }, _) if by_text => "lexical",
             (SearchMode::Hybrid { .. }, true) => "hybrid (index)",
             (SearchMode::Hybrid { .. }, false) => "hybrid",
             (SearchMode::Vector { .. }, true) => "index",
@@ -400,6 +425,7 @@ impl<'a> Reader<'a> {
             read: search_read,
             skipped,
             marking,
+            unranked,
         }))
     }
 

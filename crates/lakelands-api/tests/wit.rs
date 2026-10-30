@@ -1,5 +1,5 @@
 //! The drift check between this crate and the WIT package in `wit/`
-//! (`lakelands:data@0.21.0`). The crate is the source; the WIT mirrors it,
+//! (`lakelands:data@0.21.1`). The crate is the source; the WIT mirrors it,
 //! and this test fails as soon as the two disagree.
 //!
 //! Three things are compared:
@@ -38,7 +38,7 @@ use lakelands_api::ontology::{
 use lakelands_api::principal::{HiddenWhere, Renamed, TypeGrants};
 use lakelands_api::query::{
     Axis, Depth, Edge, Hit, Hits, Matched, Pattern, Projection, QueryResult, Search, SearchMode,
-    Span, Start, Step, VectorTerm, Walk,
+    Span, Start, Step, Unranked, VectorTerm, Walk,
 };
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
@@ -863,6 +863,14 @@ fn purge_reference() -> lakelands_api::write::PurgeReference {
     }
 }
 
+/// A vector leg that did not rank, every member set.
+fn unranked() -> Unranked {
+    Unranked {
+        field: "v".into(),
+        why: Error::refused(None, Refusal::NotGranted),
+    }
+}
+
 fn search_mode() -> SearchMode {
     SearchMode::Hybrid {
         text: "t".into(),
@@ -993,6 +1001,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         writes_only: [("w".into(), json!("a"))].into(),
                         verbs: ["v".into()].into(),
                         hide_where: vec![hidden_where()],
+                        dates_by_hidden_valid_time: true,
                     },
                 )]
                 .into(),
@@ -1012,6 +1021,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     writes_only: [("w".into(), json!("a"))].into(),
                     verbs: ["v".into()].into(),
                     hide_where: vec![hidden_where()],
+                    dates_by_hidden_valid_time: true,
                 }),
                 &[],
                 &["type"],
@@ -1422,8 +1432,10 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 ranked_by: "lexical".into(),
                 truncated: true,
                 axes: vec![],
+                unranked: Some(unranked()),
             }),
         ),
+        ("unranked", members(&unranked())),
         ("rerank", members(&rerank())),
         (
             "axis",
@@ -2233,6 +2245,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 SearchMode::Vector {
                     field: "f".into(),
                     vector: vec![],
+                    text: None,
                     weight: None,
                     also: Vec::new(),
                     model: None,

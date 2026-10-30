@@ -53,7 +53,8 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::principal::{Access, Renamed, TypeGrants};
 use lakelands_api::query::{
-    Axis, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
+    Axis, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Unranked,
+    Walk,
 };
 use lakelands_api::read::{
     After as ReadAfter, AggFunc, Aggregate, Find, Found, Get, Group, Order, OrderBy, Params, ReadAt,
@@ -141,6 +142,9 @@ pub struct Reader<'a> {
     /// The second stage of a search or of a pattern's start, as the door
     /// handed it and as this read decided it.
     second: RefCell<stage::Second>,
+    /// Why the door made no query vector for a hybrid search, as it handed
+    /// it ([`Self::unmade`]).
+    unmade: RefCell<Option<Unmade>>,
     /// The settings at the read's position, read once.
     settings: OnceCell<BTreeMap<String, Value>>,
     /// The settings as its reader is told them, where that is not whole
@@ -216,7 +220,12 @@ impl<'a> Head<'a> {
     ) -> Result<Head<'a>> {
         let view: Rc<dyn ProjectionView + 'a> = Rc::from(lake.engine.view(head)?);
         let shape = lake.shape(view.as_ref())?;
-        let sight = lake.sight(who.clone(), None, Some(&shape.renames), shape.as_ref())?;
+        let sight = lake.sight(
+            who.clone(),
+            (None, true),
+            Some(&shape.renames),
+            shape.as_ref(),
+        )?;
         let who = sight.0.who().clone();
         let since = Rc::new(held::Since::new(lake, view.as_ref(), at)?);
         Ok(Head {
@@ -323,6 +332,10 @@ struct CursorState {
     /// what its first page said of the first stage (067).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     stage: Option<stage::Staged>,
+    /// For a hybrid search its text alone ranked: why, which every page
+    /// repeats and ranks by (025).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unranked: Option<Unranked>,
 }
 
 /// The weights a lexical or hybrid search gives its text fields itself.
@@ -392,6 +405,41 @@ fn unbound(ty: &TypeName, p: &lakelands_api::ontology::ViewParam, unbound: bool)
         kind,
         unbound,
     }
+}
+
+/// Whether `c`, a cursor of `s`, a hybrid search without a vector, is of
+/// a page its text alone ranked, which the read it continues ranks so to
+/// its end (025). The read judges the cursor its own.
+pub(crate) fn text_alone(c: &Cursor, s: &Search) -> bool {
+    matches!(s.mode, SearchMode::Hybrid { vector: None, .. })
+        && resume(c, "search", Some(&s.ty), &Params::new()).is_ok_and(|st| st.unranked.is_some())
+}
+
+/// Why the door made no query vector for a hybrid search.
+#[derive(Clone)]
+pub(crate) enum Unmade {
+    /// No embedding backend is bound: the read names the field's model.
+    Unbound,
+    /// The bound backend failed, as this says.
+    Failed(Error),
+}
+
+/// The refusal of a search whose query vector `ty.field`, declared so,
+/// needs an embedding backend, where `bound` is bound instead, or none.
+pub(crate) fn embedding_unbound(
+    ty: &TypeName,
+    field: &FieldName,
+    declared: Option<&FieldDecl>,
+    bound: Option<lakelands_api::error::Bound>,
+) -> Error {
+    let embed = declared.and_then(|f| Some((f.embed.as_ref()?, f.ty.dimensions)));
+    Error::unbound(lakelands_api::error::Seam::Embedding {
+        model: embed.map(|e| e.0.model.clone()).unwrap_or_default(),
+        dimensions: embed.and_then(|e| e.1).unwrap_or(0),
+        ty: ty.clone(),
+        field: field.to_string(),
+        bound,
+    })
 }
 
 /// Refuse a cursor handed out for another read through the same door:
@@ -677,6 +725,7 @@ impl<'a> Reader<'a> {
             members: RefCell::default(),
             past: RefCell::default(),
             second: RefCell::default(),
+            unmade: RefCell::default(),
             settings: OnceCell::new(),
             told: OnceCell::new(),
         })
@@ -1003,9 +1052,9 @@ impl<'a> Reader<'a> {
         let decl = self.sight.ty(ty)?;
         // A read at a valid time filters on the type's valid-time fields,
         // so it probes them as a `where` on them would (024): those it is
-        // shown.
+        // shown, unless its grant dates the type by them unread (092).
         if self.valid_at.is_some() {
-            let timed = valid_time::bounds(decl).filter(|n| self.knows(decl, n));
+            let timed = valid_time::bounds(decl).filter(|n| self.probes_bound(decl, n));
             self.sight.check_probe(decl, timed)?;
         }
         Ok(decl)
@@ -1017,17 +1066,33 @@ impl<'a> Reader<'a> {
         !f.is_some_and(|f| self.sight.field_access(decl, f) == lakelands_api::Access::None)
     }
 
+    /// Whether a read at a valid time dates `decl`'s records by its bound
+    /// `name`: one the reader may know of, or any where its grant on the
+    /// type says `dates_by_hidden_valid_time`, the field withheld from the
+    /// answer all the same
+    /// (`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
+    fn dates_by(&self, decl: &TypeDecl, name: &FieldName) -> bool {
+        self.sight.dates_unread(&decl.name) || self.knows(decl, name)
+    }
+
+    /// Whether a read at a valid time probes `decl`'s bound `name`: one it
+    /// may know of, where its grant does not date the type by it unread.
+    fn probes_bound(&self, decl: &TypeDecl, name: &FieldName) -> bool {
+        !self.sight.dates_unread(&decl.name) && self.knows(decl, name)
+    }
+
     /// The read's valid time for `decl`, as `describe` shows it to the
     /// reader (024, extended): `valid_at` where it is shown each bound. A
     /// bound over a field it may not know of is not named, so it is
     /// dropped: the other is read as a condition on the record instead,
-    /// and with neither the type reads as one with no valid time.
+    /// and with neither the type reads as one with no valid time. A grant
+    /// that dates the type by its bounds unread keeps both (092).
     fn valid_for(&self, decl: &TypeDecl) -> (Option<Timestamp>, Option<Expr>) {
         let (Some(t), Some(from)) = (self.valid_at, &decl.valid_from) else {
             return (self.valid_at, None);
         };
         let to = decl.valid_to.as_ref();
-        let shown = |n: &FieldName| self.knows(decl, n);
+        let shown = |n: &FieldName| self.dates_by(decl, n);
         // Built, never parsed: a field may be named as a keyword is.
         let path = |f: &FieldName| {
             Box::new(Expr::Path {

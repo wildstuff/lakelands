@@ -43,12 +43,15 @@ impl Sight<'_> {
     /// The lake as its principal may see it.
     pub fn describe(&self, lake: &LakeId) -> LakeDescription {
         let (declared, who) = (self.force.declared(), self.who());
+        let writing = self.writing();
         let types = each(&declared, |d| match &d.declaration {
-            Declaration::Type(t) => self.type_description(t, d, &declared),
+            Declaration::Type(t) => {
+                self.either(&writing, |s| s.type_description(t, d, &declared), unread)
+            }
             _ => None,
         });
         let verbs = each(&declared, |d| match &d.declaration {
-            Declaration::Verb(v) => self.verb_description(v),
+            Declaration::Verb(v) => self.either(&writing, |s| s.verb_description(v), |v| v),
             _ => None,
         });
         let value_types = each(&declared, |d| match &d.declaration {
@@ -93,9 +96,11 @@ impl Sight<'_> {
     /// One type as its principal may see it; `None` when it may see none
     /// of it.
     pub fn describe_type(&self, ty: &TypeName) -> Option<TypeDescription> {
-        let declared = self.force.declared();
+        let (declared, writing) = (self.force.declared(), self.writing());
         let mut t = declared.iter().find_map(|d| match &d.declaration {
-            Declaration::Type(t) if &t.name == ty => self.type_description(t, d, &declared),
+            Declaration::Type(t) if &t.name == ty => {
+                self.either(&writing, |s| s.type_description(t, d, &declared), unread)
+            }
             _ => None,
         })?;
         // The declarations its key names: those of the fields as shown
@@ -109,6 +114,18 @@ impl Sight<'_> {
         };
         t.value_types = named.filter_map(declaration).collect();
         Some(t)
+    }
+
+    /// What `describe` answers by this sight, or, where it answers nothing,
+    /// by the one a write to a type a read is not shown sees it by (092),
+    /// as `written` takes it: such a type is described for its writes alone.
+    fn either<T>(
+        &self,
+        writing: &Option<Sight<'_>>,
+        f: impl Fn(&Sight<'_>) -> Option<T>,
+        written: fn(T) -> T,
+    ) -> Option<T> {
+        f(self).or_else(|| writing.as_ref().and_then(f).map(written))
     }
 
     /// Whether its principal reads every one of `names` on type `ty`.
@@ -755,6 +772,12 @@ impl Sight<'_> {
     }
 }
 
+/// A type described for its writes alone: not there to a read (092).
+fn unread(mut t: TypeDescription) -> TypeDescription {
+    (t.may.find, t.may.get) = (false, false);
+    t
+}
+
 /// What `pick` takes from each declaration, in declaration order.
 fn each<'a, T>(declared: &'a [Declared], pick: impl FnMut(&'a Declared) -> Option<T>) -> Vec<T> {
     declared.iter().filter_map(pick).collect()
@@ -773,25 +796,50 @@ fn each<'a, T>(declared: &'a [Declared], pick: impl FnMut(&'a Declared) -> Optio
 /// by its name; the description and every door that asks before it names
 /// a type ask this one function, through [`Sight::ty`], and so do the
 /// judgement of a relation and the making of a sight.
+///
+/// `reading` asks whether it is shown to a read
+/// (`docs/decisions/092-reading-is-judged-apart-from-writing.md`): a
+/// `write_only` grant then counts as `none`, so a type keyed by a field its
+/// principal may only write, or granted nothing but writes, is not there to
+/// a read while a write is shown it, and the lake's default does not count
+/// for a type whose fields are granted. A reading sight holds each type so
+/// judged at `none` (`rights::hide_unread_types`), so its doors ask without
+/// `reading`.
 pub(crate) fn type_shown<'a>(
     t: &'a TypeDecl,
     find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
     who: &Principal,
+    reading: bool,
 ) -> bool {
+    let shows = |a: Access| match reading {
+        true => a.appears(),
+        false => a != Access::None,
+    };
     // A type keyed by a field its principal may not know of is not shown:
     // every record key would hand out that field's value. A view's key is
-    // judged where its values come from too (lakelands#782).
+    // judged where its values come from too (lakelands#782). To a read, a
+    // key field it may only write is one it may not know of (092).
     let known = |t: &TypeDecl, key: &[FieldName]| {
         let mut key = t.fields.iter().filter(|f| key.contains(&f.name));
-        key.all(|f| field_access(who, t, f) != Access::None)
+        key.all(|f| shows(field_access(who, t, f)))
+    };
+    // To a read, the lake's default does not count for a type whose fields
+    // are granted and whose grant sets no default (092, the operator's
+    // decision): one whose every field is granted `write_only` is read by
+    // none. A field at `none` is granted nothing, as a reference the sight
+    // holds there is not.
+    let granted =
+        |g: &lakelands_api::principal::TypeGrants| g.fields.values().any(|a| *a != Access::None);
+    let typed = |t: &TypeDecl| match who.grants.types.get(&t.name) {
+        Some(g) if reading && g.default.is_none() && granted(g) => Access::None,
+        _ => type_access(who, &t.name),
     };
     let own = |t: &TypeDecl| {
         let fields = &mut t.fields.iter();
         let mut sources = t.key_sources().into_iter();
         known(t, t.key_fields())
             && sources.all(|(s, key)| find(s).is_none_or(|s| known(s, key)))
-            && (type_access(who, &t.name) != Access::None
-                || fields.any(|f| granted_access(who, t, f) != Access::None))
+            && (shows(typed(t)) || fields.any(|f| shows(granted_access(who, t, f))))
     };
     let (mut asked, mut next) = (vec![&t.name], vec![t]);
     while let Some(t) = next.pop() {
@@ -867,8 +915,8 @@ pub(crate) fn relation_shown<'a>(
         f.is_some_and(|f| field_access(who, t, f) != Access::None)
     };
     let [from, to] = r.derived.as_ref().map(Derived::reads).unwrap_or_default();
-    type_shown(owner, &|n| find(n), who)
-        && type_shown(target, find, who)
+    type_shown(owner, &|n| find(n), who, false)
+        && type_shown(target, find, who, false)
         && r.via.iter().all(|v| known(owner, v))
         && from.iter().all(|n| known(owner, n))
         && to.iter().all(|n| known(target, n))

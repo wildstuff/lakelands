@@ -279,7 +279,7 @@ and every statement names it; no connection's `search_path` is set.
   carrying TLS keys, or naming no user, is refused. The driver reads no
   libpq variables and
   no `.pgpass`.
-- **The server** is PostgreSQL 16 or newer.
+- **The server** is PostgreSQL 18 or newer.
 
 An engine is found by name and opened through `EngineOpener`:
 
@@ -1168,13 +1168,17 @@ and nothing a guest holds can be one.
 
 The store calls the backend for two things.
 
-**A hybrid `search` without a caller's vector** embeds its query text
-through the bound backend and ranks over the result. That is a read,
-and nothing is recorded. A backend that answers other than one vector
-for the one text makes the search `Unavailable`, and so does a backend
-that cannot be reached or fails, whatever error it answers. The lexical
-fallback is for an absent backend, never a failing one, so the same
-query never ranks differently by the network's weather. A search over a
+**A hybrid `search` without a caller's vector, and a vector `search`
+that brings `text`,** embed the query text through the bound backend
+and rank over the result. That is a read, and nothing is recorded. A
+backend that is not bound, cannot be reached or fails, whatever error it
+answers, or answers other than one vector with a direction for the one
+text, leaves a hybrid search its text: it ranks by that alone and says
+so, naming the vector field and the error in `unranked`, and every page
+its cursor continues does the same. A vector search has no other leg, and
+is `Unbound` or `Unavailable`
+(`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`,
+lakelands#1566, lakelands#1567). A search over a
 field declared with `embed` whose model or dimensions are not the bound
 backend's is refused as `Unbound`, naming both: that is a configuration to
 fix, not weather. The search is judged for its caller first, as any
@@ -1182,11 +1186,11 @@ search is, by the shape of the lake it reads (lakelands#741): only one it
 may make has its field's model compared and its text embedded, so a search
 refused for its caller calls nothing and names no model. The model is the
 head's declaration even for a search as of an earlier position, since the
-engines index the head's vectors. A vector search, and a hybrid search
-that brings its own vector, never call the backend; a vector the caller
+engines index the head's vectors. A vector search that brings its
+`vector`, and a hybrid search that brings its own, never call the backend; a vector the caller
 says another model made than the field's is refused as `query_model`
 (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
-A hybrid search without a vector embeds only over a field declared
+A search whose text the lake embeds does so only over a field declared
 with `embed`: over a vector field its writers fill, whose space the
 lake does not know, it is refused as invalid on the field, with a
 backend bound or not, and over a field that holds no vectors as any

@@ -195,7 +195,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 764, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 778, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -1026,40 +1026,30 @@ fn read_stored(stored: &[Value], after: &Value) -> Result<Vec<Value>, (Option<us
     Ok(events)
 }
 
-/// `framed.json`, one append in the stored form (§1.2) after the last
-/// event of `further.json`. Its events recompute; the store's writer frames
-/// them as its `stored` lines, which restore to them byte for byte, at the
-/// seam and read in order; and each of its breaks is refused at its line
-/// for the flaw it names.
-#[test]
-fn a_framed_append_is_stored_as_the_writer_frames_it_and_every_break_is_refused() {
-    let framed = read_json("framed.json");
-    let last = chain().pop().unwrap();
-    assert_eq!(framed["after"]["position"], last.position.0, "it follows");
-    assert_eq!(str_of(&framed["after"], "hash"), last.hash.0, "it follows");
-    let lines: Vec<String> = framed["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| str_of(e, "line").to_owned())
+/// The append `append` holds after the event `last`: each event canonical,
+/// in the chain, its hash and its ingest id (under `v2` with its box, if
+/// it has one) recomputed; the writer's lines for them, framed, are its
+/// `stored`; and those restore, at the seam and read in order, to the
+/// events byte for byte. Answers the framed events.
+fn the_writers_lines(append: &Value, last: &Event) -> Vec<CanonicalEvent> {
+    assert_eq!(append["after"]["position"], last.position.0, "it follows");
+    assert_eq!(str_of(&append["after"], "hash"), last.hash.0, "it follows");
+    let (mut prev, mut appended) = (last.hash.clone(), Vec::new());
+    let lines: Vec<&str> = (append["events"].as_array().unwrap().iter())
+        .map(|e| str_of(e, "line"))
         .collect();
-    let mut prev = last.hash.clone();
-    let mut appended = Vec::new();
-    for (entry, line) in framed["events"].as_array().unwrap().iter().zip(&lines) {
+    for (entry, line) in append["events"].as_array().unwrap().iter().zip(&lines) {
         let event: Event = serde_json::from_str(line).unwrap();
         let at = event.position.0;
-        assert_eq!(
-            canonical::to_vec(&serde_json::from_str::<Value>(line).unwrap()),
-            line.as_bytes()
-        );
+        let value: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(canonical::to_vec(&value), line.as_bytes(), "at {at}");
         assert_eq!(hash_of(line), event.hash.0, "at {at}: hash");
+        assert_eq!(str_of(entry, "hash"), event.hash.0, "at {at}: repeated");
         assert_eq!(
-            str_of(entry, "hash"),
-            event.hash.0,
-            "at {at}: the hash repeated"
+            (&event.prev, event.v),
+            (&prev, LOG_FORMAT_VERSION),
+            "at {at}"
         );
-        assert_eq!(event.prev, prev, "at {at}: it follows the event before it");
-        assert_eq!(event.v, LOG_FORMAT_VERSION, "at {at}: its format");
         let EventBody::RecordIngested {
             ty,
             key,
@@ -1071,7 +1061,11 @@ fn a_framed_append_is_stored_as_the_writer_frames_it_and_every_break_is_refused(
             panic!("at {at}: an ingest");
         };
         let source = event.source.as_ref().unwrap();
-        let id = log::ingest_id(source, ty, key, version.0 - 1, patch);
+        let before = version.0 - 1;
+        let id = match event.sealed.as_ref().and_then(|s| s.boxed.as_deref()) {
+            Some(b) => log::boxed_ingest_id(source, ty, key, before, patch, b),
+            None => log::ingest_id(source, ty, key, before, patch),
+        };
         assert_eq!(id, event.id, "at {at}: its ingest id");
         prev = event.hash.clone();
         appended.push(CanonicalEvent {
@@ -1085,22 +1079,16 @@ fn a_framed_append_is_stored_as_the_writer_frames_it_and_every_break_is_refused(
         });
     }
     log::frame_append(&mut appended);
-    let stored = framed["stored"].as_array().unwrap();
-    let frame = appended[0]
-        .frame
-        .clone()
-        .expect("an append of three is framed");
-    assert_eq!((frame.first, frame.events), (appended[0].position, 3));
+    let frame = appended[0].frame.clone().expect("an append is framed");
+    assert_eq!(
+        (frame.first, frame.events),
+        (appended[0].position, lines.len() as u32)
+    );
     let written = std::iter::once(&frame.bytes).chain(appended.iter().map(|e| &e.bytes));
     let written: Vec<&str> = written.map(|b| std::str::from_utf8(b).unwrap()).collect();
-    assert_eq!(
-        written,
-        stored
-            .iter()
-            .map(|l| l.as_str().unwrap())
-            .collect::<Vec<_>>(),
-        "the writer's lines"
-    );
+    let stored = append["stored"].as_array().unwrap();
+    let said: Vec<&str> = stored.iter().map(|l| l.as_str().unwrap()).collect();
+    assert_eq!(written, said, "the writer's lines");
     for (event, line) in appended.iter().zip(&lines) {
         let (restored, _) = log::restore(event).unwrap();
         assert_eq!(
@@ -1109,16 +1097,26 @@ fn a_framed_append_is_stored_as_the_writer_frames_it_and_every_break_is_refused(
             "restored at the seam"
         );
     }
-    let read = read_stored(stored, &framed["after"]).unwrap();
+    let read = read_stored(stored, &append["after"]).unwrap();
     let read: Vec<Vec<u8>> = read.iter().map(canonical::to_vec).collect();
-    assert_eq!(
-        read,
-        lines
-            .iter()
-            .map(|l| l.as_bytes().to_vec())
-            .collect::<Vec<_>>(),
-        "read in order"
-    );
+    let want: Vec<Vec<u8>> = lines.iter().map(|l| l.as_bytes().to_vec()).collect();
+    assert_eq!(read, want, "read in order");
+    appended
+}
+
+/// `framed.json`, one append in the stored form (§1.2) after the last
+/// event of `further.json`. Its events recompute; the store's writer frames
+/// them as its `stored` lines, which restore to them byte for byte, at the
+/// seam and read in order; and each of its breaks is refused at its line
+/// for the flaw it names.
+#[test]
+fn a_framed_append_is_stored_as_the_writer_frames_it_and_every_break_is_refused() {
+    let framed = read_json("framed.json");
+    let last = chain().pop().unwrap();
+    assert_eq!(framed["after"]["position"], last.position.0, "it follows");
+    assert_eq!(str_of(&framed["after"], "hash"), last.hash.0, "it follows");
+    let appended = the_writers_lines(&framed, &last);
+    assert_eq!(appended.len(), 3, "an append of three is framed");
 
     let breaks = framed["breaks"].as_array().unwrap();
     let shown: Vec<&str> = breaks.iter().map(|b| str_of(b, "shows")).collect();
@@ -1197,6 +1195,24 @@ fn an_ingest_whose_members_are_in_one_box_follows_the_framed_append() {
         }),
         "a box before format 20"
     );
+}
+
+/// `apart.json`, one append of two ingests, each in a delivery of its own
+/// and sealed apart under its own key (065, 083), after the boxed ingest:
+/// its lines hold as `framed.json`'s do, and the frame leaves each line
+/// its `delivery` and its `sealed.apart`.
+#[test]
+fn an_append_of_two_deliveries_sealed_apart_is_stored_as_the_writer_frames_it() {
+    let apart = read_json("apart.json");
+    let last: Event = serde_json::from_str(str_of(&read_json("boxed.json"), "line")).unwrap();
+    assert_eq!(the_writers_lines(&apart, &last).len(), 2);
+    let held = apart["stored"].as_array().unwrap()[1..].iter();
+    let held: Vec<Value> = held
+        .map(|l| serde_json::from_str(l.as_str().unwrap()).unwrap())
+        .collect();
+    let own = |v: &Value| (v["sealed"]["apart"].clone(), v["delivery"].clone());
+    let (a, b) = (own(&held[0]), own(&held[1]));
+    assert!(!a.0.is_null() && !a.1.is_null() && a.0 != b.0 && a.1 != b.1);
 }
 
 /// The breaks of `framed.json`, by the code of the flaw each is refused for.

@@ -1083,7 +1083,7 @@ impl Log {
             written = self.put(parts);
         }
         if let Err((e, _)) = written {
-            let e = self.failed(events, &e);
+            let e = self.failed(events, &e, again);
             self.unsynced = again;
             return Err(e);
         }
@@ -1170,8 +1170,15 @@ impl Log {
     /// log failed with `e`. What it left is read, then cut, before the
     /// error is answered: a group whose commit line is whole stays, and
     /// its outcome is not known. Where the cut fails, the next append or
-    /// seal cuts before it writes, or is refused.
-    fn failed(&mut self, events: &[CanonicalEvent], e: &io::Error) -> lakelands_api::Error {
+    /// seal cuts before it writes, or is refused. One that found no room
+    /// and left nothing is named as that, unless it wrote `again` after a
+    /// failed sync: the handle then writes nothing more.
+    fn failed(
+        &mut self,
+        events: &[CanonicalEvent],
+        e: &io::Error,
+        again: bool,
+    ) -> lakelands_api::Error {
         let last = events.last().map(|e| (e.position, e.hash.clone()));
         let (left, cut) = match self.recover() {
             Ok(()) if self.tip() == last => (Left::Unsure, None),
@@ -1179,6 +1186,10 @@ impl Log {
             Err(cut) => (Left::Uncut, Some(Box::new(cut))),
         };
         let detail = Detail::io(e);
+        if !again && left == Left::Nothing && lakelands_core::no_room(e) {
+            let part = Some(Part::Log);
+            return Error::unavailable(Situation::NoRoom { part, detail });
+        }
         Error::unavailable(Situation::AppendFailed { detail, left, cut })
     }
 

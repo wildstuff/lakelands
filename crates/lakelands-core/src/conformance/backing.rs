@@ -142,6 +142,9 @@ pub const WEATHER: &str = "weather";
 /// A text the suite's embedding backend makes the vector of zeros.
 pub const NOWHERE: &str = "nowhere";
 
+/// A text it answers two vectors for, where one was asked.
+pub const TWICE: &str = "twice";
+
 /// A text the suite's embedding backend makes `(0, 1)`.
 pub const NORTH: &str = "north";
 
@@ -204,8 +207,10 @@ impl EmbedBackend for Embedder {
             return Err(fail(Remote::Embedding { model }));
         }
         let dimensions = self.dimensions as usize;
+        let twice = matches!(texts, [one] if one.starts_with(TWICE));
         Ok(texts
             .iter()
+            .chain(texts.iter().take(usize::from(twice)))
             .map(|t| {
                 let mut v = vec![0.0; dimensions];
                 let at = usize::from(t.starts_with(NORTH));

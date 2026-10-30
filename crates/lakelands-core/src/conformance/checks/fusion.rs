@@ -224,6 +224,7 @@ pub(super) fn along(weight: Option<f64>, field: &str, also: Option<f64>) -> Sear
     SearchMode::Vector {
         field: "v".into(),
         vector: vector.clone(),
+        text: None,
         weight,
         also: vec![VectorTerm {
             field,
@@ -312,6 +313,7 @@ async fn a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it(
     let lone = SearchMode::Vector {
         field: "v".into(),
         vector: vec![1.0, 0.0],
+        text: None,
         weight: Some(2.0),
         also: Vec::new(),
         model: None,

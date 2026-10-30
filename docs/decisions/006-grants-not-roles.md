@@ -44,7 +44,10 @@ absent from `fields`, `masked` and `meta`, from every read schema, from
 `describe`'s derivation and meaning, and from the names a host's watch
 shows. For writing it is as `write`: `upsert`, `ingest` under its
 door's authority, a verb's effect, a proposal, and `retire` when every
-other field is writable too.
+other field is writable too. A type its principal may write and not
+read, and one keyed by a field it may only write, is not declared to a
+read and is described for its writes alone
+(`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
 
 - **Nothing flows back.** A write answers what any write answers, its
   position and version, never the value or the field's provenance, and
@@ -376,16 +379,23 @@ that reads a view is granted something of each of its sources.
 holds their values. So a type keyed by a field its principal may not
 know of is not shown to it: it answers as a type that is not declared,
 and so does every type made of it, a link type of its relations and a
-view over it. A key field the principal sees masked or may only write
-still gives its value through the key: the field is known, and only its
-value is withheld elsewhere. A grouped view's records are keyed by its
-`group_by`, and an ungrouped view's one record by no field. A view
-declares no other `key` (018), and one that holds another all the same,
-a host's own type, which passes no `declare`, is judged by its groups
-too: no view is hidden for a field its records do not carry as their
-key. A grouped view's key is judged at its sources too: each key field
-on the view, on its source and on each merge source by position, since
-the key holds their values. It is also the key `describe`, the tools and
+view over it. A key field the principal sees masked still gives its
+value through the key: the field is known, and only its value is
+withheld elsewhere. A key field granted `write_only` is one its
+principal may not know of to read, since for reading it is as `none`:
+a record key would hand out its value (lakelands#1572). Only the
+reading side is withheld: the type is hidden from its reads and shown
+to its writes, upsert and retire, since a write names the key and
+answers no value of it
+(`docs/decisions/092-reading-is-judged-apart-from-writing.md`). A
+grouped view's records are keyed by its `group_by`, and an ungrouped
+view's one record by no field. A view declares no other `key` (018),
+and one that holds another all the same, a host's own type, which
+passes no `declare`, is judged by its groups too: no view is hidden for
+a field its records do not carry as their key. A grouped view's key is
+judged at its sources too: each key field on the view, on its source
+and on each merge source by position, since the key holds their values.
+It is also the key `describe`, the tools and
 a listed declaration name. A view's definition shown to a principal
 names no measure of a field it may not know of, as its fields do not. A
 measure that reads such a measure by name, directly or through another,
@@ -515,7 +525,10 @@ read nor named the type in the pattern, search and subscribe tools.
   field**: the value of one that is read, the name of one that is masked,
   in the declaration's order, and nothing of one that is hidden or only
   written. One who reads no field is still answered the record; that is
-  how it sees what is withheld, and what a writer writes against.
+  how it sees what is withheld, and what a writer writes against. One
+  that sees no field, granted nothing of the type but writes, is not
+  shown it for reading
+  (`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
 - **The probe is refused.** A filter, an order, an aggregate
   or a search over a field the principal does not read is not granted
   (below), so `may.find` promises the door, not every question.
@@ -547,7 +560,10 @@ alone; with the start hidden, by the end alone, a record holding while
 it has not ended. A refusal, or a filter by the hidden bound, would tell
 the reader that a valid time it is not shown exists. A type in force
 with a `valid_to` and no `valid_from` (028) is filtered by nothing, so
-its read probes nothing either (lakelands#909).
+its read probes nothing either (lakelands#909). A grant that says
+`dates_by_hidden_valid_time` filters by the stored bounds, shown or not,
+and probes neither; the bounds stay withheld
+(`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
 
 A walk keeps each record it meets by its own type's valid time, so it
 probes every type it can meet, not only the one a step is judged to

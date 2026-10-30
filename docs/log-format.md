@@ -1199,7 +1199,16 @@ the first release with real installations
   format to the release's, in the release's; from there the lake is
   written in the new format. Another writer that upgraded the lake
   between this open's look at the log's ends and its lease leaves it
-  nothing to mark. `lakelands upgrade` is that open as a command, and
+  nothing to mark. An open that is refused leaves the log as it was,
+  but for two refusals that say otherwise: `not_folded`, whose events
+  are in the log and whose fold failed, and `append_failed`, whose
+  `left` says what the append left (a group whose commit line is whole
+  may be in the log). Whatever else can refuse the open, a forgetting a
+  crash left half done among it, runs before its append, so a lake that
+  owed an upgrade still owes it, and the open after the cause is gone
+  upgrades it once (lakelands#1564).
+  One refused for lack of room says so (`no_room`): free space, then
+  open the lake again. `lakelands upgrade` is that open as a command, and
   `--check` says what it would do and opens nothing. An import of an
   export of an older format imports its events as they are, and a
   writer's open then upgrades the new lake, under a lease above every

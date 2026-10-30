@@ -68,7 +68,11 @@ state names, with other elements, and it stays as that state wrote it.
 
 A row holds its elements as 8-byte doubles, or as 4-byte `f32`s with a
 flag that says so where every element is exactly an `f32`, as every
-element an embedding backend makes is. A read widens the `f32`s, so it
+element an embedding backend makes is. The model that makes them is the
+field's, and a search whose query the lake embeds over the field is
+embedded by that model too
+(`025 § A vector search may bring words, and the lake embeds them with
+the field's model`). A read widens the `f32`s, so it
 answers the double the write gave in both forms, in the log's number
 form as today (`docs/log-format.md` §1.2): an integral element as an
 integer, `-0` as `0`. A ranking takes each

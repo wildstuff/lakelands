@@ -31,10 +31,16 @@ fn an_append_that_failed_never_cuts_a_commit_line_that_is_whole() {
     let mut reader = Log::open(&dir, false).unwrap();
     assert_eq!(reader.read(Position(0), 9).unwrap(), events[..4]);
     let sync = io::Error::other("the sync failed");
-    let e = writer.failed(&events[2..4], &sync);
+    let e = writer.failed(&events[2..4], &sync, false);
     assert!(e.to_string().contains("the outcome is not known"), "{e}");
     assert_eq!(reader.read(Position(2), 9).unwrap(), events[2..4]);
     assert_eq!(writer.tip().map(|t| t.0), Some(Position(3)));
+    // One that found no room and left nothing says so, unless it wrote
+    // again after a failed sync (lakelands#1568).
+    let full = io::Error::from(io::ErrorKind::StorageFull);
+    let mut no_room = |again| writer.failed(&events[4..], &full, again).to_string();
+    assert!(no_room(false).contains("there is no room left"));
+    assert!(!no_room(true).contains("there is no room left"));
 
     // Half a line is left, and the segment cannot be opened to cut it.
     let (segment, aside) = (segment_path(&dir, 0), dir.join("aside"));
@@ -42,7 +48,7 @@ fn an_append_that_failed_never_cuts_a_commit_line_that_is_whole() {
     file.as_mut().unwrap().write_all(b"{\"half").unwrap();
     std::fs::rename(&segment, &aside).unwrap();
     std::fs::create_dir(&segment).unwrap();
-    let e = writer.failed(&events[4..], &sync);
+    let e = writer.failed(&events[4..], &sync, false);
     assert!(e.to_string().contains("or is refused"), "{e}");
     assert!(writer.append(Some(1), &events[4..]).is_err(), "it wrote");
     std::fs::remove_dir(&segment).unwrap();

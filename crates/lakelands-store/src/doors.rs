@@ -39,7 +39,7 @@ use crate::batch::Asked;
 use crate::exec::{self, Turn};
 use crate::ingest;
 use crate::lake::{Lake, owing};
-use crate::reads::{Judged, Pulled, Reader};
+use crate::reads::{Judged, Pulled, Reader, Unmade, embedding_unbound};
 use crate::writes::{self, Call, External, MadeDue, When};
 
 /// When a read reads: its axes, and the clock a cursor carries from its
@@ -77,10 +77,11 @@ pub type Standing = std::pin::Pin<Box<dyn std::future::Future<Output = Result<()
 /// as one does, and every `every` asks whether the lease is free and
 /// takes it if so, as a writer's open takes it. From then on it is the
 /// lake's writer. A try that fails ends the tries, and the [`Standing`]
-/// answers its error, as a writer's open that fails answers it: what the
-/// open appended under the lease before it failed stays, and the lease
-/// is given up again. While the lease is held elsewhere a try changes
-/// nothing.
+/// answers its error, as a writer's open that fails answers it: the log
+/// is as it was, but for a `not_folded`, whose append is in it, and an
+/// `append_failed`, whose `left` says what the append left; and the
+/// lease is given up again. While the lease is held elsewhere a try
+/// changes nothing.
 pub async fn standby(
     location: Location,
     seams: Seams,
@@ -172,12 +173,12 @@ pub(crate) fn seen(
     who: Principal,
 ) -> Result<(Principal, Option<usize>, Option<writes::Shown>)> {
     let none = Vec::<lakelands_api::engine::Declared>::new();
-    let (mut sight, mut followed) = lake.sight(who.clone(), None, None, &none)?;
+    let (mut sight, mut followed) = lake.sight(who.clone(), (None, false), None, &none)?;
     let head = || lake.engine.view(None).and_then(|v| lake.shape(v.as_ref()));
     let head = sight.hides_some().then(head).transpose()?;
     if let Some(head) = &head {
         let renames = Some(&head.renames[..]);
-        (sight, followed) = lake.sight(who.clone(), None, renames, head.as_ref())?;
+        (sight, followed) = lake.sight(who.clone(), (None, false), renames, head.as_ref())?;
     }
     let shown = head.as_ref().map(|head| writes::Shown {
         asked: who,
@@ -236,7 +237,7 @@ fn reading<T>(
     let renames = at.as_of.is_none().then_some(&shape.renames[..]);
     // A reference to a type it is not shown is a field it may not know of,
     // by the types the read reads (024, extended).
-    let (sight, _) = lake.sight(who, at.as_of, renames, shape.as_ref())?;
+    let (sight, _) = lake.sight(who, (at.as_of, true), renames, shape.as_ref())?;
     // A record held now is not there at any position to a reader without
     // the grant, and one released since is (006, extended).
     let held_now = at.as_of.is_some() && !sight.sees_restricted();
@@ -615,6 +616,59 @@ impl Doors {
         })?;
         Ok((at, recorded))
     }
+
+    /// The query vector the lake makes of `s`'s text, for a field the
+    /// head declares as `declared`. A field declared as the embedding of a
+    /// model is searched with that model's vectors only: another bound
+    /// model, or one making vectors of other dimensions, is a configuration
+    /// to fix, not weather, and refused. The leg's own failure is inside:
+    /// no backend bound, or the backend's.
+    async fn embedded(
+        &self,
+        s: &Search,
+        declared: Option<&FieldDecl>,
+    ) -> Result<std::result::Result<Vec<f32>, Error>> {
+        let Some((field, text)) = s.mode.embeds() else {
+            return Ok(Ok(Vec::new()));
+        };
+        let Some(embed) = self.lake.embed() else {
+            return Ok(Err(embedding_unbound(&s.ty, field, declared, None)));
+        };
+        let held = declared.and_then(|f| Some((&f.embed.as_ref()?.model, f.ty.dimensions)));
+        if let Some((model, dimensions)) = held
+            && (model != embed.model() || dimensions.unwrap_or(0) != embed.dimensions())
+        {
+            let bound = Some(lakelands_api::error::Bound {
+                model: embed.model().to_owned(),
+                dimensions: embed.dimensions(),
+            });
+            return Err(embedding_unbound(&s.ty, field, declared, bound));
+        }
+        let made = embed.embed(&[text.to_owned()]).await.map_err(|e| match e {
+            e @ Error::Unavailable { .. } => e,
+            other => {
+                let cause = Box::new(other);
+                backend_failed(embed.model(), Exchange::Failed { cause })
+            }
+        });
+        // A vector the backend made with no direction is its fault, not
+        // the caller's: weather, as a wrong count of vectors is.
+        Ok(made.and_then(|mut vectors| {
+            let exchange = match &vectors[..] {
+                [one] => {
+                    lakelands_api::query::no_direction(one).map(|why| Exchange::NoDirection { why })
+                }
+                _ => {
+                    let (answered, asked) = (vectors.len() as u64, 1);
+                    Some(Exchange::Vectors { answered, asked })
+                }
+            };
+            match exchange {
+                Some(exchange) => Err(backend_failed(embed.model(), exchange)),
+                None => Ok(vectors.pop().unwrap_or_default()),
+            }
+        }))
+    }
 }
 
 #[async_trait]
@@ -759,96 +813,63 @@ impl Catalog for Doors {
 
     async fn search(&self, who: &Principal, mut search: Search) -> Result<Reply<Hits>> {
         let at = cursor_at(search.at, search.cursor.as_ref())?;
-        // A hybrid search without a caller's vector embeds its text through
-        // the bound embedding backend, if the host bound one. This is a
-        // read: nothing is recorded. It is judged for its caller first, by
-        // the read's shape, as the read below judges it again: one refused
-        // calls nothing and names no model. A later page of a second stage
-        // answers the keys its cursor carries and embeds nothing (067).
+        // A search whose query vector the lake makes embeds its text
+        // through the bound embedding backend. This is a read: nothing is
+        // recorded. It is judged for its caller first, by the read's shape,
+        // as the read below judges it again: one refused calls nothing and
+        // names no model. A later page of a second stage answers the keys
+        // its cursor carries and embeds nothing (067).
         let staged = search.rerank.is_some() && search.cursor.is_some();
-        let unvectored = matches!(search.mode, SearchMode::Hybrid { vector: None, .. });
-        let (embed, mut judged) = (self.lake.embed().filter(|_| unvectored && !staged), None);
         let sent = search.rerank.is_some().then(|| search.mode.clone());
-        if embed.is_some() {
+        // A page of a hybrid search its text alone ranked is ranked so to
+        // its end, and repeats why: its cursor carries it (025).
+        let cursor = search.cursor.as_ref();
+        let text_alone = cursor.is_some_and(|c| crate::reads::text_alone(c, &search));
+        let hybrid = matches!(search.mode, SearchMode::Hybrid { .. });
+        let mut unmade = None;
+        let embeds = search.mode.embeds().is_some() && !staged && !text_alone;
+        if embeds && hybrid && self.lake.embed().is_none() {
+            // With no backend bound it asks nothing and reads once: its read
+            // judges it and names the field's model, at any page (025).
+            unmade = Some(Unmade::Unbound);
+        } else if embeds {
             let s = search.clone();
             // The engines index the head's vectors only, so a search at any
             // position embeds by the head's declaration, as `searched`
             // judged it there (025).
+            // A second stage that cannot be is refused first, as the read
+            // refuses it (067).
             let head = move |r: &Reader<'_>, _| {
+                r.rerank_top(&s)?;
                 let (.., mut ranks) = r.searched(&s)?;
                 let field = s.mode.vectors().first().map(|v| v.0.clone());
                 Ok(Ok(field.and_then(|f| ranks.fields.remove(&f))))
             };
-            judged = Some(self.read_to(who, at, true, head).await?.data);
-        }
-        if let (
-            SearchMode::Hybrid {
-                text,
-                field,
-                vector: vector @ None,
-                ..
-            },
-            Some(embed),
-            Some(declared),
-        ) = (&mut search.mode, embed, judged)
-        {
-            // A field declared as the embedding of a model is searched with
-            // that model's vectors only: another bound model, or one making
-            // vectors of other dimensions, is a configuration to fix, not
-            // weather.
-            let declared = declared.and_then(|f| {
-                let e = f.embed.as_ref()?;
-                Some((e.model.clone(), f.ty.dimensions.unwrap_or(0)))
-            });
-            if let Some((model, dimensions)) = declared
-                && (model != embed.model() || dimensions != embed.dimensions())
-            {
-                let bound = Some(lakelands_api::error::Bound {
-                    model: embed.model().to_owned(),
-                    dimensions: embed.dimensions(),
-                });
-                let (ty, field) = (search.ty.clone(), field.to_string());
-                return Err(Error::unbound(Seam::Embedding {
-                    model,
-                    dimensions,
-                    ty,
-                    field,
-                    bound,
-                }));
+            let judged = self.read_to(who, at, true, head).await?.data;
+            // A hybrid search whose vector the lake cannot make ranks by its
+            // text alone and says why; a later page of one its vector ranked
+            // is unavailable as before (025). A vector search has no other leg.
+            match self.embedded(&search, judged.as_ref()).await? {
+                Ok(made) => match &mut search.mode {
+                    SearchMode::Hybrid { vector, .. } => *vector = Some(made),
+                    SearchMode::Vector { vector, text, .. } => (*vector, *text) = (made, None),
+                    SearchMode::Lexical { .. } => {}
+                },
+                Err(why) if hybrid && search.cursor.is_none() => unmade = Some(Unmade::Failed(why)),
+                Err(why) => return Err(why),
             }
-            let mut vectors =
-                embed
-                    .embed(std::slice::from_ref(text))
-                    .await
-                    .map_err(|e| match e {
-                        e @ Error::Unavailable { .. } => e,
-                        other => {
-                            let cause = Box::new(other);
-                            backend_failed(embed.model(), Exchange::Failed { cause })
-                        }
-                    })?;
-            // A vector the backend made with no direction is its fault, not
-            // the caller's: weather, as a wrong count of vectors is.
-            let exchange = match &vectors[..] {
-                [one] => {
-                    lakelands_api::query::no_direction(one).map(|why| Exchange::NoDirection { why })
-                }
-                _ => {
-                    let (answered, asked) = (vectors.len() as u64, 1);
-                    Some(Exchange::Vectors { answered, asked })
-                }
-            };
-            if let Some(exchange) = exchange {
-                return Err(backend_failed(embed.model(), exchange));
-            }
-            *vector = vectors.pop();
         }
         // The second stage ranks a window of the first on a first page, and
         // a cursor carries its order after (067).
         let (mut at, mut scores) = (at, None);
         if search.rerank.is_some() && search.cursor.is_none() {
-            let s = search.clone();
-            let window = self.read_to(who, at, true, move |r, pulled| r.rerank_window(&s, pulled));
+            let (s, unmade) = (search.clone(), unmade.clone());
+            let window = self.read_to(who, at, true, move |r, pulled| {
+                if let Some(why) = &unmade {
+                    r.unmade(why.clone());
+                }
+                r.rerank_window(&s, pulled)
+            });
             let (scored, pinned) = self.rerank(at, window.await?).await?;
             (scores, at) = (Some(scored), pinned);
         }
@@ -860,13 +881,16 @@ impl Catalog for Doors {
             search.mode = sent;
         }
         let ranks = search.rerank.is_none();
-        self.read_to(who, at, ranks, move |r, pulled| {
+        let hits = self.read_to(who, at, ranks, move |r, pulled| {
             if let Some(staged) = &scores {
                 r.stage(staged.clone());
             }
+            if let Some(why) = &unmade {
+                r.unmade(why.clone());
+            }
             r.search(&search, pulled)
-        })
-        .await
+        });
+        hits.await
     }
 
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome> {

@@ -178,3 +178,28 @@ fn a_verb_grant_stays_with_the_type_name_it_is_given_under() {
     assert_eq!(at(Some(Position(3)), "invoice"), ["pay"]);
     assert_eq!(at(None, "bill"), ["send"]);
 }
+
+#[test]
+fn dating_by_a_hidden_valid_time_holds_only_where_every_name_of_the_type_says_it() {
+    let (to, at) = (Some("offer".into()), Position(4));
+    let renamed = [Renamed {
+        at,
+        ty: "quote".into(),
+        renames: Vec::new(),
+        to,
+    }];
+    let at = |quote: Option<bool>, offer: bool| {
+        let mut g = Grants::default();
+        let dated = |yes| TypeGrants {
+            dates_by_hidden_valid_time: yes,
+            ..TypeGrants::default()
+        };
+        (quote.map(dated)).map(|q| g.types.insert("quote".into(), q));
+        g.types.insert("offer".into(), dated(offer));
+        g.follow(&renamed, None);
+        g.types[&TypeName::from("offer")].dates_by_hidden_valid_time
+    };
+    // A grant under another name the type bore only takes away.
+    assert!(at(None, true) && at(Some(true), true));
+    assert!(!at(Some(false), true) && !at(Some(true), false));
+}

@@ -175,7 +175,7 @@ impl<'a> Reader<'a> {
                     renames: m.renames.clone(),
                     to: None,
                 });
-                let left = Sight::new(asked.clone(), &renames, None, o);
+                let left = Sight::reading(asked.clone(), &renames, None, o);
                 if self.sight.holds_only() || !left.would_show(&m.to) {
                     return Ok(None);
                 }
@@ -200,7 +200,7 @@ impl<'a> Reader<'a> {
                     false => None,
                 };
                 if let Some(was) = &was {
-                    let then = Sight::new(asked.clone(), &self.shape.renames, Some(at), was);
+                    let then = Sight::reading(asked.clone(), &self.shape.renames, Some(at), was);
                     for held in declarations
                         .iter()
                         .filter(withdraws)
@@ -285,9 +285,9 @@ impl<'a> Reader<'a> {
         };
         let renames = &self.shape.renames;
         let then = was.as_ref();
-        let then = then.map(|was| (Sight::new(asked.clone(), renames, Some(at), was), was));
+        let then = then.map(|was| (Sight::reading(asked.clone(), renames, Some(at), was), was));
         let left = after.as_ref();
-        let left = left.map(|(all, put)| (Sight::new(asked.clone(), renames, None, all), put));
+        let left = left.map(|(all, put)| (Sight::reading(asked.clone(), renames, None, all), put));
         let then: Under<'_> = then.as_ref().map(|(s, o)| (s, *o));
         let left: Under<'_> = left.as_ref().map(|(s, o)| (s, *o));
         let force: Under<'_> = Some((self.sight, o));
@@ -889,7 +889,7 @@ impl<'a> Reader<'a> {
             // Its references held as that lake shows them (024, extended).
             let judged = view.and_then(|v| {
                 let o = Ontology::at(v.as_ref())?;
-                let then = Sight::new(asked.clone(), &self.shape.renames, Some(at), &o);
+                let then = Sight::reading(asked.clone(), &self.shape.renames, Some(at), &o);
                 crate::writes::conditions(&o, v.as_ref(), then.who(), report, &old)
             });
             if judged.is_err() {

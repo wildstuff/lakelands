@@ -101,7 +101,11 @@ pub fn window(
     let mut w = lake.for_write()?;
     // Under the writer, so through every rename the lake has folded, and
     // with its references as the head's types show them (024, extended).
-    let who = (lake.sight(who.clone(), None, None, &w.ontology)?.0.who()).clone();
+    let who = (lake
+        .sight(who.clone(), (None, false), None, &w.ontology)?
+        .0
+        .who())
+    .clone();
     let (who, followed) = (&who, None);
     let call = Call {
         lake,

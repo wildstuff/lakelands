@@ -987,6 +987,12 @@ catalog! {
         } => "{part} is damaged[ at position {position}]: {flaw}",
         /// The storage failed.
         Storage { doing: Doing, part: Part, detail: Detail } => "the storage failed while {doing} {part}: {detail}",
+        /// The disk, the volume or the database server written to had no room left: free space there, then repeat what failed, a writer's open by opening the lake again. A writer's open refused with it, and not with it as the cause of `not_folded`, appended nothing, so a lake that owed an upgrade still owes it.
+        NoRoom {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            part: Option<Part>,
+            detail: Detail,
+        } => "there is no room left to write [{part}|to the lake's storage]: {detail}; free space there, then repeat what failed: for a writer's open, open the lake again",
         /// An append to the log failed; what it left, and why the cut after it failed where it did.
         AppendFailed {
             detail: Detail,
@@ -1021,7 +1027,7 @@ catalog! {
         /// An import stopped part way, at the position it reached.
         ImportStopped { reached: Position, lake: String, cause: Box<Error> } => "the import stopped at position {reached}: {cause}; the lake `{lake}` holds the export's events before that position, a true prefix that is not the exported lake, and refuses another import; remove it and import again",
         /// The PostgreSQL server is older than the engine needs.
-        ServerTooOld { major: u32, minor: u32 } => "the server is PostgreSQL {major}.{minor}; the engine needs PostgreSQL 16 or newer, and nothing was created",
+        ServerTooOld { major: u32, minor: u32 } => "the server is PostgreSQL {major}.{minor}; the engine needs PostgreSQL 18 or newer, and nothing was created",
         /// A transaction-mode connection pooler seems to sit in front of the server.
         Pooler => "the connection does not keep its session; a transaction-mode connection pooler seems to sit in front of the server. The writer lease is a session lock, which such a pooler loses or hands to another client, so the lake was not opened for writing. Connect directly or through a session-mode pooler.",
         /// TLS cannot be set up for the lake's connection, with the library's words if it gave any.

@@ -808,3 +808,33 @@ fn the_vectors_quarantined_box_opens_and_seals_to_the_same_bytes() {
     seal(&mut ingest, &mut other, &source, &cipher(&key()));
     assert_ne!(other.boxed, sealed.boxed);
 }
+
+/// Each box of `apart.json`, the append of two deliveries sealed apart,
+/// opens under the vectors' key composed with its own key apart, `a2` and
+/// `a3`, to its member, and under the other's or the version alone it does
+/// not; sealed again it gives the box the log holds (065).
+#[test]
+fn each_box_of_two_deliveries_sealed_apart_opens_under_its_own_composed_key() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/vectors/21/apart.json");
+    let apart: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let composed = |name: &str| {
+        let apart = DataKey(Sha256::digest(name.as_bytes()).into());
+        cipher(&super::compose(&key(), &[apart]))
+    };
+    let own = [
+        ("lakelands:vectors:apart2", "dora@example.org"),
+        ("lakelands:vectors:apart3", "emil@example.org"),
+    ];
+    for (i, entry) in apart["events"].as_array().unwrap().iter().enumerate() {
+        let event: Event = serde_json::from_str(entry["line"].as_str().unwrap()).unwrap();
+        let mut plain = event.clone();
+        open(&mut plain, &composed(own[i].0)).unwrap();
+        assert_eq!(patch_of(&plain)["email"], json!(own[i].1));
+        open(&mut event.clone(), &composed(own[1 - i].0)).unwrap_err();
+        open(&mut event.clone(), &cipher(&key())).unwrap_err();
+        let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+        seal(&mut plain.body, &mut sealed, &source, &composed(own[i].0));
+        assert_eq!((plain.body, Some(sealed)), (event.body, event.sealed));
+    }
+}

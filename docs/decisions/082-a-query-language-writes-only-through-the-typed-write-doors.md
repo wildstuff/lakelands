@@ -87,6 +87,21 @@ An agent at the MCP door changes many records through 081's typed
 tools, whose plan is structured so a host can word it for the person
 who confirms it.
 
+The tool's refusal stands in front of the translation, and no second
+check follows it. A statement becomes a write only in `translate`, and
+`run` is the only way any door gets there. `translate` makes a write of a
+statement exactly when its parser meets an updating clause, and the
+parser notes each such clause where it meets it, before it reads the
+clause. The guard runs that same parser over the same statement and the
+same parameters, so a statement the guard lets pass has no updating clause
+before the point where the parser stops, and the translation stops at the
+same point, with a refusal and no write. Parameters the guard cannot read
+as parameters are refused by the door as well, since both read them as one
+type. Nothing reaches the store from the tool except through the form the
+guard has already judged, so a check after the translation would repeat
+the guard's question about a value that cannot differ, and the refusal it
+would give has no clause or offset to name.
+
 ## Why
 
 A developer or a reporting tool that reads a lake in openCypher will
