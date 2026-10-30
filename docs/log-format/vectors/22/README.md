@@ -239,6 +239,22 @@ The files:
   release's format, its hash, its patch holding none of the members
   `fields` names, the box padded base64 past the tag, and its ingest id
   under `lakelands:ingest:v2` with the box.
+- `apart.json`: the append after the boxed ingest, two `record_ingested`
+  of `hr` at positions 101 and 102 (`docs/log-format.md` §1.2, §1.4), each
+  in a delivery of its own, `pair-a` and `pair-b`, and each sealed apart:
+  `sealed` names `hr`'s version `1` and, in `apart`, the delivery's own
+  key, `a2` and `a3`, and `email` is in one box under the key HKDF-SHA-256
+  derives from the two. `a2` is SHA-256 of `lakelands:vectors:apart2` and
+  `a3` of `lakelands:vectors:apart3`, as `a1` is of
+  `lakelands:vectors:apart`. `stored` is the writer's form: a frame line
+  holding what the two share, which leaves out `delivery` and `sealed.apart`
+  and `sealed.box`, and each event's line holding its own of the three;
+  `events` are the canonical events those lines restore to, with their
+  hashes and ingest ids, made under `lakelands:ingest:v2` with the box.
+  Each verifier recomputes the events, makes the writer's lines from them
+  and holds them to `stored`, restores `stored` byte for byte, and holds
+  each box to its form; `lakelands-store`'s `sealing` tests open each box
+  under the version composed with its own key apart.
 - `schema-hash.json`: a view type whose conditions are written as text,
   the shape object it hashes (conditions in typed form, Appendix B), the
   shape's canonical bytes, and the schema hash; and the hash of the same
@@ -292,8 +308,9 @@ serialiser: every line's `v`, `lake_created`'s `format`, each `prev` and
 `hash` along the chain, the checkpoint's hash and digest, the hashes
 `expected.json` and `further.json` repeat, the `misplaced` lines, the
 framed append, whose stored lines it writes again from its restamped
-events and whose breaks it moves to format N, both negative vectors, and
-`FORMAT` in `verify.py`.
+events and whose breaks it moves to format N, the boxed ingest, the append
+of `apart.json` with its stored lines written again, both negative
+vectors, and `FORMAT` in `verify.py`.
 It then checks what it wrote. No id changes: none is made from `v`. The
 repository's tests hold the result to `LOG_FORMAT_VERSION` and to the
 version `docs/log-format.md` opens with. Called without a number, or

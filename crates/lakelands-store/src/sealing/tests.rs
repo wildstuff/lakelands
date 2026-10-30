@@ -816,7 +816,7 @@ fn the_vectors_quarantined_box_opens_and_seals_to_the_same_bytes() {
 #[test]
 fn each_box_of_two_deliveries_sealed_apart_opens_under_its_own_composed_key() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/21/apart.json");
+        .join("../../docs/log-format/vectors/22/apart.json");
     let apart: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let composed = |name: &str| {
         let apart = DataKey(Sha256::digest(name.as_bytes()).into());
