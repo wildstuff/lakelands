@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::query::{Hits, Search, SearchMode};
-use lakelands_api::read::ReadAt;
 use lakelands_api::seam::{EmbedBackend, Seams};
-use lakelands_api::{Cursor, LakeStore, Location, TypeName, canonical};
+use lakelands_api::{Cursor, LakeStore, Location, canonical};
 use lakelands_core::conformance::backing;
+use lakelands_core::conformance::fixture::searched;
 use lakelands_core::conformance::fixture::{Lake, doors, embedding, owner, searchable, type_decl};
 use lakelands_engine_mem::MemoryOpener;
 use serde_json::json;
@@ -38,27 +38,10 @@ async fn open(
 /// A page of a hybrid search for "quayside harbour" over `e`, without a
 /// vector.
 async fn page(store: &dyn LakeStore, cursor: Option<Cursor>) -> Hits {
-    let mode = SearchMode::Hybrid {
-        text: "quayside harbour".into(),
-        field: "e".into(),
-        vector: None,
-        fields: None,
-        text_fields: None,
-        weight: None,
-        text_weight: None,
-        model: None,
-    };
+    let mode = SearchMode::hybrid("quayside harbour", "e");
     let search = Search {
-        ty: TypeName::from("doc"),
-        mode,
-        k: 1,
         cursor,
-        filter: None,
-        with_meta: false,
-        matches: false,
-        at: ReadAt::default(),
-        rerank: None,
-        text_as_of: false,
+        ..searched("doc", mode, 1)
     };
     let got = doors(store).search(&owner(store), search).await;
     got.expect("a page of the search").data

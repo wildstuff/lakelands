@@ -15,6 +15,7 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::Declaration;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_core::engines;
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
@@ -50,15 +51,13 @@ fn walked() -> Vec<StoredRecord> {
                 fields["x"] = json!(i % 7);
             }
             StoredRecord {
-                ty: "t".into(),
-                key: format!("k{i:05}").into(),
-                version: Version(1),
-                fields: serde_json::from_value(fields).unwrap(),
-                meta: Default::default(),
-                position: Position(1),
-                made: Position(1),
-                retired: false,
                 restricted: i % 13 == 4,
+                ..stored_record(
+                    "t",
+                    format!("k{i:05}"),
+                    serde_json::from_value(fields).unwrap(),
+                    1,
+                )
             }
         })
         .collect();
@@ -79,17 +78,12 @@ fn a_count_and_a_page_under_an_exact_text_are_handed_the_records_holding_it() {
     p.begin().unwrap();
     for i in 0..N {
         let v = if i % 1000 == 500 { "b" } else { "a" };
-        p.put_record(&StoredRecord {
-            ty: "t".into(),
-            key: format!("k{i:04}").into(),
-            version: Version(1),
-            fields: serde_json::from_value(json!({"v": v})).unwrap(),
-            meta: Default::default(),
-            position: Position(1),
-            made: Position(1),
-            retired: false,
-            restricted: false,
-        })
+        p.put_record(&stored_record(
+            "t",
+            format!("k{i:04}"),
+            serde_json::from_value(json!({"v": v})).unwrap(),
+            1,
+        ))
         .unwrap();
     }
     p.commit(Position(1)).unwrap();
@@ -376,17 +370,14 @@ fn read_by_key(engine: &dyn LakeEngine) {
     }))
     .unwrap();
     let state = |id: &str, n: u64| StoredRecord {
-        ty: "t".into(),
-        key: lakelands_api::key::key_component(&json!(id))
-            .unwrap()
-            .into(),
         version: Version(n),
-        fields: serde_json::from_value(json!({"id": id, "n": n})).unwrap(),
-        meta: Default::default(),
-        position: Position(n),
         made: Position(1),
-        retired: false,
-        restricted: false,
+        ..stored_record(
+            "t",
+            lakelands_api::key::key_component(&json!(id)).unwrap(),
+            serde_json::from_value(json!({"id": id, "n": n})).unwrap(),
+            n,
+        )
     };
     let ids = (0..N).map(|i| format!("k{i:04}"));
     let p = engine.projection();

@@ -17,12 +17,12 @@ use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::event::Digest;
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
+use lakelands_api::id::Position;
 use lakelands_api::ontology::StorageKind::Text;
-use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Error, Location};
 use lakelands_core::conformance::engine::{chain, seal};
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_core::conformance::fixture::{Lake, source_record, sourced, type_decl};
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
@@ -653,17 +653,12 @@ fn a_writer_that_gives_its_lease_up_leaves_the_journal_empty() {
     let fold = |at: u64| {
         let p = engine.projection();
         p.begin().unwrap();
-        p.put_record(&StoredRecord {
-            ty: TypeName::from("note"),
-            key: RecordKey::from(format!("n{at}")),
-            version: Version(1),
-            fields: serde_json::from_value(json!({"text": "x".repeat(4000)})).unwrap(),
-            meta: Default::default(),
-            position: Position(at),
-            made: Position(at),
-            retired: false,
-            restricted: false,
-        })
+        p.put_record(&stored_record(
+            "note",
+            format!("n{at}"),
+            serde_json::from_value(json!({"text": "x".repeat(4000)})).unwrap(),
+            at,
+        ))
         .unwrap();
         p.commit(Position(at)).unwrap();
     };

@@ -873,16 +873,7 @@ async fn judged(
     (ty, field, filter): (&str, &str, Option<&str>),
     text: &str,
 ) -> (Result<String, String>, usize) {
-    let mode = SearchMode::Hybrid {
-        text: text.into(),
-        field: field.into(),
-        vector: None,
-        fields: None,
-        text_fields: None,
-        weight: None,
-        text_weight: None,
-        model: None,
-    };
+    let mode = SearchMode::hybrid(text, field);
     let search = Search {
         ty: ty.into(),
         filter: filter.map(Into::into),
@@ -1086,16 +1077,7 @@ async fn quay(
     store: &dyn LakeStore,
     as_of: Option<lakelands_api::Position>,
 ) -> lakelands_api::Result<lakelands_api::query::Hits> {
-    let mode = SearchMode::Hybrid {
-        text: "quay".into(),
-        field: "vec".into(),
-        vector: None,
-        fields: None,
-        text_fields: None,
-        weight: None,
-        text_weight: None,
-        model: None,
-    };
+    let mode = SearchMode::hybrid("quay", "vec");
     let search = Search {
         ty: "note".into(),
         at: lakelands_api::ReadAt {
@@ -1781,11 +1763,7 @@ async fn ranked(l: &Lake, mode: SearchMode) -> Result<Vec<String>, Failure> {
 
 /// A lexical search of `note` for "quay", and a vector search along (1, 0).
 fn quay_searches() -> [SearchMode; 2] {
-    let lexical = SearchMode::Lexical {
-        text: "quay".into(),
-        fields: None,
-        text_fields: None,
-    };
+    let lexical = SearchMode::lexical("quay");
     [lexical, SearchMode::vector("vec", vec![1.0, 0.0])]
 }
 

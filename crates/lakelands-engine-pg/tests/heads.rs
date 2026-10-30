@@ -9,8 +9,9 @@
 mod common;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
+use lakelands_api::id::{Position, TypeName, Version};
 use lakelands_api::record::StoredRecord;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_pg::{PgOpener, read_statements};
 use serde_json::json;
 
@@ -19,15 +20,13 @@ const RECORDS: u64 = 1_024;
 
 fn state(key: u64, at: u64) -> StoredRecord {
     StoredRecord {
-        ty: TypeName::from("t"),
-        key: RecordKey::from(format!("k{key:05}")),
         version: Version(at),
-        fields: serde_json::from_value(json!({"n": at, "pad": "x".repeat(400)})).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
-        made: Position(at),
-        retired: false,
-        restricted: false,
+        ..stored_record(
+            "t",
+            format!("k{key:05}"),
+            serde_json::from_value(json!({"n": at, "pad": "x".repeat(400)})).unwrap(),
+            at,
+        )
     }
 }
 

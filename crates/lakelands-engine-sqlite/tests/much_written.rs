@@ -11,8 +11,9 @@ use std::path::PathBuf;
 
 use lakelands_api::Location;
 use lakelands_api::engine::{EngineOpener, OpenMode};
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
+use lakelands_api::id::Position;
 use lakelands_api::record::StoredRecord;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_sqlite::{SqliteOpener, seek_statements};
 use rusqlite::StatementStatus;
 use serde_json::json;
@@ -23,17 +24,12 @@ const STATES: u64 = 5_000;
 const OTHERS: u64 = 20_000;
 
 fn state(key: &str, at: u64) -> StoredRecord {
-    StoredRecord {
-        ty: TypeName::from("t"),
-        key: RecordKey::from(key),
-        version: Version(1),
-        fields: serde_json::from_value(json!({"n": at})).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
-        made: Position(at),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(
+        "t",
+        key,
+        serde_json::from_value(json!({"n": at})).unwrap(),
+        at,
+    )
 }
 
 #[test]

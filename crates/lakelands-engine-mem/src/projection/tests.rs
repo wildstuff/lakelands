@@ -1,19 +1,15 @@
 use super::*;
 use lakelands_api::id::Version;
+use lakelands_core::conformance::fixture::stored_record;
 use serde_json::json;
 
 fn record(key: &str, n: i64, position: u64) -> StoredRecord {
-    StoredRecord {
-        ty: TypeName::from("t"),
-        key: RecordKey::from(key),
-        version: Version(1),
-        fields: [("n".into(), json!(n))].into_iter().collect(),
-        meta: BTreeMap::new(),
-        position: Position(position),
-        made: Position(position),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(
+        "t",
+        key,
+        [("n".into(), json!(n))].into_iter().collect(),
+        position,
+    )
 }
 
 #[test]
@@ -43,20 +39,19 @@ fn the_setting_keeps_the_rows_of_the_fields_it_names_and_no_others() {
     }))
     .unwrap();
     let setting = |fields, at, retired| StoredRecord {
-        ty: TypeName::from(lakelands_api::seam::SETTING_TYPE),
-        key: RecordKey::from("sort_index.t"),
         version: Version(at),
-        fields: [
-            ("key".into(), json!("sort_index.t")),
-            ("value".into(), fields),
-        ]
-        .into_iter()
-        .collect(),
-        meta: BTreeMap::new(),
-        position: Position(at),
-        made: Position(at),
         retired,
-        restricted: false,
+        ..stored_record(
+            lakelands_api::seam::SETTING_TYPE,
+            "sort_index.t",
+            [
+                ("key".into(), json!("sort_index.t")),
+                ("value".into(), fields),
+            ]
+            .into_iter()
+            .collect(),
+            at,
+        )
     };
     let mut puts = vec![Put::Declaration(Declared {
         declaration: decl,

@@ -1,6 +1,6 @@
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
-use lakelands_api::record::StoredRecord;
+use lakelands_api::id::TypeName;
 use lakelands_api::seam::kept_name;
+use lakelands_core::conformance::fixture::stored_record;
 use rusqlite::{Connection, StatementStatus};
 
 use super::{Kept, SCHEMA, put_record};
@@ -17,17 +17,12 @@ fn two_types_put_in_turn_are_each_read_once() {
     let types = [TypeName::from("t"), kept_name(&TypeName::from("v"))];
     let (mut kept, mut sharing) = (Kept::new(), lakelands_core::engines::Sharing::default());
     for at in 1..=100 {
-        let record = StoredRecord {
-            ty: types[at as usize % 2].clone(),
-            key: RecordKey::from(format!("k{}", at % 7)),
-            version: Version(1),
-            fields: Default::default(),
-            meta: Default::default(),
-            position: Position(at),
-            made: Position(at),
-            retired: false,
-            restricted: false,
-        };
+        let record = stored_record(
+            types[at as usize % 2].clone(),
+            format!("k{}", at % 7),
+            Default::default(),
+            at,
+        );
         put_record(&conn, (&mut kept, &mut sharing), &record).unwrap();
     }
     // The statement of `type_at` at the head, as it prepares it.

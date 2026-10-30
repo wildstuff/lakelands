@@ -801,11 +801,14 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             (
                 "aggregate",
                 json!({"type": "object", "properties": {
-                    "measures": {"type": "array", "items": {
+                    "measures": {"type": "array",
+                                 "description": "`first` and `last` answer `field` on the record whose `by` is least (greatest), ties by key, and need both; no other function takes `by`.",
+                                 "items": {
                         "type": "object",
                         "properties": {"name": {"type": "string"},
-                                       "func": {"enum": ["count", "sum", "min", "max", "avg"]},
-                                       "field": one_of(filterable())},
+                                       "func": {"enum": ["count", "sum", "min", "max", "avg", "first", "last"]},
+                                       "field": one_of(filterable()),
+                                       "by": one_of(filterable())},
                         "required": ["name", "func"], "additionalProperties": false}},
                     "group_by": {"type": "array", "items": {"anyOf": [
                         one_of(filterable()),
@@ -1296,8 +1299,9 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 "measures": {"type": "array", "items": {
                     "type": "object",
                     "properties": {"name": {"type": "string"},
-                                   "func": {"enum": ["count", "sum", "min", "max", "avg"]},
-                                   "field": {"type": "string"}},
+                                   "func": {"enum": ["count", "sum", "min", "max", "avg", "first", "last"]},
+                                   "field": {"type": "string"},
+                                   "by": {"type": "string", "description": "For `first` and `last` only, and required there: the path whose least (greatest) value picks the row whose `field` they answer."}},
                     "required": ["name", "func"], "additionalProperties": false},
                              "description": "For `aggregate`: what each group answers, named."},
                 "weight": {"type": "string", "description": "For `cheapest`: the number or decimal field of every step's link type that a link costs."}}}),
@@ -1344,7 +1348,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         time_axes(&mut p);
         out.push(ToolSpec {
             name: CYPHER.into(),
-            description: "Read the lake with one statement of the openCypher subset: `MATCH`, `OPTIONAL MATCH`, `WHERE` and `RETURN`, with `ORDER BY` and `LIMIT`. It is translated into one pattern of `query` and read as `query` reads it, under the same rights; it never writes. The first node names its type, as in `(o:order)`, and a node may carry a map of field values, as in `(c:customer {name: $name})`. A relationship names a declared relation and is walked in its direction, `(o:order)-[:placed_by]->(c:customer)`, or against it, `(c)<-[:placed_by]-(o)`; `-[:r*1..3]->` walks it 1 to 3 hops, its upper bound written. A further part, after a comma or in a further `MATCH`, begins at a name bound before it. `WHERE` takes the lake's expression grammar with Cypher's operators (`=`, `<>`, `<`, `AND`, `OR`, `NOT`, `IN [...]`, `STARTS WITH`, `CONTAINS`, `IS NULL`), and `NOT (p)<-[:r]-(:t)` keeps a row only where no such link is. `RETURN` names fields of bound names (`o.total`), or `*` for every bound name. An aggregate (`count(*)`, `count(x)`, `sum(x.f)`, `min(x.f)`, `max(x.f)`, `avg(x.f)`, each named with `AS`) answers one group per value of the fields returned beside it, the groups in one fixed order by those fields, so `ORDER BY` beside an aggregate is refused: leave it out. Without one, `ORDER BY` names fields of bound names (`o.total DESC`), never an alias or an expression. `LIMIT` takes a whole number and caps the rows of a page; `SKIP` past 0 is refused: to read the next page, pass the answer's `next_cursor` as `cursor` with the same statement and parameters. An aggregate answers every group in one page with no cursor, ignoring `LIMIT`: for the largest few, read every group and pick them. Give values as `$name` with `params`. Refused, naming the construct at its character offset: `WITH`, `DISTINCT`, `UNWIND`, `UNION`, a named path, a function the grammar lacks, and every write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`), refused naming its clause: write through the typed write tools. The subset cannot spell a shortest or cheapest walk, a path to a record, degree, components, reach, PageRank or communities: `query` reads those. A statement that begins with `EXPLAIN` answers the `query` pattern it translates to and reads nothing.".into(),
+            description: "Read the lake with one statement of the openCypher subset: `MATCH`, `OPTIONAL MATCH`, `WHERE` and `RETURN`, with `ORDER BY` and `LIMIT`. It is translated into one pattern of `query` and read as `query` reads it, under the same rights; it never writes. The first node names its type, as in `(o:order)`, and a node may carry a map of field values, as in `(c:customer {name: $name})`. A relationship names a declared relation and is walked in its direction, `(o:order)-[:placed_by]->(c:customer)`, or against it, `(c)<-[:placed_by]-(o)`; `-[:r*1..3]->` walks it 1 to 3 hops, its upper bound written. A further part, after a comma or in a further `MATCH`, begins at a name bound before it. `WHERE` takes the lake's expression grammar with Cypher's operators (`=`, `<>`, `<`, `AND`, `OR`, `NOT`, `IN [...]`, `STARTS WITH`, `CONTAINS`, `IS NULL`), and `NOT (p)<-[:r]-(:t)` keeps a row only where no such link is. `RETURN` names fields of bound names (`o.total`), or `*` for every bound name. An aggregate (`count(*)`, `count(x)`, `sum(x.f)`, `min(x.f)`, `max(x.f)`, `avg(x.f)`, `first(x.f, x.by)` and `last(x.f, x.by)`, the value of `x.f` where `x.by` is least or greatest, each named with `AS`) answers one group per value of the fields returned beside it, the groups in one fixed order by those fields, so `ORDER BY` beside an aggregate is refused: leave it out. Without one, `ORDER BY` names fields of bound names (`o.total DESC`), never an alias or an expression. `LIMIT` takes a whole number and caps the rows of a page; `SKIP` past 0 is refused: to read the next page, pass the answer's `next_cursor` as `cursor` with the same statement and parameters. An aggregate answers every group in one page with no cursor, ignoring `LIMIT`: for the largest few, read every group and pick them. Give values as `$name` with `params`. Refused, naming the construct at its character offset: `WITH`, `DISTINCT`, `UNWIND`, `UNION`, a named path, a function the grammar lacks, and every write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`), refused naming its clause: write through the typed write tools. The subset cannot spell a shortest or cheapest walk, a path to a record, degree, components, reach, PageRank or communities: `query` reads those. A statement that begins with `EXPLAIN` answers the `query` pattern it translates to and reads nothing.".into(),
             input_schema: obj(p, &["statement"]),
             output_schema: reply_schema(json!({"type": "object"})),
             door: Door::Cypher,

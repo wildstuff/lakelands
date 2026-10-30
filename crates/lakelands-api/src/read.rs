@@ -143,6 +143,12 @@ pub enum AggFunc {
     Max,
     /// The mean of a field.
     Avg,
+    /// The value of a field on the member whose `by` comes first in its
+    /// order, ties by the least key.
+    First,
+    /// The value of a field on the member whose `by` comes last in its
+    /// order, ties by the least key.
+    Last,
 }
 
 /// One aggregate an answer carries.
@@ -156,6 +162,9 @@ pub struct AggMeasure {
     /// The field it folds (none for `count`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<FieldName>,
+    /// For `first` and `last`: the field whose order picks the member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<FieldName>,
 }
 
 /// An aggregation: measures, optionally per group.

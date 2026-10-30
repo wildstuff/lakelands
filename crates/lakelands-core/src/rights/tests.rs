@@ -1,4 +1,5 @@
 use super::*;
+use crate::conformance::fixture::stored_record;
 use lakelands_api::engine::Declared;
 use lakelands_api::ontology::{RelationDecl, StorageKind};
 use lakelands_api::principal::{Grants, PrincipalKind, TypeGrants};
@@ -65,18 +66,17 @@ fn stored() -> StoredRecord {
         on_behalf_of: None,
     };
     StoredRecord {
-        ty: "invoice".into(),
-        key: "INV-1".into(),
         version: Version(2),
-        fields: serde_json::from_value(json!({
-            "amount": "10.00", "verdict": "ok", "iban": "DE00", "note": null
-        }))
-        .unwrap(),
         meta: [("amount".into(), meta.clone()), ("iban".into(), meta)].into(),
-        position: Position(1),
-        made: Position(1),
-        retired: false,
-        restricted: false,
+        ..stored_record(
+            "invoice",
+            "INV-1",
+            serde_json::from_value(json!({
+                "amount": "10.00", "verdict": "ok", "iban": "DE00", "note": null
+            }))
+            .unwrap(),
+            1,
+        )
     }
 }
 

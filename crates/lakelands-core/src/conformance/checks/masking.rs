@@ -3,6 +3,7 @@
 //! `docs/decisions/014-four-doors-per-type-one-name-generator.md`).
 
 use lakelands_api::error::Naming;
+use lakelands_api::read::AggMeasure;
 use lakelands_api::tools::Door;
 use lakelands_api::write::Outcome;
 
@@ -19,7 +20,7 @@ check!(
 
 check!(
     BUILT_FROM_HIDDEN = a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field,
-    "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows (where a projected hidden one is refused as for an undeclared field, lakelands#752) and describe, which shows a definition only where every field it names is read; a filter, an order or an aggregate over them is refused naming them, as not granted where they are masked and as for an undeclared field where they are hidden",
+    "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows (where a projected hidden one is refused as for an undeclared field, lakelands#752) and describe, which shows a definition only where every field it names is read; a filter, an order, an aggregate over them or a `first` of another field by them, in a `find`, and that `first` in a pattern too (lakelands#1603), is refused naming them, as not granted where they are masked and as for an undeclared field where they are hidden",
     embedding
 );
 
@@ -320,10 +321,18 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
             ..Find::default()
         };
         let sum: fn(&str) -> Find = |n| aggregate(vec![agg("s", AggFunc::Sum, Some(n))]);
+        let first: fn(&str) -> Find = |n| {
+            let by = Some(n.into());
+            aggregate(vec![AggMeasure {
+                by,
+                ..agg("o", AggFunc::First, Some("k"))
+            }])
+        };
         let probes = [
             ("a filter on `g`", "g", filter),
             ("an order by `h`", "h", ordered),
             ("a sum of `g`", "g", sum),
+            ("a first of `k` by `h`", "h", first),
         ];
         for (what, name, find) in probes {
             let r = cat.find(&who, &"emp".into(), find(name)).await;
@@ -343,6 +352,28 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
                  answered {r:?}"
             );
         }
+        // The same `first` through a pattern's aggregate (lakelands#1603).
+        let first = |by: &str| {
+            let a = json!({"measures": [{"name": "o", "func": "first", "field": "emp.k",
+                "by": format!("emp.{by}")}]});
+            let a = serde_json::from_value(a).map_err(|e| Failure::new(e.to_string()))?;
+            Ok::<_, Failure>(pattern("emp", None, Vec::new(), Projection::Aggregate(a)))
+        };
+        let r = cat.query(&who, first("h")?).await;
+        if access == Access::None {
+            let absent = cat.query(&who, first("nosuch")?).await;
+            refused_alike("a pattern's first by `h`", &r, absent, ("nosuch", "h"))?;
+        }
+        let answered = match access {
+            Access::None => no_such_field(&r, "h"),
+            _ => matches!(refused_on(&r), Some(("h", Refusal::NotGranted))),
+        };
+        ensure!(
+            answered,
+            "a pattern's `first` of `emp.k` by `emp.h` by a clerk with `salary` {access:?} is \
+             refused naming `h`, as not granted where it is masked and as an undeclared field \
+             where it is hidden; it answered {r:?}"
+        );
     }
     let reader = field_access(store.as_ref(), "reader", "doc", &[("body", Access::None)]);
     let got = names(&read(cat.as_ref(), &reader, "doc", "d1").await?);

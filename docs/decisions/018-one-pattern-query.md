@@ -459,6 +459,27 @@ included: a pattern that starts on a view, or a walk that reaches one
 over a derived relation, finds the records `find` would, and never asks
 an engine for records it does not keep.
 
+### `first` and `last` answer one field by another's order
+
+Where `min` and `max` are answered, in a `find`'s aggregate, grouped or
+not, and in a view's measures, `first(f, by)` and `last(f, by)` are
+too: `f` on the member whose `by` is the least (the greatest), equal
+`by`s taken in key order, as an order takes them everywhere else. A
+member with no `by` is passed over; the answer is null where the
+member it picks has no `f` and where no member has a `by`. So a grouped
+`first` answers what a `find` of the group's members with a `by`,
+ordered by it ascending with a `limit` of 1, finds first, at the same
+position, and `last` what the same `find` descending finds: the
+opening and closing reading of a meter in an hour is one read, not one
+for each group. A measure of `find` names `by` beside its `field`; a
+`first` or `last` without either is refused, as is a `by` on any other
+function, naming the call. A pattern's aggregate answers them over its
+rows' paths, `first(reading.v, reading.at)`, and Cypher's
+`first(x.v, x.at)` is that aggregate. Over a pattern of its start type
+alone, started by no search, equal `by`s are taken in key order, as a
+`find` takes them; over the rows of a walk or of a search's hits they
+are taken in the order the rows come, which nothing fixes.
+
 ### A view declares the fields it computes and no other, and its `key` names its `group_by`
 
 A view declares the fields it computes, one for each `group_by` field
@@ -754,3 +775,5 @@ used.
   leave its start's type out; a step that does not walk `both` is
   refused `components_both_ways`, whose words now name both measures
   (lakelands#1514).
+- `first(f, by)` and `last(f, by)` answer one field by another's order
+  wherever `min` and `max` are answered (lakelands#1603).

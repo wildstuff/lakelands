@@ -13,9 +13,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
-use lakelands_api::record::StoredRecord;
+use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::write::ProposalFilter;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_pg::{LAKE_READERS, PgOpener};
 
 /// A lake in a fresh schema holding one record, `t` `a`.
@@ -25,18 +25,8 @@ fn lake_of_one(url: &str) -> (Arc<dyn LakeEngine>, String) {
     let engine: Arc<dyn LakeEngine> = PgOpener.open(&location, OpenMode::Create).unwrap().into();
     let p = engine.projection();
     p.begin().unwrap();
-    p.put_record(&StoredRecord {
-        ty: TypeName::from("t"),
-        key: RecordKey::from("a"),
-        version: Version(1),
-        fields: Default::default(),
-        meta: Default::default(),
-        position: Position(1),
-        made: Position(1),
-        retired: false,
-        restricted: false,
-    })
-    .unwrap();
+    p.put_record(&stored_record("t", "a", Default::default(), 1))
+        .unwrap();
     p.commit(Position(1)).unwrap();
     (engine, schema)
 }

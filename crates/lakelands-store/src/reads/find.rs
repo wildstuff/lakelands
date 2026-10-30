@@ -86,7 +86,8 @@ impl<'a> Reader<'a> {
                 .map(|o| o.field.clone()),
         );
         if let Some(a) = &find.aggregate {
-            probed.extend(a.measures.iter().filter_map(|m| m.field.clone()));
+            let fields = a.measures.iter().flat_map(|m| m.field.iter().chain(&m.by));
+            probed.extend(fields.cloned());
             // A field key probes its field; a named key, every field its
             // expression reads (024).
             let keys = aggregate::group_keys(&a.group_by).map_err(Error::invalid)?;
@@ -126,7 +127,7 @@ impl<'a> Reader<'a> {
             let counts = a.group_by.is_empty()
                 && a.measures
                     .iter()
-                    .all(|m| m.func == AggFunc::Count && m.field.is_none());
+                    .all(|m| m.func == AggFunc::Count && m.field.is_none() && m.by.is_none());
             if counts && !a.measures.is_empty() {
                 let n = Value::String(self.count(&decl, filter.as_ref())?.to_string());
                 let values = a.measures.iter().map(|m| (m.name.clone(), n.clone()));
@@ -355,11 +356,11 @@ impl<'a> Reader<'a> {
             Ok(())
         })?;
         let mut groups = aggregate::answer(grouping, a).map_err(named)?;
-        // A sum, minimum or maximum of a decimal field whose value type
-        // declares a scale answers at that scale, so a sum over nothing is
-        // `0.00` and not `0`.
+        // A sum, minimum, maximum, first or last of a decimal field whose
+        // value type declares a scale answers at that scale, so a sum over
+        // nothing is `0.00` and not `0`.
         for m in &a.measures {
-            if !matches!(m.func, AggFunc::Sum | AggFunc::Min | AggFunc::Max) {
+            if matches!(m.func, AggFunc::Count | AggFunc::Avg) {
                 continue;
             }
             let Some(scale) = m

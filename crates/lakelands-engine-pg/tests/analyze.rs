@@ -9,10 +9,10 @@ mod common;
 use std::time::{Duration, Instant};
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode, ProjectionStore};
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
-use lakelands_api::record::StoredRecord;
+use lakelands_api::id::Position;
 use lakelands_api::seam::SETTING_TYPE;
 use lakelands_api::write::Declaration;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_pg::{ANALYZE_AFTER, PgOpener};
 use serde_json::{Value, json};
 
@@ -32,17 +32,12 @@ fn analyses(url: &str, schema: &str) -> i64 {
 
 /// Put the record `(ty, key)` into the open transaction at `at`.
 fn record(p: &dyn ProjectionStore, at: u64, (ty, key): (&str, String), fields: Value) {
-    p.put_record(&StoredRecord {
-        ty: TypeName::from(ty),
-        key: RecordKey::from(key),
-        version: Version(1),
-        fields: serde_json::from_value(fields).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
-        made: Position(at),
-        retired: false,
-        restricted: false,
-    })
+    p.put_record(&stored_record(
+        ty,
+        key,
+        serde_json::from_value(fields).unwrap(),
+        at,
+    ))
     .unwrap();
 }
 

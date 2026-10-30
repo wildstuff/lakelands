@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{LakeEngine, OpenMode, Rankings};
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
+use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::location::SqliteTuning;
 use lakelands_api::record::StoredRecord;
+use lakelands_core::conformance::fixture::stored_record;
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use rusqlite::{Error, StatementStatus, ffi, params};
 
@@ -132,17 +133,12 @@ fn a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists() {
 
 /// The state of key `k<at>` that a put at `at` makes.
 fn state(at: u64) -> StoredRecord {
-    StoredRecord {
-        ty: TypeName::from("t"),
-        key: RecordKey::from(format!("k{at:03}")),
-        version: Version(1),
-        fields: serde_json::from_value(serde_json::json!({"n": at})).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
-        made: Position(at),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(
+        "t",
+        format!("k{at:03}"),
+        serde_json::from_value(serde_json::json!({"n": at})).unwrap(),
+        at,
+    )
 }
 
 /// A statement the engine keeps prepared is compiled once: taken from the

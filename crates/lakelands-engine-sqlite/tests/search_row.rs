@@ -10,6 +10,7 @@ use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::id::{Position, Version};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
 
@@ -27,15 +28,14 @@ fn a_record_whose_tokens_go_loses_its_search_row_and_its_document() {
     }))
     .unwrap();
     let state = |key: &str, text: Option<&str>, at: u64| StoredRecord {
-        ty: "note".into(),
-        key: key.into(),
         version: Version(at),
-        fields: serde_json::from_value(text.map_or(json!({}), |t| json!({"text": t}))).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
         made: Position(1),
-        retired: false,
-        restricted: false,
+        ..stored_record(
+            "note",
+            key,
+            serde_json::from_value(text.map_or(json!({}), |t| json!({"text": t}))).unwrap(),
+            at,
+        )
     };
     let p = engine.projection();
     p.begin().unwrap();

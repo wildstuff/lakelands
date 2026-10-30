@@ -341,7 +341,7 @@ check!(
 
 async fn after_a_rebuild_every_index_answers_as_before(store: Store) -> Held {
     use lakelands_api::ontology::RelationDecl;
-    use lakelands_api::query::{Projection, Search, SearchMode, Walk};
+    use lakelands_api::query::{Projection, SearchMode, Walk};
     let l = Lake::of(store.as_ref());
     // Declared first with nothing to search and no relation, and with a
     // `tag` a migration takes away later.
@@ -387,18 +387,7 @@ async fn after_a_rebuild_every_index_answers_as_before(store: Store) -> Held {
             find_where("text = 'crane rental'"),
         )
         .await?;
-        let search = |mode: SearchMode| Search {
-            ty: TypeName::from("note"),
-            mode,
-            k: 10,
-            cursor: None,
-            filter: None,
-            with_meta: false,
-            matches: false,
-            at: ReadAt::default(),
-            rerank: None,
-            text_as_of: false,
-        };
+        let search = |mode: SearchMode| searched("note", mode, 10);
         let lexical = cat.search(&own, search(SearchMode::lexical("harbour")));
         let lexical = lexical.await.must("searching \"harbour\"")?.data;
         let vector = cat.search(
