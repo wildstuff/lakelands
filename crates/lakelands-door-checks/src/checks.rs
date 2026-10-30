@@ -10876,11 +10876,15 @@ async fn read_doors(c: &Arc<dyn Catalog>, who: &Principal, t: &str) -> Vec<(&'st
 /// A type its principal is shown is one it may find and get
 /// (`docs/decisions/006-grants-not-roles.md`, extended): one who reads no
 /// field of `invoice`, with every field masked, with one masked by name
-/// or with one write-only, is described `may.find` and `may.get`, is
+/// or with one write-only beside it, is described `may.find` and
+/// `may.get`, is
 /// answered the record by `get` and by `find` with its key, no value and
 /// the masked fields in the declaration's order (the sensitive `note`
 /// nobody named among them), and is offered the two reads and the type
-/// in the lake's three read tools.
+/// in the lake's three read tools. One granted nothing of it but writes
+/// is not shown it to a read
+/// (`docs/decisions/092-reading-is-judged-apart-from-writing.md`), which
+/// `masking::WRITE_ONLY` pins.
 pub async fn a_type_its_principal_is_shown_is_one_it_may_find_and_get(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let (owner, c, invoice) = (&f.cast.owner, &f.catalog, ty(INVOICE));
@@ -10892,9 +10896,9 @@ pub async fn a_type_its_principal_is_shown_is_one_it_may_find_and_get(store: Arc
     let (v1, opts) = (key("v1"), WriteOpts::default());
     let written = c.upsert(owner, &invoice, &v1, patch(&p), opts).await;
     written.expect("the owner writes an invoice");
-    let one = |f: &str, a| TypeGrants {
+    let some = |fields: &[(&str, Access)]| TypeGrants {
         default: None,
-        fields: [(f.into(), a)].into(),
+        fields: fields.iter().map(|(f, a)| ((*f).into(), *a)).collect(),
         ..Default::default()
     };
     let whole = TypeGrants {
@@ -10905,10 +10909,14 @@ pub async fn a_type_its_principal_is_shown_is_one_it_may_find_and_get(store: Arc
         ("all masked", whole, &["status", "verdict", "note"][..]),
         (
             "one masked",
-            one("verdict", Access::Masked),
+            some(&[("verdict", Access::Masked)]),
             &["verdict", "note"],
         ),
-        ("write-only", one("status", Access::WriteOnly), &["note"]),
+        (
+            "write-only",
+            some(&[("status", Access::WriteOnly), ("verdict", Access::Masked)]),
+            &["verdict", "note"],
+        ),
     ];
     // Every row that is not as the sentence says: one assertion, so a
     // fault names each row it turns.
