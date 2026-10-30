@@ -130,10 +130,11 @@ caller of a door sets it.
   write if the host wants a chain to keep it. A write that names none
   appends events without the member, byte for byte what they were
   before it.
-- **An accepted proposal is written for the accept's occasion.** The
-  `write_proposed` carries the proposer's; the `write_accepted` and the
-  writes it makes, though written as the proposer, carry the
-  accepter's, for they are made at the accept and for its reason.
+- **An accepted proposal's writes carry the proposer's occasion.** The
+  `write_proposed` carries the proposer's, and so do the writes the
+  accept makes, as they are written as the proposer and for whom it
+  wrote; the `write_accepted` is the accepter's act and carries the
+  accepter's.
 - **Its form is checked, nothing else.** An occasion that is empty,
   longer than 128 bytes or holds a control character is refused
   `invalid` (`occasion_form`) at `occasion`, before anything is
@@ -153,7 +154,7 @@ caller of a door sets it.
 
 The checks: `context::OCCASION_RECORDED` (with the duplicate under
 `again`), `context::OCCASION_FORM`, `export::OCCASION_FROM_22` and
-`proposals::ACCEPTED_FOR_THE_PROPOSER` (the accept's occasion).
+`proposals::ACCEPTED_FOR_THE_PROPOSER` (the proposer's occasion on the writes of an accept).
 
 ### What it takes to build
 

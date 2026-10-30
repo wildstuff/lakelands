@@ -37,7 +37,7 @@ check!(
 
 check!(
     ACCEPTED_FOR_THE_PROPOSER = an_accepted_write_names_whom_its_proposer_wrote_for,
-    "088 (lakelands#1489): `agent:a`, bound for `human:alice`, proposes an upsert, and `human:bob`, bound for no one, accepts it; `write_accepted` names `human:bob` and no `on_behalf_of`, and the upsert names `agent:a` for `human:alice`, as the proposer wrote it; and (lakelands#1584) the `write_proposed` carries the proposer's occasion, `caught-up`, while the `write_accepted` and the upsert carry the accepter's, `confirmed`, the write being made at the accept"
+    "088 (lakelands#1489): `agent:a`, bound for `human:alice`, proposes an upsert, and `human:bob`, bound for no one, accepts it; `write_accepted` names `human:bob` and no `on_behalf_of`, and the upsert names `agent:a` for `human:alice`, as the proposer wrote it; and (lakelands#1584) the `write_proposed` and the upsert carry the proposer's occasion, `again`, the upsert being the proposer's write, while the `write_accepted` carries the accepter's, `live`, the acceptance being the accepter's act"
 );
 
 check!(
@@ -1845,7 +1845,7 @@ async fn an_accepted_write_names_whom_its_proposer_wrote_for(store: Store) -> He
         },
     );
     let for_alice = store.catalog(WriteContext {
-        occasion: Some("caught-up".into()),
+        occasion: Some("again".into()),
         ..super::context::made_for("human:alice")
     });
     let write =
@@ -1854,7 +1854,7 @@ async fn an_accepted_write_names_whom_its_proposer_wrote_for(store: Store) -> He
         .propose(&agent, de(write), "for alice".into())
         .await;
     let (at, id) = proposal(&proposed.must("`agent:a` proposing for alice")?)?;
-    (store.catalog(super::context::on_occasion("confirmed")))
+    (store.catalog(super::context::on_occasion("live")))
         .accept(&bob, &id)
         .await
         .must("`human:bob` accepting")?;
@@ -1869,12 +1869,11 @@ async fn an_accepted_write_names_whom_its_proposer_wrote_for(store: Store) -> He
     let accepted = named(|b| matches!(b, EventBody::WriteAccepted { .. }));
     let upserted = named(|b| matches!(b, EventBody::RecordUpserted { .. }));
     ensure!(
-        proposed == Some(("agent:a", Some("human:alice"), Some("caught-up")))
-            && accepted == Some(("human:bob", None, Some("confirmed")))
-            && upserted == Some(("agent:a", Some("human:alice"), Some("confirmed"))),
-        "the proposal names `agent:a` for `human:alice` under `caught-up`, the acceptance \
-         `human:bob` for no one and the upsert `agent:a` for `human:alice`, both under \
-         `confirmed`: {proposed:?}, {accepted:?}, {upserted:?}"
+        proposed == Some(("agent:a", Some("human:alice"), Some("again")))
+            && accepted == Some(("human:bob", None, Some("live")))
+            && upserted == Some(("agent:a", Some("human:alice"), Some("again"))),
+        "the proposal and the upsert name `agent:a` for `human:alice` under `again`, the \
+         acceptance `human:bob` for no one under `live`: {proposed:?}, {accepted:?}, {upserted:?}"
     );
     Ok(())
 }
