@@ -90,11 +90,16 @@ this page says only how a request reaches it.
   `Lakelands-Context`, as JSON, whose `on_behalf_of` names the principal
   the write is made for: each event the write appends names it beside
   its writer, and a read `with_meta` names it on each field it wrote
-  (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+  (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`);
+  its `occasion`, the host's word for why it wrote, lands in the
+  `context` of each event the write appends, and the store gives it no
+  meaning.
   A missing principal, or a context that is not one, is `refused` as
   `invalid` (400); an `on_behalf_of` that is not a principal of its form,
   or is the writer, is `refused` as `invalid` (`on_behalf_of_form`,
-  naming `on_behalf_of`) at the write; a principal the host may not
+  naming `on_behalf_of`) at the write, as is an `occasion` that is empty,
+  over 128 bytes or holds a control character (`occasion_form`, naming
+  `occasion`); a principal the host may not
   act for, or one the lake does not know, is `not_granted` (403). A
   principal's key that sends either header is `refused` as `invalid`
   (400): no caller sets a write context or acts as another. A process

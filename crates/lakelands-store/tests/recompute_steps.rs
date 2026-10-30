@@ -171,6 +171,7 @@ fn context(n: u32) -> WriteContext {
         depth: n,
         cause: None,
         on_behalf_of: None,
+        occasion: None,
     }
 }
 

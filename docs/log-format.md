@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 21.** Reviewed so that a verifier can be written from
+**Format version 22.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). A release reads and writes one
 format version, this one: every event of a lake carries it, from
 position 0, and a lake written in another is refused by name and never
@@ -47,7 +47,7 @@ every kind, and `body`, which holds the kind and its payload.
 | `seen_at` | string | when known | When the source observed the values (§1.3). |
 | `upstream` | object | when read from another lake | `{ "lake", "position" }`: the lake whose log the values were read from (its lake id) and the position of the event there whose state they are (an integer). Only on `record_ingested`; a reader refuses it on any other kind, naming the kind. The ingesting principal states it, as it states `seen_at`. |
 | `procedure` | object | when one did | `{ "name", "version" }`, both strings, of the procedure that produced the values: for a verb, its name and its declaration's `version` in decimal digits; for a function backing, the function's name and its declaration's `version`; for an embedding, the model as the backend names it and the version it reports. |
-| `context` | object | always | The host's context for the write: `{ "origin": "direct" \| "reactive" \| "scheduled", "depth": n }`, `depth` an integer ≥ 0. It never carries `cause` or `on_behalf_of`: a reader refuses a `context` that does, naming the member. |
+| `context` | object | always | The host's context for the write: `{ "origin": "direct" \| "reactive" \| "scheduled", "depth": n }`, `depth` an integer ≥ 0, and from format 22 `"occasion"` where the host named one: a string of 1 to 128 bytes holding no control character, the host's word for why the write was made, such as `live`, `caught-up` or `again`. Every event written as the writer carries the occasion as the host gave it; an event written as `system:lakelands` carries none, and with none named the member is absent, so the event's bytes and hash are what they were before the member. The store gives it no meaning (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`); a reader refuses it in a format before 22, naming it. It never carries `cause` or `on_behalf_of`: a reader refuses a `context` that does, naming the member. |
 | `cause` | integer | consequences | The position of the event this one follows from: a verb's write names its `verb_called`, an accepted proposal's write names its `write_accepted`, a fired trigger names the write that fired it. An event of a host's write that the store sets no cause for names the position the host gave, at or below the head when it was appended (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); any kind may carry it. |
 | `fence` | integer | always | The fencing token of the writer lease the event was appended under (§4); `0` for the event at position 0, which is written before any lease exists in the lake. |
 | `idempotency_key` | string | when given | The caller's idempotency key of an authored write. |
@@ -383,7 +383,7 @@ store has lost the version it last sealed with: the write is refused the
 same way, so a wrong key store fails at the write, not at a later
 rebuild. A verifier without the
 keys checks every hash and id over the bytes as stored, and the form of
-each sealed member, or of its box. `docs/log-format/vectors/21/` holds
+each sealed member, or of its box. `docs/log-format/vectors/22/` holds
 a sealed ingest written before the box, each member sealed alone, an
 ingest whose member is sealed in a box (`boxed.json`), a quarantined
 record whose cell is sealed in one, and a sealed output, under a key
@@ -1182,6 +1182,9 @@ the first release with real installations
   `sys.setting` has no `periods` declares it again, one version on,
   after `lake_upgraded`
   (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+  21 → 22: none. Format 22 is 0.22.0's one step (lakelands#1584), and a
+  log of format 21 holds nothing it adds: `context.occasion` (§1.1,
+  `docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
   The step changes no fold, nor does any other step, so no step
   rebuilds the projection. A step that changes how an event folds says
   so here, and a writer's open then rebuilds the projection. A SQLite
@@ -1519,7 +1522,7 @@ the record's type, and no set through itself.
   `m` 60 s, `s` 1 s) in microseconds, which must come out whole: `1.5h`
   is `5400000000`, and `30d` is `2592000000000`.
 
-`docs/log-format/vectors/21/schema-hash.json` shows a view whose conditions
+`docs/log-format/vectors/22/schema-hash.json` shows a view whose conditions
 are written as text, its shape object with those conditions in typed
 form, and the resulting hash. A shape's `key` is the key the type's
 records carry, so a grouped view hashes alike whether its declaration

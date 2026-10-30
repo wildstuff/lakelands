@@ -959,6 +959,7 @@ pub fn reactive(depth: u32, cause: Option<Position>) -> WriteContext {
         depth,
         cause,
         on_behalf_of: None,
+        occasion: None,
     }
 }
 

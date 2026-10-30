@@ -13,10 +13,10 @@ use lakelands_api::{LakeId, Result, SourceId, Timestamp};
 
 use super::{Apart, Ciphers, Keys, List, cipher, digest, open, rotates, seal, turns};
 
-/// The lines of `vectors/21/further.json` that show `shows`.
+/// The lines of `vectors/22/further.json` that show `shows`.
 fn line(shows: &str) -> Event {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/21/further.json");
+        .join("../../docs/log-format/vectors/22/further.json");
     let further: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let entries = further["events"].as_array().unwrap();
     let entry = entries.iter().find(|e| e["shows"] == shows).unwrap();
@@ -61,7 +61,7 @@ fn patch_of(e: &Event) -> &lakelands_api::Patch {
 /// `boxed.json`'s ingest, its members sealed in one box.
 fn boxed() -> Event {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/21/boxed.json");
+        .join("../../docs/log-format/vectors/22/boxed.json");
     let boxed: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     serde_json::from_str(boxed["line"].as_str().unwrap()).unwrap()
 }

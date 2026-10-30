@@ -694,6 +694,8 @@ catalog! {
         OnBehalfOfInContext => "`context` carries `on_behalf_of`, which the envelope carries",
         /// An event of a format before 21 carries `on_behalf_of`.
         OnBehalfOfBefore { v: u32 } => "an event of format {v} carries `on_behalf_of`, which format 21 added",
+        /// An event of a format before 22 carries `context.occasion`.
+        OccasionBefore { v: u32 } => "an event of format {v} carries `context.occasion`, which format 22 added",
         /// The envelope carries the origin `initial`, a field's alone.
         InitialOrigin => "the envelope carries the origin `initial`, a field's alone",
         /// An event other than `record_ingested` and `output_recorded` carries `sealed`.

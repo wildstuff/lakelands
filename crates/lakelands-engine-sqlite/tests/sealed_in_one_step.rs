@@ -122,7 +122,7 @@ fn verifies(dir: &Path, through: u64, when: &str) {
         "{when}"
     );
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/21/verify.py");
+        .join("../../docs/log-format/vectors/22/verify.py");
     let run = std::process::Command::new("python3")
         .arg(&script)
         .arg(dir)

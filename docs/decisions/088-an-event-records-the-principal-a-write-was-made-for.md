@@ -93,6 +93,41 @@ grants no wider than the person's
 (`docs/decisions/006-grants-not-roles.md`). The store has no other way to
 know them.
 
+### The host may say why it wrote (format 22)
+
+Extended on lakelands#1584, for 0.22.0, which takes format 22 for it.
+A host writes the same record for different reasons: as it happens, to
+catch up on what it missed, or again because the first try failed. The
+store cannot tell these apart, and a reader of history may need to.
+
+`WriteContext.occasion: Option<String>`, serde default and skipped when
+`None`, is the host's word for why it made the write, such as `live`,
+`caught-up` or `again`. WIT's `write-context` gains
+`occasion: option<string>`. It is the host's as the rest of the context
+is: a door carries it only where it carries `on_behalf_of`, and no
+caller of a door sets it.
+
+- **It stays in `context`.** Unlike `on_behalf_of` it is not about a
+  principal, so it does not move to the envelope: every event written
+  as the writer carries it in `context` as given, and an event written
+  as `system:lakelands` carries none. A write that names none appends
+  events without the member, byte for byte what they were before it.
+- **Its form is checked, nothing else.** An occasion that is empty,
+  longer than 128 bytes or holds a control character is refused
+  `invalid` (`occasion_form`) at `occasion`, before anything is
+  appended.
+- **The store records it and judges nothing by it.** No right, refusal,
+  fold, duplicate or trigger reads it. It is not a delivery: a record
+  delivered again under another occasion is still a duplicate. It is
+  not a clock: when the values were seen is `seen_at`, and when they
+  were written is the position.
+- **Format 22.** A reader refuses `context.occasion` on an event of a
+  format before 22, naming it, so a lake written by 0.22.0 is not
+  opened by 0.21.x again.
+
+The checks: `context::OCCASION_RECORDED`, `context::OCCASION_FORM` and
+`export::OCCASION_FROM_22`.
+
 ### What it takes to build
 
 Estimated from the nearest shipped sibling, the host's `cause` in the
@@ -172,4 +207,5 @@ given a step of its own.
   was made for, beside `authority: writer`
   (`docs/decisions/084-a-field-holds-the-writer-that-made-its-record.md`),
   is not part of this; it waits until a host asks for it.
-- **Not a filter.** No door finds events or records by it.
+- **Not a filter.** No door finds events or records by it, nor by an
+  occasion.

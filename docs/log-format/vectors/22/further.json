@@ -1,0 +1,576 @@
+{
+  "about": "The lake's events after position 7 of `log/`, each following the one before it without a gap, in the one format like every other line. `shows` names what a line is there to show, and each verifier holds one check for each name. `misplaced` holds lines that are not of the lake: each stands at its position after the event before it, its hash made right, and breaks one rule for where a member sits, so a reader refuses it for that alone.",
+  "events": [
+    {
+      "shows": "rekeyed",
+      "about": "A `migrated` event that re-keys `account` from `number` to `iban`, moving key `7` to `DE%3A01`: a `:` in the new key is percent-encoded (§2.3).",
+      "line": "{\"body\":{\"kind\":\"migrated\",\"migration\":{\"to\":{\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"iban\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"key\":[\"iban\"],\"name\":\"account\"}},\"rekeyed\":[{\"from\":\"7\",\"to\":\"DE%3A01\",\"type\":\"account\"}],\"report_id\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"522a1b4c07ed0b8cd8c5fbf77d94c50a5cf02819e1c6ce30d69b4b16a5cd7df8\",\"id\":\"e2a5c0f1b7d94a36a8c1f0e3b2d4c5a6\",\"known_at\":\"2026-09-25T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":8,\"prev\":\"253890cb7b5930ec92c8e98f42b3a47f8eb1a2b6405894b2dcd092384afae1d3\",\"v\":22,\"writer\":\"human:owner\"}",
+      "hash": "522a1b4c07ed0b8cd8c5fbf77d94c50a5cf02819e1c6ce30d69b4b16a5cd7df8"
+    },
+    {
+      "shows": "upstream",
+      "about": "A record ingested with `upstream`, the lake and position its values were read from (§1.1). The member is not in the event's id (§3).",
+      "line": "{\"body\":{\"key\":\"r1\",\"kind\":\"record_ingested\",\"patch\":{\"body\":\"warm\"},\"type\":\"reading\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"9362874429ee355f82cd0538d8cd3a56d9cd651f6eb00912980e43578622a8d6\",\"id\":\"d6ef5716acb6d366cff5aa00a6bc4d59\",\"known_at\":\"2026-09-25T08:00:01.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":9,\"prev\":\"522a1b4c07ed0b8cd8c5fbf77d94c50a5cf02819e1c6ce30d69b4b16a5cd7df8\",\"source\":\"mirror\",\"upstream\":{\"lake\":\"upstream-lake\",\"position\":42},\"v\":22,\"writer\":\"service:mirror\"}",
+      "hash": "9362874429ee355f82cd0538d8cd3a56d9cd651f6eb00912980e43578622a8d6"
+    },
+    {
+      "shows": "date_bucket",
+      "about": "A `declared` type whose derived field calls `date_bucket` (Appendix B).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"at\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"at\"],\"derived\":\"date_bucket(at, 'month')\",\"name\":\"month\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}}],\"name\":\"stamp\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"302a77ea5d5299c766daa6d37a5b59349baf468272b6f5195803f9c1bceca7ba\",\"id\":\"d93e81e87a30570987e8efd6dfdd0441\",\"known_at\":\"2026-09-25T08:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":10,\"prev\":\"9362874429ee355f82cd0538d8cd3a56d9cd651f6eb00912980e43578622a8d6\",\"v\":22,\"writer\":\"human:owner\"}",
+      "hash": "302a77ea5d5299c766daa6d37a5b59349baf468272b6f5195803f9c1bceca7ba"
+    },
+    {
+      "shows": "proposed_declare",
+      "about": "A `write_proposed` whose write is `declare`, a set of declarations (§2.4).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-declare\",\"why\":\"a place for tickets\",\"write\":{\"declarations\":[{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"title\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"ticket\"}],\"write\":\"declare\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"5b2b3b8b1b377fa39639fd7f8d0d20d30cbd5f049f71bcff62d188bbba0c209f\",\"id\":\"710183001aa81e61bd20094ab98d5da5\",\"known_at\":\"2026-09-25T08:00:04.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":11,\"prev\":\"302a77ea5d5299c766daa6d37a5b59349baf468272b6f5195803f9c1bceca7ba\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "5b2b3b8b1b377fa39639fd7f8d0d20d30cbd5f049f71bcff62d188bbba0c209f"
+    },
+    {
+      "shows": "proposed_migrate",
+      "about": "A `write_proposed` whose write is `migrate`, a migration with the report its preflight answered (§2.4).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-migrate\",\"why\":\"a text body\",\"write\":{\"migration\":{\"to\":{\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"body\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"reading\"}},\"report\":{\"fields\":[],\"from_schema_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lossless\":true,\"records_scanned\":1,\"report_id\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\",\"to_schema_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"type\":\"reading\"},\"write\":\"migrate\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"0ed101c44f156ed8dca739267c0a062e76362468a2becd352c2b3c2dbf20ccd1\",\"id\":\"c649be135b07d0bb87c366689583eade\",\"known_at\":\"2026-09-25T08:00:05.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":12,\"prev\":\"5b2b3b8b1b377fa39639fd7f8d0d20d30cbd5f049f71bcff62d188bbba0c209f\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "0ed101c44f156ed8dca739267c0a062e76362468a2becd352c2b3c2dbf20ccd1"
+    },
+    {
+      "shows": "annotations",
+      "about": "A `declared` type carrying `annotations` on the type, on two fields and on a relation. Its schema hash is the one the same type without them hashes to: annotations are not shape.",
+      "line": "{\"body\":{\"declaration\":{\"annotations\":{\"acme.icon\":\"books\",\"acme.package\":{\"name\":\"library\",\"version\":\"2.1.0\"}},\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"annotations\":{\"acme.format\":\"shelf-code\"},\"authority\":\"authored\",\"name\":\"code\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"annotations\":{\"acme.unit\":\"books\",\"acme.weight\":1.5},\"authority\":\"authored\",\"name\":\"capacity\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"key\":[\"code\"],\"name\":\"shelf\",\"relations\":[{\"annotations\":{\"acme.plural\":\"rooms\"},\"cardinality\":\"many_to_one\",\"name\":\"room\",\"target\":\"room\",\"via\":\"code\"}]},\"kind\":\"declared\",\"schema_hash\":\"55aad88dd83990a5fabb528707e4ae79b3484b583b81af53fc6a60f76591fc15\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"cc106e145e175bf799eff89e5ee5d2cd6a37da033dce6a885780a4e95dcc0365\",\"id\":\"5a0e7d1c3b9f4e2a8c6d0b1f7e3a9c54\",\"known_at\":\"2026-09-29T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":13,\"prev\":\"0ed101c44f156ed8dca739267c0a062e76362468a2becd352c2b3c2dbf20ccd1\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "cc106e145e175bf799eff89e5ee5d2cd6a37da033dce6a885780a4e95dcc0365"
+    },
+    {
+      "shows": "derived_relation",
+      "about": "A `declared` type whose relation `shelf` is derived from its `shelf_code` matching the target's `code`. Its schema hash is the one the same type with the relation carried by link records hashes to: `derived` is not shape.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"number\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"shelf_code\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"key\":[\"number\"],\"name\":\"slip\",\"relations\":[{\"cardinality\":\"many_to_one\",\"derived\":{\"match\":[{\"from\":\"shelf_code\",\"to\":\"code\"}]},\"inverse\":\"slips\",\"name\":\"shelf\",\"target\":\"shelf\"}]},\"kind\":\"declared\",\"schema_hash\":\"70337c133317f99137404cda85ec3d35abd3640342cc47657abd085ee7a13c1f\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"569fd2232c635ce3549dbaa4f2c2527b5007d92ff124d99d00f9a32a7ffe7fc0\",\"id\":\"6b1f8e2d4c0a9f3e7d5b1a2c8e4f6d09\",\"known_at\":\"2026-10-01T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":14,\"prev\":\"cc106e145e175bf799eff89e5ee5d2cd6a37da033dce6a885780a4e95dcc0365\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "569fd2232c635ce3549dbaa4f2c2527b5007d92ff124d99d00f9a32a7ffe7fc0"
+    },
+    {
+      "shows": "max_depth",
+      "about": "A `declared` trigger with `max_depth` 1.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"max_depth\":1,\"name\":\"shelved\",\"on\":\"slip\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"dac853c87527c46a2fa628e2c256becf6f34f8c92bea0bc720f9b6ef55b12915\",\"id\":\"7c2a9e4f1b8d3c6a0e5f2b9d4a7c1e83\",\"known_at\":\"2026-10-01T08:00:01.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":15,\"prev\":\"569fd2232c635ce3549dbaa4f2c2527b5007d92ff124d99d00f9a32a7ffe7fc0\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "dac853c87527c46a2fa628e2c256becf6f34f8c92bea0bc720f9b6ef55b12915"
+    },
+    {
+      "shows": "retired_guard",
+      "about": "A `declared` trigger on `slip` whose guard is `retired()`, so it fires only when a write retires a slip (Appendix B).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"name\":\"slip_retired\",\"on\":\"slip\",\"when\":\"retired()\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"175f82e933ff14b0d104a0c9e79bb9436ee2155b8e7e54f62f073c4ba564845e\",\"id\":\"8d3b0f5a2c9e4d7b1f6a3c0e9b5d2f74\",\"known_at\":\"2026-10-01T08:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":16,\"prev\":\"dac853c87527c46a2fa628e2c256becf6f34f8c92bea0bc720f9b6ef55b12915\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "175f82e933ff14b0d104a0c9e79bb9436ee2155b8e7e54f62f073c4ba564845e"
+    },
+    {
+      "shows": "view_params",
+      "about": "A `declared` view over `slip` that counts the slips on one shelf, the shelf a read binds as `shelf`: a view's `params` and a call of `param` (Appendix A, Appendix B).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"shelf_code\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"slips\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"key\":[\"shelf_code\"],\"name\":\"slips_on_shelf\",\"view\":{\"group_by\":[\"shelf_code\"],\"measures\":[{\"expr\":\"count()\",\"name\":\"slips\"}],\"params\":[{\"kind\":\"text\",\"name\":\"shelf\"}],\"source\":\"slip\",\"where\":\"shelf_code = param('shelf')\"}},\"kind\":\"declared\",\"schema_hash\":\"8767c83c571e9dd36cc09b5021ae2e0e5b3bebcb6e00a4d9aa61fdb4771a0ff3\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"91281238e2eecf1bda0184cce4d482ca6c98ce0945b3ebca7fb25ea3cd56a590\",\"id\":\"2c7e9a4f1b8d3e6a0f5c9b2d7e4a1f83\",\"known_at\":\"2026-10-01T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":17,\"prev\":\"175f82e933ff14b0d104a0c9e79bb9436ee2155b8e7e54f62f073c4ba564845e\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "91281238e2eecf1bda0184cce4d482ca6c98ce0945b3ebca7fb25ea3cd56a590"
+    },
+    {
+      "shows": "verb_on_type",
+      "about": "A `declared` verb `print_slip` on the type `slip` (`scope: type`).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"external\",\"executor\":\"printer\",\"name\":\"print_slip\",\"on\":\"slip\",\"risk\":\"low\",\"scope\":\"type\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"32b3e3c98fea5cbc58ff9e32fa7a8ad2ba82de06bd8d4f43e2b60e29011f4a43\",\"id\":\"9e4c1a7b3d5f2e8a6c0b4d9f1a3e5c72\",\"known_at\":\"2026-10-01T08:00:04.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":18,\"prev\":\"91281238e2eecf1bda0184cce4d482ca6c98ce0945b3ebca7fb25ea3cd56a590\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "32b3e3c98fea5cbc58ff9e32fa7a8ad2ba82de06bd8d4f43e2b60e29011f4a43"
+    },
+    {
+      "shows": "verb_called_on_type",
+      "about": "The `verb_called` of `print_slip`, which carries no `key`.",
+      "line": "{\"body\":{\"kind\":\"verb_called\",\"payload\":{},\"verb\":\"print_slip\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ba42f7023a332eb1fb24bb28c921ab5136d34c67ca2273f6221cc9eb22096ac4\",\"id\":\"a5f3c8e1b7d9024f6e2a8c4b1d7f3e96\",\"known_at\":\"2026-10-01T08:00:05.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":19,\"prev\":\"32b3e3c98fea5cbc58ff9e32fa7a8ad2ba82de06bd8d4f43e2b60e29011f4a43\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "ba42f7023a332eb1fb24bb28c921ab5136d34c67ca2273f6221cc9eb22096ac4"
+    },
+    {
+      "shows": "view_merge",
+      "about": "A `declared` view `shelf_load` that counts the slips on each shelf and merges `shelf`, counted by its `code`, on the same key (Appendix A).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"shelf_code\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"slips\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}},{\"authority\":\"authored\",\"name\":\"shelves\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"key\":[\"shelf_code\"],\"name\":\"shelf_load\",\"view\":{\"group_by\":[\"shelf_code\"],\"measures\":[{\"expr\":\"count()\",\"name\":\"slips\"}],\"merge\":[{\"group_by\":[\"code\"],\"measures\":[{\"expr\":\"count()\",\"name\":\"shelves\"}],\"source\":\"shelf\"}],\"source\":\"slip\"}},\"kind\":\"declared\",\"schema_hash\":\"8ad6949d4e314cef5a6fbf5a696348c7a75dd20942b688d1e757b663086aea2c\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"c6e69a2a439534e737cc3f1138d143333a3c4cbb8c03ead52120798d94b63094\",\"id\":\"4e1a7c9b2d6f0a3e8c5b1d7f9a2e6c40\",\"known_at\":\"2026-10-02T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":20,\"prev\":\"ba42f7023a332eb1fb24bb28c921ab5136d34c67ca2273f6221cc9eb22096ac4\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "c6e69a2a439534e737cc3f1138d143333a3c4cbb8c03ead52120798d94b63094"
+    },
+    {
+      "shows": "value_type",
+      "about": "A `declared` value type `slip_state` over three states (Appendix A).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"value_type\",\"kind\":\"text\",\"name\":\"slip_state\",\"one_of\":[\"open\",\"filed\",\"void\"]},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"74fe84483e4c5b1e72ed397854bdc2f8b4801768fe651980aecaaa6433531688\",\"id\":\"5f2b8d0c3e7a1b4f9d6c2e8a0b3f7d51\",\"known_at\":\"2026-10-03T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":21,\"prev\":\"c6e69a2a439534e737cc3f1138d143333a3c4cbb8c03ead52120798d94b63094\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "74fe84483e4c5b1e72ed397854bdc2f8b4801768fe651980aecaaa6433531688"
+    },
+    {
+      "shows": "proposed_tightening",
+      "about": "A `write_proposed` whose write is `migrate_value_type`: `slip_state` over two of its states, with the report its preflight answered.",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-fewer-states\",\"why\":\"no slip is void\",\"write\":{\"report\":{\"fields\":[],\"fits\":true,\"from_version\":1,\"misfits\":0,\"records_scanned\":0,\"report_id\":\"aae9d1fe02acd002151ccd3968dd93dd27a19c51b1f024ea8c27123cd10c152a\",\"value_type\":\"slip_state\"},\"to\":{\"kind\":\"text\",\"name\":\"slip_state\",\"one_of\":[\"open\",\"filed\"]},\"write\":\"migrate_value_type\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"71e86cff7bd75dbfc88c9fe467392b36f8b8f8012ffe0ffb77f0a8f425aa6395\",\"id\":\"6a3c9e1d4f8b2c5a0e7d3f9b1c4a8e62\",\"known_at\":\"2026-10-03T08:00:01.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":22,\"prev\":\"74fe84483e4c5b1e72ed397854bdc2f8b4801768fe651980aecaaa6433531688\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "71e86cff7bd75dbfc88c9fe467392b36f8b8f8012ffe0ffb77f0a8f425aa6395"
+    },
+    {
+      "shows": "floor",
+      "about": "A `declared` type `loan` whose derived field `days` is `floor((back_on - out_on) / 1d)`, the whole days between two instants: a call of `floor` (Appendix B).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"out_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"authored\",\"name\":\"back_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"out_on\",\"back_on\"],\"derived\":\"floor((back_on - out_on) / 1d)\",\"name\":\"days\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"name\":\"loan\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"bd9adf93fcfb2490676b3df862fa8a467a54d67f8aa6c24567b1f8d4d1f05569\",\"id\":\"7b4d0f2e5a9c3d6b1f8e4a0c2d5b9f73\",\"known_at\":\"2026-10-04T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":23,\"prev\":\"71e86cff7bd75dbfc88c9fe467392b36f8b8f8012ffe0ffb77f0a8f425aa6395\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "bd9adf93fcfb2490676b3df862fa8a467a54d67f8aa6c24567b1f8d4d1f05569"
+    },
+    {
+      "shows": "date_bucket_by_width",
+      "about": "A `declared` type `shift` whose derived field `week` is `date_bucket(on, 7d, '2026-01-05T00:00:00Z')`, the start of the window of seven days from a Monday: a call of `date_bucket` by a width (Appendix B).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"on\"],\"derived\":\"date_bucket(on, 7d, '2026-01-05T00:00:00Z')\",\"name\":\"week\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}}],\"name\":\"shift\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"b0f9eb2f3bf2a560c1cc48b01a215596715fd9cdadce4f15abe091ef03f2ad45\",\"id\":\"8c5e1a3f6b0d4e7c2a9f5b1d3e6c0a84\",\"known_at\":\"2026-10-04T08:00:01.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":24,\"prev\":\"bd9adf93fcfb2490676b3df862fa8a467a54d67f8aa6c24567b1f8d4d1f05569\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "b0f9eb2f3bf2a560c1cc48b01a215596715fd9cdadce4f15abe091ef03f2ad45"
+    },
+    {
+      "shows": "in_set",
+      "about": "A `declared` object set `long_loans` whose `where` is `in_set('lent') and days > 30`: a call of `in_set` (Appendix B). The vector holds the line, not a lake that declares `lent`.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"object_set\",\"name\":\"long_loans\",\"of\":\"loan\",\"where\":\"in_set('lent') and days > 30\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"f663e3b31d066d7787a599b99caf56f0e91971a321fac666dd47e591eff370fe\",\"id\":\"9d6f2b4a7c1e5f8d3b0a6c2e4f7d1b95\",\"known_at\":\"2026-10-04T08:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":25,\"prev\":\"b0f9eb2f3bf2a560c1cc48b01a215596715fd9cdadce4f15abe091ef03f2ad45\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "f663e3b31d066d7787a599b99caf56f0e91971a321fac666dd47e591eff370fe"
+    },
+    {
+      "shows": "relation_renames",
+      "about": "A `migrated` event of `loan` whose migration names a relation's rename, `relation_renames`, from `lent_to` to `borrower`: the relation keeps its edges (§2.3).",
+      "line": "{\"body\":{\"kind\":\"migrated\",\"migration\":{\"relation_renames\":[[\"lent_to\",\"borrower\"]],\"to\":{\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"out_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"authored\",\"name\":\"back_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"out_on\",\"back_on\"],\"derived\":\"floor((back_on - out_on) / 1d)\",\"name\":\"days\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"name\":\"loan\",\"relations\":[{\"cardinality\":\"many_to_one\",\"name\":\"borrower\",\"target\":\"loan\"}]}},\"report_id\":\"4f1d0c9b7a6e5d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c\",\"schema_hash\":\"ef357c24258676b46f36e03e65d41c127d312174b77c6e32b9645e5e3032874e\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"cfb138c9f10a4127480b37d11a0c304acddf8a2151987375bfdfb53d40692381\",\"id\":\"2c8e5a1f7d3b4096a1e5c7d9f0b2a468\",\"known_at\":\"2026-10-04T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":26,\"prev\":\"f663e3b31d066d7787a599b99caf56f0e91971a321fac666dd47e591eff370fe\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "cfb138c9f10a4127480b37d11a0c304acddf8a2151987375bfdfb53d40692381"
+    },
+    {
+      "shows": "view_kept",
+      "about": "A `record_upserted` of the `sys.setting` `view_kept.loan_days`, which asks for the view `loan_days` to be kept. It is the setting's first version, so it carries `made`. The vector holds the line, not a lake that declares the view.",
+      "line": "{\"body\":{\"key\":\"view_kept.loan_days\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"key\":\"view_kept.loan_days\",\"value\":true},\"type\":\"sys.setting\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"2c9509051d6ddc49fb98d5f4433828ce555de511bb40f8a492f054ee2dfc3023\",\"id\":\"7b1f4e9a2c6d4835b0a7e3c1d5f29b64\",\"known_at\":\"2026-10-05T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":27,\"prev\":\"cfb138c9f10a4127480b37d11a0c304acddf8a2151987375bfdfb53d40692381\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "2c9509051d6ddc49fb98d5f4433828ce555de511bb40f8a492f054ee2dfc3023"
+    },
+    {
+      "shows": "made_again",
+      "about": "A `record_upserted` of the `loan` `l1` at `version` 4 that carries `made`: the write found no live record under the key, and a version above 1 says the record was retired before and is made again (§2.3). The vector holds the line, not the three events before it.",
+      "line": "{\"body\":{\"key\":\"l1\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"out_on\":\"2026-10-05T09:00:00.000000Z\"},\"type\":\"loan\",\"version\":4},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"67fbf4d7d51f397e9302b150a39b959b13a7e47e56f9ec3fa1fdd68958626daa\",\"id\":\"2e8c5a1f9b3d47c6a0f4d7b1c9e35a82\",\"known_at\":\"2026-10-05T09:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":28,\"prev\":\"2c9509051d6ddc49fb98d5f4433828ce555de511bb40f8a492f054ee2dfc3023\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "67fbf4d7d51f397e9302b150a39b959b13a7e47e56f9ec3fa1fdd68958626daa"
+    },
+    {
+      "shows": "restated",
+      "about": "A `write_proposed` whose write is a migration of `loan` that declares `out_on` `sensitive` and changes no stored value: its preflight's report holds `restated`, what `to` states otherwise than the declaration in force (§2.4).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-out-on-masked\",\"why\":\"who borrowed when is not for every reader\",\"write\":{\"migration\":{\"to\":{\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"out_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":true,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"authored\",\"name\":\"back_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"out_on\",\"back_on\"],\"derived\":\"floor((back_on - out_on) / 1d)\",\"name\":\"days\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"name\":\"loan\",\"relations\":[{\"cardinality\":\"many_to_one\",\"name\":\"borrower\",\"target\":\"loan\"}]}},\"report\":{\"fields\":[],\"from_schema_hash\":\"ef357c24258676b46f36e03e65d41c127d312174b77c6e32b9645e5e3032874e\",\"lossless\":true,\"records_scanned\":1,\"report_id\":\"7c0e9d8b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d\",\"restated\":[{\"field\":\"out_on\",\"member\":\"sensitive\",\"to\":true,\"was\":false}],\"to_schema_hash\":\"ef357c24258676b46f36e03e65d41c127d312174b77c6e32b9645e5e3032874e\",\"type\":\"loan\"},\"write\":\"migrate\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"6e0d3f2b009f10bb66a1e0e09bb18c948d8f61e81dd82f5338b0b6b06ceedf7a\",\"id\":\"4d9a2f7c1e6b4380a5c8f1d3b7e09a26\",\"known_at\":\"2026-10-05T09:00:01.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":29,\"prev\":\"67fbf4d7d51f397e9302b150a39b959b13a7e47e56f9ec3fa1fdd68958626daa\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "6e0d3f2b009f10bb66a1e0e09bb18c948d8f61e81dd82f5338b0b6b06ceedf7a"
+    },
+    {
+      "shows": "initial",
+      "about": "A `declared` type `ticket` whose required field `state` declares `initial` `new`, the value the fold fills where a write makes a record and gives the field none (§2.2, §2.3).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"title\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"initial\":\"new\",\"name\":\"state\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"ticket\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"c264f6eb306bc6f6d07232e186c4752ce47f2dcb8c10a48d3b68f74a69f5027b\",\"id\":\"4b7e2c9a1d5f8e3b6c0a2d4f7e1b9c36\",\"known_at\":\"2026-10-05T09:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":30,\"prev\":\"6e0d3f2b009f10bb66a1e0e09bb18c948d8f61e81dd82f5338b0b6b06ceedf7a\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "c264f6eb306bc6f6d07232e186c4752ce47f2dcb8c10a48d3b68f74a69f5027b"
+    },
+    {
+      "shows": "with_the_set",
+      "about": "A `declared` function `loan_days` that carries `with_the_set`: another declaration of the same set follows in its append, and the records the set computes again are computed once, at its last declaration (§2.3). The vector holds the line, not the set's last declaration, so these are lines and not a log a fold accepts: a log that ends inside a set is damaged.",
+      "line": "{\"body\":{\"declaration\":{\"backing\":\"expr\",\"declare\":\"function\",\"expr\":\"floor((back - out) / 1d)\",\"inputs\":[{\"authority\":\"authored\",\"name\":\"out\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"authored\",\"name\":\"back\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}}],\"name\":\"loan_days\"},\"kind\":\"declared\",\"version\":1,\"with_the_set\":true},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"6e1fbbde9f5ddd7451dc449452066efe0a88ed60595a77279b7cfe7a0b51a614\",\"id\":\"0000000000000000000000000000001f\",\"known_at\":\"2026-10-05T09:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":31,\"prev\":\"c264f6eb306bc6f6d07232e186c4752ce47f2dcb8c10a48d3b68f74a69f5027b\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "6e1fbbde9f5ddd7451dc449452066efe0a88ed60595a77279b7cfe7a0b51a614"
+    },
+    {
+      "shows": "value_type_migrated",
+      "about": "A `value_type_migrated` that renames `lent` to `out` in the records of `loan` (§2.2).",
+      "line": "{\"body\":{\"declaration\":{\"kind\":\"text\",\"name\":\"loan_state\",\"one_of\":[\"out\",\"back\"]},\"kind\":\"value_type_migrated\",\"renames\":[[\"lent\",\"out\"]],\"report_id\":\"9b0c\",\"types\":[\"loan\"],\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"40f22ac6f0806c265e78234b0673231338acc69ee0aa45c74bd86f5cd238aa64\",\"id\":\"00000000000000000000000000000020\",\"known_at\":\"2026-10-05T09:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":32,\"prev\":\"6e1fbbde9f5ddd7451dc449452066efe0a88ed60595a77279b7cfe7a0b51a614\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "40f22ac6f0806c265e78234b0673231338acc69ee0aa45c74bd86f5cd238aa64"
+    },
+    {
+      "shows": "proposed_renames",
+      "about": "A `write_proposed` of a `migrate_value_type` that carries `renames`, with its report's `renamed` counts (Appendix A).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p553\",\"why\":\"lent again\",\"write\":{\"renames\":[[\"out\",\"lent\"]],\"report\":{\"fields\":[{\"field\":\"state\",\"misfits\":0,\"renamed\":[{\"from\":\"out\",\"records\":1,\"to\":\"lent\"}],\"type\":\"loan\",\"values_scanned\":1}],\"fits\":true,\"from_version\":2,\"misfits\":0,\"records_scanned\":1,\"report_id\":\"7e1d\",\"value_type\":\"loan_state\"},\"to\":{\"kind\":\"text\",\"name\":\"loan_state\",\"one_of\":[\"lent\",\"back\"]},\"write\":\"migrate_value_type\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"7c7dff7e69c9ee22ae7e39b27651c35b336dc62ad771f45fde8d010764dc031b\",\"id\":\"00000000000000000000000000000021\",\"known_at\":\"2026-10-05T09:00:04.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":33,\"prev\":\"40f22ac6f0806c265e78234b0673231338acc69ee0aa45c74bd86f5cd238aa64\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "7c7dff7e69c9ee22ae7e39b27651c35b336dc62ad771f45fde8d010764dc031b"
+    },
+    {
+      "shows": "pinned",
+      "about": "A `write_proposed` of an upsert, `pinned`: its proposer's grant admits only some records of `claim`, so its accept is refused once the record or the type changed after it (§2.4).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"pinned\":true,\"proposal\":\"p-own-claim\",\"why\":\"my own claim, paid\",\"write\":{\"key\":\"c1\",\"opts\":{},\"patch\":{\"note\":\"paid\"},\"type\":\"claim\",\"write\":\"upsert\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"52e953e17fac837cd7bf1db6914587aa5542a73fa8832de8b2e8e9bc84b518fb\",\"id\":\"00000000000000000000000000000022\",\"known_at\":\"2026-10-05T09:00:05.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":34,\"prev\":\"7c7dff7e69c9ee22ae7e39b27651c35b336dc62ad771f45fde8d010764dc031b\",\"v\":22,\"writer\":\"agent:alice\"}",
+      "hash": "52e953e17fac837cd7bf1db6914587aa5542a73fa8832de8b2e8e9bc84b518fb"
+    },
+    {
+      "shows": "date_field",
+      "about": "A `declared` type `due` whose field `on` is of the kind `date` (§1.3, §5).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"no\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date\"}}],\"name\":\"due\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ad7b2bcca608d5b2ec4ef39de86f35218d3b04d10859832b6c7412e9605c4549\",\"id\":\"00000000000000000000000000000023\",\"known_at\":\"2026-10-05T09:00:06.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":35,\"prev\":\"52e953e17fac837cd7bf1db6914587aa5542a73fa8832de8b2e8e9bc84b518fb\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "ad7b2bcca608d5b2ec4ef39de86f35218d3b04d10859832b6c7412e9605c4549"
+    },
+    {
+      "shows": "date_value_type",
+      "about": "A `declared` value type `pay_day` over the kind `date`.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"value_type\",\"kind\":\"date\",\"name\":\"pay_day\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"fdf404e60a703fdaf3cb3691a3be74586bdef2b97c0f4cb1161f6a959a813cd8\",\"id\":\"00000000000000000000000000000024\",\"known_at\":\"2026-10-05T09:00:07.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":36,\"prev\":\"ad7b2bcca608d5b2ec4ef39de86f35218d3b04d10859832b6c7412e9605c4549\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "fdf404e60a703fdaf3cb3691a3be74586bdef2b97c0f4cb1161f6a959a813cd8"
+    },
+    {
+      "shows": "date_value",
+      "about": "A `record_upserted` of `due` holding the date `2026-07-05`: a value is a string.",
+      "line": "{\"body\":{\"key\":\"d1\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"no\":\"1\",\"on\":\"2026-07-05\"},\"type\":\"due\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"2148948fbb805335fd9f22b535344332013ea0329c1c33ba55cf61ba26a21fdc\",\"id\":\"00000000000000000000000000000025\",\"known_at\":\"2026-10-05T09:00:08.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":37,\"prev\":\"fdf404e60a703fdaf3cb3691a3be74586bdef2b97c0f4cb1161f6a959a813cd8\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "2148948fbb805335fd9f22b535344332013ea0329c1c33ba55cf61ba26a21fdc"
+    },
+    {
+      "shows": "output_carried",
+      "about": "An `output_recorded` of a function backing that carries its `output` and fills `due` `d1`'s `day` (§2.5). The records and the function are not declared in the vectors: a reader of the format checks members and hashes here, not the fold.",
+      "line": "{\"body\":{\"field\":[\"due\",\"d1\",\"day\"],\"input\":\"bbbfae40a0d202fc24345d252fdc472570c51bda8c8aded3c9ce5ffd4512e14c\",\"kind\":\"output_recorded\",\"output\":\"Sunday\",\"seam\":\"function:http:label\"},\"cause\":37,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"718ec871c8d30994237b12ca2cdae6af6608a3ac54a908f5fede7f3ecac00871\",\"id\":\"00000000000000000000000000000026\",\"known_at\":\"2026-10-05T09:00:09.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":38,\"prev\":\"2148948fbb805335fd9f22b535344332013ea0329c1c33ba55cf61ba26a21fdc\",\"procedure\":{\"name\":\"http\",\"version\":\"1\"},\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "718ec871c8d30994237b12ca2cdae6af6608a3ac54a908f5fede7f3ecac00871"
+    },
+    {
+      "shows": "output_named",
+      "about": "A fill of the same call (the same `seam` and `input`) for `due` `d2`, which names that output by `output_at` and carries none (§2.5).",
+      "line": "{\"body\":{\"field\":[\"due\",\"d2\",\"day\"],\"input\":\"bbbfae40a0d202fc24345d252fdc472570c51bda8c8aded3c9ce5ffd4512e14c\",\"kind\":\"output_recorded\",\"output_at\":38,\"seam\":\"function:http:label\"},\"cause\":37,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"b2cde528b06e5141f35e2ca31b1854b451525029201964c3f1806383dad146ff\",\"id\":\"00000000000000000000000000000027\",\"known_at\":\"2026-10-05T09:00:10.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":39,\"prev\":\"718ec871c8d30994237b12ca2cdae6af6608a3ac54a908f5fede7f3ecac00871\",\"procedure\":{\"name\":\"http\",\"version\":\"1\"},\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "b2cde528b06e5141f35e2ca31b1854b451525029201964c3f1806383dad146ff"
+    },
+    {
+      "shows": "lake_upgraded",
+      "about": "A `lake_upgraded` from format 21 to 22 (§6), as a writer's open appends it right after its `lease_taken` where the lake's newest event was in 21. It stands here to show its members alone: in a whole lake it follows events of the format before, which this lake of one format does not hold.",
+      "line": "{\"body\":{\"from\":21,\"kind\":\"lake_upgraded\",\"to\":22},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"e293fa1089d879c35910131e8b4c224101aacd7aa388f8fc5564f402bc8699cb\",\"id\":\"00000000000000000000000000000028\",\"known_at\":\"2026-10-05T09:00:11.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":40,\"prev\":\"b2cde528b06e5141f35e2ca31b1854b451525029201964c3f1806383dad146ff\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "e293fa1089d879c35910131e8b4c224101aacd7aa388f8fc5564f402bc8699cb"
+    },
+    {
+      "shows": "erasable",
+      "about": "A `declared` type whose `email` is declared `erasable` (058): a source's values of it enter the log sealed under that source's key.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"source\",\"name\":\"id\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"source\",\"erasable\":true,\"name\":\"email\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"derived\",\"depends_on\":[\"email\"],\"function\":\"shout\",\"name\":\"loud\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"key\":[\"id\"],\"name\":\"contact\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"eca6d8f21ac6f87cd17a3a3ef1998f964b5c2bb8f6f0f3ff50ea89e7d692fcd9\",\"id\":\"5c3e8a1f2b7d4e9a0c6f1b3d8e2a7c41\",\"known_at\":\"2026-10-05T09:00:12.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":41,\"prev\":\"e293fa1089d879c35910131e8b4c224101aacd7aa388f8fc5564f402bc8699cb\",\"v\":22,\"writer\":\"human:owner\"}",
+      "hash": "eca6d8f21ac6f87cd17a3a3ef1998f964b5c2bb8f6f0f3ff50ea89e7d692fcd9"
+    },
+    {
+      "shows": "sealed_ingest",
+      "about": "A `record_ingested` whose `sealed` names the key `1` of its source and the member `email`, which the patch holds as the base64 of AES-256-GCM-SIV over the value's canonical bytes (§1.4); its id is made from the patch as stored. The vectors' key is SHA-256 of `lakelands:vectors:key`.",
+      "line": "{\"body\":{\"key\":\"c1\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"email\":\"7UznJB/dSYmb/ymD7WMsqVK99xq5zyUwORU0Knp96RoL\",\"id\":\"c1\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"8350717a1449273bfa675131c085c1d68d4ec8f365f2ea246bc14c2991150e79\",\"id\":\"2c936f69cf5a059a0662dd7875cf8886\",\"known_at\":\"2026-10-05T09:00:13.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":42,\"prev\":\"eca6d8f21ac6f87cd17a3a3ef1998f964b5c2bb8f6f0f3ff50ea89e7d692fcd9\",\"sealed\":{\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"crm\",\"v\":22,\"writer\":\"service:crm\"}",
+      "hash": "8350717a1449273bfa675131c085c1d68d4ec8f365f2ea246bc14c2991150e79"
+    },
+    {
+      "shows": "sealed_output",
+      "about": "A recorded output computed from `crm`'s erasable value: `sealed` names the key and the source, the `output` is sealed, and the `input` is an HMAC under a key derived from the source's (§1.4).",
+      "line": "{\"body\":{\"field\":[\"contact\",\"c1\",\"loud\"],\"input\":\"485a52cd131c3a003a51dbf1bc558f53255ccf11f12da73be680d0545b0888b0\",\"kind\":\"output_recorded\",\"output\":\"VGlIWoOFpr1x7HCPVB174ML9+wiFL3lSTiNWClGfoT8Z\",\"seam\":\"function:http:shout\"},\"cause\":42,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"b64c1c407558118e7ef13feaad2033594516fa5f1aa9a570979531961a481cbe\",\"id\":\"0000000000000000000000000000002b\",\"known_at\":\"2026-10-05T09:00:14.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":43,\"prev\":\"8350717a1449273bfa675131c085c1d68d4ec8f365f2ea246bc14c2991150e79\",\"procedure\":{\"name\":\"shout\",\"version\":\"1\"},\"sealed\":{\"key\":\"1\",\"source\":\"crm\"},\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "b64c1c407558118e7ef13feaad2033594516fa5f1aa9a570979531961a481cbe"
+    },
+    {
+      "shows": "set_across",
+      "about": "A `declared` object set whose `where` reads across an edge: `shelf.capacity`, through the derived relation `shelf` onto the shelf's key (`docs/decisions/055-a-path-steps-through-a-reference.md`), a form format 16 holds and 15 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"object_set\",\"name\":\"big_shelf_slips\",\"of\":\"slip\",\"where\":\"shelf.capacity > 10\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"6dbef736c994c99ffba13420658386a25fc245d57f6901607a49f3f3e379a43e\",\"id\":\"a3c5e7f9b1d2046e8a0c2e4f6b8d1a37\",\"known_at\":\"2026-10-05T09:00:15.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":44,\"prev\":\"b64c1c407558118e7ef13feaad2033594516fa5f1aa9a570979531961a481cbe\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "6dbef736c994c99ffba13420658386a25fc245d57f6901607a49f3f3e379a43e"
+    },
+    {
+      "shows": "trigger_across",
+      "about": "A `declared` trigger whose `when` reads across an edge and asks `exists` of the derived relation: `exists(shelf) and shelf.capacity > 10` (055), a form format 16 holds and 15 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"name\":\"slip_on_big_shelf\",\"on\":\"slip\",\"when\":\"exists(shelf) and shelf.capacity > 10\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ed3c3c5c0b0f2a9f5a510d848c62414282280df70cddb8ec17349ea231e71a5e\",\"id\":\"b4d6f8a0c2e3157f9b1d3f5a7c9e2b48\",\"known_at\":\"2026-10-05T09:00:16.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":45,\"prev\":\"6dbef736c994c99ffba13420658386a25fc245d57f6901607a49f3f3e379a43e\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "ed3c3c5c0b0f2a9f5a510d848c62414282280df70cddb8ec17349ea231e71a5e"
+    },
+    {
+      "shows": "constraints",
+      "about": "A `declared` type `payment` with two constraints (`docs/decisions/059-a-type-declares-its-constraints.md`): `never_overpaid`, which admits at ingest, and `closed_stays`, which reads `previous` and refuses at ingest by default, a form format 16 holds and 15 does not.",
+      "line": "{\"body\":{\"declaration\":{\"constraints\":[{\"at_ingest\":\"admit\",\"holds\":\"paid <= amount\",\"name\":\"never_overpaid\"},{\"description\":\"A closed payment stays closed.\",\"holds\":\"not (previous(status) = 'closed') or status = 'closed'\",\"name\":\"closed_stays\"}],\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"no\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"amount\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}},{\"authority\":\"authored\",\"name\":\"paid\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}},{\"authority\":\"authored\",\"name\":\"status\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"key\":[\"no\"],\"name\":\"payment\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"a46f957d58d40c1de105a8ec09ccc954a003f2152a48d080b4c69acbc62049a1\",\"id\":\"c5e7a9b1d3f4268a0c2e4b6d8f1a3c59\",\"known_at\":\"2026-10-05T09:00:17.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":46,\"prev\":\"ed3c3c5c0b0f2a9f5a510d848c62414282280df70cddb8ec17349ea231e71a5e\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "a46f957d58d40c1de105a8ec09ccc954a003f2152a48d080b4c69acbc62049a1"
+    },
+    {
+      "shows": "source_forgotten",
+      "about": "A host forgot `crm`: its key's version `1` is destroyed, and every value it sealed folds as erased, before this position and after (§2.3, 058).",
+      "line": "{\"body\":{\"keys\":[\"1\"],\"kind\":\"source_forgotten\",\"source\":\"crm\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"8ae1d86cb6efcc203c9d67eb96600a22546ab95ee084f0e2481a2c4ea2f8b601\",\"id\":\"0000000000000000000000000000002f\",\"known_at\":\"2026-10-05T09:00:18.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":47,\"prev\":\"a46f957d58d40c1de105a8ec09ccc954a003f2152a48d080b4c69acbc62049a1\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "8ae1d86cb6efcc203c9d67eb96600a22546ab95ee084f0e2481a2c4ea2f8b601"
+    },
+    {
+      "shows": "verb_authority",
+      "about": "A `declared` type `parcel` whose `state` only its verbs write (`authority: verb`, lakelands#1130), with an `initial`: `upsert` and `ingest` are refused it, a verb's `set` writes it. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"no\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"verb\",\"initial\":\"packed\",\"name\":\"state\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"parcel\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"42047e4591abd11045f453098ee2c5dcf92e521ab377de4c34ccfae79275847c\",\"id\":\"00000000000000000000000000000030\",\"known_at\":\"2026-10-05T09:00:19.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":48,\"prev\":\"8ae1d86cb6efcc203c9d67eb96600a22546ab95ee084f0e2481a2c4ea2f8b601\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "42047e4591abd11045f453098ee2c5dcf92e521ab377de4c34ccfae79275847c"
+    },
+    {
+      "shows": "setting_declared",
+      "about": "A `declared` setting `vat_rate` of the host (063, extended, lakelands#996): a `decimal`, with its unit, its meaning and its group `operator`. Every write of `vat_rate` is judged as a write of a decimal field. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"setting\",\"description\":\"The VAT rate on net amounts.\",\"group\":\"operator\",\"key\":\"vat_rate\",\"type\":{\"kind\":\"decimal\"},\"unit\":\"fraction\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"9f3c270d0a3aa0e0515399888a91bd99821236a642277830d53bd34f56432887\",\"id\":\"00000000000000000000000000000031\",\"known_at\":\"2026-10-05T09:00:20.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":49,\"prev\":\"42047e4591abd11045f453098ee2c5dcf92e521ab377de4c34ccfae79275847c\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "9f3c270d0a3aa0e0515399888a91bd99821236a642277830d53bd34f56432887"
+    },
+    {
+      "shows": "setting_group",
+      "about": "A `record_upserted` of the `sys.setting` `vat_rate` carrying the `group` the store stamps from its declaration, which a grant's `only` on `sys.setting` names. A member format 17's `sys.setting` holds and 16's does not.",
+      "line": "{\"body\":{\"key\":\"vat_rate\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"group\":\"operator\",\"key\":\"vat_rate\",\"value\":\"0.19\"},\"type\":\"sys.setting\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ae41bd654727aa3ec40bc85e51017bcfc6b64513ff323929b324bc19b387bb04\",\"id\":\"00000000000000000000000000000032\",\"known_at\":\"2026-10-05T09:00:21.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":50,\"prev\":\"9f3c270d0a3aa0e0515399888a91bd99821236a642277830d53bd34f56432887\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "ae41bd654727aa3ec40bc85e51017bcfc6b64513ff323929b324bc19b387bb04"
+    },
+    {
+      "shows": "proposed_plan",
+      "about": "A `write_proposed` whose `declare` carries its plan: per type it would compute again, the records computed again and those it would leave naming no live record (062).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-plan\",\"why\":\"the tickets computed again\",\"write\":{\"declarations\":[{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"title\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"ticket\"}],\"plan\":{\"at\":50,\"lossless\":true,\"report_id\":\"20ddb6f243b689c1f8427b062337230725c2d91399cc0cea669b554b413bcd22\",\"types\":[{\"fields\":[],\"from_schema_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lossless\":true,\"recomputed\":3,\"records_scanned\":3,\"report_id\":\"\",\"to_schema_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"ticket\",\"unlive\":[{\"field\":\"owner\",\"records\":1,\"sample_keys\":[\"t2\"]}]}]},\"write\":\"declare\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"292ad18039c4fbe3595677465ce65e2a156d572cb9fd658f8950c217e3d8af90\",\"id\":\"00000000000000000000000000000033\",\"known_at\":\"2026-10-05T09:00:21.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":51,\"prev\":\"ae41bd654727aa3ec40bc85e51017bcfc6b64513ff323929b324bc19b387bb04\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "292ad18039c4fbe3595677465ce65e2a156d572cb9fd658f8950c217e3d8af90"
+    },
+    {
+      "shows": "delivery",
+      "about": "A `record_ingested` of `erp` in the delivery `batch-7`, the id its caller gave the `ingest` (§1.1): every record of that call carries it, and its id is made without it (§3), so the same record delivered again under another delivery is a duplicate. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"key\":\"INV-2\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"80.00\",\"number\":\"INV-2\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"batch-7\",\"fence\":1,\"hash\":\"9be907dea094489c3b1c10c631d63b50f4f9da8a854c7892e5597000b1d87e48\",\"id\":\"d9f9f007b9f1a374094d9a22e559af9a\",\"known_at\":\"2026-10-05T09:00:22.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":52,\"prev\":\"292ad18039c4fbe3595677465ce65e2a156d572cb9fd658f8950c217e3d8af90\",\"source\":\"erp\",\"v\":22,\"writer\":\"service:importer\"}",
+      "hash": "9be907dea094489c3b1c10c631d63b50f4f9da8a854c7892e5597000b1d87e48"
+    },
+    {
+      "shows": "function_risk",
+      "about": "A `declared` function of the backing `http` that declares `risk: high`: a call it makes due is proposed, and made when accepted (§2.3, 064).",
+      "line": "{\"body\":{\"declaration\":{\"backing\":\"http\",\"config\":{\"url\":\"https://notify.example/send\"},\"declare\":\"function\",\"inputs\":[{\"authority\":\"authored\",\"name\":\"subject\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"notify\",\"risk\":\"high\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"39965d6c11f94831312f7e87bf12fb9cdc6909e6bf64e042d1be1285a6b93ed5\",\"id\":\"00000000000000000000000000000035\",\"known_at\":\"2026-10-05T09:00:23.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":53,\"prev\":\"9be907dea094489c3b1c10c631d63b50f4f9da8a854c7892e5597000b1d87e48\",\"v\":22,\"writer\":\"human:owner\"}",
+      "hash": "39965d6c11f94831312f7e87bf12fb9cdc6909e6bf64e042d1be1285a6b93ed5"
+    },
+    {
+      "shows": "computed_by_function",
+      "about": "A `declared` type whose field `notice` is computed by `notify`, the function declared at position 53 (§2.3).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"subject\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"derived\",\"depends_on\":[\"subject\"],\"function\":\"notify\",\"name\":\"notice\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"alert\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"a466ace640d6e7edea013f944abf8db9e9bab0f196aaa1b732166e7da234050c\",\"id\":\"00000000000000000000000000000036\",\"known_at\":\"2026-10-05T09:00:24.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":54,\"prev\":\"39965d6c11f94831312f7e87bf12fb9cdc6909e6bf64e042d1be1285a6b93ed5\",\"v\":22,\"writer\":\"human:owner\"}",
+      "hash": "a466ace640d6e7edea013f944abf8db9e9bab0f196aaa1b732166e7da234050c"
+    },
+    {
+      "shows": "computed_write",
+      "about": "A `record_upserted` of that type, which makes the call of `notify` due: the write the next line names as its cause (§2.4).",
+      "line": "{\"body\":{\"key\":\"a1\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"subject\":\"disk full\"},\"type\":\"alert\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"7dd9688484dc0c62284cb55afe520ec42415e36a556a71d136540e608c6657fe\",\"id\":\"00000000000000000000000000000037\",\"known_at\":\"2026-10-05T09:00:25.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":55,\"prev\":\"a466ace640d6e7edea013f944abf8db9e9bab0f196aaa1b732166e7da234050c\",\"v\":22,\"writer\":\"human:owner\"}",
+      "hash": "7dd9688484dc0c62284cb55afe520ec42415e36a556a71d136540e608c6657fe"
+    },
+    {
+      "shows": "proposed_compute",
+      "about": "A `write_proposed` the store appended for the call of `notify` that the write at position 55 made due, as its writer: the record, the field its output fills and the call's digest on that record as that write made it (§2.5, 064). It holds no inputs: they are the record's, which a source's forgetting may have erased (058).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"00000000000000000000000000000038\",\"why\":\"`notify` is declared high risk; its call is made when accepted\",\"write\":{\"field\":\"notice\",\"function\":\"notify\",\"input\":\"8ff7e3a8569bdcce801457c2714e79a50f278951d066a1f022928062c260d1d6\",\"key\":\"a1\",\"type\":\"alert\",\"write\":\"compute\"}},\"cause\":55,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"51c525f284c42db2e5c17c5d40e1e1a7e9e6a082e257dfeeb7670b0124518c31\",\"id\":\"00000000000000000000000000000038\",\"known_at\":\"2026-10-05T09:00:26.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":56,\"prev\":\"7dd9688484dc0c62284cb55afe520ec42415e36a556a71d136540e608c6657fe\",\"v\":22,\"writer\":\"human:owner\"}",
+      "hash": "51c525f284c42db2e5c17c5d40e1e1a7e9e6a082e257dfeeb7670b0124518c31"
+    },
+    {
+      "shows": "withdrawn",
+      "about": "A `declared` withdrawal of the trigger `shelved` (lakelands#1219): from this position on it is not in force, and a read as of before still sees it; its version, 2, follows the declaration it withdraws, and a later declaration of the name takes 3. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"withdraw\",\"kind\":\"trigger\",\"name\":\"shelved\"},\"kind\":\"declared\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"cbed8cdb095335c798773af7e7b22aece63e7642d366cbcb14400bb0745a60a2\",\"id\":\"20255277d343a5f6df3e3a890166e268\",\"known_at\":\"2026-10-05T09:00:27.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":57,\"prev\":\"51c525f284c42db2e5c17c5d40e1e1a7e9e6a082e257dfeeb7670b0124518c31\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "cbed8cdb095335c798773af7e7b22aece63e7642d366cbcb14400bb0745a60a2"
+    },
+    {
+      "shows": "retired_by_verbs",
+      "about": "A `declared` type `voucher` whose records only its verbs retire (`retired_by: verbs`, lakelands#1148): `retire` is refused it, a verb whose effect is `retire` retires one. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"no\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"state\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"voucher\",\"retired_by\":\"verbs\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"13ce0d0fdab0da5e8ffb0e4ba5a01c36d7c75471aa111ff779ba5f20bfcfac65\",\"id\":\"00000000000000000000000000000039\",\"known_at\":\"2026-10-05T09:00:28.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":58,\"prev\":\"cbed8cdb095335c798773af7e7b22aece63e7642d366cbcb14400bb0745a60a2\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "13ce0d0fdab0da5e8ffb0e4ba5a01c36d7c75471aa111ff779ba5f20bfcfac65"
+    },
+    {
+      "shows": "retire_effect",
+      "about": "A `declared` verb `redeem` whose effect is `retire` (lakelands#1148): its call retires the record it is called on, under its `requires`. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"retire\",\"name\":\"redeem\",\"on\":\"voucher\",\"requires\":\"state = 'issued'\",\"risk\":\"low\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"4610e1623448afb0dcb00a50d4d7fad21d4f19cb39597ae9f6b9924fdfadae84\",\"id\":\"0000000000000000000000000000003a\",\"known_at\":\"2026-10-05T09:00:29.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":59,\"prev\":\"13ce0d0fdab0da5e8ffb0e4ba5a01c36d7c75471aa111ff779ba5f20bfcfac65\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "4610e1623448afb0dcb00a50d4d7fad21d4f19cb39597ae9f6b9924fdfadae84"
+    },
+    {
+      "shows": "trigger_change_guard",
+      "about": "A `declared` trigger whose guard reads `created()`, strict, firing on authored writes and ingests alone and binding its reactions to depth 1: `when_strict` and `on_changes`, members format 17 holds and 16 does not (lakelands#1215, lakelands#1217).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"max_depth\":1,\"name\":\"slip_made\",\"on\":\"slip\",\"on_changes\":[\"upserted\",\"ingested\"],\"when\":\"created()\",\"when_strict\":true},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"68d724b32cf5a5f3715bccc4e2583b77799da45a5a4394a311903ffcd578e5a8\",\"id\":\"0000000000000000000000000000003b\",\"known_at\":\"2026-10-05T09:00:30.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":60,\"prev\":\"4610e1623448afb0dcb00a50d4d7fad21d4f19cb39597ae9f6b9924fdfadae84\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "68d724b32cf5a5f3715bccc4e2583b77799da45a5a4394a311903ffcd578e5a8"
+    },
+    {
+      "shows": "slip_write",
+      "about": "A write that makes the slip `S-1`, which fires `slip_made` (§2.5), made by `agent:agent` for `human:reader`: the envelope's `on_behalf_of`, beside `writer`, from format 21 (§1.1); and the host's word for why it wrote, `live`, in `context.occasion`, from format 22 (§1.1).",
+      "line": "{\"body\":{\"key\":\"S-1\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"number\":\"S-1\",\"shelf_code\":\"A\"},\"type\":\"slip\",\"version\":1},\"context\":{\"depth\":0,\"occasion\":\"live\",\"origin\":\"direct\"},\"fence\":1,\"hash\":\"4e71b18ddb801a94ed94cdc861931a83d4dbf91c45008f0d2cee429a16c87517\",\"id\":\"0000000000000000000000000000003c\",\"known_at\":\"2026-10-05T09:00:31.000000Z\",\"lake\":\"vectors\",\"on_behalf_of\":\"human:reader\",\"origin\":\"authored\",\"position\":61,\"prev\":\"68d724b32cf5a5f3715bccc4e2583b77799da45a5a4394a311903ffcd578e5a8\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "4e71b18ddb801a94ed94cdc861931a83d4dbf91c45008f0d2cee429a16c87517"
+    },
+    {
+      "shows": "fired_change",
+      "about": "A `trigger_fired` of `slip_made`, whose guard `created()` held, saying the write at its cause was an authored write that made the record: `change` and `created`, members format 17 holds and 16 does not (lakelands#1217).",
+      "line": "{\"body\":{\"change\":\"upserted\",\"created\":true,\"key\":\"S-1\",\"kind\":\"trigger_fired\",\"trigger\":\"slip_made\",\"type\":\"slip\"},\"cause\":61,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"b172273bedef201719d954cccf9b68aaaaafe183ce366423202aef5c14d152cb\",\"id\":\"0000000000000000000000000000003d\",\"known_at\":\"2026-10-05T09:00:31.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":62,\"prev\":\"4e71b18ddb801a94ed94cdc861931a83d4dbf91c45008f0d2cee429a16c87517\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "b172273bedef201719d954cccf9b68aaaaafe183ce366423202aef5c14d152cb"
+    },
+    {
+      "shows": "reaction_write",
+      "about": "A host's reaction to `slip_made`'s firing, one deeper: its context is reactive at depth 1 and its cause the firing. It makes the slip `S-2`.",
+      "line": "{\"body\":{\"key\":\"S-2\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"number\":\"S-2\",\"shelf_code\":\"B\"},\"type\":\"slip\",\"version\":1},\"cause\":62,\"context\":{\"depth\":1,\"origin\":\"reactive\"},\"fence\":1,\"hash\":\"5d768395abdd1dae250161ab76154eec4e35daeb9ef3d41baa4af65de21dc963\",\"id\":\"0000000000000000000000000000003e\",\"known_at\":\"2026-10-05T09:00:32.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":63,\"prev\":\"b172273bedef201719d954cccf9b68aaaaafe183ce366423202aef5c14d152cb\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "5d768395abdd1dae250161ab76154eec4e35daeb9ef3d41baa4af65de21dc963"
+    },
+    {
+      "shows": "trigger_dropped",
+      "about": "A `trigger_dropped` in place of `slip_made`'s firing: the write at its cause is at depth 1, the trigger's `max_depth`, so a reaction to it could write nothing. A kind format 17 adds (lakelands#1216).",
+      "line": "{\"body\":{\"bound\":\"trigger\",\"depth\":1,\"key\":\"S-2\",\"kind\":\"trigger_dropped\",\"max_depth\":1,\"trigger\":\"slip_made\",\"type\":\"slip\"},\"cause\":63,\"context\":{\"depth\":1,\"origin\":\"reactive\"},\"fence\":1,\"hash\":\"217eb69e037c49ea4e69bb66be496d6e869637aad280826c2ec06be5f33bb489\",\"id\":\"0000000000000000000000000000003f\",\"known_at\":\"2026-10-05T09:00:32.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":64,\"prev\":\"5d768395abdd1dae250161ab76154eec4e35daeb9ef3d41baa4af65de21dc963\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "217eb69e037c49ea4e69bb66be496d6e869637aad280826c2ec06be5f33bb489"
+    },
+    {
+      "shows": "untyped_input",
+      "about": "A `declared` function whose input states no `type` (lakelands#933): a type binds it as a field of any kind, and the function reads the value in the kind that type holds it. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"backing\":\"http\",\"config\":{\"url\":\"https://notify.example/send\"},\"declare\":\"function\",\"inputs\":[{\"authority\":\"authored\",\"name\":\"amount\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false}],\"name\":\"tally\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"f881e357da7174469143e236ee6eb0ea570e774c04dd93504d3cf5ee4d83d5c9\",\"id\":\"00000000000000000000000000000040\",\"known_at\":\"2026-10-05T09:00:33.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":65,\"prev\":\"217eb69e037c49ea4e69bb66be496d6e869637aad280826c2ec06be5f33bb489\",\"v\":22,\"writer\":\"human:owner\"}",
+      "hash": "f881e357da7174469143e236ee6eb0ea570e774c04dd93504d3cf5ee4d83d5c9"
+    },
+    {
+      "shows": "values_removed",
+      "about": "A host took back `erp`'s delivery `batch-7`: each value its events wrote folds as erased, at every position (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"delivery\":\"batch-7\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"0ab1dea0a25be145cfa5d850241e580d32ea9bf4b763bece8745db0ebc4eb916\",\"id\":\"00000000000000000000000000000041\",\"known_at\":\"2026-10-05T09:00:34.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":66,\"prev\":\"f881e357da7174469143e236ee6eb0ea570e774c04dd93504d3cf5ee4d83d5c9\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "0ab1dea0a25be145cfa5d850241e580d32ea9bf4b763bece8745db0ebc4eb916"
+    },
+    {
+      "shows": "removal_retires",
+      "about": "The `record_retired` of `INV-2`, which only that delivery wrote, in the same append as the act (065).",
+      "line": "{\"body\":{\"key\":\"INV-2\",\"kind\":\"record_retired\",\"type\":\"invoice\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"da138335e86e0b4b4ba343525649bf396862bee4a7067027b05b428e4e0e6394\",\"id\":\"00000000000000000000000000000042\",\"known_at\":\"2026-10-05T09:00:34.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":67,\"prev\":\"0ab1dea0a25be145cfa5d850241e580d32ea9bf4b763bece8745db0ebc4eb916\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "da138335e86e0b4b4ba343525649bf396862bee4a7067027b05b428e4e0e6394"
+    },
+    {
+      "shows": "delivery_own",
+      "about": "A `record_ingested` of `erp` whose caller named no delivery: it is in the store's own, `d` and the position of the first event its call appended (§1.1). A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"key\":\"INV-3\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"12.00\",\"number\":\"INV-3\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d68\",\"fence\":1,\"hash\":\"775e8a16ea3e47724f239264815496566170e3e10b7d7bc1e737c010e6c8357d\",\"id\":\"c03aeadc58b93705f087d53c2a54f646\",\"known_at\":\"2026-10-05T09:00:35.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":68,\"prev\":\"da138335e86e0b4b4ba343525649bf396862bee4a7067027b05b428e4e0e6394\",\"source\":\"erp\",\"v\":22,\"writer\":\"service:importer\"}",
+      "hash": "775e8a16ea3e47724f239264815496566170e3e10b7d7bc1e737c010e6c8357d"
+    },
+    {
+      "shows": "removed_before",
+      "about": "A host took back what `erp` wrote before a time of the log's own clock: the act names the selection and `before`, the first position the time does not reach, and no `keys`, since `erp` seals nothing (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). What the delivery taken back at 66 wrote is not taken again. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"before\":69,\"kind\":\"values_removed\",\"selection\":{\"written_before\":\"2026-10-05T09:00:36.000000Z\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"dca8133fba1bb366c04d8c9c3a134837df48edeecb5708fc1715a26908afa063\",\"id\":\"00000000000000000000000000000043\",\"known_at\":\"2026-10-05T09:00:36.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":69,\"prev\":\"775e8a16ea3e47724f239264815496566170e3e10b7d7bc1e737c010e6c8357d\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "dca8133fba1bb366c04d8c9c3a134837df48edeecb5708fc1715a26908afa063"
+    },
+    {
+      "shows": "removal_by_time_retires",
+      "about": "The `record_retired` of `INV-3`, which only `erp` wrote before that time, in the same append as the act (065).",
+      "line": "{\"body\":{\"key\":\"INV-3\",\"kind\":\"record_retired\",\"type\":\"invoice\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"a17d9d15ff8827a4e4b4c77bb05ef9fe12f282ecb075db76192c65307861cfe4\",\"id\":\"00000000000000000000000000000044\",\"known_at\":\"2026-10-05T09:00:36.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":70,\"prev\":\"dca8133fba1bb366c04d8c9c3a134837df48edeecb5708fc1715a26908afa063\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "a17d9d15ff8827a4e4b4c77bb05ef9fe12f282ecb075db76192c65307861cfe4"
+    },
+    {
+      "shows": "proposed_migrate_recomputed",
+      "about": "A `write_proposed` whose write is a migration of `loan` that computes `days` again, its report as format 17 writes every migration's: it holds `recomputed`, the live records the migration computes again, here `l1`, and would hold `unlive` where the migration moved a reference (`docs/decisions/062-a-change-plans-before-it-acts.md`). The proposals at 12 and 29 are lines as format 16 wrote them, without it, which a writer of 17 never writes; a reader completes such a report as `recomputed: 0` and makes its `report_id` again. A member format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-days-inclusive\",\"why\":\"a loan's days count the day it went out\",\"write\":{\"migration\":{\"to\":{\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"out_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"authored\",\"name\":\"back_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"out_on\",\"back_on\"],\"derived\":\"floor((back_on - out_on) / 1d) + 1\",\"name\":\"days\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"name\":\"loan\"}},\"report\":{\"fields\":[],\"from_schema_hash\":\"511da18676a5fa18d07778c05e74757021b0606ca2023cdabd3cb815c8bd0b89\",\"lossless\":true,\"recomputed\":1,\"records_scanned\":1,\"report_id\":\"b0ac56bb7aeecfdf6d5728a29297ce7b095d9c7d5a7decf4cfe7ade939214f3e\",\"restated\":[{\"field\":\"days\",\"member\":\"derived\",\"to\":\"floor((back_on - out_on) / 1d) + 1\",\"was\":\"floor((back_on - out_on) / 1d)\"}],\"to_schema_hash\":\"511da18676a5fa18d07778c05e74757021b0606ca2023cdabd3cb815c8bd0b89\",\"type\":\"loan\"},\"write\":\"migrate\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"a09be22f4bfd79543c53d6881ddc22534d363f2c9281d55b377188c61eea6f64\",\"id\":\"00000000000000000000000000000045\",\"known_at\":\"2026-10-05T09:00:37.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":71,\"prev\":\"a17d9d15ff8827a4e4b4c77bb05ef9fe12f282ecb075db76192c65307861cfe4\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "a09be22f4bfd79543c53d6881ddc22534d363f2c9281d55b377188c61eea6f64"
+    },
+    {
+      "shows": "sealed_apart",
+      "about": "An ingest of `hr` in the delivery `late`, which asked `sealed_apart` (065): `sealed` names `hr`'s version `1` and, in `apart`, the delivery's own key `a1`, and `email` is sealed under the key HKDF-SHA-256 derives from the two (§1.4); its id is made from the patch as stored.",
+      "line": "{\"body\":{\"key\":\"c5\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"email\":\"eDasS7hpaq9IEs5/egw3h0RwvHMr+u31dc0ZUxExQOsD\",\"id\":\"c5\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"late\",\"fence\":1,\"hash\":\"46aca30e81fbb353b8bcdc912a48fd56ffc5f2d9a8c179fed798ba6f6b983631\",\"id\":\"a6ae5100418f51f2fd2fe5b9fd2f2ee2\",\"known_at\":\"2026-10-05T09:00:38.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":72,\"prev\":\"a09be22f4bfd79543c53d6881ddc22534d363f2c9281d55b377188c61eea6f64\",\"sealed\":{\"apart\":[\"a1\"],\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"hr\",\"v\":22,\"writer\":\"service:hr\"}",
+      "hash": "46aca30e81fbb353b8bcdc912a48fd56ffc5f2d9a8c179fed798ba6f6b983631"
+    },
+    {
+      "shows": "sealed_apart_output",
+      "about": "The output `shout` recorded over `c5`'s `email`, sealed under `hr`'s version `1` composed with `a1`, and its `input` digested under the same composed key: it dies with either key (065).",
+      "line": "{\"body\":{\"field\":[\"contact\",\"c5\",\"loud\"],\"input\":\"d9146ac51f02da40e0566e6121639d140c2988ad27fb8f72b661b204dae7fe78\",\"kind\":\"output_recorded\",\"output\":\"ZITMbRdCdpQkr7O9LOXNF2CUqQIUOV1D+zdx8hREsNQ4\",\"seam\":\"function:http:shout\"},\"cause\":72,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"2e1e5b663a5c3f821ddf735b051009bb0a15f01827766e3d9ed2d916aecb81a7\",\"id\":\"00000000000000000000000000000049\",\"known_at\":\"2026-10-05T09:00:39.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":73,\"prev\":\"46aca30e81fbb353b8bcdc912a48fd56ffc5f2d9a8c179fed798ba6f6b983631\",\"procedure\":{\"name\":\"shout\",\"version\":\"1\"},\"sealed\":{\"apart\":[\"a1\"],\"key\":\"1\",\"source\":\"hr\"},\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "2e1e5b663a5c3f821ddf735b051009bb0a15f01827766e3d9ed2d916aecb81a7"
+    },
+    {
+      "shows": "removed_apart",
+      "about": "A `values_removed` taking back `hr`'s delivery `late`, naming in `apart` the key `a1` it destroys and no version: the delivery is shredded alone (065).",
+      "line": "{\"body\":{\"apart\":[\"a1\"],\"kind\":\"values_removed\",\"selection\":{\"delivery\":\"late\"},\"source\":\"hr\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ecf958c3ff16dac93bae445ada9eaea924c67029926c8d3b457df483ad5fd9e7\",\"id\":\"0000000000000000000000000000004a\",\"known_at\":\"2026-10-05T09:00:40.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":74,\"prev\":\"2e1e5b663a5c3f821ddf735b051009bb0a15f01827766e3d9ed2d916aecb81a7\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "ecf958c3ff16dac93bae445ada9eaea924c67029926c8d3b457df483ad5fd9e7"
+    },
+    {
+      "shows": "removal_apart_retires",
+      "about": "The `record_retired` of `c5`, which only the delivery taken back wrote, in the act's append.",
+      "line": "{\"body\":{\"key\":\"c5\",\"kind\":\"record_retired\",\"type\":\"contact\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"3cf894979ebffe102c363439b9abfdf5efcf767f1717372cf9848398f3c7b3f2\",\"id\":\"0000000000000000000000000000004b\",\"known_at\":\"2026-10-05T09:00:40.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":75,\"prev\":\"ecf958c3ff16dac93bae445ada9eaea924c67029926c8d3b457df483ad5fd9e7\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "3cf894979ebffe102c363439b9abfdf5efcf767f1717372cf9848398f3c7b3f2"
+    },
+    {
+      "shows": "admits",
+      "about": "A `declared` type `item` whose authored `title` admits the source `samples` (069): `ingest` writes it under `samples` alone, where no other hand's value stands. `admits` is not hashed, so the type's schema hash is the one it has without it. A form format 18 holds and 17 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"admits\":[\"samples\"],\"authority\":\"authored\",\"name\":\"title\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"note\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"item\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"3ed1bb8ef1abbe10fe158c7282e0457f318d8b09a338329ab53650b9c45680c4\",\"id\":\"0000000000000000000000000000004c\",\"known_at\":\"2026-10-05T09:00:41.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":76,\"prev\":\"3cf894979ebffe102c363439b9abfdf5efcf767f1717372cf9848398f3c7b3f2\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "3ed1bb8ef1abbe10fe158c7282e0457f318d8b09a338329ab53650b9c45680c4"
+    },
+    {
+      "shows": "removed_seen_before",
+      "about": "A `values_removed` taking back what `erp` says it observed before 08:00 on 2026-09-24, the ingest of `INV-1` at 4 among it, whose `seen_at` is 07:59:30.25 (065, lakelands#1166): the source's word selects events wherever they stand, so it names no `before`, and an earlier act took `INV-1`'s values, so it destroys no key and retires nothing. A selection format 18 holds and 17 does not.",
+      "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"seen_before\":\"2026-09-24T08:00:00.000000Z\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ae47ec9520eae2be179b1a98eb6e41cfeb68b030c388baf6f08a244a9b29b73f\",\"id\":\"0000000000000000000000000000004d\",\"known_at\":\"2026-10-05T09:00:42.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":77,\"prev\":\"3ed1bb8ef1abbe10fe158c7282e0457f318d8b09a338329ab53650b9c45680c4\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "ae47ec9520eae2be179b1a98eb6e41cfeb68b030c388baf6f08a244a9b29b73f"
+    },
+    {
+      "shows": "verb_granted",
+      "about": "A `declared` verb `void` on `voucher`, `granted` (070): only a caller whose grants on `voucher` name `void` calls it, proposes it or is shown it. A form format 18 holds and 17 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"retire\",\"granted\":true,\"name\":\"void\",\"on\":\"voucher\",\"risk\":\"low\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"37e022c6eb5dabdb65dbf4ec5bf0e7feb77bc53ac87324fd18fed1430d1515cb\",\"id\":\"0000000000000000000000000000004e\",\"known_at\":\"2026-10-05T09:00:43.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":78,\"prev\":\"ae47ec9520eae2be179b1a98eb6e41cfeb68b030c388baf6f08a244a9b29b73f\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "37e022c6eb5dabdb65dbf4ec5bf0e7feb77bc53ac87324fd18fed1430d1515cb"
+    },
+    {
+      "shows": "removed_deliveries",
+      "about": "A `values_removed` taking back `erp`'s deliveries `batch-7` and `d68` in one act (065, lakelands#1290): the set's ids in order, each once, and no `before`. The acts at 66 and 69 took both deliveries' values, so it destroys no key and retires nothing. A selection format 18 holds and 17 does not.",
+      "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"deliveries\":[\"batch-7\",\"d68\"]},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"56c0a58ad508201254ca702367f5ec71b42a5d5d93e6d5aa410269d8e7dc2d57\",\"id\":\"0000000000000000000000000000004f\",\"known_at\":\"2026-10-05T09:00:44.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":79,\"prev\":\"37e022c6eb5dabdb65dbf4ec5bf0e7feb77bc53ac87324fd18fed1430d1515cb\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "56c0a58ad508201254ca702367f5ec71b42a5d5d93e6d5aa410269d8e7dc2d57"
+    },
+    {
+      "shows": "verb_preconditions",
+      "about": "A `declared` verb `settle` on `payment` (028, 006): its `requires` reads the call's payload, `payload.amount`, and its precondition `not_overpaid`, judged after it, reads the payload beside the record's own fields; an unmet one is refused said within it. A form format 19 holds and 18 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"write\",\"name\":\"settle\",\"on\":\"payment\",\"payload\":[{\"authority\":\"authored\",\"name\":\"amount\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"preconditions\":[{\"holds\":\"paid + payload.amount <= amount\",\"name\":\"not_overpaid\"}],\"requires\":\"payload.amount > 0\",\"risk\":\"low\",\"set\":[{\"field\":\"paid\",\"value\":\"paid + payload.amount\"}]},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"5d3b5a1b61abd9ace7b45f14cf9c67d17cbd17d50185be5ed5acd6d085a6b9eb\",\"id\":\"00000000000000000000000000000050\",\"known_at\":\"2026-10-05T09:00:45.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":80,\"prev\":\"56c0a58ad508201254ca702367f5ec71b42a5d5d93e6d5aa410269d8e7dc2d57\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "5d3b5a1b61abd9ace7b45f14cf9c67d17cbd17d50185be5ed5acd6d085a6b9eb"
+    },
+    {
+      "shows": "proposed_records",
+      "about": "A `write_proposed` whose write is `records`: a change to the `ticket`s whose `title` is `open`, setting it to `closed`, with the plan its proposer was shown: the two records it selects and how many of them each field set changes, and the plan's id, which the store makes over what its reader is shown and every selected key with the version read, here a stand-in (081). A form format 20 holds and 19 does not.",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-records\",\"why\":\"every open ticket closed\",\"write\":{\"plan\":{\"at\":80,\"lossless\":true,\"records\":{\"fields\":[{\"field\":\"title\",\"records\":2}],\"sample_keys\":[\"t1\",\"t2\"],\"selected\":2,\"type\":\"ticket\"},\"report_id\":\"ba9f81fb7a624b8ea940b357e56774a0aa1dc3886d8b2a9dc2455f04dcceb455\"},\"to\":{\"set\":{\"title\":\"closed\"}},\"type\":\"ticket\",\"where\":\"title = 'open'\",\"write\":\"records\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"5461974a2fe4797b78286e64a305d23909cd843d00ce47114cd7212b6368c13f\",\"id\":\"00000000000000000000000000000051\",\"known_at\":\"2026-10-05T09:00:46.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":81,\"prev\":\"5d3b5a1b61abd9ace7b45f14cf9c67d17cbd17d50185be5ed5acd6d085a6b9eb\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "5461974a2fe4797b78286e64a305d23909cd843d00ce47114cd7212b6368c13f"
+    },
+    {
+      "shows": "quarantined",
+      "about": "A `record_quarantined` (085): `erp`'s `INV-9` of the delivery `q-1`, refused `invalid` for the field `zz`, which `invoice` does not have, kept as its version 1 under the id `erp`, `q-1`, 0 and the stream gone on. Its cells are the members as sent, `zz` among them; the envelope names the source and the call's delivery, the payload the type, the key as sent, the id, the version, the cells and the refusal. Its id is made under `lakelands:quarantined:v1` over the source, the id's delivery and index, the version before, the cells, the box (none) and the refusal, so the same record sent again in `q-1` and refused the same way has this id and appends nothing. A form format 21 holds and 20 does not.",
+      "line": "{\"body\":{\"cells\":{\"amount\":\"90.00\",\"number\":\"INV-9\",\"zz\":\"x\"},\"id\":{\"delivery\":\"q-1\",\"index\":0,\"source\":\"erp\"},\"key\":\"INV-9\",\"kind\":\"record_quarantined\",\"refusal\":{\"error\":\"refused\",\"field\":\"zz\",\"message\":\"refused on `zz`: `invoice` has no field `zz`\",\"reason\":{\"code\":\"unknown_field\",\"field\":\"zz\",\"message\":\"`invoice` has no field `zz`\",\"refusal\":\"invalid\",\"type\":\"invoice\"}},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"q-1\",\"fence\":1,\"hash\":\"babd7b406ad8afd9714a05a6b433b5b521391b73f503462dc505d81c5f83e522\",\"id\":\"7141e6b1b7fa0c0b1cf9deefb3a50d66\",\"known_at\":\"2026-10-05T09:00:47.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":82,\"prev\":\"5461974a2fe4797b78286e64a305d23909cd843d00ce47114cd7212b6368c13f\",\"source\":\"erp\",\"v\":22,\"writer\":\"service:importer\"}",
+      "hash": "babd7b406ad8afd9714a05a6b433b5b521391b73f503462dc505d81c5f83e522"
+    },
+    {
+      "shows": "quarantined_again",
+      "about": "The next version of `erp`, `q-1`, 0 (085): `INV-9` resubmitted in the delivery `q-2` with another `amount` and refused again, so version 2; its envelope names `q-2`, the call's, and its id still names `q-1`, the delivery that first quarantined it.",
+      "line": "{\"body\":{\"cells\":{\"amount\":\"9.00\",\"number\":\"INV-9\",\"zz\":\"x\"},\"id\":{\"delivery\":\"q-1\",\"index\":0,\"source\":\"erp\"},\"key\":\"INV-9\",\"kind\":\"record_quarantined\",\"refusal\":{\"error\":\"refused\",\"field\":\"zz\",\"message\":\"refused on `zz`: `invoice` has no field `zz`\",\"reason\":{\"code\":\"unknown_field\",\"field\":\"zz\",\"message\":\"`invoice` has no field `zz`\",\"refusal\":\"invalid\",\"type\":\"invoice\"}},\"type\":\"invoice\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"q-2\",\"fence\":1,\"hash\":\"083fcf996cd50435f11d2eee74280eaf051fd2dcbae0aea075d5fea14ee118b3\",\"id\":\"c25bc85f8ec3a8d07d666929d3a6badc\",\"known_at\":\"2026-10-05T09:00:48.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":83,\"prev\":\"babd7b406ad8afd9714a05a6b433b5b521391b73f503462dc505d81c5f83e522\",\"source\":\"erp\",\"v\":22,\"writer\":\"service:importer\"}",
+      "hash": "083fcf996cd50435f11d2eee74280eaf051fd2dcbae0aea075d5fea14ee118b3"
+    },
+    {
+      "shows": "quarantined_sealed",
+      "about": "A sealed `record_quarantined` of `hr` (085, log-format §1.4): `contact` `c7` refused for `zz`, its cell `email`, of a field `contact` declares `erasable`, sealed in one box under `hr`'s version `1`, the vectors' key, over `{\"email\":\"dan@example.org\"}`, its nonce made from the source, the word `quarantined`, the id's delivery and index and the version before. The cells leave `email` out; `sealed` is in the payload, and the box is among the parts of the id.",
+      "line": "{\"body\":{\"cells\":{\"id\":\"c7\",\"zz\":\"x\"},\"id\":{\"delivery\":\"q-3\",\"index\":0,\"source\":\"hr\"},\"key\":\"c7\",\"kind\":\"record_quarantined\",\"refusal\":{\"error\":\"refused\",\"field\":\"zz\",\"message\":\"refused on `zz`: `contact` has no field `zz`\",\"reason\":{\"code\":\"unknown_field\",\"field\":\"zz\",\"message\":\"`contact` has no field `zz`\",\"refusal\":\"invalid\",\"type\":\"contact\"}},\"sealed\":{\"box\":\"MlGmDYUEx+tY9MNhj+CM03BTSA5ayIVHhX603gRauKgMyDjZhhevFy0rfw==\",\"fields\":[\"email\"],\"key\":\"1\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"q-3\",\"fence\":1,\"hash\":\"2ff6f5f91bb7486248f2662f5e1150a5bb888292f92d2792232604f2ca44f895\",\"id\":\"928270fd28c5b80886dbe8f71efa0697\",\"known_at\":\"2026-10-05T09:00:49.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":84,\"prev\":\"083fcf996cd50435f11d2eee74280eaf051fd2dcbae0aea075d5fea14ee118b3\",\"source\":\"hr\",\"v\":22,\"writer\":\"service:hr\"}",
+      "hash": "2ff6f5f91bb7486248f2662f5e1150a5bb888292f92d2792232604f2ca44f895"
+    },
+    {
+      "shows": "resubmission_lands",
+      "about": "The `record_ingested` of `INV-9` in `q-4` that resubmits `erp`, `q-1`, 0 and lands, made as any ingest is.",
+      "line": "{\"body\":{\"key\":\"INV-9\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"9.00\",\"number\":\"INV-9\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"q-4\",\"fence\":1,\"hash\":\"a8a59a94839c57905dc18e59ed6eaf88e60c39ee92a288fcca67a53f058f6c6f\",\"id\":\"5c0b6982df5683cc4549fb36b952b7d5\",\"known_at\":\"2026-10-05T09:00:50.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":85,\"prev\":\"2ff6f5f91bb7486248f2662f5e1150a5bb888292f92d2792232604f2ca44f895\",\"source\":\"erp\",\"v\":22,\"writer\":\"service:importer\"}",
+      "hash": "a8a59a94839c57905dc18e59ed6eaf88e60c39ee92a288fcca67a53f058f6c6f"
+    },
+    {
+      "shows": "closed_resubmitted",
+      "about": "A `quarantine_closed` of `erp`, `q-1`, 0 as `resubmitted` (085), in the append of the `record_ingested` at 85 that resubmitted it in `q-4` and landed: the id, its type and key as its last version names them, and why; the envelope is the resubmission's, with no delivery.",
+      "line": "{\"body\":{\"id\":{\"delivery\":\"q-1\",\"index\":0,\"source\":\"erp\"},\"key\":\"INV-9\",\"kind\":\"quarantine_closed\",\"type\":\"invoice\",\"why\":\"resubmitted\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"579f2141f30a553051f1990c528383b719c26ffcaa9cb7d849828e52ac6649d4\",\"id\":\"00000000000000000000000000000056\",\"known_at\":\"2026-10-05T09:00:50.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":86,\"prev\":\"a8a59a94839c57905dc18e59ed6eaf88e60c39ee92a288fcca67a53f058f6c6f\",\"source\":\"erp\",\"v\":22,\"writer\":\"service:importer\"}",
+      "hash": "579f2141f30a553051f1990c528383b719c26ffcaa9cb7d849828e52ac6649d4"
+    },
+    {
+      "shows": "closed_dismissed",
+      "about": "A `quarantine_closed` of `hr`, `q-3`, 0 as `dismissed` (085): a person's act, alone in its append, its envelope naming the source; the sealed cell is not erased by it.",
+      "line": "{\"body\":{\"id\":{\"delivery\":\"q-3\",\"index\":0,\"source\":\"hr\"},\"key\":\"c7\",\"kind\":\"quarantine_closed\",\"type\":\"contact\",\"why\":\"dismissed\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"9068be7c70b7d5e3532ac263b2c57bf24341be0518fc439a0ce09b1b7c8f793d\",\"id\":\"00000000000000000000000000000057\",\"known_at\":\"2026-10-05T09:00:51.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":87,\"prev\":\"579f2141f30a553051f1990c528383b719c26ffcaa9cb7d849828e52ac6649d4\",\"source\":\"hr\",\"v\":22,\"writer\":\"human:owner\"}",
+      "hash": "9068be7c70b7d5e3532ac263b2c57bf24341be0518fc439a0ce09b1b7c8f793d"
+    },
+    {
+      "shows": "quarantined_constraint",
+      "about": "A `record_quarantined` of `erp`'s `INV-10` in `q-5`, refused `constraint`, `ten` not being a decimal: a refusal of the record, so kept, as `invalid` is.",
+      "line": "{\"body\":{\"cells\":{\"amount\":\"ten\",\"number\":\"INV-10\"},\"id\":{\"delivery\":\"q-5\",\"index\":0,\"source\":\"erp\"},\"key\":\"INV-10\",\"kind\":\"record_quarantined\",\"refusal\":{\"error\":\"refused\",\"field\":\"amount\",\"message\":\"refused on `amount`: not a decimal: \\\"ten\\\"\",\"reason\":{\"code\":\"not_decimal\",\"message\":\"not a decimal: \\\"ten\\\"\",\"refusal\":\"constraint\",\"value\":\"ten\"}},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"q-5\",\"fence\":1,\"hash\":\"7748accd6deabd1e5fef45f679bd055c3793939c2d7d72175977173af1b5f8d8\",\"id\":\"17240d414718146782f6eaaae6a73c57\",\"known_at\":\"2026-10-05T09:00:52.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":88,\"prev\":\"9068be7c70b7d5e3532ac263b2c57bf24341be0518fc439a0ce09b1b7c8f793d\",\"source\":\"erp\",\"v\":22,\"writer\":\"service:importer\"}",
+      "hash": "7748accd6deabd1e5fef45f679bd055c3793939c2d7d72175977173af1b5f8d8"
+    },
+    {
+      "shows": "lands",
+      "about": "An ingest of `INV-10` in `q-6`, which lands the key a quarantined record names.",
+      "line": "{\"body\":{\"key\":\"INV-10\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"10.00\",\"number\":\"INV-10\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"q-6\",\"fence\":1,\"hash\":\"480e4729cba7295ecc8e12b1f835bf58d8fca266040bd43130c5957a6eef8928\",\"id\":\"8186e5c8e3e254636af384ad5e98d6e3\",\"known_at\":\"2026-10-05T09:00:53.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":89,\"prev\":\"7748accd6deabd1e5fef45f679bd055c3793939c2d7d72175977173af1b5f8d8\",\"source\":\"erp\",\"v\":22,\"writer\":\"service:importer\"}",
+      "hash": "480e4729cba7295ecc8e12b1f835bf58d8fca266040bd43130c5957a6eef8928"
+    },
+    {
+      "shows": "closed_landed",
+      "about": "A `quarantine_closed` of `erp`, `q-5`, 0 as `landed` (085): its key, `invoice` `INV-10`, refused `constraint` at 88, landed by the ingest at 89, which names no resubmission, and the store closes it in that append.",
+      "line": "{\"body\":{\"id\":{\"delivery\":\"q-5\",\"index\":0,\"source\":\"erp\"},\"key\":\"INV-10\",\"kind\":\"quarantine_closed\",\"type\":\"invoice\",\"why\":\"landed\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"22974d3c031e63d54a853ab8278ee09cce2f75ec1808b7c9ca36d9154acdc355\",\"id\":\"0000000000000000000000000000005a\",\"known_at\":\"2026-10-05T09:00:53.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":90,\"prev\":\"480e4729cba7295ecc8e12b1f835bf58d8fca266040bd43130c5957a6eef8928\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "22974d3c031e63d54a853ab8278ee09cce2f75ec1808b7c9ca36d9154acdc355"
+    },
+    {
+      "shows": "quarantined_removed",
+      "about": "A `record_quarantined` of `erp`'s `INV-11` in `q-7`.",
+      "line": "{\"body\":{\"cells\":{\"amount\":\"eleven\",\"number\":\"INV-11\"},\"id\":{\"delivery\":\"q-7\",\"index\":0,\"source\":\"erp\"},\"key\":\"INV-11\",\"kind\":\"record_quarantined\",\"refusal\":{\"error\":\"refused\",\"field\":\"amount\",\"message\":\"refused on `amount`: not a decimal: \\\"eleven\\\"\",\"reason\":{\"code\":\"not_decimal\",\"message\":\"not a decimal: \\\"eleven\\\"\",\"refusal\":\"constraint\",\"value\":\"eleven\"}},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"q-7\",\"fence\":1,\"hash\":\"1316ffee87bc43e39c3b5a1d1c13ccafc04ea361c1c989319362ff2ba9950688\",\"id\":\"dd81914533eaf6499548ba5bdbce00c0\",\"known_at\":\"2026-10-05T09:00:54.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":91,\"prev\":\"22974d3c031e63d54a853ab8278ee09cce2f75ec1808b7c9ca36d9154acdc355\",\"source\":\"erp\",\"v\":22,\"writer\":\"service:importer\"}",
+      "hash": "1316ffee87bc43e39c3b5a1d1c13ccafc04ea361c1c989319362ff2ba9950688"
+    },
+    {
+      "shows": "removes_quarantined",
+      "about": "A `values_removed` taking back `erp`'s delivery `q-7`, which landed nothing: it retires nothing and destroys no key.",
+      "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"delivery\":\"q-7\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"08ef356090b3909479869c7ec84b3b01a48cdd4752048ff4c73add1a835f8c0a\",\"id\":\"0000000000000000000000000000005c\",\"known_at\":\"2026-10-05T09:00:55.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":92,\"prev\":\"1316ffee87bc43e39c3b5a1d1c13ccafc04ea361c1c989319362ff2ba9950688\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "08ef356090b3909479869c7ec84b3b01a48cdd4752048ff4c73add1a835f8c0a"
+    },
+    {
+      "shows": "closed_removed",
+      "about": "A `quarantine_closed` of `erp`, `q-7`, 0 as `removed` (085, 065): the `values_removed` at 92 takes back `q-7`, whose only event is the version at 91, and closes it in its append.",
+      "line": "{\"body\":{\"id\":{\"delivery\":\"q-7\",\"index\":0,\"source\":\"erp\"},\"key\":\"INV-11\",\"kind\":\"quarantine_closed\",\"type\":\"invoice\",\"why\":\"removed\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"04c04e724c75bc6320618da3f2e67e91e50b33539e77005b57935028edf8b9d4\",\"id\":\"0000000000000000000000000000005d\",\"known_at\":\"2026-10-05T09:00:55.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":93,\"prev\":\"08ef356090b3909479869c7ec84b3b01a48cdd4752048ff4c73add1a835f8c0a\",\"v\":22,\"writer\":\"system:lakelands\"}",
+      "hash": "04c04e724c75bc6320618da3f2e67e91e50b33539e77005b57935028edf8b9d4"
+    },
+    {
+      "shows": "setting_dated",
+      "about": "A `record_upserted` of the `sys.setting` `vat_rate` that adds a period (090, lakelands#1549): a write naming `from: 2027-01-01` and a value, which the store resolves against the head into the whole `periods` it holds; `value`, the first period, holding from the start, is left as it was. A member format 21's `sys.setting` holds and 20's does not.",
+      "line": "{\"body\":{\"key\":\"vat_rate\",\"kind\":\"record_upserted\",\"patch\":{\"periods\":[{\"from\":\"2027-01-01\",\"value\":\"0.21\"}]},\"type\":\"sys.setting\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"db050dfd9e8c1292707e5c6c67e74178f7d9688736aba029350f0b2a58b68793\",\"id\":\"0000000000000000000000000000005e\",\"known_at\":\"2026-10-05T09:00:55.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":94,\"prev\":\"04c04e724c75bc6320618da3f2e67e91e50b33539e77005b57935028edf8b9d4\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "db050dfd9e8c1292707e5c6c67e74178f7d9688736aba029350f0b2a58b68793"
+    },
+    {
+      "shows": "setting_corrected",
+      "about": "The correction of that period: a write naming `period: 2027-01-01` with another value, resolved into `periods` whole again. The log holds the list, never `from` or `period`, so the history of the record tells every list it held.",
+      "line": "{\"body\":{\"key\":\"vat_rate\",\"kind\":\"record_upserted\",\"patch\":{\"periods\":[{\"from\":\"2027-01-01\",\"value\":\"0.2\"}]},\"type\":\"sys.setting\",\"version\":3},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"f1f09b5732961b61363941c2805e163aff34c283a33db2349175d1b63de34888\",\"id\":\"0000000000000000000000000000005f\",\"known_at\":\"2026-10-05T09:00:55.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":95,\"prev\":\"db050dfd9e8c1292707e5c6c67e74178f7d9688736aba029350f0b2a58b68793\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "f1f09b5732961b61363941c2805e163aff34c283a33db2349175d1b63de34888"
+    },
+    {
+      "shows": "setting_at",
+      "about": "A `declared` type `sale` whose derived field `vat` is `net * setting('vat_rate', sold_on)`: a call of `setting` with two arguments, the key and the date whose UTC day picks the period (Appendix B). A form format 21 holds and 20 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"net\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"decimal\"}},{\"authority\":\"authored\",\"name\":\"sold_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date\"}},{\"authority\":\"derived\",\"depends_on\":[\"net\",\"sold_on\"],\"derived\":\"net * setting('vat_rate', sold_on)\",\"name\":\"vat\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"decimal\"}}],\"name\":\"sale\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"875c33a72d66fea123900fdfdb3c7de592bff8204a72df7351e2b052965e326a\",\"id\":\"00000000000000000000000000000060\",\"known_at\":\"2026-10-05T09:00:55.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":96,\"prev\":\"f1f09b5732961b61363941c2805e163aff34c283a33db2349175d1b63de34888\",\"v\":22,\"writer\":\"agent:agent\"}",
+      "hash": "875c33a72d66fea123900fdfdb3c7de592bff8204a72df7351e2b052965e326a"
+    }
+  ],
+  "misplaced": [
+    {
+      "shows": "upstream_on_another_kind",
+      "about": "A `record_retired` carrying `upstream`: a reader refuses it, since only a `record_ingested` event carries the member (§1.1).",
+      "line": "{\"body\":{\"key\":\"r1\",\"kind\":\"record_retired\",\"type\":\"reading\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"6e723aaebd03e7307b7ede57c10492bb08a3321edc9338064a4f6aec5bbc14a5\",\"id\":\"710183001aa81e61bd20094ab98d5da5\",\"known_at\":\"2026-09-25T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":11,\"prev\":\"302a77ea5d5299c766daa6d37a5b59349baf468272b6f5195803f9c1bceca7ba\",\"upstream\":{\"lake\":\"upstream-lake\",\"position\":43},\"v\":22,\"writer\":\"human:owner\"}"
+    },
+    {
+      "shows": "cause_in_context",
+      "about": "Position 13 with `cause` written inside `context`: a reader refuses it, since a host's cause is the envelope's (§1.1).",
+      "line": "{\"body\":{\"declaration\":{\"annotations\":{\"acme.icon\":\"books\",\"acme.package\":{\"name\":\"library\",\"version\":\"2.1.0\"}},\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"annotations\":{\"acme.format\":\"shelf-code\"},\"authority\":\"authored\",\"name\":\"code\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"annotations\":{\"acme.unit\":\"books\",\"acme.weight\":1.5},\"authority\":\"authored\",\"name\":\"capacity\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"key\":[\"code\"],\"name\":\"shelf\",\"relations\":[{\"annotations\":{\"acme.plural\":\"rooms\"},\"cardinality\":\"many_to_one\",\"name\":\"room\",\"target\":\"room\",\"via\":\"code\"}]},\"kind\":\"declared\",\"schema_hash\":\"55aad88dd83990a5fabb528707e4ae79b3484b583b81af53fc6a60f76591fc15\",\"version\":1},\"context\":{\"cause\":0,\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"2ff13205f78e04af8974ee0553601f73b02b6c1ea0aeb78b1c4d891aca049894\",\"id\":\"5a0e7d1c3b9f4e2a8c6d0b1f7e3a9c54\",\"known_at\":\"2026-09-29T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":13,\"prev\":\"0ed101c44f156ed8dca739267c0a062e76362468a2becd352c2b3c2dbf20ccd1\",\"v\":22,\"writer\":\"agent:agent\"}"
+    },
+    {
+      "shows": "output_twice",
+      "about": "Position 39 carrying both `output` and `output_at`: a reader refuses it, since a fill carries its output or names it, never both (§2.5).",
+      "line": "{\"body\":{\"field\":[\"due\",\"d2\",\"day\"],\"input\":\"bbbfae40a0d202fc24345d252fdc472570c51bda8c8aded3c9ce5ffd4512e14c\",\"kind\":\"output_recorded\",\"output\":\"Sunday\",\"output_at\":38,\"seam\":\"function:http:label\"},\"cause\":37,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"03cda5648d82d43920064c9d1ed7843c98963492422175b59d06e81f038170d4\",\"id\":\"00000000000000000000000000000027\",\"known_at\":\"2026-10-05T09:00:10.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":39,\"prev\":\"718ec871c8d30994237b12ca2cdae6af6608a3ac54a908f5fede7f3ecac00871\",\"procedure\":{\"name\":\"http\",\"version\":\"1\"},\"v\":22,\"writer\":\"system:lakelands\"}"
+    },
+    {
+      "shows": "sealed_on_another_kind",
+      "about": "`sealed` on an event that is neither a `record_ingested` nor an `output_recorded`, which a reader refuses.",
+      "line": "{\"body\":{\"key\":\"r1\",\"kind\":\"record_retired\",\"type\":\"reading\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"c1380ee732583df2ffc10846b87b26ec227bc5b5c4d97208ef1c4eee030360eb\",\"id\":\"710183001aa81e61bd20094ab98d5da5\",\"known_at\":\"2026-09-25T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":11,\"prev\":\"302a77ea5d5299c766daa6d37a5b59349baf468272b6f5195803f9c1bceca7ba\",\"sealed\":{\"fields\":[\"email\"],\"key\":\"1\"},\"v\":22,\"writer\":\"human:owner\"}"
+    },
+    {
+      "shows": "delivery_on_another_kind",
+      "about": "`delivery` on an event that is not a `record_ingested`, which a reader refuses.",
+      "line": "{\"body\":{\"key\":\"r1\",\"kind\":\"record_retired\",\"type\":\"reading\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"batch-7\",\"fence\":1,\"hash\":\"784317faa58524cf502764c727990b5355c6dd70a17341da8ec8426b51a0c983\",\"id\":\"710183001aa81e61bd20094ab98d5da5\",\"known_at\":\"2026-09-25T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":11,\"prev\":\"302a77ea5d5299c766daa6d37a5b59349baf468272b6f5195803f9c1bceca7ba\",\"v\":22,\"writer\":\"human:owner\"}"
+    },
+    {
+      "shows": "sealed_for_another_source",
+      "about": "`sealed` on a `record_ingested` naming another source than its envelope, which a reader refuses.",
+      "line": "{\"body\":{\"key\":\"c1\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"email\":\"7UznJB/dSYmb/ymD7WMsqVK99xq5zyUwORU0Knp96RoL\",\"id\":\"c1\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"d02a24b3211abf73a62f8a30104aa3ca07ba59273e710173645b45423eca4372\",\"id\":\"2c936f69cf5a059a0662dd7875cf8886\",\"known_at\":\"2026-10-05T09:00:13.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":42,\"prev\":\"eca6d8f21ac6f87cd17a3a3ef1998f964b5c2bb8f6f0f3ff50ea89e7d692fcd9\",\"sealed\":{\"fields\":[\"email\"],\"key\":\"1\",\"source\":\"web\"},\"source\":\"crm\",\"v\":22,\"writer\":\"service:crm\"}"
+    },
+    {
+      "shows": "on_behalf_of_in_context",
+      "about": "Position 61 with `on_behalf_of` written inside `context`: a reader refuses it, since whom a write is for is the envelope's, beside `writer` (§1.1).",
+      "line": "{\"body\":{\"key\":\"S-1\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"number\":\"S-1\",\"shelf_code\":\"A\"},\"type\":\"slip\",\"version\":1},\"context\":{\"depth\":0,\"on_behalf_of\":\"human:reader\",\"origin\":\"direct\"},\"fence\":1,\"hash\":\"f6c84a5a599b9910c3b36197e0cb5a7b65ec7286458a02953492259c689655cc\",\"id\":\"0000000000000000000000000000003c\",\"known_at\":\"2026-10-05T09:00:31.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":61,\"prev\":\"68d724b32cf5a5f3715bccc4e2583b77799da45a5a4394a311903ffcd578e5a8\",\"v\":22,\"writer\":\"agent:agent\"}"
+    }
+  ]
+}

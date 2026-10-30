@@ -151,6 +151,12 @@ check!(
 );
 
 check!(
+    OCCASION_FROM_22 = an_occasion_before_its_format_is_refused_naming_it,
+    "088, extended (lakelands#1584), and log-format §1.1: `context.occasion` is of format 22; an export whose last line is of format 21 and carries it, its hash made right, is refused by its verification and its import at that position, naming the member",
+    given
+);
+
+check!(
     SETTING_PERIODS_FROM_21 = a_dated_setting_of_format_20_is_refused_naming_it,
     "090 (lakelands#1549) and log-format §1.3: a setting's values from dates are of format 21; an export whose last line, of format 20, its hash made right, writes `periods` on `sys.setting`, proposes a write of it with `from`, or declares a call of `setting` on a date, is refused by its verification and its import at that position, naming the format",
     given
@@ -1309,6 +1315,51 @@ async fn an_on_behalf_of_out_of_its_place_is_refused_naming_it(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
+    let cases: [Misplaced; 2] = [
+        (
+            "carries `on_behalf_of` in its `context`",
+            Flaw::OnBehalfOfInContext,
+            |e| e["context"]["on_behalf_of"] = json!("human:alice"),
+        ),
+        (
+            "is of format 20 and carries `on_behalf_of`",
+            Flaw::OnBehalfOfBefore { v: 20 },
+            |e| {
+                e["v"] = json!(20);
+                e["on_behalf_of"] = json!("human:alice");
+            },
+        ),
+    ];
+    misplaced_refused(store, given, &cases).await
+}
+
+async fn an_occasion_before_its_format_is_refused_naming_it(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let cases: [Misplaced; 1] = [(
+        "is of format 21 and carries `context.occasion`",
+        Flaw::OccasionBefore { v: 21 },
+        |e| {
+            e["v"] = json!(21);
+            e["context"]["occasion"] = json!("live");
+        },
+    )];
+    misplaced_refused(store, given, &cases).await
+}
+
+/// What an export's last line is made to say, the flaw a reader names
+/// for it, and the change that makes it.
+type Misplaced = (&'static str, Flaw, fn(&mut Value));
+
+/// An export whose last line, its hash made right, is changed by each of
+/// `cases` is refused by its verification and its import at that
+/// position, naming the case's flaw.
+async fn misplaced_refused(
+    store: Store,
+    given: crate::conformance::Given,
+    cases: &[Misplaced],
+) -> Held {
     let scratch = Scratch::new(given.scratch.clone());
     invoices(store.as_ref(), 0, 1).await?;
     let head = store.head().await.must("reading the head")?;
@@ -1316,35 +1367,19 @@ async fn an_on_behalf_of_out_of_its_place_is_refused_naming_it(
     write(store.as_ref(), &from).await?;
     let names = files(&from)?;
     let active = names[names.len() - 1].clone();
-    let cases = [
-        (
-            "carries `on_behalf_of` in its `context`",
-            Flaw::OnBehalfOfInContext,
-        ),
-        (
-            "is of format 20 and carries `on_behalf_of`",
-            Flaw::OnBehalfOfBefore { v: 20 },
-        ),
-    ];
-    for (n, (said, flaw)) in cases.into_iter().enumerate() {
+    for (n, (said, flaw, made)) in cases.iter().enumerate() {
         let dir = scratch.dir(&format!("misplaced-{n}"));
         copied(&from, &dir)?;
         let mut lines = lines_of(&dir, &active)?;
         let last = lines.len() - 1;
-        lines[last] = rehashed(&lines[last], |e| match n {
-            0 => e["context"]["on_behalf_of"] = json!("human:alice"),
-            _ => {
-                e["v"] = json!(20);
-                e["on_behalf_of"] = json!("human:alice");
-            }
-        })?;
+        lines[last] = rehashed(&lines[last], made)?;
         rewrite(&dir, &active, &lines)?;
         let verified = export::verify(&dir);
         let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
         let imported = refused(imported, &format!("an export whose last line {said}"))?;
         for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
             ensure!(
-                e.as_ref().and_then(damaged) == Some(&flaw)
+                e.as_ref().and_then(damaged) == Some(flaw)
                     && matches!(e.as_ref().and_then(Error::situation),
                         Some(Situation::Damaged { position: Some(p), .. }) if *p == head),
                 "{door} of an export whose last line {said} is refused at {head} as {flaw:?}; \

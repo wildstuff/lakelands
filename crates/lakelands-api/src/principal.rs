@@ -465,7 +465,7 @@ pub enum WriteOrigin {
 }
 
 /// The host's context for a write: its origin, how deep in a chain of
-/// reactions it sits, and whom it is made for. The store refuses a
+/// reactions it sits, whom it is made for and why. The store refuses a
 /// reactive write deeper than the lake's configured ceiling, so a trigger
 /// cannot feed itself forever.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -492,7 +492,18 @@ pub struct WriteContext {
     /// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<String>,
+    /// The host's word for why the write was made, such as `live`,
+    /// `caught-up` or `again`, from log format 22. Recorded, not judged:
+    /// the store neither reads nor derives it. It lands in the `context` of
+    /// each event the write appends under its writer; an event the store
+    /// writes as itself names none
+    /// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occasion: Option<String>,
 }
+
+/// The most bytes a context's `occasion` may hold.
+pub const OCCASION_MAX_BYTES: usize = 128;
 
 #[cfg(test)]
 mod tests;

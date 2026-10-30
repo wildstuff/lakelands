@@ -5,8 +5,13 @@
 //! the write is for. Each event written as the writer carries it in its
 //! envelope, never in `context`, and each field it writes names it beside
 //! the writer; an event the store writes as itself names none.
+//!
+//! The host may also name the write's `occasion`, its word for why it
+//! wrote. Each event written as the writer carries it in `context`, as
+//! given; an event the store writes as itself carries none, and an event
+//! of a write that names none is written as before the member was.
 
-use lakelands_api::principal::WriteContext;
+use lakelands_api::principal::{OCCASION_MAX_BYTES, WriteContext};
 
 use crate::conformance::fixture::{ingest, source_record, type_of, upsert};
 use crate::conformance::prelude::*;
@@ -20,6 +25,16 @@ check!(
 check!(
     ON_BEHALF_OF_FORM = an_on_behalf_of_not_of_its_form_is_refused,
     "088 (lakelands#1489): a context naming `on_behalf_of` as `system:x`, `robot:x`, `human:`, an id holding a NUL, or the writer `service:mailer` itself, is refused invalid as `on_behalf_of_form` at the member, naming what it holds, appending nothing"
+);
+
+check!(
+    OCCASION_RECORDED = an_ingest_under_an_occasion_records_it_in_each_events_context,
+    "088, extended (lakelands#1584): `service:mailer` ingests two records of `reading`, on which a trigger fires, under the occasion `caught-up`; each `record_ingested` the feed hands a reader carries `caught-up` in its `context`, the `trigger_fired` they set off carries none, and an ingest naming none appends a `record_ingested` whose `context` holds no `occasion`, its hash the one its canonical bytes give"
+);
+
+check!(
+    OCCASION_FORM = an_occasion_not_of_its_form_is_refused,
+    "088, extended (lakelands#1584): an ingest under an occasion that is empty, over 128 bytes, or holds a line break, a NUL or DEL, is refused invalid as `occasion_form` at `occasion`, appending nothing"
 );
 
 /// The mailer, writing what it is asked to.
@@ -164,4 +179,101 @@ async fn an_on_behalf_of_not_of_its_form_is_refused(store: Store) -> Held {
         );
     }
     head_unmoved(store.as_ref(), before, "made for none of its form").await
+}
+
+/// A direct context naming `occasion`.
+fn on_occasion(occasion: &str) -> WriteContext {
+    WriteContext {
+        occasion: Some(occasion.into()),
+        ..WriteContext::default()
+    }
+}
+
+async fn an_ingest_under_an_occasion_records_it_in_each_events_context(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let reading = type_decl("reading", vec![sourced("value", StorageKind::Number)]);
+    for d in [
+        Declaration::Type(reading),
+        trigger_on("noted", "reading", None),
+    ] {
+        l.cat.declare(&l.own, d).await.must("declaring the lake")?;
+    }
+    let mailer = mailer(store.as_ref());
+    let before = store.head().await.must("reading the head")?;
+    let cat = store.catalog(on_occasion("caught-up"));
+    let fed = vec![
+        source_record("reading", "r1", json!({"value": 1})),
+        source_record("reading", "r2", json!({"value": 2})),
+    ];
+    let ingested = ingest(cat.as_ref(), &mailer, "meter", fed).await;
+    ingested.must("ingesting `r1` and `r2` as caught up")?;
+    let events = events_after(store.as_ref(), before).await?;
+    let mut seen = (0, 0);
+    for e in &events {
+        let (kind, said) = (e.body.kind(), e.context.occasion.as_deref());
+        let want = match e.body {
+            EventBody::RecordIngested { .. } => Some("caught-up"),
+            _ => None,
+        };
+        ensure!(
+            said == want,
+            "the `{kind}` at {}, written as `{}`, carries {want:?} as its occasion; it \
+             carries {said:?}",
+            e.position,
+            e.writer
+        );
+        seen.0 += usize::from(matches!(e.body, EventBody::RecordIngested { .. }));
+        seen.1 += usize::from(matches!(e.body, EventBody::TriggerFired { .. }));
+    }
+    ensure!(
+        seen == (2, 2),
+        "the ingest appends two `record_ingested` and sets off two `trigger_fired`: {seen:?}"
+    );
+    let before = store.head().await.must("reading the head")?;
+    let fed = vec![source_record("reading", "r3", json!({"value": 3}))];
+    let plain = store.catalog(WriteContext::default());
+    ingest(plain.as_ref(), &mailer, "meter", fed)
+        .await
+        .must("ingesting `r3` naming no occasion")?;
+    let events = events_after(store.as_ref(), before).await?;
+    let e = (events.iter())
+        .find(|e| matches!(e.body, EventBody::RecordIngested { .. }))
+        .ok_or_else(|| Failure::new("the ingest of `r3` appends a `record_ingested`"))?;
+    let line = serde_json::to_value(e).expect("an event serialises");
+    ensure!(
+        line["context"].get("occasion").is_none()
+            && crate::engines::hash_of(line.clone()) == e.hash.0,
+        "an ingest naming no occasion appends a `record_ingested` whose `context` holds no \
+         `occasion` and whose hash is its canonical bytes': {line}"
+    );
+    Ok(())
+}
+
+async fn an_occasion_not_of_its_form_is_refused(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl(
+        "reading",
+        vec![sourced("value", StorageKind::Number)],
+    ))
+    .await?;
+    let mailer = mailer(store.as_ref());
+    let before = store.head().await.must("reading the head")?;
+    let long = "a".repeat(OCCASION_MAX_BYTES + 1);
+    for occasion in ["", &long, "live\nagain", "live\0", "live\u{7f}"] {
+        let cat = store.catalog(on_occasion(occasion));
+        let fed = vec![source_record("reading", "r1", json!({"value": 1}))];
+        let said = ingest(cat.as_ref(), &mailer, "meter", fed).await;
+        let at = match &said {
+            Err(Error::Refused { field, .. }) => field.as_ref().map(|f| f.as_str()),
+            _ => None,
+        };
+        let case = invalid_case(&said);
+        ensure!(
+            at == Some("occasion")
+                && matches!(case, Some(Case::OccasionForm { max }) if *max == OCCASION_MAX_BYTES),
+            "an ingest under the occasion {occasion:?} is refused invalid as `occasion_form` \
+             at `occasion`: {said:?}"
+        );
+    }
+    head_unmoved(store.as_ref(), before, "under no occasion of its form").await
 }

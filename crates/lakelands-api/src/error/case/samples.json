@@ -1507,6 +1507,10 @@
    "value": "s"
   },
   {
+   "code": "occasion_form",
+   "max": 1
+  },
+  {
    "code": "changed_since_proposed",
    "type": "t"
   },
