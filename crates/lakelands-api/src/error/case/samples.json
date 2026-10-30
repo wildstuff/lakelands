@@ -1378,6 +1378,10 @@
    "code": "search_text_fields_empty"
   },
   {
+   "code": "start_needs_vector",
+   "field": "f"
+  },
+  {
    "asks": "s",
    "code": "start_no_type"
   },
@@ -1447,6 +1451,10 @@
    "code": "vector_aimless",
    "field": "f",
    "why": "not_finite"
+  },
+  {
+   "code": "vector_with_text",
+   "field": "f"
   },
   {
    "code": "vector_field_twice",

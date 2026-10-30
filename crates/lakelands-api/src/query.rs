@@ -459,12 +459,19 @@ pub enum SearchMode {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text_fields: Option<BTreeMap<FieldName, f64>>,
     },
-    /// Nearest neighbours of a vector the caller supplies.
+    /// Nearest neighbours of a vector the caller supplies, or of its
+    /// `text` embedded by the lake.
     Vector {
         /// The vector field searched.
         field: FieldName,
-        /// The query vector.
+        /// The query vector; empty where `text` is given.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         vector: Vec<f32>,
+        /// Words the lake embeds into the query vector with the model of
+        /// `field`, which must be an embedding; the search is then ranked
+        /// as one bringing that vector.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
         /// The weight of `field`'s ranking against `also`'s; absent, 1.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weight: Option<f64>,
@@ -582,9 +589,43 @@ impl SearchMode {
         SearchMode::Vector {
             field: field.into(),
             vector,
+            text: None,
             weight: None,
             also: Vec::new(),
             model: None,
+        }
+    }
+
+    /// A vector search over `field`, an embedding, whose query vector the
+    /// lake makes of `text` with the field's model.
+    pub fn embedded(text: impl Into<String>, field: impl Into<FieldName>) -> SearchMode {
+        SearchMode::Vector {
+            field: field.into(),
+            vector: Vec::new(),
+            text: Some(text.into()),
+            weight: None,
+            also: Vec::new(),
+            model: None,
+        }
+    }
+
+    /// The field and the text the lake embeds the mode's query vector
+    /// of: a hybrid search's that brings no vector, or a vector search's
+    /// `text`.
+    pub fn embeds(&self) -> Option<(&FieldName, &str)> {
+        match self {
+            SearchMode::Hybrid {
+                field,
+                text,
+                vector: None,
+                ..
+            }
+            | SearchMode::Vector {
+                field,
+                text: Some(text),
+                ..
+            } => Some((field, text)),
+            _ => None,
         }
     }
 
@@ -605,8 +646,7 @@ impl SearchMode {
 
     /// The model each query vector the caller brings names, by its field,
     /// in the order [`SearchMode::vectors`] names them: none where the
-    /// caller names none, and none for a hybrid search's vector the lake
-    /// makes.
+    /// caller names none, and none for a vector the lake makes.
     pub fn models(&self) -> Vec<(&FieldName, Option<&str>)> {
         match self {
             SearchMode::Lexical { .. } => Vec::new(),
@@ -626,8 +666,8 @@ impl SearchMode {
     }
 
     /// The vector rankings the mode names, in the order they are fused:
-    /// each field, its query vector (none where a hybrid search leaves it
-    /// to the lake) and its weight, if it names one.
+    /// each field, its query vector (none where the search leaves it to the
+    /// lake to embed its text) and its weight, if it names one.
     pub fn vectors(&self) -> Vec<(&FieldName, &[f32], Option<f64>)> {
         match self {
             SearchMode::Lexical { .. } => Vec::new(),
@@ -658,16 +698,18 @@ impl SearchMode {
     /// field it names if any. A weight weighs one ranking against
     /// another, so it is above 0 and at most 1 000 000, a vector search
     /// of one field takes none, no field is named twice, every query
-    /// vector has a direction ([`no_direction`]), and a `model` names one
-    /// the caller brings.
+    /// vector has a direction ([`no_direction`]), a vector search brings
+    /// a `vector` or a `text`, not both, and a `model` names one the
+    /// caller brings.
     pub fn misfit(&self) -> Option<(Option<FieldName>, Case)> {
         let terms = self.vectors();
         let lone = matches!(self, SearchMode::Vector { also, .. } if also.is_empty());
         let fits = |w: Option<f64>| w.is_none_or(weight_fits);
         for (i, (field, vector, weight)) in terms.iter().enumerate() {
             let field = (*field).clone();
-            // An empty vector is a hybrid search's that brings none, or
-            // one of the wrong length, which the field's check names.
+            // An empty vector is that of a search whose text the lake
+            // embeds, or one of the wrong length, which the field's check
+            // names.
             let aimless = no_direction(vector).filter(|_| !vector.is_empty());
             let fault = if let Some(why) = aimless {
                 let field = field.clone();
@@ -687,13 +729,22 @@ impl SearchMode {
             };
             return Some((Some(field), fault));
         }
-        if let SearchMode::Hybrid {
+        if let SearchMode::Vector {
             field,
-            vector: None,
-            model: Some(_),
+            vector,
+            text: Some(_),
             ..
         } = self
+            && !vector.is_empty()
         {
+            let field = field.clone();
+            return Some((Some(field.clone()), Case::VectorWithText { field }));
+        }
+        let model = match self {
+            SearchMode::Hybrid { model, .. } | SearchMode::Vector { model, .. } => model,
+            SearchMode::Lexical { .. } => &None,
+        };
+        if let (Some((field, _)), Some(_)) = (self.embeds(), model) {
             return Some((Some(field.clone()), Case::ModelWithoutVector));
         }
         let text = matches!(self, SearchMode::Hybrid { text_weight, .. } if !fits(*text_weight));
@@ -875,8 +926,8 @@ pub struct Hits {
     /// Where the next page of the ranking starts, if there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
-    /// The mode that actually ranked them (a hybrid search without a
-    /// vector or a backend is lexical, and says so here): `lexical`,
+    /// The mode that actually ranked them (a hybrid search whose vector
+    /// leg did not rank is lexical, and says so here): `lexical`,
     /// `vector`, `hybrid`, or `index` and `hybrid (index)` when the vector
     /// field is one the lake asks an index for, whose set the hits are; a
     /// search with a second stage adds ` + rerank`.
@@ -889,6 +940,23 @@ pub struct Hits {
     /// Each axis that ranked, in the order the fusion sums them.
     #[serde(default)]
     pub axes: Vec<Axis>,
+    /// The vector leg a hybrid search names that did not rank, and why:
+    /// the lake could not embed its text, so its text alone ranked the
+    /// hits. Absent, every leg the search names ranked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unranked: Option<Unranked>,
+}
+
+/// A vector leg a search named that did not rank
+/// (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Unranked {
+    /// The vector field the leg ranks.
+    pub field: FieldName,
+    /// What its query vector met: no embedding backend bound
+    /// ([`Error::Unbound`](crate::Error::Unbound)), or the backend's
+    /// failure ([`Error::Unavailable`](crate::Error::Unavailable)).
+    pub why: crate::Error,
 }
 
 /// One axis a search ranked by.

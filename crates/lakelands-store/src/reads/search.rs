@@ -8,8 +8,8 @@ use lakelands_core::engines::Counts;
 impl<'a> Reader<'a> {
     /// What `search` refuses before it ranks: the type its principal is
     /// shown, a view, a misfit, the fields it probes, the `where`. A
-    /// hybrid search's text is embedded only once this answers (024): one
-    /// refused calls nothing, and names no model.
+    /// search's text the lake embeds is embedded only once this answers
+    /// (024): one refused calls nothing, and names no model.
     pub fn searched<'s>(&self, s: &'s Search) -> Result<Searched<'s>> {
         let decl = self.named_type(&s.ty)?.clone();
         // A view's records are computed on read and no index holds them, so
@@ -42,9 +42,9 @@ impl<'a> Reader<'a> {
             None => Box::new(self.sight.searched_fields(&decl)),
         };
         let ranks = self.ranks(&decl, vector_fields.iter().copied().chain(texts))?;
-        // A vector ranking reads a vector field, and a hybrid search without
-        // a vector reads one a model fills: one that cannot is refused
-        // before any embedding is asked for (lakelands#743). A field the
+        // A vector ranking reads a vector field, and a search whose query
+        // vector the lake makes reads one a model fills: one that cannot is
+        // refused before any embedding is asked for (lakelands#743). A field the
         // head does not show its reader holds no vectors, and no model fills
         // it. A read that ranks nothing, a second stage's, judges none: the
         // read of its window did (067).
@@ -60,11 +60,7 @@ impl<'a> Reader<'a> {
                 return Err(Error::invalid_at(field, case));
             }
         }
-        if let SearchMode::Hybrid {
-            field,
-            vector: None,
-            ..
-        } = &s.mode
+        if let Some((field, _)) = s.mode.embeds()
             && ranked
             && declared(field).is_none_or(|f| f.embed.is_none())
         {
@@ -74,9 +70,12 @@ impl<'a> Reader<'a> {
             return Err(Error::invalid_at(field, case));
         }
         // A query vector is judged by the field's declared length, never by
-        // a stored vector, which another may own (024).
-        let embedded = matches!(&s.mode, SearchMode::Hybrid { vector: None, .. });
-        for (field, v, _) in vectors.iter().filter(|_| !embedded) {
+        // a stored vector, which another may own (024). One the lake makes
+        // is not the caller's: the first field's, where the lake makes it.
+        let embedded = s.mode.embeds().is_some();
+        let brought = vectors.iter().enumerate();
+        let brought = brought.filter(|(i, v)| !(embedded && *i == 0 && v.1.is_empty()));
+        for (_, (field, v, _)) in brought {
             if let Some(d) = declared(field).and_then(|f| f.ty.dimensions)
                 && v.len() != d as usize
             {
@@ -180,6 +179,7 @@ impl<'a> Reader<'a> {
                 of: read,
                 now: Some(self.now),
                 stage: None,
+                unranked: None,
             })
         });
         Ok(Ok(Hits {
@@ -188,6 +188,7 @@ impl<'a> Reader<'a> {
             truncated: false,
             next_cursor,
             axes,
+            unranked: None,
         }))
     }
 
@@ -201,6 +202,19 @@ impl<'a> Reader<'a> {
         mut carried: Option<Pulled>,
     ) -> Result<Judged<First>> {
         let (decl, text_fields, filter, ranks) = self.searched(s)?;
+        // The search door embeds a vector search's text before its read
+        // and answers how it ranked; a pattern's rows cannot (025).
+        if let SearchMode::Vector {
+            field,
+            text: Some(_),
+            ..
+        } = &s.mode
+        {
+            let case = Case::StartNeedsVector {
+                field: field.clone(),
+            };
+            return Err(Error::invalid_at(field, case));
+        }
         let marking = self.marking(s, &decl, text_fields, &ranks);
         let vectors = s.mode.vectors();
         let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
@@ -259,9 +273,7 @@ impl<'a> Reader<'a> {
         }
         let ranked_by = match (&s.mode, indexed) {
             (SearchMode::Lexical { .. }, _) => "lexical",
-            (SearchMode::Hybrid { .. }, _) if by_text => {
-                "lexical (no query vector and no embedding backend)"
-            }
+            (SearchMode::Hybrid { .. }, _) if by_text => "lexical",
             (SearchMode::Hybrid { .. }, true) => "hybrid (index)",
             (SearchMode::Hybrid { .. }, false) => "hybrid",
             (SearchMode::Vector { .. }, true) => "index",

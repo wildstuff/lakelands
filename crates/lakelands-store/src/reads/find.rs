@@ -203,6 +203,7 @@ impl<'a> Reader<'a> {
                 of: find_read.clone(),
                 now: Some(self.now),
                 stage: None,
+                unranked: None,
             })
         });
         let rows = keyed

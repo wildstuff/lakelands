@@ -712,6 +712,8 @@ pub const ALL: &[Check] = &[
     search::SEARCH_READS_A_VECTOR_FIELD,
     search::SEARCH_RANKS_BY_THE_HEAD,
     search::HYBRID_THROUGH_BACKEND,
+    search::HYBRID_FALLS_BACK,
+    search::VECTOR_BY_TEXT,
     erasable::SEALED_IN_THE_LOG,
     erasable::ONE_BOX,
     erasable::ERASABLE_DECLARED,

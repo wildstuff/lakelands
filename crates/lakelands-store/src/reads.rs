@@ -323,6 +323,10 @@ struct CursorState {
     /// what its first page said of the first stage (067).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     stage: Option<stage::Staged>,
+    /// For a hybrid search its text alone ranked: why, which every page
+    /// repeats and ranks by (025).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unranked: Option<lakelands_api::query::Unranked>,
 }
 
 /// The weights a lexical or hybrid search gives its text fields itself.
@@ -392,6 +396,24 @@ fn unbound(ty: &TypeName, p: &lakelands_api::ontology::ViewParam, unbound: bool)
         kind,
         unbound,
     }
+}
+
+/// Why the vector leg of the read `c` continues did not rank, where `c`
+/// is a cursor of `s` as it is asked, its query vector not made: of a
+/// page its text alone ranked (025).
+pub(crate) fn unranked_of(c: &Cursor, s: &Search) -> Option<lakelands_api::query::Unranked> {
+    if !matches!(s.mode, SearchMode::Hybrid { vector: None, .. }) {
+        return None;
+    }
+    let state = resume(c, "search", Some(&s.ty), &Params::new()).ok()?;
+    state.unranked.filter(|_| state.of == search_read(s))
+}
+
+/// `c`, a cursor of a page its text alone ranked, carrying why.
+pub(crate) fn carrying(c: &Cursor, unranked: &lakelands_api::query::Unranked) -> Result<Cursor> {
+    let mut state = decode(c)?;
+    state.unranked = Some(unranked.clone());
+    Ok(encode(&state))
 }
 
 /// Refuse a cursor handed out for another read through the same door:

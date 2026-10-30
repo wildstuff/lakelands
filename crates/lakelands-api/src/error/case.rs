@@ -1419,7 +1419,7 @@ catalog! {
         /// A limit out of range.
         LimitRange { max: u32 } => "a limit is between 1 and {max}",
         /// A search that asks for `matches` and brings no text.
-        MatchesWithoutText => "`matches` says where a search's text matched each hit, and a vector search brings no text; a lexical or hybrid search is told it",
+        MatchesWithoutText => "`matches` says where a search's text matched each hit, and a vector search ranks no text; a lexical or hybrid search is told it",
         /// A measure's step with a depth.
         MeasureNoDepth { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `depth`: it reads each record's links, not hops",
         /// A measure with an order.
@@ -1432,7 +1432,7 @@ catalog! {
         MeasureNoType { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches",
         /// A measure's step with a `where`.
         MeasureNoWhere { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `where`",
-        /// A `model` on a hybrid search that brings no query vector.
+        /// A `model` on a search whose query vector the lake makes.
         ModelWithoutVector => "`model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model",
         /// A `rerank` whose `top` is 0.
         RerankTopZero => "`rerank.top` is how many of the search's first hits the second stage ranks, and it is 1 at least",
@@ -1515,14 +1515,17 @@ catalog! {
         RetiredWithAggregate => "`retired` counts the retired records a page's `where` matches; an `aggregate` answers groups, so give one",
         /// A search's `fields` that names none.
         SearchFieldsEmpty => "`fields` names no field; leave it out to search every searchable field",
-        /// A hybrid search without a vector over a vector field no model
-        /// fills: its writers chose the space, so no bound model may stand
-        /// in for one.
-        SearchNeedsVector { field: FieldName } => "`{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector",
+        /// A search whose query vector the lake would make, over a vector
+        /// field no model fills: its writers chose the space, so no bound
+        /// model may stand in for one.
+        SearchNeedsVector { field: FieldName } => "`{field}` holds vectors its writers make, in a space the lake does not know; a search over it brings its own query vector",
         /// A vector ranking over a field that holds no vectors.
         SearchNotVector { field: FieldName, kind: StorageKind } => "`{field}` is a {kind} field; a vector ranking reads a vector field",
         /// A search's `text_fields` that weighs no field.
         SearchTextFieldsEmpty => "`text_fields` weighs no field; leave it out to weigh each as its type's setting does",
+        /// A pattern's start search whose query vector the lake would
+        /// embed: a pattern's rows cannot say how they were ranked.
+        StartNeedsVector { field: FieldName } => "a pattern's start ranks `{field}` by a `vector` it brings; the lake embeds a vector search's `text` for `search` alone, whose answer says how it ranked",
         /// A start with no type where a type is needed.
         StartNoType { asks: String } => "`{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params`",
         /// A step with no `from` after one that binds no name.
@@ -1570,6 +1573,8 @@ catalog! {
         TotalWithAggregate => "`total` counts the records a page lists; an `aggregate` answers groups, so give one",
         /// A query vector with no direction to rank along.
         VectorAimless { field: FieldName, why: Aimless } => "`{field}`'s vector {why}",
+        /// A vector search that brings both a `vector` and a `text`.
+        VectorWithText { field: FieldName } => "`{field}`'s query is a `vector` the search brings or a `text` the lake embeds with the field's model, not both",
         /// A vector field a search names twice.
         VectorFieldTwice { field: FieldName } => "`{field}` is named twice; a search ranks a vector field once",
         /// A search of a view.

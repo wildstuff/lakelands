@@ -1036,7 +1036,11 @@ interface types {
 
     record vector-search {
         field: field-name,
+        /// Empty where `text` is given.
         vector: list<f32>,
+        /// Words the lake embeds into the query vector with the model of
+        /// `field`, which must be an embedding.
+        text: option<string>,
         weight: option<f64>,
         also: list<vector-term>,
         /// The model that made the vector, if the caller names it.
@@ -1206,6 +1210,16 @@ interface types {
         /// window took.
         truncated: bool,
         axes: list<axis>,
+        /// The vector leg a hybrid search names that did not rank, and why.
+        unranked: option<unranked>,
+    }
+
+    /// A vector leg a search named that did not rank: its field, and what
+    /// its query vector met, no embedding backend bound (`unbound`) or the
+    /// backend's failure (`unavailable`).
+    record unranked {
+        field: field-name,
+        why: error,
     }
 
     /// One axis a search ranked by: `lexical`, `vector` or `rerank`, a vector

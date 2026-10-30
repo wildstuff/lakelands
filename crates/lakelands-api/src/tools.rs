@@ -1355,12 +1355,12 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             (
                 "mode",
                 json!({"enum": ["lexical", "vector", "hybrid"],
-                "description": "lexical ranks `text` in the searchable fields; vector ranks `vector` against `field`; hybrid fuses both and needs `text` and `field`, its `vector` optional."}),
+                "description": "lexical ranks `text` in the searchable fields; vector ranks `vector` against `field`, or `text` the lake embeds where `field` is an embedding; hybrid fuses both and needs `text` and `field`, its `vector` optional."}),
             ),
             (
                 "text",
                 json!({"type": "string",
-                "description": "lexical and hybrid: the words ranked; a word matches a field's word as written, its case and accents aside and stemmed where the type declares a `language`, so a misspelled word matches nothing: for a name half known, a find's `where` with starts_with or contains."}),
+                "description": "vector: in place of `vector`, words the lake embeds with the model of `field`. lexical and hybrid: the words ranked; a word matches a field's word as written, its case and accents aside and stemmed where the type declares a `language`, so a misspelled word matches nothing: for a name half known, a find's `where` with starts_with or contains."}),
             ),
             (
                 "fields",
@@ -1381,7 +1381,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             (
                 "vector",
                 json!({"type": "array", "items": {"type": "number"},
-                "description": "vector, and hybrid where the caller has one: the query vector."}),
+                "description": "vector, unless it gives `text`, and hybrid where the caller has one: the query vector."}),
             ),
             (
                 "model",
@@ -1425,6 +1425,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             input_schema: obj(p, &["type", "mode"]),
             output_schema: reply_schema(json!({"type": "object", "properties": {
                 "hits": {"type": "array"}, "ranked_by": {"type": "string"},
+                "unranked": {"type": "object", "description": "A hybrid search only: its vector leg did not rank, as the lake could not embed its text, and the hits are its text's alone; `field` names the leg and `why` the error its query vector met."},
                 "truncated": {"type": "boolean", "description": "A reranked search only: the first stage holds more hits than the window, unranked and not answered."},
                 "axes": {"type": "array"}, "next_cursor": {"type": "string"}}})),
             door: Door::Search,

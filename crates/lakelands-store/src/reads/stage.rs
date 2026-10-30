@@ -46,9 +46,9 @@ pub struct Window {
 
 /// A second stage's order and what its first page said: the keys of the
 /// window with the reranker's scores, best first, ties in the first
-/// stage's order, the answer's `ranked_by`, `axes` and `truncated`,
-/// which every page repeats, and what the first stage searched, which
-/// every page marks by.
+/// stage's order, the answer's `ranked_by`, `axes`, `truncated` and
+/// `unranked`, which every page repeats, and what the first stage
+/// searched, which every page marks by.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Staged {
     pub(super) order: Vec<(RecordKey, f64)>,
@@ -58,6 +58,8 @@ pub struct Staged {
     truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     marking: Option<Marking>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) unranked: Option<lakelands_api::query::Unranked>,
 }
 
 impl Staged {
@@ -82,6 +84,7 @@ impl Staged {
             axes,
             truncated: window.truncated,
             marking: window.marking.clone(),
+            unranked: None,
         }
     }
 }
@@ -121,7 +124,7 @@ impl Reader<'_> {
     /// The window a search with a second stage asks, or `None` for a
     /// search with none: refused for a `top` the lake does not allow and
     /// for a stage that has no text to rank against.
-    pub(super) fn rerank_top(&self, s: &Search) -> Result<Option<usize>> {
+    pub(crate) fn rerank_top(&self, s: &Search) -> Result<Option<usize>> {
         let Some(r) = &s.rerank else {
             return Ok(None);
         };
@@ -277,6 +280,7 @@ impl Reader<'_> {
                 of: read,
                 now: Some(self.now),
                 stage: Some(stage.clone()),
+                unranked: None,
             })
         });
         Ok(Hits {
@@ -285,6 +289,7 @@ impl Reader<'_> {
             ranked_by: stage.ranked_by,
             truncated: stage.truncated,
             axes: stage.axes,
+            unranked: stage.unranked,
         })
     }
 }

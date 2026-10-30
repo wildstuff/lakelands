@@ -358,6 +358,7 @@ impl Reader<'_> {
             of: super::pattern_read(p),
             now: Some(self.now),
             stage,
+            unranked: None,
         })
     }
 
