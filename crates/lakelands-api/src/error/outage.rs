@@ -527,6 +527,16 @@ named! {
 }
 
 named! {
+    /// What a bound on the requests of a network door counts by.
+    pub enum Per {
+        /// One connection.
+        Connection = "connection" => "connection",
+        /// One principal.
+        Principal = "principal" => "principal",
+    }
+}
+
+named! {
     /// A TLS setup that failed, on the side of the lake's own connection.
     pub enum Tls {
         /// The certificate authority file cannot be read.
@@ -924,6 +934,10 @@ catalog! {
         } => "there is no lake `{lake}` [in the schema `{schema}`|where its location says]; open it with `create` to make it",
         /// This server serves no lake of the name.
         NotServed { lake: String } => "this server serves no lake `{lake}`",
+        /// A connection or a principal sent more requests in a second than the server's bound on its rate.
+        RateBound { per: Per, most: u64, retry_after: u64 } => "this {per} sent more than the {most} requests a second the server takes from one; nothing was done: wait {retry_after} s and send it again",
+        /// A principal has as many requests being answered as the server's bound lets one have at once.
+        InFlightBound { most: u64 } => "the principal has {most} requests being answered, the most the server answers for one at once; nothing was done: send it again once one is answered",
         /// A part every lake of this engine has is missing: something else made what is there.
         Unmade { part: Part } => "this engine did not create what is there: {part} is missing",
         /// The lake has no projection yet.

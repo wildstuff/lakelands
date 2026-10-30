@@ -52,10 +52,11 @@ use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
+use crate::bounds::Over;
 use crate::doors::{self, Fault, to_json, unknown_argument};
 use crate::http::{
     State, Turn, Turned, admit, forwarded, header, json_response, no_link_headers, read_json,
-    resolve,
+    resolve, retry_after,
 };
 use crate::resolver::host_of;
 use crate::say::Failure;
@@ -128,9 +129,14 @@ fn contract(e: Error) -> Stop {
 /// A request the server cannot take as it is: refused as `invalid`,
 /// saying its case and the case's advice.
 fn invalid(status: StatusCode, said: impl Into<Said>) -> Stop {
+    Box::new(json_reply(status, &invalid_json(said)))
+}
+
+/// A refusal as `invalid` with its case, as JSON with the two sentences.
+pub(crate) fn invalid_json(said: impl Into<Said>) -> Value {
     let said = said.into();
     let f = Failure::of(&said);
-    Box::new(json_reply(status, &failure_json(&Error::invalid(said), &f)))
+    failure_json(&Error::invalid(said), &f)
 }
 
 /// A request the door turned away, said as REST says a refusal.
@@ -145,7 +151,24 @@ fn turned(t: Turned) -> Stop {
             Box::new(json_reply(t.status, &failure_json(&e, &f)))
         }
         Turn::Invalid(case) => invalid(t.status, case),
+        Turn::Bounded(over) => {
+            let (_, v) = bounded_json(&over);
+            Box::new(retry_after(json_reply(t.status, &v), &over))
+        }
     }
+}
+
+/// A request the door turned away before its route was known.
+pub(crate) fn refused(t: Turned) -> Answer {
+    *turned(t)
+}
+
+/// A bound reached, as the contract's error and as its JSON with the
+/// two sentences.
+pub(crate) fn bounded_json(over: &Over) -> (Error, Value) {
+    let e = Error::unavailable((*over.situation).clone());
+    let v = failure_json(&e, &Failure::from(e.clone()));
+    (e, v)
 }
 
 fn with_position(mut r: Answer, p: Option<Position>) -> Answer {
@@ -718,12 +741,14 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
     // hosts, as the principal it names; a principal's key may not name
     // another or set a write context.
     let host = host_of(&state.hosts, &key);
-    let (who, cx) = match host {
+    // The request is counted against the principal's bounds until it is
+    // answered (095).
+    let (who, cx, _held) = match host {
         Some(h) => forwarded(state, h, &lake, req.headers()).await,
         None => match no_link_headers(req.headers()) {
             Ok(()) => resolve(state, &lake, key)
                 .await
-                .map(|w| (w, WriteContext::default())),
+                .map(|(w, held)| (w, WriteContext::default(), held)),
             Err(t) => Err(t),
         },
     }
@@ -758,7 +783,7 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
 /// A JSON body, whole; `None` when it is empty.
 async fn json_body(req: Request<Incoming>) -> Result<Option<Value>, Stop> {
     let (parts, body) = req.into_parts();
-    read_json(&parts.headers, body).await.map_err(turned)
+    read_json(&parts, body).await.map_err(turned)
 }
 
 /// The compare-and-set and idempotency headers, as the arguments they

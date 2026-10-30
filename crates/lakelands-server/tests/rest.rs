@@ -109,6 +109,7 @@ async fn serve_pausing(
         workers: None,
         metrics: None,
         hosts: Vec::new(),
+        bounds: Default::default(),
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();
@@ -1015,6 +1016,7 @@ async fn a_lake_that_cannot_be_opened_is_503() {
         workers: None,
         metrics: None,
         hosts: Vec::new(),
+        bounds: Default::default(),
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();

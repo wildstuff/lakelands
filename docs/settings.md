@@ -310,6 +310,34 @@ The threads `serve` runs its doors and sessions on; absent, the machine's cores,
 - **Takes:** a count above zero.
 - **Default:** `null`.
 
+### `server.bounds.connection_rate`
+
+The most requests the HTTP door takes from one connection in a second, all at once or spread over it; a request over it is answered `429` with `Retry-After`.
+
+- **Takes:** requests a second, or "off".
+- **Default:** `1000`.
+
+### `server.bounds.principal_rate`
+
+The most requests the HTTP door takes from one principal in a second, over all its connections; a request over it is answered `429` with `Retry-After`.
+
+- **Takes:** requests a second, or "off".
+- **Default:** `1000`.
+
+### `server.bounds.principal_in_flight`
+
+The most requests of one principal the HTTP door answers at once; one more is answered `429` with `Retry-After`.
+
+- **Takes:** a count above zero, or "off".
+- **Default:** `128`.
+
+### `server.bounds.body_bytes`
+
+The largest body the HTTP door reads whole, for MCP and REST, a larger one answered `413`; an ingest body is streamed, and only its lines are bounded.
+
+- **Takes:** bytes, or "off".
+- **Default:** `4194304`.
+
 ### `server.metrics.bind`
 
 Where `serve` answers `GET /metrics` in the Prometheus text format, apart from the door; absent, it measures nothing and listens for none.

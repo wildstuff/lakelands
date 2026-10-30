@@ -137,6 +137,7 @@ async fn the_sdk_client_works_over_streamable_http_on(backend: Backend) {
         workers: None,
         metrics: None,
         hosts: Vec::new(),
+        bounds: Default::default(),
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let url = format!("http://{}/lakes/finance/mcp", server.local_addr().unwrap());

@@ -3025,9 +3025,10 @@ fn members_of<'de, T: serde::Deserialize<'de>>() -> &'static [&'static str] {
 fn the_root_s_settings_are_the_list_s() {
     use lakelands_api::settings::{BINDINGS, Layer, SETTINGS};
     use std::collections::BTreeSet;
-    let sections: [(&str, &[&str]); 12] = [
+    let sections: [(&str, &[&str]); 13] = [
         ("", members_of::<lakelands_cli::Config>()),
         ("server", members_of::<lakelands_server::HttpConfig>()),
+        ("server.bounds", members_of::<lakelands_server::Bounds>()),
         (
             "server.metrics",
             members_of::<lakelands_server::MetricsConfig>(),
