@@ -77,10 +77,11 @@ pub type Standing = std::pin::Pin<Box<dyn std::future::Future<Output = Result<()
 /// as one does, and every `every` asks whether the lease is free and
 /// takes it if so, as a writer's open takes it. From then on it is the
 /// lake's writer. A try that fails ends the tries, and the [`Standing`]
-/// answers its error, as a writer's open that fails answers it: what the
-/// open appended under the lease before it failed stays, and the lease
-/// is given up again. While the lease is held elsewhere a try changes
-/// nothing.
+/// answers its error, as a writer's open that fails answers it: the log
+/// is as it was, but for a `not_folded`, whose append is in it, and an
+/// `append_failed`, whose `left` says what the append left; and the
+/// lease is given up again. While the lease is held elsewhere a try
+/// changes nothing.
 pub async fn standby(
     location: Location,
     seams: Seams,

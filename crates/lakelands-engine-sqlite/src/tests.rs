@@ -35,6 +35,21 @@ fn a_sqlite_error_says_no_statement_and_no_value() {
     }
 }
 
+/// A projection's write SQLite finds no room for is named as that: the
+/// file may grow no further, as on a full disk (lakelands#1568).
+#[test]
+fn a_projection_write_with_no_room_left_is_named_as_that() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE t (v BLOB); PRAGMA max_page_count = 2;")
+        .unwrap();
+    let full = conn.execute("INSERT INTO t VALUES (zeroblob(100000))", []);
+    let told = super::sql(full.unwrap_err()).to_string();
+    assert!(
+        told.contains("there is no room left to write the projection"),
+        "{told}"
+    );
+}
+
 /// What the traced connection runs once, when its read of the folded
 /// position has finished.
 static AFTER_FOLDED: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
