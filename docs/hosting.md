@@ -1731,8 +1731,12 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   proxy bounds its callers already. A request over a rate or in flight
   is answered `429` with `Retry-After` and `unavailable` with
   `rate_bound` or `in_flight_bound`, a body over the size `413` with
-  `body_too_large`; nothing of it is read or written. MCP over stdio is
-  not bounded (`docs/decisions/095-the-http-door-bounds-what-one-caller-spends.md`).
+  `body_too_large`; nothing of it is read or written. An ingest holds
+  its principal's slot until its last window is committed. Over MCP the
+  body is read before the principal is counted, so an MCP request spends
+  its read, up to `body_bytes`, before a principal's bound refuses it.
+  `/livez` and `/readyz` are not counted. MCP over stdio is not bounded
+  (`docs/decisions/095-the-http-door-bounds-what-one-caller-spends.md`).
 - **Connections on PostgreSQL (lakelands#1324).** A process holds two
   connections for a lake it writes, `lakelands <schema>` in
   `pg_stat_activity`, a third while a graph of its vector index is

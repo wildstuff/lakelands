@@ -304,7 +304,7 @@ pub(crate) struct State {
     pub(crate) resolver: Arc<dyn PrincipalResolver>,
     pub(crate) open: Arc<LakeOpener>,
     pub(crate) hosts: Vec<HostEntry>,
-    pub(crate) gate: Gate,
+    pub(crate) gate: Arc<Gate>,
     sessions: Mutex<HashMap<String, Arc<Slot>>>,
 }
 
@@ -427,24 +427,32 @@ impl Turned {
         Turned { status, why }
     }
 
-    /// Said as MCP says it. A request that cannot be read, or that a
-    /// bound refused, is a JSON-RPC error whose `data` is the refusal as
-    /// REST says it, so its code reads the same.
+    /// Said as MCP says it, before the request's id is known.
     fn to_mcp(&self) -> Response<Full<Bytes>> {
+        self.to_mcp_as(Value::Null)
+    }
+
+    /// Said as MCP says it, as the answer to the request `id`. A request
+    /// that cannot be read, or that a bound refused, is a JSON-RPC error
+    /// whose `data` is the refusal as REST says it, so its code reads the
+    /// same.
+    fn to_mcp_as(&self, id: Value) -> Response<Full<Bytes>> {
         match &self.why {
-            Turn::NotGranted(what, _) => refuse(self.status, code::INVALID_REQUEST, what),
+            Turn::NotGranted(what, _) => {
+                respond(self.status, Some(&error(id, code::INVALID_REQUEST, *what)))
+            }
             Turn::Invalid(case) => {
                 let code = match case {
                     Case::BodyNotJson { .. } => code::PARSE,
                     _ => code::INVALID_REQUEST,
                 };
-                let mut v = error(Value::Null, code, case.to_string());
+                let mut v = error(id, code, case.to_string());
                 v["error"]["data"] = crate::rest::invalid_json(case.clone());
                 respond(self.status, Some(&v))
             }
             Turn::Bounded(over) => {
                 let (e, data) = crate::rest::bounded_json(over);
-                let mut v = error(Value::Null, code::BOUNDED, e.to_string());
+                let mut v = error(id, code::BOUNDED, e.to_string());
                 v["error"]["data"] = data;
                 retry_after(respond(self.status, Some(&v)), over)
             }
@@ -494,11 +502,11 @@ pub(crate) fn admit(state: &State, h: &HeaderMap) -> std::result::Result<String,
 
 /// The principal a key stands for in a lake, and the request counted
 /// against its bounds.
-pub(crate) async fn resolve<'s>(
-    state: &'s State,
+pub(crate) async fn resolve(
+    state: &State,
     lake: &LakeId,
     key: String,
-) -> std::result::Result<(Principal, Held<'s>), Turned> {
+) -> std::result::Result<(Principal, Held), Turned> {
     let who = (state.resolver.resolve(lake, &Credential::ApiKey(key)).await).map_err(|_| {
         Turned::new(
             StatusCode::UNAUTHORIZED,
@@ -516,12 +524,12 @@ pub(crate) async fn resolve<'s>(
 /// write context it carries, and the request counted against the
 /// principal's bounds: only for a lake and a principal the host may
 /// forward for, and only one the resolver knows for the lake.
-pub(crate) async fn forwarded<'s>(
-    state: &'s State,
+pub(crate) async fn forwarded(
+    state: &State,
     host: &HostEntry,
     lake: &LakeId,
     h: &HeaderMap,
-) -> std::result::Result<(Principal, WriteContext, Held<'s>), Turned> {
+) -> std::result::Result<(Principal, WriteContext, Held), Turned> {
     let bad = |case| Turned::new(StatusCode::BAD_REQUEST, Turn::Invalid(case));
     let principal = header(h, PRINCIPAL_HEADER).ok_or_else(|| bad(Case::NoForwardedPrincipal))?;
     let context = match header(h, CONTEXT_HEADER) {
@@ -573,8 +581,8 @@ pub(crate) fn no_link_headers(h: &HeaderMap) -> std::result::Result<(), Turned> 
 struct BodyBound(Limit);
 
 /// A JSON body, read whole: its media type, when named, is JSON, and it
-/// is no larger than its request's [`BodyBound`]. `None` when it is
-/// empty.
+/// is no larger than its request's [`BodyBound`], or the default bound
+/// where the request has none. `None` when it is empty.
 pub(crate) async fn read_json(
     parts: &hyper::http::request::Parts,
     body: Incoming,
@@ -588,11 +596,10 @@ pub(crate) async fn read_json(
             Turn::Invalid(Case::BodyMediaType),
         ));
     }
-    let most = match parts.extensions.get::<BodyBound>().map(|b| b.0) {
-        Some(Limit::At(n)) => usize::try_from(n.get()).unwrap_or(usize::MAX),
-        // Unbounded, or not stamped: a test drives the door only through
-        // [`bounded`].
-        Some(Limit::Off) | None => usize::MAX,
+    let bound = parts.extensions.get::<BodyBound>().map(|b| b.0);
+    let most = match bound.unwrap_or(Bounds::default().body_bytes) {
+        Limit::At(n) => usize::try_from(n.get()).unwrap_or(usize::MAX),
+        Limit::Off => usize::MAX,
     };
     let bytes = match Limited::new(body, most).collect().await {
         Ok(b) => b.to_bytes(),
@@ -631,20 +638,22 @@ impl State {
     }
 
     /// The session a caller names, if it exists and is theirs, and the
-    /// request counted against its principal's bounds. Another key's
-    /// session is answered as unknown, so its existence does not leak.
+    /// request counted against its principal's bounds; a refusal answers
+    /// the JSON-RPC `request` id. Another key's session is answered as
+    /// unknown, so its existence does not leak.
     fn session(
         &self,
         id: &str,
         lake: &LakeId,
         key: &str,
-    ) -> std::result::Result<(Arc<Slot>, Held<'_>), Refusal> {
+        request: Value,
+    ) -> std::result::Result<(Arc<Slot>, Held), Refusal> {
         let slot = (self.sessions().get(id))
             .filter(|s| s.owned_by(lake, key))
             .cloned()
             .ok_or_else(|| Box::new(unknown_session()))?;
-        let held =
-            (self.gate.principal(&slot.who)).map_err(|o| Box::new(Turned::bounded(o).to_mcp()))?;
+        let held = (self.gate.principal(&slot.who))
+            .map_err(|o| Box::new(Turned::bounded(o).to_mcp_as(request)))?;
         *slot.last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         Ok((slot, held))
     }
@@ -696,11 +705,13 @@ async fn probe(state: &State, req: &Request<Incoming>, ready: bool) -> Answer {
 /// counted by its connection here, before anything is read, and given the
 /// largest body it may send; counted by its principal where the door
 /// resolves one. A request over a bound is answered in its transport's
-/// envelope.
+/// envelope. A probe is not counted: an orchestrator that polls health
+/// on a busy connection must not see the process as down.
 async fn bounded(state: &State, connection: &Connection, mut req: Request<Incoming>) -> Answer {
     let path = req.uri().path().to_owned();
     let mcp = is_mcp(&path);
-    if let Err(over) = state.gate.connection(connection) {
+    let probe = matches!(path.as_str(), "/livez" | "/readyz");
+    if !probe && let Err(over) = state.gate.connection(connection) {
         let t = Turned::bounded(over);
         return match mcp {
             true => t.to_mcp().map(BodyExt::boxed),
@@ -767,7 +778,7 @@ async fn mcp(state: &State, req: Request<Incoming>) -> Answer {
                 )
                 .map(BodyExt::boxed);
             };
-            match state.session(&id, &lake, &key) {
+            match state.session(&id, &lake, &key, Value::Null) {
                 Ok(_) => {
                     if let Some(slot) = state.sessions().remove(&id) {
                         slot.end();
@@ -814,7 +825,7 @@ fn stream(state: &State, lake: &LakeId, key: &str, req: &Request<Incoming>) -> A
     };
     // Only the session's own key opens its stream; another key's session is
     // answered as unknown, as for every request.
-    let (slot, _held) = match state.session(id, lake, key) {
+    let (slot, _held) = match state.session(id, lake, key, Value::Null) {
         Ok(s) => s,
         Err(r) => return (*r).map(BodyExt::boxed),
     };
@@ -961,6 +972,16 @@ async fn post(
     if msg.get("method").and_then(Value::as_str) == Some("initialize") {
         let (who, _held) = match resolve(state, &lake, key.clone()).await {
             Ok(p) => p,
+            // A principal's bound answers the request; a key not known,
+            // as before, no id.
+            Err(
+                t @ Turned {
+                    why: Turn::Bounded(_),
+                    ..
+                },
+            ) => {
+                return t.to_mcp_as(id.unwrap_or(Value::Null));
+            }
             Err(t) => return t.to_mcp(),
         };
         let store = match (state.open)(&lake) {
@@ -1020,7 +1041,8 @@ async fn post(
             "name the session in Mcp-Session-Id, or initialize one",
         );
     };
-    let (slot, _held) = match state.session(&sid, &lake, &key) {
+    let request = id.clone().unwrap_or(Value::Null);
+    let (slot, _held) = match state.session(&sid, &lake, &key, request) {
         Ok(s) => s,
         Err(r) => return *r,
     };

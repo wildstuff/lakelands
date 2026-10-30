@@ -4,7 +4,9 @@
 //! flight, a request is answered `429` with `Retry-After` and the
 //! refusal of the catalogue, by MCP and REST alike; over the size,
 //! `413`. Each principal is counted apart, a request that ends gives its
-//! slot back, and a bound set `"off"` bounds nothing.
+//! slot back, an ingest holds its slot until its last window is
+//! committed, a probe is not counted, and a bound set `"off"` bounds
+//! nothing.
 
 mod common;
 
@@ -15,7 +17,7 @@ use std::time::Duration;
 use common::Backend;
 use lakelands_api::LakeStore;
 use lakelands_api::location::Limits;
-use lakelands_server::{Bounds, HttpConfig, Limit, serve_http};
+use lakelands_server::{Bounds, HostEntry, HttpConfig, Limit, serve_http};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -29,6 +31,12 @@ fn at(n: u64) -> Limit {
 
 /// The fixture lake behind a door with these bounds.
 async fn serve(bounds: Bounds) -> SocketAddr {
+    serve_beside(bounds, Vec::new()).await
+}
+
+/// The fixture lake behind a door with these bounds, and these hosts that
+/// may forward calls to it.
+async fn serve_beside(bounds: Bounds, hosts: Vec<HostEntry>) -> SocketAddr {
     let store = common::lake_with(Backend::Memory, Limits::default()).await;
     let open = Arc::new(
         move |_: &lakelands_api::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
@@ -43,7 +51,7 @@ async fn serve(bounds: Bounds) -> SocketAddr {
         feed_floor_millis: 25,
         workers: None,
         metrics: None,
-        hosts: Vec::new(),
+        hosts,
         bounds,
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
@@ -232,7 +240,9 @@ async fn a_principal_over_its_rate_is_refused_and_another_is_not() {
     is_rate_bound(&answers[2], "principal");
     // The clerk's flood is the clerk's alone.
     assert_eq!(once(addr, describe("k-clerk")).await.status, 200);
-    is_rate_bound(&once(addr, initialize("k-owner")).await, "principal");
+    let a = once(addr, initialize("k-owner")).await;
+    is_rate_bound(&a, "principal");
+    assert_eq!(a.body["id"], json!(1), "the refusal answers its request");
     assert_eq!(once(addr, initialize("k-clerk")).await.status, 200);
 }
 
@@ -404,4 +414,176 @@ async fn the_defaults_bound_what_no_waiting_caller_meets() {
     )
     .await;
     assert_eq!(a.status, 413, "{}", a.body);
+}
+
+/// The session an `initialize` of `key`'s opened.
+async fn session(addr: SocketAddr, key: &str) -> String {
+    let a = once(addr, initialize(key)).await;
+    assert_eq!(a.status, 200, "{}", a.body);
+    a.header("mcp-session-id").expect("a session").to_owned()
+}
+
+/// A `tools/list` with JSON-RPC id `id` on session `sid` of `key`'s.
+fn on_session(sid: &str, key: &str, id: u64) -> String {
+    let body = json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"}).to_string();
+    format!(
+        "POST /lakes/finance/mcp HTTP/1.1\r\nhost: lake\r\nauthorization: Bearer {key}\r\n\
+         mcp-session-id: {sid}\r\nmcp-protocol-version: 2025-06-18\r\n\
+         content-type: application/json\r\naccept: application/json\r\n\
+         content-length: {}\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+#[tokio::test]
+async fn a_request_on_a_session_is_counted_against_its_principal() {
+    let addr = serve(Bounds {
+        principal_rate: at(2),
+        ..Bounds::OFF
+    })
+    .await;
+    // The initialize is the first of the owner's two.
+    let sid = session(addr, "k-owner").await;
+    assert_eq!(once(addr, on_session(&sid, "k-owner", 7)).await.status, 200);
+    let a = once(addr, on_session(&sid, "k-owner", 8)).await;
+    is_rate_bound(&a, "principal");
+    assert_eq!(a.body["id"], json!(8), "the refusal answers its request");
+}
+
+#[tokio::test]
+async fn a_request_on_a_session_waits_for_its_principal_s_slot() {
+    let addr = serve(Bounds {
+        principal_in_flight: at(1),
+        ..Bounds::OFF
+    })
+    .await;
+    let sid = session(addr, "k-owner").await;
+    let held = hold(addr, "k-owner").await;
+    assert_eq!(refused_in_flight(addr, "k-owner").await.status, 429);
+    let a = once(addr, on_session(&sid, "k-owner", 9)).await;
+    assert_eq!(a.status, 429, "{}", a.body);
+    assert_eq!(a.code(), &json!("in_flight_bound"), "{}", a.body);
+    assert_eq!(a.body["id"], json!(9), "the refusal answers its request");
+    drop(held);
+}
+
+#[tokio::test]
+async fn a_forwarded_call_is_counted_against_the_principal_it_names() {
+    let host = HostEntry {
+        id: "edge".into(),
+        keys: vec!["h-edge".into()],
+        lakes: vec!["finance".into()],
+        principals: None,
+    };
+    let addr = serve_beside(
+        Bounds {
+            principal_rate: at(2),
+            ..Bounds::OFF
+        },
+        vec![host],
+    )
+    .await;
+    let forward = |principal: &str| {
+        let r = describe("h-edge");
+        r.replacen(
+            "content-type",
+            &format!("lakelands-principal: {principal}\r\ncontent-type"),
+            1,
+        )
+    };
+    for _ in 0..2 {
+        let a = once(addr, forward("clerk")).await;
+        assert_eq!(a.status, 200, "{}", a.body);
+    }
+    // The clerk's two went through the host; its own key finds none left.
+    is_rate_bound(&once(addr, describe("k-clerk")).await, "principal");
+    // The host's key is no principal's: the owner has both of its own.
+    assert_eq!(once(addr, forward("owner")).await.status, 200);
+    assert_eq!(once(addr, describe("k-owner")).await.status, 200);
+}
+
+#[tokio::test]
+async fn a_probe_is_not_counted_against_its_connection() {
+    let addr = serve(Bounds {
+        connection_rate: at(1),
+        ..Bounds::OFF
+    })
+    .await;
+    let probe = |path: &str| request("GET", path, None, None);
+    let answers = on_one(
+        addr,
+        &[
+            describe("k-owner"),
+            probe("/livez"),
+            probe("/readyz"),
+            probe("/livez"),
+            describe("k-owner"),
+        ],
+    )
+    .await;
+    assert_eq!(answers[0].status, 200);
+    assert_eq!(answers[1].status, 200, "{}", answers[1].body);
+    assert_ne!(answers[2].status, 429, "{}", answers[2].body);
+    assert_eq!(answers[3].status, 200, "{}", answers[3].body);
+    is_rate_bound(&answers[4], "connection");
+}
+
+#[tokio::test]
+async fn an_ingest_holds_its_slot_until_its_last_window_is_committed() {
+    let addr = serve(Bounds {
+        principal_in_flight: at(1),
+        ..Bounds::OFF
+    })
+    .await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let head = "POST /lakes/finance/ingest/bank HTTP/1.1\r\nhost: lake\r\n\
+        connection: close\r\nauthorization: Bearer k-owner\r\n\
+        content-type: application/x-ndjson\r\ntransfer-encoding: chunked\r\n\r\n";
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let line = "{\"type\":\"invoice\",\"key\":\"INV-B\",\"fields\":{\"amount\":\"1.00\"}}\n";
+    let chunk = format!("{:x}\r\n{line}\r\n", line.len());
+    stream.write_all(chunk.as_bytes()).await.unwrap();
+    // The answer has begun: the handler has returned, and the ingest
+    // commits on.
+    let mut raw = Vec::new();
+    let mut byte = [0u8; 1];
+    while !raw.ends_with(b"\r\n\r\n") {
+        let n = tokio::time::timeout(WAIT, stream.read(&mut byte))
+            .await
+            .expect("the answer begins within the wait")
+            .unwrap();
+        assert_eq!(n, 1, "the connection closed before its answer");
+        raw.push(byte[0]);
+    }
+    assert!(
+        raw.starts_with(b"HTTP/1.1 200"),
+        "{}",
+        String::from_utf8_lossy(&raw)
+    );
+    let a = once(addr, describe("k-owner")).await;
+    assert_eq!(a.status, 429, "the ingest holds its slot: {}", a.body);
+    assert_eq!(a.code(), &json!("in_flight_bound"), "{}", a.body);
+    // The body ends, its last window is committed, the answer ends.
+    stream.write_all(b"0\r\n\r\n").await.unwrap();
+    let mut rest = Vec::new();
+    tokio::time::timeout(WAIT, stream.read_to_end(&mut rest))
+        .await
+        .expect("the ingest ends within the wait")
+        .unwrap();
+    let rest = String::from_utf8_lossy(&rest);
+    assert!(rest.contains("\"position\""), "a window committed: {rest}");
+    assert!(!rest.contains("\"error\""), "{rest}");
+    let until = tokio::time::Instant::now() + WAIT;
+    loop {
+        let a = once(addr, describe("k-owner")).await;
+        if a.status == 200 {
+            break;
+        }
+        assert_eq!(a.status, 429, "{}", a.body);
+        assert!(
+            tokio::time::Instant::now() < until,
+            "the slot never came back"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }

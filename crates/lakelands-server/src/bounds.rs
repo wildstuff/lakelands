@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use lakelands_api::Principal;
@@ -208,14 +208,14 @@ struct Principals {
 const SWEEP_LEAST: usize = 64;
 
 impl Gate {
-    pub(crate) fn new(bounds: Bounds) -> Gate {
-        Gate {
+    pub(crate) fn new(bounds: Bounds) -> Arc<Gate> {
+        Arc::new(Gate {
             bounds,
             principals: Mutex::new(Principals {
                 by: HashMap::new(),
                 sweep_at: SWEEP_LEAST,
             }),
-        }
+        })
     }
 
     /// Count a request of `connection`'s.
@@ -235,11 +235,11 @@ impl Gate {
     /// whenever the counts have doubled since they were last swept. So
     /// the map holds the principals active within the last second or so,
     /// at most twice over.
-    pub(crate) fn principal(&self, who: &Principal) -> Result<Held<'_>, Over> {
+    pub(crate) fn principal(self: &Arc<Self>, who: &Principal) -> Result<Held, Over> {
         let (rate, in_flight) = (self.bounds.principal_rate, self.bounds.principal_in_flight);
         if rate == Limit::Off && in_flight == Limit::Off {
             return Ok(Held {
-                gate: self,
+                gate: self.clone(),
                 key: None,
             });
         }
@@ -267,19 +267,21 @@ impl Gate {
         }
         count.in_flight += 1;
         Ok(Held {
-            gate: self,
+            gate: self.clone(),
             key: Some(key),
         })
     }
 }
 
 /// A principal's slot for one request, given back when it is dropped.
-pub(crate) struct Held<'a> {
-    gate: &'a Gate,
+/// It owns its gate, so a request whose work outlives its handler, an
+/// ingest's commits, takes it along.
+pub(crate) struct Held {
+    gate: Arc<Gate>,
     key: Option<(LakeId, String)>,
 }
 
-impl Drop for Held<'_> {
+impl Drop for Held {
     fn drop(&mut self) {
         let Some(key) = self.key.take() else {
             return;

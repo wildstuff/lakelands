@@ -64,7 +64,8 @@ this page says only how a request reaches it.
   A request over one is answered `429` with `Retry-After` in seconds,
   as `unavailable` with the situation `rate_bound` or `in_flight_bound`;
   MCP answers the same refusal as a JSON-RPC error's `data`. Nothing of
-  such a request was read or written.
+  such a request was read or written. An ingest is counted until its
+  last window is committed; `/livez` and `/readyz` are not counted.
 - **Editing a record.** A record's version is one number for the whole
   record, not one per field: a write that changes any field moves it. A
   read of one record answers it as `ETag`. So does a `PUT` or `DELETE`

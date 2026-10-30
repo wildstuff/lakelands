@@ -52,7 +52,7 @@ use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
-use crate::bounds::Over;
+use crate::bounds::{Held, Over};
 use crate::doors::{self, Fault, to_json, unknown_argument};
 use crate::http::{
     State, Turn, Turned, admit, forwarded, header, json_response, no_link_headers, read_json,
@@ -742,8 +742,8 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
     // another or set a write context.
     let host = host_of(&state.hosts, &key);
     // The request is counted against the principal's bounds until it is
-    // answered (095).
-    let (who, cx, _held) = match host {
+    // answered, an ingest until its last window is committed (095).
+    let (who, cx, held) = match host {
         Some(h) => forwarded(state, h, &lake, req.headers()).await,
         None => match no_link_headers(req.headers()) {
             Ok(()) => resolve(state, &lake, key)
@@ -767,7 +767,7 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
     }
     let answer = match route(req.method(), rest) {
         Ok(Target::Door(r)) => door(&store, &who, cx, r, req).await,
-        Ok(Target::Ingest(source)) => ingest(&store, &who, cx, source, req).await,
+        Ok(Target::Ingest(source)) => ingest(&store, &who, cx, source, req, held).await,
         Ok(Target::Feed) => feed(state, &store, &who, req).await,
         Ok(Target::Quarantined) => quarantined(&store, &who, cx, req).await,
         Ok(Target::Dismiss) => dismiss(&store, &who, cx, req).await,
@@ -1124,6 +1124,7 @@ async fn ingest(
     cx: WriteContext,
     source: SourceId,
     req: Request<Incoming>,
+    held: Held,
 ) -> Result<Answer, Stop> {
     let args = query_args(
         req.uri().query(),
@@ -1176,7 +1177,7 @@ async fn ingest(
         .map_err(contract)?;
     let (tx, rx) = mpsc::channel(16);
     tokio::spawn(async move {
-        let _catalog = catalog;
+        let (_catalog, _held) = (catalog, held);
         loop {
             // A window that takes longer than the keep-alive to commit is
             // answered with an empty line meanwhile, so a client that

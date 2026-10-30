@@ -96,10 +96,10 @@ fn a_count_still_filling_is_kept_and_an_idle_one_goes_at_the_next_sweep() {
 
 #[tokio::test]
 async fn a_request_cancelled_gives_its_slot_back() {
-    let gate = std::sync::Arc::new(Gate::new(Bounds {
+    let gate = Gate::new(Bounds {
         principal_in_flight: at(1),
         ..Bounds::OFF
-    }));
+    });
     let (tx, rx) = tokio::sync::oneshot::channel();
     let g = gate.clone();
     let task = tokio::spawn(async move {

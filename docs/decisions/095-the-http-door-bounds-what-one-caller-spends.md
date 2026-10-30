@@ -31,7 +31,9 @@ them.
 ### Where a request is counted
 
 The door counts a request by its connection as it arrives, before
-anything of it is read, in one layer in front of every route. It counts
+anything of it is read, in one layer in front of every route; a probe,
+`/livez` or `/readyz`, is not counted, so an orchestrator polling a
+busy connection does not see the process as down. It counts
 it by its principal where it resolves one: a key or a host's forwarded
 call over REST, a key at an MCP `initialize`, an MCP session's own
 principal for every later request of the session. A principal is its
@@ -40,14 +42,22 @@ made for, and against the connection of the host that forwards it.
 
 A request refused before its principal is resolved, for an origin, a
 missing or unknown key or a path that is no lake's, is counted by its
-connection only.
+connection only. Over MCP the body is read before the principal is
+counted: the door must read the message to know whether it is an
+`initialize`, and a later one names its session in a header but is
+resolved only beside its body. So an MCP request spends its read, up to
+`body_bytes`, before a principal's bound can refuse it; REST counts the
+principal before it reads the body.
 
 A request holds its principal's slot from that point until its answer is
 made. The slot is given back when the slot's guard is dropped, so a
 request that is answered, a request whose client goes away, and a
-request whose handler panics all give it back. A streamed answer (an MCP
-event stream, the feed, an ingest's commits) holds no slot while it
-streams: it is bounded by its own session and its idle end.
+request whose handler panics all give it back. An ingest holds its slot
+until its last window is committed, not only until its answer begins:
+its commits are the work, so one principal runs no more ingests at once
+than its bound. A stream that only reads (an MCP event stream, the feed)
+holds no slot while it streams: it is bounded by its own session and its
+idle end.
 
 ### The settings are the server's
 
@@ -72,7 +82,8 @@ names none of them has the defaults.
   `most`, `retry_after`) or `in_flight_bound` (`most`). REST answers it
   as it answers every failure, with its `what` and `todo`. MCP answers
   it as a JSON-RPC error, code -32000, whose `data` is the same JSON, so
-  a client reads the same code on either door.
+  a client reads the same code on either door; a refusal for the
+  principal's bound answers the request's own id.
 - Over the size: `413`, and the contract's `refused` as `invalid` with
   the case `body_too_large`. MCP's JSON-RPC error for a request it
   cannot read carries the same refusal in `data`.
