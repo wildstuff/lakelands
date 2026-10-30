@@ -380,14 +380,17 @@ view over it. A key field the principal sees masked still gives its
 value through the key: the field is known, and only its value is
 withheld elsewhere. A field granted `write_only` is a field its
 principal may not know of for this rule, since for reading it is as
-`none`: a record key would hand out its value (lakelands#1572). A grouped view's records are keyed by its
-`group_by`, and an ungrouped view's one record by no field. A view
-declares no other `key` (018), and one that holds another all the same,
-a host's own type, which passes no `declare`, is judged by its groups
-too: no view is hidden for a field its records do not carry as their
-key. A grouped view's key is judged at its sources too: each key field
-on the view, on its source and on each merge source by position, since
-the key holds their values. It is also the key `describe`, the tools and
+`none`: a record key would hand out its value (lakelands#1572). Only
+the reading side is withheld: such a principal still writes the type,
+upsert and retire, since a write names the key and answers no value of
+it. A grouped view's records are keyed by its `group_by`, and an
+ungrouped view's one record by no field. A view declares no other `key`
+(018), and one that holds another all the same, a host's own type,
+which passes no `declare`, is judged by its groups too: no view is
+hidden for a field its records do not carry as their key. A grouped
+view's key is judged at its sources too: each key field on the view, on
+its source and on each merge source by position, since the key holds
+their values. It is also the key `describe`, the tools and
 a listed declaration name. A view's definition shown to a principal
 names no measure of a field it may not know of, as its fields do not. A
 measure that reads such a measure by name, directly or through another,

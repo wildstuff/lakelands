@@ -1517,10 +1517,12 @@ async fn a_write_only_key_field_is_not_handed_out_by_record_keys(store: Store) -
             "sekrit"
         )
     ));
-    table.extend(key_side_doors(&l, &who).await?);
+    table.extend(key_side_doors(&l, store.as_ref(), &who).await?);
     eprintln!("WRITE_ONLY_KEY PROBE\n{}", table.join("\n"));
     ensure!(
-        !table.iter().any(|r| r.ends_with("LEAKS")),
+        !table
+            .iter()
+            .any(|r| r.ends_with("LEAKS") || r.ends_with("REFUSED")),
         "a write-only key field leaks through record keys:\n{}",
         table.join("\n")
     );
@@ -1530,7 +1532,11 @@ async fn a_write_only_key_field_is_not_handed_out_by_record_keys(store: Store) -
 /// The proposal listing and an aggregate grouped by the key, read by `who`
 /// (a holder of `k: write_only` on `patient`, given the review grant), as
 /// the table's rows. The server's watch asks the same `describe_type`.
-async fn key_side_doors(l: &Lake, who: &Principal) -> Result<Vec<String>, Failure> {
+async fn key_side_doors(
+    l: &Lake,
+    store: &dyn LakeStore,
+    who: &Principal,
+) -> Result<Vec<String>, Failure> {
     let cat = l.cat.as_ref();
     let write = ProposedWrite::Upsert {
         ty: "patient".into(),
@@ -1552,7 +1558,25 @@ async fn key_side_doors(l: &Lake, who: &Principal) -> Result<Vec<String>, Failur
     let mut find = aggregate(Vec::new());
     find.aggregate = Some(by);
     let grouped = cat.find(&who, &"patient".into(), find).await;
+    // A writer who holds the key `write_only` still writes the type: only
+    // the reading side of the key is withheld.
+    let writer = field_access(
+        store,
+        "keeper",
+        "patient",
+        &[("k", Access::WriteOnly), ("name", Access::Write)],
+    );
+    let fields = json!({"k": "w1", "name": "Cy"});
+    let written = try_upsert(cat, &writer, "patient", "w1", fields).await;
+    let (ty, key) = ("patient".into(), "w1".into());
+    let retired = cat.retire(&writer, &ty, &key, Default::default()).await;
+    let wrote = |r: &Result<Outcome, _>| match r {
+        Ok(Outcome::Applied { output: None, .. }) => "answers",
+        _ => "REFUSED",
+    };
     Ok(vec![
+        format!("patient | upsert by a key writer | {}", wrote(&written)),
+        format!("patient | retire by a key writer | {}", wrote(&retired)),
         format!("patient | proposal listing | {}", told(listed, "sekrit")),
         format!("patient | aggregate by k | {}", told(grouped, "sekrit")),
     ])

@@ -77,6 +77,8 @@ pub struct Sight<'o> {
     hidden: Vec<(TypeName, FieldName)>,
     /// Each type asked for, judged once.
     shown: RefCell<BTreeMap<TypeName, bool>>,
+    /// Each type asked for to write it, judged once.
+    written: RefCell<BTreeMap<TypeName, bool>>,
     /// The value types a use of which it is shown, found in one pass.
     pub(crate) used: OnceCell<BTreeSet<ValueTypeName>>,
     /// What each type's hidings lower, by which of them select a record.
@@ -101,6 +103,7 @@ impl<'o> Sight<'o> {
             force,
             hidden,
             shown: RefCell::default(),
+            written: RefCell::default(),
             used: OnceCell::new(),
             lowerings: RefCell::default(),
         }
@@ -117,6 +120,7 @@ impl<'o> Sight<'o> {
             force,
             hidden: Vec::new(),
             shown: RefCell::default(),
+            written: RefCell::default(),
             used: OnceCell::new(),
             lowerings: RefCell::default(),
         }
@@ -142,6 +146,23 @@ impl<'o> Sight<'o> {
             known.unwrap_or_else(|| {
                 let shown = describe::type_shown(t, &|n| self.force.ty(n), &self.who);
                 self.shown.borrow_mut().insert(name.clone(), shown);
+                shown
+            })
+        });
+        let missing = Missing::Type { name: name.clone() };
+        t.ok_or(Error::NotFound { missing })
+    }
+
+    /// The type `name`, where its principal is shown it to write: as
+    /// [`Self::ty`], but one keyed by a field it holds `write_only` is
+    /// there, since a write gives that key and reads no value of it
+    /// (lakelands#1572).
+    pub fn ty_written(&self, name: &TypeName) -> Result<&'o TypeDecl, Error> {
+        let known = self.written.borrow().get(name).copied();
+        let t = self.force.ty(name).filter(|t| {
+            known.unwrap_or_else(|| {
+                let shown = describe::type_written(t, &|n| self.force.ty(n), &self.who);
+                self.written.borrow_mut().insert(name.clone(), shown);
                 shown
             })
         });

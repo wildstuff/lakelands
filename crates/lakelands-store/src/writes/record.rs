@@ -242,7 +242,7 @@ impl Decide<'_> {
             Op::Call(..) => return Ok(()),
         };
         let sees = &self.at.sight;
-        let decl = sees.ty(ty)?;
+        let decl = sees.ty_written(ty)?;
         let mut named = decl.relations.iter().filter(|r| Some(&r.name) == relation);
         match relation {
             Some(n) if named.any(|r| !sees.relation(decl, r)) => Err(no_link_relation(ty, n)),
