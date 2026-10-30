@@ -21,7 +21,7 @@ check!(
 );
 
 /// `invoice`: a source's `amount` and `customer`, an author's `note`.
-fn invoice() -> TypeDecl {
+pub(super) fn invoice() -> TypeDecl {
     let fields = vec![
         sourced("amount", StorageKind::Number),
         sourced("customer", StorageKind::Text),
@@ -31,7 +31,7 @@ fn invoice() -> TypeDecl {
 }
 
 /// The options of a delivery `delivery` that quarantines its refusals.
-fn kept(delivery: &str) -> IngestOpts {
+pub(super) fn kept(delivery: &str) -> IngestOpts {
     IngestOpts {
         delivery: Some(delivery.into()),
         quarantine_refused: true,
@@ -40,7 +40,7 @@ fn kept(delivery: &str) -> IngestOpts {
 }
 
 /// `records` fed from `source` by `who` under `opts`.
-async fn fed(
+pub(super) async fn fed(
     l: &Lake,
     who: &Principal,
     source: &str,
@@ -51,12 +51,12 @@ async fn fed(
 }
 
 /// The stream indexes the windows quarantined.
-fn indexes(windows: &[Committed]) -> Vec<u64> {
+pub(super) fn indexes(windows: &[Committed]) -> Vec<u64> {
     windows.iter().flat_map(|w| w.quarantined.clone()).collect()
 }
 
 /// What `who` is listed under `filter`.
-async fn listed(
+pub(super) async fn listed(
     l: &Lake,
     who: &Principal,
     filter: QuarantineFilter,
@@ -70,7 +70,7 @@ async fn listed(
 }
 
 /// The owner's listing of `source`'s records of `ty`.
-async fn of(l: &Lake, source: &str, ty: &str) -> Result<Vec<Quarantined>, Failure> {
+pub(super) async fn of(l: &Lake, source: &str, ty: &str) -> Result<Vec<Quarantined>, Failure> {
     let filter = QuarantineFilter {
         source: Some(source.into()),
         ty: Some(ty.into()),
@@ -80,7 +80,7 @@ async fn of(l: &Lake, source: &str, ty: &str) -> Result<Vec<Quarantined>, Failur
 }
 
 /// The id `(source, delivery, index)`.
-fn qid(source: &str, delivery: &str, index: u64) -> QuarantineId {
+pub(super) fn qid(source: &str, delivery: &str, index: u64) -> QuarantineId {
     QuarantineId {
         source: source.into(),
         delivery: delivery.into(),
@@ -90,7 +90,7 @@ fn qid(source: &str, delivery: &str, index: u64) -> QuarantineId {
 
 /// The invoice `key` with `amount`, and the field `extra` where given,
 /// which `invoice` does not declare.
-fn inv(key: &str, amount: Value, extra: Option<&str>) -> SourceRecord {
+pub(super) fn inv(key: &str, amount: Value, extra: Option<&str>) -> SourceRecord {
     let mut fields = json!({"amount": amount, "customer": "acme"});
     if let Some(extra) = extra {
         fields[extra] = json!("x");
@@ -241,7 +241,7 @@ async fn a_quarantine_is_keyed_by_its_records_delivery(store: Store) -> Held {
 }
 
 /// The kind of a refusal, as the wire names it.
-fn kind(e: &Error) -> String {
+pub(super) fn kind(e: &Error) -> String {
     let wire = json!(e);
     wire["reason"]["refusal"]
         .as_str()
@@ -250,7 +250,7 @@ fn kind(e: &Error) -> String {
 }
 
 /// The refusal a quarantined record holds, as `(field, refusal)`.
-fn refusal(q: &Quarantined) -> Option<(Option<&str>, &Refusal)> {
+pub(super) fn refusal(q: &Quarantined) -> Option<(Option<&str>, &Refusal)> {
     match &q.refusal {
         Error::Refused { field, reason } => Some((field.as_ref().map(|f| f.as_str()), reason)),
         _ => None,
@@ -911,7 +911,7 @@ async fn a_refusal_of_the_call_or_its_source_ends_the_stream_as_without_the_opti
 
 /// `contact`: a source's `name`, `email`, which is sensitive, `passcode` and
 /// `region`, the field a hiding selects on.
-fn contact() -> TypeDecl {
+pub(super) fn contact() -> TypeDecl {
     let email = FieldDecl {
         sensitive: true,
         ..sourced("email", StorageKind::Text)
@@ -926,7 +926,7 @@ fn contact() -> TypeDecl {
 }
 
 /// The cells a row is shown, and those named masked.
-fn told(q: &Quarantined) -> String {
+pub(super) fn told(q: &Quarantined) -> String {
     let cells: Vec<&str> = q.cells.keys().map(|f| f.as_str()).collect();
     let masked: Vec<&str> = q.masked.iter().map(|f| f.as_str()).collect();
     format!("{} masked={}", cells.join(" "), masked.join(" "))
@@ -934,7 +934,7 @@ fn told(q: &Quarantined) -> String {
 
 /// The row of `id` as `who` is listed it; none where the listing of the
 /// id alone answers `not_found`, as for one not there.
-async fn row_of(
+pub(super) async fn row_of(
     l: &Lake,
     who: &Principal,
     id: QuarantineId,
@@ -1105,7 +1105,7 @@ fn refused_person(key: &str, name: &str) -> SourceRecord {
 }
 
 /// How the row of `id` is closed, as its owner lists it.
-async fn closed_as(l: &Lake, id: QuarantineId) -> Result<Option<ClosedWhy>, Failure> {
+pub(super) async fn closed_as(l: &Lake, id: QuarantineId) -> Result<Option<ClosedWhy>, Failure> {
     let q = row_of(l, &l.own, id.clone()).await?;
     let q = q.ok_or_else(|| Failure::new(format!("`{id}` is not listed")))?;
     ensure!(

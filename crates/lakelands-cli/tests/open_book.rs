@@ -142,6 +142,7 @@ async fn ingest(
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     });
     let s: lakelands_api::SourceStream = Box::pin(Stream(records.collect::<Vec<_>>().into_iter()));
     let mut out = cat.ingest(who, &source.into(), s).await.unwrap();

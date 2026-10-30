@@ -15,7 +15,9 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::location::Location;
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::WriteContext;
-use lakelands_api::quarantine::{QuarantineClose, QuarantineFilter, QuarantineId, Quarantined};
+use lakelands_api::quarantine::{
+    HostRefused, QuarantineClose, QuarantineFilter, QuarantineId, Quarantined, Quarantining,
+};
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search, SearchMode};
 use lakelands_api::seam::{
     ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, Spread, VerbInvocation,
@@ -339,6 +341,35 @@ impl Doors {
         same_lake(&self.lake, who)?;
         let (lake, who) = (self.lake.clone(), who.clone());
         exec::run(move || reading(&lake, who, at, None, f)).await
+    }
+
+    /// A description `f` reads, of `ty` or of the lake where none: at the
+    /// head, the one the writer told `who` and keeps while nothing that
+    /// changes it came since ([`crate::lake::Described`]), else read and
+    /// kept.
+    async fn described<D, F>(
+        &self,
+        who: &Principal,
+        ty: Option<&TypeName>,
+        at: ReadAt,
+        f: F,
+    ) -> Result<Reply<D>>
+    where
+        D: crate::lake::Described,
+        F: FnOnce(&Reader<'_>) -> Result<(D, crate::lake::Answered)> + Send + 'static,
+    {
+        same_lake(&self.lake, who)?;
+        let drops = match (at == ReadAt::default()).then(|| self.lake.described(who, ty)) {
+            Some(Ok(told)) => return Ok(told),
+            Some(Err(drops)) => Some(drops),
+            None => None,
+        };
+        let read = self.read(who, (at, None), f).await?;
+        let (position, (data, answered)) = (read.position, read.data);
+        if let Some(drops) = drops {
+            (self.lake).keep_described((who, ty), (drops, position), &data, answered);
+        }
+        Ok(Reply { position, data })
     }
 
     /// [`Self::read`] for a read that may rank, given the head when
@@ -679,7 +710,7 @@ impl Catalog for Doors {
 
     async fn describe(&self, who: &Principal, at: ReadAt) -> Result<Reply<LakeDescription>> {
         let asked = who.clone();
-        self.read(who, (at, None), move |r| r.describe(&asked))
+        self.described(who, None, at, move |r| r.describe(&asked))
             .await
     }
 
@@ -689,8 +720,8 @@ impl Catalog for Doors {
         ty: &TypeName,
         at: ReadAt,
     ) -> Result<Reply<TypeDescription>> {
-        let (ty, asked) = (ty.clone(), who.clone());
-        self.read(who, (at, None), move |r| r.describe_type(&asked, &ty))
+        let (named, asked) = (ty.clone(), who.clone());
+        self.described(who, Some(ty), at, move |r| r.describe_type(&asked, &named))
             .await
     }
 
@@ -960,6 +991,18 @@ impl Catalog for Doors {
         self.write(who, move |c| c.dismiss_quarantined(&id)).await
     }
 
+    async fn quarantine(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: IngestOpts,
+        refused: HostRefused,
+    ) -> Result<Quarantining> {
+        self.ingest_opts(who, source, &opts)?;
+        let who = (who.clone(), self.context.clone());
+        ingest::host(self.lake.clone(), who, source.clone(), opts, refused).await
+    }
+
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
         self.write_settled(who, move |c| c.declare(declaration))
             .await
@@ -1065,20 +1108,7 @@ impl Catalog for Doors {
         opts: IngestOpts,
         records: SourceStream,
     ) -> Result<CommitStream> {
-        same_lake(&self.lake, who)?;
-        // The context first, as on every write door, and before the stream
-        // is taken.
-        writes::check_context(&self.lake, &self.context, who)?;
-        writes::granted(who.grants.ingest)?;
-        writes::check_source(source)?;
-        if let Some(d) = &opts.delivery {
-            writes::check_delivery(d)?;
-        }
-        let max = self.lake.limits.commit_window_max;
-        if opts.commit_window.is_some_and(|w| w == 0 || w > max) {
-            let case = lakelands_api::error::Case::LimitRange { max };
-            return Err(Error::invalid_at(&"commit_window".into(), case));
-        }
+        self.ingest_opts(who, source, &opts)?;
         Ok(ingest::run(
             self.lake.clone(),
             who.clone(),
@@ -1087,6 +1117,26 @@ impl Catalog for Doors {
             opts,
             records,
         ))
+    }
+}
+
+impl Doors {
+    /// The checks of an ingest's call, the context first, as on every
+    /// write door, and before a record is taken.
+    fn ingest_opts(&self, who: &Principal, source: &SourceId, opts: &IngestOpts) -> Result<()> {
+        same_lake(&self.lake, who)?;
+        writes::check_context(&self.lake, &self.context, who)?;
+        writes::granted(who.grants.ingest)?;
+        writes::check_source(source)?;
+        for d in opts.delivery.iter().chain(&opts.run) {
+            writes::check_delivery(d)?;
+        }
+        let max = self.lake.limits.commit_window_max;
+        if opts.commit_window.is_some_and(|w| w == 0 || w > max) {
+            let case = lakelands_api::error::Case::LimitRange { max };
+            return Err(Error::invalid_at(&"commit_window".into(), case));
+        }
+        Ok(())
     }
 }
 

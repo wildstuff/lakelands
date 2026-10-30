@@ -42,8 +42,8 @@ use lakelands_api::event::{EventBody, EventId, Sealed};
 use lakelands_api::id::KeyId;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::quarantine::{
-    ClosedWhy, QuarantineClose, QuarantineFilter, QuarantineFull, QuarantineId, QuarantineState,
-    Quarantined,
+    ClosedWhy, HostRefused, QuarantineClose, QuarantineFilter, QuarantineFull, QuarantineId,
+    QuarantineState, Quarantined, Quarantining,
 };
 use lakelands_api::record::Origin;
 use lakelands_api::write::{Committed, IngestOpts};
@@ -81,22 +81,29 @@ fn pair_of(r: &SourceRecord, source: &SourceId) -> Pair {
     )
 }
 
+/// How a call quarantines (085): whether it does, the host's run that
+/// keys its records in place of their delivery, and the host's refusal of
+/// them where the call is the host's door's, which ingests none.
+type Quarantine = (bool, Option<DeliveryId>, Option<Error>);
+
 /// Decide and append one window, in the call's `delivery` where one is
 /// named or decided already, its values sealed apart too where `apart`
 /// keeps the call's keys; `places` holds each record's place among the
-/// call's records of its delivery.
-pub fn window(
+/// call's records of its delivery, or of the run where one is named. It
+/// answers too the id of each record it quarantined or found
+/// quarantined so already.
+fn window(
     lake: &Turn<'_>,
     who: &Principal,
-    (context, delivery, apart, quarantine): (
+    (context, delivery, apart, (quarantine, run, host)): (
         WriteContext,
         Option<DeliveryId>,
         Option<&Apart>,
-        bool,
+        Quarantine,
     ),
     source: &SourceId,
     (first, records, places): (u64, Vec<SourceRecord>, Vec<u64>),
-) -> Result<Committed> {
+) -> Result<(Committed, Vec<QuarantineId>)> {
     crate::writes::check_context(lake, &context, who)?;
     let mut w = lake.for_write()?;
     // Under the writer, so through every rename the lake has folded, and
@@ -122,7 +129,12 @@ pub fn window(
     let keyed: DeliveryId = delivery
         .clone()
         .unwrap_or_else(|| format!("d{next}").into());
-    let quarantine = quarantine.then_some((&keyed, lake.limits.quarantined_max));
+    let quarantine = quarantine.then_some(Asked {
+        call: &keyed,
+        run: run.as_ref(),
+        max: lake.limits.quarantined_max,
+        host: host.as_ref(),
+    });
     // The window is judged taking no id as applied, and the ids it asked
     // are asked in one call; where one is applied, the window is judged
     // again, each id asked as the record meets it, so every record is
@@ -156,6 +168,7 @@ pub fn window(
         committed,
         duplicates,
         quarantined,
+        ids,
     } = judged?;
     drop(view);
     let delivery = delivery.or_else(|| (!drafts.is_empty()).then_some(keyed));
@@ -175,13 +188,14 @@ pub fn window(
         let events = lake.append_after(&mut w, drafts, reads)?;
         events.last().expect("appended").position
     };
-    Ok(Committed {
+    let committed = Committed {
         position,
         records: committed,
         duplicates,
         delivery,
         quarantined,
-    })
+    };
+    Ok((committed, ids))
 }
 
 /// What a judgement of a window takes as applied: at first no id, each it
@@ -207,22 +221,33 @@ impl Asks {
 }
 
 /// The window's records judged: their drafts, the reads they rest on, how
-/// many were written and counted duplicates, and the stream index of each
-/// it quarantined.
+/// many were written and counted duplicates, the stream index of each
+/// it quarantined, and the id of each it quarantined or found so.
 struct Judged {
     drafts: Vec<Draft>,
     reads: Reads,
     committed: u32,
     duplicates: u32,
     quarantined: Vec<u64>,
+    ids: Vec<QuarantineId>,
+}
+
+/// What a call that quarantines asks: the delivery that keys its records,
+/// the host's run in its place, the bound, and the host's refusal.
+#[derive(Clone, Copy)]
+struct Asked<'a> {
+    call: &'a DeliveryId,
+    run: Option<&'a DeliveryId>,
+    max: u32,
+    host: Option<&'a Error>,
 }
 
 /// The quarantined records a window has met, as it leaves them, over the
 /// projection's: each it wrote a version of or closed, and per source how
 /// many are open, the projection's count and the window's change.
 struct Rows<'a> {
-    /// The call's delivery and the bound, where the call quarantines.
-    asked: Option<(&'a DeliveryId, u32)>,
+    /// What the call asks, where it quarantines.
+    asked: Option<Asked<'a>>,
     rows: BTreeMap<QuarantineId, Quarantined>,
     open: BTreeMap<SourceId, (usize, i64)>,
 }
@@ -236,7 +261,7 @@ impl Rows<'_> {
     /// bound and past it by one, and as the window opened and closed them.
     fn open(&mut self, view: &dyn ProjectionView, source: &SourceId) -> Result<&mut (usize, i64)> {
         if !self.open.contains_key(source) {
-            let max = self.asked.map_or(0, |(_, max)| max);
+            let max = self.asked.map_or(0, |a| a.max);
             let open = QuarantineFilter {
                 source: Some(source.clone()),
                 state: Some(QuarantineState::Open),
@@ -309,7 +334,7 @@ fn resubmitted(
 }
 
 fn judge(
-    (call, apart, quarantine): (&Call<'_>, Option<&Apart>, Option<(&DeliveryId, u32)>),
+    (call, apart, quarantine): (&Call<'_>, Option<&Apart>, Option<Asked<'_>>),
     w: &Writer,
     (view, now): (&dyn ProjectionView, Timestamp),
     (source, first, records, places): (&SourceId, u64, &[SourceRecord], &[u64]),
@@ -373,7 +398,7 @@ fn judge(
         rows: BTreeMap::new(),
         open: BTreeMap::new(),
     };
-    let mut quarantined = Vec::new();
+    let (mut quarantined, mut ids) = (Vec::new(), Vec::new());
     for (i, (r, place)) in records.iter().zip(places).enumerate() {
         let index = first + i as u64;
         let pair = pair_of(r, source);
@@ -382,7 +407,11 @@ fn judge(
         let target = resubmitted(&d, (view, &rows), r, source);
         let target = target.map_err(|e| ingested(e, index, first, r))?;
         let from = drafts.len();
-        let judged = (|| {
+        // The host's refusal is the record's, past what keeps one from
+        // quarantine: it is not judged by the type's rules (085, extended).
+        let host = quarantine.and_then(|a| a.host);
+        let judged = host.map(|e| gate(&d, r, source, &forgotten).and(Err(e.clone())));
+        let judged = judged.unwrap_or_else(|| {
             let decl = d.at.sight.ty(&r.ty)?;
             crate::writes::untold_setting(&d.at.sight, decl, &r.key)?;
             d.envelope.source = Some(source.clone());
@@ -509,7 +538,7 @@ fn judge(
             seen.insert(id);
             committed += 1;
             Ok(())
-        })();
+        });
         match judged {
             // A resubmission written, or counted a duplicate, closes what
             // it names, in the window's append (085).
@@ -545,12 +574,13 @@ fn judge(
             // outage does not.
             Err(e) if rows.asked.is_none() => return Err(ingested(e, index, first, r)),
             Err(e) => {
-                let made = quarantining(
+                let (id, made) = quarantining(
                     (call.lake, w, view, now),
                     (&mut d, &mut rows, &mut ciphers, apart),
                     (r, &pair, target.as_ref(), &forgotten),
                     (e, index, first, *place),
                 )?;
+                ids.push(id);
                 match made {
                     Some(draft) => {
                         drafts.push(draft);
@@ -568,7 +598,38 @@ fn judge(
         committed,
         duplicates,
         quarantined,
+        ids,
     })
+}
+
+/// The declaration of `r`'s type, where nothing keeps a refusal of `r`
+/// from quarantine, else what does as `r`'s own refusal: a type not
+/// shown, a setting's key not told, a source or delivery not of its form,
+/// what it states beside its fields out of range, a forgotten source, or
+/// a key the log cannot hold (085).
+fn gate<'d>(
+    d: &'d Decide<'_>,
+    r: &SourceRecord,
+    source: &SourceId,
+    forgotten: &BTreeMap<SourceId, String>,
+) -> Result<&'d lakelands_api::ontology::TypeDecl> {
+    let decl = d.at.sight.ty(&r.ty)?;
+    crate::writes::untold_setting(&d.at.sight, decl, &r.key)?;
+    r.source
+        .as_ref()
+        .map_or(Ok(()), crate::writes::check_source)?;
+    r.delivery
+        .as_ref()
+        .map_or(Ok(()), crate::writes::check_delivery)?;
+    stated(r)?;
+    if forgotten.contains_key(source) {
+        let source = source.clone();
+        return Err(Error::invalid(Case::SourceForgotten { source }));
+    }
+    if r.key.as_str().contains('\0') {
+        crate::writes::check_key(&r.key)?;
+    }
+    Ok(decl)
 }
 
 /// The values of `patch` a record of `decl` from the pair's source seals:
@@ -607,7 +668,9 @@ fn sealing(
 /// The version that `r`'s refusal `e` makes of its quarantined record,
 /// the one it resubmits or its own place among the call's records of its
 /// delivery: none
-/// where it is a duplicate of the record's last version (085). A refusal
+/// where it is a duplicate of the record's last version (085), beside its
+/// id: the host's run keys it in place of its delivery, its line in place
+/// of its place. A refusal
 /// of the call, of its source, of a type not shown or of a key or value
 /// the log cannot hold is not quarantined, nor is one past the bound: the
 /// stream ends at it as without the option, past the bound with the bound
@@ -627,29 +690,19 @@ fn quarantining(
         &BTreeMap<SourceId, String>,
     ),
     (e, index, first, place): (Error, u64, u64, u64),
-) -> Result<Option<Draft>> {
-    let (call, max) = rows.asked.expect("the call quarantines");
-    let (source, delivery) = (&pair.0, pair.1.as_ref().unwrap_or(call));
-    let decl = match d.at.sight.ty(&r.ty) {
+) -> Result<(QuarantineId, Option<Draft>)> {
+    let Asked { call, run, max, .. } = rows.asked.expect("the call quarantines");
+    let source = &pair.0;
+    let keyed = run.or(pair.1.as_ref()).unwrap_or(call);
+    let decl = match gate(d, r, source, forgotten) {
         Ok(decl) if !matches!(e, Error::Unavailable { .. } | Error::Unbound { .. }) => decl,
         _ => return Err(ingested(e, index, first, r)),
     };
-    let ends = crate::writes::untold_setting(&d.at.sight, decl, &r.key).is_err()
-        || r.source
-            .as_ref()
-            .is_some_and(|s| crate::writes::check_source(s).is_err())
-        || (r.delivery.as_ref()).is_some_and(|d| crate::writes::check_delivery(d).is_err())
-        || stated(r).is_err()
-        || forgotten.contains_key(source)
-        || r.key.as_str().contains('\0');
-    if ends {
-        return Err(ingested(e, index, first, r));
-    }
     let id = target.map_or_else(
         || QuarantineId {
             source: source.clone(),
-            delivery: delivery.clone(),
-            index: place,
+            delivery: keyed.clone(),
+            index: r.line.unwrap_or(place),
         },
         |q| q.id.clone(),
     );
@@ -687,7 +740,7 @@ fn quarantining(
     if let Some(q) = &last
         && same(q)?
     {
-        return Ok(None);
+        return Ok((id, None));
     }
     // An id new or closed takes a place under the bound; a version of an
     // open one does not.
@@ -733,8 +786,8 @@ fn quarantining(
         more: false,
         closed: None,
     };
-    rows.rows.insert(id, row);
-    Ok(Some(d.alone(draft)?))
+    rows.rows.insert(id.clone(), row);
+    Ok((id, Some(d.alone(draft)?)))
 }
 
 /// The id of a quarantined record's version `body`, from its cells and box
@@ -800,7 +853,8 @@ fn ingested(
 /// was given, so it is judged as a written value is
 /// (`docs/log-format.md` §1.2, §1.3): a `seen_at` out of the years 0000 to
 /// 9999, which an instant built in process can be, and an upstream
-/// position beyond ±(2^53 − 1) are refused, each naming its member.
+/// position or a line beyond ±(2^53 − 1) are refused, each naming its
+/// member.
 fn stated(r: &SourceRecord) -> Result<()> {
     let at = |path: &str, case: Case| {
         let path = path.to_owned();
@@ -812,9 +866,17 @@ fn stated(r: &SourceRecord) -> Result<()> {
         let value = t.to_string();
         return at("seen_at", Case::NotDateTime { value });
     }
-    let position = r.upstream.as_ref().map(|u| u.position.0.into());
-    match position.as_ref().and_then(canonical::integer_too_large) {
-        Some(n) => at("upstream.position", Case::IntegerTooLarge { n: n.clone() }),
+    let position = r
+        .upstream
+        .as_ref()
+        .map(|u| ("upstream.position", u.position.0));
+    let large = position.into_iter().chain(r.line.map(|l| ("line", l)));
+    let large = large.map(|(path, n)| (path, serde_json::Value::from(n)));
+    match large
+        .filter_map(|(p, n)| canonical::integer_too_large(&n).map(|n| (p, n.clone())))
+        .next()
+    {
+        Some((path, n)) => at(path, Case::IntegerTooLarge { n }),
         None => Ok(()),
     }
 }
@@ -920,6 +982,8 @@ pub fn run(
     let mut places: BTreeMap<Option<DeliveryId>, u64> = BTreeMap::new();
     let apart = opts.sealed_apart.then(|| Arc::new(Apart::default()));
     let quarantine = opts.quarantine_refused;
+    let run = opts.run;
+    let by_run = run.is_some();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Committed>>(4);
     let lakes = lake.limits.commit_window_events;
     let size = opts.commit_window.unwrap_or(lakes).max(1) as usize;
@@ -950,29 +1014,32 @@ pub fn run(
                 continue;
             }
             let (w, s, d) = (who.clone(), source.clone(), delivery.clone());
-            let (a, context) = (apart.clone(), context.clone());
+            let (a, context, r) = (apart.clone(), context.clone(), run.clone());
             let first = next;
             next += batch.len() as u64;
+            // A place counts the records its id is keyed under: the
+            // run's, where one is named, else its delivery's.
             let at = (batch.iter())
                 .map(|r| {
-                    let place = places.entry(r.delivery.clone()).or_default();
+                    let keyed = if by_run { None } else { r.delivery.clone() };
+                    let place = places.entry(keyed).or_default();
                     *place += 1;
                     *place - 1
                 })
                 .collect();
             let run = move |t: &Turn<'_>| {
-                let how = (context, d, a.as_deref(), quarantine);
+                let how = (context, d, a.as_deref(), (quarantine, r, None));
                 crate::lake::owing(|| window(t, &w, how, &s, (first, batch, at)))
             };
             let mut answer = exec::write(&lake, run).await;
             // The calls the window made due are made before it answers, so
             // its position is one the filled fields are visible from.
-            if let Ok((c, own)) = &mut answer
+            if let Ok(((c, _), own)) = &mut answer
                 && let Some(last) = crate::backed::settle_after(&lake, own).await
             {
                 c.position = c.position.max(last);
             }
-            let answer = answer.map(|(c, _)| c);
+            let answer = answer.map(|((c, _), _)| c);
             if let Ok(c) = &answer {
                 delivery.clone_from(&c.delivery);
             }
@@ -984,6 +1051,69 @@ pub fn run(
     });
     Box::pin(Receiver(rx))
 }
+
+/// Quarantine the record the host refused, as a call of it alone that
+/// quarantines and ingests nothing: what keeps a refusal from quarantine
+/// refuses it, as the record's (085, extended).
+pub async fn host(
+    lake: Arc<Lake>,
+    (who, context): (Principal, WriteContext),
+    source: SourceId,
+    opts: IngestOpts,
+    refused: HostRefused,
+) -> Result<Quarantining> {
+    let HostRefused {
+        mut record,
+        cause,
+        reason,
+    } = refused;
+    let max = HOST_REASON_MAX;
+    let cause_formed = (1..=64).contains(&cause.len())
+        && (cause.bytes()).all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_'));
+    let reason_formed =
+        !reason.is_empty() && reason.len() <= max && !reason.chars().any(char::is_control);
+    if !cause_formed || !reason_formed {
+        let path = if cause_formed { "reason" } else { "cause" }.to_owned();
+        let said = Said::from(Case::HostRefusalForm { max });
+        return Err(Error::invalid(said.within(Place::Member { path })));
+    }
+    // A call of one record has it at place 0 always: under a named run or
+    // delivery only its line keys it apart from the run's other rows.
+    let named = opts.run.is_some() || opts.delivery.is_some() || record.delivery.is_some();
+    if named && record.line.is_none() {
+        let path = "line".to_owned();
+        let said = Said::from(Case::HostLineMissing);
+        return Err(Error::invalid(said.within(Place::Member { path })));
+    }
+    let said = Box::new(Said::from(Case::RefusedByHost { cause, reason }));
+    let refusal = Error::refused(None, lakelands_api::error::Refusal::Declined(said));
+    if record.delivery.is_some() && record.delivery == opts.delivery {
+        record.delivery = None;
+    }
+    let apart = opts.sealed_apart.then(Apart::default);
+    let work = move |t: &Turn<'_>| {
+        let how = (
+            context,
+            opts.delivery,
+            apart.as_ref(),
+            (true, opts.run, Some(refusal)),
+        );
+        crate::lake::owing(|| window(t, &who, how, &source, (0, vec![record], vec![0])))
+    };
+    let ((c, ids), own) = exec::write(&lake, work).await?;
+    let last = crate::backed::settle_after(&lake, &own).await;
+    Ok(Quarantining {
+        id: ids
+            .into_iter()
+            .next()
+            .expect("a record not refused is quarantined"),
+        position: last.map_or(c.position, |l| c.position.max(l)),
+        duplicate: c.duplicates == 1,
+    })
+}
+
+/// The most bytes of the host's reason for a refusal.
+const HOST_REASON_MAX: usize = 1024;
 
 /// The answers of an ingest, as a stream.
 struct Receiver(tokio::sync::mpsc::Receiver<Result<Committed>>);
