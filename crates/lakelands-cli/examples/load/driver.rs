@@ -1490,6 +1490,7 @@ impl Worker {
                 let opts = WriteOpts {
                     idempotency_key: idem.map(|i| i.to_owned().into()),
                     expected_version: expected.map(lakelands_api::id::Version),
+                    defer_computed_fields: false,
                 };
                 outcome(
                     self.remote
@@ -1540,6 +1541,7 @@ impl Worker {
                 let opts = WriteOpts {
                     idempotency_key: None,
                     expected_version: Some(lakelands_api::id::Version(expected)),
+                    defer_computed_fields: false,
                 };
                 match self
                     .remote

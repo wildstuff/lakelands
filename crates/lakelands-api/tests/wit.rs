@@ -482,6 +482,7 @@ fn write_opts() -> WriteOpts {
     WriteOpts {
         expected_version: Some(Version(1)),
         idempotency_key: Some("i".into()),
+        defer_computed_fields: true,
     }
 }
 

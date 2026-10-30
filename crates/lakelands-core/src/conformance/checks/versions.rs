@@ -88,6 +88,7 @@ fn expecting(v: u64) -> WriteOpts {
     WriteOpts {
         expected_version: Some(Version(v)),
         idempotency_key: None,
+        defer_computed_fields: false,
     }
 }
 
@@ -147,6 +148,7 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
     let keyed = || WriteOpts {
         expected_version: None,
         idempotency_key: Some(IdempotencyKey::from("retry-1")),
+        defer_computed_fields: false,
     };
 
     let first = put(cat.as_ref(), own, "k", 1, keyed())

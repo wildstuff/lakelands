@@ -326,6 +326,38 @@ one per declared type, a batch holds at most 64 calls and one answer per
 call, and no write waits for more than one batch of a backlog it did not
 make.
 
+### A write may answer before its computed fields
+
+A write made with `defer_computed_fields` answers once it is in the log
+and folded, with its own last event's position, and waits for none of
+the calls it made due. The lake makes them in a task of its own, the
+same drain a write that waits runs (its own entries, a batch at a time,
+on the lane of calls) and the one the open's sweep of waiting
+embeddings runs; there is no second queue. Until a call is made, its
+field reads as a waiting one does: no value and no `error`. A lexical or
+structured read finds the record at its answer, a vector ranking leaves
+it out without failing, and the record never shows the vector of a text
+it no longer holds, since its write cleared the field. An output answered
+for a call the record has moved on from fills nothing, so a record
+written again while its earlier call is in flight ends with the output
+of its latest inputs. If the task stops (the lake is closed, a batch
+fails, the host's handle is dropped), what it left stays owed, made as
+orphans by the writes after it, and the open's sweep makes any embedding
+still waiting. A call that hands an external verb to its executor waits
+as without the option. The option is off by default, and a write
+without it behaves as before. The network doors do not carry it; it is
+for a host that writes many records in process and reads them back
+lexically before their embeddings exist.
+
+**Why.** A host that loads a corpus through its own process pays the
+backend's latency on every write it waits for, though what it reads
+next is a keyword or structured lookup that needs no vector. Answering
+at the fold, and filling the vector behind it, is honest because the
+fold already distinguishes a field that waits from one that holds a
+value or an error: a read never has to guess which. Reusing the drain
+keeps one owner of the lane of calls and one recovery path for work a
+caller stopped waiting for.
+
 ### A call is due to the append that wrote its event, never to a fold of the log
 
 A call is due to the append that wrote its event, never to a fold of

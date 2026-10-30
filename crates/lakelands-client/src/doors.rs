@@ -245,7 +245,9 @@ fn members<T: serde::Serialize>(v: &T, less: &[&str]) -> Value {
 /// for. `PUT` says a record that must not exist yet as
 /// `If-None-Match: *`; every other write names the version it expects.
 /// An idempotency key a header cannot carry (a line break, say) is
-/// refused before anything is sent.
+/// refused before anything is sent: sent without it, a retry could apply
+/// twice. `defer_computed_fields` has no header and is not sent: the
+/// write waits for its computed fields, as the option allows.
 fn write_headers(mut call: Call, opts: &WriteOpts, put: bool) -> Result<Call> {
     match opts.expected_version {
         Some(v) if v.0 == 0 && put => call = call.header("if-none-match", "*".into()),

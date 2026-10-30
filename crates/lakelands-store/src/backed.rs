@@ -1277,16 +1277,25 @@ fn empty_on(fields: &[FieldName]) -> Expr {
 /// it: on a writer, each type with an embedding of its model and
 /// dimensions that a live record holds none of is owed a sweep of those
 /// records, unless one is owed already (one that waits reads from the
-/// first record again, for the backend bound now), and a task of its own
-/// makes the waiting calls, a batch at a time, while the lake is open. A call that
-/// failed is not made again; `recompute` makes it. Outside a runtime the
-/// sweeps stay owed, made as orphans by the writes after. A handle the
-/// host drops gives its lease up once the batch in flight is recorded.
+/// first record again, for the backend bound now), and [`apart`] makes
+/// the waiting calls. A call that failed is not made again; `recompute`
+/// makes it.
 pub fn make_waiting(lake: &Arc<Lake>, turn: &Turn<'_>) {
-    let own = match owe_waiting(turn) {
-        Ok(own) if !own.is_empty() => own,
-        _ => return,
-    };
+    if let Ok(own) = owe_waiting(turn) {
+        apart(lake, own);
+    }
+}
+
+/// Make what `own` owes as [`settle`] does, but in a task of its own that
+/// no caller waits for, a batch at a time, while the lake is open: a
+/// write made with `defer_computed_fields`, and [`make_waiting`]. Outside
+/// a runtime, or once a batch fails, what is left stays owed, made as
+/// orphans by the writes after. A handle the host drops gives its lease
+/// up once the batch in flight is recorded.
+pub fn apart(lake: &Arc<Lake>, own: BTreeSet<Position>) {
+    if own.is_empty() {
+        return;
+    }
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         return;
     };
