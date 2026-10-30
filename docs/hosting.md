@@ -100,10 +100,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `lakelands-backings` for any `/v1/embeddings` endpoint, which the CLI
   and the server bind from the `embed` section of the root's
   `lakelands.json`. A bound backend embeds the query text of a hybrid
-  search that brings no vector of its own, which is a read and records
-  nothing. Without one, search is lexical and over caller-supplied
-  vectors, and says so. A bound backend that fails makes the search
-  `Unavailable`; it never falls back to lexical. A vector field declared
+  search that brings no vector of its own, and of a vector search that
+  brings `text`, which is a read and records nothing. Without one, or
+  with one that fails, a hybrid search ranks by its text and names its
+  vector leg and why in `unranked`; a vector search that brings `text`
+  is `Unbound` or `Unavailable`. A vector field declared
   with `embed` is the embedding of text fields of its record: the store
   embeds the text after the write, records each vector in the log
   (`output_recorded`) and reads it back on replay, one call per text and

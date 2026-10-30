@@ -38,7 +38,7 @@ use lakelands_api::ontology::{
 use lakelands_api::principal::{HiddenWhere, Renamed, TypeGrants};
 use lakelands_api::query::{
     Axis, Depth, Edge, Hit, Hits, Matched, Pattern, Projection, QueryResult, Search, SearchMode,
-    Span, Start, Step, VectorTerm, Walk,
+    Span, Start, Step, Unranked, VectorTerm, Walk,
 };
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
@@ -863,6 +863,14 @@ fn purge_reference() -> lakelands_api::write::PurgeReference {
     }
 }
 
+/// A vector leg that did not rank, every member set.
+fn unranked() -> Unranked {
+    Unranked {
+        field: "v".into(),
+        why: Error::refused(None, Refusal::NotGranted),
+    }
+}
+
 fn search_mode() -> SearchMode {
     SearchMode::Hybrid {
         text: "t".into(),
@@ -1421,8 +1429,10 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 ranked_by: "lexical".into(),
                 truncated: true,
                 axes: vec![],
+                unranked: Some(unranked()),
             }),
         ),
+        ("unranked", members(&unranked())),
         ("rerank", members(&rerank())),
         (
             "axis",
@@ -2232,6 +2242,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 SearchMode::Vector {
                     field: "f".into(),
                     vector: vec![],
+                    text: None,
                     weight: None,
                     also: Vec::new(),
                     model: None,

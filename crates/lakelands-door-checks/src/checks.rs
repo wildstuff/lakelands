@@ -11701,6 +11701,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
     let by_vector = |field: &str| SearchMode::Vector {
         field: field.into(),
         vector: vec![1.0, 0.0],
+        text: None,
         weight: None,
         also: Vec::new(),
         model: None,
@@ -12348,6 +12349,7 @@ pub async fn a_vector_ranking_reads_a_vector_field(store: Arc<dyn LakeStore>) {
     let along = |field: &str, also: &[&str]| SearchMode::Vector {
         field: field.into(),
         vector: vec![1.0, 0.0],
+        text: None,
         weight: None,
         also: (also.iter())
             .map(|f| VectorTerm {
@@ -13118,6 +13120,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
     let fields = |weight, also: &str, also_weight| SearchMode::Vector {
         field: "v".into(),
         vector: vec![1.0, 0.0],
+        text: None,
         weight,
         also: vec![VectorTerm {
             field: also.into(),
@@ -13177,6 +13180,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
     let lone = SearchMode::Vector {
         field: "v".into(),
         vector: vec![1.0, 0.0],
+        text: None,
         weight: Some(2.0),
         also: Vec::new(),
         model: None,

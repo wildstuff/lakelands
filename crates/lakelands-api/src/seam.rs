@@ -142,10 +142,11 @@ pub trait EmbedBackend: Send + Sync {
     /// One vector per text, in order. `Invalid` refuses the request for
     /// what it carries, and the store asks again in halves to find the
     /// text; any other error is weather, recorded for every text of the
-    /// batch not answered yet. Any failure reaches the caller of the search that
-    /// asked as `Unavailable`, whatever error the backend answered: the
-    /// store never falls back to lexical ranking for a backend that is
-    /// bound.
+    /// batch not answered yet. For a search's query any failure is the
+    /// backend's, whatever error it answered: a hybrid search ranks by its
+    /// text and names the failure in its answer's `unranked`, and a vector
+    /// search that brings `text`, or a later page of an answer its vector
+    /// ranked, is `Unavailable`.
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
 

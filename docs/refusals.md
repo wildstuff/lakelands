@@ -577,14 +577,14 @@ What a refusal is about.
 | `latest_no_change` | `type` (TypeName, optional) | `order_by` `latest` orders records by their latest change, and [`{type}` is a view, whose records are computed and have none\|a query's rows are projections of a walk, not records] | A `latest` order where no record has a change of its own. |
 | `latest_takes_no_field` | `field` (FieldName) | `latest` orders by the position of each record's latest change and takes no field, and `{field}` was given | A `latest` order given a field. |
 | `limit_range` | `max` (u32) | a limit is between 1 and {max} | A limit out of range. |
-| `matches_without_text` | — | `matches` says where a search's text matched each hit, and a vector search brings no text; a lexical or hybrid search is told it | A search that asks for `matches` and brings no text. |
+| `matches_without_text` | — | `matches` says where a search's text matched each hit, and a vector search ranks no text; a lexical or hybrid search is told it | A search that asks for `matches` and brings no text. |
 | `measure_no_depth` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `depth`: it reads each record's links, not hops | A measure's step with a depth. |
 | `measure_no_order` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `order_by`: its rows come in the measure's own order | A measure with an order. |
 | `measure_no_steps` | `measure` (String) | `{measure}` walks the relations its steps name; name at least one | A measure with no step. |
 | `measure_no_to` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `to` | A measure with a `to`. |
 | `measure_no_type` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches | A measure's step with a `type`. |
 | `measure_no_where` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `where` | A measure's step with a `where`. |
-| `model_without_vector` | — | `model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model | A `model` on a hybrid search that brings no query vector. |
+| `model_without_vector` | — | `model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model | A `model` on a search whose query vector the lake makes. |
 | `rerank_top_zero` | — | `rerank.top` is how many of the search's first hits the second stage ranks, and it is 1 at least | A `rerank` whose `top` is 0. |
 | `rerank_no_window` | — | the location's `limits.max_rerank_top` is 0, which lets no search take a second stage; set it to 1 at least, or leave it out for 100 | A location whose `limits.max_rerank_top` is 0. |
 | `rerank_top_above` | `max` (u32) | `rerank.top` is above the lake's `limits.max_rerank_top`, {max}; ask for a window of at most {max}, or raise the setting in the lake's location | A `rerank` whose `top` is above the lake's bound. |
@@ -616,9 +616,10 @@ What a refusal is about.
 | `query_model` | `query` (String), `held` (String) | the query vector is of the model `{query}`, and the field holds vectors of `{held}` | A query vector the caller names another model for than the one the field is the embedding of. |
 | `retired_with_aggregate` | — | `retired` counts the retired records a page's `where` matches; an `aggregate` answers groups, so give one | A `retired` count beside an aggregate. |
 | `search_fields_empty` | — | `fields` names no field; leave it out to search every searchable field | A search's `fields` that names none. |
-| `search_needs_vector` | `field` (FieldName) | `{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector | A hybrid search without a vector over a vector field no model fills: its writers chose the space, so no bound model may stand in for one. |
+| `search_needs_vector` | `field` (FieldName) | `{field}` holds vectors its writers make, in a space the lake does not know; a search over it brings its own query vector | A search whose query vector the lake would make, over a vector field no model fills: its writers chose the space, so no bound model may stand in for one. |
 | `search_not_vector` | `field` (FieldName), `kind` (StorageKind) | `{field}` is a {kind} field; a vector ranking reads a vector field | A vector ranking over a field that holds no vectors. |
 | `search_text_fields_empty` | — | `text_fields` weighs no field; leave it out to weigh each as its type's setting does | A search's `text_fields` that weighs no field. |
+| `start_needs_vector` | `field` (FieldName) | a pattern's start ranks `{field}` by a `vector` it brings; the lake embeds a vector search's `text` for `search` alone, whose answer says how it ranked | A pattern's start search whose query vector the lake would embed: a pattern's rows cannot say how they were ranked. |
 | `start_no_type` | `asks` (String) | `{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params` | A start with no type where a type is needed. |
 | `step_after_no_name` | — | the step before binds no name, as a join and an absent step bind none; say with `from` which name this step walks from | A step with no `from` after one that binds no name. |
 | `step_binds_no_name` | `member` (String), `join` (bool) | a[{?join} join\|n absent step] binds no name of its own[{?join}, and the record it reaches is judged where its name was bound]; it takes no `{member}` | A member given to a join or an absent step, which bind no name. |
@@ -633,6 +634,7 @@ What a refusal is about.
 | `text_weight_range` | — | `text_weight` must be above 0 and at most 1000000 | A `text_weight` out of range. |
 | `total_with_aggregate` | — | `total` counts the records a page lists; an `aggregate` answers groups, so give one | A `total` beside an aggregate. |
 | `vector_aimless` | `field` (FieldName), `why` (Aimless) | `{field}`'s vector {why} | A query vector with no direction to rank along. |
+| `vector_with_text` | `field` (FieldName) | `{field}`'s query is a `vector` the search brings or a `text` the lake embeds with the field's model, not both | A vector search that brings both a `vector` and a `text`. |
 | `vector_field_twice` | `field` (FieldName) | `{field}` is named twice; a search ranks a vector field once | A vector field a search names twice. |
 | `view_not_searched` | `type` (TypeName) | `{type}` is a view, and a view is not searched: its records are computed on read and no index holds them | A search of a view. |
 | `view_reads_itself` | `type` (TypeName), `chain` (Names) | view `{type}` reads itself through other views, reading {chain} in turn, so it has no records | A view that reads itself through views the reader did not check. |

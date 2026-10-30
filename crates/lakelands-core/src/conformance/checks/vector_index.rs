@@ -397,6 +397,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
     let fused = SearchMode::Vector {
         field: "w".into(),
         vector: query(0),
+        text: None,
         weight: None,
         also: vec![VectorTerm {
             field: "v".into(),
