@@ -2119,7 +2119,10 @@ an empty set admits nothing; a field named both in `only` and in
 `only_any` is a grant that cannot be applied, since the two would say
 two things of one field; a rename that joins two names keeps the values
 both sets hold. `describe` tells the holder its sets in `may.only_any`
-(lakelands#1588).
+(lakelands#1588). A proposal made under a set is accepted only by a
+reviewer whose own pair or set on the field holds every value of it: a
+reviewer of one of the values would otherwise apply a change to records
+of another it does not see.
 
 **Why.** A host often admits a principal to the records of several
 owners, a manager to a team's, and a grant of one value cannot say
@@ -2134,6 +2137,8 @@ A grant that admits only some records of a type may hold
 records then refuses as invalid, naming the type: a count, `total`, the
 count of the retired, a sum, a group, a pattern's aggregate, and any
 view that reads the type, kept or not, at any depth of its sources. A
+link type whose end the grant narrows is narrowed with it, so a count
+of its links or a view over them refuses alike. A
 read that answers records, `get`, `find` and a search, is answered as
 without it. On a type the grant does not narrow it changes nothing
 (lakelands#1590).

@@ -719,9 +719,10 @@ impl Sight<'_> {
         };
         let value = t.fields.iter().find(|f| f.name.as_str() == "value");
         let writes = value.is_some_and(|f| field_access(who, t, f).writes());
+        let text = |t: &str| Some(lakelands_api::Value::String(t.to_owned()));
         let admits = |(f, v): &(FieldName, lakelands_api::Value)| match f.as_str() {
-            "key" => v.as_str() == Some(s.key.as_str()),
-            "group" => v.as_str().is_some() && v.as_str() == s.group.as_deref(),
+            "key" => crate::rights::holds_value(text(&s.key).as_ref(), v),
+            "group" => crate::rights::holds_value(s.group.as_deref().and_then(text).as_ref(), v),
             _ => false,
         };
         writes && crate::rights::own_only(who, &ty).iter().all(admits)

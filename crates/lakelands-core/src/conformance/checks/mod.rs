@@ -932,6 +932,7 @@ pub const ALL: &[Check] = &[
     rerank::RERANK_REORDERS_THE_WINDOW,
     rerank::RERANK_ONE_WINDOW,
     rerank::RERANK_ONE_WINDOW_ONLY,
+    rerank::RERANK_ONLY_ANY,
     rerank::RERANK_RANKS_AGAINST,
     rerank::RERANK_PAGES_WITHOUT_EMBEDDING,
     rerank::RERANK_SEES_ONLY_WHAT_ITS_READER_READS,

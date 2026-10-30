@@ -30,7 +30,7 @@ check!(
 
 check!(
     ONLY_SEARCH = a_search_finds_only_admitted_records,
-    "051: a lexical, a vector and a hybrid search by a holder of `only` find only its admitted records, however they rank; a search as of a position keeps a candidate only where it is admitted then and at the head, a link by its ends, under the grant followed to the head, so a field renamed since changes nothing"
+    "051, extended (lakelands#1588): a lexical, a vector and a hybrid search by a holder of `only`, or of an `only_any` set naming its value among others, find only its admitted records, however they rank; a search as of a position keeps a candidate only where it is admitted then and at the head, a link by its ends, under the grant followed to the head, so a field renamed since changes nothing"
 );
 
 check!(
@@ -50,7 +50,7 @@ check!(
 
 check!(
     ONLY_SCHEMA = a_holder_of_only_changes_no_shape,
-    "051: `declare`, `apply`, `recompute`, `add_field`, `migrate`, `migrate_apply`, `migrate_value_type`, `migrate_value_type_apply`, the proposal of a declaration or a migration of a type or a value type, and `accept` and `reject` of a schema proposal are refused to a principal holding `only` on any type, appending nothing, and a migration's proposal, of a type or a value type, is not listed to it"
+    "051: `declare`, `apply`, `recompute`, `add_field`, `migrate`, `migrate_apply`, `migrate_value_type`, `migrate_value_type_apply`, the proposal of a declaration or a migration of a type or a value type, and `accept` and `reject` of a schema proposal are refused to a principal holding `only`, or an `only_any` set (lakelands#1588), on any type, appending nothing, and a migration's proposal, of a type or a value type, is not listed to it"
 );
 
 check!(
@@ -299,31 +299,35 @@ async fn a_search_finds_only_admitted_records(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, false).await?;
     // With `restricted`, a fused search at the head would rank unread.
-    let alice = alice(store.as_ref(), json!({"restricted": true}));
-    let (cat, alice) = (&l.cat, &alice);
-    let search = |what: &str, mode: &str, at: Option<Position>| {
+    // Her `only`, and a set that admits her as one of two owners
+    // (lakelands#1588), answer alike.
+    let only = alice(store.as_ref(), json!({"restricted": true}));
+    let set = json!({"claim": {"only_any": {"owner": ["alice", "carol"]}}});
+    let set = json!({"default": "read", "restricted": true, "types": set});
+    let set = holder(store.as_ref(), "alice", set);
+    let cat = &l.cat;
+    let search = |alice: &Principal, what: &str, mode: &str, at: Option<Position>| {
         let mut s: Value = serde_json::from_str(mode).expect("a search reads");
         (s["type"], s["as_of"]) = (json!("claim"), json!(at));
-        let what = format!("alice's {what} search as of {at:?}");
-        async move { Ok::<_, Failure>(cat.search(alice, de(s)).await.must(&what)?.data) }
+        let grant = serde_json::to_string(&alice.grants.types).unwrap_or_default();
+        let what = format!("alice's {what} search as of {at:?} under {grant}");
+        let alice = alice.clone();
+        async move { Ok::<_, Failure>((cat.search(&alice, de(s)).await.must(&what)?.data, what)) }
     };
     let rows = SEARCHES.lines().map(str::trim).filter(|r| !r.is_empty());
     let rows: Vec<Vec<&str>> = rows.map(|r| r.split(" | ").collect()).collect();
     let mut wrong = Vec::new();
-    for row in &rows {
-        let hits = search(row[0], row[1], None).await?;
-        if hit_keys(&hits) != row[2] {
-            wrong.push(format!(
-                "{}: `{}`, not `{}`",
-                row[0],
-                hit_keys(&hits),
-                row[2]
-            ));
-        }
-        // Bob's `c2` moves no score: `c3` is second of alice's vectors.
-        let c3 = hits.hits.iter().find(|h| h.record.key.as_str() == "c3");
-        if row[0] == "hybrid" && c3.is_none_or(|h| h.score != 1.0 / 61.0) {
-            wrong.push(format!("hybrid: `c3` scores {c3:?}, not 1/61"));
+    for alice in [&only, &set] {
+        for row in &rows {
+            let (hits, what) = search(alice, row[0], row[1], None).await?;
+            if hit_keys(&hits) != row[2] {
+                wrong.push(format!("{what}: `{}`, not `{}`", hit_keys(&hits), row[2]));
+            }
+            // Bob's `c2` moves no score: `c3` is second of alice's vectors.
+            let c3 = hits.hits.iter().find(|h| h.record.key.as_str() == "c3");
+            if row[0] == "hybrid" && c3.is_none_or(|h| h.score != 1.0 / 61.0) {
+                wrong.push(format!("{what}: `c3` scores {c3:?}, not 1/61"));
+            }
         }
     }
     // `c3` handed to bob, then `owner` renamed: as of before the handover
@@ -331,27 +335,24 @@ async fn a_search_finds_only_admitted_records(store: Store) -> Held {
     let handed = l.upsert("claim", "c3", json!({"owner": "bob"})).await?;
     let before = Position(handed.position().0 - 1);
     migrate(&l, claim_with("holder"), true).await?;
-    for row in &rows {
-        let hits = search(row[0], row[1], Some(before)).await?;
-        if hit_keys(&hits) != row[3] {
+    for alice in [&only, &set] {
+        for row in &rows {
+            let (hits, what) = search(alice, row[0], row[1], Some(before)).await?;
+            if hit_keys(&hits) != row[3] {
+                wrong.push(format!("{what}: `{}`, not `{}`", hit_keys(&hits), row[3]));
+            }
+        }
+        // A link is judged by its ends at the head too.
+        let link = json!({"type": "sys.link.claim.on_trip", "mode": "lexical", "text": "trip",
+                          "as_of": before});
+        let hits = cat.search(alice, de(link));
+        let hits = hits.await.must("alice's search of the links")?;
+        if hit_keys(&hits.data) != "c1:t1" {
             wrong.push(format!(
-                "{} as of before: `{}`, not `{}`",
-                row[0],
-                hit_keys(&hits),
-                row[3]
+                "the links as of before: `{}`",
+                hit_keys(&hits.data)
             ));
         }
-    }
-    // A link is judged by its ends at the head too.
-    let link = json!({"type": "sys.link.claim.on_trip", "mode": "lexical", "text": "trip",
-                      "as_of": before});
-    let hits = cat.search(alice, de(link));
-    let hits = hits.await.must("alice's search of the links")?;
-    if hit_keys(&hits.data) != "c1:t1" {
-        wrong.push(format!(
-            "the links as of before: `{}`",
-            hit_keys(&hits.data)
-        ));
     }
     ensure!(
         wrong.is_empty(),
@@ -1067,6 +1068,14 @@ async fn a_holder_of_only_changes_no_shape(store: Store) -> Held {
     )?;
     let rejected = cat.reject(&alice, &proposals[0], why()).await;
     not_granted("`reject` of a declaration", rejected)?;
+    // A set changes no shape either (lakelands#1588).
+    let set = json!({"claim": {"only_any": {"owner": ["alice", "bob"]}}});
+    let set = json!({"default": "write", "schema": true, "review": true, "types": set});
+    let dave = holder(store.as_ref(), "dave", set);
+    let mine = json!({"declare": "type", "name": "mine", "fields": [{"name": "n", "type": {"kind": "text"}}]});
+    not_granted("`declare` by a set", cat.declare(&dave, de(mine)).await)?;
+    let accepted = cat.accept(&dave, &proposals[0]).await;
+    not_granted("`accept` of a declaration by a set", accepted)?;
     head_unmoved(store.as_ref(), head, "every schema write by alice").await?;
     let listed = cat.proposals(&alice, Default::default());
     let listed = listed.await.must("alice's listing")?;
@@ -2078,7 +2087,7 @@ async fn a_set_admits_the_records_holding_one_of_its_values(store: Store) -> Hel
 
 check!(
     WHOLE_SETS_ONLY = a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole,
-    "006 (lakelands#1590): a grant that admits only some records of a type, by `only` or `only_any`, and holds `whole_sets_only` there refuses a count, `total`, a sum, a group, a pattern's aggregate and a view over the type, kept or not, a view over such a view too, saying the read needs every record of the type and the reader may read only some; `find`, `get` and a search of the admitted records are answered as without it; without it the same reads answer the admitted part, and on a type it does not narrow it changes nothing"
+    "006 (lakelands#1590): a grant that admits only some records of a type, by `only` or `only_any`, and holds `whole_sets_only` there refuses a count, `total`, a sum, a group, a pattern's aggregate and a view over the type, kept or not, a view over such a view too, and a count of a link type whose end it narrows and a view over that link type, saying the read needs every record of the type and the reader may read only some; `find`, `get` and a search of the admitted records are answered as without it; without it the same reads answer the admitted part, and on a type it does not narrow it changes nothing"
 );
 
 /// The reads a holder of `whole_sets_only` on `claim` is refused (`-`
@@ -2093,6 +2102,8 @@ const WHOLE_SETS: &str = r#"
     spend | a kept view grouped by the field | {} | -
     all_spend | a kept view of every record | {} | -
     top | a view over a view | {} | -
+    sys.link.claim.on_trip | a count of the links its ends narrow | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | -
+    trips | a view over those links | {} | -
 "#;
 
 async fn a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole(store: Store) -> Held {
@@ -2109,6 +2120,10 @@ async fn a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole(store: Stor
         &[("n", "count()")],
     ))
     .await?;
+    let links = "sys.link.claim.on_trip";
+    let n = vec![field("n", Number)];
+    l.declare(view_of("trips", links, &[], n, &[("n", "count()")]))
+        .await?;
     let refused =
         "refused: this read needs every record of `claim`; you may read only some of them";
     let rows = WHOLE_SETS.replace("| -\n", &format!("| {refused}\n"));

@@ -413,6 +413,23 @@ impl Admit {
         }
     }
 
+    /// Whether every record the pairs `only` select is one this admits:
+    /// each pair of this is named in `only` by a value it holds, or by a
+    /// set of values it holds every one of.
+    pub fn within(&self, only: &BTreeMap<FieldName, Value>) -> bool {
+        let named = |(f, v): &(FieldName, Value)| only.get(f).is_some_and(|o| Self::inside(o, v));
+        self.pairs().is_some_and(|p| p.iter().all(named))
+    }
+
+    /// Whether `selected`, a value or a set of values a selection names,
+    /// holds only values the pair value `held` admits.
+    pub fn inside(selected: &Value, held: &Value) -> bool {
+        match selected.as_array() {
+            Some(set) => set.iter().all(|s| holds_value(Some(s), held)),
+            None => holds_value(Some(selected), held),
+        }
+    }
+
     /// The pairs as an engine's scan selects by them: `equal`, each pair
     /// of one value, and `equal_any`, a tuple for each choice of one value
     /// from every set; none where no record is admitted.
@@ -492,7 +509,7 @@ pub(crate) fn admitted(pairs: &[(FieldName, Value)], fields: &BTreeMap<FieldName
 
 /// Whether a field holding `held` holds a pair's value: the value, or, of a
 /// set, one of its texts.
-fn holds_value(held: Option<&Value>, v: &Value) -> bool {
+pub(crate) fn holds_value(held: Option<&Value>, v: &Value) -> bool {
     match v {
         Value::Array(set) => held.is_some_and(|h| h.is_string() && set.contains(h)),
         v => held == Some(v),
@@ -755,11 +772,21 @@ impl Sight<'_> {
             if !seen.insert(ty.clone()) {
                 continue;
             }
+            // A link type answers only the links whose held ends are
+            // admitted, so it is narrowed by them, and their own setting
+            // holds over it too.
+            let find = &|n: &TypeName| self.force.ty(n);
+            let decl = self.force.ty(&ty);
+            let ends: Vec<TypeName> = decl.map_or_else(Vec::new, |d| {
+                let held = held_ends(who, d, find).into_iter();
+                held.map(|(_, end)| end.clone()).collect()
+            });
             let whole = who.grants.types.get(&ty).is_none_or(|t| !t.whole_sets_only);
-            if !whole && !own_only(who, &ty).is_empty() {
+            if !whole && (!own_only(who, &ty).is_empty() || !ends.is_empty()) {
                 return Err(Error::invalid(Case::WholeSetNeeded { ty }));
             }
-            if let Some(v) = self.force.ty(&ty).and_then(|d| d.view.as_deref()) {
+            next.extend(ends);
+            if let Some(v) = decl.and_then(|d| d.view.as_deref()) {
                 next.push(v.source.clone());
                 next.extend(v.merge.iter().map(|m| m.source.clone()));
             }
