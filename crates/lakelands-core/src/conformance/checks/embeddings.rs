@@ -12,9 +12,11 @@
 
 use std::sync::atomic::AtomicBool;
 
+use lakelands_api::VerbName;
+
 use super::search::doc_search;
 use crate::conformance::backing::{
-    EMBED_MODEL, UNREACHABLE, embedded, plug_text, release, unplug_text,
+    EMBED_MODEL, EXECUTOR, UNREACHABLE, embedded, executed, plug_text, release, unplug_text,
 };
 use crate::conformance::fixture::{
     derived, doors, get_at, owner, read, recorded_outputs, source_record,
@@ -1731,7 +1733,14 @@ check!(
 check!(
     EMBED_DEFERRED_UPDATE =
         a_record_written_again_while_its_deferred_embedding_is_made_ends_with_its_latest_text,
-    "022, extended: a record written again with `defer_computed_fields` holds no vector of its earlier text while its new text's embedding is made, and one written again while that embedding is in flight ends with the vector of its latest text, though that vector was recorded before the earlier text's answer",
+    "022, extended: a record written again with `defer_computed_fields` holds no vector of its earlier text while its new text's embedding is made, and one written again while that embedding is in flight ends with the vector of its latest text, though that vector was recorded before the earlier text's answer, or its latest text's call waited behind the one in flight",
+    embedding
+);
+
+check!(
+    EMBED_DEFERRED_VERB =
+        a_deferred_verb_call_answers_before_its_embedding_and_an_external_one_waits,
+    "022, extended: a call of a verb that writes made with `defer_computed_fields` answers at its own position, the embedding of the text it wrote holding no value and no error there, and a task of the lake's own makes it; a call that hands an external verb to its executor waits for the executor as without the option and answers with its output",
     embedding
 );
 
@@ -1820,6 +1829,20 @@ async fn a_write_that_defers_its_computed_fields_answers_before_them(store: Stor
         "while its embedding is made, a lexical search finds `n1` and a vector search ranks \
          `n0` alone; they ranked {found:?} and {near:?}"
     );
+    let filter = format!("title = '{text}'");
+    let rows = l.all_found("note", find_where(&filter)).await?;
+    let c = store.vector_coverage(&note).await;
+    let due: Vec<u64> = c
+        .must("asking vector_coverage of `note`")?
+        .iter()
+        .map(|c| c.due)
+        .collect();
+    ensure!(
+        matches!(rows.as_slice(), [r] if r.key.as_str() == "n1") && due == [1],
+        "while its embedding is made, a find by its title answers `n1` alone and \
+         `vector_coverage` counts it due; they answered {:?} and due {due:?}",
+        rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>()
+    );
     release(text);
     let c = settled(store.as_ref()).await?;
     let near = ranked(&l, along).await?;
@@ -1865,14 +1888,136 @@ async fn a_record_written_again_while_its_deferred_embedding_is_made_ends_with_i
         "the answer for {stale:?} was never recorded"
     );
     let got = vec_of(store.as_ref(), "n1").await?;
-    let north = got
-        .as_ref()
-        .and_then(Value::as_array)
-        .map(|a| a.iter().map(Value::as_f64).collect::<Vec<_>>());
     ensure!(
-        north == Some(vec![Some(0.0), Some(1.0)]),
+        is_north(&got),
         "`n1` ends with the vector of its latest text {latest:?}, (0, 1), not that of \
          {stale:?}, whose answer was recorded after; it reads {got:?}"
+    );
+    // The latest text is new, so its own call waits behind the one in flight.
+    let (stale, latest) = ("held-queued pier", "north pier, new");
+    deferred(&l, "n2", json!({"title": stale})).await?;
+    ensure!(
+        came(|| async { embedded(stale) == 1 }).await,
+        "the deferred embedding of `n2` never reached the backend"
+    );
+    deferred(&l, "n2", json!({"title": latest})).await?;
+    release(stale);
+    let c = settled(store.as_ref()).await?;
+    let got = vec_of(store.as_ref(), "n2").await?;
+    ensure!(
+        c.due == 0 && is_north(&got) && embedded(latest) == 1,
+        "`n2`, written again with a text never embedded while its earlier text's call was \
+         in flight, ends with the vector of {latest:?}, (0, 1), made once; it reads {got:?}, \
+         {} records wait and the text was sent {} times",
+        c.due,
+        embedded(latest)
+    );
+    Ok(())
+}
+
+/// The vector (0, 1), the suite's embedding of a text beginning `north`.
+fn is_north(v: &Option<Value>) -> bool {
+    v.as_ref()
+        .and_then(Value::as_array)
+        .is_some_and(|a| a.iter().map(Value::as_f64).collect::<Vec<_>>() == [Some(0.0), Some(1.0)])
+}
+
+async fn a_deferred_verb_call_answers_before_its_embedding_and_an_external_one_waits(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(quays()).await?;
+    let text = "held-verb quay";
+    l.cat
+        .declare(
+            &l.own,
+            write_verb("retitle", "note", "title", &format!("'{text}'")),
+        )
+        .await
+        .must("declaring `retitle`")?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "ring", "on": "note", "risk": "low",
+                          "effect": "external", "executor": EXECUTOR}),
+    )
+    .await?;
+    l.upsert("note", "n1", json!({"title": "Plain quay"}))
+        .await?;
+    let opts = WriteOpts {
+        defer_computed_fields: true,
+        ..WriteOpts::default()
+    };
+    let (n1, note) = (RecordKey::from("n1"), TypeName::from("note"));
+    let (retitle, ring) = (VerbName::from("retitle"), VerbName::from("ring"));
+    let called = l
+        .cat
+        .call(&l.own, &retitle, Some(&n1), patch(json!({})), opts.clone());
+    let at = called
+        .await
+        .must("calling `retitle` on `n1` deferred")?
+        .position();
+    let got = l.cat.get(&l.own, &note, get_at("n1", Some(at)));
+    let r = got.await.must("reading `n1` at the call's answer")?.data;
+    let (vec, error) = (
+        value(&r, "vec"),
+        r.meta.get("vec").and_then(|m| m.error.clone()),
+    );
+    ensure!(
+        value(&r, "title") == Some(&json!(text))
+            && vec.is_none_or(Value::is_null)
+            && error.is_none(),
+        "as of its answer, a deferred call of a verb that writes the embedded text reads \
+         with that text and a `vec` holding no value and no error; it reads {:?}, `vec` \
+         {vec:?}, error {error:?}",
+        value(&r, "title")
+    );
+    release(text);
+    let c = settled(store.as_ref()).await?;
+    let vec = vec_of(store.as_ref(), "n1").await?;
+    ensure!(
+        c.due == 0 && is_east(&vec),
+        "the lake makes the deferred call's embedding with no later write: `vec` of `n1` \
+         reads (1, 0); it reads {vec:?}, {} records wait",
+        c.due
+    );
+    let bell = "held-bell";
+    l.upsert("note", bell, json!({"title": "Bell quay"}))
+        .await?;
+    let answered = AtomicBool::new(false);
+    let ring: Caller<'_, Result<Option<Outcome>, Failure>> = Box::pin(async {
+        let key = RecordKey::from(bell);
+        let called = l
+            .cat
+            .call(&l.own, &ring, Some(&key), patch(json!({})), opts);
+        let outcome = called.await.must("calling `ring` deferred");
+        answered.store(true, Ordering::Release);
+        outcome.map(Some)
+    });
+    let held: Caller<'_, Result<Option<Outcome>, Failure>> = Box::pin(async {
+        ensure!(
+            came(|| async { executed(bell) == 1 }).await,
+            "the deferred call of the external `ring` never reached its executor"
+        );
+        let early = answered.load(Ordering::Acquire);
+        release(bell);
+        ensure!(
+            !early,
+            "a deferred call of an external verb waits for its executor as without the \
+             option; it answered while the executor held the call"
+        );
+        Ok(None)
+    });
+    let [rung, held] = <[_; 2]>::try_from(join_all(vec![ring, held]).await)
+        .map_err(|_| Failure::new("two callers answer two outcomes"))?;
+    held?;
+    let output = match rung? {
+        Some(Outcome::Applied { output, .. }) => output,
+        other => return Err(Failure::new(format!("`ring` answered {other:?}"))),
+    };
+    let want = json!({"done": "ring", "record": bell});
+    ensure!(
+        output.as_ref() == Some(&want),
+        "a deferred call of an external verb answers with its executor's output {want}; it \
+         answered {output:?}"
     );
     Ok(())
 }

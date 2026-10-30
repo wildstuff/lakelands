@@ -272,9 +272,8 @@ impl Doors {
         let (outcome, own) = self
             .write(who, move |c| owing(|| c.record(&write, opts)))
             .await?;
-        let own = self.deferred(defer, own);
         let by = MadeDue::Call { keyed: false };
-        self.handed(who, ((outcome, None), own), by).await
+        self.handed(who, ((outcome, None), own), (by, defer)).await
     }
 
     /// What the bound reranker scores a window at, by key. A read: nothing
@@ -430,10 +429,7 @@ impl Doors {
             };
             let by = MadeDue::Call { keyed: false };
             answers.push(match answer {
-                Ok((outcome, own)) => {
-                    let own = self.deferred(defer, own);
-                    self.handed(&who, ((outcome, None), own), by).await
-                }
+                Ok((outcome, own)) => self.handed(&who, ((outcome, None), own), (by, defer)).await,
                 Err(e) => Err(e),
             });
         }
@@ -452,17 +448,6 @@ impl Doors {
         answers.remove(0)
     }
 
-    /// What a write waits for of what it made due: nothing where it was
-    /// made with `defer_computed_fields`, whose calls a task of the lake's
-    /// own makes ([`crate::backed::apart`]).
-    fn deferred(&self, defer: bool, own: BTreeSet<Position>) -> BTreeSet<Position> {
-        if !defer {
-            return own;
-        }
-        crate::backed::apart(&self.lake, own);
-        BTreeSet::new()
-    }
-
     /// Make the calls of backed functions the write made due, and answer
     /// its outcome at the position of the last output recorded, from which
     /// the filled fields are visible. Of what the write set off, it names
@@ -472,12 +457,19 @@ impl Doors {
     /// only after a drain that did not fail: after one that did, the
     /// writer may be behind and the executor's answer could not be
     /// recorded, so nothing is handed and [`writes::not_handed`] answers.
+    /// With `defer` (`defer_computed_fields`), a write that hands nothing
+    /// out waits for none of its calls: a task of the lake's own makes them
+    /// ([`crate::backed::apart`]). One that hands a verb out waits as
+    /// without it.
     async fn handed(
         &self,
         who: &Principal,
-        ((mut outcome, external), own): ((Outcome, Option<External>), BTreeSet<Position>),
-        by: MadeDue,
+        ((mut outcome, external), mut own): ((Outcome, Option<External>), BTreeSet<Position>),
+        (by, defer): (MadeDue, bool),
     ) -> Result<Outcome> {
+        if defer && external.is_none() {
+            crate::backed::apart(&self.lake, std::mem::take(&mut own));
+        }
         let last = crate::backed::settle(&self.lake, &own).await;
         let last = match &external {
             Some(_) => last.map_err(|e| writes::not_handed(e, true, by))?,
@@ -509,21 +501,14 @@ impl Doors {
     /// hand-out and the recording of the answer, run in a task of its own
     /// that the caller awaits: a caller who goes away, as a request whose
     /// client closed its connection does, does not stop it between the
-    /// call's append and its answer's recording. With `defer`, one that
-    /// hands nothing out waits for none of its calls ([`Self::deferred`]).
-    async fn detached<F>(
-        &self,
-        who: &Principal,
-        (by, defer): (MadeDue, bool),
-        f: F,
-    ) -> Result<Outcome>
+    /// call's append and its answer's recording.
+    async fn detached<F>(&self, who: &Principal, by: (MadeDue, bool), f: F) -> Result<Outcome>
     where
         F: FnOnce(&Call<'_>) -> Result<(Outcome, Option<External>)> + Send + 'static,
     {
         let (doors, who) = (self.clone(), who.clone());
         let task = tokio::spawn(async move {
             let ((outcome, external), own) = doors.write(&who, |c| owing(|| f(c))).await?;
-            let own = doors.deferred(defer && external.is_none(), own);
             doors.handed(&who, ((outcome, external), own), by).await
         });
         task.await.unwrap_or_else(|e| Err(exec::stopped(&e)))
@@ -536,7 +521,7 @@ impl Doors {
     {
         let (outcome, own) = self.write(who, |c| owing(|| f(c))).await?;
         let by = MadeDue::Call { keyed: false };
-        self.handed(who, ((outcome, None), own), by).await
+        self.handed(who, ((outcome, None), own), (by, false)).await
     }
 
     /// Hand an external verb to its executor and record the answer; the

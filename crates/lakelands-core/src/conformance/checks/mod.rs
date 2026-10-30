@@ -782,6 +782,7 @@ pub const ALL: &[Check] = &[
     embeddings::EMBED_SWEEP_REKEYED,
     embeddings::EMBED_DEFERRED,
     embeddings::EMBED_DEFERRED_UPDATE,
+    embeddings::EMBED_DEFERRED_VERB,
     rebuild::INDEXES_AFTER_REBUILD,
     rebuild::ONE_JSON_FORM,
     ingest::DUPLICATE_ACROSS_WINDOWS,
