@@ -985,6 +985,12 @@ catalog! {
         } => "{part} is damaged[ at position {position}]: {flaw}",
         /// The storage failed.
         Storage { doing: Doing, part: Part, detail: Detail } => "the storage failed while {doing} {part}: {detail}",
+        /// The disk, the volume or the database server written to had no room left: free space there, then repeat what failed, a writer's open by opening the lake again. A writer's open refused with it, and not with it as the cause of `not_folded`, appended nothing, so a lake that owed an upgrade still owes it.
+        NoRoom {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            part: Option<Part>,
+            detail: Detail,
+        } => "there is no room left to write [{part}|to the lake's storage]: {detail}; free space there, then repeat what failed: for a writer's open, open the lake again",
         /// An append to the log failed; what it left, and why the cut after it failed where it did.
         AppendFailed {
             detail: Detail,

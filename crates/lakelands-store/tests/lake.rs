@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::error::Case;
-use lakelands_api::event::{Digest, EventBody, SegmentDigest};
+use lakelands_api::event::{Digest, EventBody, OLDEST_LOG_FORMAT, SegmentDigest};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
     Assignment, Authority, FieldDecl, FieldType, RelationDecl, Risk, StorageKind, TypeDecl,
@@ -897,13 +897,13 @@ async fn lake_continued_in(formats: &[u32]) -> (String, (Position, Digest)) {
 /// A lake the release before wrote whole, in format 14, written below the
 /// store: its first event says that format, and so do its lease's.
 fn lake_of_format_14() -> String {
-    lake_of_format_14_at(&opener(), 1)
+    lake_of_format_at(&opener(), 1, OLDEST_LOG_FORMAT, vec![])
 }
 
-/// [`lake_of_format_14`] through `opener`, its lease at fence `fence`: the
-/// release before's writers took the leases before it.
-fn lake_of_format_14_at(opener: &MemoryOpener, fence: u64) -> String {
-    use lakelands_api::event::OLDEST_LOG_FORMAT as OLD;
+/// A lake of format `old` through `opener`, as [`lake_of_format_14`] is,
+/// its lease at fence `fence`: the release before's writers took the
+/// leases before it. The events `then` follow its lease, in that format.
+fn lake_of_format_at(opener: &MemoryOpener, fence: u64, old: u32, then: Vec<EventBody>) -> String {
     let lake = name();
     let engine = opener
         .open(&Location::memory(lake.as_str()), OpenMode::Create)
@@ -916,17 +916,17 @@ fn lake_of_format_14_at(opener: &MemoryOpener, fence: u64) -> String {
     let id = &lake.as_str().into();
     let made = lakelands_store::log::Draft::system(
         lakelands_api::Timestamp(1),
-        EventBody::LakeCreated { format: OLD },
+        EventBody::LakeCreated { format: old },
     );
     let (_, made) = lakelands_store::log::seal(id, Position(0), &Digest::zero(), 0, made);
     let mut value: serde_json::Value = serde_json::from_slice(&made.bytes).unwrap();
-    value["body"]["format"] = json!(OLD);
+    value["body"]["format"] = json!(old);
     let made = in_format(
         lakelands_api::engine::CanonicalEvent {
             bytes: lakelands_core::canonical::to_vec(&value),
             ..made
         },
-        OLD,
+        old,
     );
     let taken = lakelands_store::log::Draft::system(
         lakelands_api::Timestamp(2),
@@ -936,9 +936,15 @@ fn lake_of_format_14_at(opener: &MemoryOpener, fence: u64) -> String {
         },
     );
     let (_, taken) = lakelands_store::log::seal(id, Position(1), &made.hash, lease.fence, taken);
-    engine
-        .append(&lease, &[made, in_format(taken, OLD)])
-        .unwrap();
+    let mut stored = vec![made, in_format(taken, old)];
+    for (body, at) in then.into_iter().zip(2..) {
+        let draft = lakelands_store::log::Draft::system(lakelands_api::Timestamp(at + 1), body);
+        let prev = &stored.last().unwrap().hash;
+        let (_, next) =
+            lakelands_store::log::seal(id, Position(at as u64), prev, lease.fence, draft);
+        stored.push(in_format(next, old));
+    }
+    engine.append(&lease, &stored).unwrap();
     engine.release_lease(&lease).unwrap();
     lake
 }
@@ -1014,6 +1020,43 @@ async fn a_lake_of_the_format_before_is_upgraded_by_a_writer_and_refused_to_a_re
     assert_eq!(markers.count(), 1);
 }
 
+/// A writer's open that owes an upgrade and that a forgetting's owed
+/// rebuild refuses appends nothing: the lake stays in its format, owing
+/// the upgrade, and the open after the rebuild can run upgrades it once
+/// (lakelands#1564).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upgrading_open_an_owed_rebuild_refuses_appends_nothing() {
+    use lakelands_api::event::LOG_FORMAT_VERSION as NEW;
+    use lakelands_core::conformance::checks::{Fails, failing};
+    let old = NEW - 1;
+    let forgot = EventBody::SourceForgotten {
+        source: "crm".into(),
+        keys: vec![],
+    };
+    let lake = lake_of_format_at(&opener(), 1, old, vec![forgot]);
+    let mut at = Location::memory(lake.as_str());
+    at.limits.forget_rebuild = true;
+    let fails: Fails = Arc::default();
+    let faulty = Seams {
+        engines: vec![failing(&fails)(Arc::new(opener()))],
+        ..Seams::default()
+    };
+    let below = || opener().open(&at, OpenMode::Read)?.read(Position(0), 100);
+    let before = below().unwrap().len();
+    fails[1].store(1, Ordering::SeqCst);
+    let refused = lakelands_store::open(at.clone(), faulty, OpenMode::Write).await;
+    assert!(refused.is_err() && fails[1].load(Ordering::SeqCst) == 0);
+    assert_eq!(below().unwrap().len(), before, "a refused open appended");
+    let written = lakelands_store::written_in(at.clone(), seams()).await;
+    assert_eq!(written.unwrap(), Some(old));
+    let store = lakelands_store::open(at, seams(), OpenMode::Write).await;
+    let log = lakelands_core::conformance::fixture::log_events(store.unwrap().as_ref()).await;
+    let upgraded = (log.unwrap().into_iter()).filter(
+        |e| matches!(e.body, EventBody::LakeUpgraded { from, to } if from == old && to == NEW),
+    );
+    assert_eq!(upgraded.count(), 1);
+}
+
 /// An opener over the tests' own that, the first time the store asks a
 /// log's ends, answers them and then lets a whole writer's open of the
 /// same lake run before the asking open goes on: another process that
@@ -1076,7 +1119,7 @@ fn export_below(opener: &MemoryOpener, lake: &str, dir: &std::path::Path) {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_older_export_with_fences_above_one_imports_and_imports_again() {
     let before = MemoryOpener::new();
-    let lake = lake_of_format_14_at(&before, 3);
+    let lake = lake_of_format_at(&before, 3, OLDEST_LOG_FORMAT, vec![]);
     let root = std::env::temp_dir().join(format!("lakelands-{lake}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     export_below(&before, &lake, &root.join("first"));

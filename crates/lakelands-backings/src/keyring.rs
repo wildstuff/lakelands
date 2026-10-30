@@ -109,7 +109,7 @@ impl FileKeyring {
             fs::rename(&next, path)?;
             fs::File::open(&self.dir)?.sync_all()
         })();
-        written.map_err(|e| failed(Doing::Write, Detail::io(&e)))
+        written.map_err(|e| lakelands_core::io_failed(Doing::Write, Part::File, &e))
     }
 
     /// Change one lake's file under the lock and write it back.
