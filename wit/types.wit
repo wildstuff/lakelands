@@ -743,12 +743,14 @@ interface types {
         dir: direction,
     }
 
-    enum agg-func { count, sum, min, max, avg }
+    enum agg-func { count, sum, min, max, avg, first, last }
 
     record agg-measure {
         name: field-name,
         %func: agg-func,
         field: option<field-name>,
+        /// For `first` and `last`: the field whose order picks the member.
+        by: option<field-name>,
     }
 
     record aggregate {

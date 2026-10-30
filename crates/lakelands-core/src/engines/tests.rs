@@ -1,5 +1,6 @@
 use super::*;
 use crate::conformance::fixture::order;
+use crate::conformance::fixture::stored_record;
 use serde_json::json;
 
 #[test]
@@ -103,16 +104,13 @@ fn a_scan_sorted_by_keys_answers_what_cmp_places_orders() {
     let records: Vec<StoredRecord> = sort_corpus()
         .into_iter()
         .enumerate()
-        .map(|(i, v)| StoredRecord {
-            ty: TypeName::from("t"),
-            key: RecordKey::from(format!("k{:04}", (i * 37) % 1000)),
-            version: lakelands_api::Version(1),
-            fields: [(FieldName::from("v"), v)].into_iter().collect(),
-            meta: BTreeMap::new(),
-            position: lakelands_api::Position(1),
-            made: lakelands_api::Position(1),
-            retired: false,
-            restricted: false,
+        .map(|(i, v)| {
+            stored_record(
+                "t",
+                format!("k{:04}", (i * 37) % 1000),
+                [(FieldName::from("v"), v)].into_iter().collect(),
+                1,
+            )
         })
         .collect();
     for dir in [Direction::Asc, Direction::Desc] {
@@ -241,15 +239,8 @@ fn a_walk_in_index_order_answers_what_a_whole_sort_answers() {
                 fields.insert(FieldName::from("w"), json!(format!("w{}", i % 3)));
             }
             StoredRecord {
-                ty: TypeName::from("t"),
-                key: RecordKey::from(format!("k{:04}", (i * 37) % 1009)),
-                version: lakelands_api::Version(1),
-                fields,
-                meta: BTreeMap::new(),
-                position: lakelands_api::Position(1),
-                made: lakelands_api::Position(1),
                 retired: i % 11 == 0,
-                restricted: false,
+                ..stored_record("t", format!("k{:04}", (i * 37) % 1009), fields, 1)
             }
         })
         .collect();
@@ -305,15 +296,8 @@ fn a_walk_at_an_earlier_position_answers_what_a_whole_sort_there_answers() {
         }
         fields.insert(FieldName::from("w"), json!(format!("w{}", i % 3)));
         StoredRecord {
-            ty: TypeName::from("t"),
-            key: RecordKey::from(format!("k{:04}", (i * 37) % 1009)),
-            version: lakelands_api::Version(1),
-            fields,
-            meta: BTreeMap::new(),
-            position: lakelands_api::Position(1),
-            made: lakelands_api::Position(1),
             retired,
-            restricted: false,
+            ..stored_record("t", format!("k{:04}", (i * 37) % 1009), fields, 1)
         }
     };
     let n = corpus.len() + 40;
@@ -683,17 +667,12 @@ fn a_commit_decides_again_only_the_types_its_puts_move_and_as_the_whole_decides(
     let set = |of: &str, filter: &str| {
         decl(json!({"declare": "object_set", "name": "s", "of": of, "where": filter}))
     };
-    let setting = StoredRecord {
-        ty: lakelands_api::seam::SETTING_TYPE.into(),
-        key: "lookup_index.w".into(),
-        version: lakelands_api::id::Version(1),
-        fields: serde_json::from_value(json!({"key": "lookup_index.w", "value": ["f"]})).unwrap(),
-        meta: Default::default(),
-        position: Position(1),
-        made: Position(1),
-        retired: false,
-        restricted: false,
-    };
+    let setting = stored_record(
+        lakelands_api::seam::SETTING_TYPE,
+        "lookup_index.w",
+        serde_json::from_value(json!({"key": "lookup_index.w", "value": ["f"]})).unwrap(),
+        1,
+    );
     // Each moves the index of a type other than the one it declares, or,
     // declared again, of the one its last declaration named.
     let steps: Vec<(&str, Vec<Declaration>, bool)> = vec![

@@ -248,16 +248,9 @@ async fn reads(
         };
         for text in ["Ada", "Bob", "Dee", "Di", "Cy", "Rome", "Oslo", "Bonn"] {
             let search = Search {
-                ty: ty.clone(),
-                mode: SearchMode::lexical(text),
-                k: 20,
-                cursor: None,
-                filter: None,
-                rerank: None,
                 with_meta: true,
-                matches: false,
                 at,
-                text_as_of: false,
+                ..searched(ty.clone(), SearchMode::lexical(text), 20)
             };
             let r = l.cat.search(&l.own, search).await;
             push(format!("a search for {text}"), answered(r));

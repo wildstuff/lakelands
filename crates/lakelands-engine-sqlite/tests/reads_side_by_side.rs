@@ -13,8 +13,8 @@ use std::time::Instant;
 
 use lakelands_api::Location;
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode, Scan};
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
-use lakelands_api::record::StoredRecord;
+use lakelands_api::id::{Position, RecordKey, TypeName};
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
 
@@ -33,17 +33,12 @@ fn a_read_answers_while_another_holds_its_transaction_open() {
     let p = engine.projection();
     p.begin().unwrap();
     for i in 0..5_000 {
-        p.put_record(&StoredRecord {
-            ty: TypeName::from("t"),
-            key: RecordKey::from(format!("k{i:05}")),
-            version: Version(1),
-            fields: serde_json::from_value(json!({"text": "words ".repeat(20)})).unwrap(),
-            meta: Default::default(),
-            position: Position(1),
-            made: Position(1),
-            retired: false,
-            restricted: false,
-        })
+        p.put_record(&stored_record(
+            "t",
+            format!("k{i:05}"),
+            serde_json::from_value(json!({"text": "words ".repeat(20)})).unwrap(),
+            1,
+        ))
         .unwrap();
     }
     p.commit(Position(1)).unwrap();

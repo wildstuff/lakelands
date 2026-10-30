@@ -20,9 +20,21 @@ fn case(view: serde_json::Value) -> Result<(), Said> {
         ("data", K::Json),
         ("open", K::Boolean),
     ];
+    let mut fields: Vec<_> = kinds.map(|(name, kind)| FieldDecl::of(name, kind)).into();
+    let buckets = [
+        ("hour", "date_bucket(due, 1h, '2026-01-01T00:00:00Z')"),
+        ("day", "date_bucket(due, 'day')"),
+        ("lot", "date_bucket(note, 'day')"),
+        ("late", "due"),
+    ];
+    for (name, expr) in buckets {
+        let mut f = FieldDecl::of(name, K::DateTime);
+        f.derived = Some(expr.into());
+        fields.push(f);
+    }
     let invoice = TypeDecl {
         name: "invoice".into(),
-        fields: kinds.map(|(name, kind)| FieldDecl::of(name, kind)).into(),
+        fields,
         ..TypeDecl::default()
     };
     let mut whole = json!({"source": "invoice", "measures": []});
@@ -60,16 +72,23 @@ fn a_view_is_kept_where_every_fold_is_a_function_of_its_values() {
         "sum(coalesce(amount, 0))",
         "min(due)",
         "max(amount) - min(if(open, amount, null))",
+        "first(note, due)",
+        "last(amount, qty) - first(data, if(open, due, null))",
     ];
     for expr in kept {
         assert_eq!(measured(&grouped, expr), Ok(()), "{expr}");
     }
     assert_eq!(measured(&[], "sum(amount) / count()"), Ok(()));
     assert_eq!(measured(&["qty", "open"], "avg(amount)"), Ok(()));
+    // An extreme is kept under one bucket of time beside its text fields.
+    for by in [&["partner", "hour"][..], &["day", "region", "partner"]] {
+        assert_eq!(measured(by, "min(amount) + last(qty, due)"), Ok(()));
+    }
 
     let adds = "it is kept where its argument is certainly a number";
-    let orders = "it is kept where its argument is certainly a number or an instant";
-    let by = "is kept only in a view grouped by text or reference fields";
+    let orders = "it is kept where what it orders by is certainly a number or an instant";
+    let by = "is kept only in a view grouped by text or reference fields, one at least";
+    let one = "and at most one bucket of time beside them";
     let refused = [
         (
             &grouped[..],
@@ -112,7 +131,32 @@ fn a_view_is_kept_where_every_fold_is_a_function_of_its_values() {
         (
             &["partner", "qty"],
             "min(due)",
-            format!("`min(due)` {by}, and `qty` is neither"),
+            format!("`min(due)` {by}, {one}, and `qty` does not fit that"),
+        ),
+        (
+            &grouped,
+            "first(amount, note)",
+            format!("`first(amount, note)` orders a text; {orders}"),
+        ),
+        (
+            &["hour"],
+            "last(amount, due)",
+            format!("`last(amount, due)` {by}, {one}, and `hour` does not fit that"),
+        ),
+        (
+            &["partner", "hour", "day"],
+            "max(amount)",
+            format!("`max(amount)` {by}, {one}, and `day` does not fit that"),
+        ),
+        (
+            &["partner", "lot"],
+            "max(amount)",
+            format!("`max(amount)` {by}, {one}, and `lot` does not fit that"),
+        ),
+        (
+            &["partner", "late"],
+            "max(amount)",
+            format!("`max(amount)` {by}, {one}, and `late` does not fit that"),
         ),
     ];
     for (by, expr, why) in refused {

@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::conformance::fixture::stored_record;
 use lakelands_api::Refusal;
 use lakelands_api::engine::{LakeEngine, OpenMode, ProjectionStore, ProjectionView};
 use lakelands_api::error::Situation;
@@ -218,17 +219,12 @@ fn refused_for_its_layout(
 
 /// A record state of `ty` at `position`, with version 1 and no flags.
 pub(super) fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {
-    StoredRecord {
-        ty: TypeName::from(ty),
-        key: RecordKey::from(key),
-        version: Version(1),
-        fields: serde_json::from_value(fields).unwrap_or_default(),
-        meta: BTreeMap::new(),
-        position: Position(position),
-        made: Position(position),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(
+        ty,
+        key,
+        serde_json::from_value(fields).unwrap_or_default(),
+        position,
+    )
 }
 
 /// A view at `as_of`, or a failure saying which view could not open.

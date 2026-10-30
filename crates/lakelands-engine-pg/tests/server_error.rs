@@ -8,8 +8,8 @@ mod common;
 
 use lakelands_api::Error;
 use lakelands_api::engine::{EngineOpener, OpenMode};
-use lakelands_api::id::{Position, Version};
-use lakelands_api::record::StoredRecord;
+use lakelands_api::id::Position;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_pg::PgOpener;
 use serde_json::json;
 
@@ -35,17 +35,12 @@ fn a_refused_statement_answers_no_detail_of_the_failing_row() {
     let p = engine.projection();
     p.begin().unwrap();
     let answer = p
-        .put_record(&StoredRecord {
-            ty: "t".into(),
-            key: "marker-key".into(),
-            version: Version(1),
-            fields: serde_json::from_value(json!({"v": "marker-value"})).unwrap(),
-            meta: Default::default(),
-            position: Position(1),
-            made: Position(1),
-            retired: false,
-            restricted: false,
-        })
+        .put_record(&stored_record(
+            "t",
+            "marker-key",
+            serde_json::from_value(json!({"v": "marker-value"})).unwrap(),
+            1,
+        ))
         .and_then(|()| p.commit(Position(1)));
     let Err(Error::Unavailable { situation }) = answer else {
         panic!("a write the server refuses is unavailable; it answered {answer:?}");

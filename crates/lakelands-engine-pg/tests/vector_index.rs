@@ -15,6 +15,7 @@ use lakelands_api::id::{Position, RecordKey, TypeName, Version};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::Declaration;
 use lakelands_core::conformance::engine::reads::nearest;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_core::engines;
 use lakelands_engine_pg::PgOpener;
 use serde_json::json;
@@ -85,31 +86,24 @@ fn declaration() -> Declaration {
 }
 
 fn record(i: u64) -> StoredRecord {
-    StoredRecord {
-        ty: TypeName::from("t"),
-        key: RecordKey::from(format!("k{i:04}")),
-        version: Version(1),
-        fields: serde_json::from_value(json!({"e": vector(i), "f": vector(i)})).unwrap(),
-        meta: Default::default(),
-        position: Position(1),
-        made: Position(1),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(
+        "t",
+        format!("k{i:04}"),
+        serde_json::from_value(json!({"e": vector(i), "f": vector(i)})).unwrap(),
+        1,
+    )
 }
 
 /// The state of the setting `vector_index.t` asking for `fields`, at `at`.
 fn setting(fields: Value, at: u64) -> StoredRecord {
     StoredRecord {
-        ty: TypeName::from(lakelands_api::seam::SETTING_TYPE),
-        key: RecordKey::from("vector_index.t"),
         version: Version(at),
-        fields: serde_json::from_value(json!({"key": "vector_index.t", "value": fields})).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
-        made: Position(at),
-        retired: false,
-        restricted: false,
+        ..stored_record(
+            lakelands_api::seam::SETTING_TYPE,
+            "vector_index.t",
+            serde_json::from_value(json!({"key": "vector_index.t", "value": fields})).unwrap(),
+            at,
+        )
     }
 }
 

@@ -395,6 +395,14 @@ fn return_answers_rows_or_an_aggregate() {
                    {"name": "mean", "func": "avg", "field": "b.amount"}]}}),
     );
     same(
+        "MATCH (b:bill) RETURN first(b.amount, b.due) AS opened, last(b.amount, b.due) AS closed",
+        json!({}),
+        json!({"start": {"type": "bill", "as": "b"},
+               "project": {"as": "aggregate", "group_by": [], "measures": [
+                   {"name": "opened", "func": "first", "field": "b.amount", "by": "b.due"},
+                   {"name": "closed", "func": "last", "field": "b.amount", "by": "b.due"}]}}),
+    );
+    same(
         "MATCH (b:bill) RETURN date_bucket(b.due, 'month') AS month, b.amount AS a, count(*) AS n",
         json!({}),
         json!({"start": {"type": "bill", "as": "b"},

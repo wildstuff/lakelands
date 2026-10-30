@@ -786,7 +786,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             };
             return (scope.in_set(set)).map_or(err(Case::InSetHere), |b| Ok(Val::Bool(b)));
         }
-        Func::Count | Func::Sum | Func::Min | Func::Max | Func::Avg => {
+        f if f.is_aggregate() => {
             if let Some(v) = scope.aggregate(func, args) {
                 return v;
             }
@@ -910,7 +910,9 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         | Func::Sum
         | Func::Min
         | Func::Max
-        | Func::Avg => unreachable!("handled above"),
+        | Func::Avg
+        | Func::First
+        | Func::Last => unreachable!("handled above"),
     })
 }
 

@@ -1,14 +1,13 @@
 //! The engine through its seam: the opener's registry, the lease across
 //! handles, transactions, and every read a view answers.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lakelands_api::Error;
 use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::engine::{After, EngineOpener, LakeEngine, OpenMode, ProjectionStore, Scan};
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{Position, ProposalId, RecordKey, TypeName, Version};
+use lakelands_api::id::{Position, ProposalId, RecordKey, TypeName};
 use lakelands_api::location::Location;
 use lakelands_api::query::Walk;
 use lakelands_api::read::{Direction, Order, OrderBy};
@@ -16,6 +15,7 @@ use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState, ProposedWrite};
 use lakelands_core::conformance::engine::reads::{lexical, nearest};
+use lakelands_core::conformance::fixture::stored_record;
 use serde_json::{Value, json};
 
 use super::*;
@@ -66,17 +66,7 @@ fn decl(v: Value) -> Declaration {
 }
 
 fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {
-    StoredRecord {
-        ty: ty.into(),
-        key: key.into(),
-        version: Version(1),
-        fields: serde_json::from_value(fields).unwrap(),
-        meta: BTreeMap::new(),
-        position: Position(position),
-        made: Position(position),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(ty, key, serde_json::from_value(fields).unwrap(), position)
 }
 
 /// Folds `puts` in one transaction through `through`.

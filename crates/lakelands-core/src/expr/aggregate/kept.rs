@@ -24,6 +24,9 @@
 //!   equal values by the least key. So the holder is a function of the
 //!   members whatever the order they arrived in. When the holder leaves,
 //!   the next one is the first entry of an order the store keeps.
+//! - A `first` or `last` is the same extreme of its `by`, a `first` as a
+//!   minimum and a `last` as a maximum, whose holder carries its
+//!   argument's value beside it, null included.
 
 use std::ops::Not;
 
@@ -46,6 +49,9 @@ enum Held {
     Num(String),
     Text(String),
     Time(i64),
+    Bool(bool),
+    Duration(i64),
+    Json(serde_json::Value),
 }
 
 impl Held {
@@ -61,6 +67,19 @@ impl Held {
         }
     }
 
+    /// A value a `first` or a `last` carries: any but null.
+    fn carried(v: &Val) -> Option<Held> {
+        Some(match v {
+            Val::Null => return None,
+            Val::Bool(b) => Held::Bool(*b),
+            Val::Num(d) => Held::Num(d.to_string()),
+            Val::Text(s) => Held::Text(s.clone()),
+            Val::Time(t) => Held::Time(t.0),
+            Val::Duration(d) => Held::Duration(*d),
+            Val::Json(j) => Held::Json(j.clone()),
+        })
+    }
+
     fn val(&self) -> Val {
         match self {
             Held::Num(s) => {
@@ -71,34 +90,47 @@ impl Held {
             }
             Held::Text(s) => Val::Text(s.clone()),
             Held::Time(t) => Val::Time(Timestamp(*t)),
+            Held::Bool(b) => Val::Bool(*b),
+            Held::Duration(d) => Val::Duration(*d),
+            Held::Json(j) => Val::Json(j.clone()),
         }
     }
 }
 
 /// One member's argument to one call: null, which no fold counts; a value
-/// the call folds; or one it does not (a text under `sum`, a number no
-/// decimal holds, an argument that fails). The test is of the member
-/// alone, so it reads the same when the member leaves.
+/// the call folds, with what a `first` or `last` carries; or one it does
+/// not (a text under `sum`, a number no decimal holds, an argument that
+/// fails). The test is of the member alone, so it reads the same when the
+/// member leaves.
 enum Arg {
     None,
-    Value(Val),
+    Value(Val, Option<Held>),
     Odd,
 }
 
 impl Arg {
-    fn of(func: Func, arg: Option<&Expr>, scope: &RecordScope<'_>) -> Arg {
+    fn of(func: Func, args: &[Expr], scope: &RecordScope<'_>) -> Arg {
         // `count()` counts every member.
-        let Some(arg) = arg else {
-            return Arg::Value(Val::Null);
+        let Some(arg) = args.first() else {
+            return Arg::Value(Val::Null, None);
         };
         let folds = |v: &Val| match func {
             Func::Sum | Func::Avg => as_number(v).is_some(),
-            Func::Min | Func::Max => Held::of(v).is_some(),
+            f if extreme(f) => Held::of(v).is_some(),
             _ => true,
+        };
+        // `first` and `last` fold their `by` and carry their argument.
+        let (arg, carry) = match (func, args) {
+            (Func::First | Func::Last, [carry, by]) => (by, Some(carry)),
+            _ => (arg, None),
         };
         match eval(arg, scope) {
             Ok(Val::Null) => Arg::None,
-            Ok(v) if folds(&v) => Arg::Value(v),
+            Ok(v) if folds(&v) => match carry.map(|c| eval(c, scope)) {
+                None => Arg::Value(v, None),
+                Some(Ok(c)) => Arg::Value(v, Held::carried(&c)),
+                Some(Err(_)) => Arg::Odd,
+            },
             _ => Arg::Odd,
         }
     }
@@ -122,6 +154,9 @@ struct KeptFold {
     /// The extreme and its holder's key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     best: Option<(Held, RecordKey)>,
+    /// What the holder of a `first` or a `last` carries; none for null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    of: Option<Held>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -151,13 +186,13 @@ impl KeptFold {
         for (side, put) in [(&was, false), (&is, true)] {
             held &= match side {
                 Some((_, Arg::Odd)) => step(&mut self.odd, put),
-                Some((_, Arg::Value(v))) => {
+                Some((_, Arg::Value(v, _))) => {
                     let kind = match (func, as_number(v)) {
                         (Func::Sum | Func::Avg, Some(n)) => {
                             self.sum.fold(n, put);
                             true
                         }
-                        (Func::Min | Func::Max, None) => step(&mut self.times, put),
+                        (f, None) if extreme(f) => step(&mut self.times, put),
                         _ => true,
                     };
                     step(&mut self.n, put) && kind
@@ -169,7 +204,7 @@ impl KeptFold {
             return (held, false);
         }
         let new = is.as_ref().and_then(|(key, arg)| match arg {
-            Arg::Value(v) => Held::of(v).map(|h| (place(func, v), h, *key)),
+            Arg::Value(v, of) => Held::of(v).map(|h| (place(func, v), h, *key, of.clone())),
             _ => None,
         });
         let holder = self.best.as_ref().map(|(_, key)| key);
@@ -178,7 +213,7 @@ impl KeptFold {
         // it where it stays first, and another member takes over where it
         // comes first.
         let takes = match (&new, &self.best) {
-            (Some((at, _, key)), Some((best, holder))) => {
+            (Some((at, _, key, _)), Some((best, holder))) => {
                 (at, *key) <= (&place(func, &best.val()), holder)
             }
             (new, _) => new.is_some(),
@@ -186,7 +221,10 @@ impl KeptFold {
         // With no other member folded in there is nothing to read again.
         let alone = self.n.saturating_sub(u64::from(new.is_some())) == 0;
         if takes || (leaves && alone) {
-            self.best = new.map(|(_, h, key)| (h, key.clone()));
+            (self.best, self.of) = match new {
+                Some((_, h, key, of)) => (Some((h, key.clone())), of),
+                None => (None, None),
+            };
         }
         (held, leaves && !takes && !alone)
     }
@@ -230,19 +268,21 @@ impl KeptFolds {
     }
 }
 
-/// Whether `func` is an extreme, `min` or `max`.
+/// Whether `func` is an extreme: `min`, `max`, or `first` and `last`,
+/// extremes of their `by`.
 fn extreme(func: Func) -> bool {
-    matches!(func, Func::Min | Func::Max)
+    matches!(func, Func::Min | Func::Max | Func::First | Func::Last)
 }
 
 /// Where a value stands in the order of the extreme `func`: its sort key
-/// for a `min`; for a `max` the same with a zero byte after it, every byte
-/// complemented, so that the greatest value comes first and a value whose
-/// key begins another's (`1` before `1.5`) comes after it.
+/// for a `min` and a `first`; for a `max` and a `last` the same with a
+/// zero byte after it, every byte complemented, so that the greatest value
+/// comes first and a value whose key begins another's (`1` before `1.5`)
+/// comes after it.
 fn place(func: Func, v: &Val) -> Vec<u8> {
     let key = val_key(v);
     match func {
-        Func::Max => key.into_iter().chain([0]).map(|b| !b).collect(),
+        Func::Max | Func::Last => key.into_iter().chain([0]).map(|b| !b).collect(),
         _ => key,
     }
 }
@@ -254,6 +294,9 @@ fn place(func: Func, v: &Val) -> Vec<u8> {
 pub struct Entry {
     v: Held,
     m: RecordKey,
+    /// What a holder of a `first` or a `last` carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    of: Option<Held>,
 }
 
 /// Where a member stands in an extreme's order: its place ([`place`]) and
@@ -274,7 +317,7 @@ type Keyed<'a> = (&'a RecordKey, Member<'a>);
 /// another number of folds is not exact, and one with as many folds under
 /// other calls cannot be told, so a view declared again is made again.
 #[derive(Clone, Debug)]
-pub struct Keeping(Vec<(Func, Option<Expr>)>);
+pub struct Keeping(Vec<(Func, Vec<Expr>)>);
 
 impl Keeping {
     /// The calls `measures` make.
@@ -341,7 +384,7 @@ impl Keeping {
                     settings,
                     now,
                 };
-                Arg::of(*func, arg.as_ref(), &scope)
+                Arg::of(*func, arg, &scope)
             };
             let (was, is) = (was.map(|m| (m.0, read(m.1))), is.map(|m| (m.0, read(m.1))));
             let (held, left) = fold.moved(*func, was, is);
@@ -364,11 +407,11 @@ impl Keeping {
         };
         let mut placed = Vec::new();
         for (i, (func, arg)) in self.0.iter().enumerate().filter(|(_, (f, _))| extreme(*f)) {
-            if let Arg::Value(v) = Arg::of(*func, arg.as_ref(), &scope)
+            if let Arg::Value(v, of) = Arg::of(*func, arg, &scope)
                 && let Some(v) = Held::of(&v).map(|held| (place(*func, &v), held))
             {
                 let m = key.clone();
-                placed.push((i, v.0, Entry { v: v.1, m }));
+                placed.push((i, v.0, Entry { v: v.1, m, of }));
             }
         }
         placed
@@ -401,7 +444,10 @@ impl Keeping {
         for (i, entry) in first {
             let fold = &mut folds.folds[i];
             folds.lost |= entry.is_none() && fold.n > 0;
-            fold.best = entry.map(|e| (e.v, e.m));
+            (fold.best, fold.of) = match entry {
+                Some(e) => (Some((e.v, e.m)), e.of),
+                None => (None, None),
+            };
         }
         folds.waits = false;
     }
@@ -422,7 +468,10 @@ impl Keeping {
             let fold = Fold {
                 count: usize::try_from(kept.n).unwrap_or(usize::MAX),
                 scales: kept.sum.clone(),
-                best: kept.best.as_ref().map(|(held, _)| held.val()),
+                best: kept.best.as_ref().map(|(held, _)| match func {
+                    Func::First | Func::Last => kept.of.as_ref().map_or(Val::Null, Held::val),
+                    _ => held.val(),
+                }),
                 ..Fold::default()
             };
             (*func, arg.clone(), fold)

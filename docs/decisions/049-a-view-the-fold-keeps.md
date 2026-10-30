@@ -26,10 +26,21 @@ would have to reproduce one.
   (052), each of whose aggregate calls is a function of
   its values as a multiset: any `count`; a `sum` or an `avg` of what is
   certainly a number; a `min` or a `max` of what is certainly a number
-  or an instant, and that only under group fields that are all text or
-  references, one at least, so that a group whose extreme left is found
-  again by its fields' values. A view over a view is kept while that
-  view is.
+  or an instant, and a `first(f, by)` or a `last(f, by)` whose `by` is
+  certainly one, whatever `f` is. An extreme, as these four are called
+  here, is kept only under group fields that are text or references,
+  one at least, and at most one bucket of time beside them: a field the
+  source derives at the write as `date_bucket` of an instant or a date.
+  The rule served the first version, which read a group's members again
+  by its fields' values when its extreme left; the next holder is now
+  sought in the order the fold keeps, by a digest of the group's key
+  (below), which a bucket serves as a text does, since the write fixes
+  its value. One bucket and not two: a view by meter and hour answers
+  what is asked of readings, and a second bucket is the same time cut
+  twice; other kinds wait for a case that asks for them. The rule is
+  interim: since the seek works whatever the group fields' kinds, whether
+  an extreme may be kept under any group field the write fixes is open
+  in lakelands#1614. A view over a view is kept while that view is.
 - **Under a name no type can bear.** A view's kept records are put under
   `sys:kept.<view>`, which holds a character no type name may. No write,
   link, walk, preflight or fold reaches them by a type's name: a
@@ -95,8 +106,12 @@ would have to reproduce one.
 - **An extreme is held by the first member of its order.** A `min` or
   a `max` orders its members by their value's sort key (a number before
   an instant), the greatest first for a `max`, and equal values by the
-  least key; its holder is the first. So the holder is a function of the
-  members, whatever the order they came in.
+  least key; its holder is the first. A `first` and a `last` order by
+  their `by` the same way, the greatest first for a `last`, and answer
+  the holder's `f`, which the kept record and the order's entry carry
+  beside the `by`; a member whose `by` is null is in no order. So the
+  holder is a function of the members, whatever the order they came in,
+  and `describe_type` says `kept` of such a view as of one with a `min`.
 - **The fold keeps that order, and the next holder is its first entry.**
   Beside the kept records, under `sys:order.<view>`, the fold keeps an
   entry for each member of each extreme, put in the fold of the event
@@ -249,8 +264,10 @@ that already walks the type.
   549 MB more (5.5 s and 281 MB without its entries) and ended in 7 s,
   holding nothing more; a source declared again ends and makes the view
   in one event, about 35 s under the writer.
-- **Not for every view.** An extreme over a text, a sum over what may
-  be a text, a view with a parameter or the clock compute, as before.
+- **Not for every view.** An extreme over a text (a `first` whose
+  `by` is one), a sum over what may be a text, an extreme under any
+  other group field or a second bucket, a view with a parameter or the
+  clock compute, as before.
 
 ## How it came to be
 
@@ -282,3 +299,10 @@ that already walks the type.
 - A group whose measure does not land in its field is flagged as one
   whose measure fails; before, the fold kept what the read answered
   (lakelands#839).
+- `first(f, by)` and `last(f, by)` are kept as `min` and `max` are, and
+  an extreme's group may add one bucket of time to its text and
+  reference fields, so that a view of readings by meter and hour keeps
+  its opening, closing, least and greatest value (lakelands#1603,
+  lakelands#1605). Its holder is found again by the order the fold
+  already keeps, sought from the group's digest, not by a range read
+  over the source.
