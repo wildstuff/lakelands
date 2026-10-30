@@ -270,6 +270,24 @@ pub struct FeedBatch {
     /// reaction passes these by.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overruled: Vec<Position>,
+    /// The last position of each append that wrote one of `events`, in
+    /// order: an event belongs to the first of them at or after its own
+    /// position, and a consumer holds all of an append's events it
+    /// admits once a batch's `next` passes its end. Read from the frames
+    /// the log stores, so it holds whatever `known_at` reads and however
+    /// the caller names deliveries
+    /// (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub appends: Vec<Position>,
+}
+
+impl FeedBatch {
+    /// The last position of the append that wrote the event at `at`: the
+    /// first of `appends` at or after it, none where there is none.
+    pub fn append_of(&self, at: Position) -> Option<Position> {
+        let i = self.appends.partition_point(|end| *end < at);
+        self.appends.get(i).copied()
+    }
 }
 
 /// The most events one feed poll reads from the log and opens, matched or

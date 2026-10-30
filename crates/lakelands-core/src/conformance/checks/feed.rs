@@ -163,6 +163,17 @@ check!(
 );
 
 check!(
+    APPEND_ENDS = a_consumer_groups_the_firings_of_two_ingests_into_their_two_appends,
+    "083, extended (lakelands#1540): `poll` names the last position of each append that wrote one of its events, read from the stored form, and `append_of` an event's; with the clock behind the log, so that every append reads one `known_at`, and two ingests under one delivery name, `[A1, A2]` then `[B1, B2]`, a consumer of `trigger_fired` alone groups the firings into exactly the two appends that wrote them, each ending at its ingest's window, alike in one poll and a firing a poll",
+    given
+);
+
+check!(
+    APPEND_DELIVERIES = one_append_carrying_two_deliveries_is_one_append,
+    "083 and 087, extended (lakelands#1540): one ingest whose records name two deliveries, in one window, is one append: `poll` names one end for all its events, the window's position, alike in one poll and an event a poll"
+);
+
+check!(
     LIMIT_ZERO_IS_ONE = a_poll_with_a_limit_of_zero_answers_one_event,
     "seams, ChangeFeed: a limit of 0 is read as 1, so a consumer that passes 0 still moves forward instead of polling the same position for ever"
 );
@@ -836,6 +847,163 @@ pub(super) async fn the_index_answers_the_log(store: &dyn LakeStore, what: &str)
              head {head}",
             positions(&paged),
             positions(&want)
+        );
+    }
+    Ok(())
+}
+
+/// Each event `filter` admits from `from` on, with the last position of
+/// its append as `append_of` names it, polled `page` events at a time.
+async fn ended(
+    store: &dyn LakeStore,
+    from: Position,
+    filter: &FeedFilter,
+    page: u32,
+) -> Result<Vec<(Event, Option<Position>)>, Failure> {
+    let (feed, mut next, mut out) = (store.feed(), from, Vec::new());
+    loop {
+        let batch = feed.poll(next, filter, page).await;
+        let batch = batch.must(&format!("polling from {next}, {page} a poll"))?;
+        let ends: Vec<_> = (batch.events.iter())
+            .map(|e| batch.append_of(e.position))
+            .collect();
+        out.extend(batch.events.into_iter().zip(ends));
+        if batch.next > batch.head {
+            return Ok(out);
+        }
+        next = batch.next;
+    }
+}
+
+/// The ends `ended` names grouped: each end with the positions it names,
+/// in order.
+fn grouped(ended: &[(Event, Option<Position>)]) -> Vec<(Option<Position>, Vec<Position>)> {
+    let mut groups: Vec<(Option<Position>, Vec<Position>)> = Vec::new();
+    for (e, end) in ended {
+        match groups.last_mut() {
+            Some((last, at)) if last == end => at.push(e.position),
+            _ => groups.push((*end, vec![e.position])),
+        }
+    }
+    groups
+}
+
+async fn a_consumer_groups_the_firings_of_two_ingests_into_their_two_appends(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use crate::conformance::Lines;
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::event::EventId;
+    use lakelands_api::{DeliveryId, IngestOpts};
+    let l = Lake::of(store.as_ref());
+    l.declare_json(json!({"declare": "type", "name": "reading", "fields": [
+        {"name": "amount", "type": {"kind": "number"}, "authority": "source"}]}))
+        .await?;
+    l.declare_as(trigger_on("seen", "reading", None), "declaring `seen`")
+        .await?;
+    // The clock behind the log: a `lease_taken` a day ahead of it, below
+    // the store, so each append after it reads its `known_at`.
+    let lake = store.lake().clone();
+    let events = log_events(store.as_ref()).await?;
+    let taken = |e: &&Event| matches!(e.body, EventBody::LeaseTaken { .. });
+    let (Some(taken), Some(last)) = (events.iter().find(taken), events.last()) else {
+        return Err(Failure::new(
+            "the lake's log holds its writer's `lease_taken`",
+        ));
+    };
+    let (template, ahead) = (taken.clone(), Timestamp(last.known_at.0 + 86_400_000_000));
+    let line: Lines = Box::new(move |(tip, prev), fence| {
+        let (position, holder) = (tip.next(), "a writer ahead".into());
+        let event = Event {
+            position,
+            id: EventId(format!("{:032x}", position.0)),
+            prev,
+            known_at: ahead,
+            fence,
+            body: EventBody::LeaseTaken { fence, holder },
+            ..template
+        };
+        (vec![crate::conformance::fixture::canonical_line(event)], 0)
+    });
+    let c = (given.continued)(Some(store), lake, line, OpenMode::Write, Seams::default());
+    let c = c
+        .await
+        .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
+    let store = c
+        .opened
+        .map_err(|e| Failure::new(format!("opening the lake for a write after it: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let from = store.head().await.must("reading the head")?.next();
+    let mut windows = Vec::new();
+    for keys in [["A1", "A2"], ["B1", "B2"]] {
+        let records = keys.map(|k| source_record("reading", k, json!({"amount": 1})));
+        let records = records.to_vec();
+        let opts = IngestOpts {
+            delivery: Some(DeliveryId::from("nightly")),
+            ..IngestOpts::default()
+        };
+        let source = SourceId::from("meter");
+        let said = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, opts, records);
+        let said = said
+            .await
+            .must(&format!("ingesting {keys:?} as `nightly`"))?;
+        ensure!(
+            said.len() == 1,
+            "ingesting {keys:?} commits one window; it committed {said:?}"
+        );
+        windows.push(Some(said[0].position));
+    }
+    let all = ended(store.as_ref(), from, &FeedFilter::default(), 100).await?;
+    let read: BTreeSet<_> = all.iter().map(|(e, _)| e.known_at).collect();
+    ensure!(
+        read == BTreeSet::from([ahead]),
+        "every append after the line ahead reads its `known_at`, {ahead:?}; they read {read:?}"
+    );
+    let firings = FeedFilter {
+        kinds: vec!["trigger_fired".into()],
+        ..FeedFilter::default()
+    };
+    for page in [100, 1] {
+        let fired = ended(store.as_ref(), from, &firings, page).await?;
+        let groups = grouped(&fired);
+        let ends: Vec<_> = groups.iter().map(|(end, _)| *end).collect();
+        ensure!(
+            groups.len() == 2 && groups.iter().all(|(_, at)| at.len() == 2) && ends == windows,
+            "a consumer of `trigger_fired`, {page} a poll, groups the four firings of two \
+             ingests into two appends of two, ending at the windows {windows:?}; it groups \
+             {groups:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn one_append_carrying_two_deliveries_is_one_append(store: Store) -> Held {
+    use lakelands_api::DeliveryId;
+    let l = Lake::of(store.as_ref());
+    l.declare_json(json!({"declare": "type", "name": "reading", "fields": [
+        {"name": "amount", "type": {"kind": "number"}, "authority": "source"}]}))
+        .await?;
+    let from = store.head().await.must("reading the head")?.next();
+    let records = [("r1", "monday"), ("r2", "monday"), ("r3", "tuesday")].map(|(k, d)| {
+        let mut r = source_record("reading", k, json!({"amount": 1}));
+        r.delivery = Some(DeliveryId::from(d));
+        r
+    });
+    let said = l.ingest("meter", records.to_vec()).await;
+    let said = said.must("ingesting three records naming two deliveries")?;
+    ensure!(
+        said.len() == 1,
+        "three records naming two deliveries commit in one window; they committed {said:?}"
+    );
+    let end = Some(said[0].position);
+    for page in [100, 1] {
+        let all = ended(store.as_ref(), from, &FeedFilter::default(), page).await?;
+        let groups = grouped(&all);
+        ensure!(
+            groups.len() == 1 && groups[0].0 == end && groups[0].1.len() >= 3,
+            "the window's events, {page} a poll, are one append ending at {end:?}; the feed \
+             groups them {groups:?}"
         );
     }
     Ok(())

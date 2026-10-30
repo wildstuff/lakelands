@@ -986,6 +986,13 @@ impl Lake {
     /// Events from a position, opened and checked, at most `limit`. A read
     /// of a range goes through `pages`.
     pub fn read_events(&self, from: Position, limit: u32) -> Result<Vec<Event>> {
+        let read = self.read_ended(from, limit)?;
+        Ok(read.into_iter().map(|(e, _)| e).collect())
+    }
+
+    /// [`Lake::read_events`], each event with the last position of its
+    /// append (`lakelands_core::log::append_end`).
+    pub fn read_ended(&self, from: Position, limit: u32) -> Result<Vec<(Event, Position)>> {
         let mut out = Vec::new();
         let mut at = from;
         // The format of the event before the first one read: a fall is
@@ -1021,7 +1028,7 @@ impl Lake {
                     return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
                 before = Some(e.v.into());
-                out.push(e);
+                out.push((e, lakelands_core::log::append_end(stored)));
             }
             at = Position(batch.last().expect("not empty").position.0 + 1);
             if out.len() >= limit as usize {
@@ -1036,6 +1043,13 @@ impl Lake {
     /// through rather than sought again, and the events in it are dropped
     /// unopened: nothing is answered from them.
     pub fn read_these(&self, positions: &[Position]) -> Result<Vec<Event>> {
+        let read = self.read_these_ended(positions)?;
+        Ok(read.into_iter().map(|(e, _)| e).collect())
+    }
+
+    /// [`Lake::read_these`], each event with the last position of its
+    /// append (`lakelands_core::log::append_end`).
+    pub fn read_these_ended(&self, positions: &[Position]) -> Result<Vec<(Event, Position)>> {
         let mut out = Vec::with_capacity(positions.len());
         let mut rest = positions;
         while let Some(&first) = rest.first() {
@@ -1054,7 +1068,8 @@ impl Lake {
                 at = last.position.next();
                 for stored in &batch {
                     if wanted.next_if(|p| **p == stored.position).is_some() {
-                        out.push(log::open(stored)?);
+                        let end = lakelands_core::log::append_end(stored);
+                        out.push((log::open(stored)?, end));
                     }
                 }
             }

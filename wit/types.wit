@@ -1996,5 +1996,8 @@ interface types {
         /// The positions of the reactions among `events` an act overruled
         /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
         overruled: list<position>,
+        /// The last position of each append that wrote one of `events`, in
+        /// order (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`).
+        appends: list<position>,
     }
 }

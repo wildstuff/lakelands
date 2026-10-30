@@ -13,7 +13,10 @@
 //! JSON: the bytes of a line of the feed, carrying `lake`, `position` and
 //! `id`. The headers `Lakelands-Lake`, `Lakelands-Position` (with the lake,
 //! the change's dedup key), `Lakelands-Event` and `Lakelands-Attempt` repeat
-//! what the receiver needs before it parses. With a secret,
+//! what the receiver needs before it parses; `Lakelands-Append` is the
+//! last position of the append that wrote the event, so a receiver
+//! gathers one append's firings by it (083), and holds them all once the
+//! event at that position arrives, or one of a later append. With a secret,
 //! `Lakelands-Signature: sha256=<hex>` is the HMAC-SHA256 of the body's
 //! bytes; the receiver checks it over the raw bytes before parsing. The
 //! connection is the crate's one transport: no proxy, no redirect
@@ -457,7 +460,7 @@ impl Deliverer {
         for event in &batch.events {
             let overruled = batch.overruled.binary_search(&event.position).is_ok();
             match (self.wanted(event), overruled) {
-                (true, false) => self.deliver(event).await,
+                (true, false) => self.deliver(event, batch.append_of(event.position)).await,
                 (true, true) => self.journal(event, 0, json!({ "outcome": "overruled" })),
                 (false, _) => {}
             }
@@ -483,13 +486,14 @@ impl Deliverer {
         }
     }
 
-    /// Send one event until it is delivered or refused.
-    async fn deliver(&mut self, event: &Event) {
+    /// Send one event, whose append ends at `append`, until it is
+    /// delivered or refused.
+    async fn deliver(&mut self, event: &Event, append: Option<Position>) {
         let body = lakelands_core::canonical::of(event);
         let mut wait = self.retry_first.min(self.retry_max);
         let mut attempt: u32 = 1;
         loop {
-            match self.attempt(event, &body, attempt).await {
+            match self.attempt(event, append, &body, attempt).await {
                 Answer::Delivered => {
                     self.journal(event, attempt, json!({ "outcome": "delivered" }));
                     return;
@@ -525,7 +529,13 @@ impl Deliverer {
         }
     }
 
-    async fn attempt(&self, event: &Event, body: &[u8], attempt: u32) -> Answer {
+    async fn attempt(
+        &self,
+        event: &Event,
+        append: Option<Position>,
+        body: &[u8],
+        attempt: u32,
+    ) -> Answer {
         let mut headers: Vec<(HeaderName, HeaderValue)> = vec![
             (
                 HeaderName::from_static("lakelands-lake"),
@@ -544,6 +554,12 @@ impl Deliverer {
                 header(&attempt.to_string()),
             ),
         ];
+        if let Some(end) = append {
+            headers.push((
+                HeaderName::from_static("lakelands-append"),
+                header(&end.0.to_string()),
+            ));
+        }
         if let Some(key) = &self.secret {
             headers.push((
                 HeaderName::from_static("lakelands-signature"),
