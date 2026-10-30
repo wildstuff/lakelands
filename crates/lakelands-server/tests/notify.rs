@@ -176,6 +176,61 @@ async fn declare_memo(store: &dyn LakeStore) {
         .unwrap();
 }
 
+/// Reads everything, but holds the key field of `ward` `write_only`.
+fn keyless() -> Principal {
+    let ward = TypeGrants {
+        default: None,
+        fields: [("k".into(), Access::WriteOnly)].into(),
+        ..Default::default()
+    };
+    Principal {
+        kind: PrincipalKind::Agent,
+        id: "keyless".into(),
+        lake: "finance".into(),
+        grants: Grants {
+            default: Access::Read,
+            types: [("ward".into(), ward)].into(),
+            ..Grants::default()
+        },
+    }
+}
+
+#[tokio::test]
+async fn a_session_is_not_told_of_a_record_keyed_by_a_field_it_holds_write_only() {
+    for backend in BACKENDS {
+        let store = common::lake_on(backend).await;
+        let ward = serde_json::from_value(json!({
+            "name": "ward", "key": ["k"],
+            "fields": [{"name": "k", "type": {"kind": "text"}},
+                       {"name": "name", "type": {"kind": "text"}}]
+        }))
+        .unwrap();
+        let cat = store.catalog(WriteContext::default());
+        cat.declare(&common::owner(), Declaration::Type(ward))
+            .await
+            .unwrap();
+        let mut s = Stdio::open(store.clone(), keyless()).await;
+        s.call("subscribe", json!({})).await;
+        write(
+            store.as_ref(),
+            "ward",
+            "sekrit",
+            json!({"k": "sekrit", "name": "Ada"}),
+        )
+        .await;
+        let p = write(
+            store.as_ref(),
+            "invoice",
+            "INV-1",
+            json!({"status": "open"}),
+        )
+        .await;
+        let got = s.change().await;
+        assert_eq!(got["params"]["position"], json!(p), "{backend:?}: {got}");
+        assert_eq!(got["params"]["key"], "INV-1", "{backend:?}");
+    }
+}
+
 #[tokio::test]
 async fn a_subscribed_session_is_told_what_it_may_see_and_nothing_else() {
     for backend in BACKENDS {

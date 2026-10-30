@@ -556,6 +556,11 @@ check!(
 );
 
 check!(
+    WRITE_ONLY_KEY = a_write_only_key_field_is_not_handed_out_by_record_keys,
+    "006, extended (lakelands#1572): a type keyed by a field granted write_only is, for reading, keyed by one granted none: no read answers the field's value through a record key"
+);
+
+check!(
     VALID_AT_MEETS = a_walk_at_a_valid_time_probes_every_type_it_can_meet,
     "024 and 006, extended (lakelands#831): a walk at `valid_at` keeps each record it meets by its own type's valid-time fields, so a pattern probes those of every type its steps can meet, judged from the declarations before a record is read, with no record of the type written as with one: where two types own a relation, a reader masked on the valid-time field of either, the one a step is judged to reach or the other, is refused not_granted naming it by a chain's graph, a graph from depth 0, a path, `degree`, `components` and rows two hops away; one masked on that of a type two hops away is refused by a range that reaches it, and by a graph from depth 0, a path and `components`, which are judged wherever the relation is declared, and answered by one hop and `degree` as a reader of every field is; a range that names its `type` is refused for a type it passes through and answered where the masked type is no way to it; one hop that names the other owner, as its `type` or by its inverse, is answered, and so is a step of no hop that names no `type`; a reader of both is answered by their dates, one who holds the field at `none` as on a type with no valid time (lakelands#726), by each of the reads in March as in July, and one not shown the types word for word as on a lake that does not declare them; without `valid_at` the masked readers are answered"
 );
@@ -1371,6 +1376,210 @@ async fn a_write_only_field_is_written_and_never_shown(store: Store) -> Held {
         red.join("; ")
     );
     Ok(())
+}
+
+/// One read's answer, short: whether it carries `secret`, answers without
+/// it, or refuses.
+fn told<T: serde::Serialize, E>(r: Result<T, E>, secret: &str) -> &'static str {
+    match r {
+        Err(_) => "refuses",
+        Ok(v) if serde_json::to_string(&v).is_ok_and(|s| s.contains(secret)) => "LEAKS",
+        Ok(_) => "answers without it",
+    }
+}
+
+async fn a_write_only_key_field_is_not_handed_out_by_record_keys(store: Store) -> Held {
+    use lakelands_api::query::Walk;
+    let l = Lake::of(store.as_ref());
+    let cat = l.cat.as_ref();
+    let mut keyed = type_decl(
+        "patient",
+        vec![field("k", StorageKind::Text), searchable("name")],
+    );
+    keyed.key = vec!["k".into()];
+    let mut pair = type_decl(
+        "pair",
+        vec![
+            field("k", StorageKind::Text),
+            field("n", StorageKind::Text),
+            searchable("name"),
+        ],
+    );
+    pair.key = vec!["k".into(), "n".into()];
+    l.declare(keyed).await?;
+    l.declare(pair).await?;
+    l.declare(count_view("tally", "patient", "k")).await?;
+    l.declare_json(json!({"declare": "type", "name": "visit", "fields": [
+        {"name": "who", "type": {"kind": "reference", "target": "patient"}}],
+        "relations": [{"name": "seen", "target": "patient", "via": "who"}]}))
+        .await?;
+    l.upsert("patient", "sekrit", json!({"k": "sekrit", "name": "Ada"}))
+        .await?;
+    l.upsert(
+        "pair",
+        "sekrit:7",
+        json!({"k": "sekrit", "n": "7", "name": "Bo"}),
+    )
+    .await?;
+    l.upsert("visit", "v1", json!({"who": "sekrit"})).await?;
+    let clerk = |ty: &str, k: Access| {
+        let fields = [("k", k), ("name", Access::Read), ("n", Access::Read)];
+        field_access(store.as_ref(), "clerk", ty, &fields)
+    };
+    let rows = || Projection::Rows { fields: vec![] };
+    let named = |f: &str| Projection::Rows {
+        fields: vec![f.into()],
+    };
+    let mut table = Vec::new();
+    for (ty, shown) in [("patient", "sekrit"), ("pair", "sekrit")] {
+        let who = clerk(ty, Access::WriteOnly);
+        let key = if ty == "pair" { "sekrit:7" } else { "sekrit" };
+        let mut rec = |what: &str, r: &'static str| table.push(format!("{ty} | {what} | {r}"));
+        rec("get", told(read(cat, &who, ty, key).await, shown));
+        rec(
+            "find",
+            told(all_found(cat, &who, ty, Find::default()).await, shown),
+        );
+        rec(
+            "pattern rows",
+            told(
+                cat.query(&who, pattern(ty, None, vec![], rows())).await,
+                shown,
+            ),
+        );
+        rec(
+            "pattern rows .key",
+            told(
+                cat.query(&who, pattern(ty, None, vec![], named(&format!("{ty}.key"))))
+                    .await,
+                shown,
+            ),
+        );
+        rec(
+            "pattern rows .k",
+            told(
+                cat.query(&who, pattern(ty, None, vec![], named(&format!("{ty}.k"))))
+                    .await,
+                shown,
+            ),
+        );
+        rec(
+            "describe_type",
+            told(
+                cat.describe_type(&who, &ty.into(), ReadAt::default()).await,
+                shown,
+            ),
+        );
+        let lake = cat
+            .describe(&who, ReadAt::default())
+            .await
+            .must("describing the lake")?;
+        let listed = lake.data.types.iter().any(|t| t.name.as_str() == ty);
+        rec(
+            "describe: type listed",
+            if listed {
+                "answers without it (type shown)"
+            } else {
+                "refuses (type not shown)"
+            },
+        );
+    }
+    // The relation to the type, and the view keyed by `k`.
+    let who = clerk("patient", Access::WriteOnly);
+    let seen = |w| pattern("visit", Some("v1"), vec![step("seen", w)], rows());
+    table.push(format!(
+        "patient | walk visit -seen-> patient | {}",
+        told(cat.query(&who, seen(Walk::Out)).await, "sekrit")
+    ));
+    let back = pattern(
+        "patient",
+        Some("sekrit"),
+        vec![step("seen", Walk::In)],
+        rows(),
+    );
+    table.push(format!(
+        "patient | walk patient <-seen- visit | {}",
+        told(cat.query(&who, back).await, "sekrit")
+    ));
+    let tally = clerk("tally", Access::WriteOnly);
+    table.push(format!(
+        "tally | find | {}",
+        told(
+            all_found(cat, &tally, "tally", Find::default()).await,
+            "sekrit"
+        )
+    ));
+    table.push(format!(
+        "tally | describe_type | {}",
+        told(
+            cat.describe_type(&tally, &"tally".into(), ReadAt::default())
+                .await,
+            "sekrit"
+        )
+    ));
+    table.extend(key_side_doors(&l, store.as_ref(), &who).await?);
+    eprintln!("WRITE_ONLY_KEY PROBE\n{}", table.join("\n"));
+    ensure!(
+        !table
+            .iter()
+            .any(|r| r.ends_with("LEAKS") || r.ends_with("REFUSED")),
+        "a write-only key field leaks through record keys:\n{}",
+        table.join("\n")
+    );
+    Ok(())
+}
+
+/// The proposal listing and an aggregate grouped by the key, read by `who`
+/// (a holder of `k: write_only` on `patient`, given the review grant), as
+/// the table's rows. The server's watch asks the same `describe_type`.
+async fn key_side_doors(
+    l: &Lake,
+    store: &dyn LakeStore,
+    who: &Principal,
+) -> Result<Vec<String>, Failure> {
+    let cat = l.cat.as_ref();
+    let write = ProposedWrite::Upsert {
+        ty: "patient".into(),
+        key: "sekrit".into(),
+        patch: patch(json!({"name": "Bo"})),
+        opts: Default::default(),
+    };
+    let proposed = cat.propose(&l.own, write, "why".into()).await;
+    let Outcome::Proposed { .. } = proposed.must("proposing a write")? else {
+        return Err(Failure::new("a proposed upsert must wait"));
+    };
+    let mut who = who.clone();
+    who.grants.review = true;
+    let listed = cat.proposals(&who, ProposalFilter::default()).await;
+    let by: Aggregate = serde_json::from_value(json!({
+        "measures": [{"name": "n", "func": "count"}],
+        "group_by": [{"name": "g", "expr": "k"}]}))
+    .map_err(|e| Failure::new(format!("reading the aggregate: {e}")))?;
+    let mut find = aggregate(Vec::new());
+    find.aggregate = Some(by);
+    let grouped = cat.find(&who, &"patient".into(), find).await;
+    // A writer who holds the key `write_only` still writes the type: only
+    // the reading side of the key is withheld.
+    let writer = field_access(
+        store,
+        "keeper",
+        "patient",
+        &[("k", Access::WriteOnly), ("name", Access::Write)],
+    );
+    let fields = json!({"k": "w1", "name": "Cy"});
+    let written = try_upsert(cat, &writer, "patient", "w1", fields).await;
+    let (ty, key) = ("patient".into(), "w1".into());
+    let retired = cat.retire(&writer, &ty, &key, Default::default()).await;
+    let wrote = |r: &Result<Outcome, _>| match r {
+        Ok(Outcome::Applied { output: None, .. }) => "answers",
+        _ => "REFUSED",
+    };
+    Ok(vec![
+        format!("patient | upsert by a key writer | {}", wrote(&written)),
+        format!("patient | retire by a key writer | {}", wrote(&retired)),
+        format!("patient | proposal listing | {}", told(listed, "sekrit")),
+        format!("patient | aggregate by k | {}", told(grouped, "sekrit")),
+    ])
 }
 
 /// A lexical search of `ty` for `text`, five hits a page, in `fields` or

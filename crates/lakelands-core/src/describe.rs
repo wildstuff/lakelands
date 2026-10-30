@@ -778,12 +778,36 @@ pub(crate) fn type_shown<'a>(
     find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
     who: &Principal,
 ) -> bool {
+    shown_by_keys(t, find, who, Access::appears)
+}
+
+/// Whether `who` is shown `t` to write it: as [`type_shown`], but a key
+/// field it holds `write_only` is known to it, since a write names the
+/// key and answers no value of it, and the field is a field it may write
+/// (`docs/decisions/006-grants-not-roles.md`, lakelands#1572).
+pub(crate) fn type_written<'a>(
+    t: &'a TypeDecl,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+    who: &Principal,
+) -> bool {
+    shown_by_keys(t, find, who, |a| a != Access::None)
+}
+
+/// [`type_shown`] and [`type_written`]: the judgement of a type, where
+/// `knows` says whether a key field held at an access is known.
+fn shown_by_keys<'a>(
+    t: &'a TypeDecl,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+    who: &Principal,
+    knows: fn(Access) -> bool,
+) -> bool {
     // A type keyed by a field its principal may not know of is not shown:
-    // every record key would hand out that field's value. A view's key is
-    // judged where its values come from too (lakelands#782).
+    // every record key would hand out that field's value, and a field
+    // granted `write_only` is not known for reading (lakelands#1572). A
+    // view's key is judged where its values come from too (lakelands#782).
     let known = |t: &TypeDecl, key: &[FieldName]| {
         let mut key = t.fields.iter().filter(|f| key.contains(&f.name));
-        key.all(|f| field_access(who, t, f) != Access::None)
+        key.all(|f| knows(field_access(who, t, f)))
     };
     let own = |t: &TypeDecl| {
         let fields = &mut t.fields.iter();
