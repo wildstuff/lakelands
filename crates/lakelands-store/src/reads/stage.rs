@@ -213,8 +213,21 @@ impl Reader<'_> {
     }
 
     /// The search a pattern's start is: the best hits, one page of the
-    /// lake's `max_limit`.
+    /// lake's `max_limit`. A vector search that brings text is refused by
+    /// its shape, before any rights: a pattern's read makes no embedding
+    /// call and its rows cannot say how they ranked (025).
     pub(super) fn start_search(&self, p: &Pattern, mode: &SearchMode) -> Result<Search> {
+        if let SearchMode::Vector {
+            field,
+            text: Some(_),
+            ..
+        } = mode
+        {
+            let case = Case::StartNeedsVector {
+                field: field.clone(),
+            };
+            return Err(Error::invalid_at(field, case));
+        }
         Ok(Search {
             ty: super::start_type(p)?.clone(),
             mode: mode.clone(),

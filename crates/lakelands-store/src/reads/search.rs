@@ -202,19 +202,6 @@ impl<'a> Reader<'a> {
         mut carried: Option<Pulled>,
     ) -> Result<Judged<First>> {
         let (decl, text_fields, filter, ranks) = self.searched(s)?;
-        // The search door embeds a vector search's text before its read
-        // and answers how it ranked; a pattern's rows cannot (025).
-        if let SearchMode::Vector {
-            field,
-            text: Some(_),
-            ..
-        } = &s.mode
-        {
-            let case = Case::StartNeedsVector {
-                field: field.clone(),
-            };
-            return Err(Error::invalid_at(field, case));
-        }
         let marking = self.marking(s, &decl, text_fields, &ranks);
         let vectors = s.mode.vectors();
         let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
