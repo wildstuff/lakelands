@@ -26,8 +26,8 @@ pub use case::{
 };
 pub(crate) use case::{Param, catalog, render};
 pub use outage::{
-    Act, Aimless, Bound, Closed, Detail, Doing, Exchange, Flaw, Left, Part, Per, Remote, Resent,
-    Retry, Seam, Situation, Tls, Unknown, closed,
+    Act, Aimless, Bound, Closed, Detail, Doing, Exchange, Flaw, Left, Part, Per, Remote, Requests,
+    Resent, Retry, Seam, Situation, Tls, Unknown, closed,
 };
 
 /// What went wrong.
@@ -704,6 +704,16 @@ impl fmt::Display for Error {
                 "the record changed: expected version {expected}, found {actual}"
             ),
             Error::Unbound { seam } => write!(f, "nothing is bound for {seam}"),
+            // A bound on a caller is no state of the lake: its sentence
+            // is the whole message.
+            Error::Unavailable { situation }
+                if matches!(
+                    **situation,
+                    Situation::RateBound { .. } | Situation::InFlightBound { .. }
+                ) =>
+            {
+                write!(f, "{situation}")
+            }
             Error::Unavailable { situation } => write!(f, "the lake is unavailable: {situation}"),
             Error::Unknown(u) => f.write_str(u.message()),
         }

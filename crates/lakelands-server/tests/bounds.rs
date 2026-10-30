@@ -185,6 +185,11 @@ fn is_rate_bound(a: &Answer, per: &str) {
         _ => &a.body["situation"],
     };
     assert_eq!(situation["per"], json!(per));
+    // The bound's own sentence is the message, on either door: the lake
+    // is as it was (lakelands#1600).
+    let data = a.body.get("error").filter(|e| e.is_object());
+    let message = data.map_or(&a.body["message"], |e| &e["data"]["message"]);
+    assert_eq!(message, &situation["message"], "{}", a.body);
 }
 
 #[tokio::test]
@@ -464,6 +469,29 @@ async fn a_request_on_a_session_waits_for_its_principal_s_slot() {
     assert_eq!(a.status, 429, "{}", a.body);
     assert_eq!(a.code(), &json!("in_flight_bound"), "{}", a.body);
     assert_eq!(a.body["id"], json!(9), "the refusal answers its request");
+    drop(held);
+}
+
+#[tokio::test]
+async fn a_principal_at_its_bounds_can_still_end_its_session() {
+    let addr = serve(Bounds {
+        principal_rate: at(2),
+        principal_in_flight: at(1),
+        ..Bounds::OFF
+    })
+    .await;
+    let sid = session(addr, "k-owner").await;
+    let held = hold(addr, "k-owner").await;
+    let a = once(addr, on_session(&sid, "k-owner", 3)).await;
+    assert_eq!(a.status, 429, "at its bounds: {}", a.body);
+    let end = format!(
+        "DELETE /lakes/finance/mcp HTTP/1.1\r\nhost: lake\r\nauthorization: Bearer k-owner\r\n\
+         mcp-session-id: {sid}\r\nmcp-protocol-version: 2025-06-18\r\n\r\n"
+    );
+    let a = once(addr, end).await;
+    assert_eq!(a.status, 204, "ending a session is not counted: {}", a.body);
+    let a = once(addr, on_session(&sid, "k-owner", 4)).await;
+    assert_eq!(a.status, 404, "the session ended: {}", a.body);
     drop(held);
 }
 

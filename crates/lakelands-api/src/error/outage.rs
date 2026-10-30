@@ -110,6 +110,21 @@ impl Detail {
     }
 }
 
+/// A count of requests, said with its noun: "1 request", "2 requests". On
+/// the wire it is the number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Requests(pub u64);
+
+impl fmt::Display for Requests {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            1 => f.write_str("1 request"),
+            n => write!(f, "{n} requests"),
+        }
+    }
+}
+
 impl fmt::Display for Detail {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -935,9 +950,9 @@ catalog! {
         /// This server serves no lake of the name.
         NotServed { lake: String } => "this server serves no lake `{lake}`",
         /// A connection or a principal sent more requests in a second than the server's bound on its rate.
-        RateBound { per: Per, most: u64, retry_after: u64 } => "this {per} sent more than the {most} requests a second the server takes from one; nothing was done: wait {retry_after} s and send it again",
+        RateBound { per: Per, most: Requests, retry_after: u64 } => "this {per} sent more than its bound of {most} a second; nothing was done: wait {retry_after} s and send it again",
         /// A principal has as many requests being answered as the server's bound lets one have at once.
-        InFlightBound { most: u64 } => "the principal has {most} requests being answered, the most the server answers for one at once; nothing was done: send it again once one is answered",
+        InFlightBound { most: Requests } => "the principal has its bound of {most} being answered at once; nothing was done: send it again once one is answered",
         /// A part every lake of this engine has is missing: something else made what is there.
         Unmade { part: Part } => "this engine did not create what is there: {part} is missing",
         /// The lake has no projection yet.

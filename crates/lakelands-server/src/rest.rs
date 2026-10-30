@@ -52,7 +52,7 @@ use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
-use crate::bounds::{Held, Over};
+use crate::bounds::{Held, Limit, Over};
 use crate::doors::{self, Fault, to_json, unknown_argument};
 use crate::http::{
     State, Turn, Turned, admit, forwarded, header, json_response, no_link_headers, read_json,
@@ -765,12 +765,13 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
         };
         return Err(contract(Error::unavailable(read_only)));
     }
+    let most = state.gate.bounds.body_bytes;
     let answer = match route(req.method(), rest) {
-        Ok(Target::Door(r)) => door(&store, &who, cx, r, req).await,
+        Ok(Target::Door(r)) => door(&store, &who, cx, r, req, most).await,
         Ok(Target::Ingest(source)) => ingest(&store, &who, cx, source, req, held).await,
         Ok(Target::Feed) => feed(state, &store, &who, req).await,
-        Ok(Target::Quarantined) => quarantined(&store, &who, cx, req).await,
-        Ok(Target::Dismiss) => dismiss(&store, &who, cx, req).await,
+        Ok(Target::Quarantined) => quarantined(&store, &who, cx, req, most).await,
+        Ok(Target::Dismiss) => dismiss(&store, &who, cx, req, most).await,
         Err(a) => Err(a),
     };
     match answer {
@@ -780,10 +781,11 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
     }
 }
 
-/// A JSON body, whole; `None` when it is empty.
-async fn json_body(req: Request<Incoming>) -> Result<Option<Value>, Stop> {
+/// A JSON body, whole and no larger than `most`; `None` when it is
+/// empty.
+async fn json_body(req: Request<Incoming>, most: Limit) -> Result<Option<Value>, Stop> {
     let (parts, body) = req.into_parts();
-    read_json(&parts, body).await.map_err(turned)
+    read_json(&parts, body, most).await.map_err(turned)
 }
 
 /// The compare-and-set and idempotency headers, as the arguments they
@@ -858,6 +860,7 @@ async fn door(
     cx: WriteContext,
     r: Route,
     req: Request<Incoming>,
+    most: Limit,
 ) -> Result<Answer, Stop> {
     let mut a = r.path;
     a.extend(query_args(req.uri().query(), r.query, r.label)?);
@@ -871,12 +874,12 @@ async fn door(
     let catalog = store.catalog(cx);
     match r.body {
         BodyAs::Nothing => {
-            if json_body(req).await?.is_some() {
+            if json_body(req, most).await?.is_some() {
                 let route = r.label.into();
                 return Err(invalid(StatusCode::BAD_REQUEST, Case::NoBody { route }));
             }
         }
-        BodyAs::One(arg, required) => match json_body(req).await? {
+        BodyAs::One(arg, required) => match json_body(req, most).await? {
             Some(v @ Value::Object(_)) => {
                 a.insert(arg.into(), v);
             }
@@ -892,7 +895,7 @@ async fn door(
             }
         },
         BodyAs::Args => {
-            let body = match json_body(req).await? {
+            let body = match json_body(req, most).await? {
                 Some(Value::Object(o)) => o,
                 None => Map::new(),
                 Some(_) => {
@@ -1226,10 +1229,11 @@ async fn quarantined(
     who: &Principal,
     cx: WriteContext,
     req: Request<Incoming>,
+    most: Limit,
 ) -> Result<Answer, Stop> {
     const LABEL: &str = "GET …/quarantined";
     let a = query_args(req.uri().query(), &QUARANTINED, LABEL)?;
-    if json_body(req).await?.is_some() {
+    if json_body(req, most).await?.is_some() {
         let route = LABEL.into();
         return Err(invalid(StatusCode::BAD_REQUEST, Case::NoBody { route }));
     }
@@ -1252,10 +1256,11 @@ async fn dismiss(
     who: &Principal,
     cx: WriteContext,
     req: Request<Incoming>,
+    most: Limit,
 ) -> Result<Answer, Stop> {
     const LABEL: &str = "POST …/quarantined/dismiss";
     query_args(req.uri().query(), &[], LABEL)?;
-    let Some(Value::Object(body)) = json_body(req).await? else {
+    let Some(Value::Object(body)) = json_body(req, most).await? else {
         let route = LABEL.into();
         return Err(invalid(
             StatusCode::BAD_REQUEST,

@@ -575,17 +575,13 @@ pub(crate) fn no_link_headers(h: &HeaderMap) -> std::result::Result<(), Turned> 
     }
 }
 
-/// The largest body the door reads whole: [`Bounds::body_bytes`], which
-/// [`bounded`] gives every request.
-#[derive(Clone, Copy)]
-struct BodyBound(Limit);
-
 /// A JSON body, read whole: its media type, when named, is JSON, and it
-/// is no larger than its request's [`BodyBound`], or the default bound
-/// where the request has none. `None` when it is empty.
+/// is no larger than `most`, the door's [`Bounds::body_bytes`]. `None`
+/// when it is empty.
 pub(crate) async fn read_json(
     parts: &hyper::http::request::Parts,
     body: Incoming,
+    most: Limit,
 ) -> std::result::Result<Option<Value>, Turned> {
     let h = &parts.headers;
     if let Some(ct) = header(h, CONTENT_TYPE)
@@ -596,8 +592,7 @@ pub(crate) async fn read_json(
             Turn::Invalid(Case::BodyMediaType),
         ));
     }
-    let bound = parts.extensions.get::<BodyBound>().map(|b| b.0);
-    let most = match bound.unwrap_or(Bounds::default().body_bytes) {
+    let most = match most {
         Limit::At(n) => usize::try_from(n.get()).unwrap_or(usize::MAX),
         Limit::Off => usize::MAX,
     };
@@ -637,10 +632,18 @@ impl State {
         sessions
     }
 
-    /// The session a caller names, if it exists and is theirs, and the
-    /// request counted against its principal's bounds; a refusal answers
-    /// the JSON-RPC `request` id. Another key's session is answered as
-    /// unknown, so its existence does not leak.
+    /// The session a caller names, if it exists and is theirs. Another
+    /// key's session is answered as unknown, so its existence does not
+    /// leak.
+    fn owned(&self, id: &str, lake: &LakeId, key: &str) -> std::result::Result<Arc<Slot>, Refusal> {
+        (self.sessions().get(id))
+            .filter(|s| s.owned_by(lake, key))
+            .cloned()
+            .ok_or_else(|| Box::new(unknown_session()))
+    }
+
+    /// The [`State::owned`] session, and the request counted against its
+    /// principal's bounds; a refusal answers the JSON-RPC `request` id.
     fn session(
         &self,
         id: &str,
@@ -648,10 +651,7 @@ impl State {
         key: &str,
         request: Value,
     ) -> std::result::Result<(Arc<Slot>, Held), Refusal> {
-        let slot = (self.sessions().get(id))
-            .filter(|s| s.owned_by(lake, key))
-            .cloned()
-            .ok_or_else(|| Box::new(unknown_session()))?;
+        let slot = self.owned(id, lake, key)?;
         let held = (self.gate.principal(&slot.who))
             .map_err(|o| Box::new(Turned::bounded(o).to_mcp_as(request)))?;
         *slot.last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
@@ -702,12 +702,11 @@ async fn probe(state: &State, req: &Request<Incoming>, ready: bool) -> Answer {
 
 /// Every request, through the door's bounds
 /// (`docs/decisions/095-the-http-door-bounds-what-one-caller-spends.md`):
-/// counted by its connection here, before anything is read, and given the
-/// largest body it may send; counted by its principal where the door
-/// resolves one. A request over a bound is answered in its transport's
+/// counted by its connection here, before anything is read, and by its
+/// principal where the door resolves one. A request over a bound is answered in its transport's
 /// envelope. A probe is not counted: an orchestrator that polls health
 /// on a busy connection must not see the process as down.
-async fn bounded(state: &State, connection: &Connection, mut req: Request<Incoming>) -> Answer {
+async fn bounded(state: &State, connection: &Connection, req: Request<Incoming>) -> Answer {
     let path = req.uri().path().to_owned();
     let mcp = is_mcp(&path);
     let probe = matches!(path.as_str(), "/livez" | "/readyz");
@@ -718,7 +717,6 @@ async fn bounded(state: &State, connection: &Connection, mut req: Request<Incomi
             false => crate::rest::refused(t),
         };
     }
-    (req.extensions_mut()).insert(BodyBound(state.gate.bounds.body_bytes));
     handle(state, req, &path, mcp).await
 }
 
@@ -778,7 +776,9 @@ async fn mcp(state: &State, req: Request<Incoming>) -> Answer {
                 )
                 .map(BodyExt::boxed);
             };
-            match state.session(&id, &lake, &key, Value::Null) {
+            // Ending a session is not counted against its principal: one
+            // at its bounds can still give back what it holds.
+            match state.owned(&id, &lake, &key) {
                 Ok(_) => {
                     if let Some(slot) = state.sessions().remove(&id) {
                         slot.end();
@@ -949,7 +949,7 @@ async fn post(
     }
     let session_id = header(req.headers(), SESSION_HEADER).map(str::to_owned);
     let (parts, body) = req.into_parts();
-    let msg = match read_json(&parts, body).await {
+    let msg = match read_json(&parts, body, state.gate.bounds.body_bytes).await {
         Ok(Some(v)) => v,
         Ok(None) => {
             return refuse(

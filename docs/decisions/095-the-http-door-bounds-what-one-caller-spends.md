@@ -36,7 +36,9 @@ anything of it is read, in one layer in front of every route; a probe,
 busy connection does not see the process as down. It counts
 it by its principal where it resolves one: a key or a host's forwarded
 call over REST, a key at an MCP `initialize`, an MCP session's own
-principal for every later request of the session. A principal is its
+principal for every later request of the session. Ending a session (an
+MCP `DELETE`) is not counted against its principal: a principal at its
+bounds can still give back what it holds. A principal is its
 lake and its id. A forwarded call counts against the principal it is
 made for, and against the connection of the host that forwards it.
 
@@ -84,6 +86,10 @@ names none of them has the defaults.
   it as a JSON-RPC error, code -32000, whose `data` is the same JSON, so
   a client reads the same code on either door; a refusal for the
   principal's bound answers the request's own id.
+- Either way the message is the bound's own sentence, that this caller
+  sent more than its bound and when to send again, with no word of the
+  lake in front: the lake is as it was (the operator's decision on
+  lakelands#1600). Its kind stays `unavailable`.
 - Over the size: `413`, and the contract's `refused` as `invalid` with
   the case `body_too_large`. MCP's JSON-RPC error for a request it
   cannot read carries the same refusal in `data`.

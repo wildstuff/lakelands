@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use lakelands_api::Principal;
-use lakelands_api::error::{Per, Situation};
+use lakelands_api::error::{Per, Requests, Situation};
 use lakelands_api::id::LakeId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -165,7 +165,7 @@ fn over_rate(per: Per, most: u64, retry_after: u64) -> Over {
     Over {
         situation: Box::new(Situation::RateBound {
             per,
-            most,
+            most: Requests(most),
             retry_after,
         }),
         retry_after,
@@ -258,7 +258,9 @@ impl Gate {
             && count.in_flight >= most
         {
             return Err(Over {
-                situation: Box::new(Situation::InFlightBound { most }),
+                situation: Box::new(Situation::InFlightBound {
+                    most: Requests(most),
+                }),
                 retry_after: 1,
             });
         }
