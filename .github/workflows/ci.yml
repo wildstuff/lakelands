@@ -133,7 +133,7 @@ jobs:
     # nothing but this job's own database, so it is not a secret.
     services:
       postgres:
-        image: ${{ matrix.engine == 'pg' && 'mirror.gcr.io/library/postgres:16' || '' }}
+        image: ${{ matrix.engine == 'pg' && 'mirror.gcr.io/library/postgres:18' || '' }}
         env:
           POSTGRES_USER: lakelands
           POSTGRES_PASSWORD: lakelands
@@ -154,8 +154,8 @@ jobs:
       - name: add pgvector to the server
         if: matrix.engine == 'pg' && matrix.server == 'pgvector'
         run: |
-          docker exec "$(docker ps --filter ancestor=mirror.gcr.io/library/postgres:16 --format '{{.ID}}')" \
-            sh -c 'apt-get update && apt-get install -y postgresql-16-pgvector'
+          docker exec "$(docker ps --filter ancestor=mirror.gcr.io/library/postgres:18 --format '{{.ID}}')" \
+            sh -c 'apt-get update && apt-get install -y postgresql-18-pgvector'
       - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest

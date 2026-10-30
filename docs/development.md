@@ -24,7 +24,7 @@ derived from its letter. A worktree's PostgreSQL is a container of its own:
 docker run -d --name lakelands-<letter>-pg \
   -e POSTGRES_USER=lakelands -e POSTGRES_PASSWORD=lakelands \
   -e POSTGRES_DB=lakelands -p 127.0.0.1:<port>:5432 \
-  pgvector/pgvector:pg16 -c max_connections=300
+  pgvector/pgvector:pg18 -c max_connections=300
 ```
 
 It takes 300 connections, not the image's 100: the CLI's mirror tests

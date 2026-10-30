@@ -90,7 +90,7 @@ environment (`docs/decisions/005-no-environment-reads.md`), so the
 harness passes it on as the `url` of `EngineConfig::Postgres`, with TLS
 disabled because the container serves none. Each check creates its own
 schema and the harness drops it afterwards, so one database serves the
-whole suite. The container runs PostgreSQL 16, the oldest version the
+whole suite. The container runs PostgreSQL 18, the oldest version the
 engine supports (`docs/decisions/038-a-lake-in-postgresql.md`). The
 roster names `pg` required, so the job runs on every pull request.
 Without the variable, the
@@ -105,7 +105,7 @@ suite. To run the same tests locally:
 ```sh
 docker run --rm -d --name lakelands-pg -p 5432:5432 \
   -e POSTGRES_USER=lakelands -e POSTGRES_PASSWORD=lakelands -e POSTGRES_DB=lakelands \
-  postgres:16
+  postgres:18
 LAKELANDS_TEST_PG_URL=postgres://lakelands:lakelands@localhost:5432/lakelands \
   scripts/conformance.sh pg
 ```

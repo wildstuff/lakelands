@@ -400,8 +400,9 @@ fn planned_without_a_sort(url: &str, schema: &str) {
         });
         (holding.iter().chain(cursors.as_flattened()))
             .map(|(statement, args)| {
-                let explain =
-                    format!("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}");
+                let explain = format!(
+                    "EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}"
+                );
                 let rows = client.query(&explain, args).unwrap();
                 rows.iter().map(|row| row.get(0)).collect()
             })

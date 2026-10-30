@@ -201,11 +201,13 @@ Selection, order, scoring and ranking are `lakelands_core::engines`'
 asks an index for answers the index's set, which may differ between
 engines (043).
 
-### The server is PostgreSQL 16 or newer
+### The server is PostgreSQL 18 or newer
 
-The server is PostgreSQL 16 or newer, the release the conformance job
-runs. The engine uses nothing a newer release adds. The floor is checked
-when a handle opens, before anything is created.
+The server is PostgreSQL 18 or newer, the release the conformance job
+runs. The floor began at 16 and was raised to 18 for a host that ships
+only 18 and tests nothing older, so a 16 or a 17 server is refused
+rather than run untested. It is the engine's own and a host does not
+set it. It is checked when a handle opens, before anything is created.
 
 ## Why
 

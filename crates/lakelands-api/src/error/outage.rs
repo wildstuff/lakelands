@@ -1019,7 +1019,7 @@ catalog! {
         /// An import stopped part way, at the position it reached.
         ImportStopped { reached: Position, lake: String, cause: Box<Error> } => "the import stopped at position {reached}: {cause}; the lake `{lake}` holds the export's events before that position, a true prefix that is not the exported lake, and refuses another import; remove it and import again",
         /// The PostgreSQL server is older than the engine needs.
-        ServerTooOld { major: u32, minor: u32 } => "the server is PostgreSQL {major}.{minor}; the engine needs PostgreSQL 16 or newer, and nothing was created",
+        ServerTooOld { major: u32, minor: u32 } => "the server is PostgreSQL {major}.{minor}; the engine needs PostgreSQL 18 or newer, and nothing was created",
         /// A transaction-mode connection pooler seems to sit in front of the server.
         Pooler => "the connection does not keep its session; a transaction-mode connection pooler seems to sit in front of the server. The writer lease is a session lock, which such a pooler loses or hands to another client, so the lake was not opened for writing. Connect directly or through a session-mode pooler.",
         /// TLS cannot be set up for the lake's connection, with the library's words if it gave any.

@@ -1,7 +1,9 @@
 use lakelands_api::error::{Situation, Tls};
 use lakelands_api::location::{PgTls, PgTlsMode, PgTuning};
 
-use super::{PREPARED_MOST, Target, reader, tls_config_with};
+use super::{
+    MIN_SERVER_VERSION, PREPARED_MOST, Target, reader, server_new_enough, tls_config_with,
+};
 
 /// A reader that ran more statement texts than [`PREPARED_MOST`] keeps
 /// that many prepared on the server, not one for each and not fewer, and
@@ -60,4 +62,15 @@ fn require_without_a_ca_file_or_a_system_bundle_is_unavailable_naming_ca_file() 
         Err(other) => panic!("refused as {other:?}, not as unavailable"),
         Ok(_) => panic!("TLS was set up with no certificate authority at all"),
     }
+}
+
+/// The floor is PostgreSQL 18: a 16 or a 17 server is refused with its
+/// own version, and 18.0 passes.
+#[test]
+fn a_server_before_18_is_refused_with_its_version() {
+    for (num, major, minor) in [(160_011, 16, 11), (170_006, 17, 6)] {
+        let want = Situation::ServerTooOld { major, minor };
+        assert_eq!(server_new_enough(num).unwrap_err().situation(), Some(&want));
+    }
+    assert!(server_new_enough(MIN_SERVER_VERSION).is_ok() && MIN_SERVER_VERSION == 180_000);
 }
