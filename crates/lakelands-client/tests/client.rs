@@ -264,6 +264,7 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let collect = |records: Vec<SourceRecord>| {
         let (c, who) = (f.catalog.clone(), f.cast.importer.clone());
@@ -454,6 +455,7 @@ async fn a_poll_over_the_wire_that_matches_nothing_reaches_the_head() {
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     });
     let records = lakelands_door_checks::stream::of(records.collect());
     let bank = SourceId::from("bank");
@@ -1067,6 +1069,7 @@ async fn an_ingests_delivery_id_goes_over_the_wire() {
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let (bank, who) = (SourceId::from("bank"), &f.cast.importer);
     let remote = remote.catalog(WriteContext::default());

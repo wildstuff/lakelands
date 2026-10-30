@@ -141,6 +141,7 @@ key may hold any character.
 | `GET …/describe/<type>` | describe one type | query: `as_of`, `valid_at` |
 | `GET …/quarantined` | quarantined records | query: `source`, `type`, `delivery`, `index`, `state` (`open` or `closed`), `limit`, `after` (an id, as JSON) |
 | `POST …/quarantined/dismiss` | dismiss a quarantined record | body: the id, `source`, `delivery`, `index` |
+| `POST …/quarantined` | quarantine a record the host refused | body: `source`, `opts` (as an ingest's: `delivery`, `sealed_apart`, `run`), `refused` (`record`, `cause`, `reason`) |
 | `GET …/proposals` | proposals | query: `state`, `type`, `kind`, `limit`, `order_by`, `cursor`, `as_of`, `valid_at` |
 | `POST …/proposals` | propose | body: `write` (`upsert`, `retire`, `call`, `declare` with `declarations`, `migrate` with `migration`, or `records` with `type`, `where` and `to`), `why` |
 | `POST …/proposals/<id>/accept` | accept | — |
@@ -361,7 +362,10 @@ delivery shreds it alone
 `?quarantine_refused` keeps a record refused by a rule of the record as
 a quarantined record and goes on; each window's line then lists the
 `index` of each record it quarantined in `quarantined`, and a line may
-name what it `resubmits` (`{"delivery":…,"index":…}`)
+name what it `resubmits` (`{"delivery":…,"index":…}`). `?run=` names
+the host's run, which keys the call's quarantined records in place of
+their delivery, and a line's `line` keys its record in place of its
+place
 (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`). `?commit_window=`
 is the most records one of the call's windows holds, between 1 and the
 lake's `limits.commit_window_max`; without it the lake's

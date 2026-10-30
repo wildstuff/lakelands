@@ -438,6 +438,7 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert() {
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let deliver = |records: Vec<SourceRecord>| {
         let cat = cat.clone();
@@ -494,6 +495,7 @@ async fn a_second_write_to_a_record_in_one_window_is_folded_over_the_first() {
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let deliver = |records: Vec<SourceRecord>| {
         let cat = cat.clone();
@@ -1616,6 +1618,7 @@ async fn an_ingest_that_carries_an_authored_field_is_refused_even_unchanged() {
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         }]
         .into_iter(),
     ));
@@ -2417,6 +2420,7 @@ async fn a_reference_must_name_a_live_record_or_one_earlier_in_the_window() {
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         },
         SourceRecord {
             source: None,
@@ -2427,6 +2431,7 @@ async fn a_reference_must_name_a_live_record_or_one_earlier_in_the_window() {
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         },
     ];
     let s: lakelands_api::SourceStream = Box::pin(Stream(records.into_iter()));

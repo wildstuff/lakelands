@@ -427,6 +427,7 @@ enum Target {
     Feed,
     Quarantined,
     Dismiss,
+    Quarantine,
 }
 
 fn route(method: &Method, rest: &str) -> Result<Target, Stop> {
@@ -713,6 +714,7 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
         (["feed"], Method::GET) => Target::Feed,
         (["quarantined"], Method::GET) => Target::Quarantined,
         (["quarantined", "dismiss"], Method::POST) => Target::Dismiss,
+        (["quarantined"], Method::POST) => Target::Quarantine,
         _ => return None,
     };
     Some(target)
@@ -772,6 +774,7 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
         Ok(Target::Feed) => feed(state, &store, &who, req).await,
         Ok(Target::Quarantined) => quarantined(&store, &who, cx, req, most).await,
         Ok(Target::Dismiss) => dismiss(&store, &who, cx, req, most).await,
+        Ok(Target::Quarantine) => quarantine(&store, &who, cx, req, most).await,
         Err(a) => Err(a),
     };
     match answer {
@@ -1136,6 +1139,7 @@ async fn ingest(
             ("sealed_apart", Kind::Flag),
             ("commit_window", Kind::Int),
             ("quarantine_refused", Kind::Flag),
+            ("run", Kind::Text),
         ],
         "POST …/ingest/<source>",
     )?;
@@ -1148,6 +1152,7 @@ async fn ingest(
             .and_then(Value::as_u64)
             .map(|w| u32::try_from(w).unwrap_or(u32::MAX)),
         quarantine_refused: args.get("quarantine_refused").and_then(Value::as_bool) == Some(true),
+        run: args.get("run").and_then(Value::as_str).map(Into::into),
     };
     if let Some(ct) = header(req.headers(), CONTENT_TYPE.as_str())
         && ![
@@ -1249,6 +1254,23 @@ async fn quarantined(
     ))
 }
 
+/// The body of a `POST` that takes no query, an object read as `T`.
+async fn object_body<T: serde::de::DeserializeOwned>(
+    req: Request<Incoming>,
+    label: &'static str,
+    most: Limit,
+) -> Result<T, Stop> {
+    query_args(req.uri().query(), &[], label)?;
+    let Some(Value::Object(body)) = json_body(req, most).await? else {
+        let route = label.into();
+        return Err(invalid(
+            StatusCode::BAD_REQUEST,
+            Case::BodyNotObject { route },
+        ));
+    };
+    doors::args(label, &body).map_err(fault_answer)
+}
+
 /// `POST …/quarantined/dismiss`, its body the id: close one as
 /// dismissed (085).
 async fn dismiss(
@@ -1258,16 +1280,7 @@ async fn dismiss(
     req: Request<Incoming>,
     most: Limit,
 ) -> Result<Answer, Stop> {
-    const LABEL: &str = "POST …/quarantined/dismiss";
-    query_args(req.uri().query(), &[], LABEL)?;
-    let Some(Value::Object(body)) = json_body(req, most).await? else {
-        let route = LABEL.into();
-        return Err(invalid(
-            StatusCode::BAD_REQUEST,
-            Case::BodyNotObject { route },
-        ));
-    };
-    let id: QuarantineId = doors::args(LABEL, &body).map_err(fault_answer)?;
+    let id: QuarantineId = object_body(req, "POST …/quarantined/dismiss", most).await?;
     let close = store
         .catalog(cx)
         .dismiss_quarantined(who, &id)
@@ -1276,6 +1289,39 @@ async fn dismiss(
     let at = Some(close.position);
     Ok(with_position(
         json_reply(StatusCode::OK, &to_json(&close)),
+        at,
+    ))
+}
+
+/// What `POST …/quarantined` takes: the source, the call's options and
+/// the host's refusal.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostQuarantine {
+    source: SourceId,
+    #[serde(default)]
+    opts: lakelands_api::IngestOpts,
+    refused: lakelands_api::quarantine::HostRefused,
+}
+
+/// `POST …/quarantined`, its body a [`HostQuarantine`]: quarantine a
+/// record the host refused (085, extended).
+async fn quarantine(
+    store: &Arc<dyn LakeStore>,
+    who: &Principal,
+    cx: WriteContext,
+    req: Request<Incoming>,
+    most: Limit,
+) -> Result<Answer, Stop> {
+    let q: HostQuarantine = object_body(req, "POST …/quarantined", most).await?;
+    let done = store
+        .catalog(cx)
+        .quarantine(who, &q.source, q.opts, q.refused)
+        .await
+        .map_err(contract)?;
+    let at = Some(done.position);
+    Ok(with_position(
+        json_reply(StatusCode::OK, &to_json(&done)),
         at,
     ))
 }

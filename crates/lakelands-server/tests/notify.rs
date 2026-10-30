@@ -1179,6 +1179,7 @@ async fn a_firing_an_act_overruled_is_not_told() {
         seen_at: None,
         delivery: None,
         resubmits: None,
+        line: None,
     };
     let (cat, tracker) = (store.catalog(WriteContext::default()), "tracker".into());
     let own = common::owner();
@@ -1611,6 +1612,7 @@ async fn an_ingest_is_told_as_a_change_of_the_members_it_seals() {
             seen_at: None,
             delivery: None,
             resubmits: None,
+            line: None,
         };
         let fed = lakelands_api::ingest_all(cat.as_ref(), &own, &crm, vec![record]);
         fed.await.unwrap();

@@ -110,6 +110,7 @@ async fn a_delivery_a_record_names_is_sealed_under_a_key_of_its_own(
         sealed_apart: true,
         quarantine_refused: true,
         commit_window: Some(2),
+        run: None,
     };
     let mark = store.head().await.must("reading the head")?;
     let said = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &crm, opts, records);

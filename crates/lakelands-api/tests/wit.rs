@@ -197,9 +197,11 @@ fn every_door_of_the_crate_is_a_function_of_the_wit_and_no_other() {
         .chain(fns("schema"))
         .collect();
     // The quarantined records are a person's, worked through the host:
-    // their listing and their dismiss stay off the guest door (085).
+    // their listing, their dismiss and the host's own quarantine stay off
+    // the guest door (085).
     let mut doors = trait_methods(catalog_rs, "Catalog");
-    doors.retain(|door| !["quarantined", "dismiss_quarantined"].contains(&door.as_str()));
+    let off = ["quarantined", "dismiss_quarantined", "quarantine"];
+    doors.retain(|door| !off.contains(&door.as_str()));
     assert_eq!(
         catalog, doors,
         "the catalog's doors: the `catalog` resource with `query` and `schema`, against `Catalog`"
@@ -1148,6 +1150,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     delivery: "d1".into(),
                     index: 1,
                 }),
+                line: Some(7),
             }),
         ),
         ("order", members(&order())),
@@ -1203,6 +1206,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 sealed_apart: true,
                 commit_window: Some(1024),
                 quarantine_refused: true,
+                run: Some("run-1".into()),
             }),
         ),
         // The `applied` record is the variant's members beside its tag.
