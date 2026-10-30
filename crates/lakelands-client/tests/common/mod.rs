@@ -100,6 +100,7 @@ pub async fn serve_hosting(
         workers: None,
         metrics: None,
         hosts,
+        bounds: Default::default(),
     };
     let server = serve_http(config, Arc::new(StaticResolver::new(entries)), open)
         .await

@@ -47,6 +47,7 @@ async fn serve() -> (SocketAddr, tokio::task::JoinHandle<()>) {
             host("any", None),
             host("narrow", Some(vec!["clerk".into()])),
         ],
+        bounds: Default::default(),
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();

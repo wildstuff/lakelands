@@ -26,6 +26,7 @@ async fn door() -> (SocketAddr, super::Health) {
         workers: None,
         metrics: None,
         hosts: Vec::new(),
+        bounds: Default::default(),
     };
     let server = serve_http(config, Arc::new(StaticResolver::new(vec![])), open)
         .await

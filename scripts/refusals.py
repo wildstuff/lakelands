@@ -263,8 +263,9 @@ its own sentence. The other types:
 - **text** (`String`), a **name** (`TypeName`, `FieldName`, `RelationName`,
   `VerbName`, `ParamName`, `TriggerName`, `ConstraintName`,
   `PreconditionName`, `ValueTypeName`, `LakeId`, `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
-- a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`) or
-  a **position** (`Position`): a JSON number;
+- a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`), a
+  **position** (`Position`) or a **count of requests** (`Requests`, said
+  "1 request", "2 requests"): a JSON number;
 - an **instant** (`Timestamp`): an RFC 3339 string in UTC; a
   **proposal's identifier** (`ProposalId`): a string;
 - a **field's type** (`FieldType`): an object as a declaration writes
@@ -289,7 +290,7 @@ SCALARS = {
     "ParamName", "TriggerName", "ConstraintName", "PreconditionName", "ValueTypeName", "LakeId", "SourceId", "KeyId",
     "Names",
     "Detail", "Error", "i32", "Timestamp", "ProposalId", "FieldType", "Bound",
-    "Printed",
+    "Printed", "Requests",
 }
 
 
@@ -591,7 +592,7 @@ SAMPLE = {
     "TriggerName": "g", "ConstraintName": "c", "PreconditionName": "pc", "ValueTypeName": "vt", "LakeId": "lake", "SourceId": "src", "KeyId": "1",
     "Names": ["a"], "Detail": "d", "Error": {"error": "refused", "reason": {"refusal": "not_granted"}},
     "Timestamp": "2026-01-01T00:00:00Z", "ProposalId": "p-1", "FieldType": {"kind": "text"},
-    "Bound": {"model": "m", "dimensions": 2}, "Printed": "a = 1",
+    "Bound": {"model": "m", "dimensions": 2}, "Printed": "a = 1", "Requests": 1,
 }
 
 

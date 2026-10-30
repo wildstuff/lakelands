@@ -52,10 +52,11 @@ use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
+use crate::bounds::{Held, Limit, Over};
 use crate::doors::{self, Fault, to_json, unknown_argument};
 use crate::http::{
     State, Turn, Turned, admit, forwarded, header, json_response, no_link_headers, read_json,
-    resolve,
+    resolve, retry_after,
 };
 use crate::resolver::host_of;
 use crate::say::Failure;
@@ -128,9 +129,14 @@ fn contract(e: Error) -> Stop {
 /// A request the server cannot take as it is: refused as `invalid`,
 /// saying its case and the case's advice.
 fn invalid(status: StatusCode, said: impl Into<Said>) -> Stop {
+    Box::new(json_reply(status, &invalid_json(said)))
+}
+
+/// A refusal as `invalid` with its case, as JSON with the two sentences.
+pub(crate) fn invalid_json(said: impl Into<Said>) -> Value {
     let said = said.into();
     let f = Failure::of(&said);
-    Box::new(json_reply(status, &failure_json(&Error::invalid(said), &f)))
+    failure_json(&Error::invalid(said), &f)
 }
 
 /// A request the door turned away, said as REST says a refusal.
@@ -145,7 +151,24 @@ fn turned(t: Turned) -> Stop {
             Box::new(json_reply(t.status, &failure_json(&e, &f)))
         }
         Turn::Invalid(case) => invalid(t.status, case),
+        Turn::Bounded(over) => {
+            let (_, v) = bounded_json(&over);
+            Box::new(retry_after(json_reply(t.status, &v), &over))
+        }
     }
+}
+
+/// A request the door turned away before its route was known.
+pub(crate) fn refused(t: Turned) -> Answer {
+    *turned(t)
+}
+
+/// A bound reached, as the contract's error and as its JSON with the
+/// two sentences.
+pub(crate) fn bounded_json(over: &Over) -> (Error, Value) {
+    let e = Error::unavailable((*over.situation).clone());
+    let v = failure_json(&e, &Failure::from(e.clone()));
+    (e, v)
 }
 
 fn with_position(mut r: Answer, p: Option<Position>) -> Answer {
@@ -718,12 +741,14 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
     // hosts, as the principal it names; a principal's key may not name
     // another or set a write context.
     let host = host_of(&state.hosts, &key);
-    let (who, cx) = match host {
+    // The request is counted against the principal's bounds until it is
+    // answered, an ingest until its last window is committed (095).
+    let (who, cx, held) = match host {
         Some(h) => forwarded(state, h, &lake, req.headers()).await,
         None => match no_link_headers(req.headers()) {
             Ok(()) => resolve(state, &lake, key)
                 .await
-                .map(|w| (w, WriteContext::default())),
+                .map(|(w, held)| (w, WriteContext::default(), held)),
             Err(t) => Err(t),
         },
     }
@@ -740,12 +765,13 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
         };
         return Err(contract(Error::unavailable(read_only)));
     }
+    let most = state.gate.bounds.body_bytes;
     let answer = match route(req.method(), rest) {
-        Ok(Target::Door(r)) => door(&store, &who, cx, r, req).await,
-        Ok(Target::Ingest(source)) => ingest(&store, &who, cx, source, req).await,
+        Ok(Target::Door(r)) => door(&store, &who, cx, r, req, most).await,
+        Ok(Target::Ingest(source)) => ingest(&store, &who, cx, source, req, held).await,
         Ok(Target::Feed) => feed(state, &store, &who, req).await,
-        Ok(Target::Quarantined) => quarantined(&store, &who, cx, req).await,
-        Ok(Target::Dismiss) => dismiss(&store, &who, cx, req).await,
+        Ok(Target::Quarantined) => quarantined(&store, &who, cx, req, most).await,
+        Ok(Target::Dismiss) => dismiss(&store, &who, cx, req, most).await,
         Err(a) => Err(a),
     };
     match answer {
@@ -755,10 +781,11 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
     }
 }
 
-/// A JSON body, whole; `None` when it is empty.
-async fn json_body(req: Request<Incoming>) -> Result<Option<Value>, Stop> {
+/// A JSON body, whole and no larger than `most`; `None` when it is
+/// empty.
+async fn json_body(req: Request<Incoming>, most: Limit) -> Result<Option<Value>, Stop> {
     let (parts, body) = req.into_parts();
-    read_json(&parts.headers, body).await.map_err(turned)
+    read_json(&parts, body, most).await.map_err(turned)
 }
 
 /// The compare-and-set and idempotency headers, as the arguments they
@@ -833,6 +860,7 @@ async fn door(
     cx: WriteContext,
     r: Route,
     req: Request<Incoming>,
+    most: Limit,
 ) -> Result<Answer, Stop> {
     let mut a = r.path;
     a.extend(query_args(req.uri().query(), r.query, r.label)?);
@@ -846,12 +874,12 @@ async fn door(
     let catalog = store.catalog(cx);
     match r.body {
         BodyAs::Nothing => {
-            if json_body(req).await?.is_some() {
+            if json_body(req, most).await?.is_some() {
                 let route = r.label.into();
                 return Err(invalid(StatusCode::BAD_REQUEST, Case::NoBody { route }));
             }
         }
-        BodyAs::One(arg, required) => match json_body(req).await? {
+        BodyAs::One(arg, required) => match json_body(req, most).await? {
             Some(v @ Value::Object(_)) => {
                 a.insert(arg.into(), v);
             }
@@ -867,7 +895,7 @@ async fn door(
             }
         },
         BodyAs::Args => {
-            let body = match json_body(req).await? {
+            let body = match json_body(req, most).await? {
                 Some(Value::Object(o)) => o,
                 None => Map::new(),
                 Some(_) => {
@@ -1099,6 +1127,7 @@ async fn ingest(
     cx: WriteContext,
     source: SourceId,
     req: Request<Incoming>,
+    held: Held,
 ) -> Result<Answer, Stop> {
     let args = query_args(
         req.uri().query(),
@@ -1151,7 +1180,7 @@ async fn ingest(
         .map_err(contract)?;
     let (tx, rx) = mpsc::channel(16);
     tokio::spawn(async move {
-        let _catalog = catalog;
+        let (_catalog, _held) = (catalog, held);
         loop {
             // A window that takes longer than the keep-alive to commit is
             // answered with an empty line meanwhile, so a client that
@@ -1200,10 +1229,11 @@ async fn quarantined(
     who: &Principal,
     cx: WriteContext,
     req: Request<Incoming>,
+    most: Limit,
 ) -> Result<Answer, Stop> {
     const LABEL: &str = "GET …/quarantined";
     let a = query_args(req.uri().query(), &QUARANTINED, LABEL)?;
-    if json_body(req).await?.is_some() {
+    if json_body(req, most).await?.is_some() {
         let route = LABEL.into();
         return Err(invalid(StatusCode::BAD_REQUEST, Case::NoBody { route }));
     }
@@ -1226,10 +1256,11 @@ async fn dismiss(
     who: &Principal,
     cx: WriteContext,
     req: Request<Incoming>,
+    most: Limit,
 ) -> Result<Answer, Stop> {
     const LABEL: &str = "POST …/quarantined/dismiss";
     query_args(req.uri().query(), &[], LABEL)?;
-    let Some(Value::Object(body)) = json_body(req).await? else {
+    let Some(Value::Object(body)) = json_body(req, most).await? else {
         let route = LABEL.into();
         return Err(invalid(
             StatusCode::BAD_REQUEST,

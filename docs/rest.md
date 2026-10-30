@@ -51,13 +51,21 @@ this page says only how a request reaches it.
   | Error | Status |
   |---|---|
   | `refused`: `not_granted`, `grant_needed`, `wrong_door`, `verbs_only`, `reserved`, `declined` | 403 (401 for a missing or unknown key) |
-  | `refused`: `invalid`, `constraint`, `precondition`, `too_deep`, `too_large`, `migration`, `out_of_range` | 422 (400 for a request the server cannot read, 404 for no route, 405 for a method the route does not take, 413 for a body over 4 MiB, 415 for a body of another media type) |
+  | `refused`: `invalid`, `constraint`, `precondition`, `too_deep`, `too_large`, `migration`, `out_of_range` | 422 (400 for a request the server cannot read, 404 for no route, 405 for a method the route does not take, 413 for a body over `server.bounds.body_bytes`, 4 MiB unless set, 415 for a body of another media type) |
   | `refused`: `decided`, `unanswered` | 409 |
   | `not_found` | 404 |
   | `conflict` | 412 — a stale `If-Match`; `If-None-Match: *` on a key that exists (`expected` is 0, the message says the key already exists); an accept whose proposal's record moved since it was made |
   | `unbound` | 501 |
-  | `unavailable` | 503 |
+  | `unavailable` | 503 (429 with `Retry-After` for `rate_bound` and `in_flight_bound`) |
 
+- **Bounds.** A connection and a principal may send so many requests a
+  second, and a principal have so many answered at once
+  (`server.bounds`, `docs/decisions/095-the-http-door-bounds-what-one-caller-spends.md`).
+  A request over one is answered `429` with `Retry-After` in seconds,
+  as `unavailable` with the situation `rate_bound` or `in_flight_bound`;
+  MCP answers the same refusal as a JSON-RPC error's `data`. Nothing of
+  such a request was read or written. An ingest is counted until its
+  last window is committed; `/livez` and `/readyz` are not counted.
 - **Editing a record.** A record's version is one number for the whole
   record, not one per field: a write that changes any field moves it. A
   read of one record answers it as `ETag`. So does a `PUT` or `DELETE`
