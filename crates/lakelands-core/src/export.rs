@@ -361,9 +361,21 @@ pub async fn backup(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) ->
             return Err(refused(Case::BackupOtherLog { held }));
         };
         removed(&torn)?;
+        torn.clear();
         let cut = OpenOptions::new().write(true).open(&path);
         let cut = cut.and_then(|f| f.set_len(tail.cut).and_then(|()| f.sync_all()));
         cut.map_err(|e| io(Doing::Write, &path, e))?;
+        // A frame an earlier release wrote may begin inside an append: its
+        // run goes too, and the file's end is read again, so that the
+        // append is written whole.
+        if let Some(before) = tail.run.0.checked_sub(1).map(Position) {
+            let two = feed.poll(before, &FeedFilter::default(), 2).await?;
+            let end = |p: Position| two.append_of(p).unwrap_or(p);
+            if end(before) == end(tail.run) {
+                files.push(path);
+                continue;
+            }
+        }
         let through = store.head().await?;
         let open = match tail.cut {
             0 => None,
@@ -404,6 +416,10 @@ struct Tail {
     cut: u64,
 }
 
+/// The most lines `tail` reads: past it, a last line no frame is seen to
+/// cover is taken as a run of its own.
+const WINDOW: usize = 1_002;
+
 /// The end of the file at `path`, read from its last lines, as many as
 /// reach back to the frame of the last event line; `None` where it holds
 /// no whole event line. A frame holds `lake`, which every event of one
@@ -413,7 +429,7 @@ fn tail(path: &Path) -> Result<Option<Tail>> {
     let mut n = 64;
     let (lines, framed) = loop {
         let mut lines = last_lines(path, n)?;
-        let whole = lines.len() < n;
+        let whole = lines.len() < n || n >= WINDOW;
         while lines
             .last()
             .is_some_and(|(_, l)| parsed(l).is_some_and(|v| crate::log::is_frame(&v)))
@@ -424,7 +440,7 @@ fn tail(path: &Path) -> Result<Option<Tail>> {
             match whole {
                 true => return Ok(None),
                 false => {
-                    n *= 2;
+                    n = (n * 2).min(WINDOW);
                     continue;
                 }
             }
@@ -444,7 +460,7 @@ fn tail(path: &Path) -> Result<Option<Tail>> {
         if framed.is_some() || whole {
             break (lines, framed);
         }
-        n *= 2;
+        n = (n * 2).min(WINDOW);
     };
     let (at, last) = lines.last().expect("an event line is held");
     let line = parsed(last).unwrap_or_default();
@@ -729,3 +745,6 @@ pub fn verify(dir: &Path) -> Result<Verification> {
         hash: chain.prev,
     })
 }
+
+#[cfg(test)]
+mod tests;

@@ -36,6 +36,10 @@ use lakelands_api::{Catalog, LakeStore};
 pub struct Faults {
     pub head: AtomicUsize,
     pub poll: AtomicUsize,
+    /// Non zero: a poll tells all it reads as one append.
+    pub one_append: AtomicUsize,
+    /// How many milliseconds a `get` takes.
+    pub get_millis: AtomicU64,
     pub get: AtomicUsize,
     pub behind: AtomicUsize,
     pub first_window_millis: AtomicU64,
@@ -116,7 +120,16 @@ struct Feed {
 impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
         fail(&self.faults.poll)?;
-        self.inner.poll(from, filter, limit).await
+        let mut batch = self.inner.poll(from, filter, limit).await?;
+        if self.faults.one_append.load(Ordering::SeqCst) != 0 {
+            batch.appends = batch
+                .events
+                .last()
+                .map(|e| e.position)
+                .into_iter()
+                .collect();
+        }
+        Ok(batch)
     }
     async fn ack(&self, consumer: &str, through: Position) -> Result<()> {
         self.inner.ack(consumer, through).await
@@ -297,6 +310,8 @@ impl Catalog for Doors {
     }
     async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
         self.faults.gets.fetch_add(1, Ordering::SeqCst);
+        let wait = self.faults.get_millis.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(wait)).await;
         fail(&self.faults.get)?;
         behind(&self.faults.behind, get.at.as_of)?;
         self.inner.get(who, ty, get).await

@@ -352,6 +352,11 @@ pub async fn pump(
         }
         let (generation, subscription, next, declared) = watch.snapshot();
         if held.generation != generation {
+            // A new subscription re-reads the changes; a declaration is
+            // not re-read, so its notification goes now.
+            if !held.send_tools(&queue).await {
+                return;
+            }
             held = Held {
                 generation,
                 ..Held::default()
@@ -426,10 +431,17 @@ pub async fn pump(
             let queued = match e.body.kind() {
                 "declared" | "migrated" | "value_type_migrated" if e.position >= declared => {
                     watch.inner().tools_made += 1;
-                    Some(Queued {
-                        generation: None,
-                        message: json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
-                    })
+                    match held.end {
+                        // In the append's order, after the changes before it.
+                        Some(_) => {
+                            held.shown.push((e.position, Held::TOOLS));
+                            None
+                        }
+                        None => Some(Queued {
+                            generation: None,
+                            message: json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
+                        }),
+                    }
                 }
                 "declared" | "migrated" | "value_type_migrated" => None,
                 _ if batch.overruled.binary_search(&e.position).is_ok() => None,
@@ -486,21 +498,51 @@ struct Held {
     generation: u64,
     /// The end of the append, while a change of it is held.
     end: Option<Position>,
-    /// Each change's position and its notification's parameters.
+    /// Each change's position and its notification's parameters, or null
+    /// for a `tools/list_changed` between them.
     shown: Vec<(Position, Value)>,
 }
 
 impl Held {
+    /// The marker of a `tools/list_changed` among the changes.
+    const TOOLS: Value = Value::Null;
+
+    /// Queue the held `tools/list_changed`, dropping the changes.
+    async fn send_tools(&mut self, queue: &mpsc::Sender<Queued>) -> bool {
+        let tools = self.shown.iter().filter(|(_, p)| *p == Self::TOOLS);
+        for _ in tools {
+            let message = json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
+            if queue
+                .send(Queued {
+                    generation: None,
+                    message,
+                })
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Queue the held changes; false when the queue is gone.
     async fn send(&mut self, queue: &mpsc::Sender<Queued>) -> bool {
         self.end = None;
-        let last = self.shown.last().map(|(at, _)| at.0);
+        let last = self.shown.iter().rfind(|(_, p)| !p.is_null());
+        let last = last.map(|(at, _)| at.0);
         for (_, mut params) in std::mem::take(&mut self.shown) {
-            if let Some(p) = params.as_object_mut() {
-                p.insert("append".into(), json!(last));
-            }
-            let message = json!({"jsonrpc": "2.0", "method": CHANGED, "params": params});
-            let generation = Some(self.generation);
+            let (generation, message) = if params.is_null() {
+                let message =
+                    json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
+                (None, message)
+            } else {
+                if let Some(p) = params.as_object_mut() {
+                    p.insert("append".into(), json!(last));
+                }
+                let message = json!({"jsonrpc": "2.0", "method": CHANGED, "params": params});
+                (Some(self.generation), message)
+            };
             if queue
                 .send(Queued {
                     generation,
