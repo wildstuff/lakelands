@@ -352,6 +352,7 @@ pub const ALL: &[Check] = &[
     masking::VALID_AT_MEETS,
     masking::VALID_AT_VIEW,
     masking::WRITE_ONLY,
+    masking::WRITE_ONLY_KEY,
     masking::VIA_HIDDEN,
     masking::RANK_UNSEEN,
     masking::WEIGHT_HIDDEN,
