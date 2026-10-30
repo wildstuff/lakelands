@@ -41,7 +41,11 @@ check!(
 
 /// `dated`, granted `ty` with `field` at `access`, its grant dating `ty` by
 /// its valid time where it does not read it (092).
-fn dated_by(store: &dyn LakeStore, ty: &str, (field, access): (&str, Access)) -> Principal {
+pub(super) fn dated_by(
+    store: &dyn LakeStore,
+    ty: &str,
+    (field, access): (&str, Access),
+) -> Principal {
     let mut who = field_access(store, "dated", ty, &[(field, access)]);
     let grant = who
         .grants
@@ -565,7 +569,7 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
 
 check!(
     WRITE_ONLY = a_write_only_field_is_written_and_never_shown,
-    "006, extended (lakelands#393): a field granted write_only is written by upsert and retire like a writable one, while get, find, query, search, describe and the tools' read schemas never show it, a filter or a search that names it is refused not_granted naming it, and the write answers no value; a writable field built from one the principal may not read, write-only or masked, is write-only in turn: written, and probed as not granted, never as undeclared; 092 (lakelands#1569): a principal that may write a type and see none of it, or a type keyed by a field it may only write, writes it by upsert and propose and is described it for writing, `may.find` and `may.get` false, while every read door, `get`, `find`, a pattern, a search, a walk to it, a view over it and the proposals listing, answers it word for word as to a principal granted nothing of it"
+    "006, extended (lakelands#393): a field granted write_only is written by upsert and retire like a writable one, while get, find, query, search, describe and the tools' read schemas never show it, a filter or a search that names it is refused not_granted naming it, and the write answers no value; a writable field built from one the principal may not read, write-only or masked, is write-only in turn: written, and probed as not granted, never as undeclared; 092 (lakelands#1569): a principal that may write a type and see none of it, by the type's default or on every field it names under a lake default that reads, or a type keyed by a field it may only write, writes it by upsert and propose and is described it for writing, its declared fields each `write_only`, `may.find` and `may.get` false, while every read door, `get`, `find`, a pattern, a search, a walk to it, a view over it and the proposals listing, answers it word for word as to a principal granted nothing of it"
 );
 
 check!(
@@ -580,7 +584,7 @@ check!(
 
 check!(
     VALID_AT_VIEW = a_view_read_at_a_valid_time_probes_its_sources_valid_time,
-    "024 and 006, extended (lakelands#881): a view read at `valid_at` is computed from its source's records as they are valid then, so its computation probes the source's valid-time fields, as deep as the view goes: to a reader masked on the field, the source's `valid_from` or its `valid_to`, `find`, `get`, a pattern started on the view and a walk that arrives at it are refused not_granted, of the view, of one with a `where` and of a view that reads it, in a month the source's record is valid in as in one it is not, naming the field to a holder of `schema` and nothing of the source to another (024); without `valid_at` both are answered as a reader of every field is; one who holds the field at `none` is answered at every time what a reader of every field is answered where the record is valid, the source reading to it as one with no valid time (lakelands#726); one not shown the source is shown none of the views, at any time, each answered word for word as a type no one declared and the walk as one over a relation no one declared; `describe_type` shows a kept view to each reader alike with a valid time and without (lakelands#798); a reader of every field is answered by the dates, a count of one where the record is valid; and (lakelands#910, lakelands#911) a read at `valid_at` reads no view's kept records where a valid time is declared in its tree, its own or a source's, merged and nested ones included, and reads them where none is, a page answered as without `valid_at` and in the heap of that page, give or take twice and 256 KiB, where its computation would hold each of 2 000 groups, while one whose valid time stands only in a merged source, a kept view over a valid-timed type, and a kept view over that one are computed at a valid time where the dates matter; a computed view's own valid time keeps its records as a type's does, by the bounds its reader is shown, so one valid until a hidden end is answered to its reader as a view with no end: a kept view with a valid time of its own is computed for a reader at `none` on that valid time, answered by `find`, a count, `get` and a pattern as its owner is, the group whose records do not hold left out, and refused naming it to the masked and write-only readers, each answered the kept records as the owner is without `valid_at`; a view over merged sources makes the probes of every source before it reads a record, so one masked or write-only on a source's valid time is refused not_granted, naming nothing, whichever source comes first and whatever measure of another fails, and is told the failing measure without `valid_at`, as a reader at `none` is at any time; 092 (lakelands#1571): a reader whose grant on the source says `dates_by_hidden_valid_time` is answered the view by the source's stored bounds, masked or hidden, at every time as a reader of every field is",
+    "024 and 006, extended (lakelands#881): a view read at `valid_at` is computed from its source's records as they are valid then, so its computation probes the source's valid-time fields, as deep as the view goes: to a reader masked on the field, the source's `valid_from` or its `valid_to`, `find`, `get`, a pattern started on the view and a walk that arrives at it are refused not_granted, of the view, of one with a `where` and of a view that reads it, in a month the source's record is valid in as in one it is not, naming the field to a holder of `schema` and nothing of the source to another (024); without `valid_at` both are answered as a reader of every field is; one who holds the field at `none` is answered at every time what a reader of every field is answered where the record is valid, the source reading to it as one with no valid time (lakelands#726); one not shown the source is shown none of the views, at any time, each answered word for word as a type no one declared and the walk as one over a relation no one declared; `describe_type` shows a kept view to each reader alike with a valid time and without (lakelands#798); a reader of every field is answered by the dates, a count of one where the record is valid; and (lakelands#910, lakelands#911) a read at `valid_at` reads no view's kept records where a valid time is declared in its tree, its own or a source's, merged and nested ones included, and reads them where none is, a page answered as without `valid_at` and in the heap of that page, give or take twice and 256 KiB, where its computation would hold each of 2 000 groups, while one whose valid time stands only in a merged source, a kept view over a valid-timed type, and a kept view over that one are computed at a valid time where the dates matter; a computed view's own valid time keeps its records as a type's does, by the bounds its reader is shown, so one valid until a hidden end is answered to its reader as a view with no end: a kept view with a valid time of its own is computed for a reader at `none` on that valid time, answered by `find`, a count, `get` and a pattern as its owner is, the group whose records do not hold left out, and refused naming it to the masked and write-only readers, each answered the kept records as the owner is without `valid_at`; a view over merged sources makes the probes of every source before it reads a record, so one masked or write-only on a source's valid time is refused not_granted, naming nothing, whichever source comes first and whatever measure of another fails, and is told the failing measure without `valid_at`, as a reader at `none` is at any time; 092 (lakelands#1571): a reader whose grant on the source says `dates_by_hidden_valid_time` is answered the view by the source's stored bounds, masked or hidden, at every time as a reader of every field is, and one whose grant on a kept view with a valid time of its own says it is answered by the view's own bounds, masked, write-only or hidden, as its owner is",
     given
 );
 
@@ -1441,7 +1445,8 @@ async fn a_write_only_field_is_written_and_never_shown(store: Store) -> Held {
 }
 
 /// 092 (lakelands#1569): a type its principal may write and reads nothing
-/// of, granted only `write_only` or keyed by a field it may only write, is
+/// of, granted only `write_only`, by its default or on every field under a
+/// lake default that reads, or keyed by a field it may only write, is
 /// written and described for writing, and answered at every read door word
 /// for word as to one granted nothing of it.
 async fn a_type_written_and_not_read(
@@ -1450,8 +1455,9 @@ async fn a_type_written_and_not_read(
 ) -> Result<Vec<String>, Failure> {
     use lakelands_api::query::Walk;
     let cat = l.cat.as_ref();
-    let fields = vec![searchable("name"), field("bed", StorageKind::Text)];
-    l.declare(type_decl("ward", fields)).await?;
+    let fields = || vec![searchable("name"), field("bed", StorageKind::Text)];
+    l.declare(type_decl("ward", fields())).await?;
+    l.declare(type_decl("bay", fields())).await?;
     let mut wing = type_decl(
         "wing",
         vec![field("k", StorageKind::Text), searchable("name")],
@@ -1468,21 +1474,27 @@ async fn a_type_written_and_not_read(
     l.upsert("wing", "east", json!({"k": "east", "name": "Ada"}))
         .await?;
     l.upsert("round", "r1", json!({"on": "w1"})).await?;
-    // One name to both, so that no answer differs by it.
-    let grant = |ward: Value, wing: Value| {
-        let grants =
-            json!({"default": "read", "review": true, "types": {"ward": ward, "wing": wing}});
+    l.upsert("bay", "b1", json!({"name": "Ada", "bed": "3"}))
+        .await?;
+    // One name to both, so that no answer differs by it. The lake's
+    // default reads; `bay`'s grant names each field and no default.
+    let grant = |ward: Value, wing: Value, bay: Value| {
+        let types = json!({"ward": ward, "wing": wing, "bay": bay});
+        let grants = json!({"default": "read", "review": true, "types": types});
         let grants = serde_json::from_value(grants).expect("grants read");
         let agent = lakelands_api::PrincipalKind::Agent;
         crate::conformance::fixture::principal(store, agent, "clerk", grants)
     };
     let k = json!({"fields": {"k": "write_only", "name": "write"}});
-    let writer = grant(json!({"default": "write_only"}), k);
-    let blind = grant(json!({"default": "none"}), json!({"default": "none"}));
+    let each = json!({"fields": {"name": "write_only", "bed": "write_only"}});
+    let writer = grant(json!({"default": "write_only"}), k, each);
+    let none = || json!({"default": "none"});
+    let blind = grant(none(), none(), none());
     let mut red = Vec::new();
     for (ty, key, fields) in [
         ("ward", "w2", json!({"bed": "4"})),
         ("wing", "west", json!({"k": "west"})),
+        ("bay", "b2", json!({"bed": "4"})),
     ] {
         let written = try_upsert(cat, &writer, ty, key, fields).await;
         if !matches!(written, Ok(Outcome::Applied { output: None, .. })) {
@@ -1505,7 +1517,11 @@ async fn a_type_written_and_not_read(
         .await
         .must("describing")?;
     let generated = tools(&lake.data).map_err(|p| Failure::new(format!("no tools: {p:?}")))?;
-    for ty in ["ward", "wing"] {
+    for (ty, names) in [
+        ("ward", ["name", "bed"]),
+        ("wing", ["k", "name"]),
+        ("bay", ["name", "bed"]),
+    ] {
         let d = describe_type(cat, &writer, ty).await?;
         let (may, ty) = (&d.may, TypeName::from(ty));
         let doors = [
@@ -1514,7 +1530,8 @@ async fn a_type_written_and_not_read(
             Door::Find { ty },
         ];
         let has = doors.map(|door| generated.iter().any(|t| t.door == door));
-        let written = d.fields.iter().all(|f| f.access == Access::WriteOnly);
+        let written = (d.fields.iter().map(|f| (f.name.as_str(), f.access)))
+            .eq(names.map(|n| (n, Access::WriteOnly)));
         if may.find || may.get || !may.upsert || !written || has != [true, false, false] {
             red.push(format!(
                 "`{}` is described {may:?}, {:?}, tools {has:?}",
@@ -1527,7 +1544,12 @@ async fn a_type_written_and_not_read(
     let mut doors = Vec::new();
     for who in [&writer, &blind] {
         let mut told = Vec::new();
-        for (ty, key) in [("ward", "w1"), ("wing", "east"), ("per_bed", "3")] {
+        for (ty, key) in [
+            ("ward", "w1"),
+            ("wing", "east"),
+            ("per_bed", "3"),
+            ("bay", "b1"),
+        ] {
             let name = TypeName::from(ty);
             told.push(format!(
                 "{:?}",

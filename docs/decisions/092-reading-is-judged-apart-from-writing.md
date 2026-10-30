@@ -50,8 +50,21 @@ A type is shown to a write and not to a read when the principal holds a
 `write_only` grant and either:
 
 - the type is keyed by a field it may only write (above), or
-- no grant of its own on the type, the type's default or a field, reads
-  it or shows it masked.
+- no grant on the type, the type's default or a field's, reads it or
+  shows it masked.
+
+A field with no grant of its own takes the type's default, and a type
+with no default of its own takes the lake's. To a read, where fields of
+a type are granted, the lake's default does not count for the type; it
+counts only where the type's grant sets no default and grants no field.
+This is the operator's decision, 2026-10-30. So under a lake default
+that reads, a type whose every field is granted `write_only`, with no
+default of its own, is read by none, and the read doors and `describe`
+answer it as above. A field the grant does not name still takes the
+lake's default, so granting one field `write_only` hides only that
+field. A field held at `none` is granted nothing. That covers a
+reference a sight holds there because its target is hidden, so holding
+one does not take the lake's default from its type.
 
 Every read door answers such a type as a type that is not declared, word
 for word as to a principal granted nothing of it. That covers `find`,
@@ -67,7 +80,10 @@ The write side is unchanged:
 - a write answers as 006 § "Nothing flows back" says;
 - `describe` lists the type for its writes alone, with `may.find` and
   `may.get` false, each field the principal may write as `write_only`
-  and no other.
+  and no other. `may.find` and `may.get` come from the same judgement
+  the read doors ask. They are false exactly where the type is not
+  shown to a read and is described for its writes, and true for every
+  type a read is shown.
 
 The tools follow the description. `<type>_upsert` is generated, and no
 read tool names the type.
@@ -205,17 +221,21 @@ On every engine. Each was seen red before the build.
    - `ward`, with a searchable `name` and a `bed`;
    - `wing`, keyed by `k`;
    - a count view `per_bed` over `ward` by `bed`;
-   - `round`, carrying a relation `of` to `ward` through `on`.
+   - `round`, carrying a relation `of` to `ward` through `on`;
+   - `bay`, declared as `ward` is.
 
-   A clerk holds `ward` at `{default: write_only}` and `wing` at
-   `{k: write_only, name: write}`, with review. It upserts both and
-   proposes on `ward`, and is answered `Applied` and `Proposed`.
-   `describe_type` gives each `may.find` and `may.get` false,
-   `may.upsert` true, and every field `write_only`. The tools hold
-   `ward_upsert` and no read tool of it. `get`, `find`, a pattern and a
-   search on `ward`, `wing` and `per_bed`, a walk from `round` over
-   `of`, and the proposals listing each answer the same bytes as to a
-   clerk granted nothing of either type.
+   A clerk's lake default reads. It holds `ward` at
+   `{default: write_only}`, `wing` at `{k: write_only, name: write}` and
+   `bay` at `{name: write_only, bed: write_only}` with no default of its
+   own, with review. It upserts all three and proposes on `ward`, and is
+   answered `Applied` and `Proposed`. `describe_type` gives each
+   `may.find` and `may.get` false and `may.upsert` true, and lists its
+   declared fields by name, each `write_only`, so an empty list does not
+   pass. The tools hold each one's upsert tool and no read tool of it.
+   `get`, `find`, a pattern and a search on `ward`, `wing`, `per_bed`
+   and `bay`, a walk from `round` over `of`, and the proposals listing
+   each answer the same bytes as to a clerk granted nothing of the
+   three.
 2. `masking::VALID_AT_PROBES`, extended (lakelands#1571). A clerk dated
    by the grant holds the start or the end masked or at `none`. On each
    of the four, a read in March answers no record and `get` is refused.
@@ -223,7 +243,14 @@ On every engine. Each was seen red before the build.
    the bound's value.
 3. `masking::VALID_AT_VIEW`, extended (lakelands#1571). A reader dated
    by the grant on the source, masked or at `none` on its start, is
-   answered the view at each time as a reader of every field is.
+   answered the view at each time as a reader of every field is. A
+   reader dated by the grant on a kept view with a valid time of its
+   own is answered as the owner is:
+   - masked, write-only or at `none` on the view's `valid_from`, in
+     January and with no valid time;
+   - at `none` on the view's `valid_to`, in July, which leaves out the
+     group whose end has passed. Undated, it reads as a view with no
+     end.
 4. `masking::VALID_AT_MEETS`, extended (lakelands#1571). A walk at a
    valid time, by readers dated by the grant on the types it meets,
    masked or at `none`, answers in March and in July what a reader of
@@ -258,6 +285,14 @@ move, the facade gains no method, and the engines do not move.
 
 - Proposed on lakelands#1569 and lakelands#1571, for 0.22.0. A host kept
   a guard of its own for both.
+- Review found a type that `describe` said may not be read while `get`
+  and `find` still answered it. Every field was granted `write_only`,
+  and the type took its default from a lake default that reads. The
+  description had judged reads from the fields, and the doors from the
+  type's default. The operator decided on 2026-10-30 to hide the type
+  from reads: where fields of a type are granted, the lake default does
+  not count for it. `describe` takes `may.find` and `may.get` from the
+  one judgement.
 - lakelands#1572 found while probing that a write-only key field leaks
   through every record key. It ships in 0.21.1 on its own, with the
   key's test changed for every door. This record states the rule as

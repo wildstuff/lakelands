@@ -1291,9 +1291,14 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   type keyed by a field its principal may not know of is not shown", and
   `docs/decisions/092-reading-is-judged-apart-from-writing.md`.
 - **A grant that writes a type and reads none of it hides the type from
-  every read.** A principal whose grants on a type are `write_only` and
-  `none`, or whose key field on it is `write_only`, upserts and proposes
-  it, and `describe` lists it for those writes with `may.find` and
+  every read.** This covers a principal whose grants on a type are
+  `write_only` and `none`, or whose key field on it is `write_only`. It
+  also covers one whose every field of the type is granted `write_only`
+  with no type default. To a read, the lake default does not count for
+  a type whose fields are granted, so a lake default that reads does
+  not show such a type. Name a field `read` or `masked`, or set the type's
+  default, to keep it readable. Such a principal upserts and proposes
+  the type, and `describe` lists it for those writes with `may.find` and
   `may.get` false. Every read door, a walk, a view and the proposals
   listing included, answers the type as one that is not declared. A
   write answers as it does for anyone. See

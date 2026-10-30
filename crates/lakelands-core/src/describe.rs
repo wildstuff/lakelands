@@ -45,11 +45,13 @@ impl Sight<'_> {
         let (declared, who) = (self.force.declared(), self.who());
         let writing = self.writing();
         let types = each(&declared, |d| match &d.declaration {
-            Declaration::Type(t) => self.either(&writing, |s| s.type_description(t, d, &declared)),
+            Declaration::Type(t) => {
+                self.either(&writing, |s| s.type_description(t, d, &declared), unread)
+            }
             _ => None,
         });
         let verbs = each(&declared, |d| match &d.declaration {
-            Declaration::Verb(v) => self.either(&writing, |s| s.verb_description(v)),
+            Declaration::Verb(v) => self.either(&writing, |s| s.verb_description(v), |v| v),
             _ => None,
         });
         let value_types = each(&declared, |d| match &d.declaration {
@@ -97,7 +99,7 @@ impl Sight<'_> {
         let (declared, writing) = (self.force.declared(), self.writing());
         let mut t = declared.iter().find_map(|d| match &d.declaration {
             Declaration::Type(t) if &t.name == ty => {
-                self.either(&writing, |s| s.type_description(t, d, &declared))
+                self.either(&writing, |s| s.type_description(t, d, &declared), unread)
             }
             _ => None,
         })?;
@@ -115,14 +117,15 @@ impl Sight<'_> {
     }
 
     /// What `describe` answers by this sight, or, where it answers nothing,
-    /// by the one a write to a type a read is not shown sees it by (092):
-    /// such a type is described for its writes alone.
+    /// by the one a write to a type a read is not shown sees it by (092),
+    /// as `written` takes it: such a type is described for its writes alone.
     fn either<T>(
         &self,
         writing: &Option<Sight<'_>>,
         f: impl Fn(&Sight<'_>) -> Option<T>,
+        written: fn(T) -> T,
     ) -> Option<T> {
-        f(self).or_else(|| writing.as_ref().and_then(f))
+        f(self).or_else(|| writing.as_ref().and_then(f).map(written))
     }
 
     /// Whether its principal reads every one of `names` on type `ty`.
@@ -769,6 +772,12 @@ impl Sight<'_> {
     }
 }
 
+/// A type described for its writes alone: not there to a read (092).
+fn unread(mut t: TypeDescription) -> TypeDescription {
+    (t.may.find, t.may.get) = (false, false);
+    t
+}
+
 /// What `pick` takes from each declaration, in declaration order.
 fn each<'a, T>(declared: &'a [Declared], pick: impl FnMut(&'a Declared) -> Option<T>) -> Vec<T> {
     declared.iter().filter_map(pick).collect()
@@ -792,7 +801,8 @@ fn each<'a, T>(declared: &'a [Declared], pick: impl FnMut(&'a Declared) -> Optio
 /// (`docs/decisions/092-reading-is-judged-apart-from-writing.md`): a
 /// `write_only` grant then counts as `none`, so a type keyed by a field its
 /// principal may only write, or granted nothing but writes, is not there to
-/// a read while a write is shown it. A reading sight holds each type so
+/// a read while a write is shown it, and the lake's default does not count
+/// for a type whose fields are granted. A reading sight holds each type so
 /// judged at `none` (`rights::hide_unread_types`), so its doors ask without
 /// `reading`.
 pub(crate) fn type_shown<'a>(
@@ -813,13 +823,23 @@ pub(crate) fn type_shown<'a>(
         let mut key = t.fields.iter().filter(|f| key.contains(&f.name));
         key.all(|f| shows(field_access(who, t, f)))
     };
+    // To a read, the lake's default does not count for a type whose fields
+    // are granted and whose grant sets no default (092, the operator's
+    // decision): one whose every field is granted `write_only` is read by
+    // none. A field at `none` is granted nothing, as a reference the sight
+    // holds there is not.
+    let granted =
+        |g: &lakelands_api::principal::TypeGrants| g.fields.values().any(|a| *a != Access::None);
+    let typed = |t: &TypeDecl| match who.grants.types.get(&t.name) {
+        Some(g) if reading && g.default.is_none() && granted(g) => Access::None,
+        _ => type_access(who, &t.name),
+    };
     let own = |t: &TypeDecl| {
         let fields = &mut t.fields.iter();
         let mut sources = t.key_sources().into_iter();
         known(t, t.key_fields())
             && sources.all(|(s, key)| find(s).is_none_or(|s| known(s, key)))
-            && (shows(type_access(who, &t.name))
-                || fields.any(|f| shows(granted_access(who, t, f))))
+            && (shows(typed(t)) || fields.any(|f| shows(granted_access(who, t, f))))
     };
     let (mut asked, mut next) = (vec![&t.name], vec![t]);
     while let Some(t) = next.pop() {
@@ -1039,11 +1059,9 @@ impl Sight<'_> {
             && !is_link
             && fields.iter().any(FieldDescription::authored_writable);
         let closed = create_closed(who, &resolved, &value_types, &broken);
-        // A type described for its writes alone is not there to a read (092).
-        let reads = fields.is_empty() || fields.iter().any(|f| f.access.appears());
         let may = TypeRights {
-            find: reads,
-            get: reads,
+            find: true,
+            get: true,
             upsert,
             create: upsert && !closed,
             create_why: (upsert && closed).then(|| CREATE_CLOSED.to_owned()),
