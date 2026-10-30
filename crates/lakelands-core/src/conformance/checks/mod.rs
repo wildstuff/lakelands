@@ -512,6 +512,8 @@ pub const ALL: &[Check] = &[
     only::ONLY_SCHEMA,
     only::ONLY_GRANT_CHECKED,
     only::ONLY_UNAPPLIED_ADMITS_NONE,
+    only::ONLY_ANY_READS,
+    only::WHOLE_SETS_ONLY,
     hidden_where::HIDDEN_NOT_ANSWERED,
     hidden_where::HIDDEN_NOT_TOLD,
     hidden_where::HIDDEN_NO_LEXICAL,

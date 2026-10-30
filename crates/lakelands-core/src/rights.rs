@@ -276,25 +276,37 @@ impl Sight<'_> {
     }
 }
 
-/// The pairs `who`'s grant on `ty` admits records by: its `only`, empty
-/// where it admits every record.
+/// The pairs `who`'s grant on `ty` admits records by: its `only`, and a
+/// pair for each set of its `only_any`, its value the set's values as an
+/// array, which a record holds by holding one of them; empty where it
+/// admits every record. An array given in `only`, and a set on a field
+/// `only` names too, is null, a pair that cannot be applied.
 pub(crate) fn own_only(who: &Principal, ty: &TypeName) -> Vec<(FieldName, Value)> {
-    let only = who.grants.types.get(ty).map(|t| &t.only);
-    only.into_iter()
-        .flatten()
-        .map(|(f, v)| (f.clone(), v.clone()))
-        .collect()
+    let Some(t) = who.grants.types.get(ty) else {
+        return Vec::new();
+    };
+    let any = t
+        .only_any
+        .iter()
+        .map(|(f, set)| match t.only.contains_key(f) {
+            true => (f.clone(), Value::Null),
+            false => (f.clone(), set.iter().cloned().map(Value::String).collect()),
+        });
+    one_each(&t.only).chain(any).collect()
 }
 
 /// The pairs `who`'s grant on `ty` admits records to write by: its
 /// `writes_only`, empty where it may write every record it reads.
 pub(crate) fn own_writes_only(who: &Principal, ty: &TypeName) -> Vec<(FieldName, Value)> {
-    let pairs = who.grants.types.get(ty).map(|t| &t.writes_only);
-    pairs
-        .into_iter()
-        .flatten()
-        .map(|(f, v)| (f.clone(), v.clone()))
-        .collect()
+    let pairs = who.grants.types.get(ty).map(|t| one_each(&t.writes_only));
+    pairs.into_iter().flatten().collect()
+}
+
+/// The pairs of a grant that names one value a field: an array, which
+/// would read as a set, is null.
+fn one_each(pairs: &BTreeMap<FieldName, Value>) -> impl Iterator<Item = (FieldName, Value)> + '_ {
+    let one = |v: &Value| if v.is_array() { Value::Null } else { v.clone() };
+    pairs.iter().map(move |(f, v)| (f.clone(), one(v)))
 }
 
 /// The one effective `only` of a type for `who`, and whether its records are
@@ -316,6 +328,9 @@ pub(crate) fn only<'a>(
 
 /// What [`only`] answers of a type: its pairs, and whether it is computed.
 type OnlyAnswer = (Vec<(FieldName, Value)>, bool);
+
+/// Pairs of a field and the value a record must hold there.
+pub type Pairs = Vec<(FieldName, Value)>;
 
 /// [`only`] of `ty`, `seen` the views on the walk's path and `known` what
 /// each view walked before answered, so a shared view is asked once a call
@@ -388,14 +403,40 @@ impl Admit {
         self.pairs().is_some_and(|p| admitted(p, fields))
     }
 
-    /// The pairs an admitted record holds, for an engine to filter by;
-    /// none where no record is admitted.
+    /// The pairs an admitted record holds, a set's as an array of which
+    /// it holds one; none where no record is admitted.
     pub fn pairs(&self) -> Option<&[(FieldName, Value)]> {
         match self {
             Admit::All => Some(&[]),
             Admit::Only(p) | Admit::Computed(p) => Some(p),
             Admit::Nothing => None,
         }
+    }
+
+    /// The pairs as an engine's scan selects by them: `equal`, each pair
+    /// of one value, and `equal_any`, a tuple for each choice of one value
+    /// from every set; none where no record is admitted.
+    pub fn scanned(&self) -> Option<(Pairs, Vec<Pairs>)> {
+        let (sets, equal): (Vec<_>, Vec<_>) = self.pairs()?.iter().partition(|p| p.1.is_array());
+        let mut any: Vec<Pairs> = Vec::new();
+        for (f, values) in sets.iter().filter_map(|(f, v)| Some((f, v.as_array()?))) {
+            if values.is_empty() {
+                return None;
+            }
+            let had = std::mem::take(&mut any);
+            for t in if had.is_empty() {
+                vec![Vec::new()]
+            } else {
+                had
+            } {
+                any.extend(
+                    values
+                        .iter()
+                        .map(|v| [&t[..], &[(f.clone(), v.clone())]].concat()),
+                );
+            }
+        }
+        Some((equal.into_iter().cloned().collect(), any))
     }
 }
 
@@ -428,6 +469,13 @@ impl Sight<'_> {
             return Admit::Nothing;
         }
         match only(self.who(), ty, find) {
+            // A set that lists no value admits no record.
+            (p, _)
+                if p.iter()
+                    .any(|(_, v)| v.as_array().is_some_and(Vec::is_empty)) =>
+            {
+                Admit::Nothing
+            }
             (p, true) => Admit::Computed(p),
             (p, false) if p.is_empty() => Admit::All,
             (p, false) if decl.is_some() => Admit::Only(p),
@@ -436,9 +484,19 @@ impl Sight<'_> {
     }
 }
 
-/// Whether a stored record holds every pair.
+/// Whether a stored record holds every pair, one of a set's values for a
+/// set ([`own_only`]).
 pub(crate) fn admitted(pairs: &[(FieldName, Value)], fields: &BTreeMap<FieldName, Value>) -> bool {
-    pairs.iter().all(|(f, v)| fields.get(f) == Some(v))
+    pairs.iter().all(|(f, v)| holds_value(fields.get(f), v))
+}
+
+/// Whether a field holding `held` holds a pair's value: the value, or, of a
+/// set, one of its texts.
+fn holds_value(held: Option<&Value>, v: &Value) -> bool {
+    match v {
+        Value::Array(set) => held.is_some_and(|h| h.is_string() && set.contains(h)),
+        v => held == Some(v),
+    }
 }
 
 /// The end types of a link type `decl` whose records `who` is admitted
@@ -652,8 +710,8 @@ pub(crate) fn create_holds(
 ) -> bool {
     decl.field(field).is_some_and(|d| match d.authority {
         Authority::Authored | Authority::Shared => field_access(who, decl, d).writes(),
-        Authority::Verb => d.initial.as_ref() == Some(value),
-        Authority::Writer => value.as_str() == Some(who.writer().as_str()),
+        Authority::Verb => holds_value(d.initial.as_ref(), value),
+        Authority::Writer => holds_value(Some(&Value::String(who.writer())), value),
         _ => false,
     })
 }
@@ -662,7 +720,8 @@ impl Sight<'_> {
     /// Whether its principal's grant admits only some records of any type:
     /// such a principal changes no shape.
     pub fn holds_only(&self) -> bool {
-        self.who().grants.types.values().any(|t| !t.only.is_empty())
+        let mut types = self.who().grants.types.values();
+        types.any(|t| !t.only.is_empty() || !t.only_any.is_empty())
     }
 
     /// Refuse a read that names `decl` where its principal's `only` on it
@@ -682,6 +741,32 @@ impl Sight<'_> {
         Err(Error::invalid(Case::OnlyUnappliable { ty }))
     }
 
+    /// Refuse a read that computes over the records of `ty` as a set (a
+    /// count, an aggregate, a view) where its principal's grant admits only
+    /// some of them and holds `whole_sets_only` there, so a part is never
+    /// answered as the whole; of a view, so of every type it reads, as deep
+    /// as it goes. The refusal names the type so narrowed.
+    pub fn check_whole_set(&self, ty: &TypeName) -> Result<(), Error> {
+        let (who, mut seen) = (self.who(), BTreeSet::new());
+        let mut next = vec![ty.clone()];
+        while let Some(ty) = next.pop() {
+            let kept = ty.as_str().strip_prefix(lakelands_api::seam::KEPT_PREFIX);
+            let ty = kept.map_or(ty.clone(), TypeName::from);
+            if !seen.insert(ty.clone()) {
+                continue;
+            }
+            let whole = who.grants.types.get(&ty).is_none_or(|t| !t.whole_sets_only);
+            if !whole && !own_only(who, &ty).is_empty() {
+                return Err(Error::invalid(Case::WholeSetNeeded { ty }));
+            }
+            if let Some(v) = self.force.ty(&ty).and_then(|d| d.view.as_deref()) {
+                next.push(v.source.clone());
+                next.extend(v.merge.iter().map(|m| m.source.clone()));
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse a write of `decl` where its principal's `writes_only` on it
     /// cannot be applied, each pair judged as one of `only` is
     /// ([`Self::check_only`]), naming the type and never the field.
@@ -696,12 +781,13 @@ impl Sight<'_> {
 
     /// Whether a pair of a grant on `decl` can be applied: a declared field
     /// of kind `text` or `reference` its holder reads, not computed at the
-    /// read, with a text value.
+    /// read, with a text value or a set of them.
     fn applies(&self, decl: &TypeDecl, (f, v): &(FieldName, Value)) -> bool {
         use lakelands_api::ontology::StorageKind;
+        let texts = |a: &Vec<Value>| a.iter().all(Value::is_string);
         decl.field(f).is_some_and(|d| {
             matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
-                && v.is_string()
+                && (v.is_string() || v.as_array().is_some_and(texts))
                 && field_access(self.who(), decl, d).reads()
                 && !d.at_read()
         })
@@ -1625,6 +1711,7 @@ impl Sight<'_> {
             t.default.as_ref().is_none_or(reads)
                 && t.fields.values().all(reads)
                 && t.only.is_empty()
+                && t.only_any.is_empty()
                 && t.hide_where.is_empty()
         };
         reads(&who.grants.default) && who.grants.types.values().all(typed)

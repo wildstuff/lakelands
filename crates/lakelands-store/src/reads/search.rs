@@ -470,7 +470,7 @@ impl<'a> Reader<'a> {
         {
             return None;
         }
-        let equal = self.sight.admit(&decl.name).pairs()?.to_vec();
+        let (equal, equal_any) = self.sight.admit(&decl.name).scanned()?;
         let bounded = self.with_bound(decl, filter);
         if bounded.as_ref().is_some_and(|e| self.store_only(decl, e)) {
             return None;
@@ -478,6 +478,7 @@ impl<'a> Reader<'a> {
         Some(Scan {
             filter: bounded,
             equal,
+            equal_any,
             valid_at: self.valid_at_for(decl),
             retired: self.retired.get(),
             restricted: self.sight.sees_restricted(),

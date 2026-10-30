@@ -1085,6 +1085,8 @@ const UNAPPLIED: &str = r#"
     a value that is not text | {"only": {"owner": 1}}
     a field she may not read | {"only": {"owner": "alice"}, "fields": {"owner": "masked"}}
     a field she may not know of | {"only": {"owner": "alice"}, "fields": {"owner": "none"}}
+    a set on a number field | {"only_any": {"amount": ["10"]}}
+    a set on a field `only` names | {"only": {"owner": "alice"}, "only_any": {"owner": ["alice"]}}
 "#;
 
 /// The reads of the kept `spend`, grouped by the pair's field, and of a
@@ -1944,4 +1946,209 @@ async fn a_link_whose_end_is_a_link_is_answered_where_that_link_is(store: Store)
         "a link whose end is a link is answered where that link is: {wrong:#?}"
     );
     Ok(())
+}
+
+check!(
+    ONLY_ANY_READS = a_set_admits_the_records_holding_one_of_its_values,
+    "006 (lakelands#1588): a principal whose grant holds `only_any` on a type is answered only the records whose field holds one of its values, a value not listed being as a record that does not exist: `find`, `total`, a count, a sum, a group, a lexical search, a walk, a kept view grouped by the field and one of every record, and `get` of another's, alike on a second call; `\"\"` in the set admits a record whose field is empty; an empty set admits none; beside `only` both must hold; `describe_type` tells the holder its set; a write that would leave a record outside the set is not granted, one inside it applied"
+);
+
+/// `c4` (carol, 7, taxi) and `c5` (with an empty owner, 1, bus) beside
+/// [`claims`]' three.
+async fn set_claims(l: &Lake) -> Result<(), Failure> {
+    claims(l, true).await?;
+    l.upsert(
+        "claim",
+        "c4",
+        json!({"owner": "carol", "amount": 7, "note": "taxi"}),
+    )
+    .await?;
+    l.upsert(
+        "claim",
+        "c5",
+        json!({"owner": "", "amount": 1, "note": "bus"}),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Each set grant on `claim` and the reads it answers, `GRANT` standing
+/// for the grant in the rows that follow.
+const SET_READS: &str = r#"
+    GRANT {"only_any": {"owner": ["alice", "bob"]}}
+    claim | every record | {} | c1 c2 c3
+    claim | a filter | {"where": "amount > 1"} | c1 c2 c3
+    claim | a total | {"total": true, "limit": 1} | c1 total=3
+    claim | a count | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=3
+    claim | a sum | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "amount"}]}} | s=35
+    claim | a group | {"aggregate": {"measures": [{"name": "n", "func": "count"}], "group_by": ["owner"]}} | owner=alice n=2; owner=bob n=1
+    spend | a kept view grouped by the field | {} | alice bob
+    all_spend | a kept view of every record | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "total"}]}} | s=35
+    GRANT {"only_any": {"owner": ["carol", ""]}}
+    claim | the empty value too | {} | c4 c5
+    claim | its count | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=2
+    GRANT {"only_any": {"owner": []}}
+    claim | an empty set's count | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=0
+    GRANT {"only": {"note": "taxi"}, "only_any": {"owner": ["alice", "carol"]}}
+    claim | beside `only` | {} | c1 c4
+    claim | its total | {"total": true} | c1 c4 total=2
+"#;
+
+async fn a_set_admits_the_records_holding_one_of_its_values(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    set_claims(&l).await?;
+    let mut grant = Value::Null;
+    let mut rows = String::new();
+    let mut wrong = Vec::new();
+    let lines = SET_READS.lines().map(str::trim).filter(|r| !r.is_empty());
+    for line in lines.chain(["GRANT null"]) {
+        let Some(next) = line.strip_prefix("GRANT ") else {
+            rows.push_str(line);
+            rows.push('\n');
+            continue;
+        };
+        if !grant.is_null() {
+            let who = json!({"default": "read", "types": {"claim": grant}});
+            let dave = holder(store.as_ref(), "dave", who);
+            // Asked twice, the same grant answers the same.
+            for _ in 0..2 {
+                if let Err(e) = finds(&l, &dave, &rows, Position::GENESIS).await {
+                    wrong.push(format!("{grant}: {e}"));
+                }
+            }
+        }
+        (grant, rows) = (
+            serde_json::from_str(next).expect("a grant reads"),
+            String::new(),
+        );
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a set must admit one of its values alone: {wrong:?}"
+    );
+    let dave = holder(
+        store.as_ref(),
+        "dave",
+        json!({"default": "write", "types": {"claim": {"only_any": {"owner": ["alice", "bob"]}}}}),
+    );
+    let cat = l.cat.as_ref();
+    not_found(
+        "carol's `c4` to dave",
+        get(&l, &dave, "claim", "c4", None).await,
+    )?;
+    let none = json!({"default": "read", "types": {"claim": {"only_any": {"owner": []}}}});
+    let erin = holder(store.as_ref(), "erin", none);
+    not_found(
+        "`c1` to an empty set",
+        get(&l, &erin, "claim", "c1", None).await,
+    )?;
+    get(&l, &dave, "claim", "c2", None)
+        .await
+        .must("dave's `get` of bob's `c2`")?;
+    let lexical = de(json!({"type": "claim", "mode": "lexical", "text": "taxi"}));
+    let hits = cat.search(&dave, lexical).await.must("dave's search")?.data;
+    let walk = json!({"start": {"type": "trip", "key": "t1"},
+                      "steps": [{"relation": "on_trip", "walk": "in"}], "project": {"as": "graph"}});
+    let walked = cat.query(&dave, de(walk)).await.must("dave's walk")?.data;
+    let claim: TypeName = "claim".into();
+    let told = cat.describe_type(&dave, &claim, Default::default()).await;
+    let told = told.must("describing `claim` to dave")?.data.may.only_any;
+    let told = serde_json::to_value(&told).expect("a map reads");
+    let (searched, walked) = (hit_keys(&hits), node_keys(&walked, "claim"));
+    ensure!(
+        searched == "c1 c2" && walked == "c1 c2 c3" && told == json!({"owner": ["alice", "bob"]}),
+        "dave must find `c1 c2`, walk to `c1 c2 c3` and be told his set; he finds `{searched}`, walks to `{walked}` and is told {told}"
+    );
+    let mut wrote = Vec::new();
+    for (key, owner) in [("c6", "carol"), ("c7", "bob")] {
+        let fields = de(json!({"owner": owner, "amount": 2}));
+        let key = key.into();
+        let up = cat.upsert(&dave, &claim, &key, fields, Default::default());
+        wrote.push(said(up.await));
+    }
+    let [outside, inside] = &wrote[..] else {
+        unreachable!("two writes")
+    };
+    ensure!(
+        outside != "applied" && inside == "applied",
+        "dave writes inside his set alone: outside it `{outside}`, inside `{inside}`"
+    );
+    Ok(())
+}
+
+check!(
+    WHOLE_SETS_ONLY = a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole,
+    "006 (lakelands#1590): a grant that admits only some records of a type, by `only` or `only_any`, and holds `whole_sets_only` there refuses a count, `total`, a sum, a group, a pattern's aggregate and a view over the type, kept or not, a view over such a view too, saying the read needs every record of the type and the reader may read only some; `find`, `get` and a search of the admitted records are answered as without it; without it the same reads answer the admitted part, and on a type it does not narrow it changes nothing"
+);
+
+/// The reads a holder of `whole_sets_only` on `claim` is refused (`-`
+/// standing for the refusal) or answered.
+const WHOLE_SETS: &str = r#"
+    claim | every record | {} | c1 c3
+    claim | a filter | {"where": "amount > 1"} | c1 c3
+    claim | a count | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | -
+    claim | a sum | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "amount"}]}} | -
+    claim | a group | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "amount"}], "group_by": ["owner"]}} | -
+    claim | a total | {"total": true} | -
+    spend | a kept view grouped by the field | {} | -
+    all_spend | a kept view of every record | {} | -
+    top | a view over a view | {} | -
+"#;
+
+async fn a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    claims(&l, true).await?;
+    let by = vec![field("total", Number)];
+    l.declare(view_of("top", "spend", &[], by, &[("total", "sum(total)")]))
+        .await?;
+    l.declare(view_of(
+        "plain",
+        "claim",
+        &[],
+        vec![field("n", Number)],
+        &[("n", "count()")],
+    ))
+    .await?;
+    let refused =
+        "refused: this read needs every record of `claim`; you may read only some of them";
+    let rows = WHOLE_SETS.replace("| -\n", &format!("| {refused}\n"));
+    for grant in [
+        json!({"only": {"owner": "alice"}, "whole_sets_only": true}),
+        json!({"only_any": {"owner": ["alice"]}, "whole_sets_only": true}),
+    ] {
+        let who = json!({"default": "read", "types": {"claim": grant}});
+        let alice = holder(store.as_ref(), "alice", who);
+        finds(&l, &alice, &rows, Position::GENESIS).await?;
+        let plain = "plain | a view not kept | {} | ".to_owned() + refused;
+        finds(&l, &alice, &plain, Position::GENESIS).await?;
+        get(&l, &alice, "claim", "c1", None)
+            .await
+            .must("alice's `get` of `c1`")?;
+        not_found(
+            "bob's `c2` to alice",
+            get(&l, &alice, "claim", "c2", None).await,
+        )?;
+        let lexical = de(json!({"type": "claim", "mode": "lexical", "text": "taxi"}));
+        let hits = l
+            .cat
+            .search(&alice, lexical)
+            .await
+            .must("alice's search")?
+            .data;
+        let aggregate = json!({"start": {"type": "claim"}, "steps": [],
+            "project": {"as": "aggregate", "measures": [{"name": "n", "func": "count"}]}});
+        let counted = said(l.cat.query(&alice, de(aggregate)).await);
+        ensure!(
+            hit_keys(&hits) == "c1" && counted == refused,
+            "under {grant} alice finds `{}` and a pattern's count answers `{counted}`",
+            hit_keys(&hits)
+        );
+    }
+    // Without the setting the part is answered, as before; on a type the
+    // grant does not narrow the setting changes nothing.
+    let alice = alice(store.as_ref(), json!({}));
+    finds(&l, &alice, "claim | a sum | {\"aggregate\": {\"measures\": [{\"name\": \"s\", \"func\": \"sum\", \"field\": \"amount\"}]}} | s=15", Position::GENESIS).await?;
+    let whole = json!({"default": "read", "types": {"claim": {"whole_sets_only": true}}});
+    let carol = holder(store.as_ref(), "carol", whole);
+    finds(&l, &carol, "claim | a sum of every record | {\"aggregate\": {\"measures\": [{\"name\": \"s\", \"func\": \"sum\", \"field\": \"amount\"}]}} | s=35", Position::GENESIS).await
 }

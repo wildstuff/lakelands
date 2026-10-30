@@ -46,6 +46,11 @@ impl<'a> Reader<'a> {
 
     fn find_ordered(&self, ty: &TypeName, find: &Find) -> Result<Found> {
         let decl = self.named_type(ty)?.clone();
+        // An aggregate and a count are over the set, under `whole_sets_only`
+        // its whole or nothing (006).
+        if find.aggregate.is_some() || find.total || find.retired {
+            self.sight.check_whole_set(ty)?;
+        }
         let params = self.bind_params(&decl, &find.params)?;
         for o in &find.order_by {
             if let Some((field, case)) = o.misfit() {

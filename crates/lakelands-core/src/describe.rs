@@ -1059,6 +1059,17 @@ impl Sight<'_> {
             && !is_link
             && fields.iter().any(FieldDescription::authored_writable);
         let closed = create_closed(who, &resolved, &value_types, &broken);
+        // Told only where it applies, so it names no field its reader may
+        // not read (024): a set apart from the pairs of one value.
+        let pairs = self
+            .check_only(t)
+            .map(|()| crate::rights::own_only(who, &t.name));
+        let pairs = pairs.unwrap_or_default().into_iter();
+        let (sets, one): (Vec<_>, Vec<_>) = pairs.partition(|p| p.1.is_array());
+        let texts = |v: &lakelands_api::Value| {
+            let each = v.as_array().into_iter().flatten();
+            each.filter_map(|s| Some(s.as_str()?.to_owned())).collect()
+        };
         let may = TypeRights {
             find: true,
             get: true,
@@ -1097,12 +1108,8 @@ impl Sight<'_> {
                 })
                 .map(|r| r.name.clone())
                 .collect(),
-            // Told only where it applies, so it names no field its reader may
-            // not read (024).
-            only: match self.check_only(t) {
-                Ok(()) => crate::rights::own_only(who, &t.name).into_iter().collect(),
-                Err(_) => Default::default(),
-            },
+            only: one.into_iter().collect(),
+            only_any: sets.into_iter().map(|(f, v)| (f, texts(&v))).collect(),
             writes_only: match self.check_writes_only(t) {
                 Ok(()) => crate::rights::own_writes_only(who, &t.name)
                     .into_iter()
