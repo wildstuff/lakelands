@@ -1722,6 +1722,46 @@ fn serve_needs_a_protocol_named() {
     }
 }
 
+/// A holder of a set who may not read a part as the whole is answered the
+/// records its set admits and refused their count, told what to do
+/// (lakelands#1588, lakelands#1590).
+#[test]
+fn a_holder_of_a_set_is_refused_a_count_of_its_part() {
+    for backend in BACKENDS {
+        let sh = Shell::on("whole", backend);
+        sh.lake();
+        let claim = "name: claim\nfields:\n  owner: { type: text, authority: source }\n  amount: { type: decimal, authority: source }\n";
+        sh.run(&[
+            "apply",
+            &sh.bundle("claims", &[("types/claim.yaml", claim)]),
+        ]);
+        let lines = [("c1", "alice", "10"), ("c2", "bob", "20"), ("c3", "carol", "5")].map(
+            |(key, owner, amount)| {
+                format!("{{\"type\": \"claim\", \"key\": \"{key}\", \"fields\": {{\"owner\": \"{owner}\", \"amount\": \"{amount}\"}}}}\n")
+            },
+        );
+        let file = sh.file("claims.ndjson", &lines.concat());
+        assert_eq!(sh.run(&["ingest", &file, "--source", "bank"]).code, 0);
+        let config = r#"{"lakelands": 1, "owner": "owner", "principals": [
+        {"name": "auditor", "kind": "agent", "id": "auditor", "grants": {"default": "read",
+         "types": {"claim": {"only_any": {"owner": ["alice", "carol"]}, "whole_sets_only": true}}}}]}"#;
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let rows = "MATCH (c:claim) RETURN c.key ORDER BY c.key";
+        let read = sh.run(&["query", "--cypher", rows, "--as", "auditor"]);
+        assert_eq!(read.code, 0, "{}", read.err);
+        assert!(
+            read.out.contains(r#"[{"c.key":"c1"},{"c.key":"c3"}]"#),
+            "{}",
+            read.out
+        );
+        let count = "MATCH (c:claim) RETURN count(c) AS n";
+        fails(
+            &sh.run(&["query", "--cypher", count, "--as", "auditor"]),
+            "error: refused: this read needs every record of `claim`; you may read only some of them\n  what to do: read the records you are admitted one by one, or ask the lake's owner for a grant that admits every record of the type or does not hold `whole_sets_only`\n",
+        );
+    }
+}
+
 #[test]
 fn a_principal_from_the_configuration_acts_under_its_grants() {
     for backend in BACKENDS {

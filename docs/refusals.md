@@ -597,6 +597,7 @@ What a refusal is about.
 | `only_unappliable` | `type` (TypeName) | the grant's `only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `only` that cannot be applied to the read. |
 | `writes_only_unappliable` | `type` (TypeName) | the grant's `writes_only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `writes_only` that cannot be applied to the write. |
 | `hiding_unappliable` | `type` (TypeName) | the grant's `hide_where` on `{type}` cannot be applied here; the host's grants need fixing | A grant's hiding of a field on some records that cannot be applied to the read. |
+| `whole_set_needed` | `type` (TypeName) | this read needs every record of `{type}`; you may read only some of them | A read that computes over a set of records (a view over them, an aggregate, a count) of a type the reader's grant admits only some records of and holds `whole_sets_only` on. |
 | `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read; order by a stored field it is computed from | An order by a field computed at the read. |
 | `order_names_no_field` | — | an order by a value, `known_at` or `seen_at` names its field | An order by a value or a time that names no field. |
 | `param_missing` | `type` (TypeName), `name` (ParamName), `kind` (StorageKind), `unbound` (bool) | view `{type}` needs parameter `{name}` ({kind})[{?unbound}, and only a read that names the view binds it] | A view's parameter not given, or met where no read binds it. |

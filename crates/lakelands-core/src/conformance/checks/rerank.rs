@@ -28,6 +28,11 @@ check!(
 );
 
 check!(
+    RERANK_ONLY_ANY = a_holder_of_a_set_is_reranked_over_the_records_its_set_admits,
+    "067 and 006 (lakelands#1588): a holder of an `only_any` set on a type is answered, reranked, only the records whose field holds one of its values, and the reranker is handed those alone"
+);
+
+check!(
     RERANK_RANKS_AGAINST =
         a_vector_search_is_reranked_against_its_text_and_a_hybrid_one_against_its_own,
     "067 (lakelands#993): a vector search's window is ranked against the `text` its `rerank` gives, and a hybrid search's against the search's own text where its `rerank` gives none; each answers `ranked_by` with ` + rerank`"
@@ -886,6 +891,31 @@ async fn a_reranked_hybrid_search_embeds_its_text_on_the_first_page_alone(store:
         "a reranked hybrid search over three pages must embed its text once and answer \
          every scored key though the backend fails after the first page; it embedded it \
          {calls} times, answered {keys} keys, and a later page answered {later:?}"
+    );
+    Ok(())
+}
+
+async fn a_holder_of_a_set_is_reranked_over_the_records_its_set_admits(store: Store) -> Held {
+    let l = invoices(store.as_ref()).await?;
+    bound(store.as_ref())?;
+    // `d2` is tagged `y`, `d6` and `d3` `z`: the set admits `x` and `y`.
+    for (key, tag) in [("d2", "y"), ("d3", "z"), ("d6", "z")] {
+        l.upsert("doc", key, json!({"tag": tag})).await?;
+    }
+    let set = json!({"default": "read", "types": {"doc": {"only_any": {"tag": ["x", "y"]}}}});
+    let holder = super::only::holder(store.as_ref(), "holder", set);
+    let since = backing::rerank_calls().len();
+    let search = json!({"mode": "lexical", "text": "invoice", "rerank": {"top": 10}});
+    let hits = ask(&l, &holder, search).await?;
+    let mut answered: Vec<&str> = hits.hits.iter().map(|h| h.record.key.as_str()).collect();
+    answered.sort_unstable();
+    let calls = calls_since(since);
+    let mut handed: Vec<&str> = calls.iter().flat_map(texts).map(|(k, _)| k).collect();
+    handed.sort_unstable();
+    let admitted = ["d1", "d2", "d4", "d5"];
+    ensure!(
+        answered == admitted && handed == admitted,
+        "a holder of the set `x`, `y` must be answered and have the reranker handed `d1 d2 d4 d5` alone; it was answered {answered:?}, the reranker handed {handed:?}"
     );
     Ok(())
 }

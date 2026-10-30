@@ -29,7 +29,7 @@ check!(
 
 check!(
     CHANGE_REVIEWED = a_change_to_records_is_accepted_whole_or_not_at_all,
-    "081, 006, 051: a reviewer accepts a proposed change to records whole, never a part of what its proposer selected, and nothing its proposer could not select: a proposer without `restricted` proposes with restricted records left out, so the plan of a reviewer that holds `restricted` and its accept leave a held record out too; a reviewer holding `only` on the type beyond the proposal's pairs is refused not granted, appending nothing, and the proposal stays pending, while one whose `only` is the proposal's pairs accepts it; a proposal whose proposer held `restricted` is refused not granted to a reviewer without it"
+    "081, 006, 051: a reviewer accepts a proposed change to records whole, never a part of what its proposer selected, and nothing its proposer could not select: a proposer without `restricted` proposes with restricted records left out, so the plan of a reviewer that holds `restricted` and its accept leave a held record out too; a reviewer holding `only` on the type beyond the proposal's pairs is refused not granted, appending nothing, and the proposal stays pending, while one whose `only` is the proposal's pairs accepts it; a proposer's `only_any` set is held as its pairs, refused to a reviewer admitting one value of it and accepted by one whose set holds every value of it (lakelands#1588); a proposal whose proposer held `restricted` is refused not granted to a reviewer without it"
 );
 
 check!(
@@ -637,6 +637,34 @@ async fn a_change_to_records_is_accepted_whole_or_not_at_all(store: Store) -> He
     ensure!(
         wrote == ["s2", "s5", "s6"],
         "a reviewer whose `only` is the proposal's pairs must accept it whole: {wrote:?}"
+    );
+    // A proposer admitted by a set (lakelands#1588): a reviewer whose
+    // `only` admits one value of it is refused, one whose set holds every
+    // value of the proposer's accepts it, selecting the proposer's own.
+    let set = |id: &str, depts: &[&str]| {
+        let grants = json!({"default": "write", "review": true,
+            "types": {"staff": {"only_any": {"dept": depts}}}});
+        holder(s, id, grants)
+    };
+    let proposer = set("team", &["a", "b"]);
+    let team = proposed(c, &proposer, "salary > 8500", json!({"status": "team"})).await?;
+    let head = s.head().await.must("the head")?;
+    let refused = accepted(&l, &only("only-a", "a"), &team).await?;
+    ensure!(
+        matches!(reason(&refused), Some(Refusal::NotGranted)),
+        "a reviewer holding one value of the proposer's set must be refused not granted: {refused:?}"
+    );
+    head_unmoved(s, head, "an accept of part of a set's proposal").await?;
+    accepted(&l, &set("teams", &["a", "b", "c"]), &team)
+        .await?
+        .must("accepting within the reviewer's set")?;
+    let wrote: Vec<_> = writes(&events_after(s, head).await?)
+        .into_iter()
+        .map(|w| w.0)
+        .collect();
+    ensure!(
+        wrote == ["s6", "s7"],
+        "a reviewer whose set holds the proposer's must accept it whole, selecting the proposer's own: {wrote:?}"
     );
     // A proposer that held `restricted`: not a reviewer without it's.
     let boss = holder(s, "boss", json!({"default": "write", "restricted": true}));
