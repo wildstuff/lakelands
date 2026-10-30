@@ -86,7 +86,7 @@ fn plans(
         let mut explain = |statement: &str, args: &[&(dyn ToSql + Sync)]| -> Vec<String> {
             let rows = client
                 .query(
-                    &format!("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}"),
+                    &format!("EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}"),
                     args,
                 )
                 .unwrap();
@@ -156,7 +156,11 @@ fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
             // count reads its name's heads by their primary key.
             let walked = plan.iter().find_map(|line| {
                 let (_, rows) = line.split_once("on records_head h (actual rows=")?;
-                rows.split(' ').next()?.parse::<u64>().ok()
+                rows.split(' ')
+                    .next()?
+                    .parse::<f64>()
+                    .ok()
+                    .map(|n| n as u64)
             });
             // At the head the state is the one at the head's position, by
             // either index that holds it; earlier, the key's primary key read
@@ -367,7 +371,8 @@ fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
             .unwrap();
         let [_, later, ..] = read_statements(&sc, true);
         let (ty, at, limit, after) = (n.as_str(), last as i64, 1_i64, "k10000");
-        let explain = format!("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {later}");
+        let explain =
+            format!("EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF) {later}");
         let rows = client.query(&explain, &[&ty, &at, &limit, &after]).unwrap();
         rows.iter().map(|row| row.get(0)).collect()
     })

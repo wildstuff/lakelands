@@ -56,7 +56,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use crate::{lock, sql};
 
 /// The oldest server the engine supports, as `server_version_num` says it.
-pub const MIN_SERVER_VERSION: i32 = 160_000;
+pub const MIN_SERVER_VERSION: i32 = 180_000;
 
 /// Where systems keep their bundle of trusted certificate authorities,
 /// tried in this order when the configuration names none.
@@ -441,10 +441,7 @@ fn open(target: &Target, name: &str) -> Result<Db> {
     let version: i32 = db
         .query_one("SELECT current_setting('server_version_num')::int4", &[])?
         .get(0);
-    if version < MIN_SERVER_VERSION {
-        let (major, minor) = ((version / 10_000) as u32, (version % 10_000) as u32);
-        return Err(Error::unavailable(Situation::ServerTooOld { major, minor }));
-    }
+    server_new_enough(version)?;
     if target.tuning.statement_timeout_secs > 0 {
         db.batch(&format!(
             "SET statement_timeout = '{}s'",
@@ -486,6 +483,15 @@ pub(crate) fn session_keeping_state(target: &Target) -> Result<Db> {
         }
     }
     Ok(probe)
+}
+
+/// Refuses a server older than [`MIN_SERVER_VERSION`], before any DDL.
+fn server_new_enough(version: i32) -> Result<(), Error> {
+    if version < MIN_SERVER_VERSION {
+        let (major, minor) = ((version / 10_000) as u32, (version % 10_000) as u32);
+        return Err(Error::unavailable(Situation::ServerTooOld { major, minor }));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

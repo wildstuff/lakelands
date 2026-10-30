@@ -1174,8 +1174,8 @@ catalog! {
         VocabularyReserved { #[serde(rename = "type")] ty: TypeName, link: bool } => "the host vocabulary's type `{ty}` is reserved: [{?link}the store derives the link types under `sys.link.` from relations itself|the store keeps it for its own reader]; nothing was appended, and the lake is not opened for writing until the vocabulary names it otherwise",
         /// A host vocabulary's type the lake holds in a form the vocabulary changes beyond adding optional fields and rewording it.
         VocabularyChanged { #[serde(rename = "type")] ty: TypeName, #[serde(with = "closed::list")] reasons: Vec<Revision> } => "the host vocabulary declares `{ty}` otherwise than the lake holds it ({reasons}); between releases a vocabulary only adds optional fields to a type it declared, so the lake is not opened until the vocabulary declares `{ty}` as the lake holds it, or with optional fields added and nothing else changed but its descriptions, labels, annotations or the order of its fields",
-        /// A trigger on a link type of a relation carried by a reference.
-        WatchesViaLinks { #[serde(rename = "type")] ty: TypeName, relation: RelationName, via: FieldName, owner: Box<TypeName> } => "it watches `{ty}`, but `{relation}` is carried by a reference field, not by link records; watch `{owner}` with `changed({via})`",
+        /// A trigger on a link type of a relation carried by a field (a reference, or JSON holding keys).
+        WatchesViaLinks { #[serde(rename = "type")] ty: TypeName, relation: RelationName, via: FieldName, owner: Box<TypeName> } => "it watches `{ty}`, but `{relation}` is carried by the field `{via}`, not by link records; watch `{owner}` with `changed({via})`",
         /// A trigger on a view the lake does not keep.
         WatchesView { #[serde(rename = "type")] ty: TypeName } => "it watches `{ty}`, a view the lake does not keep, and a trigger fires on rows the lake keeps: set `view_kept.{ty}` to keep it first",
         /// A write effect that sets nothing.
@@ -1208,6 +1208,8 @@ catalog! {
         CypherFunction { name: String, offset: usize } => "`{name}()` is no function of Lakelands' expression grammar (at character {offset})",
         /// A key field a `CREATE` or `MERGE` does not give.
         CypherKeyMissing { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a record of `{ty}` is keyed by `{field}`, which the statement does not give",
+        /// A key field a `CREATE` or `MERGE` gives as null.
+        CypherKeyNull { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a record of `{ty}` is keyed by `{field}`, which the statement gives as null",
         /// A member a statement of its kind does not take.
         CypherMember { member: String } => "the statement takes no `{member}`: a read takes the axes and a cursor, a `MATCH … SET`, `REMOVE` or `DELETE` the id of its plan, and every other write nothing beside its parameters",
         /// A `MERGE` on a field that keys no record.
@@ -1324,7 +1326,7 @@ catalog! {
         RegexUnmatchable { pattern: String, limit: Option<usize> } => "`{pattern}` cannot be matched[: its compiled form is over {limit} bytes]",
         /// A path through a relation that may hold several links from a record.
         RelationHoldsMany { relation: RelationName, cardinality: Cardinality } => "`{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern",
-        /// A path through a relation carried by a reference field.
+        /// A path through a relation carried by a field (a reference, or JSON holding keys).
         RelationViaField { relation: RelationName, field: FieldName } => "`{relation}` is carried by the field `{field}`: a path steps through `{field}`",
         /// A `retired` outside a trigger's guard.
         RetiredOnlyInGuard => "retired() has meaning only in a trigger's guard",

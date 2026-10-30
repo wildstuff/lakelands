@@ -68,6 +68,7 @@ use postgres::Row;
 use postgres::types::ToSql;
 
 use crate::connect::{Db, Target};
+use crate::handle::ANALYZE_AFTER;
 use crate::vector_index::{self, Touched};
 
 /// The lake's tables, each named with its schema.
@@ -1959,7 +1960,10 @@ impl Buffer {
     /// whose `vector_index.<type>` setting it wrote go into `asked`, and
     /// the records it wrote or erased into `touched`, for the graphs
     /// (`crate::vector_index`). It answers the order index rows the
-    /// settings it wrote rebuilt.
+    /// settings it wrote rebuilt. A rebuild reads the heads it pages over
+    /// in the transaction that put them, which the planner has not seen:
+    /// `put`, the records the transaction put, tells whether to analyse
+    /// them first.
     pub(crate) fn write(
         self,
         db: &mut Db,
@@ -1967,6 +1971,7 @@ impl Buffer {
         types: &mut HeadTypes,
         asked: &mut BTreeMap<TypeName, Position>,
         touched: &mut Touched,
+        put: u64,
     ) -> Result<u64> {
         self.drop_rows(db, names)?;
         for (ty, _) in &self.dropped {
@@ -2082,6 +2087,10 @@ impl Buffer {
         // The setting's write rebuilds the index it asks for, so the index
         // describes the head from the next read on.
         let mut rebuilt = 0;
+        if !settings.is_empty() && put >= ANALYZE_AFTER {
+            let (heads, records) = (names.t("records_head"), names.t("records"));
+            db.batch(&format!("ANALYZE {heads}, {records}"))?;
+        }
         for (ty, at) in settings {
             rebuilt += rebuild_sorted(db, names, &ty, at)?;
         }

@@ -279,7 +279,7 @@ and every statement names it; no connection's `search_path` is set.
   carrying TLS keys, or naming no user, is refused. The driver reads no
   libpq variables and
   no `.pgpass`.
-- **The server** is PostgreSQL 16 or newer.
+- **The server** is PostgreSQL 18 or newer.
 
 An engine is found by name and opened through `EngineOpener`:
 

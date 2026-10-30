@@ -1,0 +1,22 @@
+{
+  "about": "One append of two `record_ingested` of `hr`, positions 101 and 102 after `boxed.json`, each in a delivery of its own, `pair-a` and `pair-b`, and each sealed apart: `sealed` names `hr`'s version `1` and, in `apart`, the delivery's own key, `a2` and `a3`, and `email` is in one box under the key HKDF-SHA-256 derives from the two (log-format §1.4), its nonce made from the source, the type, the key and the version before. The stored form (§1.2) is a frame line holding what the two share, and each event's line holding the rest, its `delivery` and its `sealed.apart` and `sealed.box` among it. `events` are the events the lines restore to, canonical, with their hashes; their ids are made under `lakelands:ingest:v2` with the box.",
+  "after": {
+    "position": 100,
+    "hash": "c2f80f9f7910d4a362c41210d65c745baebab0c6cf3f07fe0c01cef65293c643"
+  },
+  "stored": [
+    "{\"events\":2,\"frame\":{\"body\":{\"kind\":\"record_ingested\",\"made\":true,\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"known_at\":\"2026-10-05T09:00:58.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"sealed\":{\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"hr\",\"writer\":\"service:hr\"},\"v\":21}",
+    "{\"body\":{\"key\":\"c8\",\"patch\":{\"id\":\"c8\"}},\"delivery\":\"pair-a\",\"hash\":\"23b3c283591173dc7042bc959b78c543183fd8615494b3057ec5d7dfe0aff88e\",\"id\":\"73271db7711269a4f86e8363b96fdc36\",\"sealed\":{\"apart\":[\"a2\"],\"box\":\"sBJZRjAl1pSAWqSt1zDc+I0kWUZtp3DkaIyDY1jRA6V+41B0DVAmJpK9v1I=\"},\"v\":21}",
+    "{\"body\":{\"key\":\"c9\",\"patch\":{\"id\":\"c9\"}},\"delivery\":\"pair-b\",\"hash\":\"e60622aa77d0b98981828c240bcb60db9cb90f369b402bd15d50fabc6d61cbed\",\"id\":\"0618b1b33b1f8ac510c6a9a34901ffd7\",\"sealed\":{\"apart\":[\"a3\"],\"box\":\"fjVqT2dtkNZDE43hnK0Pf8KVEGlSHPXw4+VNecompRG/igOG1vlXQuSczyk=\"},\"v\":21}"
+  ],
+  "events": [
+    {
+      "line": "{\"body\":{\"key\":\"c8\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"id\":\"c8\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"pair-a\",\"fence\":1,\"hash\":\"23b3c283591173dc7042bc959b78c543183fd8615494b3057ec5d7dfe0aff88e\",\"id\":\"73271db7711269a4f86e8363b96fdc36\",\"known_at\":\"2026-10-05T09:00:58.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":101,\"prev\":\"c2f80f9f7910d4a362c41210d65c745baebab0c6cf3f07fe0c01cef65293c643\",\"sealed\":{\"apart\":[\"a2\"],\"box\":\"sBJZRjAl1pSAWqSt1zDc+I0kWUZtp3DkaIyDY1jRA6V+41B0DVAmJpK9v1I=\",\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"hr\",\"v\":21,\"writer\":\"service:hr\"}",
+      "hash": "23b3c283591173dc7042bc959b78c543183fd8615494b3057ec5d7dfe0aff88e"
+    },
+    {
+      "line": "{\"body\":{\"key\":\"c9\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"id\":\"c9\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"pair-b\",\"fence\":1,\"hash\":\"e60622aa77d0b98981828c240bcb60db9cb90f369b402bd15d50fabc6d61cbed\",\"id\":\"0618b1b33b1f8ac510c6a9a34901ffd7\",\"known_at\":\"2026-10-05T09:00:58.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":102,\"prev\":\"23b3c283591173dc7042bc959b78c543183fd8615494b3057ec5d7dfe0aff88e\",\"sealed\":{\"apart\":[\"a3\"],\"box\":\"fjVqT2dtkNZDE43hnK0Pf8KVEGlSHPXw4+VNecompRG/igOG1vlXQuSczyk=\",\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"hr\",\"v\":21,\"writer\":\"service:hr\"}",
+      "hash": "e60622aa77d0b98981828c240bcb60db9cb90f369b402bd15d50fabc6d61cbed"
+    }
+  ]
+}

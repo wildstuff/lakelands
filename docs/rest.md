@@ -227,8 +227,8 @@ without a plan takes no `plan_id`: each is `invalid` (422),
 `cypher_member`, naming it. A statement that would need two door calls
 is refused `cypher_second_write`, naming its second updating clause; a
 `MERGE` on another field `cypher_merge_on`, a key field not given
-`cypher_key_missing`, and a field the lake computes `cypher_computed`;
-`ON CREATE`, a label, a schema change, `DETACH DELETE`, a computed
+`cypher_key_missing` and one given as null `cypher_key_null`, and a field
+the lake computes `cypher_computed`; `ON CREATE`, a label, a schema change, `DETACH DELETE`, a computed
 value, `CALL`, `FOREACH` and a `RETURN` beside a write are
 `cypher_outside`, each named. Every one of them is refused before a
 record is read. The MCP `cypher` tool takes no write: it refuses one

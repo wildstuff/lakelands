@@ -120,8 +120,9 @@ fn a_heads_read_is_a_lookup_per_head() {
                 ),
                 (later, vec![&ty, &at, &limit, &after]),
             ] {
-                let explain =
-                    format!("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}");
+                let explain = format!(
+                    "EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}"
+                );
                 let rows = client.query(&explain, &args).unwrap();
                 out.push((head, rows.iter().map(|row| row.get(0)).collect()));
             }
@@ -138,7 +139,7 @@ fn a_heads_read_is_a_lookup_per_head() {
             has("using records_head_pkey on records_head h")
                 && !has("Sort")
                 && !has("Seq Scan")
-                && seek.is_some_and(|i| plan[i - 1].contains("Limit (actual rows=1 loops=10)")),
+                && seek.is_some_and(|i| plan[i - 1].contains("Limit (actual rows=1.00 loops=10)")),
             "a page of ten at the head ({head}) is not a walk of ten heads, each with one \
              seek of its state: {plan:#?}"
         );

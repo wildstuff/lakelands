@@ -49,6 +49,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   well-known Unix paths; on Windows there is none, so opening the lake
   fails as `unavailable` until `ca_file` names one.
 
+  The server must be **PostgreSQL 18 or newer**. The floor is the
+  engine's own and a host does not set it: a 16 or a 17 server is refused
+  at first contact as `server_too_old`, before anything is created.
+
   PostgreSQL in a container wants a `shm_size` of at least 256 MB:
   a parallel index build, pgvector's HNSW during a rebuild for one,
   takes shared memory of `maintenance_work_mem`'s size and more from
