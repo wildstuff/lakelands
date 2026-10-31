@@ -31,7 +31,8 @@
 //! projection's). Then the reads: one series' last hour and last day,
 //! raw and from the roll-up, the median of `--reads` reads. The bytes of
 //! a SQLite lake are read after the server has stopped; PostgreSQL's need
-//! `--pg-plain`. Every knob is an argument.
+//! `--pg-plain`. The last column is the machine's one-minute load average
+//! at the cell's start and end, own work included. Every knob is an argument.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -202,6 +203,18 @@ impl Feed {
                             "size": 1 + i % 500, "seq": seq});
         (key(&symbol, &at, seq), fields)
     }
+}
+
+/// The machine's one-minute load average, from `uptime`.
+fn load_average() -> f64 {
+    let out = std::process::Command::new("uptime").output();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    text.ok()
+        .and_then(|t| {
+            let tail = t.rsplit("load averages:").next()?.to_owned();
+            tail.trim().split([' ', ',']).next()?.parse().ok()
+        })
+        .unwrap_or(f64::NAN)
 }
 
 fn key(symbol: &str, at: &str, seq: u64) -> String {
@@ -498,6 +511,7 @@ async fn cell(
     a: &Args,
 ) {
     let root = scratch.join(format!("root-{}-{rollups}-{trigger}", std::process::id()));
+    let load_before = load_average();
     let schema = prepare(bin, &root, pg);
     let mut child = Command::new(bin)
         .arg("--root")
@@ -616,12 +630,13 @@ async fn cell(
         });
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
     println!(
-        "| {} | {rollups} | {trigger} | {records} | {:.0} | {:.1} | {:.0} | {:.1} | {log} | {proj} | {index} |",
+        "| {} | {rollups} | {trigger} | {records} | {:.0} | {:.1} | {:.0} | {:.1} | {log} | {proj} | {index} | {load_before:.1} / {:.1} |",
         if pg.is_some() { "postgres" } else { "sqlite" },
         c.singles.0,
         ms(c.singles.2),
         c.ingest.0,
         ms(c.ingest.2),
+        load_average(),
     );
     println!(
         "|   reads (largest series, {} ticks) | {} |",
@@ -682,10 +697,10 @@ async fn main() {
     let bin = bin.expect("--lakelands");
     let scratch = scratch.expect("--scratch");
     println!(
-        "| engine | roll-ups | trigger | records | callers: writes/s | p99 ms | ingest: records/s | p99 ms a call of {} | log B/rec | projection B/rec | index B/rec |",
+        "| engine | roll-ups | trigger | records | callers: writes/s | p99 ms | ingest: records/s | p99 ms a call of {} | log B/rec | projection B/rec | index B/rec | load 1 min, start / end |",
         a.batch
     );
-    println!("|---|---|---|---|---|---|---|---|---|---|---|");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|");
     for &n in &records {
         for &r in &rollups {
             for t in &triggers {
