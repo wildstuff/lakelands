@@ -58,8 +58,10 @@
 //! `measures` may call it, since only a view declares parameters.
 //! `preceding(f, by, match…)` is `f` on the record of the same type
 //! before this one in the series its `match` fields name, ordered by
-//! `by`; only a constraint may call it, since only the write judging one
-//! reads the series (`docs/decisions/059-a-type-declares-its-constraints.md`).
+//! `by`; only a constraint and a trigger's `when` may call it, since only
+//! the write judging one reads the series
+//! (`docs/decisions/059-a-type-declares-its-constraints.md`,
+//! `docs/decisions/004-the-change-feed-is-the-log.md`).
 //!
 //! **Durations.** The difference of two instants is a duration. A
 //! duration divided by a duration is a number, so the days between two
@@ -89,7 +91,8 @@
 //! reproduce on replay (`docs/decisions/002-determinism-is-the-boundary.md`).
 //! In them, `now()` and `today()` mean the `known_at` of the event being
 //! folded, never the clock of the process replaying it. A constraint is
-//! judged by the write alone, and its clock is the write's. In a read, they
+//! judged by the write alone, and its clock is the write's; so is a
+//! guard's `preceding`, whose firing the log keeps. In a read, they
 //! mean the read's clock: the instant `valid_at` names, else as of a
 //! position the `known_at` of its event, else the time of the read
 //! (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
@@ -252,12 +255,12 @@ pub enum Func {
     /// `previous(field)`: in a guard, the field's value before the write
     /// (null for a record the write creates).
     Previous,
-    /// `preceding(field, by, match, …)`: in a constraint, `field` of the
-    /// live record of the type, other than the one written, that holds
-    /// this record's values in every matched field and whose `by` is the
-    /// greatest below this record's, the first in key order among ties;
-    /// null where none is, or where this record's `by` or a matched field
-    /// is null.
+    /// `preceding(field, by, match, …)`: in a constraint and a trigger's
+    /// guard, `field` of the live record of the type, other than the one
+    /// written, that holds this record's values in every matched field
+    /// and whose `by` is the greatest below this record's, the first in
+    /// key order among ties; null where none is, or where this record's
+    /// `by` or a matched field is null.
     Preceding,
     /// `setting('key')`: the value of the lake's `sys.setting` record with
     /// that key, as it stood at the position being read or folded.

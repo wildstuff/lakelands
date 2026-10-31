@@ -119,7 +119,12 @@ a forgotten value.
     before the cause the membership the write read, kept by an earlier
     decision, unless the record then holds an erased value the `where`
     reads: a `where` that reads the clock moves without a write. A
-    trigger with no `when`, or withdrawn at its cause, stands.
+    conjunct of a `when` that reads `preceding` was its write's alone
+    and is not decided again, unless the record then holds an erased
+    value it reads on it; a predecessor taken back overrules nothing,
+    since which record came before is the write's to judge, in the
+    writer's sight then (004, 059). A trigger with no `when`, or
+    withdrawn at its cause, stands.
   - **What it costs.** Only a reaction before the lake's last act, or
     sharing its time as every event of its append does, is decided: each
     by a few point reads, and by the shape at its cause, which an `as_of`

@@ -228,7 +228,7 @@ impl Decide<'_> {
         }];
         let e = declare::filter(&sets, &t.on, c, Eval::Guard, &at)?;
         let on = self.ontology.ty(&t.on)?;
-        Ok(self.holds_at_write((&e, t.when_strict), on, before, after))
+        self.holds_at_write((&e, t.when_strict), on, before, after)
     }
 
     /// The event of `t` firing on the record of `ty` at `key`, by a change
@@ -269,27 +269,40 @@ impl Decide<'_> {
 
     /// Whether a trigger's `when`, `e` over `on`, holds at a write that
     /// leaves `after` (it was `before`), strictly where `strict`
-    /// ([`expr::holds_strict`]).
+    /// ([`expr::holds_strict`]). Its `preceding` reads the record before
+    /// `after` in each series as a constraint's does, as its writer is
+    /// answered ([`Self::preceding`]); a field a hiding lowers there reads
+    /// as null, since a guard refuses no write.
     fn holds_at_write(
         &self,
         (e, strict): (&Expr, bool),
         on: &TypeDecl,
         before: Option<&StoredRecord>,
         after: &StoredRecord,
-    ) -> bool {
+    ) -> Result<bool> {
         let now = self.at.now;
         let live = before.filter(|b| !b.retired);
+        let mut preceding = expr::Preceding::new();
+        for series in e.series().into_keys() {
+            let found = self.preceding(on, after, &series)?;
+            let mut fields = found.map(|r| r.fields).unwrap_or_default();
+            for s in self.at.sights() {
+                let low = s.lowered(&on.name, &fields);
+                fields.retain(|f, _| !low.contains_key(f));
+            }
+            preceding.insert(series, fields);
+        }
         let scope = WriteScope {
             after: &after.fields,
             before: live.map(|b| &b.fields),
             retiring: live.is_some() && after.retired,
             meta: Some(&after.meta),
             settings: Some(self.at.settings),
-            preceding: None,
+            preceding: Some(&preceding),
             now,
         };
         let settings = (self.at.settings, strict);
-        self.with_heads(|h| holds((h, self.ontology, on), after, e, scope, settings))
+        Ok(self.with_heads(|h| holds((h, self.ontology, on), after, e, scope, settings)))
     }
 
     /// Whether `record` is a member of `s` as the append leaves what its
@@ -391,7 +404,7 @@ impl Decide<'_> {
                     false => {
                         let t = &o.triggers[name].decl;
                         let strict = (&e, t.when_strict);
-                        if r.retired || !self.holds_at_write(strict, on, Some(&r), &r) {
+                        if r.retired || !self.holds_at_write(strict, on, Some(&r), &r)? {
                             continue;
                         }
                         // The write that set it off made another record.
@@ -808,6 +821,10 @@ impl<S: Scope> Scope for VerbScope<'_, S> {
 
     fn previous(&self, field: &FieldName) -> Option<Value> {
         self.record.previous(field)
+    }
+
+    fn preceding(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
+        self.record.preceding(series, field)
     }
 
     fn in_write(&self) -> bool {

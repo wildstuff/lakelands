@@ -80,12 +80,13 @@ where this record's `by` or a matched field is null, or where that
 record's field is. Every argument names a field of the type, and there
 are three or more.
 
-`preceding` is a constraint's alone: anywhere else, a filter, a guard,
-a derived field, it is refused `preceding_here`. The declaration refuses
+`preceding` is a constraint's and a trigger's guard's alone (004,
+extended, lakelands#1604): anywhere else, a filter, a derived field, a
+guard on a view, it is refused `preceding_here`. The declaration refuses
 a series it cannot read cheaply: a matched field that is not text or a
 reference, which no exact-text index keeps, `preceding_unlooked`, and a
 `by` field the lake does not sort, `preceding_unordered`, each naming
-the constraint and the field. A field matched on is looked up, so an
+the declaration and the field. A field matched on is looked up, so an
 engine keeps the index for it from the declaration on (057, extended):
 the write reads one series, never the type.
 

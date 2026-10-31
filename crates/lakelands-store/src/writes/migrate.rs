@@ -393,6 +393,26 @@ impl Call<'_> {
                 after_it(Case::NoLongerDeclarable { ty }.into())
             }));
         }
+        // A trigger's `preceding` reads its series by the kinds the
+        // migration leaves, as a constraint's does: `declare` must still
+        // take the trigger (004, extended). It is named only to an author
+        // `describe` shows it to.
+        let preceding = [lakelands_api::expr::Func::Preceding];
+        for t in w.ontology.triggers.values().map(|e| &e.decl) {
+            let e = t.when.as_ref().and_then(|c| c.typed().ok());
+            if t.on != m.to.name || !e.is_some_and(|e| e.calls(&preceding)) {
+                continue;
+            }
+            let d = Declaration::Trigger(t.clone());
+            let Err(e) = declare::check_declaration(&after, &d, false) else {
+                continue;
+            };
+            let ty = m.to.name.clone();
+            return Err(match sees.shows(&d) {
+                true => e.within(Place::AfterMigration { name: ty }),
+                false => after_it(Case::NoLongerDeclarable { ty }.into()),
+            });
+        }
         // So does every other declaration in force (027, extended): the
         // type's derived fields, another type's derived relation to it, and
         // the sets, triggers and verbs on it keep the fields they read; and
