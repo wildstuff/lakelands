@@ -113,7 +113,13 @@ async fn a_delivery_a_record_names_is_sealed_under_a_key_of_its_own(
         run: None,
     };
     let mark = store.head().await.must("reading the head")?;
-    let said = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &crm, opts, records);
+    let said = lakelands_api::ingest_all_with(
+        l.cat.as_ref(),
+        &l.own,
+        &crm,
+        opts,
+        super::quarantine::lined(records),
+    );
     said.await.must("ingesting three deliveries sealed apart")?;
     let sealed = seals(store.as_ref(), mark).await?;
     let of = |k: &str| {

@@ -1546,6 +1546,9 @@
    "code": "host_line_missing"
   },
   {
+   "code": "quarantine_line_missing"
+  },
+  {
    "cause": 1,
    "code": "cause_past_head",
    "head": 1

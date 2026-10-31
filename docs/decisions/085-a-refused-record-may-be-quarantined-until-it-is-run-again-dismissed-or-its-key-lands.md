@@ -147,6 +147,17 @@ line, else it is `invalid`, `host_line_missing`, at member `line`.
 With neither named it is keyed under the store's own delivery, its
 call's alone, as an ingest's record with none is.
 
+**A delivery's records name their line.** A place counts the records
+of one delivery within one call, so a delivery sent in several calls
+without `line` would quarantine different records under one id, the
+second hiding the first. An ingest that asks `quarantine_refused`
+under a delivery, the call's or a record's own, therefore refuses a
+record with no `line`: `invalid`, `quarantine_line_missing`, at member
+`line`, ending the stream as any refusal of the call does: windows
+already committed stay. Without the option, under no delivery, or under
+a `run` (whose rows key by place), nothing changes. The store keeps no state
+between calls for this, and the log format is untouched.
+
 What keeps an ingest's refusal from quarantine keeps the host's (the
 table above, marked no): the call, the `ingest` grant, the source and
 the delivery or run's form, a type not shown, a source forgotten or

@@ -38,6 +38,16 @@ check!(
 );
 
 check!(
+    QUARANTINED_DELIVERY_NAMES_ITS_LINE = a_quarantining_delivery_names_the_line_of_each_record,
+    "085, extended: an ingest asking `quarantine_refused` under a delivery, the call's or a record's own, whose record names no line is refused `invalid` (`quarantine_line_missing`) at member `line`, in the second call of a delivery as in a first, and appends nothing from that call; without `quarantine_refused`, or with the lines, the same records land"
+);
+
+check!(
+    QUARANTINED_UNNAMED_NEEDS_NO_LINE = an_unnamed_quarantining_call_needs_no_line_in_any_window,
+    "085, extended: an ingest asking `quarantine_refused` under no delivery, at a `commit_window` of 1, of three records with no line and the second refused, lands two and quarantines the second, window after window, as the store names the delivery after the first"
+);
+
+check!(
     QUARANTINED_BY_RUN_PLACES = a_run_counts_the_places_of_its_rows,
     "085, extended: one call under run `r` of two records with no line, of two deliveries and both refused, lists `(erp, r, 0)` and `(erp, r, 1)`, each at version 1 and its own key"
 );
@@ -340,6 +350,90 @@ async fn one_delivery_in_two_calls_keys_by_line(store: Store) -> Held {
     ensure!(
         after.is_empty() && rows == want,
         "sent again, the calls appended {after:?} and list {rows:?}"
+    );
+    Ok(())
+}
+
+async fn a_quarantining_delivery_names_the_line_of_each_record(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(invoice()).await?;
+    let plain = |key: &str| inv(key, json!(1), None);
+    let own = SourceRecord {
+        delivery: Some("other".into()),
+        ..plain("o")
+    };
+    let asked = [
+        ("the call of a delivery", kept("file"), plain("a")),
+        ("the second call of a delivery", kept("file"), plain("b")),
+        (
+            "a record naming its delivery",
+            IngestOpts {
+                quarantine_refused: true,
+                ..IngestOpts::default()
+            },
+            own,
+        ),
+    ];
+    let first = SourceRecord {
+        line: Some(1),
+        ..plain("first")
+    };
+    fed(&l, &l.own, "erp", kept("file"), vec![first])
+        .await
+        .must("the first call, with its line")?;
+    let head = store.head().await.must("reading the head")?;
+    for (what, opts, record) in asked {
+        let source = SourceId::from("erp");
+        let got =
+            lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, opts, vec![record])
+                .await;
+        let at = got.as_ref().err().and_then(|e| {
+            let said = e.case()?;
+            Some((said.case.clone(), said.at.clone()))
+        });
+        let line = Place::Member {
+            path: "line".into(),
+        };
+        ensure!(
+            at == Some((Case::QuarantineLineMissing, vec![line])),
+            "a record with no line in {what} answered {got:?}"
+        );
+    }
+    let after = events_after(store.as_ref(), head).await?;
+    ensure!(after.is_empty(), "the refused calls appended {after:?}");
+    // Without the option the same record lands, as before.
+    let unasked = IngestOpts {
+        delivery: Some("file".into()),
+        ..IngestOpts::default()
+    };
+    let source = SourceId::from("erp");
+    lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, unasked, vec![plain("c")])
+        .await
+        .must("ingesting without the option")?;
+    Ok(())
+}
+
+async fn an_unnamed_quarantining_call_needs_no_line_in_any_window(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(invoice()).await?;
+    let opts = IngestOpts {
+        quarantine_refused: true,
+        commit_window: Some(1),
+        ..IngestOpts::default()
+    };
+    let three = vec![
+        inv("u1", json!(1), None),
+        inv("u2", json!(2), Some("nope")),
+        inv("u3", json!(3), None),
+    ];
+    let source = SourceId::from("erp");
+    let got = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, opts, three)
+        .await
+        .must("the unnamed call at a window of 1")?;
+    let landed: u32 = got.iter().map(|w| w.records).sum();
+    ensure!(
+        indexes(&got) == [1] && landed == 2,
+        "the unnamed call answered {got:?}"
     );
     Ok(())
 }
