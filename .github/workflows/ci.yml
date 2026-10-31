@@ -161,6 +161,25 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: scripts/conformance.sh "${{ matrix.engine }}"
 
+  # The PostgreSQL engine's refusals at connect, run against what they
+  # guard against (docs/decisions/038-a-lake-in-postgresql.md): PgBouncer
+  # in transaction mode and in session mode, and a server that demands a
+  # client certificate, all in one container of the `pg` leg's image
+  # (scripts/pg-live/up.sh). Runs on every pull request, but builds only
+  # the one test file; the conformance job runs the file too, standing
+  # down for want of these servers.
+  pg-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: start the servers
+        run: scripts/pg-live/up.sh | sed 's/^export //' >> "$GITHUB_ENV"
+      - run: cargo nextest run --locked -p lakelands-engine-pg --test live_servers --no-tests=fail
+
   # Licences and advisories (deny.toml): one job each, so a new advisory
   # never hides a licence failure.
   deny:
