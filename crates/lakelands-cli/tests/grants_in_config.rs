@@ -157,6 +157,27 @@ fn a_grant_holding_a_key_it_does_not_know_stops_the_root() {
     );
 }
 
+/// The file's order decides which fault is met first, and whose: written by
+/// hand, since a `Value` would sort the keys, with the name after the grant.
+#[test]
+fn the_refusal_names_the_principal_the_file_meets_first() {
+    let root = Lakes::with_articles("first-met");
+    fs::write(
+        root.dir.join("lakelands.json"),
+        r#"{"lakelands": 1, "owner": "owner", "principals": [
+        {"name": "fine", "kind": "agent", "id": "fine", "grants": {"default": "read"}},
+        {"kind": "agent", "id": "clerk",
+         "grants": {"default": "read", "typez": {}, "reviw": true}, "name": "clerk"},
+        {"name": "later", "kind": "agent", "id": "later", "grants": {"typez": {}}},
+        {"name": "lacking", "kind": "agent", "id": "lacking"}]}"#,
+    )
+    .unwrap();
+    let said = err(&root.serve_as_clerk());
+    assert!(said.contains("`typez`"), "no key: {said}");
+    assert!(said.contains("`clerk`"), "no principal: {said}");
+    assert!(!said.contains("`later`"), "another's name: {said}");
+}
+
 #[test]
 fn a_grant_naming_a_type_no_lake_declares_is_told_and_starts() {
     let root = Lakes::with_articles("unknown-type");

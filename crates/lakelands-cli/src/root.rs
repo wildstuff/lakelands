@@ -139,26 +139,29 @@ fn show(p: &Path) -> String {
     p.display().to_string()
 }
 
-/// The principal whose grant `refused` a configuration's `text`, where a
-/// grant did: the reader of a grant does not know whose it is. Read apart,
-/// a grant answers what the whole file answered, less the place in it.
-fn grant_holder(text: &str, refused: &serde_json::Error) -> Option<String> {
-    #[derive(Deserialize)]
-    struct Held {
-        name: String,
-        grants: serde_json::Value,
-    }
-    #[derive(Deserialize)]
-    struct Listed {
-        principals: Vec<Held>,
-    }
-    let said = refused.to_string();
-    let listed: Listed = serde_json::from_str(text).ok()?;
-    let refuses = |held: &Held| {
-        Grants::deserialize(&held.grants).is_err_and(|e| said.starts_with(&e.to_string()))
+/// The name of the principal whose grant stops a configuration's `text`
+/// being read, where a grant is what stops it: the reader of a grant does not
+/// know whose it is, so the file is read again for the place it stopped at.
+fn grant_holder(text: &str) -> Option<String> {
+    use serde_path_to_error::Segment;
+    let read = &mut serde_json::Deserializer::from_str(text);
+    let refused = serde_path_to_error::deserialize::<_, Config>(read).err()?;
+    let place: Vec<&Segment> = refused.path().iter().collect();
+    let [
+        Segment::Map { key: list },
+        Segment::Seq { index },
+        Segment::Map { key: field },
+        ..,
+    ] = place[..]
+    else {
+        return None;
     };
-    let holder = listed.principals.into_iter().find(refuses)?;
-    Some(holder.name)
+    if list != "principals" || field != "grants" {
+        return None;
+    }
+    let file: serde_json::Value = serde_json::from_str(text).ok()?;
+    let name = file.get(list)?.get(index)?.get("name")?.as_str()?;
+    Some(name.to_owned())
 }
 
 /// Create a root. Refuses to overwrite an existing one.
@@ -461,7 +464,7 @@ impl Root {
             }
             Err(e) => return Err(io(&file, e)),
         };
-        let config: Config = serde_json::from_str(&text).map_err(|e| match grant_holder(&text, &e) {
+        let config: Config = serde_json::from_str(&text).map_err(|e| match grant_holder(&text) {
             Some(name) => Failure::new(
                 format!(
                     "{}: the grant of principal `{name}` is not understood: {e}",
