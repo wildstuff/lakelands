@@ -130,9 +130,11 @@ equals it. `exact_terms` takes the field's kind, so `in` and a number
 literal count on a number field; on a text field it reads as today, so a
 text that reads as a number (`'7'`) stays a scan.
 
-Every `Holders` statement stands as it is. The fill cannot be
-`json_extract`, because the token is made in Rust: `relook` fills number
-fields by the type's records in chunks.
+Every `Holders` statement stands as it is. 057's rule stands too: a reader
+decides from the set, so the rows follow the set in the same transaction,
+and a field's fill is never seen half done. The fill cannot be
+`json_extract`, because the token is made in Rust: `relook` reads the type's
+head states for a number field, holding the writer for that pass.
 
 ### The series index
 
@@ -191,7 +193,8 @@ that trusts them would answer wrongly, not slowly. So a mark of this release,
 twin row in `sort_index`, moved by a fold only from the position it folded
 from. A reader takes series rows and number tokens only while it equals the
 fold; else it takes the old road. A writer's open that finds it behind puts
-each pair at `Start` and each number field back to its fill.
+each pair at `Start`, fills each number field in its own transaction, and
+moves the mark only once those fills are done.
 
 ### What the settings cost
 
@@ -199,7 +202,7 @@ each pair at `Start` and each number field back to its fill.
 |---|---|
 | `series_index` written | chunks beside the writer; reckoned as 041's `chosen` build, 2.0 s on SQLite and 3.5 s on PostgreSQL at 100 000 records, plus a wait of up to one chunk per write |
 | `series_index` removed | one delete, one row a record |
-| a number named in `lookup_index` | a fill by chunks; rows as a text's |
+| a number named in `lookup_index` | one pass in the setting's transaction, holding the writer; reckoned as `sort_index`'s, 0.85 s on SQLite and 2.4 s on PostgreSQL at 100 000 records; rows as a text's |
 | neither written | nothing, on any read or write |
 
 ## Why
