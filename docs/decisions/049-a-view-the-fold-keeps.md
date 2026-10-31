@@ -4,6 +4,10 @@
 
 ### The fold keeps a view's records, and a read of the view answers them
 
+098 keeps a kept view's head alone and its order entries in
+`view_order`; 099 builds a view in parts, and a read computes until the
+build is whole.
+
 A view asked for by the setting `view_kept.<type>` has its records kept
 in the projection by the fold, one for each group, and a read of the
 view answers them. **A kept record is exactly what the read would
@@ -304,3 +308,4 @@ that already walks the type.
   none, where it was kept only under text and reference fields and one
   bucket of time beside them (lakelands#1614): the seek by the group's
   digest needs nothing of the group fields' kinds.
+- Amended by 098 and 099 (lakelands#1652), proposed for 0.23.0.

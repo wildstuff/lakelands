@@ -4,6 +4,9 @@
 
 ### The SQLite engine keeps a lake as a directory whose log anyone can read
 
+098 compresses an append's lines into blocks of zlib, and a reader still
+needs this document and a standard library alone.
+
 The SQLite engine keeps a lake as a directory whose log anyone can read:
 
 - `log/<first position>.jsonl` holds the segments exactly as the log
@@ -256,3 +259,4 @@ file's contents; the operating system's lock does not.
 - The index goes into a file copy of the directory, and a backup the
   store writes holds the segments alone; before, every backup was said
   to hold the index (lakelands#1369).
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

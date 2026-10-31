@@ -20,6 +20,11 @@ amended rule is marked where it stands as accepted for 0.20.0.
 
 ### A segment's lines are a stored form, and each restores to exactly one canonical event
 
+098 amends this for format 23: a block holds one format, so `v` is on
+its first line, not on every line; a block's lines also leave out each
+`hash` but the last and an `id` the event decides; and compression ends
+this record's "Not a compression of the log".
+
 The log stores a **stored form**, not each event's canonical bytes. A
 reader restores every event from it, and the event it restores is the
 one the store made: the same members, the same canonical bytes, the same
@@ -234,3 +239,7 @@ the events it delivers (`trigger_fired` and `object_set_changed`). An
 append that ends with an event the deliverer does not send, such as a
 `record_ingested` whose trigger did not fire, is seen complete by a
 receiver only when a later append is delivered.
+
+## How it came to be
+
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

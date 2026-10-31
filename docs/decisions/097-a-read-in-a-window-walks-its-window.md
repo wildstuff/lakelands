@@ -2,8 +2,10 @@
 
 Decided on lakelands#1633, lakelands#1635 and lakelands#1638, for 0.23.0.
 No code yet. The build waits for the joint record of lakelands#1649,
-lakelands#1651 and lakelands#1652, which may change the format this record
-stands on; what waits for it is listed below.
+lakelands#1651 and lakelands#1652, proposed in
+`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md` and
+`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`, and for the new
+format's pull requests, which land first; what waits for it is listed below.
 
 **No data migration and no breaking change of its own, and no compatibility
 is kept.** The operator decided a green field: no older lake and no older writer
@@ -372,6 +374,7 @@ Lines as reckoned, then ×1.35. Every pull request stays about 600 or under.
 
 Steps 1 to 4 stand alone, in order. Steps 5 and 6 need step 1, and steps 7 to 10
 need step 2. Step 8 changes what `describe` says, so its pull request walks.
+Every step lands after 098's last, and step 8 after 099's R7.
 
 The reserve for lines 2, 3, 4, 6 and 7 of lakelands#1578 is 3 500 product and
 6 000 specification lines, and the sum fits it. Shipped pull requests of this
@@ -397,13 +400,15 @@ Both on 2026-10-31.
 ### What waits for the joint record
 
 The joint record of lakelands#1649, lakelands#1651 and lakelands#1652 decides
-these. Each stands here until it does, and it says what it changes:
+these. Each stands here until 098 and 099 are accepted, and they say what they
+change:
 
 - `sort_index` and `text_index` as the rows' home. A changed format moves the
-  rows' shape, not the roads.
+  rows' shape, not the roads. 098 keeps both tables' columns and primary keys; its
+  only change here is the bound a window down takes on PostgreSQL.
 - A number field's fill, a single pass today, into the bounded parts of
   lakelands#1651. The same goes for the series build, if one road for parts
-  carries it, and for `choose_order`'s refusal.
+  carries it, and for `choose_order`'s refusal. 099 carries all three on its road.
 
 ### Open for the operator
 
@@ -441,3 +446,4 @@ has. The issues' numbers lean on a count, so the count comes first.
   scratch's roads were run again at 600 000 records.
 - The operator decided a green field, so no compatibility is kept and that mark
   went (2026-10-31).
+- Amended by 098 and 099 (lakelands#1652), proposed for 0.23.0.
