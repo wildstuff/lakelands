@@ -7,7 +7,9 @@
 Each engine that keeps an exact-text index (SQLite and PostgreSQL) keeps
 a row for each string a record's latest state holds, but only in the
 fields of its type that are looked up. The memory engine keeps no such
-index.
+index today; 097 gives it one. A number field named in the setting keeps
+a row of its value's token, and a value that reads as no number keeps
+none and is scanned for (097).
 
 **The declarations look up these fields of a type:**
 - its key, but a key that is one text field;
@@ -23,9 +25,9 @@ index.
 
 **The setting adds others.** The `sys.setting` record
 `lookup_index.<type>` holds a JSON array of text fields, as
-`sort_index.<type>` does for the order index (041). Its write is refused
-as invalid, naming the field, when the field is no text or is computed
-at the read.
+`sort_index.<type>` does for the order index (041), and from 097 of
+number and decimal fields too. Its write is refused as invalid, naming
+the field, when the field is of no such kind or is computed at the read.
 
 **A key of one text field is read by key.** A record's key is its key
 fields' values made components by the key rule (`docs/log-format.md`
@@ -145,3 +147,5 @@ on every engine.
 - So is one a trigger's `preceding` matches on (lakelands#1604).
 - A field another type's `in_force` matches on is looked up
   (lakelands#1606).
+- A number field can be named, and the memory engine keeps the index
+  (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`).
