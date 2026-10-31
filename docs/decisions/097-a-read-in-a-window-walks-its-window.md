@@ -1,7 +1,8 @@
 # 097 — A read in a window walks its window
 
-Proposed on lakelands#1633, lakelands#1635 and lakelands#1638, for
-0.23.0. No code yet; the build waits for the word.
+Decided on lakelands#1633, lakelands#1635 and lakelands#1638, for 0.23.0;
+the operator settled its two product choices on 2026-10-31. No code yet;
+the build waits for the leader's word.
 
 **No data migration and no breaking change.** The log format stays,
 no stored table changes and `LAYOUT` stays on both engines, so a kept lake
@@ -291,18 +292,24 @@ The sums are of the epic's size and within the granted reserve. They are
 reckoned against that estimate, not against shipped sizes of each step. Step 7
 carries the most risk, since a mark with an older writer has cost rounds before.
 
+## Decided by the operator
+
+Both on 2026-10-31.
+
+1. **A host's `series_index` builds by chunks, beside the writer, not in the
+   setting's write.** `sort_index` holds the writer for a full pass: at
+   SQLite's 8.5 µs a row, one hundred million ticks would hold it for about
+   14 minutes. By chunks, ingest keeps running and the read stays at its old
+   price until `Keep`. A host cannot tell from the write that the index is
+   ready, only from `describe`.
+2. **`exact_through` stays, and `LAYOUT` does not rise.** The mark costs step
+   7's lines and leaves a kept lake unrebuilt. A layout step would need no
+   mark, but it would rebuild every kept lake at its first 0.23.0 open, and an
+   older writer's open would rebuild it back.
+
 ## Open for the operator
 
-1. **A host's `series_index` builds by chunks, not in the setting's write.**
-   `sort_index` holds the writer for a full pass. By chunks, ingest keeps
-   running and the read stays at its old price until `Keep`; a host cannot
-   tell from the write that it is ready, only from `describe`. Held, a large
-   lake stops writing for the pass: at SQLite's 8.5 µs a row, one hundred
-   million ticks hold it for about 14 minutes. **Recommended: chunks.**
-2. **`exact_through` against a layout step.** The mark costs step 7's lines
-   and leaves a kept lake unrebuilt. Raising `LAYOUT` costs no lines and needs
-   no mark, but rebuilds every kept lake at its first 0.23.0 open, and an older
-   writer's open then rebuilds it back. **Recommended: the mark.**
+Nothing.
 
 ## How it came to be
 
@@ -310,3 +317,4 @@ carries the most risk, since a mark with an older writer has cost rounds before.
   of the engines and a scratch run on SQLite at 600 000 records over 5 000
   series, one holding a tenth, with records of about 330 bytes. PostgreSQL was
   not measured here: its figures are reckoned from 041 and measured in the build.
+- The operator settled the build by chunks and the mark (2026-10-31).
