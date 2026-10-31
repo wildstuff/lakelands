@@ -166,22 +166,38 @@ fn built_from<'d>(
         };
         access = lowered(decl, access, of_source, &mut from_source);
     }
-    // One paired at the read is built from the fields of the other type it
-    // pairs by and reads, as that type's grant resolves them (052, extended).
-    for (_, e) in decl
-        .in_force()
-        .into_iter()
-        .filter(|(f, _)| f.name == field.name)
-    {
-        for p in e.pairings().unwrap_or_default() {
-            let ty = TypeName::from(p.ty.as_str());
-            for name in p.theirs() {
-                let of = who.grants.access(&ty, name);
-                access = lowered(decl, access, of, &mut from_source);
+    (access, from_source)
+}
+
+/// Each field of a type paired at the read held no wider than the fields
+/// of the other type it pairs by and reads, as `who` is shown them (024;
+/// 052, extended): its grant lowered once, where a sight is made, since a
+/// field's access is otherwise judged within its own type.
+pub(crate) fn hold_paired(who: &mut Principal, force: &dyn crate::sight::InForce) {
+    let mut held = Vec::new();
+    for t in force.types() {
+        for (f, e) in t.in_force() {
+            let (was, mut hid) = (who.grants.access(&t.name, &f.name), false);
+            let mut access = was;
+            for p in e.pairings().unwrap_or_default() {
+                let ty = TypeName::from(p.ty.as_str());
+                for n in p.theirs() {
+                    access = lowered(t, access, who.grants.access(&ty, n), &mut hid);
+                }
+            }
+            if access != was {
+                held.push((t.name.clone(), f.name.clone(), access));
             }
         }
     }
-    (access, from_source)
+    for (ty, f, access) in held {
+        who.grants
+            .types
+            .entry(ty)
+            .or_default()
+            .fields
+            .insert(f, access);
+    }
 }
 
 /// `access` lowered by a field it is built from, of access `of_source`.

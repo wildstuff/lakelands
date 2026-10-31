@@ -99,9 +99,10 @@ pub struct Sight<'o> {
 
 impl<'o> Sight<'o> {
     /// The sight of `who` over `force`: its grants held through `renames`
-    /// (`Grants::follow`), for a read at `at` or at the head, and each
+    /// (`Grants::follow`), for a read at `at` or at the head, each
     /// reference to a type it is not shown held at `none` (024 and 051,
-    /// extended).
+    /// extended), and each field paired at the read held by what it pairs
+    /// by (052, extended).
     pub fn new(
         mut who: Principal,
         renames: &[Renamed],
@@ -110,6 +111,7 @@ impl<'o> Sight<'o> {
     ) -> Sight<'o> {
         who.grants.follow(renames, at);
         let hidden = rights::hide_unshown_references(&mut who, force);
+        rights::hold_paired(&mut who, force);
         Sight {
             who: Cow::Owned(who),
             force,
@@ -140,6 +142,7 @@ impl<'o> Sight<'o> {
         let Some(more) = rights::hide_unread_types(&mut who, force) else {
             return sight;
         };
+        rights::hold_paired(&mut who, force);
         sight.writer = Some(Box::new(rights::writing_unread(&sight.who, &who, force)));
         sight.hidden.extend(more);
         sight.who = Cow::Owned(who);
