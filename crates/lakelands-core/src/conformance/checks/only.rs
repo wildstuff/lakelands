@@ -2088,7 +2088,7 @@ async fn a_set_admits_the_records_holding_one_of_its_values(store: Store) -> Hel
 
 check!(
     WHOLE_SETS_ONLY = a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole,
-    "006 (lakelands#1590): a grant that admits only some records of a type, by `only` or `only_any`, and holds `whole_sets_only` there refuses a count, `total`, a sum, a group, a pattern's aggregate and a view over the type, kept or not, a view over such a view too, and a count of a link type whose end it narrows, a view over that link type, and `degree`, `components`, `page_rank` and `communities` over a graph that reaches the type, as a start or as an end of a step's links, with a start type or none (lakelands#1608), saying the read needs every record of the type and the reader may read only some; `find`, `get` and a search of the admitted records are answered as without it; without it the same reads answer the admitted part, and on a type it does not narrow it changes nothing, a measure over a graph of such types answered"
+    "006 (lakelands#1590): a grant that admits only some records of a type, by `only` or `only_any`, and holds `whole_sets_only` there refuses a count, `total`, a sum, a group, a pattern's aggregate and a view over the type, kept or not, a view over such a view too, and a count of a link type whose end it narrows, a view over that link type, and `degree`, `components`, `page_rank` and `communities` over a graph that reaches the type, as a start or as an end of a step's links, with a start type or none, or whose links are of a link type its own `only` narrows (lakelands#1608), saying the read needs every record of the type and the reader may read only some; `find`, `get` and a search of the admitted records are answered as without it; without it the same reads answer the admitted part, and on a type it does not narrow it changes nothing, a measure over a graph of such types answered"
 );
 
 /// The reads a holder of `whole_sets_only` on `claim` is refused (`-`
@@ -2203,9 +2203,12 @@ async fn a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole(store: Stor
     let whole = json!({"default": "read", "types": {"claim": {"whole_sets_only": true}}});
     let carol = holder(store.as_ref(), "carol", whole);
     let over = measured(&l, &carol, 0).await;
-    ensure!(
-        over.iter().all(|s| s == "applied"),
-        "carol's measures answer {over:?}"
-    );
+    ensure!(over.iter().all(|s| s == "applied"), "carol's {over:?}");
+    // A link type narrowed by its own `only`, its ends not, refuses alike.
+    let only = json!({links: {"only": {"from": "c2"}, "whole_sets_only": true}});
+    let grants = json!({"default": "read", "types": only});
+    let over = measured(&l, &holder(store.as_ref(), "dave", grants), 0).await;
+    let refused = refused.replace("claim", links);
+    ensure!(over.iter().all(|s| *s == refused), "dave's {over:?}");
     finds(&l, &carol, "claim | a sum of every record | {\"aggregate\": {\"measures\": [{\"name\": \"s\", \"func\": \"sum\", \"field\": \"amount\"}]}} | s=35", Position::GENESIS).await
 }
