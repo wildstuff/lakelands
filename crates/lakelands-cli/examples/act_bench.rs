@@ -15,7 +15,9 @@
 //! and a purge of a source of 1 000 records. `--set` takes many
 //! deliveries back in one act. It prints one line per step and asserts
 //! nothing. Every knob is an argument. Record 099's split of an act into
-//! its layers came from timers in a scratch build, not from here.
+//! its layers came from timers in a scratch build, not from here. The
+//! `way` a line prints is the store's forecast, made before the pass, and
+//! never a timing of the pass or of a rebuild.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

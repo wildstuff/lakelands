@@ -30,8 +30,8 @@ come first.
   `records` and `routes` hold an integer key, `records` a `flags` column,
   `applied.id` is bytes. Gone: `sort_index_desc`, `text_index_key`. `sort_index`
   and `text_index` keep their columns and primary keys. A new file sets
-  `auto_vacuum = INCREMENTAL` and `secure_delete = ON`. The index file holds a
-  line a block.
+  `auto_vacuum = INCREMENTAL`, and every connection that deletes sets
+  `secure_delete = ON`. The index file holds a line a block.
 - **Stored tables on PostgreSQL; `LAYOUT` rises.** New: `ids`, `view_order`.
   Changed: `log` holds a row a block, `records` and `records_head` a `flags`
   column. Gone: `frames`, `log_id`, `sort_index_desc`, `text_index_key`.
@@ -244,7 +244,7 @@ face.
 | A vector read's `HELD`, `RETIRED`. PostgreSQL `vector_index.rs:108,110` | the `flags` column | reckoned: a cast's 2 µs a row saved | as here |
 | Narrow field filter of `records_after_sql`. SQLite and PostgreSQL `view.rs:112` | stays, JSON in SQL | none | Rust: measured 2.7× on SQLite, 3.45 against 1.25 µs; 9.4× compressed; on PostgreSQL the row travels too (reckoned) |
 | Exact-text fill. SQLite `projection.rs:1503-04`; PostgreSQL `projection.rs:946-947` | stays, in SQL, one part at a time (099) | none | Rust, measured 3.45 µs a row |
-| Sweep of unused bases. SQLite `projection.rs:1430-31`; PostgreSQL `projection.rs:2135` | stays, as a part (099) | none | a `base` column |
+| Sweep of unused bases. SQLite `projection.rs:1430-31`; PostgreSQL `projection.rs:2135` | stays, in chunks of `order_chunk`, each a turn (099, "The sweep of bases") | none | a `base` column |
 | Proposals: index and list. SQLite `projection.rs:79`, `view.rs:1047-49`; PostgreSQL `projection.rs:235`, `view.rs:1220-22` | stays | none; a table of few rows | columns, no read cost |
 | Quarantine: index and list. SQLite `projection.rs:87`, `view.rs:1070-72`; PostgreSQL `projection.rs:241`, `view.rs:1255-57` | stays | none; likewise | columns, no read cost |
 
@@ -267,8 +267,9 @@ Measured, SQLite, 100 000 ticks with three roll-ups, A/B, load 3 to 4:
   already, and `describe`'s three earlier-position reads are what change with it.
 - **`view_order` holds an entry as bytes:** extreme, group, sort key and the
   member's id, and no copy of a value. Read: a state of an order entry holds nothing
-  a member's record does not. It is the largest gain measured here, 7.4× in time and
-  5.8× in bytes, and it is what candles run on.
+  a member's record does not. It is the largest gain measured here, 5.6× in time and
+  4.5× in bytes over a `sys:kept` of heads, and with those heads 7.4× and 5.8× over
+  today. It is what candles run on.
 - **An extreme over a sorted field** could read its next holder from the source's
   order index and keep no entry. Reckoned; it waits for record 097's `series_index`.
 
@@ -280,17 +281,25 @@ Measured above: 380 B a tick on a type with derived fields, the page 2.3× short
 at 1M, nothing on a general record (493.3 B either way). lakelands#1636 takes
 derived fields out of the tick, so this shrinks then, and it is first to cut.
 
-### What is set at creation is set at creation
+### What a file holds, and what a connection sets
 
 Read: neither `auto_vacuum`, `page_size` nor `secure_delete` is set anywhere. A
-green field makes them free; each takes effect only on a new file or a full
-`VACUUM`.
+green field makes the first two free: the file holds them, and each takes effect
+only on a new file or a full `VACUUM`. `secure_delete` is not one of them.
 
 - **`auto_vacuum = INCREMENTAL`:** +1.9 B a record, 0.13%. `incremental_vacuum` of
   10 MiB took at most 15.6 ms a turn, and 0.08 s to take 150 MB to 125 MB after a
   third was deleted (measured). 099's reclaim stands on it.
-- **`secure_delete = ON`:** a rewrite took 6 to 8 µs a row against 5.5 to 16,
-  no measurable difference. A value goes from its page at the delete.
+- **`secure_delete = ON`, on every connection that deletes.** Measured on the bundled
+  SQLite 3.54.1: set on one connection it reads 1 there and 0 on the next, where
+  `auto_vacuum` reads 2 on the next; the default is 0, and `libsqlite3-sys`' build
+  sets no flag for it (read). Without it, 2 000 deleted values' bytes stayed in the
+  file after `wal_checkpoint(TRUNCATE)`; with it, none did.
+  It is a line of the connection setup (`handle.rs:118-133`), for the writer's
+  connection, the swap's and the scratch's, and nothing a lake's creation does
+  holds it. A rewrite took 6 to 8 µs a row against 5.5 to 16, no measurable
+  difference. A value goes from its page at the delete, and
+  `ERASED_VALUE_LEAVES_THE_FILE` is the row.
 - **`page_size` stays 4 096.** Measured, unpaired, on the general record: 8 192
   held 604.5 B against 623.6 today, and 516.6 against 518.7 on the set.
 
@@ -319,10 +328,11 @@ green field makes them free; each takes effect only on a new file or a full
 | sealing a box | 2.68 | | 3.03 | |
 
 Where a tick's bytes go, measured. SQLite, 1 840 B: log 271; index 101; projection
-1 468, of it `records` 729, `sort_index_desc` 129, `text_index`, `text_index_key`,
-`sort_index_asc`, `sort_index` 72 each, `records`' key 65, `records_at` 62,
-`routes_key` 59, `routes` 58, `applied` 46, `records_since` 19, `routes_ty`,
-`routes_source`, `routes_kind` 15 each. PostgreSQL, 2 870 B: `records` 745 and
+1 468. The split is `dbstat` on a million-tick file after `VACUUM`, which sums to 1 476, a
+later run than the 1 468 and not a pair with it: `records` 817, `text_index`, `text_index_key`
+and `sort_index` 65 each, `sort_index_asc` and `sort_index_desc` 65 each, `routes` 60,
+`records`' key 60, `records_at` 57, `routes_key` 55, `applied` 41, `records_since` 17,
+`routes_ty`, `routes_source`, `routes_kind` 14 each. PostgreSQL, 2 870 B: `records` 745 and
 its key 119, `records_since` 106, `records_head` 122 and its key 105, `log` 431,
 `log_id` 54, `log_segment` 32, its key 23, `text_index` 93 and its two indexes 288,
 `sort_index` 93 and its three 352, `routes` 93 and its four 213.
@@ -356,7 +366,7 @@ Bytes of a tick's line unless said; compared with 280.7 as stored.
 | `text_index_key` gone | above | **yes** |
 | `sort_index`'s primary key gone | a tie needs it | no |
 | Page size 8 192 | above | no |
-| `auto_vacuum`, `secure_delete` | above | **yes** |
+| `auto_vacuum` on a new file, `secure_delete` on each connection | above | **yes** |
 | Older-format code removed | below | **yes**, the operator's |
 
 ### The whole
@@ -481,8 +491,9 @@ and its own into the raise.
 - `PROVENANCE_ONCE`: a field's provenance reads as it did, where it agrees with the
   version and where it does not.
 
-One test beside the suite, SQLite: a removed value is in no page of the file after
-the reclaim. One beside the suite on the log: a binary of 0.22.x refuses a lake of
+One test beside the suite, SQLite, `ERASED_VALUE_LEAVES_THE_FILE`: an erased value's
+bytes are in no page of the file after the reclaim, by the scoped pass and by the swap,
+with every connection that deleted checked for `secure_delete`. One beside the suite on the log: a binary of 0.22.x refuses a lake of
 23 by its format.
 
 ### Open for the operator
