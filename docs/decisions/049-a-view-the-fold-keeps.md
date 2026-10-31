@@ -28,19 +28,12 @@ would have to reproduce one.
   certainly a number; a `min` or a `max` of what is certainly a number
   or an instant, and a `first(f, by)` or a `last(f, by)` whose `by` is
   certainly one, whatever `f` is. An extreme, as these four are called
-  here, is kept only under group fields that are text or references,
-  one at least, and at most one bucket of time beside them: a field the
-  source derives at the write as `date_bucket` of an instant or a date.
-  The rule served the first version, which read a group's members again
-  by its fields' values when its extreme left; the next holder is now
-  sought in the order the fold keeps, by a digest of the group's key
-  (below), which a bucket serves as a text does, since the write fixes
-  its value. One bucket and not two: a view by meter and hour answers
-  what is asked of readings, and a second bucket is the same time cut
-  twice; other kinds wait for a case that asks for them. The rule is
-  interim: since the seek works whatever the group fields' kinds, whether
-  an extreme may be kept under any group field the write fixes is open
-  in lakelands#1614. A view over a view is kept while that view is.
+  here, is kept under any group fields the write fixes, or none: when
+  its holder leaves, the next is sought in the order the fold keeps, by
+  a digest of the group's key (below), which is the same whatever the
+  group fields' kinds, and one digest for a view with no group field.
+  A group field computed at the read is refused, as above. A view over
+  a view is kept while that view is.
 - **Under a name no type can bear.** A view's kept records are put under
   `sys:kept.<view>`, which holds a character no type name may. No write,
   link, walk, preflight or fold reaches them by a type's name: a
@@ -306,3 +299,7 @@ that already walks the type.
   lakelands#1605). Its holder is found again by the order the fold
   already keeps, sought from the group's digest, not by a range read
   over the source.
+- An extreme is kept under any group field the write fixes, or under
+  none, where it was kept only under text and reference fields and one
+  bucket of time beside them (lakelands#1614): the seek by the group's
+  digest needs nothing of the group fields' kinds.

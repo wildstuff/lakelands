@@ -1376,12 +1376,6 @@ catalog! {
         KeptAtRead { field: FieldName, source: TypeName } => "it reads `{field}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written",
         /// A measure reading the clock.
         KeptClock => "it reads the clock, and a kept record is computed when its source is written",
-        /// An extreme under a group field that is no text, reference or
-        /// bucket of time, under a second bucket, or under a bucket with
-        /// no text or reference field beside it.
-        KeptExtremeGroupedBy { call: String, field: FieldName } => "`{call}` is kept only in a view grouped by text or reference fields, one at least, and at most one bucket of time beside them, and `{field}` does not fit that",
-        /// An extreme in a view with no group field.
-        KeptExtremeUngrouped { call: String } => "`{call}` is kept only in a view grouped by text or reference fields, one at least, and this one has no group field",
         /// A grouping by a field computed at the read.
         KeptGroupAtRead { field: FieldName, source: TypeName } => "it groups by what reads `{field}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written",
         /// An aggregate call with no argument.

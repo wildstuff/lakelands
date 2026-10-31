@@ -1101,15 +1101,6 @@
    "code": "kept_clock"
   },
   {
-   "call": "s",
-   "code": "kept_extreme_grouped_by",
-   "field": "f"
-  },
-  {
-   "call": "s",
-   "code": "kept_extreme_ungrouped"
-  },
-  {
    "code": "kept_group_at_read",
    "field": "f",
    "source": "t"

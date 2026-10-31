@@ -1974,9 +1974,9 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
     (lakelands#748).
   - **Not every view can be kept:** only counts, sums and averages of
     what is certainly a number, and a `min`, `max`, `first` or `last`
-    ordered by a number or an instant under text or reference group
-    fields, with at most one derived `date_bucket` field beside them (a
-    view of readings by meter and hour). The setting's write is
+    ordered by a number or an instant, under any group fields the write
+    fixes, or none (a view of readings by meter and hour, or by the
+    hour alone). The setting's write is
     refused otherwise and says which measure. `describe_type` says for a
     view whether it is kept, and why not.
 - **A view's measure lands in its field's kind, or the view is not
