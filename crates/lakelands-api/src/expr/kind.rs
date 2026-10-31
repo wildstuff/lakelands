@@ -145,6 +145,11 @@ pub fn of(e: &Expr, field: Reads<'_>) -> Result<Option<Kind>, Case> {
                 }
             }),
         },
+        // What another type's field holds is not known here.
+        Expr::Call {
+            func: Func::InForce,
+            ..
+        } => None,
         Expr::Call { func, args } => {
             let kinds: Vec<Option<Kind>> =
                 (args.iter().map(|a| of(a, field))).collect::<Result<_, _>>()?;
@@ -168,6 +173,7 @@ pub fn of(e: &Expr, field: Reads<'_>) -> Result<Option<Kind>, Case> {
                 },
                 Func::Previous
                 | Func::Preceding
+                | Func::InForce
                 | Func::Min
                 | Func::Max
                 | Func::First

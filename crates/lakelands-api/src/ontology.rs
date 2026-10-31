@@ -699,6 +699,16 @@ impl TypeDecl {
             .collect()
     }
 
+    /// Each of its fields computed at the read that pairs with another
+    /// type's record in force, with its expression typed (052, extended).
+    pub fn in_force(&self) -> Vec<(&FieldDecl, crate::expr::Expr)> {
+        let typed = |f: &FieldDecl| f.derived.as_ref()?.typed().ok();
+        (self.fields.iter().filter(|f| f.at_read()))
+            .filter_map(|f| Some((f, typed(f)?)))
+            .filter(|(_, e)| e.calls(&[Func::InForce]))
+            .collect()
+    }
+
     /// Of a view, the view fields the measure making `field` reads by
     /// name, its own or a merged source's: a field is built from them as a
     /// derived field from its `depends_on`, so one built from a measure its

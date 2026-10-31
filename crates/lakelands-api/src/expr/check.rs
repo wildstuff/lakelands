@@ -19,6 +19,9 @@ pub enum Place {
     /// Over one record in a write: a derived field, where `changed` and
     /// `previous` have meaning.
     Write,
+    /// A field computed at the read: as `Write`, and `in_force` has
+    /// meaning as well.
+    AtRead,
     /// A trigger's guard: a write, where `retired` has meaning as well.
     Guard,
     /// Over a group of records: a view measure, where aggregates have
@@ -106,6 +109,7 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                     return Err(Case::CallTakesField { name });
                 }
                 Func::Preceding if place != Place::Constraint => return Err(Case::PrecedingHere),
+                Func::InForce if place != Place::AtRead => return Err(Case::InForceHere),
                 Func::Setting | Func::Param | Func::InSet if quoted(args.first()).is_none() => {
                     return Err(Case::CallTakesQuoted { name });
                 }
@@ -124,7 +128,9 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                         return Err(Case::BucketArguments);
                     }
                 }
-                Func::Previous | Func::Changed if !(guard || place == Place::Write) => {
+                Func::Previous | Func::Changed
+                    if !(guard || matches!(place, Place::Write | Place::AtRead)) =>
+                {
                     return Err(Case::OnlyInWrite { name });
                 }
                 Func::Retired if !guard => return Err(Case::RetiredOnlyInGuard),

@@ -60,6 +60,14 @@
 //! before this one in the series its `match` fields name, ordered by
 //! `by`; only a constraint may call it, since only the write judging one
 //! reads the series (`docs/decisions/059-a-type-declares-its-constraints.md`).
+//! `in_force(T.f, T.by <= by, T.m = m, …)` is `f` on the record of another
+//! stored type `T` whose `by` is the greatest at or below this record's
+//! `by` among those that hold its values in every matched field, the first
+//! in key order among ties, of those its reader is answered; only a field
+//! computed at the read may call it, since a stored pairing would go stale
+//! when the paired record is written after the record it governs
+//! (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`). Its
+//! `T.` paths are fields of `T`, no part of this record.
 //!
 //! **Durations.** The difference of two instants is a duration. A
 //! duration divided by a duration is a number, so the days between two
@@ -259,6 +267,10 @@ pub enum Func {
     /// null where none is, or where this record's `by` or a matched field
     /// is null.
     Preceding,
+    /// `in_force(T.f, T.by <= by, T.m = m, …)`: in a field computed at the
+    /// read, `f` of the record of another stored type `T` in force at this
+    /// record (the module doc); null where this `by` or a match is null.
+    InForce,
     /// `setting('key')`: the value of the lake's `sys.setting` record with
     /// that key, as it stood at the position being read or folded.
     Setting,
@@ -343,7 +355,9 @@ pub enum Func {
     Last,
 }
 
-/// The expressions directly inside `e`, left to right.
+/// The expressions directly inside `e`, left to right; of an
+/// `in_force`, this record's side of each pair alone, since the other
+/// type's fields are no part of this record.
 pub fn children(e: &Expr) -> impl Iterator<Item = &Expr> {
     let (pair, list): ([Option<&Expr>; 2], &[Expr]) = match e {
         Expr::Lit { .. } | Expr::Path { .. } => ([None, None], &[]),
@@ -352,7 +366,87 @@ pub fn children(e: &Expr) -> impl Iterator<Item = &Expr> {
         Expr::And { args } | Expr::Or { args } | Expr::Call { args, .. } => ([None, None], args),
         Expr::In { arg, list } => ([Some(arg), None], list),
     };
-    pair.into_iter().flatten().chain(list)
+    let paired = in_force(e).is_some();
+    pair.into_iter()
+        .flatten()
+        .chain(list.iter().filter_map(move |a| match (paired, a) {
+            (true, Expr::Cmp { rhs, .. }) => Some(&**rhs),
+            (paired, a) => (!paired).then_some(a),
+        }))
+}
+
+/// The arguments of `e` where it calls `in_force`.
+fn in_force(e: &Expr) -> Option<&[Expr]> {
+    match e {
+        Expr::Call {
+            func: Func::InForce,
+            args,
+        } => Some(args),
+        _ => None,
+    }
+}
+
+/// What an `in_force` pairs by: the other type, the field read there, the
+/// order bound (its field, this record's) and each matched pair, alike.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pairing<'e> {
+    /// The other type, as the paths name it.
+    pub ty: &'e FieldName,
+    /// The field read on the record in force.
+    pub read: &'e FieldName,
+    /// The order bound: `T.by`, then this record's `by`.
+    pub by: (&'e FieldName, &'e FieldName),
+    /// Each matched pair: `T.m`, then this record's `m`.
+    pub matched: Vec<(&'e FieldName, &'e FieldName)>,
+}
+
+impl Pairing<'_> {
+    /// The series it reads among the pairings of a record: `T`, the bound
+    /// and the matched pairs, each `T`'s field then this record's.
+    pub fn series(&self) -> Vec<FieldName> {
+        let pairs = std::iter::once(self.by).chain(self.matched.iter().copied());
+        (std::iter::once(self.ty).chain(pairs.flat_map(|(t, m)| [t, m])))
+            .cloned()
+            .collect()
+    }
+
+    /// The fields of `T` it reads: `f`, `by` and each matched one.
+    pub fn theirs(&self) -> impl Iterator<Item = &FieldName> {
+        let pairs = std::iter::once(self.by).chain(self.matched.iter().copied());
+        std::iter::once(self.read).chain(pairs.map(|(t, _)| t))
+    }
+
+    /// The pairing of an `in_force` call's arguments; `None` where they
+    /// are not of its form: a `T.f` path, then `T.by <= by`, then one
+    /// `T.m = m` or more, over one `T`.
+    pub fn of(args: &[Expr]) -> Option<Pairing<'_>> {
+        type Side<'e> = (&'e FieldName, (&'e FieldName, &'e FieldName));
+        fn side(e: &Expr, op: CmpOp) -> Option<Side<'_>> {
+            if let Expr::Cmp { cmp, lhs, rhs } = e
+                && let (Expr::Path { path: t }, Expr::Path { path: m }) = (&**lhs, &**rhs)
+                && let ([ty, f], [m]) = (&t[..], &m[..])
+                && *cmp == op
+            {
+                return Some((ty, (f, m)));
+            }
+            None
+        }
+        let Some(Expr::Path { path }) = args.first() else {
+            return None;
+        };
+        let [ty, read] = &path[..] else { return None };
+        let (bound, by) = side(args.get(1)?, CmpOp::Le)?;
+        let matched = (args.get(2..)?.iter())
+            .map(|a| side(a, CmpOp::Eq).filter(|(t, _)| *t == ty).map(|(_, p)| p))
+            .collect::<Option<Vec<_>>>()?;
+        let pairing = Pairing {
+            ty,
+            read,
+            by,
+            matched,
+        };
+        (bound == ty && !pairing.matched.is_empty()).then_some(pairing)
+    }
 }
 
 /// Every path in `e`, left to right.
@@ -440,6 +534,19 @@ impl Expr {
             out.entry(series).or_default().extend(fields);
         }
         out
+    }
+
+    /// Every `in_force` in it, as it pairs; `Err` with the first that is
+    /// not of its form.
+    pub fn pairings(&self) -> Result<Vec<Pairing<'_>>, &Expr> {
+        let mut out = Vec::new();
+        if let Some(args) = in_force(self) {
+            out.push(Pairing::of(args).ok_or(self)?);
+        }
+        for c in children(self) {
+            out.extend(c.pairings()?);
+        }
+        Ok(out)
     }
 
     /// Whether every `now()` and `today()` in it is a clock term, the call

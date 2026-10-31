@@ -930,6 +930,10 @@ catalog! {
         PrecedingUnlooked { constraint: ConstraintName, field: FieldName } => "constraint `{constraint}` matches its preceding record on `{field}`, which is not text or a reference",
         /// A `preceding` ordered by a field whose kind has no order.
         PrecedingUnordered { constraint: ConstraintName, field: FieldName } => "constraint `{constraint}` orders its preceding record by `{field}`, whose kind has no order",
+        /// An `in_force` not of the form it pairs by.
+        InForceForm { field: FieldName } => "the field `{field}` pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of this record",
+        /// An `in_force` pair whose two fields cannot pair.
+        InForcePair { field: FieldName, left: FieldName, right: FieldName } => "the field `{field}` pairs `{left}` with `{right}`: two fields of one kind, a match of text or a reference, an order bound of a kind with an order",
         /// A constraint that reads what can change without a write of the
         /// record.
         ConstraintReadsBeyond { constraint: ConstraintName, reads: Box<Beyond> } => "constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields",
@@ -1099,7 +1103,7 @@ catalog! {
         /// A verb's assignment reading a payload member the payload does not have.
         PayloadNoMember { member: FieldName } => "it reads `payload.{member}`, which the payload does not have",
         /// A field taken to the read that something reads as stored.
-        ReadAsStored => "a trigger, a verb, an object set or another type's derived relation in force reads it as stored, so it is not computed at the read",
+        ReadAsStored => "a trigger, a verb, an object set, another type's derived relation or another type's `in_force` in force reads it as stored, so it is not computed at the read",
         /// A declaration reading as stored a field computed at the read.
         ReadsAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}`, which `{ty}` computes at the read; it is evaluated over the record as stored, which never holds it",
         /// A set's `where` reading the clock.
@@ -1257,6 +1261,8 @@ catalog! {
         ExistsHere => "exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at",
         /// A `preceding` outside a constraint.
         PrecedingHere => "preceding() has meaning in a type's constraint, over the record before it",
+        /// An `in_force` outside a field computed at the read.
+        InForceHere => "in_force() has meaning in a field computed at the read, over another type's record in force",
         /// An `in_set` left where no set's filter stands.
         InSetHere => "in_set() has meaning in an object set's `where`, a trigger's `when` and a read's `where`",
         /// A negation of what has no negative.
@@ -1649,7 +1655,7 @@ catalog! {
         /// A new field whose name begins with `_`, which the lake keeps for its own columns.
         FieldNameKept { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a new field of `{ty}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`, `<name>._type`); name it `{field}` without the `_`",
         /// A field taken away that another part of the type reads.
-        FieldReadElsewhere { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`{field}` is read by another part of `{ty}` and cannot be removed or changed",
+        FieldReadElsewhere { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`{field}` is read by another part of `{ty}`, or another type pairs by it, and cannot be removed or changed",
         /// A forgetting refused while the log holds plaintext values of the source in erasable fields.
         ForgetPlaintext { source: SourceId, count: u64 } => "the log holds {count} value(s) of `{source}` in erasable fields in plaintext, written before the field was erasable or before the log sealed them; destroying its key cannot reach them, so it is not forgotten: export the lake, leave the source out and import that as a new lake",
         /// A forgetting's report of another source or head.

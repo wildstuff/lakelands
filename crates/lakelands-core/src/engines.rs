@@ -317,7 +317,8 @@ pub fn key_lookup(decl: Option<&TypeDecl>, scan: &Scan) -> Option<BTreeSet<Strin
 /// key, but a [`text_key`], its references, the fields a derived relation
 /// matches at either end, those a set's condition or a view's `where` over
 /// it compares to a text at the top level, those a constraint's
-/// `preceding` matches its series on) and those the setting names
+/// `preceding` matches its series on, those another type's `in_force`
+/// matches it on) and those the setting names
 /// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
 /// `None`, every field, for a name no type declares: a view's kept records.
 pub fn looked_up<'a>(
@@ -343,6 +344,11 @@ pub fn looked_up<'a>(
                 }
                 for v in t.view.iter().filter(|v| v.source == *ty) {
                     terms(&v.r#where);
+                }
+                for (_, e) in t.in_force() {
+                    let paired = e.pairings().unwrap_or_default().into_iter();
+                    let paired = paired.filter(|p| p.ty.as_str() == ty.as_str());
+                    matched.extend(paired.flat_map(|p| p.matched).map(|(m, _)| m.clone()));
                 }
                 for m in t.view.iter().flat_map(|v| &v.merge) {
                     (m.source == *ty).then(|| terms(&m.r#where));
@@ -567,7 +573,8 @@ pub fn sort_index_type(r: &StoredRecord) -> Option<TypeName> {
 
 /// The types whose exact-text index a declaration can move: those
 /// [`looked_up`] reads it for. A type's own, the targets of its derived
-/// relations, its view's sources; a set's type.
+/// relations, the types it pairs with by `in_force`, its view's sources;
+/// a set's type.
 pub fn looked_up_by(d: &Declaration) -> BTreeSet<TypeName> {
     let mut out = BTreeSet::new();
     match d {
@@ -575,6 +582,10 @@ pub fn looked_up_by(d: &Declaration) -> BTreeSet<TypeName> {
             out.insert(t.name.clone());
             let derived = t.relations.iter().filter(|r| r.derived.is_some());
             out.extend(derived.map(|r| r.target.clone()));
+            for (_, e) in t.in_force() {
+                let paired = e.pairings().unwrap_or_default().into_iter();
+                out.extend(paired.map(|p| TypeName::from(p.ty.as_str())));
+            }
             for v in t.view.iter() {
                 out.insert(v.source.clone());
                 out.extend(v.merge.iter().map(|m| m.source.clone()));

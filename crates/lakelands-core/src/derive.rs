@@ -159,6 +159,7 @@ const OUTSIDE: &[Func] = &[
     Func::Now,
     Func::Today,
     Func::Preceding,
+    Func::InForce,
     Func::KnownAt,
     Func::SeenAt,
     Func::Setting,
@@ -417,7 +418,8 @@ pub fn apply(
 
 /// A record as one read answers it: each field computed at the read
 /// computed from its fields as stored, their provenance, the lake's
-/// settings and the read's clock, in the order the fold computes derived
+/// settings, the read's clock and the records in force it pairs with,
+/// `pairs`, in the order the fold computes derived
 /// fields; a value that cannot be computed is none. A type whose derived
 /// fields cannot be ordered was refused when declared, and has none here.
 #[doc(hidden)]
@@ -426,6 +428,7 @@ pub fn at_read(
     value_types: &[ValueTypeDecl],
     record: &mut StoredRecord,
     settings: &BTreeMap<String, Value>,
+    pairs: Option<&crate::expr::Preceding>,
     now: Timestamp,
 ) {
     if !ty.fields.iter().any(FieldDecl::at_read) {
@@ -443,7 +446,7 @@ pub fn at_read(
             retiring: false,
             meta: Some(&record.meta),
             settings: Some(settings),
-            preceding: None,
+            preceding: pairs,
             now,
         };
         match computed(decl, &expr, value_types, &scope) {

@@ -164,21 +164,41 @@ fn built_from<'d>(
                 answered
             }
         };
-        access = match of_source {
-            s if s.reads() => access,
-            // The field's value stays hidden; its write stays the
-            // principal's, as the store's write check grants it. A view's
-            // fields are never written (lakelands#782).
-            _ if access.writes() && decl.view.is_none() => Access::WriteOnly,
-            Access::Masked if access.reads() => Access::Masked,
-            Access::Masked => access,
-            _ => {
-                from_source = true;
-                Access::None
+        access = lowered(decl, access, of_source, &mut from_source);
+    }
+    // One paired at the read is built from the fields of the other type it
+    // pairs by and reads, as that type's grant resolves them (052, extended).
+    for (_, e) in decl
+        .in_force()
+        .into_iter()
+        .filter(|(f, _)| f.name == field.name)
+    {
+        for p in e.pairings().unwrap_or_default() {
+            let ty = TypeName::from(p.ty.as_str());
+            for name in p.theirs() {
+                let of = who.grants.access(&ty, name);
+                access = lowered(decl, access, of, &mut from_source);
             }
-        };
+        }
     }
     (access, from_source)
+}
+
+/// `access` lowered by a field it is built from, of access `of_source`.
+fn lowered(decl: &TypeDecl, access: Access, of_source: Access, from_source: &mut bool) -> Access {
+    match of_source {
+        s if s.reads() => access,
+        // The field's value stays hidden; its write stays the
+        // principal's, as the store's write check grants it. A view's
+        // fields are never written (lakelands#782).
+        _ if access.writes() && decl.view.is_none() => Access::WriteOnly,
+        Access::Masked if access.reads() => Access::Masked,
+        Access::Masked => access,
+        _ => {
+            *from_source = true;
+            Access::None
+        }
+    }
 }
 
 /// The principal's access to a type as a whole: its type-level grant, or

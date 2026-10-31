@@ -172,6 +172,8 @@ mod describe;
 mod edges;
 mod find;
 mod held;
+mod in_force;
+pub(crate) use in_force::at_or_below;
 mod measures;
 mod proposals;
 mod query;
@@ -741,7 +743,7 @@ impl<'a> Reader<'a> {
             return self.kept_by_key(ty, kept, keys);
         }
         let Some(all) = self.computed(ty)? else {
-            return Ok(self.at_read(ty, self.view.get_many(ty, keys)?));
+            return self.at_read(ty, self.view.get_many(ty, keys)?);
         };
         let keys: BTreeSet<&RecordKey> = keys.iter().collect();
         Ok(all
@@ -761,19 +763,20 @@ impl<'a> Reader<'a> {
     /// reader is told it ([`Sight::told`]: a setting narrowed, a field a
     /// hiding lowers gone), so a `where`, an order and an aggregate read
     /// what it is told.
-    fn at_read(&self, ty: &TypeName, mut rows: Vec<StoredRecord>) -> Vec<StoredRecord> {
+    fn at_read(&self, ty: &TypeName, mut rows: Vec<StoredRecord>) -> Result<Vec<StoredRecord>> {
         let o = &self.shape.ontology;
         if let Some(decl) = o
             .ty(ty)
             .ok()
             .filter(|t| t.fields.iter().any(|f| f.at_read()))
         {
+            let pairs = self.in_force(decl, &rows)?;
             let (decl, value_types) = (
                 core_derive::resolve_functions(decl, |n| o.functions.get(n).map(|e| &e.decl)),
                 o.value_type_list(),
             );
-            for r in &mut rows {
-                core_derive::at_read(&decl, &value_types, r, self.told(), self.now);
+            for (r, pairs) in rows.iter_mut().zip(&pairs) {
+                core_derive::at_read(&decl, &value_types, r, self.told(), Some(pairs), self.now);
             }
         }
         if self.sight.narrows(ty) {
@@ -783,7 +786,7 @@ impl<'a> Reader<'a> {
             };
             rows = rows.into_iter().filter_map(told).collect();
         }
-        rows
+        Ok(rows)
     }
 
     /// Whether the store evaluates `e` over records of `decl` itself: it
@@ -837,7 +840,7 @@ impl<'a> Reader<'a> {
             let page = self.view.scan(ty, &scan)?;
             let next =
                 (page.last().map(|r| r.key.clone())).filter(|_| page.len() == MATCHED as usize);
-            return Ok((self.at_read(ty, page), next));
+            return Ok((self.at_read(ty, page)?, next));
         };
         let holds = |r: &StoredRecord, t: &[(FieldName, Value)]| {
             t.iter().all(|(f, v)| r.fields.get(f) == Some(v))

@@ -122,6 +122,16 @@
    "field": "f"
   },
   {
+   "code": "in_force_form",
+   "field": "f"
+  },
+  {
+   "code": "in_force_pair",
+   "field": "f",
+   "left": "f",
+   "right": "f"
+  },
+  {
    "code": "constraint_reads_beyond",
    "constraint": "c",
    "reads": {
@@ -798,6 +808,9 @@
   },
   {
    "code": "preceding_here"
+  },
+  {
+   "code": "in_force_here"
   },
   {
    "code": "in_set_here"

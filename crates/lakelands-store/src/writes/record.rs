@@ -534,7 +534,7 @@ impl Decide<'_> {
         after: &StoredRecord,
         series: &[FieldName],
     ) -> Result<Option<StoredRecord>> {
-        use lakelands_api::engine::{After, Scan};
+        use lakelands_api::engine::Scan;
         use lakelands_core::engines::{Place, cmp_places};
         let value = |f: &FieldName| after.fields.get(f).filter(|v| !v.is_null()).cloned();
         let Some(((by, here), equal)) = (series.split_first())
@@ -576,38 +576,23 @@ impl Decide<'_> {
             let (a, b) = (Place::of(a, &order_by), Place::of(b, &order_by));
             cmp_places(&a, &b, &order_by)
         });
-        // The head's, a page at a time from just below `after`, past what
-        // this append holds and what its writer is not answered.
-        let mut scan = Scan {
+        // The head's, from just below `after`, past what this append holds
+        // and what its writer is not answered.
+        let scan = Scan {
             equal: equal.clone(),
-            order_by: order_by.clone(),
             limit: u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
-            after: Some(After {
-                values: vec![here.clone()],
-                key: RecordKey::from(""),
-            }),
             ..crate::lake::every(false)
         };
-        loop {
-            let page = self.at.view.scan(&decl.name, &scan)?;
-            let found = (page.iter()).find(|r| !self.pending.holds(&decl.name, &r.key) && fits(r));
-            if let Some(r) = found {
-                let head = Place::of(r, &order_by);
-                let kept = best.as_ref().map(|b| Place::of(b, &order_by));
-                if kept.is_none_or(|b| cmp_places(&head, &b, &order_by).is_lt()) {
-                    best = Some(r.clone());
-                }
-                return Ok(best);
-            }
-            match page.last() {
-                Some(last) if page.len() as u64 >= u64::from(scan.limit) => {
-                    let values = vec![last.fields.get(by).cloned().unwrap_or(Value::Null)];
-                    let key = last.key.clone();
-                    scan.after = Some(After { values, key });
-                }
-                _ => return Ok(best),
+        let unheld = |r: &StoredRecord| !self.pending.holds(&decl.name, &r.key) && fits(r);
+        let found = crate::reads::at_or_below(self.at.view, &decl.name, (by, &here), scan, unheld)?;
+        if let Some(r) = found {
+            let head = Place::of(&r, &order_by);
+            let kept = best.as_ref().map(|b| Place::of(b, &order_by));
+            if kept.is_none_or(|b| cmp_places(&head, &b, &order_by).is_lt()) {
+                best = Some(r);
             }
         }
+        Ok(best)
     }
 
     /// The rest of a record write, authored or from a source (`ingest`),
