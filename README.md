@@ -166,7 +166,7 @@ terrain Lakelands is built for, and where it is not the right tool.
 > **Status: `0.22.0`.** Lakelands `0.22.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (@DOORS@ checks through the doors and @SEAM@ through the
+> conformance suite (983 checks through the doors and 87 through the
 > engine seam), with 93 decision records and the event log at format
 > version 22, installable from the release. Its budgets: see
 > `docs/budgets.md` for the ceilings and the ratchet bases.

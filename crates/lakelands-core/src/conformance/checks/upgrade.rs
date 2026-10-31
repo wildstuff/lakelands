@@ -95,6 +95,9 @@ by_format!(
     the_lake_of_format_17_is_read_as_it_answered = kept_lake_answers(17),
     the_lake_of_format_18_is_read_as_it_answered = kept_lake_answers(18),
     the_lake_of_format_19_is_read_as_it_answered = kept_lake_answers(19),
+    the_lake_of_format_20_is_read_as_it_answered = kept_lake_answers(20),
+    the_lake_of_format_21_is_read_as_it_answered = kept_lake_answers(21),
+    the_lake_of_format_22_is_read_as_it_answered = kept_lake_answers(22),
 );
 
 async fn a_lake_of_format_20_is_upgraded_and_read(store: Store, given: Given) -> Held {
@@ -281,18 +284,6 @@ async fn a_lake_of_format_19_takes_boxes_beside_the_members_it_sealed_alone(
     Ok(())
 }
 
-async fn the_lake_of_format_20_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 20).await
-}
-
-async fn the_lake_of_format_21_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 21).await
-}
-
-async fn the_lake_of_format_22_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 22).await
-}
-
 /// The kept lake of `format` (`docs/log-format/lakes/<format>/`), imported
 /// on this engine: its events stay in their format, a writer's open
 /// upgrades an older one, the lake verifies, and it answers as the
@@ -475,7 +466,6 @@ async fn answered(
             .push(serde_json::json!({"type": ty, "key": key, "fields": r.fields, "meta": r.meta}));
     }
     let now = serde_json::json!({"records": records, "open": members, "walk_from_i1": walked, "erasable": erasable});
-    if let Ok(out) = std::env::var("KEPT_ANSWERS_OUT") { std::fs::write(out, serde_json::to_string_pretty(&now).unwrap()).unwrap(); }
     let mut red = Vec::new();
     let parts = ["records", "open", "walk_from_i1", "erasable"];
     for part in parts.into_iter().filter(|p| answers.get(*p).is_some()) {

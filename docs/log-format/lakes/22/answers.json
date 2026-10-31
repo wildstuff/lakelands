@@ -1,23 +1,194 @@
 {
  "erasable": [
   {
+   "fields": {
+    "city": "Oslo",
+    "email": "ann@example.org",
+    "id": "p1",
+    "name": "Ann"
+   },
    "key": "p1",
+   "meta": {
+    "city": {
+     "known_at": "2026-10-31T04:42:17.723995Z",
+     "origin": "source",
+     "position": 22,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "email": {
+     "known_at": "2026-10-31T04:42:17.723995Z",
+     "origin": "source",
+     "position": 22,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "id": {
+     "known_at": "2026-10-31T04:42:17.723995Z",
+     "origin": "source",
+     "position": 22,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "name": {
+     "known_at": "2026-10-31T04:42:17.723995Z",
+     "origin": "source",
+     "position": 22,
+     "source": "crm",
+     "writer": "human:owner"
+    }
+   },
    "type": "person"
   },
   {
+   "fields": {
+    "city": "Rome",
+    "id": "p2",
+    "note": "kept"
+   },
    "key": "p2",
+   "meta": {
+    "city": {
+     "known_at": "2026-10-31T04:42:17.723995Z",
+     "origin": "source",
+     "position": 23,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "email": {
+     "erased": true,
+     "known_at": "2026-10-31T04:42:17.739947Z",
+     "origin": "source",
+     "position": 25,
+     "source": "web",
+     "writer": "human:owner"
+    },
+    "id": {
+     "known_at": "2026-10-31T04:42:17.739947Z",
+     "origin": "source",
+     "position": 25,
+     "source": "web",
+     "writer": "human:owner"
+    },
+    "name": {
+     "erased": true,
+     "known_at": "2026-10-31T04:42:17.739947Z",
+     "origin": "source",
+     "position": 25,
+     "source": "web",
+     "writer": "human:owner"
+    },
+    "note": {
+     "known_at": "2026-10-31T04:42:17.750206Z",
+     "origin": "authored",
+     "position": 26,
+     "writer": "human:owner"
+    }
+   },
    "type": "person"
   },
   {
+   "fields": {
+    "city": "Lima",
+    "email": "cy@example.org",
+    "id": "p3",
+    "name": "Cy"
+   },
    "key": "p3",
+   "meta": {
+    "city": {
+     "known_at": "2026-10-31T04:42:17.723995Z",
+     "origin": "source",
+     "position": 24,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "email": {
+     "known_at": "2026-10-31T04:42:17.723995Z",
+     "origin": "source",
+     "position": 24,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "id": {
+     "known_at": "2026-10-31T04:42:17.723995Z",
+     "origin": "source",
+     "position": 24,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "name": {
+     "known_at": "2026-10-31T04:42:17.723995Z",
+     "origin": "source",
+     "position": 24,
+     "source": "crm",
+     "writer": "human:owner"
+    }
+   },
    "type": "person"
   },
   {
+   "fields": {
+    "city": "Bonn",
+    "id": "p4"
+   },
    "key": "p4",
+   "meta": {
+    "city": {
+     "known_at": "2026-10-31T04:42:17.768097Z",
+     "origin": "source",
+     "position": 30,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "id": {
+     "known_at": "2026-10-31T04:42:17.768097Z",
+     "origin": "source",
+     "position": 30,
+     "source": "crm",
+     "writer": "human:owner"
+    }
+   },
    "type": "person"
   },
   {
-   "key": "p9",
+   "fields": {
+    "city": "Graz",
+    "email": "di@example.org",
+    "id": "p7",
+    "name": "Di"
+   },
+   "key": "p7",
+   "meta": {
+    "city": {
+     "known_at": "2026-10-31T04:42:17.756185Z",
+     "origin": "source",
+     "position": 27,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "email": {
+     "known_at": "2026-10-31T04:42:17.756185Z",
+     "origin": "source",
+     "position": 27,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "id": {
+     "known_at": "2026-10-31T04:42:17.756185Z",
+     "origin": "source",
+     "position": 27,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "name": {
+     "known_at": "2026-10-31T04:42:17.756185Z",
+     "origin": "source",
+     "position": 27,
+     "source": "crm",
+     "writer": "human:owner"
+    }
+   },
    "type": "person"
   }
  ],
