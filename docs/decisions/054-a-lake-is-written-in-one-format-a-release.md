@@ -138,11 +138,19 @@ binary built from that commit is not to open a lake that 0.22.0 has
 written, which may hold a line it adds (a host's quarantined record keyed
 by its run and line, `preceding` in a constraint or a trigger, `first`
 and `last`, `in_force`), and is not supported. It does not refuse the
-lake, because both write format 22. It serves it with the constraints and
-fields that use `preceding` or `in_force` missing and the views over
-`first` or `last` refused; its first write on such a lake reports a damaged
-projection although nothing is damaged; and its `verify` exits 0. The way
-back is a backup taken before 0.22.0's first open of the lake.
+lake, because both write format 22. It serves such a lake, and what it
+serves is not the lake. Describe lists no constraint or trigger that reads
+`preceding`. A record answers without its `in_force` field, though
+describe still lists the field. A view over `first` or `last` is refused,
+and kept views are described as computed. A write is refused: where a
+trigger reads `preceding`, every write of every type is answered 422
+`not_parsed`, naming the lake's own expression as if the input were bad; a
+write of a type with an `in_force` field is answered 503, a damaged
+projection, with the advice to rebuild. Neither is so: the input is good,
+nothing is damaged, and a rebuild does not help. Its `verify` and its
+other commands exit 0. It appends only `lease_taken`, so 0.22.0 opens the
+lake again whole, and that is the way out. The way back is a backup taken
+before 0.22.0's first open of the lake.
 
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
