@@ -11,7 +11,6 @@
 
 mod probed;
 
-use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, mpsc};
 
@@ -319,38 +318,6 @@ async fn another_handles_declaration_is_seen_by_the_next_read() {
     w.declare(type_of("u", &[("a", Text)])).await.unwrap();
     assert!(shown(&r, "u", None).await, "the reading handle's next read");
     assert!(shown(&w, "u", None).await, "the writing handle's");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reads_beside_declaring_appends_see_one_shape_whole() {
-    let (store, _probe) = lake("beside").await;
-    let l = Lake::of(store.as_ref());
-    let declaring = async {
-        let mut at = Vec::new();
-        for i in 0..20 {
-            let o = l
-                .declare(type_of(&format!("u{i:02}"), &[("a", Text)]))
-                .await;
-            at.push(o.unwrap().position());
-        }
-        at
-    };
-    let reading = async {
-        let mut seen = Vec::new();
-        for _ in 0..200 {
-            let d = l.cat.describe(&l.own, read_at(None)).await.unwrap();
-            let names = d.data.types.iter().map(|t| t.name.to_string());
-            let names: BTreeSet<String> = names.filter(|n| n.starts_with('u')).collect();
-            seen.push((d.position, names));
-        }
-        seen
-    };
-    let (at, seen) = tokio::join!(declaring, reading);
-    for (p, names) in seen {
-        let then = at.iter().enumerate().filter(|(_, a)| **a <= p);
-        let want: BTreeSet<String> = then.map(|(i, _)| format!("u{i:02}")).collect();
-        assert_eq!(names, want, "a read at {p}");
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

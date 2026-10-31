@@ -669,6 +669,25 @@ async fn a_read_before_a_range_ends_keeps_its_own_shape_and_the_ending_is_learnt
     assert_eq!(learnt("k2").await, Some((retired, retired + 1)));
 }
 
+/// Between an append's fold and its publish the head stands behind what a
+/// read of the engine finds and the writer keeps: that description is not
+/// told at that head, whose position it does not show (lakelands#1632).
+#[tokio::test]
+async fn a_description_kept_past_the_published_head_is_not_told_at_it() {
+    let (lake, cat, owner) = owned("unpublished");
+    let declare = async |d: serde_json::Value| cat.declare(&owner, declaration(d)).await.unwrap();
+    let head = lakelands_api::ReadAt::default();
+    declare(text_type("t", &["a"])).await;
+    let before = lake.head();
+    declare(text_type("u", &["a"])).await;
+    let declared = lake.head();
+    cat.describe(&owner, head).await.unwrap();
+    lake.set_head(before.0);
+    let told = cat.describe(&owner, head).await.unwrap();
+    let shows_u = told.data.types.iter().any(|t| t.name.as_str() == "u");
+    assert_eq!((told.position, shows_u), (declared, true));
+}
+
 /// A `declared` event of the type `t`, at `at`.
 fn declared_type(t: serde_json::Value, at: u64) -> Event {
     let body = EventBody::Declared {

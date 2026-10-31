@@ -50,6 +50,11 @@ check!(
     "008 and 022, extended: each write answers a position its own filled field is visible from, whoever else is writing, and one input is called once across all the writers"
 );
 
+check!(
+    DESCRIBED_AT_ITS_POSITION = a_description_beside_declarations_shows_what_its_position_holds,
+    "008 and 009: a description made while types are declared shows exactly the types declared at or before the position it names, read from the engine or told from what the writer keeps (lakelands#1632)"
+);
+
 const WRITERS: usize = 8;
 const EACH: usize = 25;
 /// The threads of the runtime's blocking pool, its default: the suite runs
@@ -67,6 +72,11 @@ fn waiting() -> usize {
 }
 /// The writes of those that land before the read is made.
 const FIRST: usize = 64;
+/// The types [`DESCRIBED_AT_ITS_POSITION`] declares, and its callers who
+/// describe the lake beside them: one of them may keep what the other is
+/// told.
+const DECLARED: usize = 20;
+const DESCRIBERS: usize = 2;
 
 pub(super) async fn items(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
@@ -634,6 +644,68 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
         "{WRITERS} writers wrote the same input, code AT, at once; the backing must be \
          called once for it, not {calls} times"
     );
+    Ok(())
+}
+
+/// What one caller of [`DESCRIBED_AT_ITS_POSITION`] saw or did: a
+/// position, and the types it showed or declared.
+type Shown = Vec<(Position, BTreeSet<String>)>;
+
+async fn a_description_beside_declarations_shows_what_its_position_holds(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let done = Arc::new(AtomicBool::new(false));
+    let (cat, own, flag) = (l.cat.clone(), l.own.clone(), done.clone());
+    let declaring: Caller<'static, Result<Shown, Failure>> = Box::pin(async move {
+        let mut at = Vec::new();
+        for i in 0..DECLARED {
+            let name = format!("u{i:02}");
+            let o = declare(cat.as_ref(), &own, type_of(&name, &[("a", Text)])).await;
+            // Set on every way out, so a failure does not leave the
+            // describers polling.
+            let o = o.inspect_err(|_| flag.store(true, Ordering::SeqCst))?;
+            at.push((o.position(), BTreeSet::from([name])));
+        }
+        flag.store(true, Ordering::SeqCst);
+        Ok(at)
+    });
+    let describing = (0..DESCRIBERS).map(|_| -> Caller<'static, Result<Shown, Failure>> {
+        let (cat, own, done) = (l.cat.clone(), l.own.clone(), done.clone());
+        Box::pin(async move {
+            let mut seen = Vec::new();
+            while !done.load(Ordering::SeqCst) {
+                let d = cat.describe(&own, read_at(None)).await;
+                let d = d.must("describing the lake beside the declarations")?;
+                let names = d.data.types.iter().map(|t| t.name.to_string());
+                seen.push((d.position, names.filter(|n| n.starts_with('u')).collect()));
+                // A description told from what the writer keeps does not
+                // wait, and the others are polled only when this one does.
+                pause(std::time::Duration::ZERO).await;
+            }
+            Ok(seen)
+        })
+    });
+    let callers = std::iter::once(declaring).chain(describing).collect();
+    let mut answers = join_all(callers).await.into_iter();
+    let at = answers.next().expect("the declarations answered")?;
+    for seen in answers {
+        let seen = seen?;
+        ensure!(
+            seen.len() > 1,
+            "a caller described the lake {} times beside the declarations; the check needs \
+             descriptions during them",
+            seen.len()
+        );
+        for (position, names) in seen {
+            let then = at.iter().filter(|(p, _)| *p <= position);
+            let want: BTreeSet<String> = then.flat_map(|(_, n)| n.iter().cloned()).collect();
+            ensure!(
+                names == want,
+                "a description naming position {position} showed {names:?}, and the types \
+                 declared at or before it are {want:?}: an answer's position is the one it \
+                 reflects"
+            );
+        }
+    }
     Ok(())
 }
 

@@ -1063,6 +1063,7 @@ pub const ALL: &[Check] = &[
     concurrency::READS_AT_A_POSITION,
     concurrency::FEED_READERS_AGREE,
     concurrency::BACKED_UNDER_WRITES,
+    concurrency::DESCRIBED_AT_ITS_POSITION,
     aging::HELD_RULE_RUNS,
     aging::SETTING_IN_WHEN,
     aging::SKIPPED_EVERY_WAY,

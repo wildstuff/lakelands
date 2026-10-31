@@ -123,6 +123,13 @@ impl Lake {
     /// The description of `ty`, or of the lake where none, told to `who`
     /// at the head and kept since; else how often the kept ones were
     /// dropped, for [`Self::keep_described`].
+    ///
+    /// It is told only at a head inside the range it holds for. An append
+    /// moves the range under the lock and publishes the head after it, so
+    /// a head from before that range is behind what a read of the engine
+    /// already keeps here: told at it, the description would be of a later
+    /// position than the one it names (lakelands#1632). Such a read goes
+    /// to the engine, whose view gives the position and the shape at once.
     pub(crate) fn described<D: Described>(
         &self,
         who: &Principal,
@@ -132,7 +139,8 @@ impl Lake {
         let held = lakelands_core::lock(&self.shapes);
         // INTERIM: lakelands#1610 — a lease lost unnoticed still serves.
         let ended = held.ended.filter(|_| self.is_writer());
-        let fresh = |at: u64| ended.is_some_and(|(from, to)| from <= at && head.0 <= to);
+        let fresh =
+            |at: u64| ended.is_some_and(|(from, to)| from <= at && (from..=to).contains(&head.0));
         let kept = (held.described.kept.iter())
             .find(|(p, t, at, _)| p == who && t.as_ref() == ty && fresh(*at))
             .map(|(.., told)| told.clone());
