@@ -1438,8 +1438,11 @@ pub async fn backup(
     let since = b
         .since
         .map_or_else(|| "new".to_owned(), |p| format!("since {p}"));
+    let again = b.again.map_or_else(String::new, |p| {
+        format!(", the last append written again from {p}")
+    });
     let line = format!(
-        "backed up {} through position {} ({} new event(s), {since}) to {}",
+        "backed up {} through position {} ({} new event(s), {since}{again}) to {}",
         b.lake,
         b.through,
         b.copied,
