@@ -19,9 +19,6 @@ pub enum Place {
     /// Over one record in a write: a derived field, where `changed` and
     /// `previous` have meaning.
     Write,
-    /// A field computed at the read: as `Write`, and `in_force` has
-    /// meaning as well.
-    AtRead,
     /// A trigger's guard: a write, where `retired` has meaning as well.
     Guard,
     /// Over a group of records: a view measure, where aggregates have
@@ -36,6 +33,9 @@ pub enum Place {
     /// A type's constraint: a guard's, where `preceding` has meaning as
     /// well.
     Constraint,
+    /// A field computed at the read: as `Write`, and `in_force` has
+    /// meaning as well.
+    AtRead,
 }
 
 impl Condition {
