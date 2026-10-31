@@ -24,7 +24,7 @@ check!(
 
 check!(
     IN_FORCE_REFUSED = in_force_is_refused_where_it_cannot_pair,
-    "052, extended (lakelands#1606): `in_force` in a constraint, in a field computed at the write or in a `find` is refused `in_force_here`; an order bound other than `T.by <= by`, a pairing with the type itself or with a view `in_force_form`; a matched pair of dates or of two kinds `in_force_pair`; a type that is none `undeclared`, a field it lacks `unknown_field`, two arguments `not_parsed`; `order_by` on the field `order_at_read`; and declaring `tariff` again without `from`, or migrating it so, is refused naming `from`"
+    "052, extended (lakelands#1606): `in_force` in a constraint, in a field computed at the write or in a `find` is refused `in_force_here`; an order bound other than `T.by <= by`, a pairing with the type itself or with a view `in_force_form`; a matched pair of dates or of two kinds `in_force_pair`; a type that is none `undeclared`, a field it lacks `unknown_field`, two arguments `not_parsed`, a date paired into a decimal `never_lands`; `order_by` on the field `order_at_read`; and declaring `tariff` again without `from`, or migrating it so, is refused naming `from`"
 );
 
 /// The pairing every check declares, of `price` by `from` and `meter`.
@@ -286,6 +286,10 @@ async fn in_force_is_refused_where_it_cannot_pair(store: Store) -> Held {
             "unknown_field",
         ),
         ("tariff.price, tariff.from <= at", "not_parsed"),
+        (
+            "tariff.from, tariff.from <= at, tariff.meter = meter",
+            "never_lands",
+        ),
     ] {
         tried.push((read(&format!("in_force({args})")), case));
     }

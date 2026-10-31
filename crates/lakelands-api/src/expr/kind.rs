@@ -43,6 +43,19 @@ impl Kind {
         }
     }
 
+    /// The kind a field of kind `field` is read as; `None` where it is
+    /// none of them.
+    pub fn read(field: StorageKind) -> Option<Kind> {
+        use StorageKind as S;
+        match field {
+            S::Number | S::Decimal => Some(Kind::Number),
+            S::Boolean => Some(Kind::Boolean),
+            S::DateTime | S::Date => Some(Kind::Instant),
+            S::Text | S::Reference => Some(Kind::Text),
+            _ => None,
+        }
+    }
+
     /// Whether a value of this kind can land in a field of kind `field`,
     /// as the fold lands one (`eval::to_json` in `lakelands-core`).
     pub fn lands(self, field: StorageKind) -> bool {
@@ -84,13 +97,7 @@ pub fn of(e: &Expr, field: Reads<'_>) -> Result<Option<Kind>, Case> {
             Literal::Duration(_) => Some(Duration),
         },
         Expr::Path { path } => match field(path) {
-            Some((k, n)) if n == path.len() => match k {
-                StorageKind::Number | StorageKind::Decimal => Some(Number),
-                StorageKind::Boolean => Some(Boolean),
-                StorageKind::DateTime | StorageKind::Date => Some(Instant),
-                StorageKind::Text | StorageKind::Reference => Some(Text),
-                _ => None,
-            },
+            Some((k, n)) if n == path.len() => Kind::read(k),
             // A longer path walks into a `json` or `geo` value's members;
             // into anything else it reads nothing, whatever the record
             // holds. `payload.<name>` is a call's payload.

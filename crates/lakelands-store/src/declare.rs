@@ -668,7 +668,8 @@ pub(crate) fn computed_at(f: &FieldDecl) -> Eval {
 /// takes, with another stored type, over fields that pair: two of one
 /// kind, a match of text or a reference, which the exact-text index keeps,
 /// an order bound of a kind the lake sorts; of the other type stored
-/// fields (052, extended).
+/// fields, and where the call is the whole field, one whose kind lands in
+/// it (052, extended).
 fn in_force(o: &Ontology, t: &TypeDecl) -> Result<()> {
     use StorageKind::{Reference, Text};
     for (f, e) in t.in_force() {
@@ -695,7 +696,14 @@ fn in_force(o: &Ontology, t: &TypeDecl) -> Result<()> {
                     Some(d) => Ok(d.ty.kind),
                 }
             };
-            theirs(p.read)?;
+            // Where the call is the whole of what the field computes, what
+            // `T.f` holds is what lands in it.
+            let read = Kind::read(theirs(p.read)?);
+            if let Expr::Call { func, .. } = &e
+                && *func == Func::InForce
+            {
+                lands(f, read, &on)?;
+            }
             let pairs = std::iter::once(p.by).chain(p.matched.iter().copied());
             for (i, (left, right)) in pairs.enumerate() {
                 let kind = theirs(left)?;

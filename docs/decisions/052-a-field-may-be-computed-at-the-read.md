@@ -95,11 +95,14 @@ a view's `sum(kwh * price)` reads it as every read does.
 - **The form.** A path `T.f` first; exactly `T.by <= by` second; one or
   more `T.m = m`. Every `T.` is one type, another stored type, and every
   bare name a stored field of the record. Each call answers one value:
-  a host that wants two declares two fields.
+  a host that wants two declares two fields. A link type is never `T`:
+  its name is dotted, and `T.f` is two names.
 - **Pairs pair.** The two fields of a pair are of one kind; a matched
   pair is text or a reference, which the exact-text index keeps (057);
   an order pair is of a kind the lake sorts (041). Of `T`, each field
   named is stored: one computed at the read is refused `reads_at_read`.
+  Where the call is the whole of a field, `f` holds a kind that lands in
+  it, or the field is refused `never_lands`, as any derived field is.
 - **Only here.** Anywhere else (a constraint, a field computed at the
   write, a `find`'s `where`) it is refused `in_force_here`: a stored
   pairing would go stale when a tariff is written after the readings it
@@ -116,7 +119,8 @@ a view's `sum(kwh * price)` reads it as every read does.
 - **Its rights.** It is computed from the record's `by` and matched
   fields and from `T`'s `f`, `by` and matched fields, so a reader not
   shown one of them is not shown it, and one shown one masked reads it
-  masked (024).
+  masked (024). `T`'s `f` is judged as the reader's `find` on `T`
+  judges it: one derived there is shown where what it reads is.
 - **Its cost.** A read pairs a page at a time: each partition of `T`
   (one set of matched values) is read once, in `by` order, and each
   record found in it by a binary search. A partition of more than 1 024
