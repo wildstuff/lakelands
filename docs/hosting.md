@@ -2018,6 +2018,63 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   computation that rises or falls with one stored field the order is the
   same, descending where the count falls as the field rises.
 
+## What a market tick costs
+
+`crates/lakelands-cli/examples/tick_bench.rs` measures a tick workload through
+`lakelands serve` (build and flags in its header). A tick has `symbol`, `at`
+(under an order index), `price`, `size` and `seq`, keyed by all three; 5 000 series
+of uneven size (weight `1 / (rank + 1)^0.9`) get their ticks in time order. The
+first 20 000 records are written by 16 callers, an `upsert` each (writes a second, p99
+of a write); the rest by one caller in `ingest` calls of 1 000 (records a second, p99 of
+a call). A roll-up is a kept view grouped by `[symbol, date_bucket(at, …)]` with
+`count`, `sum`, `min`, `max`, `first` and `last`: one roll-up is the hour, three are
+the minute, the hour and the day, each grouped by a derived `date_bucket` field of the
+tick type. The trigger's guard reads `preceding(price, at, symbol)` against a constant
+bound and never fires; it is judged on every write. Bytes are per record: the log's
+files, the projection's tables, and the projection's indexes (`dbstat`). Reads are of
+the largest series, the median of five, raw (`where symbol and at >= …`, paged by 1 000)
+and from the finest roll-up (last hour) and the hour roll-up (last day).
+
+Machine: Apple M4 Pro, 14 cores, 24 GB, internal NVMe SSD; the machine was shared with
+other builds, and **the load average was not recorded for the cells below**, so a
+number here is one run at an unknown load, not a median. The `in_force` trigger cell is
+not measured (lakelands#1640), PostgreSQL is not measured (the run's PostgreSQL was 16;
+the engine needs 18), and 10 million records are not measured.
+
+SQLite, 100 000 records:
+
+| engine | roll-ups | trigger | records | callers: writes/s | p99 ms | ingest: records/s | p99 ms a call of 1000 | log B/rec | projection B/rec | index B/rec |
+|---|---|---|---|---|---|---|---|---|---|---|
+| sqlite | 0 | none | 100000 | 796 | 30.9 | 7755 | 239.0 | 424 | 1953 | 525 |
+|   reads (largest series, 7171 ticks) | raw hour 5161 rows 85.6 ms | raw day 7171 rows 91.2 ms |
+| sqlite | 0 | preceding | 100000 | 781 | 31.6 | 2806 | 559.6 | 424 | 1957 | 525 |
+|   reads (largest series, 7171 ticks) | raw hour 5161 rows 87.2 ms | raw day 7171 rows 92.3 ms |
+| sqlite | 1 | none | 100000 | 669 | 81.2 | 1756 | 724.8 | 424 | 4079 | 2144 |
+|   reads (largest series, 7171 ticks) | raw hour 5161 rows 89.3 ms | raw day 7171 rows 94.3 ms | roll-up hour 1 rows 0.2 ms | roll-up day 2 rows 0.1 ms |
+| sqlite | 1 | preceding | 100000 | 552 | 99.9 | 1188 | 1504.3 | 424 | 4056 | 2147 |
+|   reads (largest series, 7171 ticks) | raw hour 5161 rows 112.3 ms | raw day 7171 rows 119.1 ms | roll-up hour 1 rows 0.2 ms | roll-up day 2 rows 0.2 ms |
+| sqlite | 3 | none | 100000 | 389 | 269.0 | 463 | 5424.6 | 424 | 8754 | 5570 |
+|   reads (largest series, 7171 ticks) | raw hour 5161 rows 100.5 ms | raw day 7171 rows 105.4 ms | roll-up hour 60 rows 1.0 ms | roll-up day 2 rows 0.2 ms |
+| sqlite | 3 | preceding | 100000 | 390 | 207.8 | 522 | 2481.7 | 424 | 8715 | 5586 |
+|   reads (largest series, 7171 ticks) | raw hour 5161 rows 104.9 ms | raw day 7171 rows 108.1 ms | roll-up hour 60 rows 1.0 ms | roll-up day 2 rows 0.2 ms |
+
+SQLite, 1 000 000 records:
+
+| engine | roll-ups | trigger | records | callers: writes/s | p99 ms | ingest: records/s | p99 ms a call of 1000 | log B/rec | projection B/rec | index B/rec |
+|---|---|---|---|---|---|---|---|---|---|---|
+| sqlite | 0 | none | 1000000 | 686 | 43.0 | 4174 | 553.4 | 389 | 1163 | 536 |
+|   reads (largest series, 71847 ticks) | raw hour 5174 rows 1142.6 ms | raw day 71847 rows 1353.5 ms |
+| sqlite | 0 | preceding | 1000000 | 823 | 33.9 | 1747 | 1008.5 | 389 | 1163 | 537 |
+|   reads (largest series, 71847 ticks) | raw hour 5174 rows 952.2 ms | raw day 71847 rows 1134.7 ms |
+| sqlite | 1 | none | 1000000 | 575 | 101.7 | 745 | 2943.5 | 389 | 3151 | 2194 |
+|   reads (largest series, 71847 ticks) | raw hour 5174 rows 991.3 ms | raw day 71847 rows 1183.9 ms | roll-up hour 1 rows 0.2 ms | roll-up day 14 rows 0.3 ms |
+| sqlite | 1 | preceding | 1000000 | 544 | 99.5 | 588 | 4259.4 | 389 | 3151 | 2196 |
+|   reads (largest series, 71847 ticks) | raw hour 5174 rows 1045.9 ms | raw day 71847 rows 1224.7 ms | roll-up hour 1 rows 0.3 ms | roll-up day 14 rows 0.3 ms |
+| sqlite | 3 | none | 1000000 | 391 | 222.2 | 180 | 8011.2 | 389 | 7623 | 5701 |
+|   reads (largest series, 71847 ticks) | raw hour 5174 rows 1125.9 ms | raw day 71847 rows 1301.9 ms | roll-up hour 60 rows 4.8 ms | roll-up day 14 rows 0.3 ms |
+| sqlite | 3 | preceding | 1000000 | 445 | 224.9 | 113 | 35419.5 | 389 | 7622 | 5723 |
+|   reads (largest series, 71847 ticks) | raw hour 5174 rows 1106.7 ms | raw day 71847 rows 1302.5 ms | roll-up hour 60 rows 4.9 ms | roll-up day 14 rows 0.3 ms |
+
 ## Building declarations in Rust
 
 A host that builds declarations or reads descriptions through
