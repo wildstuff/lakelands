@@ -125,11 +125,11 @@ impl Lake {
     /// dropped, for [`Self::keep_described`].
     ///
     /// It is told only at a head inside the range it holds for. An append
-    /// moves the range under the lock and publishes the head after it, so
-    /// a head from before that range is behind what a read of the engine
-    /// already keeps here: told at it, the description would be of a later
-    /// position than the one it names (lakelands#1632). Such a read goes
-    /// to the engine, whose view gives the position and the shape at once.
+    /// publishes the head last, so from its fold's commit on a read of the
+    /// engine can keep a description of a position the head has not reached:
+    /// told at that head, the description would be of a later position
+    /// than the one it names (lakelands#1632). Such a read goes to the
+    /// engine, whose view gives the position and the shape at once.
     pub(crate) fn described<D: Described>(
         &self,
         who: &Principal,
