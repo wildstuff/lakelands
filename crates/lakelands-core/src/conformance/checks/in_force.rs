@@ -23,6 +23,11 @@ check!(
 );
 
 check!(
+    IN_FORCE_LONG = a_meter_of_many_tariffs_pairs_as_one_of_few,
+    "052, extended (lakelands#1606): a meter of more than 1 024 tariffs, more than a read keeps of one meter, pairs as one of fewer does, in `get` and `find` alike: the tariff whose `from` is the greatest at or below, tied the first by key though written last, a restricted tariff passed over for a reader without `restricted` and paired for one granted it, and a reading before every tariff null"
+);
+
+check!(
     IN_FORCE_REFUSED = in_force_is_refused_where_it_cannot_pair,
     "052, extended (lakelands#1606): `in_force` in a constraint, in a field computed at the write or in a `find` is refused `in_force_here`; an order bound other than `T.by <= by`, a pairing with the type itself or with a view `in_force_form`; a matched pair of dates or of two kinds `in_force_pair`; a type that is none `undeclared`, a field it lacks `unknown_field`, two arguments `not_parsed`, a date paired into a decimal `never_lands`; `order_by` on the field `order_at_read`; and declaring `tariff` again without `from`, or migrating it so, is refused naming `from`"
 );
@@ -226,6 +231,62 @@ async fn a_reading_is_paired_among_the_tariffs_its_reader_is_answered(store: Sto
         "a reader not shown `tariff` is not shown `price`, one masked from `tariff.price` \
          reads it masked: {unseen:?}, {masked:?}"
     );
+    Ok(())
+}
+
+async fn a_meter_of_many_tariffs_pairs_as_one_of_few(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    declared(&l, PAIRED).await?;
+    let days = (2000..).flat_map(|y| {
+        (1..=12).flat_map(move |m| (1..=28).map(move |d| format!("{y}-{m:02}-{d:02}")))
+    });
+    let days: Vec<String> = days.take(1030).collect();
+    for (i, from) in days.iter().enumerate() {
+        let t = json!({"meter": "M", "from": from, "price": i.to_string(), "hand": "a"});
+        l.upsert("tariff", &format!("T{i:04}"), t).await?;
+    }
+    let tie = json!({"meter": "M", "from": days[500], "price": "1500", "hand": "a"});
+    l.upsert("tariff", "A0500", tie).await?;
+    for key in ["T0800", "T1029"] {
+        restrict(store.as_ref(), "tariff", key, "kept").await?;
+    }
+    let read = [
+        ("R0", "1999-12-31"),
+        ("R1", &days[10]),
+        ("R2", &days[500]),
+        ("R3", &days[800]),
+        ("R4", &days[1029]),
+    ];
+    for (key, at) in read {
+        let r = json!({"meter": "M", "at": at, "kwh": "1"});
+        l.upsert("reading", key, r).await?;
+    }
+    let s = store.as_ref();
+    let readers = [
+        ("plain", json!({}), ["", "10", "1500", "799", "1028"]),
+        (
+            "boss",
+            json!({"restricted": true}),
+            ["", "10", "1500", "800", "1029"],
+        ),
+    ];
+    for (id, mut grants, want) in readers {
+        grants["default"] = json!("read");
+        let who = holder(s, id, grants);
+        let want: Prices = (read.iter().zip(want))
+            .map(|((k, _), p)| (k.to_string(), (!p.is_empty()).then(|| dec(p))))
+            .collect();
+        let mut got = Vec::new();
+        for (key, _) in read {
+            got.push(get(&l, &who, key, None).await?);
+        }
+        let got = prices(&got);
+        let found = prices(&all_found(l.cat.as_ref(), &who, "reading", find_at(None)).await?);
+        ensure!(
+            got == want && found == want,
+            "`{id}` pairs {want:?} among 1 031 tariffs of one meter: `get` {got:?}, `find` {found:?}"
+        );
+    }
     Ok(())
 }
 

@@ -360,6 +360,7 @@ pub const ALL: &[Check] = &[
     computed_at::MOVED,
     in_force::IN_FORCE_PAIRED,
     in_force::IN_FORCE_SIGHT,
+    in_force::IN_FORCE_LONG,
     in_force::IN_FORCE_REFUSED,
     read_clock::READ_CLOCK,
     read_clock::TODAY_RULES_OUT,
