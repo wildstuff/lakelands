@@ -9,6 +9,9 @@ writes it only through a network door of the process that does.
 
 ### Many callers already write one lake; many processes write it through its writer
 
+099 keeps this: a job's turns are the writer's turns, and a write waits
+for at most the turn in front of it.
+
 A lake has one writing process, holding the lease and its fencing token
 (`docs/decisions/008-one-writer-per-lake.md`), and one hash-chained log
 in one order
@@ -297,3 +300,4 @@ harmless.
 - Way D rests on several lakes whose answers the host adds up, where it
   had rested on a read across lakes too; that read is paused
   (lakelands#1404).
+- Amended by 099 (lakelands#1652), proposed for 0.23.0.

@@ -134,6 +134,9 @@ out, by a name a model can carry, and a kept set could not hold it.
 
 ### What would leave a set of a view without its rows is refused
 
+099 adds one refusal, `view_building`: a set or trigger over a view
+whose build is not whole.
+
 While a set holds a view, through any view it reads too:
 
 - ending the view's keeping is refused `view_kept_for_set`, naming the
@@ -280,3 +283,4 @@ them would mean running a migration twice.
   `where` and its merged sources', kept or not (lakelands#1441), and a
   kept set a read names by `in_set` answers by its kept membership,
   whatever its `where` reads (lakelands#1437).
+- Amended by 099 (lakelands#1652), proposed for 0.23.0.

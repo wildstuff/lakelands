@@ -4,6 +4,10 @@
 
 ### A purge retires every live record a source brought in, in one append
 
+099 appends a purge in parts, between `source_purged` and `act_whole`;
+the rule below of one append and the note that it is not paged change
+with it.
+
 `LakeStore::purge_source(source)` retires every live record one source
 brought in, across every type it reached, in one append, and answers what
 it retired per type. Each retirement is an ordinary `record_retired`,
@@ -226,3 +230,4 @@ ingest, because the ingest id carries the version it was written over
 - Extended by 091 (lakelands#1551): a `via` field that holds an array
   of keys refers to the record of each key in it, and its record is
   counted once.
+- Amended by 099 (lakelands#1652), proposed for 0.23.0.

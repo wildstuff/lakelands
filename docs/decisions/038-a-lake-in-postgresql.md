@@ -36,6 +36,8 @@ configured. With `disable` the connection is plaintext.
 
 ### The log is kept as the format's lines
 
+098 keeps a row a block, and moves the ids to `ids`.
+
 - An event's canonical bytes are stored unchanged, one row per event,
   with the position, id, `prev`, `hash` and fence beside them, and the
   first position of the segment it belongs to. As 086 decides for
@@ -300,3 +302,4 @@ file answers on disk: it dies with its holder.
   state (lakelands#1432).
 - A row holding the stored form, a table of frames, and a digest over
   the restored bytes, accepted with 083 (lakelands#1413).
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

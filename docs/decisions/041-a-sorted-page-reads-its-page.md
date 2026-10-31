@@ -71,6 +71,10 @@ is full. A field not asked for is ordered by sorting the type.
 
 ### The lake chooses an order index from what is ordered by, beside its log, and the host's setting wins
 
+099 builds every setting by these steps, each a turn of `order_chunk`
+rows, falling to 1 000; takes `Drop` into parts; and ends the refusal of
+a type with `sort_index`. `chosen_through` goes with the green field.
+
 **What changes no answer, the lake may keep beside the log; what it keeps
 there is learned from use and never logged.** An order index changes only
 what a page costs. A host's `sort_index.<type>` setting is the logged
@@ -737,3 +741,4 @@ chooses again from use.
   wins (lakelands#1131).
 - Bounds narrow the walk, and a series index is the host's
   (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`).
+- Amended by 099 (lakelands#1652), proposed for 0.23.0.

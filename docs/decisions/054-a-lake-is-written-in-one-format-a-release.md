@@ -75,6 +75,9 @@ that restated it.
 
 ### From the first release with real installations on, every change of the format carries its upgrade path
 
+The operator's green field of 2026-10-31 (098) ends this for formats
+before 23: an older format is refused, and nothing is upgraded.
+
 How a lake the release before wrote becomes one the new release reads is
 then part of the change, and the suite proves it on a lake the release
 before wrote. Upgrading is then a commitment of the first rank, not an
@@ -302,3 +305,4 @@ them.
   only append of 20 was the last as a lake of 19 with a crash's tail,
   refused its projection's layout and advised a rebuild that cut that
   append (lakelands#1477).
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

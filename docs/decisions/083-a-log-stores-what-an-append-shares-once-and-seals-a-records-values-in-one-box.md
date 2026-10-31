@@ -20,6 +20,11 @@ amended rule is marked where it stands as accepted for 0.20.0.
 
 ### A segment's lines are a stored form, and each restores to exactly one canonical event
 
+098 amends this for format 23: a block holds one format, so `v` is on
+its first line, not on every line; a block's lines also leave out each
+`hash` but the last and an `id` the event decides; and compression ends
+this record's "Not a compression of the log".
+
 The log stores a **stored form**, not each event's canonical bytes. A
 reader restores every event from it, and the event it restores is the
 one the store made: the same members, the same canonical bytes, the same
@@ -227,3 +232,7 @@ format fixes.
   members of one event still share one.
 - **Not a compression of the log.** Every line is still canonical JSON a
   reader parses without a codec.
+
+## How it came to be
+
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

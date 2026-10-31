@@ -4,6 +4,9 @@
 
 ### The exact-text index keeps rows for the fields that are looked up
 
+099 builds these rows in parts; a reader decides from the setting's mark
+until the build is whole.
+
 Each engine that keeps an exact-text index (SQLite and PostgreSQL) keeps
 a row for each string a record's latest state holds, but only in the
 fields of its type that are looked up. The memory engine keeps no such
@@ -149,3 +152,4 @@ on every engine.
   (lakelands#1606).
 - A number field can be named, and the memory engine keeps the index
   (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`).
+- Amended by 099 (lakelands#1652), proposed for 0.23.0.
