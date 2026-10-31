@@ -130,6 +130,15 @@ member, `context.occasion` (088, lakelands#1584). The way back to
 0.21.x is a backup taken before the upgrade, restored into a lake of its
 own.
 
+**0.21.x on a lake that 0.22.0 wrote.** It refuses the lake by its log
+format, naming 22, on SQLite and on PostgreSQL, and writes nothing. Do
+not restore a backup over the lake, and open it with 0.22.0. Format 22
+is the one develop `2df88393` writes, and 0.22.0 only adds to it: a
+binary built from that commit is not to open a lake that 0.22.0 has
+written, which may hold a line it adds (a host's quarantined record keyed
+by its run and line, `preceding` in a constraint or a trigger, `first`
+and `last`, `in_force`), and is not supported.
+
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
 - **The log is never rewritten.** Each format step from 14 on ships a
@@ -171,7 +180,8 @@ own.
   on, `docs/log-format/lakes/18/`, the lake v0.17.0 made, from that one on,
   `docs/log-format/lakes/19/`, the lake v0.18.0 made, from that one on,
   `docs/log-format/lakes/20/`, the lake v0.20.0 made, from that one on,
-  and `docs/log-format/lakes/21/`, the lake v0.21.0 made, from that one
+  `docs/log-format/lakes/21/`, the lake v0.21.0 made, from that one on,
+  and `docs/log-format/lakes/22/`, the lake v0.22.0 made, from that one
   on. The vectors of each older format are imported and upgraded on
   every engine too.
 

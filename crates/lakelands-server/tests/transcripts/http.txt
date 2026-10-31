@@ -24,7 +24,7 @@
 < 200
 < content-type: application/json
 < mcp-session-id: {session}
-< {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"experimental":{"lakelands/changes":{}},"tools":{"listChanged":true}},"instructions":"This session serves one lake, `finance`. Every answer carries the position it was read or written at. Call `describe` to see what the lake holds.","protocolVersion":"2025-06-18","serverInfo":{"name":"lakelands","version":"0.21.1"}}}
+< {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"experimental":{"lakelands/changes":{}},"tools":{"listChanged":true}},"instructions":"This session serves one lake, `finance`. Every answer carries the position it was read or written at. Call `describe` to see what the lake holds.","protocolVersion":"2025-06-18","serverInfo":{"name":"lakelands","version":"0.22.0"}}}
 
 > POST /lakes/finance/mcp
 > authorization: Bearer k-clerk

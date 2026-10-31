@@ -95,6 +95,9 @@ by_format!(
     the_lake_of_format_17_is_read_as_it_answered = kept_lake_answers(17),
     the_lake_of_format_18_is_read_as_it_answered = kept_lake_answers(18),
     the_lake_of_format_19_is_read_as_it_answered = kept_lake_answers(19),
+    the_lake_of_format_20_is_read_as_it_answered = kept_lake_answers(20),
+    the_lake_of_format_21_is_read_as_it_answered = kept_lake_answers(21),
+    the_lake_of_format_22_is_read_as_it_answered = kept_lake_answers(22),
 );
 
 async fn a_lake_of_format_20_is_upgraded_and_read(store: Store, given: Given) -> Held {
@@ -223,6 +226,12 @@ check!(
 );
 
 check!(
+    LAKE_22_READ = the_lake_of_format_22_is_read_as_it_answered,
+    "054 (lakelands#962): the lake v0.22.0 made through its doors (`docs/log-format/lakes/22/`), in format 22, imported on this engine, is read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, the link records of its relation and the counts of its view among them, a setting of two periods, a price found at the read by `in_force`, the extremes a kept view holds per bucket, and a person of a source whose values are sealed in one box; the members of its object set; the walk over its relation; and its sealed values read whole with the file keyring's file it ships, each with its provenance, while a forgotten source's read as erased; the lake holds what format 22 adds to 21 (a write made on an occasion, a record the host refused and quarantined under its run and line, and the `preceding` and `in_force` of a constraint, a trigger and a field computed at the read), beside the frames each append is written in, the sealed boxes and the erasure of 21; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
+    given
+);
+
+check!(
     BOXES_BESIDE_19 = a_lake_of_format_19_takes_boxes_beside_the_members_it_sealed_alone,
     "083: the lake of format 19 (`docs/log-format/lakes/19/`), imported with its file keyring's file and upgraded by a writer's open, takes a source's ingests after its own events: each seals its erasable value in a `sealed.box` of format 20, while the lake's events of 19 seal each member alone in the patch; the lake verifies, a value of either form reads whole, and so it does rebuilt",
     given
@@ -273,14 +282,6 @@ async fn a_lake_of_format_19_takes_boxes_beside_the_members_it_sealed_alone(
         }
     }
     Ok(())
-}
-
-async fn the_lake_of_format_20_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 20).await
-}
-
-async fn the_lake_of_format_21_is_read_as_it_answered(store: Store, given: Given) -> Held {
-    kept_lake_answers(store, given, 21).await
 }
 
 /// The kept lake of `format` (`docs/log-format/lakes/<format>/`), imported

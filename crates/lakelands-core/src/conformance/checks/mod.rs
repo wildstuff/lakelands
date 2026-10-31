@@ -1027,6 +1027,7 @@ pub const ALL: &[Check] = &[
     upgrade::LAKE_19_READ,
     upgrade::LAKE_20_READ,
     upgrade::LAKE_21_READ,
+    upgrade::LAKE_22_READ,
     upgrade::BOXES_BESIDE_19,
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
