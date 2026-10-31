@@ -126,7 +126,14 @@ impl Access {
 /// the type's default, then the lake-wide default. There is no role and
 /// no switch that stops the checking; a fully trusted principal is one
 /// whose `default` is [`Access::Write`].
+///
+/// A grant narrows what a principal may do, so a key this build does not
+/// know is refused, here and in the two types below, rather than dropped
+/// with the restriction it spelt: no event or proposal holds a grant, so
+/// nothing an old log folds reads one
+/// (`006 § A grant that is not understood stops the root`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Grants {
     /// The access for any field not granted more specifically.
     #[serde(default)]
@@ -171,6 +178,7 @@ pub struct Renamed {
 
 /// The grants of one principal on one type.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TypeGrants {
     /// The access for any field of this type not granted per field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -234,6 +242,7 @@ pub struct TypeGrants {
 /// a pair of `only` is, each of `fields` has the lower of its access and
 /// the one given here, `none` or `masked`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HiddenWhere {
     /// The field that selects: of kind `text` or `reference`, read by the
     /// holder.

@@ -825,6 +825,10 @@ async fn dispatch(
     let who = root
         .principal(store.lake(), text(sub, "as").as_deref())
         .await?;
+    // A process with no door acts as this one principal, in this one lake.
+    if let (None, Some(acting)) = (&door, text(sub, "as")) {
+        (root.tell_undeclared(std::slice::from_ref(&store), Some(&acting))).await;
+    }
     let catalog = store.catalog(WriteContext::default());
     match name {
         "apply" => {
@@ -1324,6 +1328,7 @@ async fn serve(
         }
     }
     let held: Vec<Arc<dyn LakeStore>> = lakes.values().cloned().collect();
+    root.tell_undeclared(&held, None).await;
     // A standby's door serves reads at once and is not ready until every
     // lake holds its lease; what writes on the lakes' behalf starts then.
     if root.config.standby.is_some() {
