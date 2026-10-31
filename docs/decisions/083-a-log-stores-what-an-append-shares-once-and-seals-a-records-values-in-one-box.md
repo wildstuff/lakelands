@@ -115,7 +115,8 @@ may name two ingests alike.
   no mark: told the end, it would learn that the write it was told of
   set off something it is not told. A receiver that sees no `next`
   holds an append whole once the event at its end arrives, or one of a
-  later append.
+  later append; the deliverer names as the end the last event of the
+  append it sends, since it does not send them all.
 - **Where it is not exact.** An append of a format before 20, or of 20
   before lakelands#1433, has no frame, and each of its events reads as
   an append of its own; so does each event of the append that creates
@@ -231,14 +232,6 @@ format fixes.
   members of one event still share one.
 - **Not a compression of the log.** Every line is still canonical JSON a
   reader parses without a codec.
-
-## A known limit
-
-The deliverer sends the end of an append in a header, but it sends only
-the events it delivers (`trigger_fired` and `object_set_changed`). An
-append that ends with an event the deliverer does not send, such as a
-`record_ingested` whose trigger did not fire, is seen complete by a
-receiver only when a later append is delivered.
 
 ## How it came to be
 

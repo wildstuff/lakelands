@@ -14,9 +14,10 @@
 //! `id`. The headers `Lakelands-Lake`, `Lakelands-Position` (with the lake,
 //! the change's dedup key), `Lakelands-Event` and `Lakelands-Attempt` repeat
 //! what the receiver needs before it parses; `Lakelands-Append` is the
-//! last position of the append that wrote the event, so a receiver
-//! gathers one append's firings by it (083), and holds them all once the
-//! event at that position arrives, or one of a later append. With a secret,
+//! last position of the append that wrote the event which this deliverer
+//! sends, so a receiver gathers one append's firings by it (083), and
+//! holds them all once the event at that position arrives, or one of a
+//! later append. With a secret,
 //! `Lakelands-Signature: sha256=<hex>` is the HMAC-SHA256 of the body's
 //! bytes; the receiver checks it over the raw bytes before parsing. The
 //! connection is the crate's one transport: no proxy, no redirect
@@ -57,7 +58,7 @@ use hyper::header::{HeaderName, HeaderValue};
 use lakelands_api::LakeStore;
 use lakelands_api::event::Event;
 use lakelands_api::event::EventBody;
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::{LakeId, Position, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -457,10 +458,36 @@ impl Deliverer {
         // it did not move.
         let more = batch.next <= batch.head && batch.next > from;
         self.caught = (batch.next > batch.head).then_some(batch.head);
+        let mut sent = self.sendable(&batch);
+        // A page that cuts through an append leaves its last events unread:
+        // read on to its end, so that the header names a position that is
+        // sent whatever the page size.
+        if let Some(cut) = batch
+            .appends
+            .last()
+            .copied()
+            .filter(|end| *end >= batch.next)
+        {
+            let mut at = batch.next;
+            while at <= cut {
+                let more = feed
+                    .poll(at, &filter, self.batch)
+                    .await
+                    .map_err(|e| format!("the feed failed: {e}"))?;
+                if more.next <= at {
+                    return Err("the feed did not move past a page that cuts an append".into());
+                }
+                sent.extend(self.sendable(&more).into_iter().filter(|p| *p <= cut));
+                at = more.next;
+            }
+        }
         for event in &batch.events {
             let overruled = batch.overruled.binary_search(&event.position).is_ok();
             match (self.wanted(event), overruled) {
-                (true, false) => self.deliver(event, batch.append_of(event.position)).await,
+                (true, false) => {
+                    let end = last_sent(&batch, &sent, event.position);
+                    self.deliver(event, end).await
+                }
                 (true, true) => self.journal(event, 0, json!({ "outcome": "overruled" })),
                 (false, _) => {}
             }
@@ -470,6 +497,16 @@ impl Deliverer {
             self.keep(batch.next)?;
         }
         Ok(more)
+    }
+
+    /// The positions of a batch's events that are sent, in order.
+    fn sendable(&self, batch: &FeedBatch) -> Vec<Position> {
+        batch
+            .events
+            .iter()
+            .filter(|e| self.wanted(e) && batch.overruled.binary_search(&e.position).is_err())
+            .map(|e| e.position)
+            .collect()
     }
 
     /// Whether the endpoint receives an event: its kind, and the trigger
@@ -653,6 +690,15 @@ impl Deliverer {
             self.target.shown()
         );
     }
+}
+
+/// The last position of the append that wrote the event at `at` which the
+/// deliverer sends (`sent`, in order): a receiver holds the append whole
+/// once the event there arrives. `sent` reaches to the end of the append,
+/// across a page that cuts it.
+fn last_sent(batch: &FeedBatch, sent: &[Position], at: Position) -> Option<Position> {
+    let end = batch.append_of(at)?;
+    sent.iter().rev().find(|p| **p <= end).copied()
 }
 
 fn header(v: &str) -> HeaderValue {
