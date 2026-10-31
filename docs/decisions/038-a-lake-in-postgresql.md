@@ -97,6 +97,32 @@ The lease is session state.
   misconfiguration the probe catches when it can, not one the engine
   survives.
 
+### What is proved, and against what
+
+`crates/lakelands-engine-pg/tests/live_servers.rs` runs in CI's
+`pg-live` job, on every pull request, against servers
+`scripts/pg-live/up.sh` starts in one container of the conformance job's
+image (`postgres:18`):
+
+- **PgBouncer in transaction mode** (1.26.1, the PostgreSQL project's
+  package): an open for writing, `Write` or `Create`, is refused as the
+  pooler situation, and every table of the lake holds the same rows
+  afterwards; a lake that did not exist is not made.
+- **PgBouncer in session mode**, the same version: the lake is opened,
+  and its lease is taken and given back.
+- **A server that demands a client certificate** (`hostssl ... cert`,
+  the certificate's CN the user): the connection with the certificate is
+  served, the same location without it is refused by the server, and
+  half a certificate (the certificate without the key, the key without
+  the certificate) is refused as invalid before a connection is tried,
+  with nothing listening at the URL.
+
+Each was seen failing with its refusal removed. What is not proved: any
+other pooler (PgBouncer is the one run, and its `pool_mode` the only
+setting varied), a transaction-mode pooler that passes the probe (the
+limit stated above), a server certificate that does not verify, and
+PostgreSQL versions other than 18.
+
 ### The fold writes in one `READ COMMITTED` transaction, and every read of a view runs in a `REPEATABLE READ` one
 
 - The fold writes the projection in one `READ COMMITTED` transaction on
