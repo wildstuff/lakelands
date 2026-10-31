@@ -290,6 +290,52 @@ async fn fired_triggers_go_in_log_order_as_the_feed_holds_them_signed_over_the_r
     );
 }
 
+/// An append that ends with an event the deliverer does not send, here the
+/// ingest of a record whose trigger did not fire, names the last position
+/// the deliverer sent: the receiver holds the append whole at once, not
+/// when a later append is delivered (083).
+#[tokio::test]
+async fn the_append_header_names_the_last_position_sent_not_the_appends_end() {
+    let store = lake().await;
+    let (cat, own) = (doors(store.as_ref()), owner(store.as_ref()));
+    let stop = type_decl("stop", vec![sourced("place", StorageKind::Text)]);
+    declare(cat.as_ref(), &own, stop).await.unwrap();
+    cat.declare(&own, trigger_on("in_rome", "stop", Some("place = 'Rome'")))
+        .await
+        .unwrap();
+    let rome = source_record("stop", "s1", json!({"place": "Rome"}));
+    let oslo = source_record("stop", "s2", json!({"place": "Oslo"}));
+    ingest(cat.as_ref(), &own, "tracker", vec![rome, oslo])
+        .await
+        .unwrap();
+    let f = fake(&[]).await;
+    let dir = root();
+    let lake = lake_id(store.as_ref());
+    let c = config(json!({"url": f.url(), "lakes": [lake.as_str()]}));
+    let mut d = deliverers(&c, &dir, &lake).unwrap().pop().unwrap();
+    d.round(store.as_ref()).await.unwrap();
+
+    let all = FeedFilter {
+        kinds: vec![],
+        types: vec![],
+        keys: Vec::new(),
+    };
+    let batch = store
+        .feed()
+        .poll(Position::GENESIS, &all, 100)
+        .await
+        .unwrap();
+    let requests = f.requests();
+    assert_eq!(requests.len(), 1, "only the Rome firing is sent");
+    let sent = header(&requests[0], "lakelands-position").unwrap();
+    let end = batch.append_of(Position(sent.parse().unwrap())).unwrap();
+    assert!(
+        end.0 > sent.parse::<u64>().unwrap(),
+        "the append ends in an event that is not sent"
+    );
+    assert_eq!(header(&requests[0], "lakelands-append"), Some(sent));
+}
+
 /// A firing decided over a value an act took back since is overruled: it
 /// is journaled `overruled` and not posted, while the firing beside it
 /// that stands is (065).

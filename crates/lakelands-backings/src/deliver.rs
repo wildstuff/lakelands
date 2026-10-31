@@ -14,7 +14,8 @@
 //! `id`. The headers `Lakelands-Lake`, `Lakelands-Position` (with the lake,
 //! the change's dedup key), `Lakelands-Event` and `Lakelands-Attempt` repeat
 //! what the receiver needs before it parses; `Lakelands-Append` is the
-//! last position of the append that wrote the event, so a receiver
+//! last position of the append that wrote the event which this deliverer
+//! sends, so a receiver
 //! gathers one append's firings by it (083), and holds them all once the
 //! event at that position arrives, or one of a later append. With a secret,
 //! `Lakelands-Signature: sha256=<hex>` is the HMAC-SHA256 of the body's
@@ -57,7 +58,7 @@ use hyper::header::{HeaderName, HeaderValue};
 use lakelands_api::LakeStore;
 use lakelands_api::event::Event;
 use lakelands_api::event::EventBody;
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::{LakeId, Position, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -457,10 +458,19 @@ impl Deliverer {
         // it did not move.
         let more = batch.next <= batch.head && batch.next > from;
         self.caught = (batch.next > batch.head).then_some(batch.head);
+        let sent: Vec<Position> = batch
+            .events
+            .iter()
+            .filter(|e| self.wanted(e) && batch.overruled.binary_search(&e.position).is_err())
+            .map(|e| e.position)
+            .collect();
         for event in &batch.events {
             let overruled = batch.overruled.binary_search(&event.position).is_ok();
             match (self.wanted(event), overruled) {
-                (true, false) => self.deliver(event, batch.append_of(event.position)).await,
+                (true, false) => {
+                    let end = last_sent(&batch, &sent, event.position);
+                    self.deliver(event, end).await
+                }
                 (true, true) => self.journal(event, 0, json!({ "outcome": "overruled" })),
                 (false, _) => {}
             }
@@ -653,6 +663,18 @@ impl Deliverer {
             self.target.shown()
         );
     }
+}
+
+/// The last position of the append that wrote the event at `at` which the
+/// deliverer sends (`sent`, in order): a receiver holds the append whole
+/// once the event there arrives. Where a page cuts through the append, the
+/// rest is not known, and the append's end stands.
+fn last_sent(batch: &FeedBatch, sent: &[Position], at: Position) -> Option<Position> {
+    let end = batch.append_of(at)?;
+    if end >= batch.next {
+        return Some(end);
+    }
+    sent.iter().rev().find(|p| **p <= end).copied()
 }
 
 fn header(v: &str) -> HeaderValue {
