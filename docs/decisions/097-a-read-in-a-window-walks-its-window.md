@@ -5,11 +5,13 @@ No code yet. The build waits for the joint record of lakelands#1649,
 lakelands#1651 and lakelands#1652, which may change the format this record
 stands on; what waits for it is listed below.
 
-**No data migration and no breaking change.** The log format stays, no stored
-table changes and `LAYOUT` stays on both engines. No kept lake binds this
-record: the profiles are deleted at this tag and an older binary need not be
-served. Additive: one setting, one wider setting, one `limits` member, three
-`ProjectionView` methods with defaults and a `Window` type, one `describe`
+**No data migration and no breaking change of its own, and no compatibility
+is kept.** The operator decided a green field: no older lake and no older writer
+meets 0.23.0, so nothing here guards against one
+(https://github.com/wildstuff/lakelands/issues/1652#issuecomment-6547704529).
+This record moves neither the log format nor a stored table, and `LAYOUT` does
+not rise for it. Additive: one setting, one wider setting, one `limits` member,
+three `ProjectionView` methods with defaults and a `Window` type, one `describe`
 member. `Scan` is unchanged.
 
 ## What is decided
@@ -288,16 +290,6 @@ road.
 `building` or `kept`. A pair is told to a holder of `schema` who reads both its
 fields, at the head only, as `chosen` is. A taken-back pair leaves the list.
 
-**Held: an older writer.** A 0.22.x binary shares the format and the layout, so
-it could fold this lake: it writes neither series rows nor number tokens, its
-`rebuild_sorted` drops the first and its `relook` the second. A mark,
-`exact_through`, would guard that: kept as `chosen_through` is, in `meta` with
-PostgreSQL's twin row in `sort_index`, moved by a fold only from the position it
-folded from. A reader would take series rows and number tokens only while it
-equals the fold, and a writer's open that finds it behind would put each pair at
-`Start` and fill each number field. This stands until the joint record decides,
-and step 11 waits for it.
-
 ### What the settings cost
 
 | act | cost |
@@ -359,7 +351,6 @@ and step 11 waits for it.
 - `SERIES_REBUILD_SAME_ROWS`: a rebuild from the log gives the same rows.
 - `SERIES_TAKEN_BACK`: during a build and after it, the rows are gone, and the answer stands.
 - `SERIES_DECLARED_OVER`: a setting before a declaration, and a declaration over a built pair (lakelands#591).
-- `EXACT_MARK_BEHIND`, held with step 11: a fold that leaves `exact_through` behind sends readers to the old road.
 
 ### The estimate
 
@@ -378,7 +369,6 @@ Lines as reckoned, then ×1.35. Every pull request stays about 600 or under.
 | 9. the series road, one value, the tail | 1638 | 130 | 250 | 176 / 338 |
 | 10. `in`, the merge, the matrix row | 1638 | 100 | 170 | 135 / 230 |
 | **sum** | | **1 320** | **1 820** | **1 785 / 2 459** |
-| 11. held: `exact_through`, the older-writer guard | 1638 | 110 | 150 | 149 / 203 |
 
 Steps 1 to 4 stand alone, in order. Steps 5 and 6 need step 1, and steps 7 to 10
 need step 2. Step 8 changes what `describe` says, so its pull request walks.
@@ -391,16 +381,18 @@ measured sizes should reset this table before the rest is cut.
 
 ### What the operator decided
 
-Both on 2026-10-31, relayed on https://github.com/wildstuff/lakelands/issues/1633#issuecomment-6547537700.
+Both on 2026-10-31.
 
 1. **A host's `series_index` builds by chunks, beside the writer, not in the
    setting's write.** `sort_index` holds the writer for a full pass: at
    SQLite's 8.5 µs a row, one hundred million ticks would hold it for about
    14 minutes. By chunks, ingest keeps running and the read stays at its old
-   price until `Keep`.
-2. **`exact_through` stays, and `LAYOUT` does not rise.** That was answered for
-   lakes kept across the release. It stands until the joint record decides, and
-   the question is reopened below.
+   price until `Keep`
+   (https://github.com/wildstuff/lakelands/issues/1633#issuecomment-6547537700).
+2. **No compatibility is kept.** 0.23.0 starts a new format with no past, and an
+   older binary already refuses a format it does not read. So this record keeps
+   no mark and no guard for an older lake or an older writer
+   (https://github.com/wildstuff/lakelands/issues/1652#issuecomment-6547704529).
 
 ### What waits for the joint record
 
@@ -412,15 +404,10 @@ these. Each stands here until it does, and it says what it changes:
 - A number field's fill, a single pass today, into the bounded parts of
   lakelands#1651. The same goes for the series build, if one road for parts
   carries it, and for `choose_order`'s refusal.
-- `exact_through`, the older-writer guard, and with them step 11.
 
 ### Open for the operator
 
-1. **Drop `exact_through` and the older-writer guard?** They guard a lake kept
-   across the release and a 0.22.x writer, and neither exists now. I recommend
-   dropping both and raising `LAYOUT` if the format needs it. That saves step 11,
-   149 / 203 lines, and the record's largest risk: a mark with an older writer
-   has cost rounds before. It is decided in the joint record.
+Nothing.
 
 ## Why
 
@@ -444,10 +431,13 @@ has. The issues' numbers lean on a count, so the count comes first.
   of the engines and a scratch run on SQLite at 600 000 records over 5 000
   series, one holding a tenth, with records of about 330 bytes. PostgreSQL was
   not measured here: its figures are reckoned from 041 and measured in the build.
-- The operator settled the build by chunks and the mark (2026-10-31).
+- The operator settled the build by chunks, and a mark for older writers
+  (2026-10-31).
 - A review measured the first version slower than today on wide windows and
   wrong on long decimals. So a read walks the smaller side, reads a text literal
   on a decimal as it did, and counts on every road. A pair took its own state
   and driver, and `describe` tells it. The kept-lake premise went with
   lakelands#1652, and the record now says what waits for the joint record. The
   scratch's roads were run again at 600 000 records.
+- The operator decided a green field, so no compatibility is kept and that mark
+  went (2026-10-31).
