@@ -37,6 +37,13 @@ pub struct Entry {
     pub api_keys: Vec<String>,
 }
 
+impl Entry {
+    /// Whether this principal may address `lake`.
+    pub fn addresses(&self, lake: &LakeId) -> bool {
+        self.lakes.is_empty() || self.lakes.contains(lake)
+    }
+}
+
 /// Another host that may forward calls to the doors over the link
 /// between hosts: a forwarding handle's process. Its key is its own,
 /// never a principal's, and carries no grants: it lets the host name the
@@ -126,7 +133,7 @@ impl PrincipalResolver for StaticResolver {
             Credential::Forwarded { principal, .. } => &e.id == principal,
         });
         match entry {
-            Some(e) if e.lakes.is_empty() || e.lakes.contains(lake) => Ok(Principal {
+            Some(e) if e.addresses(lake) => Ok(Principal {
                 kind: e.kind,
                 id: e.id.clone(),
                 lake: lake.clone(),
