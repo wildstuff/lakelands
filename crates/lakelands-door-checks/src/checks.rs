@@ -5867,11 +5867,19 @@ pub async fn a_refused_record_is_quarantined_listed_and_dismissed(store: Arc<dyn
         line: None,
     };
     let amount = ("amount", json!("1.00"));
+    // A quarantining delivery names each record's line (085).
     let records = vec![
         rec("INV-Q1", std::slice::from_ref(&amount)),
         rec("INV-Q2", &[amount.clone(), ("nope", json!("x"))]),
         rec("INV-Q3", &[amount]),
-    ];
+    ]
+    .into_iter()
+    .zip(0..)
+    .map(|(r, line)| SourceRecord {
+        line: Some(line),
+        ..r
+    })
+    .collect::<Vec<_>>();
     let opts = lakelands_api::IngestOpts {
         delivery: Some("q1".into()),
         quarantine_refused: true,

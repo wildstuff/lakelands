@@ -154,7 +154,8 @@ second hiding the first. An ingest that asks `quarantine_refused`
 under a delivery, the call's or a record's own, therefore refuses a
 record with no `line`: `invalid`, `quarantine_line_missing`, at member
 `line`, ending the stream as any refusal of the call does. Without the
-option, or under no delivery, nothing changes. The store keeps no state
+option, under no delivery, or under a `run` (whose rows key by place
+and, at the host's door, by line), nothing changes. The store keeps no state
 between calls for this, and the log format is untouched.
 
 What keeps an ingest's refusal from quarantine keeps the host's (the

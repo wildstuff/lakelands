@@ -1003,6 +1003,7 @@ pub fn run(
                         // Places count per call, so under a delivery only
                         // a line keeps two calls' records apart (085).
                         if quarantine
+                            && !by_run
                             && r.line.is_none()
                             && (delivery.is_some() || r.delivery.is_some())
                         {
