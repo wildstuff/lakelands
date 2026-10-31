@@ -1,6 +1,6 @@
 //! What one market tick costs a lake: writes a second, the p99 of a
 //! write, the bytes a record keeps, and what a kept roll-up and a
-//! trigger's guard add to a write. Asserts nothing.
+//! trigger's guard add to a write. Asserts only that the guard fires on a tick far above the last.
 //!
 //! ```text
 //! cargo build --release -p lakelands-cli --bin lakelands --example tick_bench
@@ -471,6 +471,7 @@ fn sizes_sqlite(root: &Path) -> Option<(u64, u64, u64)> {
              OR name LIKE 'sqlite_autoindex%'",
         )
         .output()
+        .map_err(|e| eprintln!("the `sqlite3` shell is needed for index bytes: {e}"))
         .ok()?;
     let index: i64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
     let all = dir_bytes(&dir, &|n| n.starts_with("projection.db"));
@@ -580,6 +581,30 @@ async fn cell(
     }
     let feed = Arc::new(Feed::new(a.series));
     let c = load(&remote, &feed, records, a.singles, a.callers, a.batch).await;
+    if trigger == "preceding" {
+        // The guard is judged: a tick far above the series' last price
+        // fires it, and the outcome names it.
+        let at = instant(BASE_MS + records * STEP_MS + 1_000);
+        let patch = serde_json::from_value(json!({"symbol": "S0000", "at": at,
+            "price": "99999999.00", "size": 1, "seq": 9_999_999_999u64}))
+        .unwrap();
+        let out = cat
+            .upsert(
+                &writer(),
+                &"tick".into(),
+                &key("S0000", &at, 9_999_999_999).into(),
+                patch,
+                WriteOpts::default(),
+            )
+            .await
+            .expect("it applies");
+        let fired = matches!(&out, lakelands_api::write::Outcome::Applied { set_off, .. }
+            if set_off.fired.iter().any(|t| t.as_str() == "tick_guard"));
+        assert!(
+            fired,
+            "the guard must fire on a tick far above the last: {out:?}"
+        );
+    }
     // The reads, at the end of the feed: the largest series' last hour
     // and last day.
     let end = BASE_MS + records * STEP_MS;
@@ -599,9 +624,10 @@ async fn cell(
     }
     if rollups > 0 {
         let finest = if rollups == 1 { "h1" } else { "m1" };
+        let coarsest = if rollups == 1 { "h1" } else { "d1" };
         for (label, view, by, from) in [
             ("hour", format!("tick_{finest}"), finest, &hour),
-            ("day", "tick_h1".to_owned(), "h1", &day),
+            ("day", format!("tick_{coarsest}"), coarsest, &day),
         ] {
             let (rows, ms) = median(
                 a.reads,
