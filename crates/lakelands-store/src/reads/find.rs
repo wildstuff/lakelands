@@ -404,7 +404,7 @@ impl<'a> Reader<'a> {
                 .into_iter()
                 .find(|r| r.key == get.key)
         } else {
-            let held = self.at_read(ty, self.view.get(ty, &get.key)?.into_iter().collect());
+            let held = self.at_read(ty, self.view.get(ty, &get.key)?.into_iter().collect())?;
             let ends = self.admitted_ends(&decl, &held)?;
             let mut held = held.into_iter().zip(ends);
             held.find(|(r, ends)| *ends && self.live(&decl, r))

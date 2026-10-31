@@ -62,6 +62,7 @@ mod hidden_readers;
 mod hidden_where;
 mod host_cause;
 mod host_settings;
+mod in_force;
 mod ingest;
 mod initial;
 mod judged;
@@ -358,6 +359,10 @@ pub const ALL: &[Check] = &[
     computed_at::AT_THE_READ,
     computed_at::SAID_WHEN,
     computed_at::MOVED,
+    in_force::IN_FORCE_PAIRED,
+    in_force::IN_FORCE_SIGHT,
+    in_force::IN_FORCE_LONG,
+    in_force::IN_FORCE_REFUSED,
     read_clock::READ_CLOCK,
     read_clock::TODAY_RULES_OUT,
     before_declared::BEFORE_DECLARED,

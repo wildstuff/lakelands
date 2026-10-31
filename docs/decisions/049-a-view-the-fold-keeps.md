@@ -23,7 +23,8 @@ would have to reproduce one.
   (`docs/decisions/066-a-set-holds-a-kept-view.md`).
 - **What can be kept is read off the declaration.** A view with no
   parameter and no clock, that reads no field computed at the read
-  (052), each of whose aggregate calls is a function of
+  (052; so a view over a field paired by `in_force` computes at every
+  read, and `view_kept` for it is refused `kept_at_read`), each of whose aggregate calls is a function of
   its values as a multiset: any `count`; a `sum` or an `avg` of what is
   certainly a number; a `min` or a `max` of what is certainly a number
   or an instant, and a `first(f, by)` or a `last(f, by)` whose `by` is

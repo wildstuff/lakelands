@@ -70,6 +70,7 @@ pub fn func_name(f: Func) -> &'static str {
         Func::SeenAt => "seen_at",
         Func::Previous => "previous",
         Func::Preceding => "preceding",
+        Func::InForce => "in_force",
         Func::Setting => "setting",
         Func::Param => "param",
         Func::InSet => "in_set",
@@ -138,7 +139,7 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         Func::DateBucket => (2, Some(3)),
         Func::Substr => (2, Some(3)),
         Func::If | Func::Replace => (3, Some(3)),
-        Func::Preceding => (3, None),
+        Func::Preceding | Func::InForce => (3, None),
         Func::Coalesce | Func::Concat => (1, None),
     }
 }

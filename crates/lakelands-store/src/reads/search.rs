@@ -824,7 +824,7 @@ impl<'a> Reader<'a> {
         with_meta: bool,
     ) -> Result<Vec<Hit>> {
         let keys: Vec<RecordKey> = ranked.iter().map(|(k, _)| k.clone()).collect();
-        let rows = self.at_read(&decl.name, self.view.get_many(&decl.name, &keys)?);
+        let rows = self.at_read(&decl.name, self.view.get_many(&decl.name, &keys)?)?;
         let (ends, admit) = (
             self.admitted_ends(decl, &rows)?,
             self.sight.admit(&decl.name),

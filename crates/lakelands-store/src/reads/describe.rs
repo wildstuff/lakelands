@@ -413,7 +413,7 @@ impl<'a> Reader<'a> {
                     key: last.key.clone(),
                 });
             }
-            let rows = self.at_read(&decl.name, rows);
+            let rows = self.at_read(&decl.name, rows)?;
             let ends = self.admitted_ends(decl, &rows)?;
             for (r, _) in rows.into_iter().zip(ends).filter(|(_, ends)| *ends) {
                 if self.live_by(decl, &admit, &r) && here.is_none_or(|e| self.holds(e, &r, true)) {

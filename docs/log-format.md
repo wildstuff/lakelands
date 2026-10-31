@@ -1189,8 +1189,9 @@ the first release with real installations
   log of format 21 holds nothing it adds: `context.occasion` (§1.1,
   `docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`),
   `preceding` in a constraint and a trigger's `when` (Appendix B,
-  lakelands#1552, lakelands#1604), and `first`
-  and `last` (Appendix B, lakelands#1603).
+  lakelands#1552, lakelands#1604), `first` and `last` (Appendix B,
+  lakelands#1603), and `in_force` in a field computed at the read
+  (Appendix B, lakelands#1606).
   A `record_quarantined` the host refused, or keyed by its run and
   line, is written from 0.22.0 in the event's format-21 form (§2.3,
   lakelands#1596).
@@ -1535,6 +1536,17 @@ one, that holds this record's value in each `match` field and whose
 `by` is the greatest below this record's, the first by key among ties;
 null where none is (lakelands#1552,
 `docs/decisions/059-a-type-declares-its-constraints.md`).
+`in_force`, from format 22, with three or more arguments,
+`in_force(T.f, T.by <= by, T.m = m…)`: the first a path of two
+identifiers, another stored type and its field; the second exactly the
+comparison `<=` of a path to that type's field and a field of the
+record's type; each further one exactly an `=` of the same shape. As
+the expression of a field computed at the read only, so no event holds
+its value: `f` on the record of `T`, of those the read would answer on
+`T`, that holds this record's value in each matched field and whose
+`by` is the greatest at or below this record's, the first by key among
+ties; null where none is (lakelands#1606,
+`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
 
 **From text to typed form.**
 

@@ -639,7 +639,7 @@ fn field_type(
         value::conformance(f, &o.value_type_list()).map_err(wrong)?;
     }
     if let Some(d) = &f.derived {
-        condition(d, Eval::Write, &on)?;
+        condition(d, computed_at(f), &on)?;
     }
     if let Some(func) = &f.function {
         if f.derived.is_some() {
@@ -650,6 +650,73 @@ fn field_type(
         }
         if f.authority != lakelands_api::ontology::Authority::Derived {
             return Err(wrong(Case::FunctionNotDerived));
+        }
+    }
+    Ok(())
+}
+
+/// Where a derived field is evaluated: at the read, where `in_force` has
+/// meaning, or at the write.
+pub(crate) fn computed_at(f: &FieldDecl) -> Eval {
+    match f.at_read() {
+        true => Eval::AtRead,
+        false => Eval::Write,
+    }
+}
+
+/// Each field of `t` paired at the read pairs by the form `in_force`
+/// takes, with another stored type, over fields that pair: two of one
+/// kind, a match of text or a reference, which the exact-text index keeps,
+/// an order bound of a kind the lake sorts; of the other type stored
+/// fields, and where the call is the whole field, one whose kind lands in
+/// it (052, extended).
+fn in_force(o: &Ontology, t: &TypeDecl) -> Result<()> {
+    use StorageKind::{Reference, Text};
+    for (f, e) in t.in_force() {
+        let on = [of_type(&t.name), of_field(&f.name)];
+        let wrong = |case| Error::invalid_at(&f.name, at(&on, case));
+        let field = &f.name;
+        let form = || {
+            wrong(Case::InForceForm {
+                field: field.clone(),
+            })
+        };
+        for p in e.pairings().map_err(|_| form())? {
+            let ty = TypeName::from(p.ty.as_str());
+            let other = match o.types.get(&ty) {
+                None if ty != t.name => return Err(wrong(Case::Undeclared { ty })),
+                Some(e) if ty != t.name && e.decl.view.is_none() => &e.decl,
+                _ => return Err(form()),
+            };
+            let theirs = |n: &FieldName| {
+                let (ty, field) = (ty.clone(), n.clone());
+                match other.field(n) {
+                    None => Err(wrong(Case::UnknownField { ty, field })),
+                    Some(d) if d.at_read() => Err(wrong(Case::ReadsAtRead { field, ty })),
+                    Some(d) => Ok(d.ty.kind),
+                }
+            };
+            // Where the call is the whole of what the field computes, what
+            // `T.f` holds is what lands in it.
+            let read = Kind::read(theirs(p.read)?);
+            if let Expr::Call { func, .. } = &e
+                && *func == Func::InForce
+            {
+                lands(f, read, &on)?;
+            }
+            let pairs = std::iter::once(p.by).chain(p.matched.iter().copied());
+            for (i, (left, right)) in pairs.enumerate() {
+                let kind = theirs(left)?;
+                let pairs = match i {
+                    0 => lakelands_api::seam::sortable(&kind),
+                    _ => matches!(kind, Text | Reference),
+                };
+                let ours = t.field(right).filter(|r| !r.at_read()).map(|r| r.ty.kind);
+                if !pairs || ours != Some(kind) {
+                    let (field, left, right) = (field.clone(), left.clone(), right.clone());
+                    return Err(wrong(Case::InForcePair { field, left, right }));
+                }
+            }
         }
     }
     Ok(())
@@ -945,7 +1012,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         .filter(|f| t.view.is_none() && f.derived.is_some())
     {
         let on = [of_type(&t.name), of_field(&f.name)];
-        let e = condition(f.derived.as_ref().expect("derived"), Eval::Write, &on)?;
+        let e = condition(f.derived.as_ref().expect("derived"), computed_at(f), &on)?;
         lands(f, evaluates(&e, t, &on)?, &on)?;
     }
     // Order the fields as the fold will compute them: a field computed by
@@ -1714,6 +1781,24 @@ pub fn reads_of(o: &Ontology, d: &Declaration, ty: &TypeName) -> BTreeSet<FieldN
 /// record as stored. The refusal names the field alone, not what reads it,
 /// which its declarer may not be shown.
 fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
+    // A field another type pairs by stays there, of the kind it was, and
+    // stored: it is refused naming the field alone.
+    let held = o.types.get(&t.name).map(|e| &e.decl);
+    let others = o
+        .types
+        .values()
+        .map(|e| &e.decl)
+        .filter(|d| d.name != t.name);
+    for n in held.map(|h| paired_by(others, h)).unwrap_or_default() {
+        let kind = |d: &TypeDecl| d.field(&n).map(|f| f.ty.kind);
+        if kind(t) != held.and_then(kind) {
+            let (field, ty) = (n.clone(), t.name.clone());
+            return Err(Error::invalid_at(
+                &n,
+                Case::FieldReadElsewhere { field, ty },
+            ));
+        }
+    }
     if !t.fields.iter().any(FieldDecl::at_read) {
         return Ok(());
     }
@@ -1728,9 +1813,11 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
     }
     let others = o.types.values().filter(|e| e.decl.name != t.name);
     let matching = others
+        .clone()
         .flat_map(|e| &e.decl.relations)
         .filter(|r| r.target == t.name);
     read.extend(matching.flat_map(|r| r.derived.iter().flat_map(|d| d.reads()[1].clone())));
+    read.extend(paired_by(others.map(|e| &e.decl), t));
     match t
         .fields
         .iter()
@@ -1742,6 +1829,19 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
         }
         None => Ok(()),
     }
+}
+
+/// The fields of `t` another of `types` pairs by at the read, and reads.
+fn paired_by<'a>(types: impl Iterator<Item = &'a TypeDecl>, t: &TypeDecl) -> BTreeSet<FieldName> {
+    let mut out = BTreeSet::new();
+    for (_, e) in types.flat_map(TypeDecl::in_force) {
+        for p in e.pairings().unwrap_or_default() {
+            if p.ty.as_str() == t.name.as_str() {
+                out.extend(p.theirs().cloned());
+            }
+        }
+    }
+    out
 }
 
 /// Passes the refusal of a reshaping declaration, which a migration is.
@@ -1872,6 +1972,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 return Err(Error::refused(None, Refusal::Reserved));
             }
             type_decl(o, t)?;
+            in_force(o, t)?;
             kept_names(o, t)?;
             read_as_stored(o, t)?;
             constraints(o, t)?;

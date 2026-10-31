@@ -18,6 +18,8 @@ index.
   term);
 - the fields its constraints' and its triggers' `preceding` matches on,
   so a write reads one series of the type, never the type (059, 004).
+- the fields another type's `in_force` matches on, so a read pairs by
+  one partition of the type, never the type (052).
 
 **The setting adds others.** The `sys.setting` record
 `lookup_index.<type>` holds a JSON array of text fields, as
@@ -141,3 +143,5 @@ on every engine.
 - A field a constraint's `preceding` matches on is looked up
   (lakelands#1552).
 - So is one a trigger's `preceding` matches on (lakelands#1604).
+- A field another type's `in_force` matches on is looked up
+  (lakelands#1606).

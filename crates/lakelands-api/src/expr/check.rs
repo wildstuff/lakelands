@@ -34,6 +34,9 @@ pub enum Place {
     /// A type's constraint: a guard's, whose reach
     /// `TypeDecl::constraint_reach` judges beside.
     Constraint,
+    /// A field computed at the read: as `Write`, and `in_force` has
+    /// meaning as well.
+    AtRead,
 }
 
 impl Condition {
@@ -107,6 +110,7 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                     return Err(Case::CallTakesField { name });
                 }
                 Func::Preceding if !guard => return Err(Case::PrecedingHere),
+                Func::InForce if place != Place::AtRead => return Err(Case::InForceHere),
                 Func::Setting | Func::Param | Func::InSet if quoted(args.first()).is_none() => {
                     return Err(Case::CallTakesQuoted { name });
                 }
@@ -125,7 +129,9 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                         return Err(Case::BucketArguments);
                     }
                 }
-                Func::Previous | Func::Changed if !(guard || place == Place::Write) => {
+                Func::Previous | Func::Changed
+                    if !(guard || matches!(place, Place::Write | Place::AtRead)) =>
+                {
                     return Err(Case::OnlyInWrite { name });
                 }
                 Func::Retired if !guard => return Err(Case::RetiredOnlyInGuard),

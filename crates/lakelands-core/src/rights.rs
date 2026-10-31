@@ -164,21 +164,59 @@ fn built_from<'d>(
                 answered
             }
         };
-        access = match of_source {
-            s if s.reads() => access,
-            // The field's value stays hidden; its write stays the
-            // principal's, as the store's write check grants it. A view's
-            // fields are never written (lakelands#782).
-            _ if access.writes() && decl.view.is_none() => Access::WriteOnly,
-            Access::Masked if access.reads() => Access::Masked,
-            Access::Masked => access,
-            _ => {
-                from_source = true;
-                Access::None
-            }
-        };
+        access = lowered(decl, access, of_source, &mut from_source);
     }
     (access, from_source)
+}
+
+/// Each field of a type paired at the read held no wider than the fields
+/// of the other type it pairs by and reads, as `who` is shown them,
+/// settled, never their bare grant (024; 052, extended): its grant
+/// lowered once, where a sight is made, since a field's access is
+/// otherwise judged within its own type.
+pub(crate) fn hold_paired(who: &mut Principal, force: &dyn crate::sight::InForce) {
+    let mut held = Vec::new();
+    for t in force.types() {
+        for (f, e) in t.in_force() {
+            let (was, mut hid) = (who.grants.access(&t.name, &f.name), false);
+            let mut access = was;
+            for p in e.pairings().unwrap_or_default() {
+                let other = force.ty(&TypeName::from(p.ty.as_str()));
+                for n in p.theirs() {
+                    let settled = other.and_then(|o| Some(field_access(who, o, o.field(n)?)));
+                    access = lowered(t, access, settled.unwrap_or(Access::None), &mut hid);
+                }
+            }
+            if access != was {
+                held.push((t.name.clone(), f.name.clone(), access));
+            }
+        }
+    }
+    for (ty, f, access) in held {
+        who.grants
+            .types
+            .entry(ty)
+            .or_default()
+            .fields
+            .insert(f, access);
+    }
+}
+
+/// `access` lowered by a field it is built from, of access `of_source`.
+fn lowered(decl: &TypeDecl, access: Access, of_source: Access, from_source: &mut bool) -> Access {
+    match of_source {
+        s if s.reads() => access,
+        // The field's value stays hidden; its write stays the
+        // principal's, as the store's write check grants it. A view's
+        // fields are never written (lakelands#782).
+        _ if access.writes() && decl.view.is_none() => Access::WriteOnly,
+        Access::Masked if access.reads() => Access::Masked,
+        Access::Masked => access,
+        _ => {
+            *from_source = true;
+            Access::None
+        }
+    }
 }
 
 /// The principal's access to a type as a whole: its type-level grant, or

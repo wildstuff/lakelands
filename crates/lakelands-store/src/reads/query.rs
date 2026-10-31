@@ -438,7 +438,7 @@ impl<'a> Reader<'a> {
             let held = keys
                 .iter()
                 .filter_map(|k| self.view.get(&start_ty, k).ok().flatten());
-            Some(self.at_read(&start_ty, held.collect()))
+            Some(self.at_read(&start_ty, held.collect())?)
         } else {
             None
         };
