@@ -320,7 +320,12 @@ other is not:
 An earlier position, an order by a field the lake does not index, and
 the memory engine take neither way. The memory engine keeps no
 exact-text index, and reads the order index's rows in its order and
-admits each.
+admits each; 097 gives it the index and these ways.
+
+`rows_read` counts the rows handed on, so it does not see the rows the
+order-first way passes over; 097 adds `rows_walked`. A bound on the
+order field narrows either way and skips the records without the field,
+and a series index reads one text's window by itself (097).
 
 **The cost.** 100 000 records, a page of 50 in an indexed field's order
 under a text, then a walk of every holder by cursor, 1 000 a page. The
