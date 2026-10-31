@@ -927,9 +927,9 @@ catalog! {
         ClockNotCompared { constraint: ConstraintName } => "constraint `{constraint}` reads the clock other than as `now()` or `today()`, with or without a duration added or taken away, on one side of a comparison whose other side is a field, with or without a duration added or taken away; the rule is fixed and only the write's instant moves",
         /// A `preceding` whose matched field the exact-text index cannot
         /// keep.
-        PrecedingUnlooked { constraint: ConstraintName, field: FieldName } => "constraint `{constraint}` matches its preceding record on `{field}`, which is not text or a reference",
+        PrecedingUnlooked { field: FieldName } => "a `preceding` matches its series on `{field}`, which is not text or a reference",
         /// A `preceding` ordered by a field whose kind has no order.
-        PrecedingUnordered { constraint: ConstraintName, field: FieldName } => "constraint `{constraint}` orders its preceding record by `{field}`, whose kind has no order",
+        PrecedingUnordered { field: FieldName } => "a `preceding` orders its series by `{field}`, whose kind has no order",
         /// An `in_force` not of the form it pairs by.
         InForceForm { field: FieldName } => "the field `{field}` pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of this record",
         /// An `in_force` pair whose two fields cannot pair.
@@ -1259,8 +1259,9 @@ catalog! {
         InEmpty => "an `in` lists one value at least",
         /// An `exists` outside a verb's `requires` and set values.
         ExistsHere => "exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at",
-        /// A `preceding` outside a constraint.
-        PrecedingHere => "preceding() has meaning in a type's constraint, over the record before it",
+        /// A `preceding` outside a constraint and a trigger's `when`, or
+        /// over a view's rows.
+        PrecedingHere => "preceding() has meaning in a type's constraint and in the `when` of a trigger on a type that is no view, over the record before it in its series",
         /// An `in_force` outside a field computed at the read.
         InForceHere => "in_force() has meaning in a field computed at the read, over another type's record in force",
         /// An `in_set` left where no set's filter stands.

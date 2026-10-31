@@ -16,8 +16,8 @@ index.
 - those a set's condition, or a view's `where` over the type, compares
   to a text at the top level (`field = 'text'`, alone or as an `and`
   term);
-- the fields its constraints' `preceding` matches on, so a write reads
-  one series of the type, never the type (059).
+- the fields its constraints' and its triggers' `preceding` matches on,
+  so a write reads one series of the type, never the type (059, 004).
 - the fields another type's `in_force` matches on, so a read pairs by
   one partition of the type, never the type (052).
 
@@ -142,5 +142,6 @@ on every engine.
   for it (lakelands#1318).
 - A field a constraint's `preceding` matches on is looked up
   (lakelands#1552).
+- So is one a trigger's `preceding` matches on (lakelands#1604).
 - A field another type's `in_force` matches on is looked up
   (lakelands#1606).

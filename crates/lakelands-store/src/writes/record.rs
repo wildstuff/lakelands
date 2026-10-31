@@ -528,7 +528,7 @@ impl Decide<'_> {
     /// one is chosen tells no value its writer may not read; at an accept,
     /// one either the proposer or the reviewer is not. None where
     /// `after`'s `by` or a matched field is null.
-    fn preceding(
+    pub(super) fn preceding(
         &self,
         decl: &TypeDecl,
         after: &StoredRecord,

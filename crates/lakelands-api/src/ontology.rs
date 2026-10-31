@@ -922,23 +922,36 @@ impl TypeDecl {
             let (ty, field) = (self.name.clone(), n.clone());
             return Err(Case::UnknownField { ty, field });
         }
-        // A series is read by exact text and ordered by a scalar kind.
+        self.series_read(&e)?;
+        Ok(e)
+    }
+
+    /// Whether every `preceding` in `e`, a constraint or a trigger's
+    /// `when` over this type, reads its series as `declare` takes it: a
+    /// series matched on fields an exact-text index keeps, text or a
+    /// reference, so a write reads one series and never the type, and
+    /// ordered by a field of a kind with an order; never over a view's
+    /// rows, which a write stages apart from its records.
+    pub fn series_read(&self, e: &crate::expr::Expr) -> Result<(), Case> {
         let kind = |n: &FieldName| self.field(n).map(|f| f.ty.kind);
         for series in e.series().into_keys() {
             let (by, matched) = series.split_first().expect("three arguments or more");
+            if self.view.is_some() {
+                return Err(Case::PrecedingHere);
+            }
             let looked = |n: &&FieldName| {
                 matches!(kind(n), Some(StorageKind::Text | StorageKind::Reference))
             };
             if let Some(n) = matched.iter().find(|n| !looked(n)) {
                 let field = n.clone();
-                return Err(Case::PrecedingUnlooked { constraint, field });
+                return Err(Case::PrecedingUnlooked { field });
             }
             if !kind(by).is_some_and(|k| crate::seam::sortable(&k)) {
                 let field = by.clone();
-                return Err(Case::PrecedingUnordered { constraint, field });
+                return Err(Case::PrecedingUnordered { field });
             }
         }
-        Ok(e)
+        Ok(())
     }
 }
 
@@ -1704,9 +1717,10 @@ pub struct TriggerDecl {
     pub name: TriggerName,
     /// The type whose writes it watches.
     pub on: TypeName,
-    /// A guard over the written record; `changed(f)` and `previous(f)`
+    /// A guard over the written record; `changed(f)`, `previous(f)`
     /// (the value before the write, null for a record the write creates)
-    /// are available.
+    /// and `preceding(f, by, match…)` (the record before it in a series,
+    /// as its writer is answered) are available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<Condition>,
     /// What the trigger is for.

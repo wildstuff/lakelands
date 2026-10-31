@@ -168,7 +168,8 @@ A trigger's guard reads the write: the record's new values, `changed(f)`,
 and `previous(f)`, the value before the write, which is null for a record
 the write creates (or revives from retirement). A transition is a guard,
 `previous(status) = 'open' and status = 'closed'`, and fires on that
-transition only. A guard reads no other record. A trigger may also cap
+transition only. A guard reads no other record, but the one before it
+in its series (below). A trigger may also cap
 the depth of the reactions that name its firing as their cause
 (`docs/decisions/021-the-write-context-belongs-to-the-host.md`, extended).
 Past that depth, or the lake's, the write appends `trigger_dropped` in
@@ -267,6 +268,61 @@ fail on a record without `status`. Without it, a guard reads as before.
 A host whose own guards fail closed moves them onto the lake with the
 flag, without changing what fires. Making strict the default would
 change what fires for triggers whose declarations did not change.
+
+### A guard may read the record before it in its series
+
+A guard may read `preceding(f, by, match…)`, the record before this one
+in a series of its type, as a constraint reads it (059):
+`date_bucket(at, 1h, o) != date_bucket(preceding(at, at, meter), 1h, o)`
+fires when a meter's reading of a new hour lands. The write resolves it
+in the decision that judges its constraints, under the writer's lock, at
+the head with what the same append has written laid over it, and reads
+one series of the type, never the type. A delivery of many readings of
+one meter judges each, in the order the delivery holds them, against the
+one before it among the head and those of the delivery already judged:
+of three readings across an hour's turn, delivered in time order, the one
+that opens the new hour fires and the others do not.
+
+It is resolved by what the writer is answered, as a constraint's is: a
+record the writer is not answered is passed over, and so is one whose
+`by` or a matched field a hiding lowers. A field the guard reads there
+that a hiding lowers for the writer reads as null, where a constraint's
+makes the write `not_granted`: a guard refuses no write.
+
+A backfill is judged as any write is, against the record before it when
+it lands. One that lands in an hour that already holds an earlier
+reading does not fire; one whose predecessor lies in an earlier hour
+does, though readings of its own hour follow it, so a reading backdated
+before every reading of an hour already logged fires for that hour
+again. A guard reads the record before it, not those after it. And a
+guard is a level: a later write of a reading, of any field, fires again
+where its predecessor lies in another hour. A trigger that fires on the
+landing only adds `created()`.
+
+What the guard read was decided by its write. The firing does not carry
+the value: a host that needs it reads the series as of the firing's
+position. A write of the record before, or of another record of the
+series, fires nothing through it. An act that erases a value decides the
+rest of the guard again (065); a conjunct that reads `preceding` it
+keeps as its write decided it, unless the fired record as of its cause
+holds an erased value that conjunct reads on it, its `by`, a matched
+field or another of its own fields, and then the firing is overruled. A
+predecessor an act takes back overrules nothing: what the record before
+was is the write's to judge, as for a constraint (059), and judging it
+again would need the series as the writer saw it then, its grants and
+its hidings at the cause. A view's
+rows are made by no write, so a trigger on a view that reads `preceding`
+is refused `preceding_here`; a series matched on a field that is not text
+or a reference is refused `preceding_unlooked`, and one ordered by a field
+the lake does not sort `preceding_unordered`, each naming the trigger and
+the field, and a migration that leaves the series so is refused the
+same. The fields a trigger's `preceding` matches on are looked up (057).
+
+**Why.** Without it a host keeps the last hour of every meter itself and
+reads the lake after each firing: a second copy of what the lake holds,
+which a backfill or a replay leaves out of step. Read in the write, the
+series is read once, by the sight the write is judged in, and the firing
+is a fact of the write that a replay reads instead of deciding again.
 
 ### A set's declaration decides the records already there
 
@@ -556,3 +612,7 @@ own pace, and adding one changes nothing in the lake.
   refused it until the host ran `lakelands rebuild`; the first layout
   step after real installations would otherwise have kept every lake
   closed until its operator acted (lakelands#1151).
+- A guard may read the record before it in its series, `preceding`,
+  resolved in its write's decision by the writer's sight, as a
+  constraint's is; before, `preceding` was a constraint's alone and a
+  guard read no other record (lakelands#1604).

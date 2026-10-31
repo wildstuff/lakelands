@@ -316,9 +316,9 @@ pub fn key_lookup(decl: Option<&TypeDecl>, scan: &Scan) -> Option<BTreeSet<Strin
 /// setting's value: those its declarations look its records up by (its
 /// key, but a [`text_key`], its references, the fields a derived relation
 /// matches at either end, those a set's condition or a view's `where` over
-/// it compares to a text at the top level, those a constraint's
-/// `preceding` matches its series on, those another type's `in_force`
-/// matches it on) and those the setting names
+/// it compares to a text at the top level, those a constraint's or a
+/// trigger's `preceding` matches its series on, those another type's
+/// `in_force` matches it on) and those the setting names
 /// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
 /// `None`, every field, for a name no type declares: a view's kept records.
 pub fn looked_up<'a>(
@@ -331,7 +331,7 @@ pub fn looked_up<'a>(
         let e = c.as_ref().and_then(|c| c.typed().ok());
         out.extend(e.iter().flat_map(exact_text_terms).map(|(f, _)| f));
     };
-    let mut matched = Vec::new();
+    let (mut matched, mut series) = (Vec::new(), Vec::new());
     for d in decls {
         match d {
             Declaration::Type(t) => {
@@ -355,11 +355,13 @@ pub fn looked_up<'a>(
                 }
             }
             Declaration::ObjectSet(o) if o.of == *ty => terms(&Some(o.filter.clone())),
+            Declaration::Trigger(t) if t.on == *ty => series.extend(t.when.clone()),
             _ => {}
         }
     }
     let t = own?;
-    let typed = t.constraints.iter().filter_map(|c| c.holds.typed().ok());
+    let constraints = t.constraints.iter().map(|c| c.holds.clone());
+    let typed = (constraints.chain(series)).filter_map(|c| c.typed().ok());
     out.extend(
         typed
             .flat_map(|e| e.series().into_keys())
@@ -574,7 +576,7 @@ pub fn sort_index_type(r: &StoredRecord) -> Option<TypeName> {
 /// The types whose exact-text index a declaration can move: those
 /// [`looked_up`] reads it for. A type's own, the targets of its derived
 /// relations, the types it pairs with by `in_force`, its view's sources;
-/// a set's type.
+/// a set's and a trigger's type.
 pub fn looked_up_by(d: &Declaration) -> BTreeSet<TypeName> {
     let mut out = BTreeSet::new();
     match d {
@@ -592,6 +594,7 @@ pub fn looked_up_by(d: &Declaration) -> BTreeSet<TypeName> {
             }
         }
         Declaration::ObjectSet(o) => _ = out.insert(o.of.clone()),
+        Declaration::Trigger(t) => _ = out.insert(t.on.clone()),
         _ => {}
     }
     out

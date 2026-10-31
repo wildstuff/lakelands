@@ -250,34 +250,23 @@ async fn a_meter_of_many_tariffs_pairs_as_one_of_few(store: Store) -> Held {
     for key in ["T0800", "T1029"] {
         restrict(store.as_ref(), "tariff", key, "kept").await?;
     }
-    let read = [
-        ("R0", "1999-12-31"),
-        ("R1", &days[10]),
-        ("R2", &days[500]),
-        ("R3", &days[800]),
-        ("R4", &days[1029]),
-    ];
-    for (key, at) in read {
+    let read = ["1999-12-31", &days[10], &days[500], &days[800], &days[1029]];
+    for (i, at) in read.iter().enumerate() {
         let r = json!({"meter": "M", "at": at, "kwh": "1"});
-        l.upsert("reading", key, r).await?;
+        l.upsert("reading", &format!("R{i}"), r).await?;
     }
     let s = store.as_ref();
     let readers = [
-        ("plain", json!({}), ["", "10", "1500", "799", "1028"]),
-        (
-            "boss",
-            json!({"restricted": true}),
-            ["", "10", "1500", "800", "1029"],
-        ),
+        ("plain", false, ["", "10", "1500", "799", "1028"]),
+        ("boss", true, ["", "10", "1500", "800", "1029"]),
     ];
-    for (id, mut grants, want) in readers {
-        grants["default"] = json!("read");
-        let who = holder(s, id, grants);
-        let want: Prices = (read.iter().zip(want))
-            .map(|((k, _), p)| (k.to_string(), (!p.is_empty()).then(|| dec(p))))
+    for (id, restricted, want) in readers {
+        let who = holder(s, id, json!({"default": "read", "restricted": restricted}));
+        let want: Prices = (want.iter().enumerate())
+            .map(|(i, p)| (format!("R{i}"), (!p.is_empty()).then(|| dec(p))))
             .collect();
         let mut got = Vec::new();
-        for (key, _) in read {
+        for key in want.keys() {
             got.push(get(&l, &who, key, None).await?);
         }
         let got = prices(&got);
@@ -313,45 +302,21 @@ async fn in_force_is_refused_where_it_cannot_pair(store: Store) -> Held {
     };
     let read = |p: &str| odd(priced(p, true), json!([]));
     let held = json!([{"name": "c", "holds": format!("{PAIRED} > 0")}]);
-    let mut tried = vec![
-        (
-            odd(json!({"name": "x", "type": {"kind": "text"}}), held),
-            "in_force_here",
-        ),
-        (odd(priced(PAIRED, false), json!([])), "in_force_here"),
-    ];
-    for (args, case) in [
-        (
-            "tariff.price, tariff.from >= at, tariff.meter = meter",
-            "in_force_form",
-        ),
-        (
-            "odd.kwh, odd.from <= at, odd.meter = meter",
-            "in_force_form",
-        ),
-        ("flat.n, flat.n <= kwh, flat.n = kwh", "in_force_form"),
-        (
-            "tariff.price, tariff.from <= at, tariff.from = at",
-            "in_force_pair",
-        ),
-        (
-            "tariff.price, tariff.from <= at, tariff.meter = kwh",
-            "in_force_pair",
-        ),
-        (
-            "none.price, none.from <= at, none.meter = meter",
-            "undeclared",
-        ),
-        (
-            "tariff.cost, tariff.from <= at, tariff.meter = meter",
-            "unknown_field",
-        ),
-        ("tariff.price, tariff.from <= at", "not_parsed"),
-        (
-            "tariff.from, tariff.from <= at, tariff.meter = meter",
-            "never_lands",
-        ),
+    let x = json!({"name": "x", "type": {"kind": "text"}});
+    let mut tried = vec![(odd(x, held), "in_force_here")];
+    tried.push((odd(priced(PAIRED, false), json!([])), "in_force_here"));
+    for row in [
+        "tariff.price, tariff.from >= at, tariff.meter = meter in_force_form",
+        "odd.kwh, odd.from <= at, odd.meter = meter in_force_form",
+        "flat.n, flat.n <= kwh, flat.n = kwh in_force_form",
+        "tariff.price, tariff.from <= at, tariff.from = at in_force_pair",
+        "tariff.price, tariff.from <= at, tariff.meter = kwh in_force_pair",
+        "none.price, none.from <= at, none.meter = meter undeclared",
+        "tariff.cost, tariff.from <= at, tariff.meter = meter unknown_field",
+        "tariff.price, tariff.from <= at not_parsed",
+        "tariff.from, tariff.from <= at, tariff.meter = meter never_lands",
     ] {
+        let (args, case) = row.rsplit_once(' ').unwrap_or((row, ""));
         tried.push((read(&format!("in_force({args})")), case));
     }
     for (d, case) in tried {

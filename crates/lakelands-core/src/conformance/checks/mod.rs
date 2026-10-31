@@ -326,6 +326,7 @@ pub const ALL: &[Check] = &[
     write_judged::WALK_JUDGES_NO_WRITE_PART,
     write_judged::WALK_JUDGES_THE_REST,
     write_judged::PRECEDING_SERIES_CHOSEN,
+    write_judged::PRECEDING_IN_A_GUARD,
     upsert_preflight::UPSERT_JUDGED_AS_WRITTEN,
     upsert_preflight::UPSERT_JUDGED_ON_WHAT_IT_MAKES,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,
