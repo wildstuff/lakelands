@@ -1005,7 +1005,7 @@ pub fn run(
                         if quarantine
                             && !by_run
                             && r.line.is_none()
-                            && (delivery.is_some() || r.delivery.is_some())
+                            && (named.is_some() || r.delivery.is_some())
                         {
                             let path = "line".to_owned();
                             let said = Said::from(Case::QuarantineLineMissing);

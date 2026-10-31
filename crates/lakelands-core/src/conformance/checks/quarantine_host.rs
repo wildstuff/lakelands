@@ -43,6 +43,11 @@ check!(
 );
 
 check!(
+    QUARANTINED_UNNAMED_NEEDS_NO_LINE = an_unnamed_quarantining_call_needs_no_line_in_any_window,
+    "085, extended: an ingest asking `quarantine_refused` under no delivery, at a `commit_window` of 1, of three records with no line and the second refused, lands two and quarantines the second, window after window, as the store names the delivery after the first"
+);
+
+check!(
     QUARANTINED_BY_RUN_PLACES = a_run_counts_the_places_of_its_rows,
     "085, extended: one call under run `r` of two records with no line, of two deliveries and both refused, lists `(erp, r, 0)` and `(erp, r, 1)`, each at version 1 and its own key"
 );
@@ -405,6 +410,31 @@ async fn a_quarantining_delivery_names_the_line_of_each_record(store: Store) -> 
     lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, unasked, vec![plain("c")])
         .await
         .must("ingesting without the option")?;
+    Ok(())
+}
+
+async fn an_unnamed_quarantining_call_needs_no_line_in_any_window(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(invoice()).await?;
+    let opts = IngestOpts {
+        quarantine_refused: true,
+        commit_window: Some(1),
+        ..IngestOpts::default()
+    };
+    let three = vec![
+        inv("u1", json!(1), None),
+        inv("u2", json!(2), Some("nope")),
+        inv("u3", json!(3), None),
+    ];
+    let source = SourceId::from("erp");
+    let got = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, opts, three)
+        .await
+        .must("the unnamed call at a window of 1")?;
+    let landed: u32 = got.iter().map(|w| w.records).sum();
+    ensure!(
+        indexes(&got) == [1] && landed == 2,
+        "the unnamed call answered {got:?}"
+    );
     Ok(())
 }
 

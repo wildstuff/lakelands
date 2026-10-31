@@ -309,6 +309,7 @@ pub const ALL: &[Check] = &[
     quarantine_host::QUARANTINED_ACROSS_CALLS,
     quarantine_host::QUARANTINED_BY_HOST_NAMES_ITS_LINE,
     quarantine_host::QUARANTINED_DELIVERY_NAMES_ITS_LINE,
+    quarantine_host::QUARANTINED_UNNAMED_NEEDS_NO_LINE,
     quarantine_host::QUARANTINED_BY_RUN_PLACES,
     quarantine_host::QUARANTINED_BY_HOST_CLOSES,
     quarantine_host::QUARANTINED_BY_HOST_PROTECTED,
