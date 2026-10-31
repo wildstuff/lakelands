@@ -601,6 +601,22 @@ impl EngineOpener for ProbedOpener {
     }
 }
 
+/// A handle on the lake `name` of `opener`: two opens of one name through
+/// it are two handles on one lake.
+pub async fn open(
+    opener: &Arc<dyn EngineOpener>,
+    name: &str,
+    mode: OpenMode,
+) -> Arc<dyn lakelands_api::LakeStore> {
+    let engines = vec![opener.clone()];
+    let seams = lakelands_api::seam::Seams {
+        engines,
+        ..Default::default()
+    };
+    let opened = lakelands_store::open(Location::memory(name), seams, mode);
+    opened.await.expect("a handle on the lake")
+}
+
 /// The calls the lake owes now, entry by entry, a sweep's over every
 /// page; the entries taken.
 pub fn calls(lake: &lakelands_store::lake::Turn<'_>) -> Vec<lakelands_store::backed::Due> {

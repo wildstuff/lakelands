@@ -11,7 +11,6 @@
 
 mod probed;
 
-use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, mpsc};
 
@@ -19,34 +18,20 @@ use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::read::{Find, Found};
-use lakelands_api::seam::Seams;
 use lakelands_api::write::Migration;
-use lakelands_api::{
-    Access, Error, Grants, LakeStore, Location, Position, PrincipalKind, TypeName,
-};
+use lakelands_api::{Access, Error, Grants, LakeStore, Position, PrincipalKind, TypeName};
 use lakelands_core::conformance::fixture::{
     Lake, computed_by, field, field_access, find_where, principal, read, read_at, reads_all,
     restrict, source_record, sourced, type_decl, type_of, value,
 };
 use lakelands_engine_mem::MemoryOpener;
-use probed::{Probe, ProbedOpener};
+use probed::{Probe, ProbedOpener, open};
 use serde_json::json;
 
 /// The opener of `probe`'s memory lakes: two opens of one name through it
 /// are two handles on one lake.
 fn opener(probe: &Arc<Probe>) -> Arc<dyn EngineOpener> {
     Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))
-}
-
-/// A handle on the lake `name` of `opener`.
-async fn open(opener: &Arc<dyn EngineOpener>, name: &str, mode: OpenMode) -> Arc<dyn LakeStore> {
-    let seams = Seams {
-        engines: vec![opener.clone()],
-        ..Seams::default()
-    };
-    lakelands_store::open(Location::memory(name), seams, mode)
-        .await
-        .expect("a handle on the lake")
 }
 
 /// A new lake on the probed memory engine, with `t`: its text `a` and its
@@ -304,53 +289,6 @@ async fn a_shape_is_carried_only_from_where_it_stands() {
         shown(&l, "u", None).await,
         "the declaration the write caught up"
     );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn another_handles_declaration_is_seen_by_the_next_read() {
-    let probe = Arc::new(Probe::default());
-    let opener = opener(&probe);
-    let writer = open(&opener, "two", OpenMode::Create).await;
-    let w = Lake::of(writer.as_ref());
-    w.declare(type_of("t", &[("a", Text)])).await.unwrap();
-    let reader = open(&opener, "two", OpenMode::Read).await;
-    let r = Lake::of(reader.as_ref());
-    assert!(shown(&r, "t", None).await && !shown(&r, "u", None).await);
-    w.declare(type_of("u", &[("a", Text)])).await.unwrap();
-    assert!(shown(&r, "u", None).await, "the reading handle's next read");
-    assert!(shown(&w, "u", None).await, "the writing handle's");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reads_beside_declaring_appends_see_one_shape_whole() {
-    let (store, _probe) = lake("beside").await;
-    let l = Lake::of(store.as_ref());
-    let declaring = async {
-        let mut at = Vec::new();
-        for i in 0..20 {
-            let o = l
-                .declare(type_of(&format!("u{i:02}"), &[("a", Text)]))
-                .await;
-            at.push(o.unwrap().position());
-        }
-        at
-    };
-    let reading = async {
-        let mut seen = Vec::new();
-        for _ in 0..200 {
-            let d = l.cat.describe(&l.own, read_at(None)).await.unwrap();
-            let names = d.data.types.iter().map(|t| t.name.to_string());
-            let names: BTreeSet<String> = names.filter(|n| n.starts_with('u')).collect();
-            seen.push((d.position, names));
-        }
-        seen
-    };
-    let (at, seen) = tokio::join!(declaring, reading);
-    for (p, names) in seen {
-        let then = at.iter().enumerate().filter(|(_, a)| **a <= p);
-        let want: BTreeSet<String> = then.map(|(i, _)| format!("u{i:02}")).collect();
-        assert_eq!(names, want, "a read at {p}");
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

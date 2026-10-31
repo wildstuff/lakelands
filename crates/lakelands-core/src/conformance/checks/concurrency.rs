@@ -50,6 +50,11 @@ check!(
     "008 and 022, extended: each write answers a position its own filled field is visible from, whoever else is writing, and one input is called once across all the writers"
 );
 
+check!(
+    DESCRIBED_AT_ITS_POSITION = a_description_beside_declarations_shows_what_its_position_holds,
+    "008 and 009: a description made while types are declared shows exactly the types declared at or before the position it names, read from the engine or told from what the writer keeps (lakelands#1632)"
+);
+
 const WRITERS: usize = 8;
 const EACH: usize = 25;
 /// The threads of the runtime's blocking pool, its default: the suite runs
@@ -634,6 +639,41 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
         "{WRITERS} writers wrote the same input, code AT, at once; the backing must be \
          called once for it, not {calls} times"
     );
+    Ok(())
+}
+
+async fn a_description_beside_declarations_shows_what_its_position_holds(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let (mut at, mut seen) = (BTreeMap::new(), Vec::new());
+    let declaring = async {
+        for i in 0..20 {
+            let name = format!("u{i:02}");
+            let o = l.declare(type_of(&name, &[("a", Text)])).await?;
+            at.insert(o.position(), name);
+        }
+        Ok(())
+    };
+    let describing = async {
+        for _ in 0..200 {
+            let d = l.cat.describe(&l.own, read_at(None)).await;
+            let d = d.must("describing the lake beside the declarations")?;
+            let names = d.data.types.iter().map(|t| t.name.to_string());
+            let names: BTreeSet<String> = names.filter(|n| n.starts_with('u')).collect();
+            seen.push((d.position, names));
+            // A description told from what the writer keeps does not wait.
+            pause(Duration::from_millis(1)).await;
+        }
+        Ok(())
+    };
+    let both: Vec<Caller<'_, Held>> = vec![Box::pin(declaring), Box::pin(describing)];
+    join_all(both).await.into_iter().collect::<Held>()?;
+    for (position, names) in seen {
+        let want: BTreeSet<String> = at.range(..=position).map(|(_, n)| n.clone()).collect();
+        ensure!(
+            names == want,
+            "a description naming position {position} showed {names:?}; declared by it: {want:?}"
+        );
+    }
     Ok(())
 }
 

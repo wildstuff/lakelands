@@ -669,6 +669,20 @@ async fn a_read_before_a_range_ends_keeps_its_own_shape_and_the_ending_is_learnt
     assert_eq!(learnt("k2").await, Some((retired, retired + 1)));
 }
 
+/// Between an append's fold and its publish the head stands behind what a
+/// read finds and the writer keeps, which is not told at it (lakelands#1632).
+#[tokio::test]
+async fn a_description_kept_past_the_published_head_is_not_told_at_it() {
+    let (lake, cat, owner) = owned("unpublished");
+    let (head, before) = (lakelands_api::ReadAt::default(), lake.head());
+    let t = declaration(text_type("t", &["a"]));
+    cat.declare(&owner, t).await.unwrap();
+    let kept = cat.describe(&owner, head).await.unwrap();
+    lake.set_head(before.0);
+    let told = cat.describe(&owner, head).await.unwrap();
+    assert_eq!(told.position, kept.position);
+}
+
 /// A `declared` event of the type `t`, at `at`.
 fn declared_type(t: serde_json::Value, at: u64) -> Event {
     let body = EventBody::Declared {

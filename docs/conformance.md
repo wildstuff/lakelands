@@ -1496,6 +1496,7 @@ belongs in the suite, not beside one engine:
 - `a_read_at_a_position_answers_the_same_during_writes_and_after` — 008 and 009: a read at a position sees the lake as it was there, whoever is writing; `find` and `get` at one position agree, and answer the same when asked again later; a read made while more writes wait for the writer than the blocking pool holds threads waits for none of those beyond it
 - `two_feed_readers_polling_during_writes_see_one_log` — 004 and 008: the feed is the log; two consumers polling from one position while others write see the same events, in the same order, each once
 - `concurrent_writes_see_their_own_filled_field_and_one_input_is_called_once` — 008 and 022, extended: each write answers a position its own filled field is visible from, whoever else is writing, and one input is called once across all the writers
+- `a_description_beside_declarations_shows_what_its_position_holds` — 008 and 009: a description made while types are declared shows exactly the types declared at or before the position it names, read from the engine or told from what the writer keeps (lakelands#1632)
 - `writes_made_while_a_rule_runs_land_before_or_after_its_append` — 036 and seams, SystemVocabulary: `age` holds the writer's lock for a rule's whole run, so a write made meanwhile lands before or after the rule's append, never inside it, and every move is made from the record as it stood before that append
 
 **batched**
