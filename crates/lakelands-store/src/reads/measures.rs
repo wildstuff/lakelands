@@ -187,6 +187,7 @@ impl Reader<'_> {
         carried: Option<Pulled>,
         hidden: &Visible<'_, '_>,
     ) -> Result<Judged<QueryResult>> {
+        self.check_whole_graph(p, hidden.reach)?;
         let params = (p.start.ty.as_ref()).map_or_else(Params::default, |t| self.bound_params(t));
         let offset = super::offset(p.cursor.as_ref(), p, &params)?.0;
         let all = match p.project {
@@ -289,6 +290,52 @@ impl Reader<'_> {
             }
         };
         Ok(Ok(self.rows_page(p, all, offset, limit, params)))
+    }
+
+    /// Refuses a measure under `whole_sets_only` over a type its reader may
+    /// read only some of (006): a record's degree, rank, component or
+    /// community is read off the links around it and the records at their
+    /// ends, so one over the admitted part would answer a part as the
+    /// whole. The graph is met from the start's type, or with none from
+    /// every type a step walks from, one hop for a degree and as far as the
+    /// types lead for the others; each type met is checked, and the link
+    /// type of each relation walked.
+    fn check_whole_graph(&self, p: &Pattern, reach: &[super::Reach]) -> Result<()> {
+        let shown = self.shown_relations(None);
+        let edges: Vec<_> = (p.steps.iter().zip(reach))
+            .flat_map(|(s, at)| {
+                let named = shown.iter().filter(|(_, r)| r.name == s.relation);
+                named.map(move |(o, r)| (s.walk, at, *o, *r))
+            })
+            .collect();
+        let ends = edges.iter().flat_map(|(_, _, o, r)| [&o.name, &r.target]);
+        let mut met: BTreeSet<TypeName> = match &p.start.ty {
+            Some(t) => BTreeSet::from([t.clone()]),
+            None => (ends.filter(|t| edges.iter().any(|(w, at, o, r)| at.walks(t, *w, o, r))))
+                .cloned()
+                .collect(),
+        };
+        let (mut at, mut links) = (met.clone(), BTreeSet::new());
+        let hops = if p.project == Projection::Degree {
+            1
+        } else {
+            usize::MAX
+        };
+        for _ in 0..hops {
+            let mut next = BTreeSet::new();
+            for (walk, reach, o, r) in &edges {
+                if at.iter().any(|t| reach.walks(t, *walk, o, r)) {
+                    next.extend([o.name.clone(), r.target.clone()]);
+                    let link = lakelands_core::links::link_type_name(&o.name, &r.name);
+                    r.carried_by_links().then(|| links.insert(link));
+                }
+            }
+            at = next.into_iter().filter(|t| met.insert(t.clone())).collect();
+            if at.is_empty() {
+                break;
+            }
+        }
+        (met.iter().chain(&links)).try_for_each(|t| self.sight.check_whole_set(t))
     }
 
     /// The graph the start's records reach over the steps' relations, each

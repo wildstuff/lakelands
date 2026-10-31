@@ -412,6 +412,20 @@ impl Lake {
         self.cat.migrate_apply(&self.own, m, &id).await.must(&what)
     }
 
+    /// Links `from` of `ty` over `rel` to `to` as the owner, with no fields.
+    pub async fn link(
+        &self,
+        ty: &str,
+        from: &str,
+        rel: &str,
+        to: &str,
+    ) -> Result<Outcome, Failure> {
+        let (ty, rel, at, to) = (&ty.into(), &rel.into(), &from.into(), &to.into());
+        let fields = patch(serde_json::json!({}));
+        let linked = (self.cat).link(&self.own, ty, at, rel, to, fields, WriteOpts::default());
+        linked.await.must(&format!("linking {from} to {to}"))
+    }
+
     /// Retires one record as the owner.
     pub async fn retire(&self, ty: &str, key: &str) -> Result<Outcome, Failure> {
         let (t, k) = (TypeName::from(ty), RecordKey::from(key));

@@ -112,18 +112,7 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
 }
 
 async fn link(l: &Lake, from: &str, to: &str) -> Held {
-    let (cat, who) = (l.cat.as_ref(), &l.own);
-    cat.link(
-        who,
-        &"invoice".into(),
-        &from.into(),
-        &"approved_by".into(),
-        &to.into(),
-        patch(json!({})),
-        WriteOpts::default(),
-    )
-    .await
-    .must(&format!("linking {from} to {to}"))?;
+    l.link("invoice", from, "approved_by", to).await?;
     Ok(())
 }
 
