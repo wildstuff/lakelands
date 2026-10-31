@@ -16,27 +16,14 @@ use std::sync::atomic::Ordering;
 use lakelands_api::describe::TypeDescription;
 use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::ontology::StorageKind::{Number, Text};
-use lakelands_api::seam::Seams;
-use lakelands_api::{Access, FieldName, LakeStore, Location, Position, Principal, ReadAt, Reply};
+use lakelands_api::{Access, FieldName, LakeStore, Position, Principal, ReadAt, Reply};
 use lakelands_core::conformance::fixture::{Lake, field_access, read_at, type_of};
 use lakelands_engine_mem::MemoryOpener;
-use probed::{Probe, ProbedOpener};
+use probed::{Probe, ProbedOpener, open};
 use serde_json::json;
 
 /// How many records are written, each followed by a description.
 const WRITES: usize = 50;
-
-/// A handle on the lake `name` of `opener`: two opens of one name through
-/// it are two handles on one lake.
-async fn open(opener: &Arc<dyn EngineOpener>, name: &str, mode: OpenMode) -> Arc<dyn LakeStore> {
-    let seams = Seams {
-        engines: vec![opener.clone()],
-        ..Seams::default()
-    };
-    lakelands_store::open(Location::memory(name), seams, mode)
-        .await
-        .expect("a handle on the lake")
-}
 
 /// A new lake with `t`: its text `a` and its number `n`, and the opener of
 /// its memory engine.
