@@ -8,7 +8,8 @@ Each engine that keeps an exact-text index (SQLite and PostgreSQL) keeps
 a row for each string a record's latest state holds, but only in the
 fields of its type that are looked up. The memory engine keeps no such
 index today; 097 gives it one. A number field named in the setting keeps
-a row of its value's token (097).
+a row of its value's token, and a value that reads as no number keeps
+none and is scanned for (097).
 
 **The declarations look up these fields of a type:**
 - its key, but a key that is one text field;
@@ -49,9 +50,7 @@ two fields.
 declarations and the setting at the head. Both engines call it, and no
 other field has rows.
 
-**A reader decides from the same set, never from which rows exist.**
-A number's rows also ask `exact_through`, since a writer of an earlier
-release does not keep them (097). A
+**A reader decides from the same set, never from which rows exist.** A
 string the index keeps is looked up. A string of any other field is
 found by a scan of the type, narrowed in storage by the stored value
 (`json_extract` on SQLite, `->>` on PostgreSQL). In both cases the one

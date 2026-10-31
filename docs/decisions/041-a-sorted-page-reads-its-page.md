@@ -325,7 +325,10 @@ admits each; 097 gives it the index and these ways.
 `rows_read` counts the rows handed on, so it does not see the rows the
 order-first way passes over; 097 adds `rows_walked`. A bound on the
 order field narrows either way and skips the records without the field,
-and a series index reads one text's window by itself (097).
+an aggregate, a count and a key page walk the smaller of the window and
+the other side, and a series index reads one text's window by itself. A
+series index is the host's: it is not in `Chosen`, and the chooser's
+rules do not reach it (097).
 
 **The cost.** 100 000 records, a page of 50 in an indexed field's order
 under a text, then a walk of every holder by cursor, 1 000 a page. The
@@ -732,3 +735,5 @@ chooses again from use.
   keeps the choice beside its log and builds it in chunks beside the
   writer, where only the host's setting asked for one; a host's setting
   wins (lakelands#1131).
+- Bounds narrow the walk, and a series index is the host's
+  (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`).
