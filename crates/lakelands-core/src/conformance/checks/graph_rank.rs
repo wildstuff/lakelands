@@ -5,7 +5,6 @@
 //! `docs/decisions/026-the-store-walks-the-graph.md`).
 
 use lakelands_api::Value;
-use lakelands_api::write::WriteOpts;
 
 use crate::conformance::fixture::{doors, owner, reference, source_record, step};
 use crate::conformance::prelude::*;
@@ -61,18 +60,7 @@ async fn lake(store: &dyn LakeStore) -> Held {
 }
 
 async fn cite(l: &Lake, from: &str, to: &str) -> Held {
-    l.cat
-        .link(
-            &l.own,
-            &"page".into(),
-            &from.into(),
-            &"cites".into(),
-            &to.into(),
-            patch(json!({})),
-            WriteOpts::default(),
-        )
-        .await
-        .must(&format!("linking {from} to {to}"))?;
+    l.link("page", from, "cites", to).await?;
     Ok(())
 }
 

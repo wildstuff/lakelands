@@ -6,8 +6,6 @@
 //! (`docs/decisions/018-one-pattern-query.md`,
 //! `docs/decisions/026-the-store-walks-the-graph.md`).
 
-use lakelands_api::write::WriteOpts;
-
 use super::graph_rank::{PAGES, ring};
 use crate::conformance::fixture::{doors, owner, step};
 use crate::conformance::prelude::*;
@@ -58,18 +56,7 @@ async fn write(l: &Lake, keys: &[&str], links: &[(&str, &str)]) -> Held {
 }
 
 async fn link(l: &Lake, from: &str, to: &str) -> Held {
-    l.cat
-        .link(
-            &l.own,
-            &"page".into(),
-            &from.into(),
-            &"links".into(),
-            &to.into(),
-            patch(json!({})),
-            WriteOpts::default(),
-        )
-        .await
-        .must(&format!("linking {from} to {to}"))?;
+    l.link("page", from, "links", to).await?;
     Ok(())
 }
 

@@ -5,7 +5,6 @@
 
 use lakelands_api::query::Depth;
 use lakelands_api::query::Walk::{Both, Out};
-use lakelands_api::write::WriteOpts;
 
 use crate::conformance::fixture::{doors, order, owner, reference};
 use crate::conformance::prelude::*;
@@ -100,24 +99,13 @@ async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
         let fields = json!({"name": b, "enterer": enterer, "contact": contact, "cname": contact});
         l.upsert("bill", b, fields).await?;
     }
-    let (ty, approved_by) = ("bill".into(), "approved_by".into());
     for (b, p) in [
         ("b1", "bob"),
         ("b1", "alice"),
         ("b2", "alice"),
         ("b4", "dan"),
     ] {
-        let (from, to, what) = (b.into(), p.into(), format!("{p} approving {b}"));
-        let linked = (l.cat).link(
-            &l.own,
-            &ty,
-            &from,
-            &approved_by,
-            &to,
-            patch(json!({})),
-            WriteOpts::default(),
-        );
-        linked.await.must(&what)?;
+        l.link("bill", b, "approved_by", p).await?;
     }
     Ok(l)
 }
