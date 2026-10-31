@@ -19,7 +19,7 @@ check!(
 
 check!(
     IN_FORCE_SIGHT = a_reading_is_paired_among_the_tariffs_its_reader_is_answered,
-    "052, extended (lakelands#1606): a reading pairs among the tariffs its reader's `find` on `tariff` answers: a restricted tariff is passed over for a reader without `restricted` and paired for one granted it, a reader with `only` on `tariff` pairs among what `only` admits, a tariff whose `from` a hiding lowers is passed over, one whose `price` a hiding lowers reads the field as none, never as the tariff before it; a reader not shown `tariff` is not shown the field, and one masked from `tariff.price` reads it masked"
+    "052, extended (lakelands#1606): a reading pairs among the tariffs its reader's `find` on `tariff` answers: a restricted tariff is passed over for a reader without `restricted` and paired for one granted it, a reader with `only` on `tariff` pairs among what `only` admits, a tariff whose `from` a hiding lowers is passed over, one whose `price` a hiding lowers reads the field as none, never as the tariff before it; a reader not shown `tariff` is not shown the field, one not shown a field `tariff.dear` is derived from is not shown `dear` paired, and one masked from `tariff.price` reads it masked"
 );
 
 check!(
@@ -34,14 +34,25 @@ const PAIRED: &str = "in_force(tariff.price, tariff.from <= at, tariff.meter = m
 async fn declared(l: &Lake, paired: &str) -> Held {
     let f = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
     let tariff = [f("meter", "text"), f("from", "date"), f("price", "decimal")];
+    let dear = json!({"name": "dear", "type": {"kind": "decimal"}, "authority": "derived",
+        "derived": "price"});
     let tariff = json!({"declare": "type", "name": "tariff",
-        "fields": [tariff[0], tariff[1], tariff[2], f("hand", "text")]});
+        "fields": [tariff[0], tariff[1], tariff[2], f("hand", "text"), dear]});
     l.declare_json(tariff).await?;
-    let price = json!({"name": "price", "type": {"kind": "decimal"}, "authority": "derived",
-        "derived": paired, "computed_at": "read"});
-    let reading = json!({"declare": "type", "name": "reading",
-        "fields": [f("meter", "text"), f("at", "date"), f("kwh", "decimal"), price]});
-    l.declare_json(reading).await.map(drop)
+    l.declare_json(reading(&[("price", paired)]))
+        .await
+        .map(drop)
+}
+
+/// `reading`, each of `paired` a field derived from it at the read.
+fn reading(paired: &[(&str, &str)]) -> Value {
+    let f = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    let mut fields = vec![f("meter", "text"), f("at", "date"), f("kwh", "decimal")];
+    fields.extend(paired.iter().map(|(n, p)| {
+        json!({"name": n, "type": {"kind": "decimal"}, "authority": "derived",
+            "derived": p, "computed_at": "read"})
+    }));
+    json!({"declare": "type", "name": "reading", "fields": fields})
 }
 
 /// Puts the tariffs `(key, meter, from, price, hand)`.
@@ -152,6 +163,9 @@ async fn a_reading_is_paired_with_the_tariff_in_force(store: Store) -> Held {
 async fn a_reading_is_paired_among_the_tariffs_its_reader_is_answered(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     declared(&l, PAIRED).await?;
+    let dear = PAIRED.replace("tariff.price", "tariff.dear");
+    l.declare_json(reading(&[("price", PAIRED), ("dear", &dear)]))
+        .await?;
     let t = [
         ("S1", "M", "2026-01-01", "10", "a"),
         ("S2", "M", "2026-02-01", "20", "a"),
@@ -194,8 +208,15 @@ async fn a_reading_is_paired_among_the_tariffs_its_reader_is_answered(store: Sto
     let blind = json!({"default": "read", "types": {"tariff": {"default": "none"}}});
     let blind = holder(s, "blind", blind);
     let masked = field_access(s, "masked", "tariff", &[("price", Access::Masked)]);
+    let sly = field_access(s, "sly", "tariff", &[("price", Access::None)]);
     let unseen = get(&l, &blind, "P2", None).await?;
     let masked = get(&l, &masked, "P2", None).await?;
+    let sly = get(&l, &sly, "P2", None).await?;
+    ensure!(
+        !sly.fields.contains_key("price") && !sly.fields.contains_key("dear"),
+        "a reader not shown `tariff.price` is not shown `tariff.dear`, derived from it, nor \
+         either paired at the read: {sly:?}"
+    );
     let marked = |r: &Record| r.masked.iter().any(|f| f.as_str() == "price");
     ensure!(
         !unseen.fields.contains_key("price")

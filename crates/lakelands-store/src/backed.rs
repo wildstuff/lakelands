@@ -595,7 +595,7 @@ pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<Fie
         return Some(func.decl.inputs.iter().map(|i| i.name().clone()).collect());
     }
     let e = f.derived.as_ref()?;
-    let e = crate::declare::condition(e, lakelands_core::expr::Place::Write, &[]).ok()?;
+    let e = crate::declare::condition(e, crate::declare::computed_at(f), &[]).ok()?;
     Some(lakelands_core::derive::reads(&e))
 }
 

@@ -657,7 +657,7 @@ fn field_type(
 
 /// Where a derived field is evaluated: at the read, where `in_force` has
 /// meaning, or at the write.
-fn computed_at(f: &FieldDecl) -> Eval {
+pub(crate) fn computed_at(f: &FieldDecl) -> Eval {
     match f.at_read() {
         true => Eval::AtRead,
         false => Eval::Write,
