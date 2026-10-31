@@ -113,12 +113,10 @@
   },
   {
    "code": "preceding_unlooked",
-   "constraint": "c",
    "field": "f"
   },
   {
    "code": "preceding_unordered",
-   "constraint": "c",
    "field": "f"
   },
   {

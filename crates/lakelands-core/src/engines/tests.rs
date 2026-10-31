@@ -678,6 +678,12 @@ fn a_commit_decides_again_only_the_types_its_puts_move_and_as_the_whole_decides(
     let steps: Vec<(&str, Vec<Declaration>, bool)> = vec![
         ("a set's type", vec![set("t", "a = 'x'")], false),
         (
+            "a trigger's `preceding`",
+            vec![decl(json!({"declare": "trigger", "name": "g", "on": "u",
+                             "when": "preceding(c, d, c) is null"}))],
+            false,
+        ),
+        (
             "the set declared again over another type",
             vec![set("w", "e = 'x'")],
             false,

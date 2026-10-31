@@ -2104,7 +2104,14 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             // (lakelands#1185).
             declared(o, &t.on, &on)?;
             if let Some(w) = &t.when {
-                filter(&|n| o.set(n), &t.on, w, Eval::Guard, &on)?;
+                let e = filter(&|n| o.set(n), &t.on, w, Eval::Guard, &on)?;
+                // The series a `preceding` reads, as a constraint's.
+                let series = match o.ty(&t.on) {
+                    Ok(ty) => ty.series_read(&e),
+                    Err(_) if e.calls(&[Func::Preceding]) => Err(Case::PrecedingHere),
+                    Err(_) => Ok(()),
+                };
+                series.map_err(|c| Error::invalid(at(&on, c)))?;
             }
         }
         Declaration::ObjectSet(s) => {

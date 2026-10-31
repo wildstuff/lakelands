@@ -14,14 +14,17 @@
 //! `where` over the record then, as a read inlines it, and before the
 //! cause the membership the write read unless the record held an erased
 //! value the `where` reads ([`member`]). One that does not
-//! hold so is *overruled*. A trigger with no `when`, or withdrawn at its
-//! cause, stands, and so does a reaction whose record is not there as of
-//! its cause; so does every reaction no act follows, unread: one after
+//! hold so is *overruled*. A conjunct of a `when` that reads `preceding`
+//! is its write's alone and is not decided again. A trigger with no
+//! `when`, or withdrawn at its cause, stands, and so does a reaction
+//! whose record is not there as of its cause; so does every reaction no
+//! act follows, unread: one after
 //! the last act that does not share its time, which every event of its
 //! append shares.
 
 use super::*;
 use crate::lake::Shape;
+use lakelands_api::expr::{Expr, Func};
 
 /// The views and shapes of one decision, each read once a position, and
 /// whether the event at a cause ends a range of one shape.
@@ -139,7 +142,17 @@ fn stands(asof: &mut AsOf<'_>, e: &Event, cause: Position) -> Result<bool> {
             let at = [Place::Trigger {
                 name: t.name.clone(),
             }];
-            let when = declare::filter(&|n| o.set(n), &t.on, c, Eval::Guard, &at)?;
+            let mut when = declare::filter(&|n| o.set(n), &t.on, c, Eval::Guard, &at)?;
+            // What `preceding` decided, its write decided alone.
+            let write = [Func::Preceding];
+            if when.calls(&write) {
+                let rest = when.conjuncts().into_iter().filter(|c| !c.calls(&write));
+                let args: Vec<_> = rest.cloned().collect();
+                if args.is_empty() {
+                    return Ok(true);
+                }
+                when = Expr::And { args };
+            }
             let was = asof.get(before, ty, key)?.filter(|b| !b.retired);
             let Some(after) = asof.get(cause, ty, key)? else {
                 return Ok(true);

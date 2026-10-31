@@ -346,8 +346,8 @@ What a refusal is about.
 | `computed_reads_itself` | `field` (FieldName) | the computed field `{field}` reads itself | A computed field that reads itself. |
 | `constraint_named_twice` | `constraint` (ConstraintName) | two constraints are named `{constraint}` | A type naming two constraints alike. |
 | `clock_not_compared` | `constraint` (ConstraintName) | constraint `{constraint}` reads the clock other than as `now()` or `today()`, with or without a duration added or taken away, on one side of a comparison whose other side is a field, with or without a duration added or taken away; the rule is fixed and only the write's instant moves | A constraint whose `now()` or `today()` is no clock term on one side of a comparison with a field. |
-| `preceding_unlooked` | `constraint` (ConstraintName), `field` (FieldName) | constraint `{constraint}` matches its preceding record on `{field}`, which is not text or a reference | A `preceding` whose matched field the exact-text index cannot keep. |
-| `preceding_unordered` | `constraint` (ConstraintName), `field` (FieldName) | constraint `{constraint}` orders its preceding record by `{field}`, whose kind has no order | A `preceding` ordered by a field whose kind has no order. |
+| `preceding_unlooked` | `field` (FieldName) | a `preceding` matches its series on `{field}`, which is not text or a reference | A `preceding` whose matched field the exact-text index cannot keep. |
+| `preceding_unordered` | `field` (FieldName) | a `preceding` orders its series by `{field}`, whose kind has no order | A `preceding` ordered by a field whose kind has no order. |
 | `constraint_reads_beyond` | `constraint` (ConstraintName), `reads` (Beyond) | constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields | A constraint that reads what can change without a write of the record. |
 | `declared_twice` | `what` (Naming), `name` (String) | it declares the {what} `{name}` twice | A name declared twice in one declaration. |
 | `derived_and_function` | — | a field is derived from an expression or computed by a function, not both | A field both derived and computed by a function. |
@@ -504,7 +504,7 @@ What a refusal is about.
 | `division_by_zero` | — | division by zero | A division by zero. |
 | `in_empty` | — | an `in` lists one value at least | An `in` with an empty list. |
 | `exists_here` | — | exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at | An `exists` outside a verb's `requires` and set values. |
-| `preceding_here` | — | preceding() has meaning in a type's constraint, over the record before it | A `preceding` outside a constraint. |
+| `preceding_here` | — | preceding() has meaning in a type's constraint and in the `when` of a trigger on a type that is no view, over the record before it in its series | A `preceding` outside a constraint and a trigger's `when`, or over a view's rows. |
 | `in_set_here` | — | in_set() has meaning in an object set's `where`, a trigger's `when` and a read's `where` | An `in_set` left where no set's filter stands. |
 | `kind_negates` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it negates {kind} | A negation of what has no negative. |
 | `kind_sides` | `expr` (String), `left` (Kind), `right` (Kind) | `{expr}` has no meaning: its sides are {left} and {right} | Arithmetic over kinds that do not combine. |

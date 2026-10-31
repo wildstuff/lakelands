@@ -19,7 +19,8 @@ pub enum Place {
     /// Over one record in a write: a derived field, where `changed` and
     /// `previous` have meaning.
     Write,
-    /// A trigger's guard: a write, where `retired` has meaning as well.
+    /// A trigger's guard: a write, where `retired` and `preceding` have
+    /// meaning as well.
     Guard,
     /// Over a group of records: a view measure, where aggregates have
     /// meaning.
@@ -30,8 +31,8 @@ pub enum Place {
     /// A verb's `requires`, preconditions and set values, and an object
     /// set's `where`: like `Record`, and `exists` has meaning.
     Verb,
-    /// A type's constraint: a guard's, where `preceding` has meaning as
-    /// well.
+    /// A type's constraint: a guard's, whose reach
+    /// `TypeDecl::constraint_reach` judges beside.
     Constraint,
 }
 
@@ -85,7 +86,7 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
         Expr::Call { func, args } => {
             let name = func_name(*func).to_owned();
             let (min, max) = arity(*func);
-            // A constraint is a guard, with `preceding` beside.
+            // A constraint is a guard.
             let guard = matches!(place, Place::Guard | Place::Constraint);
             if args.len() < min || max.is_some_and(|m| args.len() > m) {
                 return Err(Case::CallArity {
@@ -105,7 +106,7 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                 {
                     return Err(Case::CallTakesField { name });
                 }
-                Func::Preceding if place != Place::Constraint => return Err(Case::PrecedingHere),
+                Func::Preceding if !guard => return Err(Case::PrecedingHere),
                 Func::Setting | Func::Param | Func::InSet if quoted(args.first()).is_none() => {
                     return Err(Case::CallTakesQuoted { name });
                 }

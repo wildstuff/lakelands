@@ -2,7 +2,9 @@
 //! clock and the record before it in a series
 //! (`docs/decisions/059-a-type-declares-its-constraints.md`, extended;
 //! lakelands#1552, lakelands#1556). Every write door judges it; no walk
-//! judges it again.
+//! judges it again. A trigger's guard reads the record before it the same
+//! way (`docs/decisions/004-the-change-feed-is-the-log.md`, extended;
+//! lakelands#1604).
 
 use lakelands_api::write::{Breach, MigrationReport, Outcome, ValueTypeMigration};
 
@@ -32,6 +34,11 @@ check!(
 check!(
     PRECEDING_SERIES_CHOSEN = the_record_before_is_chosen_in_its_series,
     "059, extended (lakelands#1552): `preceding(stand, at, line, site)`, matched on a text and a reference, reads among records of `at` tied the first by key; a record of another `line` or `site` is no predecessor; `upsert_preflight` answers `constraint_broken` as `upsert` does; a retired record is passed over; a write that moves a record into another series is judged against the record before it there; and a restricted record is passed over for a writer not granted `restricted`, though not for one granted it"
+);
+
+check!(
+    PRECEDING_IN_A_GUARD = a_guard_reads_the_record_before_it_in_its_series,
+    "004 and 059, extended (lakelands#1604): a trigger whose `when` is `preceding(at, at, meter) is not null and date_bucket(at, 1h, o) != date_bucket(preceding(at, at, meter), 1h, o)` declares, and fires in the write's append on a reading whose predecessor of its meter lies in another hour; not on a meter's first reading, nor on a second in the same hour, nor on another meter's first; a backdated reading fires where the reading before it lies in an earlier hour, also before every reading of an hour already logged, and not where one of its own hour does or none does; a later write of another field fires again; three readings of one meter in one ingest delivery fire once, on the third, each judged against the one before it; a predecessor its writer is not answered is passed over, and a field a hiding lowers on it reads as null to its writer and not to the owner; an act that takes back another source's write overrules none of these firings; a series matched on a number is refused `preceding_unlooked`, at a declaration and at a migration that makes the matched field a number, and a `preceding` in a trigger on a view `preceding_here`"
 );
 
 /// A door's answer.
@@ -440,6 +447,126 @@ async fn the_record_before_is_chosen_in_its_series(store: Store) -> Held {
         "the first of a tie by key, `upsert_preflight`, a move into another series and one \
          granted `restricted` against a restricted record are judged: {tied:?}, {judged:?}, \
          {moved:?}, {held:?}"
+    );
+    Ok(())
+}
+
+/// The triggers fired after `at`, each with the key it fired on.
+async fn fired(store: &dyn LakeStore, at: Position) -> Result<Vec<(String, String)>, Failure> {
+    let mut fired = Vec::new();
+    for e in events_after(store, at).await? {
+        if let EventBody::TriggerFired { trigger, key, .. } = e.body {
+            fired.push((trigger.to_string(), key.to_string()));
+        }
+    }
+    Ok(fired)
+}
+
+async fn a_guard_reads_the_record_before_it_in_its_series(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let (cat, s) = (l.cat.as_ref(), store.as_ref());
+    let fields = "no meter at:date_time stand:number hand";
+    declare(&l, typed("reading", &["no"], fields, json!([]))).await?;
+    let bucket = |f: &str| format!("date_bucket({f}, 1h, '2026-01-01T00:00:00Z')");
+    let p = "preceding(at, at, meter)";
+    let hour = format!("{p} is not null and {} != {}", bucket("at"), bucket(p));
+    let low = format!("{p} is not null and preceding(stand, at, meter) is null");
+    let trigger = |name: &str, on: &str, when: &str| json!({"declare": "trigger", "name": name, "on": on, "when": when});
+    declare(&l, trigger("hour", "reading", &hour)).await?;
+    declare(&l, trigger("low", "reading", &low)).await?;
+    let reading = |m: &str, at: &str, hand: &str| json!({"meter": m, "at": format!("2026-01-01T{at}:00Z"), "stand": 5, "hand": hand});
+    // The triggers a write of `m` at `at` by `who` fires.
+    let fires = |who: &Principal, no: &str, m: &str, at: &str, hand: &str| {
+        let (who, no, fields) = (who.clone(), no.to_string(), reading(m, at, hand));
+        async move {
+            let head = s.head().await.must("reading the head")?;
+            let w = try_upsert(cat, &who, "reading", &no, fields).await;
+            w.must("a reading")?;
+            let fired = fired(s, head).await?.into_iter().map(|(t, _)| t);
+            Ok::<_, Failure>(fired.collect::<Vec<_>>().join(" "))
+        }
+    };
+    let own = &l.own;
+    let mut got = Vec::new();
+    for (no, m, at) in [
+        ("A1", "M1", "14:10"),
+        ("A2", "M1", "14:40"),
+        ("A3", "M2", "15:05"),
+        ("A4", "M1", "15:05"),
+        ("A5", "M1", "14:20"),
+        ("A6", "M1", "12:30"),
+        ("A7", "M1", "13:30"),
+    ] {
+        got.push(fires(own, no, m, at, "a").await?);
+    }
+    // Before every reading of an hour logged; a level, again on another field.
+    got.push(fires(own, "A8", "M1", "14:05", "a").await?);
+    got.push(fires(own, "A4", "M1", "15:05", "x").await?);
+    let head = s.head().await.must("reading the head")?;
+    let one = |no: &str, at: &str| source_record("reading", no, reading("M3", at, "a"));
+    let three = vec![one("C1", "09:10"), one("C2", "09:50"), one("C3", "10:05")];
+    let done = ingest(cat, own, "meter", three).await;
+    done.must("one delivery")?;
+    let delivered = fired(s, head).await?;
+    // A predecessor hand `b`'s writer is not answered; one whose `stand` is hidden.
+    let grants = json!({"default": "write", "types": {"reading": {"only": {"hand": "b"}}}});
+    let b = super::only::holder(s, "b", grants);
+    fires(own, "B1", "M4", "10:10", "a").await?;
+    got.push(fires(&b, "B2", "M4", "11:05", "b").await?);
+    let hide = json!({"field": "hand", "values": ["z"], "fields": {"stand": "none"}});
+    let grants = json!({"default": "write", "types": {"reading": {"hide_where": [hide]}}});
+    let h = super::only::holder(s, "h", grants);
+    fires(own, "H1", "M5", "10:00", "z").await?;
+    got.push(fires(&h, "H2", "M5", "10:30", "c").await?);
+    got.push(fires(own, "H3", "M5", "10:20", "c").await?);
+    // An act takes back another source's reading; no firing it follows is overruled.
+    let z1 = source_record("reading", "Z1", reading("M9", "09:00", "a"));
+    let done = ingest(cat, own, "other", vec![z1]).await;
+    done.must("other's reading")?;
+    let far = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let act = s.remove_values(&"other".into(), &far, false, None).await;
+    act.must("taking other's reading back")?;
+    let filter = FeedFilter {
+        kinds: vec!["trigger_fired".to_owned()],
+        ..FeedFilter::default()
+    };
+    let polled = s.feed().poll(Position::GENESIS, &filter, 1024).await;
+    let overruled = polled.must("polling the feed")?.overruled;
+    let want = [
+        "", "", "", "hour", "", "", "hour", "hour", "hour", "", "low", "",
+    ];
+    let once = delivered == [("hour".to_string(), "C3".to_string())];
+    ensure!(
+        got == want && once && overruled.is_empty(),
+        "firings by write {got:?}, in one delivery {delivered:?}, overruled {overruled:?}"
+    );
+    // Refused: matched on a number, over a view's rows.
+    let on_number = trigger("t", "reading", "preceding(at, at, stand) is null");
+    let a = try_declare(&l, on_number).await?;
+    let unlooked = matches!(invalid_case(&a),
+        Some(Case::PrecedingUnlooked { field }) if field.as_str() == "stand");
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    let view = json!({"declare": "type", "name": "hours", "key": ["meter"],
+        "fields": [field("meter", "text"), field("n", "number")],
+        "view": {"source": "reading", "group_by": ["meter"],
+                 "measures": [{"name": "n", "expr": "count()"}]}});
+    declare(&l, view).await?;
+    l.set("view_kept.hours", json!(true)).await?;
+    let on_view = try_declare(&l, trigger("v", "hours", "preceding(n, n, meter) is null")).await?;
+    let here = matches!(invalid_case(&on_view), Some(Case::PrecedingHere));
+    let number = typed(
+        "reading",
+        &["no"],
+        &fields.replace("meter", "meter:number"),
+        json!([]),
+    );
+    let moved = l.cat.migrate(own, Migration::to(decl(number)?)).await;
+    let migrated = matches!(invalid_case(&moved),
+        Some(Case::PrecedingUnlooked { field }) if field.as_str() == "meter");
+    ensure!(
+        unlooked && here && migrated,
+        "a series matched on a number is refused `preceding_unlooked`, also by a migration, and \
+         a trigger on a view `preceding_here`: {a:?}, {moved:?}, {on_view:?}"
     );
     Ok(())
 }
