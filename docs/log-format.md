@@ -1188,7 +1188,8 @@ the first release with real installations
   21 → 22: none. Format 22 is 0.22.0's one step (lakelands#1584), and a
   log of format 21 holds nothing it adds: `context.occasion` (§1.1,
   `docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`),
-  and `first` and `last` (Appendix B, lakelands#1603).
+  `preceding` in a constraint (Appendix B, lakelands#1552), and `first`
+  and `last` (Appendix B, lakelands#1603).
   A `record_quarantined` the host refused, or keyed by its run and
   line, is written from 0.22.0 in the event's format-21 form (§2.3,
   lakelands#1596).
@@ -1525,6 +1526,13 @@ its members are ordered by: the first argument on the member whose
 second is the least (`first`) or the greatest (`last`), equal ones
 taken in key order; null where that member's first argument is null
 and where no member's second argument holds a value (lakelands#1603).
+`preceding`, from format 22, with three or more arguments, each a path
+of one identifier naming a field of the record's type, `preceding(f, by, match…)`: in a
+constraint only, `f` on the live record of the type, other than this
+one, that holds this record's value in each `match` field and whose
+`by` is the greatest below this record's, the first by key among ties;
+null where none is (lakelands#1552,
+`docs/decisions/059-a-type-declares-its-constraints.md`).
 
 **From text to typed form.**
 

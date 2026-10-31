@@ -285,6 +285,7 @@ impl Decide<'_> {
             retiring: live.is_some() && after.retired,
             meta: Some(&after.meta),
             settings: Some(self.at.settings),
+            preceding: None,
             now,
         };
         let settings = (self.at.settings, strict);

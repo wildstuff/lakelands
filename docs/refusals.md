@@ -345,6 +345,9 @@ What a refusal is about.
 | `computed_cycle` | `fields` (Names) | computed fields read each other in a cycle: {fields} | Computed fields that read each other. |
 | `computed_reads_itself` | `field` (FieldName) | the computed field `{field}` reads itself | A computed field that reads itself. |
 | `constraint_named_twice` | `constraint` (ConstraintName) | two constraints are named `{constraint}` | A type naming two constraints alike. |
+| `clock_not_compared` | `constraint` (ConstraintName) | constraint `{constraint}` reads the clock other than as `now()` or `today()`, with or without a duration added or taken away, on one side of a comparison whose other side is a field, with or without a duration added or taken away; the rule is fixed and only the write's instant moves | A constraint whose `now()` or `today()` is no clock term on one side of a comparison with a field. |
+| `preceding_unlooked` | `constraint` (ConstraintName), `field` (FieldName) | constraint `{constraint}` matches its preceding record on `{field}`, which is not text or a reference | A `preceding` whose matched field the exact-text index cannot keep. |
+| `preceding_unordered` | `constraint` (ConstraintName), `field` (FieldName) | constraint `{constraint}` orders its preceding record by `{field}`, whose kind has no order | A `preceding` ordered by a field whose kind has no order. |
 | `constraint_reads_beyond` | `constraint` (ConstraintName), `reads` (Beyond) | constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields | A constraint that reads what can change without a write of the record. |
 | `declared_twice` | `what` (Naming), `name` (String) | it declares the {what} `{name}` twice | A name declared twice in one declaration. |
 | `derived_and_function` | — | a field is derived from an expression or computed by a function, not both | A field both derived and computed by a function. |
@@ -501,6 +504,7 @@ What a refusal is about.
 | `division_by_zero` | — | division by zero | A division by zero. |
 | `in_empty` | — | an `in` lists one value at least | An `in` with an empty list. |
 | `exists_here` | — | exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at | An `exists` outside a verb's `requires` and set values. |
+| `preceding_here` | — | preceding() has meaning in a type's constraint, over the record before it | A `preceding` outside a constraint. |
 | `in_set_here` | — | in_set() has meaning in an object set's `where`, a trigger's `when` and a read's `where` | An `in_set` left where no set's filter stands. |
 | `kind_negates` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it negates {kind} | A negation of what has no negative. |
 | `kind_sides` | `expr` (String), `left` (Kind), `right` (Kind) | `{expr}` has no meaning: its sides are {left} and {right} | Arithmetic over kinds that do not combine. |
@@ -952,7 +956,6 @@ What a constraint reads that can change without a write of its record (lakelands
 | `path` | — | a path across a reference or a link | A path across a reference or a link. |
 | `in_set` | — | `in_set` | An object set. |
 | `setting` | — | `setting` | A setting. |
-| `clock` | — | the clock | The clock. |
 | `exists` | — | `exists` | A relation's links. |
 | `computed_outside` | `field` (FieldName) | `{field}`, computed outside the lake | A field computed outside the lake. |
 | `computed_at_read` | `field` (FieldName) | `{field}`, computed at the read | A field computed at the read. |
@@ -1275,6 +1278,7 @@ whose own page says its sentence.
 | `Unmocked::hops` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
 | `Unmocked::proposer` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
 | `Case::window_links_already` | v0.15.1 | 0.16.0 | it was deprecated since 0.15.0 and never answered: a link that breaks its relation's cardinality is answered `linked_already_from` / `linked_already_to` |
+| `Beyond::clock` | v0.21.1 | 0.22.0 | a constraint reads the clock as the write's: compared with the record it is taken, anywhere else refused `clock_not_compared` (lakelands#1556) |
 
 ## Parameter types
 

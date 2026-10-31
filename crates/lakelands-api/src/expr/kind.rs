@@ -166,7 +166,12 @@ pub fn of(e: &Expr, field: Reads<'_>) -> Result<Option<Kind>, Case> {
                     }
                     _ => Some(Number),
                 },
-                Func::Previous | Func::Min | Func::Max | Func::First | Func::Last => first,
+                Func::Previous
+                | Func::Preceding
+                | Func::Min
+                | Func::Max
+                | Func::First
+                | Func::Last => first,
                 Func::If => kinds
                     .get(1)
                     .copied()

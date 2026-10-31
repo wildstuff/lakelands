@@ -87,9 +87,21 @@ pub struct Plan {
 
 /// A type's constraint as the write path judges it: parsed, with the
 /// fields it reads and those whose write moves them, through derived
-/// fields and fields cleared when their inputs change.
+/// fields and fields cleared when their inputs change. `walked` is what
+/// a walk judges of it, without what only the write can judge, the
+/// write's clock and the record before it; `None` where nothing is left.
 pub(crate) struct Constraint {
     pub(crate) decl: lakelands_api::ontology::ConstraintDecl,
+    pub(crate) holds: Expr,
+    pub(crate) walked: Option<Walk>,
+    pub(crate) reads: BTreeSet<FieldName>,
+    pub(crate) fed: BTreeSet<FieldName>,
+}
+
+/// The part of a constraint a walk judges, with the fields that part
+/// reads and those whose write moves them: a walk reaches it, and grants
+/// by it, only by these (lakelands#1552).
+pub(crate) struct Walk {
     pub(crate) holds: Expr,
     pub(crate) reads: BTreeSet<FieldName>,
     pub(crate) fed: BTreeSet<FieldName>,
@@ -110,33 +122,42 @@ impl Plan {
         });
         let derived = derive::order(&decl);
         let computed = derived.as_deref().unwrap_or_default();
-        let constraints = (decl.constraints.iter()).filter_map(|c| {
-            let holds = crate::declare::typed(&c.holds, lakelands_core::expr::Place::Guard).ok()?;
-            let reads = lakelands_core::derive::reads(&holds);
-            // What moves a field it reads: a derived field's inputs, and
-            // those of a field the fold clears when they change, to the
-            // fields a write sends (lakelands#1119).
-            let feeds = (computed.iter())
-                .map(|(f, e)| (f, lakelands_core::derive::reads(e)))
-                .chain(
-                    decl.fields
-                        .iter()
-                        .filter(|f| f.on_input_change == OnInputChange::Clear)
-                        .map(|f| (&f.name, f.depends_on.iter().cloned().collect())),
-                );
-            let feeds: Vec<(&FieldName, BTreeSet<FieldName>)> = feeds.collect();
+        // What moves a field it reads: a derived field's inputs, and those
+        // of a field the fold clears when they change, to the fields a
+        // write sends (lakelands#1119).
+        let feeds = (computed.iter())
+            .map(|(f, e)| (f, lakelands_core::derive::reads(e)))
+            .chain(
+                decl.fields
+                    .iter()
+                    .filter(|f| f.on_input_change == OnInputChange::Clear)
+                    .map(|f| (&f.name, f.depends_on.iter().cloned().collect())),
+            );
+        let feeds: Vec<(&FieldName, BTreeSet<FieldName>)> = feeds.collect();
+        let fed = |reads: &BTreeSet<FieldName>| {
             let mut fed = reads.clone();
             while let Some(more) =
                 (feeds.iter()).find(|(f, inputs)| fed.contains(*f) && !inputs.is_subset(&fed))
             {
                 fed.extend(more.1.iter().cloned());
             }
-            let decl = c.clone();
+            fed
+        };
+        let constraints = (decl.constraints.iter()).filter_map(|c| {
+            let place = lakelands_core::expr::Place::Constraint;
+            let holds = crate::declare::typed(&c.holds, place).ok()?;
+            let reads = lakelands_core::derive::reads(&holds);
+            let walked = holds.walked().map(|holds| {
+                let reads = lakelands_core::derive::reads(&holds);
+                let fed = fed(&reads);
+                Walk { holds, reads, fed }
+            });
             Some(Constraint {
-                decl,
+                decl: c.clone(),
+                walked,
+                fed: fed(&reads),
                 holds,
                 reads,
-                fed,
             })
         });
         let constraints = constraints.collect();

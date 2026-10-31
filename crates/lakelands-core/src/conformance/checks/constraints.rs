@@ -55,7 +55,7 @@ check!(
 check!(
     CONSTRAINT_READS_ITS_RECORD_ALONE =
         a_constraint_reads_its_record_alone_and_is_added_by_a_migration,
-    "lakelands#1119: a constraint names itself once and reads its record alone, its own fields as stored or computed at the write, `previous` and `changed`; a path, `exists`, a setting, the clock or a field computed at the read is refused at the declaration, naming the constraint; a type that holds a constraint is declared again with it removed, restated in other words, described otherwise or moved to admit at ingest, and one added, changed or moved to refuse is refused naming `migrate`; `describe_type` tells a constraint to one who reads every field it reads"
+    "lakelands#1119: a constraint names itself once and reads its record alone, its own fields as stored or computed at the write, `previous` and `changed`; a path, `exists`, a setting or a field computed at the read is refused at the declaration, naming the constraint; a type that holds a constraint is declared again with it removed, restated in other words, described otherwise or moved to admit at ingest, and one added, changed or moved to refuse is refused naming `migrate`; `describe_type` tells a constraint to one who reads every field it reads"
 );
 
 check!(
@@ -670,7 +670,6 @@ async fn a_constraint_reads_its_record_alone_and_is_added_by_a_migration(store: 
     let mut said = Vec::new();
     for (holds, beyond) in [
         ("setting('cap') = 'x'", Beyond::Setting),
-        ("now() > now()", Beyond::Clock),
         ("exists(next)", Beyond::Exists),
         ("next.n > 1", Beyond::Path),
         (
@@ -693,7 +692,7 @@ async fn a_constraint_reads_its_record_alone_and_is_added_by_a_migration(store: 
                 invalid_case(&twice),
                 Some(Case::ConstraintNamedTwice { .. })
             ),
-        "a constraint reading a setting, the clock or a field computed at the read, and \
+        "a constraint reading a setting, a path or a field computed at the read, and \
          one named twice, are refused at the declaration: {said:?}, {twice:?}"
     );
     // Added by `declare` to a type in force: refused, naming `migrate`;

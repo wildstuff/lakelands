@@ -854,22 +854,26 @@ impl TypeDecl {
     }
 
     /// `c`, one of this type's constraints, in its typed form, checked
-    /// as `declare` checks it: parsed and checked in a guard's place, then
-    /// refused where it reads what can change without a write of its
+    /// as `declare` checks it: parsed and checked in a constraint's place,
+    /// then refused where it reads what can change without a write of its
     /// record — a path across a reference or a link, `in_set`, `setting`,
-    /// the clock, `exists`, a field computed at the read or one computed
-    /// outside the lake (an embedding, or a field of a function whose
-    /// backing is not `expr`), the first of these that holds — and then
-    /// where it reads a field the type does not declare. `function` names
-    /// the declared functions. A constraint is judged on the write of its
-    /// own record alone, so what it reads must move only with that write;
-    /// a host that authors one asks here and gets the store's answer.
+    /// `exists`, a field computed at the read or one computed outside the
+    /// lake (an embedding, or a field of a function whose backing is not
+    /// `expr`), the first of these that holds — where it reads the clock
+    /// other than as a clock term compared with a field, where it reads
+    /// a field the type does not declare, and where a `preceding` matches
+    /// on a field that is not text or a reference or orders by one of a
+    /// kind with no order. `function` names the declared functions. A
+    /// constraint is judged on the write of its own record alone, so what
+    /// it reads must move only with that write, or be the write's own to
+    /// judge: its clock, and the record before it; a host that authors one
+    /// asks here and gets the store's answer.
     pub fn constraint_reach<'f>(
         &self,
         c: &ConstraintDecl,
         function: impl Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
     ) -> Result<crate::expr::Expr, Case> {
-        let e = c.holds.checked(crate::expr::Place::Guard)?;
+        let e = c.holds.checked(crate::expr::Place::Constraint)?;
         let mut paths = Vec::new();
         crate::expr::paths(&e, &mut paths);
         let backed = |n: &str| function(n).is_some_and(|f| f.backing != "expr");
@@ -879,8 +883,6 @@ impl TypeDecl {
             Some(Beyond::InSet)
         } else if e.calls(&[Func::Setting]) {
             Some(Beyond::Setting)
-        } else if e.reads_clock() {
-            Some(Beyond::Clock)
         } else if e.calls(&[Func::Exists]) {
             Some(Beyond::Exists)
         } else {
@@ -901,10 +903,30 @@ impl TypeDecl {
             let reads = Box::new(reads);
             return Err(Case::ConstraintReadsBeyond { constraint, reads });
         }
+        let constraint = c.name.clone();
+        if !e.clock_compared() {
+            return Err(Case::ClockNotCompared { constraint });
+        }
         let declared = |n: &&FieldName| self.has_field(n);
         if let Some(n) = e.fields_read().into_iter().find(|n| !declared(n)) {
             let (ty, field) = (self.name.clone(), n.clone());
             return Err(Case::UnknownField { ty, field });
+        }
+        // A series is read by exact text and ordered by a scalar kind.
+        let kind = |n: &FieldName| self.field(n).map(|f| f.ty.kind);
+        for series in e.series().into_keys() {
+            let (by, matched) = series.split_first().expect("three arguments or more");
+            let looked = |n: &&FieldName| {
+                matches!(kind(n), Some(StorageKind::Text | StorageKind::Reference))
+            };
+            if let Some(n) = matched.iter().find(|n| !looked(n)) {
+                let field = n.clone();
+                return Err(Case::PrecedingUnlooked { constraint, field });
+            }
+            if !kind(by).is_some_and(|k| crate::seam::sortable(&k)) {
+                let field = by.clone();
+                return Err(Case::PrecedingUnordered { constraint, field });
+            }
         }
         Ok(e)
     }

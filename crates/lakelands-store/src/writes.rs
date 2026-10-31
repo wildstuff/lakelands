@@ -208,9 +208,15 @@ impl Walked {
         (sight, judging): (&Sight<'_>, Judging),
     ) -> Result<Walked> {
         let plan = crate::record::Plans::default().get(o, decl);
-        let reaches = |c: &crate::record::Constraint| !c.fed.is_disjoint(moving);
-        let reads =
-            |c: &crate::record::Constraint| c.reads.iter().all(|f| sight.reads_from(&decl.name, f));
+        // What only a write judges, the clock and the record before, no
+        // walk judges, nor grants by.
+        let reaches = |c: &crate::record::Constraint| {
+            (c.walked.as_ref()).is_some_and(|w| !w.fed.is_disjoint(moving))
+        };
+        let reads = |c: &crate::record::Constraint| {
+            let reads = c.walked.as_ref().map_or(&c.reads, |w| &w.reads);
+            reads.iter().all(|f| sight.reads_from(&decl.name, f))
+        };
         for c in (plan.constraints.iter()).filter(|c| reaches(c) && c.decl.at_ingest.refuses()) {
             granted(judging.tells() || reads(c))?;
         }
@@ -256,18 +262,20 @@ impl Walked {
             let Some((records, all, first)) = b.as_mut().filter(|_| !is.retired) else {
                 continue;
             };
-            if !c.reads.iter().any(moved) {
+            // What only the write judges, a walk does not judge again.
+            let Some(walk) = c.walked.as_ref().filter(|w| w.reads.iter().any(moved)) else {
                 continue;
-            }
+            };
             let scope = WriteScope {
                 after: &is.fields,
                 before: Some(&is.fields),
                 retiring: false,
                 meta: Some(&is.meta),
                 settings: Some(&w.settings),
+                preceding: None,
                 now,
             };
-            if !expr::holds(&c.holds, &scope).unwrap_or(false) {
+            if !expr::holds(&walk.holds, &scope).unwrap_or(false) {
                 *all += 1;
                 *records += u64::from(self.held || !was.restricted);
                 if first.len() < 5 && shown(was)? {
@@ -511,6 +519,10 @@ pub struct Shown {
 #[derive(Default)]
 pub struct Pending {
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
+    /// Its records in each series a `preceding` has read, by their matched
+    /// values, kept as they are written: a long append of one type reads
+    /// a series' own records alone (lakelands#1552).
+    series: RefCell<Series>,
     members: BTreeMap<(String, TypeName, RecordKey), bool>,
     /// The memberships and firings its far writes set off across an edge.
     pub across: usize,
@@ -530,7 +542,85 @@ pub struct Pending {
     viewed: Option<Box<viewed::Viewed>>,
 }
 
+/// Of each type and series, its `by` and then its matched fields, the
+/// keys of the records that hold each set of matched values.
+type Series = BTreeMap<(TypeName, Vec<FieldName>), BTreeMap<Vec<String>, BTreeSet<RecordKey>>>;
+
+/// The values `r` holds in the matched fields of `series`, none null.
+fn matched(r: &StoredRecord, series: &[FieldName]) -> Option<Vec<String>> {
+    let value = |f: &FieldName| {
+        r.fields
+            .get(f)
+            .filter(|v| !v.is_null())
+            .map(Value::to_string)
+    };
+    series.get(1..)?.iter().map(value).collect()
+}
+
 impl Pending {
+    /// The records of `ty` this append has written in `series` that hold
+    /// `values` in its matched fields.
+    pub(crate) fn in_series(
+        &self,
+        ty: &TypeName,
+        series: &[FieldName],
+        values: &[Value],
+    ) -> Vec<&StoredRecord> {
+        let mut kept = self.series.borrow_mut();
+        let index = kept
+            .entry((ty.clone(), series.to_vec()))
+            .or_insert_with(|| {
+                let from = (ty.clone(), RecordKey::from(""));
+                let of = (self.records.range(from..)).take_while(|((t, _), _)| t == ty);
+                let mut index: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+                for (_, r) in of {
+                    if let Some(m) = matched(r, series) {
+                        index.entry(m).or_default().insert(r.key.clone());
+                    }
+                }
+                index
+            });
+        let values: Vec<String> = values.iter().map(Value::to_string).collect();
+        let keys = index.get(&values).into_iter().flatten();
+        keys.filter_map(|k| self.records.get(&(ty.clone(), k.clone())))
+            .collect()
+    }
+
+    /// This append leaves `r` at its type and key, or, where `None`, none:
+    /// what it held there before.
+    pub(crate) fn put(
+        &mut self,
+        at: (TypeName, RecordKey),
+        r: Option<StoredRecord>,
+    ) -> Option<StoredRecord> {
+        let series = self.series.get_mut();
+        let from = (at.0.clone(), Vec::new());
+        let of = series
+            .range_mut(from..)
+            .take_while(|((t, _), _)| t == &at.0);
+        let prior = match r {
+            Some(r) => self.records.insert(at.clone(), r),
+            None => self.records.remove(&at),
+        };
+        let now = self.records.get(&at);
+        for ((_, fields), index) in of {
+            if let Some(m) = prior.as_ref().and_then(|p| matched(p, fields))
+                && let Some(keys) = index.get_mut(&m)
+            {
+                keys.remove(&at.1);
+            }
+            if let Some(m) = now.and_then(|r| matched(r, fields)) {
+                index.entry(m).or_default().insert(at.1.clone());
+            }
+        }
+        prior
+    }
+
+    /// Whether this append has written the record of `ty` at `key`.
+    pub(crate) fn holds(&self, ty: &TypeName, key: &RecordKey) -> bool {
+        self.records.contains_key(&(ty.clone(), key.clone()))
+    }
+
     /// A record as this append leaves it, or as the projection holds it.
     pub fn record(
         &self,
@@ -573,6 +663,7 @@ impl Pending {
         }
         Mark {
             records: self.records.clone(),
+            series: self.series.borrow().clone(),
             members: self.members.clone(),
             sealed: self.sealed.clone(),
             apart: self.apart.clone(),
@@ -591,6 +682,7 @@ impl Pending {
     /// Put back what the job marked by `m` changed.
     pub(crate) fn undo(&mut self, m: Mark) {
         (self.records, self.members) = (m.records, m.members);
+        self.series = RefCell::new(m.series);
         (self.sealed, self.apart, self.calls) = (m.sealed, m.apart, m.calls);
         match (&mut self.viewed, m.viewed) {
             (Some(v), true) => v.close(false),
@@ -617,6 +709,7 @@ impl Pending {
 /// read from the projection, stays.
 pub(crate) struct Mark {
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
+    series: Series,
     members: BTreeMap<(String, TypeName, RecordKey), bool>,
     sealed: crate::backed::Recorded,
     apart: crate::sealing::Apart,

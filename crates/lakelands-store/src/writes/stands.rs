@@ -150,6 +150,7 @@ fn stands(asof: &mut AsOf<'_>, e: &Event, cause: Position) -> Result<bool> {
                 retiring: was.is_some() && after.retired,
                 meta: Some(&after.meta),
                 settings: Some(&shape.settings),
+                preceding: None,
                 now: e.known_at,
             };
             let settings = (&shape.settings, t.when_strict);

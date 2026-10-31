@@ -168,6 +168,7 @@ mod views;
 mod vocabulary;
 mod walks;
 mod withdraw;
+mod write_judged;
 mod writer_filled;
 mod writes_only;
 
@@ -319,6 +320,11 @@ pub const ALL: &[Check] = &[
     constraints::CONSTRAINT_NOT_GRANTED_UNREAD,
     constraints::CONSTRAINT_READS_ITS_RECORD_ALONE,
     constraints::CONSTRAINT_BROKEN_IN_THE_PREFLIGHT,
+    write_judged::CLOCK_JUDGED_AT_THE_WRITE,
+    write_judged::PRECEDING_JUDGED_AT_THE_WRITE,
+    write_judged::WALK_JUDGES_NO_WRITE_PART,
+    write_judged::WALK_JUDGES_THE_REST,
+    write_judged::PRECEDING_SERIES_CHOSEN,
     upsert_preflight::UPSERT_JUDGED_AS_WRITTEN,
     upsert_preflight::UPSERT_JUDGED_ON_WHAT_IT_MAKES,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,

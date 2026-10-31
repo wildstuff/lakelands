@@ -1913,7 +1913,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             // records: a migration's preflight lists them. One restated in
             // other words, described otherwise or moved to admit at ingest
             // is not (lakelands#1119).
-            let parsed = |c: &ConstraintDecl| typed(&c.holds, Eval::Guard).ok();
+            let parsed = |c: &ConstraintDecl| typed(&c.holds, Eval::Constraint).ok();
             let loosens = |c: &ConstraintDecl, h: &ConstraintDecl| {
                 h.name == c.name
                     && parsed(h) == parsed(c)

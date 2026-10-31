@@ -69,6 +69,7 @@ pub fn func_name(f: Func) -> &'static str {
         Func::KnownAt => "known_at",
         Func::SeenAt => "seen_at",
         Func::Previous => "previous",
+        Func::Preceding => "preceding",
         Func::Setting => "setting",
         Func::Param => "param",
         Func::InSet => "in_set",
@@ -137,6 +138,7 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         Func::DateBucket => (2, Some(3)),
         Func::Substr => (2, Some(3)),
         Func::If | Func::Replace => (3, Some(3)),
+        Func::Preceding => (3, None),
         Func::Coalesce | Func::Concat => (1, None),
     }
 }
@@ -146,7 +148,7 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
 fn takes_field(f: Func) -> bool {
     matches!(
         f,
-        Func::KnownAt | Func::SeenAt | Func::Previous | Func::Changed
+        Func::KnownAt | Func::SeenAt | Func::Previous | Func::Preceding | Func::Changed
     )
 }
 
@@ -490,7 +492,15 @@ impl Parser {
                     },
                 }));
             }
-            if takes_field(func) && !matches!(args.first(), Some(Expr::Path { .. })) {
+            // `preceding` names a field in every argument, the others in
+            // their first.
+            let named = if func == Func::Preceding {
+                args.len()
+            } else {
+                1
+            };
+            let path = |a: &Expr| matches!(a, Expr::Path { .. });
+            if takes_field(func) && !args.iter().take(named).all(path) {
                 self.pos = start;
                 return Err(self.err(|offset| Case::ParseTakesField {
                     name: first,
