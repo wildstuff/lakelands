@@ -336,6 +336,42 @@ async fn the_append_header_names_the_last_position_sent_not_the_appends_end() {
     assert_eq!(header(&requests[0], "lakelands-append"), Some(sent));
 }
 
+/// A page smaller than the append that cuts through it: the header still
+/// names the last position sent, not the append's end and not the last
+/// event of the page.
+#[tokio::test]
+async fn the_append_header_holds_when_a_page_cuts_the_append() {
+    let store = lake().await;
+    let (cat, own) = (doors(store.as_ref()), owner(store.as_ref()));
+    let stop = type_decl("stop", vec![sourced("place", StorageKind::Text)]);
+    declare(cat.as_ref(), &own, stop).await.unwrap();
+    cat.declare(&own, trigger_on("in_rome", "stop", Some("place = 'Rome'")))
+        .await
+        .unwrap();
+    let records = ["Rome", "Rome", "Oslo", "Oslo"]
+        .iter()
+        .enumerate()
+        .map(|(i, place)| source_record("stop", &format!("s{i}"), json!({ "place": place })))
+        .collect();
+    ingest(cat.as_ref(), &own, "tracker", records)
+        .await
+        .unwrap();
+    let f = fake(&[]).await;
+    let dir = root();
+    let lake = lake_id(store.as_ref());
+    let mut c = config(json!({"url": f.url(), "lakes": [lake.as_str()]}));
+    c.batch = 1;
+    let mut d = deliverers(&c, &dir, &lake).unwrap().pop().unwrap();
+    while d.round(store.as_ref()).await.unwrap() {}
+
+    let requests = f.requests();
+    assert_eq!(requests.len(), 2, "the two Rome firings are sent");
+    let last = header(&requests[1], "lakelands-position").unwrap();
+    for r in &requests {
+        assert_eq!(header(r, "lakelands-append"), Some(last));
+    }
+}
+
 /// A firing decided over a value an act took back since is overruled: it
 /// is journaled `overruled` and not posted, while the firing beside it
 /// that stands is (065).
