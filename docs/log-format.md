@@ -976,7 +976,10 @@ consecutive events that shared `known_at`, and is read alike. An import
 restores the events and appends each frame as one append, and each
 event no frame covers as one of its own, as any writer does, so its
 lake holds the writer's form (§1.2) and its feed names the appends the
-copy framed. A copy holds one append at a time, so what it holds
+copy framed. An append of more than 1 000 events in a copy made before
+lakelands#1540 therefore restores as several appends: the feed's append
+marks differ from the original lake's there, and the events, their hashes
+and the digests are equal. A copy holds one append at a time, so what it holds
 follows the lake's largest append. Each copy's digests are its log's, and every
 checkpoint it holds stays true.
 

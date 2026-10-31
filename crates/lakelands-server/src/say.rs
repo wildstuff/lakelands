@@ -288,6 +288,10 @@ impl From<Error> for Failure {
                 "nothing was read or written: wait the seconds `Retry-After` says, then send the request again"
                     .to_owned()
             }
+            Error::Unavailable { situation } if matches!(**situation, Situation::ServerTooOld { .. }) => {
+                "run the lake on PostgreSQL 18 or newer; nothing was created, so the lake is as it was"
+                    .to_owned()
+            }
             Error::Unavailable { .. } => {
                 "wait and retry, or check that no other process holds the lake".to_owned()
             }
@@ -499,6 +503,15 @@ mod tests {
         let todo = Failure::from(Error::unavailable(format)).todo;
         assert!(
             todo.contains("reads log format 21") && !todo.contains("retry"),
+            "{todo}"
+        );
+        let old = Situation::ServerTooOld {
+            major: 16,
+            minor: 15,
+        };
+        let todo = Failure::from(Error::unavailable(old)).todo;
+        assert!(
+            todo.contains("PostgreSQL 18") && !todo.contains("retry"),
             "{todo}"
         );
     }

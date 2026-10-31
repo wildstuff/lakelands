@@ -299,8 +299,11 @@ pub struct Backup {
     /// The last position the directory held before the run; `None` for a
     /// new backup.
     pub since: Option<Position>,
-    /// The events the run wrote.
+    /// The events after `since`: the new ones, not those written again.
     pub copied: u64,
+    /// Where the run began writing again the last append the directory
+    /// held, when that reaches back before `since`.
+    pub again: Option<Position>,
     /// The files it wrote into, the one it extended first.
     pub files: Vec<String>,
 }
@@ -327,19 +330,21 @@ pub async fn backup(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) ->
     if names.iter().any(|n| n == "log") {
         files = segment_files(dir)?;
     }
-    let (since, segments, hash, through) = loop {
+    let mut first = None;
+    let (since, again, segments, hash, through) = loop {
         let Some(path) = files.pop() else {
             removed(&torn)?;
             let _ = fs::remove_dir(dir.join("log"));
             let _ = fs::remove_file(dir.join("export.json"));
             let m = write_from(store, feed, dir).await?;
-            break (None, m.segments, m.hash, m.through);
+            break (None, None, m.segments, m.hash, m.through);
         };
         let Some(tail) = tail(&path)? else {
             torn.push(path);
             continue;
         };
         let held = tail.position;
+        let old = *first.get_or_insert(held);
         let at = |position| async move {
             let found = feed.poll(position, &FeedFilter::default(), 1).await?;
             Ok::<_, Error>(found.events.into_iter().find(|e| e.position == position))
@@ -385,7 +390,8 @@ pub async fn backup(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) ->
             )?),
         };
         let (segments, hash) = copy(feed, dir, (open, tail.run, start.prev), through).await?;
-        break (Some(held), segments, hash, through);
+        let again = (tail.run.0 < old.0).then_some(tail.run);
+        break (Some(old), again, segments, hash, through);
     };
     let _ = fs::remove_file(dir.join("export.json"));
     Ok(Backup {
@@ -394,6 +400,7 @@ pub async fn backup(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) ->
         hash,
         since,
         copied: through.0 + 1 - since.map_or(0, |p| p.0 + 1),
+        again,
         files: segments.into_iter().map(|s| s.file).collect(),
     })
 }

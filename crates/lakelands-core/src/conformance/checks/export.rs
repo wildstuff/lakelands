@@ -2376,9 +2376,10 @@ async fn a_backup_stopped_among_a_frames_lines_writes_its_run_again_whole(
         fs::write(dir.join(&last), torn).map_err(|e| Failure::new(format!("tearing: {e}")))?;
         let run = backup(s, &dir).await?;
         ensure!(
-            as_exported(s, &dir, &export).await?,
-            "a backup stopped after {what} writes the frame's run again whole and holds the \
-             files an export of the head writes; it answered {run:?}"
+            as_exported(s, &dir, &export).await?
+                && (kept != usize::MAX || run.copied == 0 && run.again.is_some()),
+            "a backup stopped after {what} writes the frame's run again whole, counts the new \
+             events and holds the files an export of the head writes; it answered {run:?}"
         );
         let restored = (given.import)(dir.clone(), store.lake().clone(), None, import_seams());
         let restored = restored

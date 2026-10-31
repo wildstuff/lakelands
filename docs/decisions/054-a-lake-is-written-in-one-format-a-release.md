@@ -137,7 +137,12 @@ is the one develop `2df88393` writes, and 0.22.0 only adds to it: a
 binary built from that commit is not to open a lake that 0.22.0 has
 written, which may hold a line it adds (a host's quarantined record keyed
 by its run and line, `preceding` in a constraint or a trigger, `first`
-and `last`, `in_force`), and is not supported.
+and `last`, `in_force`), and is not supported. It does not refuse the
+lake, because both write format 22. It serves it with the constraints and
+fields that use `preceding` or `in_force` missing and the views over
+`first` or `last` refused; its first write on such a lake reports a damaged
+projection although nothing is damaged; and its `verify` exits 0. The way
+back is a backup taken before 0.22.0's first open of the lake.
 
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
