@@ -16,6 +16,7 @@ use lakelands_api::{RelationName, Value, VerbName};
 use serde::de::DeserializeOwned;
 
 use crate::conformance::backing::EXECUTOR;
+use crate::conformance::fixture::reference;
 use crate::conformance::prelude::*;
 
 check!(
@@ -2087,7 +2088,7 @@ async fn a_set_admits_the_records_holding_one_of_its_values(store: Store) -> Hel
 
 check!(
     WHOLE_SETS_ONLY = a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole,
-    "006 (lakelands#1590): a grant that admits only some records of a type, by `only` or `only_any`, and holds `whole_sets_only` there refuses a count, `total`, a sum, a group, a pattern's aggregate and a view over the type, kept or not, a view over such a view too, and a count of a link type whose end it narrows and a view over that link type, saying the read needs every record of the type and the reader may read only some; `find`, `get` and a search of the admitted records are answered as without it; without it the same reads answer the admitted part, and on a type it does not narrow it changes nothing"
+    "006 (lakelands#1590): a grant that admits only some records of a type, by `only` or `only_any`, and holds `whole_sets_only` there refuses a count, `total`, a sum, a group, a pattern's aggregate and a view over the type, kept or not, a view over such a view too, and a count of a link type whose end it narrows, a view over that link type, and `degree`, `components`, `page_rank` and `communities` over a graph that reaches the type, as a start or as an end of a step's links, with a start type or none (lakelands#1608), saying the read needs every record of the type and the reader may read only some; `find`, `get` and a search of the admitted records are answered as without it; without it the same reads answer the admitted part, and on a type it does not narrow it changes nothing, a measure over a graph of such types answered"
 );
 
 /// The reads a holder of `whole_sets_only` on `claim` is refused (`-`
@@ -2105,6 +2106,30 @@ const WHOLE_SETS: &str = r#"
     sys.link.claim.on_trip | a count of the links its ends narrow | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | -
     trips | a view over those links | {} | -
 "#;
+
+/// Each measure from its start type over `on_trip`, and over `near`
+/// (`-` no start type), its walk and the measure.
+const MEASURED: [[&str; 4]; 5] = [
+    ["claim", "city", "out", "degree"],
+    ["trip", "city", "in", "degree"],
+    ["trip", "city", "both", "components"],
+    ["trip", "city", "in", "page_rank"],
+    ["-", "-", "both", "communities"],
+];
+
+/// What `who` is answered of each measure, over `on_trip` at 0 and over
+/// `near` at 1.
+async fn measured(l: &Lake, who: &Principal, i: usize) -> Vec<String> {
+    let mut answers = Vec::new();
+    for row in MEASURED {
+        let start = (row[i] != "-").then(|| json!({"type": row[i]}));
+        let (relation, start) = (["on_trip", "near"][i], start.unwrap_or(json!({})));
+        let steps = json!([{"relation": relation, "walk": row[2]}]);
+        let p = json!({"start": start, "steps": steps, "project": {"as": row[3]}});
+        answers.push(said(l.cat.query(who, de(p)).await));
+    }
+    answers
+}
 
 async fn a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
@@ -2124,6 +2149,12 @@ async fn a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole(store: Stor
     let n = vec![field("n", Number)];
     l.declare(view_of("trips", links, &[], n, &[("n", "count()")]))
         .await?;
+    // `city` x near y by a reference, a graph no grant narrows.
+    let mut city = type_decl("city", vec![field("name", Text), reference("next", "city")]);
+    city.relations = vec![de(json!({"name": "near", "target": "city", "via": "next"}))];
+    l.declare(city).await?;
+    l.upsert("city", "y", json!({"name": "y"})).await?;
+    l.upsert("city", "x", json!({"next": "y"})).await?;
     let refused =
         "refused: this read needs every record of `claim`; you may read only some of them";
     let rows = WHOLE_SETS.replace("| -\n", &format!("| {refused}\n"));
@@ -2158,6 +2189,12 @@ async fn a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole(store: Stor
             "under {grant} alice finds `{}` and a pattern's count answers `{counted}`",
             hit_keys(&hits)
         );
+        // A measure's value at a record is read off the graph around it.
+        let (over, near) = (measured(&l, &alice, 0).await, measured(&l, &alice, 1).await);
+        ensure!(
+            over.iter().all(|s| *s == refused) && near.iter().all(|s| s == "applied"),
+            "under {grant} the measures over `on_trip` answer {over:?}, over `near` {near:?}"
+        );
     }
     // Without the setting the part is answered, as before; on a type the
     // grant does not narrow the setting changes nothing.
@@ -2165,5 +2202,10 @@ async fn a_grant_holding_whole_sets_only_refuses_a_part_as_the_whole(store: Stor
     finds(&l, &alice, "claim | a sum | {\"aggregate\": {\"measures\": [{\"name\": \"s\", \"func\": \"sum\", \"field\": \"amount\"}]}} | s=15", Position::GENESIS).await?;
     let whole = json!({"default": "read", "types": {"claim": {"whole_sets_only": true}}});
     let carol = holder(store.as_ref(), "carol", whole);
+    let over = measured(&l, &carol, 0).await;
+    ensure!(
+        over.iter().all(|s| s == "applied"),
+        "carol's measures answer {over:?}"
+    );
     finds(&l, &carol, "claim | a sum of every record | {\"aggregate\": {\"measures\": [{\"name\": \"s\", \"func\": \"sum\", \"field\": \"amount\"}]}} | s=35", Position::GENESIS).await
 }

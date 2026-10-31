@@ -2138,7 +2138,11 @@ records then refuses as invalid, naming the type: a count, `total`, the
 count of the retired, a sum, a group, a pattern's aggregate, and any
 view that reads the type, kept or not, at any depth of its sources. A
 link type whose end the grant narrows is narrowed with it, so a count
-of its links or a view over them refuses alike. A
+of its links or a view over them refuses alike, and so does a graph
+measure, `degree`, `components`, `page_rank` or `communities`, over a
+graph that meets the type, as its start or at an end of a step's links,
+since a record's measure is read off the records and links around it
+(lakelands#1608). A
 read that answers records, `get`, `find` and a search, is answered as
 without it. On a type the grant does not narrow it changes nothing
 (lakelands#1590).

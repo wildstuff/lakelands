@@ -1861,18 +1861,7 @@ async fn page_rank_counts_no_far_end_its_reader_may_not_see(store: Store) -> Hel
         ("d", "a"),
     ];
     for (from, to) in cites {
-        l.cat
-            .link(
-                &l.own,
-                &"page".into(),
-                &from.into(),
-                &"cites".into(),
-                &to.into(),
-                patch(json!({})),
-                WriteOpts::default(),
-            )
-            .await
-            .must(&format!("linking {from} to {to}"))?;
+        l.link("page", from, "cites", to).await?;
     }
     restrict(store.as_ref(), "page", "d", "hold").await?;
     let held = link_key(&"b".into(), &"a".into());
