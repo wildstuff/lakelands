@@ -695,11 +695,10 @@ impl Root {
         for store in held {
             let lake = store.lake();
             let catalog = store.catalog(WriteContext::default());
-            let answer = match self.principal(lake, None).await {
-                Ok(owner) => catalog.describe(&owner, Default::default()).await,
-                Err(_) => continue,
-            };
-            match answer {
+            match catalog
+                .describe(&self.owner(lake), Default::default())
+                .await
+            {
                 Ok(told) => {
                     let names = told.data.types.into_iter().map(|t| t.name);
                     declared.push((lake, names.collect::<BTreeSet<_>>()));
@@ -876,6 +875,16 @@ impl Root {
         Ok(location)
     }
 
+    /// The root's owner, as a principal of `lake`.
+    fn owner(&self, lake: &LakeId) -> Principal {
+        Principal {
+            kind: PrincipalKind::Human,
+            id: self.config.owner.clone(),
+            lake: lake.clone(),
+            grants: Grants::owner(),
+        }
+    }
+
     /// The principal the CLI acts as in a lake: the owner, or the entry
     /// `--as` names, resolved by the default resolver.
     pub async fn principal(
@@ -884,12 +893,7 @@ impl Root {
         act_as: Option<&str>,
     ) -> Result<Principal, Failure> {
         let Some(name) = act_as else {
-            return Ok(Principal {
-                kind: PrincipalKind::Human,
-                id: self.config.owner.clone(),
-                lake: lake.clone(),
-                grants: Grants::owner(),
-            });
+            return Ok(self.owner(lake));
         };
         StaticResolver::new(self.config.principals.clone())
             .resolve(lake, &Credential::LocalUser(name.to_owned()))
