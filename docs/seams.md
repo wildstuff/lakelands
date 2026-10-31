@@ -2014,10 +2014,8 @@ aggregate of its measures and of its merged sources' is a function of
 its values, whatever order they are folded in: any `count`; a `sum` or
 an `avg` of what is certainly a number; a `min` or a `max` of what is
 certainly a number or an instant, and a `first(f, by)` or a
-`last(f, by)` whose `by` is, under group fields that are text or
-references, of which there is one at least, and at most one bucket of
-time beside them, a field its source derives as `date_bucket` of an
-instant or a date (lakelands#1605). A fold skips nulls, so
+`last(f, by)` whose `by` is, under any group fields its source's write
+fixes, or none (lakelands#1614). A fold skips nulls, so
 an `if` with `null` for one branch stands for its other branch
 (`lakelands_api::expr::keepable`). `false` and a retired setting ask for
 nothing. A view declared again so that it can no longer be kept is not

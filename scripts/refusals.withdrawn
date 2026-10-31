@@ -45,3 +45,5 @@ Unmocked | hops | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
 Unmocked | proposer | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
 Case | window_links_already | v0.15.1 | 0.16.0 | it was deprecated since 0.15.0 and never answered: a link that breaks its relation's cardinality is answered `linked_already_from` / `linked_already_to`
 Beyond | clock | v0.21.1 | 0.22.0 | a constraint reads the clock as the write's: compared with the record it is taken, anywhere else refused `clock_not_compared` (lakelands#1556)
+Case | kept_extreme_grouped_by | v0.21.1 | 0.22.0 | an extreme is kept under any group field the write fixes: the next holder is sought by the group's digest, whatever its fields' kinds (lakelands#1614)
+Case | kept_extreme_ungrouped | v0.21.1 | 0.22.0 | an extreme is kept in a view with no group field too, its one group sought by one digest (lakelands#1614)

@@ -563,8 +563,6 @@ What a refusal is about.
 | `kept_adds_uncertain` | `call` (String) | `{call}` adds what is of no certain kind: it is kept where its argument is certainly a number | A sum or an average of what is of no certain kind. |
 | `kept_at_read` | `field` (FieldName), `source` (TypeName) | it reads `{field}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written | A measure reading a field computed at the read. |
 | `kept_clock` | — | it reads the clock, and a kept record is computed when its source is written | A measure reading the clock. |
-| `kept_extreme_grouped_by` | `call` (String), `field` (FieldName) | `{call}` is kept only in a view grouped by text or reference fields, one at least, and at most one bucket of time beside them, and `{field}` does not fit that | An extreme under a group field that is no text, reference or bucket of time, under a second bucket, or under a bucket with no text or reference field beside it. |
-| `kept_extreme_ungrouped` | `call` (String) | `{call}` is kept only in a view grouped by text or reference fields, one at least, and this one has no group field | An extreme in a view with no group field. |
 | `kept_group_at_read` | `field` (FieldName), `source` (TypeName) | it groups by what reads `{field}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written | A grouping by a field computed at the read. |
 | `kept_no_argument` | `call` (String) | `{call}` has no argument | An aggregate call with no argument. |
 | `kept_orders_kind` | `call` (String), `kind` (Kind) | `{call}` orders {kind}; it is kept where what it orders by is certainly a number or an instant | An extreme ordering by a kind that is no number or instant. |
@@ -1279,6 +1277,8 @@ whose own page says its sentence.
 | `Unmocked::proposer` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
 | `Case::window_links_already` | v0.15.1 | 0.16.0 | it was deprecated since 0.15.0 and never answered: a link that breaks its relation's cardinality is answered `linked_already_from` / `linked_already_to` |
 | `Beyond::clock` | v0.21.1 | 0.22.0 | a constraint reads the clock as the write's: compared with the record it is taken, anywhere else refused `clock_not_compared` (lakelands#1556) |
+| `Case::kept_extreme_grouped_by` | v0.21.1 | 0.22.0 | an extreme is kept under any group field the write fixes: the next holder is sought by the group's digest, whatever its fields' kinds (lakelands#1614) |
+| `Case::kept_extreme_ungrouped` | v0.21.1 | 0.22.0 | an extreme is kept in a view with no group field too, its one group sought by one digest (lakelands#1614) |
 
 ## Parameter types
 
