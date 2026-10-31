@@ -15,7 +15,8 @@
 //! cause the membership the write read unless the record held an erased
 //! value the `where` reads ([`member`]). One that does not
 //! hold so is *overruled*. A conjunct of a `when` that reads `preceding`
-//! is its write's alone and is not decided again. A trigger with no
+//! is its write's alone and is not decided again, unless the record then
+//! holds an erased value it reads on it. A trigger with no
 //! `when`, or withdrawn at its cause, stands, and so does a reaction
 //! whose record is not there as of its cause; so does every reaction no
 //! act follows, unread: one after
@@ -143,20 +144,31 @@ fn stands(asof: &mut AsOf<'_>, e: &Event, cause: Position) -> Result<bool> {
                 name: t.name.clone(),
             }];
             let mut when = declare::filter(&|n| o.set(n), &t.on, c, Eval::Guard, &at)?;
-            // What `preceding` decided, its write decided alone.
-            let write = [Func::Preceding];
-            if when.calls(&write) {
-                let rest = when.conjuncts().into_iter().filter(|c| !c.calls(&write));
-                let args: Vec<_> = rest.cloned().collect();
-                if args.is_empty() {
-                    return Ok(true);
-                }
-                when = Expr::And { args };
-            }
             let was = asof.get(before, ty, key)?.filter(|b| !b.retired);
             let Some(after) = asof.get(cause, ty, key)? else {
                 return Ok(true);
             };
+            // What `preceding` decided, its write decided alone, unless the
+            // record then holds an erased value it read on it, as [`member`].
+            let write = [Func::Preceding];
+            if when.calls(&write) {
+                let (theirs, rest): (Vec<_>, Vec<_>) =
+                    (when.conjuncts().into_iter()).partition(|c| c.calls(&write));
+                let mut reads = BTreeSet::new();
+                theirs.into_iter().for_each(|c| own_reads(c, &mut reads));
+                if reads
+                    .iter()
+                    .any(|f| after.meta.get(f).is_some_and(|m| m.erased))
+                {
+                    return Ok(false);
+                }
+                if rest.is_empty() {
+                    return Ok(true);
+                }
+                when = Expr::And {
+                    args: rest.into_iter().cloned().collect(),
+                };
+            }
             let scope = WriteScope {
                 after: &after.fields,
                 before: was.as_ref().map(|b| &b.fields),
@@ -189,6 +201,19 @@ fn stands(asof: &mut AsOf<'_>, e: &Event, cause: Position) -> Result<bool> {
             Ok(was != *joined && is == *joined)
         }
         _ => Ok(true),
+    }
+}
+
+/// The fields of its own record `e` reads: every path but the first
+/// argument of a `preceding`, which it reads on the record before.
+fn own_reads(e: &Expr, out: &mut BTreeSet<FieldName>) {
+    match e {
+        Expr::Call {
+            func: Func::Preceding,
+            args,
+        } => args.iter().skip(1).for_each(|a| own_reads(a, out)),
+        Expr::Path { path } => out.extend(path.first().cloned()),
+        _ => lakelands_api::expr::children(e).for_each(|c| own_reads(c, out)),
     }
 }
 

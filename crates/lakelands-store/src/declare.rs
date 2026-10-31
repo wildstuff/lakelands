@@ -2102,15 +2102,11 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             // A trigger on a view fires from the rows the lake keeps of it:
             // whether it keeps them is a setting's, judged at the write
             // (lakelands#1185).
-            declared(o, &t.on, &on)?;
+            let ty = declared(o, &t.on, &on)?;
             if let Some(w) = &t.when {
                 let e = filter(&|n| o.set(n), &t.on, w, Eval::Guard, &on)?;
                 // The series a `preceding` reads, as a constraint's.
-                let series = match o.ty(&t.on) {
-                    Ok(ty) => ty.series_read(&e),
-                    Err(_) if e.calls(&[Func::Preceding]) => Err(Case::PrecedingHere),
-                    Err(_) => Ok(()),
-                };
+                let series = ty.series_read(&e);
                 series.map_err(|c| Error::invalid(at(&on, c)))?;
             }
         }

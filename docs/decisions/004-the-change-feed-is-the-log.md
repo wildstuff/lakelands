@@ -302,9 +302,15 @@ landing only adds `created()`.
 What the guard read was decided by its write. The firing does not carry
 the value: a host that needs it reads the series as of the firing's
 position. A write of the record before, or of another record of the
-series, fires nothing through it; an act that erases a value does not
-decide again a conjunct that reads `preceding`, only the rest of the
-guard (065), and a firing whose every conjunct reads it stands. A view's
+series, fires nothing through it. An act that erases a value decides the
+rest of the guard again (065); a conjunct that reads `preceding` it
+keeps as its write decided it, unless the fired record as of its cause
+holds an erased value that conjunct reads on it, its `by`, a matched
+field or another of its own fields, and then the firing is overruled. A
+predecessor an act takes back overrules nothing: what the record before
+was is the write's to judge, as for a constraint (059), and judging it
+again would need the series as the writer saw it then, its grants and
+its hidings at the cause. A view's
 rows are made by no write, so a trigger on a view that reads `preceding`
 is refused `preceding_here`; a series matched on a field that is not text
 or a reference is refused `preceding_unlooked`, and one ordered by a field

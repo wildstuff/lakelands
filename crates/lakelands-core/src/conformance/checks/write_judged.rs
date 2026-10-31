@@ -38,7 +38,7 @@ check!(
 
 check!(
     PRECEDING_IN_A_GUARD = a_guard_reads_the_record_before_it_in_its_series,
-    "004 and 059, extended (lakelands#1604): a trigger whose `when` is `preceding(at, at, meter) is not null and date_bucket(at, 1h, o) != date_bucket(preceding(at, at, meter), 1h, o)` declares, and fires in the write's append on a reading whose predecessor of its meter lies in another hour; not on a meter's first reading, nor on a second in the same hour, nor on another meter's first; a backdated reading fires where the reading before it lies in an earlier hour, also before every reading of an hour already logged, and not where one of its own hour does or none does; a later write of another field fires again; three readings of one meter in one ingest delivery fire once, on the third, each judged against the one before it; a predecessor its writer is not answered is passed over, and a field a hiding lowers on it reads as null to its writer and not to the owner; an act that takes back another source's write overrules none of these firings; a series matched on a number is refused `preceding_unlooked`, at a declaration and at a migration that makes the matched field a number, and a `preceding` in a trigger on a view `preceding_here`"
+    "004 and 059, extended (lakelands#1604): a trigger whose `when` is `preceding(at, at, meter) is not null and date_bucket(at, 1h, o) != date_bucket(preceding(at, at, meter), 1h, o)` declares, and fires in the write's append on a reading whose predecessor of its meter lies in another hour; not on a meter's first reading, nor on a second in the same hour, nor on another meter's first; a backdated reading fires where the reading before it lies in an earlier hour, also before every reading of an hour already logged, and not where one of its own hour does or none does; a later write of another field fires again; of three readings of one meter in one ingest delivery, at 09:10, 10:20 and 10:05, the second and the third fire, each judged at its turn against the one before it among those already judged; a predecessor its writer is not answered is passed over, and a field a hiding lowers on it reads as null to its writer and not to the owner; an act that takes back the `at` and `meter` another source wrote of a reading overrules the firings of its ingest and of a later write of its `hand`, and no other; a series matched on a number is refused `preceding_unlooked`, at a declaration and at a migration that makes the matched field a number, and a `preceding` in a trigger on a view `preceding_here`"
 );
 
 /// A door's answer.
@@ -504,7 +504,7 @@ async fn a_guard_reads_the_record_before_it_in_its_series(store: Store) -> Held 
     got.push(fires(own, "A4", "M1", "15:05", "x").await?);
     let head = s.head().await.must("reading the head")?;
     let one = |no: &str, at: &str| source_record("reading", no, reading("M3", at, "a"));
-    let three = vec![one("C1", "09:10"), one("C2", "09:50"), one("C3", "10:05")];
+    let three = vec![one("C1", "09:10"), one("C3", "10:20"), one("C2", "10:05")];
     let done = ingest(cat, own, "meter", three).await;
     done.must("one delivery")?;
     let delivered = fired(s, head).await?;
@@ -519,10 +519,14 @@ async fn a_guard_reads_the_record_before_it_in_its_series(store: Store) -> Held 
     fires(own, "H1", "M5", "10:00", "z").await?;
     got.push(fires(&h, "H2", "M5", "10:30", "c").await?);
     got.push(fires(own, "H3", "M5", "10:20", "c").await?);
-    // An act takes back another source's reading; no firing it follows is overruled.
-    let z1 = source_record("reading", "Z1", reading("M9", "09:00", "a"));
+    // An act takes back the `at` and `meter` another source wrote of Z1: the
+    // firings that read them are overruled, and no other.
+    fires(own, "Z0", "M9", "09:10", "a").await?;
+    let z1 = source_record("reading", "Z1", reading("M9", "10:10", "a"));
     let done = ingest(cat, own, "other", vec![z1]).await;
     done.must("other's reading")?;
+    let hand = try_upsert(cat, own, "reading", "Z1", json!({"hand": "x"})).await;
+    hand.must("the owner's hand on Z1")?;
     let far = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
     let act = s.remove_values(&"other".into(), &far, false, None).await;
     act.must("taking other's reading back")?;
@@ -531,13 +535,21 @@ async fn a_guard_reads_the_record_before_it_in_its_series(store: Store) -> Held 
         ..FeedFilter::default()
     };
     let polled = s.feed().poll(Position::GENESIS, &filter, 1024).await;
-    let overruled = polled.must("polling the feed")?.overruled;
+    let polled = polled.must("polling the feed")?;
+    let overruled: Vec<_> = (polled.events.iter())
+        .filter(|e| polled.overruled.contains(&e.position))
+        .filter_map(|e| match &e.body {
+            EventBody::TriggerFired { key, .. } => Some(key.to_string()),
+            _ => None,
+        })
+        .collect();
     let want = [
         "", "", "", "hour", "", "", "hour", "hour", "hour", "", "low", "",
     ];
-    let once = delivered == [("hour".to_string(), "C3".to_string())];
+    let hour = |k: &str| ("hour".to_string(), k.to_string());
+    let in_order = delivered == [hour("C3"), hour("C2")];
     ensure!(
-        got == want && once && overruled.is_empty(),
+        got == want && in_order && overruled == ["Z1", "Z1"],
         "firings by write {got:?}, in one delivery {delivered:?}, overruled {overruled:?}"
     );
     // Refused: matched on a number, over a view's rows.
