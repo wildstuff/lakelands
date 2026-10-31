@@ -1,0 +1,347 @@
+{
+ "erasable": [
+  {
+   "key": "p1",
+   "type": "person"
+  },
+  {
+   "key": "p2",
+   "type": "person"
+  },
+  {
+   "key": "p3",
+   "type": "person"
+  },
+  {
+   "key": "p4",
+   "type": "person"
+  },
+  {
+   "key": "p9",
+   "type": "person"
+  }
+ ],
+ "head": 55,
+ "made_by": "v0.22.0",
+ "open": {
+  "rows": [
+   {
+    "fields": {
+     "amount": "10.50",
+     "payer": "p1",
+     "state": "open"
+    },
+    "key": "i1",
+    "type": "invoice",
+    "version": 1
+   },
+   {
+    "fields": {
+     "amount": "1000000000000",
+     "payer": "p1",
+     "state": "open"
+    },
+    "key": "i3",
+    "type": "invoice",
+    "version": 2
+   }
+  ],
+  "shape": "records"
+ },
+ "records": [
+  {
+   "fields": {
+    "name": "Acme"
+   },
+   "key": "p1",
+   "type": "partner"
+  },
+  {
+   "fields": {
+    "name": "Börse & Co"
+   },
+   "key": "p2",
+   "type": "partner"
+  },
+  {
+   "fields": {
+    "name": "Mailed"
+   },
+   "key": "p3",
+   "type": "partner"
+  },
+  {
+   "fields": {
+    "amount": "10.50",
+    "payer": "p1",
+    "state": "open"
+   },
+   "key": "i1",
+   "type": "invoice"
+  },
+  {
+   "fields": {
+    "amount": "1000000000000",
+    "payer": "p1",
+    "state": "open"
+   },
+   "key": "i3",
+   "type": "invoice"
+  },
+  {
+   "fields": {
+    "from": "i1",
+    "since": "2026-09-01",
+    "to": "p1"
+   },
+   "key": "i1:p1",
+   "type": "sys.link.invoice.approved_by"
+  },
+  {
+   "fields": {
+    "from": "i2",
+    "since": "2026-09-02",
+    "to": "p2"
+   },
+   "key": "i2:p2",
+   "type": "sys.link.invoice.approved_by"
+  },
+  {
+   "fields": {
+    "from": "i3",
+    "since": "2026-09-03",
+    "to": "p2"
+   },
+   "key": "i3:p2",
+   "type": "sys.link.invoice.approved_by"
+  },
+  {
+   "fields": {
+    "n": 2,
+    "state": "open"
+   },
+   "key": "open",
+   "type": "by_state"
+  },
+  {
+   "fields": {
+    "city": "Oslo",
+    "email": "ann@example.org",
+    "id": "p1",
+    "name": "Ann"
+   },
+   "key": "p1",
+   "type": "person"
+  },
+  {
+   "fields": {
+    "city": "Rome",
+    "id": "p2",
+    "note": "kept"
+   },
+   "key": "p2",
+   "type": "person"
+  },
+  {
+   "fields": {
+    "city": "Lima",
+    "email": "cy@example.org",
+    "id": "p3",
+    "name": "Cy"
+   },
+   "key": "p3",
+   "type": "person"
+  },
+  {
+   "fields": {
+    "city": "Bonn",
+    "id": "p4"
+   },
+   "key": "p4",
+   "type": "person"
+  },
+  {
+   "fields": {
+    "city": "Graz",
+    "id": "p6"
+   },
+   "key": "p6",
+   "type": "person"
+  },
+  {
+   "fields": {
+    "city": "Graz",
+    "email": "di@example.org",
+    "id": "p7",
+    "name": "Di"
+   },
+   "key": "p7",
+   "type": "person"
+  },
+  {
+   "fields": {
+    "city": "Kyiv",
+    "email": "ed@example.org",
+    "id": "p8",
+    "name": "Ed"
+   },
+   "key": "p8",
+   "type": "person"
+  },
+  {
+   "fields": {
+    "key": "vat_rate",
+    "periods": [
+     {
+      "from": "2026-07-01",
+      "value": "0.20"
+     }
+    ],
+    "value": "0.16"
+   },
+   "key": "vat_rate",
+   "type": "sys.setting"
+  },
+  {
+   "fields": {
+    "group": "store",
+    "key": "view_kept.hourly",
+    "value": true
+   },
+   "key": "view_kept.hourly",
+   "type": "sys.setting"
+  },
+  {
+   "fields": {
+    "from": "2026-01-01",
+    "meter": "M1",
+    "price": "10"
+   },
+   "key": "T1",
+   "type": "tariff"
+  },
+  {
+   "fields": {
+    "from": "2026-02-01",
+    "meter": "M1",
+    "price": "14"
+   },
+   "key": "T2",
+   "type": "tariff"
+  },
+  {
+   "fields": {
+    "at": "2026-01-10",
+    "kwh": "1",
+    "meter": "M1",
+    "price": "10",
+    "stand": 100
+   },
+   "key": "R1",
+   "type": "reading"
+  },
+  {
+   "fields": {
+    "at": "2026-01-10",
+    "kwh": "2",
+    "meter": "M1",
+    "price": "10",
+    "stand": 100
+   },
+   "key": "R2",
+   "type": "reading"
+  },
+  {
+   "fields": {
+    "at": "2026-02-10",
+    "kwh": "3",
+    "meter": "M1",
+    "price": "14",
+    "stand": 140
+   },
+   "key": "R3",
+   "type": "reading"
+  },
+  {
+   "fields": {
+    "at": "2026-03-01T09:05:00.000000Z",
+    "hour": "2026-03-01T09:00:00.000000Z",
+    "meter": "M1",
+    "v": "3"
+   },
+   "key": "s1",
+   "type": "sample"
+  },
+  {
+   "fields": {
+    "at": "2026-03-01T09:50:00.000000Z",
+    "hour": "2026-03-01T09:00:00.000000Z",
+    "meter": "M1",
+    "v": "5"
+   },
+   "key": "s2",
+   "type": "sample"
+  },
+  {
+   "fields": {
+    "at": "2026-03-01T10:10:00.000000Z",
+    "hour": "2026-03-01T10:00:00.000000Z",
+    "meter": "M1",
+    "v": "4"
+   },
+   "key": "s3",
+   "type": "sample"
+  },
+  {
+   "fields": {
+    "closed": "5",
+    "high": "5",
+    "hour": "2026-03-01T09:00:00.000000Z",
+    "meter": "M1",
+    "opened": "3"
+   },
+   "key": "M1:2026-03-01T09%3A00%3A00.000000Z",
+   "type": "hourly"
+  },
+  {
+   "fields": {
+    "closed": "4",
+    "high": "4",
+    "hour": "2026-03-01T10:00:00.000000Z",
+    "meter": "M1",
+    "opened": "4"
+   },
+   "key": "M1:2026-03-01T10%3A00%3A00.000000Z",
+   "type": "hourly"
+  },
+  {
+   "fields": {
+    "total": "72"
+   },
+   "key": "all",
+   "type": "cost"
+  }
+ ],
+ "types": [
+  "partner",
+  "invoice",
+  "sys.link.invoice.approved_by",
+  "by_state",
+  "person",
+  "sys.setting",
+  "tariff",
+  "reading",
+  "sample",
+  "hourly",
+  "cost"
+ ],
+ "walk_from_i1": [
+  {
+   "fields": {
+    "since": "2026-09-01"
+   },
+   "from": "i1",
+   "to": "p1"
+  }
+ ]
+}
