@@ -53,7 +53,7 @@ use lakelands_api::location::{EngineConfig, Location, SqliteTuning};
 
 use handle::SqliteLake;
 #[doc(hidden)]
-pub use view::keyed_routes_statement;
+pub use view::keyed_routes_plan;
 #[doc(hidden)]
 pub use view::{few_holders_statements, first_page_statements, read_statements, seek_statements};
 

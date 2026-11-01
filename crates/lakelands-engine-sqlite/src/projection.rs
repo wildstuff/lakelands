@@ -369,12 +369,6 @@ fn routes_sql(tests: &[(&str, usize)], lead: Option<&str>) -> String {
     )
 }
 
-/// The statement of a scoped forget's read of a source's routes: one key,
-/// one type, for the engine's own test of its plan.
-pub(crate) fn keyed_routes_sql() -> String {
-    routes_sql(&[("key", 1), ("ty", 1)], Some("key"))
-}
-
 /// The positions from `from` through `through` of the feed index's rows
 /// whose `column` is `value`, in order and at most `limit`, each row
 /// checked against the filter's other lists (`lakelands_core::feed::Seek`).
@@ -384,21 +378,55 @@ pub(crate) fn routes(
     conn: &Connection,
     filter: &FeedFilter,
     by: Option<(&str, &str)>,
-    [from, through]: [Position; 2],
+    range: [Position; 2],
     limit: u32,
 ) -> Result<Vec<Position>> {
+    let Some((statement, args)) = routes_query(conn, filter, by, range, limit)? else {
+        return Ok(Vec::new());
+    };
+    column(conn, &statement, params_from_iter(args), |at: i64| {
+        Ok(Position(at as u64))
+    })
+}
+
+/// The plan SQLite makes for the statement [`routes`] runs for these
+/// arguments, one line a step; none where the names match nothing.
+pub(crate) fn routes_plan(
+    conn: &Connection,
+    filter: &FeedFilter,
+    by: Option<(&str, &str)>,
+    range: [Position; 2],
+    limit: u32,
+) -> Result<Option<Vec<String>>> {
+    let Some((statement, args)) = routes_query(conn, filter, by, range, limit)? else {
+        return Ok(None);
+    };
+    let mut plan = conn
+        .prepare(&format!("EXPLAIN QUERY PLAN {statement}"))
+        .map_err(sql)?;
+    let rows = plan
+        .query_map(params_from_iter(args), |r| r.get::<_, String>(3))
+        .map_err(sql)?;
+    rows.collect::<std::result::Result<_, _>>()
+        .map(Some)
+        .map_err(sql)
+}
+
+/// The statement and arguments of [`routes`]: none where a list holds no
+/// name a route can hold.
+fn routes_query(
+    conn: &Connection,
+    filter: &FeedFilter,
+    by: Option<(&str, &str)>,
+    [from, through]: [Position; 2],
+    limit: u32,
+) -> Result<Option<(String, Vec<Value>)>> {
     let lists: [(&str, Vec<&str>); 3] = [
         ("kind", filter.kinds.iter().map(String::as_str).collect()),
         ("ty", filter.types.iter().map(TypeName::as_str).collect()),
         ("key", filter.keys.iter().map(RecordKey::as_str).collect()),
     ];
-    let lead = by.map(|(c, _)| c).or_else(|| {
-        lists
-            .iter()
-            .find(|(_, v)| !v.is_empty())
-            .map(|(c, _)| *c)
-            .filter(|c| *c == "key")
-    });
+    let lead = by.map(|(c, _)| c);
     let mut args: Vec<Value> = Vec::new();
     let mut tests = Vec::new();
     for (column, values) in by.iter().map(|(c, v)| (*c, vec![*v])).chain(
@@ -409,17 +437,14 @@ pub(crate) fn routes(
             held.extend(stored(conn, column, v)?);
         }
         if held.is_empty() {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         tests.push((column, held.len()));
         args.extend(held);
     }
     let (from, through, limit) = (from.0 as i64, through.0 as i64, i64::from(limit.max(1)));
     args.extend([from, through, limit].map(Value::Integer));
-    let statement = routes_sql(&tests, lead);
-    column(conn, &statement, params_from_iter(args), |at: i64| {
-        Ok(Position(at as u64))
-    })
+    Ok(Some((routes_sql(&tests, lead), args)))
 }
 
 /// The layout of the projection this build reads and writes. It is

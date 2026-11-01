@@ -1,15 +1,16 @@
 //! A read of the feed index by a key and a type takes the key's index, not
 //! the type's: a scoped forget names the keys of one source, and the type
-//! holds most of the lake's routes (lakelands#1659).
+//! holds most of the lake's routes (lakelands#1659). The plan is that of
+//! the statement the view's feed read runs, built by the same code.
 
 use std::path::PathBuf;
 
 use lakelands_api::Location;
-use lakelands_api::engine::{EngineOpener, OpenMode};
-use lakelands_api::id::Position;
-use lakelands_core::conformance::fixture::stored_record;
-use lakelands_engine_sqlite::{SqliteOpener, keyed_routes_statement};
-use serde_json::json;
+use lakelands_api::engine::{About, Applied, EngineOpener, OpenMode};
+use lakelands_api::event::EventId;
+use lakelands_api::id::{Position, RecordKey, TypeName};
+use lakelands_api::seam::FeedFilter;
+use lakelands_engine_sqlite::{SqliteOpener, keyed_routes_plan};
 
 #[test]
 fn a_keyed_read_of_the_feed_takes_the_key_index_where_the_type_is_the_less_selective_column() {
@@ -24,34 +25,36 @@ fn a_keyed_read_of_the_feed_takes_the_key_index_where_the_type_is_the_less_selec
         let p = engine.projection();
         p.begin().unwrap();
         for at in first..first + 500 {
-            let record = stored_record(
-                "t",
-                format!("k{at:05}"),
-                serde_json::from_value(json!({"n": at})).unwrap(),
-                at,
-            );
-            p.put_record(&record).unwrap();
+            p.mark_applied(&Applied {
+                id: EventId(format!("{at:032x}")),
+                at: Position(at),
+                kind: "record_ingested",
+                about: vec![About {
+                    ty: Some(TypeName::from("t")),
+                    key: Some(RecordKey::from(format!("k{at:05}"))),
+                }],
+                source: None,
+            })
+            .unwrap();
         }
         p.commit(Position(first + 499)).unwrap();
     }
     drop(engine);
     let db = rusqlite::Connection::open(dir.join("projection.db")).unwrap();
-    let mut plan = db
-        .prepare(&format!("EXPLAIN QUERY PLAN {}", keyed_routes_statement()))
-        .unwrap();
-    let details: Vec<String> = plan
-        .query_map(rusqlite::params_from_iter([1, 1, 1, 1, 1]), |r| {
-            r.get::<_, String>(3)
-        })
+    let filter = FeedFilter {
+        types: vec![TypeName::from("t")],
+        keys: vec![RecordKey::from("k00042".to_owned())],
+        ..FeedFilter::default()
+    };
+    let plan = keyed_routes_plan(&db, &filter, "k00042")
         .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
+        .expect("the type and key are held");
     assert!(
-        details.iter().any(|d| d.contains("routes_key")),
-        "the plan takes the key index: {details:?}"
+        plan.iter().any(|d| d.contains("routes_key")),
+        "the plan takes the key index: {plan:?}"
     );
     assert!(
-        !details.iter().any(|d| d.contains("routes_ty")),
-        "the plan does not take the type index: {details:?}"
+        !plan.iter().any(|d| d.contains("routes_ty")),
+        "the plan does not take the type index: {plan:?}"
     );
 }
