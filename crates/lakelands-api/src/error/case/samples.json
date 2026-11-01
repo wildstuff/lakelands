@@ -309,6 +309,15 @@
    "kind": "type"
   },
   {
+   "code": "group_term",
+   "name": "f",
+   "second": true
+  },
+  {
+   "code": "group_term_merged",
+   "name": "f"
+  },
+  {
    "code": "group_unkeyable",
    "field": "f"
   },
@@ -680,6 +689,10 @@
   {
    "code": "bucket_unit",
    "unit": "s"
+  },
+  {
+   "code": "bucket_zone",
+   "zone": "s"
   },
   {
    "code": "bucket_unit_text",

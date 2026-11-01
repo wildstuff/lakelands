@@ -42,6 +42,7 @@ use lakelands_api::ontology::{
     RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl,
     lands_in_the_fold,
 };
+use lakelands_api::read::GroupKey;
 use lakelands_api::tools::{NameProblem, name_problems};
 use lakelands_api::write::{
     Carrier, Declaration, DeclarationKind, FunctionDecl, ObjectSetDecl, SettingDecl, Withdrawal,
@@ -154,6 +155,42 @@ fn grouped_field<'a>(source: &'a TypeDecl, g: &FieldName, on: &[Place]) -> Resul
     Ok(f)
 }
 
+/// A view's group: each field one of its source's that a key may be
+/// made of, and each term, under a name of its own, one `date_bucket`
+/// over such a field holding an instant or a date, its other arguments
+/// literals, so that its value is a function of that field alone, as a
+/// derived field's would be; one term at most.
+fn view_group(source: &TypeDecl, v: &ViewDecl, owner: &[Place]) -> Result<()> {
+    let keys = lakelands_core::expr::aggregate::group_keys(&v.group_by);
+    let keys = keys.map_err(|e| Error::invalid(at(owner, e)))?;
+    let mut terms = 0;
+    for (name, e) in keys {
+        let Some(e) = e else {
+            grouped_field(source, &name, owner)?;
+            continue;
+        };
+        terms += 1;
+        let on = [owner, &[Place::Group { name: name.clone() }]].concat();
+        let read = match &e {
+            Expr::Call {
+                func: Func::DateBucket,
+                args,
+            } if args[1..].iter().all(|a| matches!(a, Expr::Lit { .. })) => match &args[0] {
+                Expr::Path { path } if path.len() == 1 => source.field(&path[0]),
+                _ => None,
+            },
+            _ => None,
+        };
+        let timed = |f: &&FieldDecl| matches!(f.ty.kind, StorageKind::DateTime | StorageKind::Date);
+        let second = terms > 1;
+        match read.filter(timed).filter(|_| !second) {
+            Some(f) => drop(grouped_field(source, &f.name, &on)?),
+            None => return Err(Error::invalid(at(owner, Case::GroupTerm { name, second }))),
+        }
+    }
+    Ok(())
+}
+
 /// The declared type a declaration reads, acts on, watches or holds:
 /// refused at `on`, naming the type, when it is not declared.
 fn declared<'a>(o: &'a Ontology, name: &TypeName, on: &[Place]) -> Result<&'a TypeDecl> {
@@ -177,11 +214,12 @@ fn unbound_source(on: &[Place], source: &TypeDecl) -> Result<()> {
     }
 }
 
-/// A view's merged sources: each declared, read once and not as the view's
-/// own source, not a view with parameters, grouped by as many fields as the
-/// view, each of the kind of the main source's field it lines up with and
-/// one a key may be, with measures named uniquely in the view. The
-/// parameters their expressions read are added to `read`.
+/// A view's merged sources: none where the view groups by a term, and
+/// each declared, read once and not as the view's own source, not a view
+/// with parameters, grouped by as many fields as the view, each of the
+/// kind of the main source's field it lines up with and one a key may be,
+/// with measures named uniquely in the view. The parameters their
+/// expressions read are added to `read`.
 fn merged_sources(
     o: &Ontology,
     owner: &[Place],
@@ -189,6 +227,13 @@ fn merged_sources(
     main: &TypeDecl,
     read: &mut BTreeSet<String>,
 ) -> Result<()> {
+    let term = v.group_by.iter().find_map(|k| match k {
+        GroupKey::Named { name, .. } => Some(name.clone()),
+        GroupKey::Field(_) => None,
+    });
+    if let (Some(name), false) = (term, v.merge.is_empty()) {
+        return Err(Error::invalid(at(owner, Case::GroupTermMerged { name })));
+    }
     let mut names: Vec<&FieldName> = v.measures.iter().map(|m| &m.name).collect();
     for (i, m) in v.merge.iter().enumerate() {
         let merged = Place::MergedSource {
@@ -208,7 +253,7 @@ fn merged_sources(
                 Case::MergedGroupCount { given, view },
             )));
         }
-        for (g, to) in m.group_by.iter().zip(&v.group_by) {
+        for (g, to) in m.group_by.iter().zip(&v.group_names()) {
             let kind = grouped_field(source, g, &on)?.ty.kind;
             if main
                 .fields
@@ -262,10 +307,11 @@ fn merged_sources(
 /// records the view does not make, and a rule that reads a type's key
 /// would judge a field no record of the view carries as one.
 fn view_key(owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Result<()> {
-    if t.key.is_empty() || t.key == v.group_by {
+    let names = v.group_names();
+    if t.key.is_empty() || t.key == names {
         return Ok(());
     }
-    let group_by = (!v.group_by.is_empty()).then(|| v.group_by.iter().collect());
+    let group_by = (!names.is_empty()).then(|| names.iter().collect());
     Err(Error::invalid(at(owner, Case::ViewKey { group_by })))
 }
 
@@ -274,7 +320,8 @@ fn view_key(owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Result<()> {
 /// field that nothing fills (028). A read answers declared fields only, so
 /// a computed value with no field would be dropped without a word.
 fn view_fields(owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Result<()> {
-    let computed: Vec<&FieldName> = (v.group_by.iter())
+    let names = v.group_names();
+    let computed: Vec<&FieldName> = (names.iter())
         .chain(v.measures.iter().map(|m| &m.name))
         .chain(
             v.merge
@@ -975,9 +1022,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             let e = record_stands(stored, condition(w, Eval::View, &on)?, &on)?;
             lakelands_core::expr::params_read(&e, &mut read);
         }
-        for g in &v.group_by {
-            grouped_field(source, g, &owner)?;
-        }
+        view_group(source, v, &owner)?;
         for m in &v.measures {
             name(Naming::Measure, m.name.as_str())?;
             let name = m.name.clone();
@@ -1068,8 +1113,18 @@ fn view_kinds(o: &Ontology, owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Resu
         };
         let by = (v.group_by.iter()).filter(|_| source == &v.source);
         let by = by.map(|g| {
-            let on = [owner, &[Place::Group { name: g.clone() }]].concat();
-            (g, on, Ok(path(g)))
+            let on = [
+                owner,
+                &[Place::Group {
+                    name: g.name().clone(),
+                }],
+            ]
+            .concat();
+            let e = match g {
+                GroupKey::Field(f) => Ok(path(f)),
+                GroupKey::Named { expr, .. } => condition(expr, Eval::View, &on),
+            };
+            (g.name(), on, e)
         });
         let measures = measures.iter().map(|m| {
             let on = [

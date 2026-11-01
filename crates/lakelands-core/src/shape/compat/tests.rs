@@ -317,7 +317,10 @@ fn a_stored_type_turned_into_a_view_needs_a_migration() {
     // Grouped by the fields that keyed it, it changes no key.
     let grouped = with(|t| {
         let mut view = view("b > 0").view;
-        view.as_mut().unwrap().group_by = std::mem::take(&mut t.key);
+        view.as_mut().unwrap().group_by = std::mem::take(&mut t.key)
+            .into_iter()
+            .map(Into::into)
+            .collect();
         t.view = view;
     });
     let reasons = migrates(&base(), &grouped);

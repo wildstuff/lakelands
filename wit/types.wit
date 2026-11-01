@@ -314,7 +314,9 @@ interface types {
         source: type-name,
         params: list<view-param>,
         where: option<condition>,
-        group-by: list<field-name>,
+        /// A source field, or one `date_bucket` term over one under a
+        /// name the view type declares.
+        group-by: list<group-key>,
         measures: list<measure>,
         /// Further sources merged on the view's key.
         merge: list<view-source>,

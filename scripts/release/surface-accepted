@@ -24,4 +24,7 @@ lakelands-api	enum_variant_missing	variant Flaw::RemovedBefore
 lakelands-api	enum_variant_missing	variant Flaw::SealedBefore
 lakelands-api	enum_variant_missing	variant Flaw::SelectsLater
 lakelands-api	enum_variant_missing	variant Situation::LogUpgradeOwed
+lakelands-api	struct_field_type_changed	field ViewDecl.group_by
+lakelands-api	method_signature_changed	method TypeDecl::key_fields
+lakelands-api	method_signature_changed	method TypeDecl::key_sources
 lakelands-store	function_missing	function lakelands_store::written_in

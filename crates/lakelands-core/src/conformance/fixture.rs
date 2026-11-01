@@ -697,7 +697,7 @@ pub fn view_of(
             source: TypeName::from(source),
             params: Vec::new(),
             r#where: None,
-            group_by: by,
+            group_by: by.into_iter().map(Into::into).collect(),
             measures: measures.iter().map(|(n, e)| measure(n, e)).collect(),
             merge: Vec::new(),
         })),

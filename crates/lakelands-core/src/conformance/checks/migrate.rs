@@ -355,7 +355,7 @@ async fn a_migration_taking_a_field_a_view_reads_is_refused(store: Store) -> Hel
             source: TypeName::from("invoice"),
             params: Vec::new(),
             r#where: None,
-            group_by: by_partner.clone(),
+            group_by: vec!["partner".into()],
             measures: vec![measure("total", "sum(amount)"), measure("n", "count()")],
             merge: vec![ViewSource {
                 source: TypeName::from("credit"),

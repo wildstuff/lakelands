@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::lake::Answered;
+use lakelands_api::read::GroupKey;
 
 impl<'a> Reader<'a> {
     /// `describe`, as `asked` asked it, and what it tells at its answer.
@@ -699,12 +700,13 @@ impl<'a> Reader<'a> {
         // declared order, by the one key rule. Sources meet where their
         // keys are identical (044's identity of values, not 017's `=`).
         let keyed_by = TypeDecl {
-            key: v.group_by.clone(),
+            key: v.group_names(),
             ..decl.clone()
         };
         // A view without `group_by` is one total, kept over no records too,
         // under the key reserved for it: the rule over no fields makes none.
         let (ungrouped, none) = (v.group_by.is_empty(), aggregate::Folds::default());
+        let names = v.group_names();
         // A group's values under the names the other side groups by, field for field.
         let renamed = |values: &aggregate::Row, from: &[FieldName], to: &[FieldName]| {
             let pairs = to.iter().zip(from);
@@ -759,7 +761,7 @@ impl<'a> Reader<'a> {
             let (members, measures) = self.view_source(
                 &m.source,
                 m.r#where.as_ref(),
-                &m.group_by,
+                &field_keys(&m.group_by),
                 &m.measures,
                 &literals,
             )?;
@@ -768,7 +770,7 @@ impl<'a> Reader<'a> {
                 if own.values().any(Value::is_null) {
                     continue;
                 }
-                let by = renamed(&own, &m.group_by, &v.group_by);
+                let by = renamed(&own, &m.group_by, &names);
                 let Some(key) = key_of(&by) else {
                     continue;
                 };
@@ -787,7 +789,7 @@ impl<'a> Reader<'a> {
                 let values = match at.get(&key) {
                     Some(values) => values.clone(),
                     None => {
-                        let own = renamed(&by, &v.group_by, &m.group_by);
+                        let own = renamed(&by, &names, &m.group_by);
                         measured(&none, &own, measures, BTreeMap::new(), &key)?
                     }
                 };
@@ -842,7 +844,7 @@ impl<'a> Reader<'a> {
         &self,
         source: &TypeName,
         filter: Option<&lakelands_api::expr::Condition>,
-        group_by: &[FieldName],
+        group_by: &[GroupKey],
         measures: &[lakelands_api::ontology::Measure],
         literals: &BTreeMap<String, Literal>,
     ) -> Result<Source> {
@@ -855,7 +857,7 @@ impl<'a> Reader<'a> {
             true => (where_.as_ref(), None),
             false => (None, where_.as_ref()),
         };
-        let keys = group_by.iter().map(|f| (f.clone(), None)).collect();
+        let keys = aggregate::group_keys(group_by).map_err(Error::invalid)?;
         let mut members = aggregate::Grouping::new(keys, &measures, self.now);
         self.each_member(&source, down, COUNT_PAGE, |r| {
             if here.is_none_or(|w| self.holds(w, r, true)) {
@@ -923,10 +925,18 @@ impl<'a> Reader<'a> {
     fn probe_view(&self, v: &lakelands_api::ontology::ViewDecl, read: bool) -> Result<()> {
         let own = (&v.source, v.r#where.as_ref(), &v.group_by, &v.measures);
         let merged = v.merge.iter();
-        let merged = merged.map(|m| (&m.source, m.r#where.as_ref(), &m.group_by, &m.measures));
+        let merged = merged.map(|m| {
+            (
+                &m.source,
+                m.r#where.as_ref(),
+                field_keys(&m.group_by),
+                &m.measures,
+            )
+        });
+        let own = (own.0, own.1, own.2.clone(), own.3);
         for (source, filter, group_by, measures) in std::iter::once(own).chain(merged) {
             let (source, ..) =
-                self.view_probe(source, filter, group_by, measures, &BTreeMap::new(), read)?;
+                self.view_probe(source, filter, &group_by, measures, &BTreeMap::new(), read)?;
             // Marked before it is walked: a cycle of views, which a log
             // the store did not write may hold, is refused where it is
             // read, not walked here for ever.
@@ -948,7 +958,7 @@ impl<'a> Reader<'a> {
         &self,
         source: &TypeName,
         filter: Option<&lakelands_api::expr::Condition>,
-        group_by: &[FieldName],
+        group_by: &[GroupKey],
         m: &[lakelands_api::ontology::Measure],
         literals: &BTreeMap<String, Literal>,
         read: bool,
@@ -969,8 +979,12 @@ impl<'a> Reader<'a> {
             })
             .collect::<Result<_>>()?;
         // What it reads of the source is what `describe` shows it by; one
-        // that cannot be read there is read by no one.
-        let probed = lakelands_core::describe::source_reads(filter, group_by, m);
+        // that cannot be read there is read by no one. A group term that
+        // does not parse is refused as a condition is, never probed by its
+        // name.
+        aggregate::group_keys(group_by).map_err(Error::invalid)?;
+        let by: Vec<FieldName> = group_by.iter().map(GroupKey::source).collect();
+        let probed = lakelands_core::describe::source_reads(filter, &by, m);
         let mut probed = probed.ok_or_else(|| Error::refused(None, Refusal::NotGranted))?;
         // The computation at a valid time filters the source by its
         // valid-time fields besides, which `describe` does not judge by: it
@@ -1027,4 +1041,9 @@ impl<'a> Reader<'a> {
         }
         Ok(l as usize)
     }
+}
+
+/// A merged source's group fields, as keys of its grouping.
+fn field_keys(by: &[FieldName]) -> Vec<GroupKey> {
+    by.iter().cloned().map(GroupKey::Field).collect()
 }

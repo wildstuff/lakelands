@@ -15,6 +15,7 @@ use crate::id::{
     ConstraintName, FieldName, ParamName, PreconditionName, RelationName, SourceId, TriggerName,
     TypeName, ValueTypeName, VerbName,
 };
+use crate::read::GroupKey;
 
 /// A host's own marks on a declaration: a map from a namespaced key
 /// (`acme.icon`) to a JSON value. Lakelands stores, replays and describes
@@ -678,10 +679,10 @@ impl TypeDecl {
     /// `key` names the same or is left out; one that came in past
     /// `declare` and says otherwise keys nothing (lakelands#782,
     /// lakelands#788).
-    pub fn key_fields(&self) -> &[FieldName] {
+    pub fn key_fields(&self) -> Vec<FieldName> {
         match &self.view {
-            Some(v) => &v.group_by,
-            None => &self.key,
+            Some(v) => v.group_names(),
+            None => self.key.clone(),
         }
     }
 
@@ -689,12 +690,12 @@ impl TypeDecl {
     /// fields it groups by, then each merge source and the fields it
     /// groups by, which line up with them position by position (018).
     /// None of a stored type.
-    pub fn key_sources(&self) -> Vec<(&TypeName, &[FieldName])> {
+    pub fn key_sources(&self) -> Vec<(&TypeName, Vec<FieldName>)> {
         let Some(v) = &self.view else {
             return Vec::new();
         };
-        let merged = v.merge.iter().map(|m| (&m.source, m.group_by.as_slice()));
-        std::iter::once((&v.source, v.group_by.as_slice()))
+        let merged = v.merge.iter().map(|m| (&m.source, m.group_by.clone()));
+        std::iter::once((&v.source, v.group_sources()))
             .chain(merged)
             .collect()
     }
@@ -1234,11 +1235,15 @@ pub struct ViewDecl {
     /// Which source records it covers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#where: Option<Condition>,
-    /// Source fields whose values form one view record each. Without
-    /// them the view is one record, keyed [`crate::key::UNGROUPED`], over
+    /// What forms one view record each: a source field's value, or a
+    /// term's under a name of its own, as an aggregate's grouping takes
+    /// them (`docs/decisions/049-a-view-the-fold-keeps.md`). A term is one
+    /// `date_bucket` over a field of the source; the record carries its
+    /// value under its name, and the source has no such field. Without
+    /// any the view is one record, keyed [`crate::key::UNGROUPED`], over
     /// no source record too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub group_by: Vec<FieldName>,
+    pub group_by: Vec<GroupKey>,
     /// The view's fields, each an expression over its group. They are
     /// computed after the merged sources' measures, which they may read by
     /// name.
@@ -1250,6 +1255,18 @@ pub struct ViewDecl {
 }
 
 impl ViewDecl {
+    /// The names its records hold their group values under, in order:
+    /// a field's own name, or a term's.
+    pub fn group_names(&self) -> Vec<FieldName> {
+        self.group_by.iter().map(|k| k.name().clone()).collect()
+    }
+
+    /// Of each group value, the source field it comes from: the field, or
+    /// the one a term reads (none where its expression does not parse).
+    pub fn group_sources(&self) -> Vec<FieldName> {
+        self.group_by.iter().map(GroupKey::source).collect()
+    }
+
     /// The definition without each measure, its own or a merged source's,
     /// whose view field `known` does not answer: shown beside a type's
     /// fields, it names none that they leave out (lakelands#782).

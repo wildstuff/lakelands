@@ -115,8 +115,9 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                     return Err(Case::CallTakesQuoted { name });
                 }
                 // A calendar unit, quoted, starts where the calendar says and
-                // takes no origin; a width is a duration above zero, with
-                // the origin its windows are counted from.
+                // takes no origin, but may name the zone, quoted, whose local
+                // calendar it is cut in; a width is a duration above zero,
+                // with the origin its windows are counted from.
                 Func::DateBucket => {
                     let unit = quoted(args.get(1));
                     let width = matches!(args.get(1),
@@ -125,8 +126,16 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                     if let Some(u) = unit.filter(|u| !known(u)) {
                         return Err(Case::BucketUnit { unit: u.clone() });
                     }
-                    if (unit.is_some(), width) != (args.len() == 2, args.len() == 3) {
+                    let zone = quoted(args.get(2)).filter(|_| unit.is_some());
+                    let taken = match args.len() {
+                        2 => unit.is_some(),
+                        _ => zone.is_some() || width,
+                    };
+                    if !taken {
                         return Err(Case::BucketArguments);
+                    }
+                    if let Some(z) = zone.filter(|z| !super::zone::known(z)) {
+                        return Err(Case::BucketZone { zone: z.clone() });
                     }
                 }
                 Func::Previous | Func::Changed

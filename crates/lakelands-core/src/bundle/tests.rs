@@ -270,7 +270,7 @@ fn complete_declarations() -> Vec<Declaration> {
             view: Some(Box::new(ViewDecl {
                 source: TypeName::new("invoice"),
                 r#where: Some(text("status = 'open'")),
-                group_by: vec![FieldName::new("partner")],
+                group_by: vec![FieldName::new("partner").into()],
                 measures: vec![Measure {
                     name: FieldName::new("total"),
                     expr: text("sum(net)"),

@@ -398,6 +398,8 @@ What a refusal is about.
 | `withdrawn_undeclared` | `kind` (Naming), `name` (String) | the {kind} `{name}` is not declared, so it is not withdrawn | A withdrawal of a name not in force. |
 | `withdrawn_name_held` | `type` (TypeName) | the lake keeps the records of the withdrawn type `{type}`; take another name | A type declared again where the lake keeps records of the one withdrawn. |
 | `withdrawn_kind` | `kind` (Naming) | a {kind} is not withdrawn: a type, a trigger, a verb, an object set or a function is, and a setting leaves by its record | A withdrawal of a kind that leaves force another way. |
+| `group_term` | `name` (FieldName), `second` (bool) | its group term `{name}` [{?second}is its second, and a view groups by one term at most\|is no `date_bucket` over one field of its source that holds an instant or a date, its other arguments written out] | A view's group term that is not one `date_bucket` over a field of instants or dates, or is its second term. |
+| `group_term_merged` | `name` (FieldName) | its group term `{name}` meets no group of a merged source, which groups by fields alone; group the view by fields, or merge into a view without a term | A view grouped by a term that merges a source, whose groups are fields. |
 | `group_unkeyable` | `field` (FieldName) | it groups by `{field}`, whose kind cannot be part of a key | A view grouped by a field no key may be. |
 | `initial_cleared` | — | its inputs would clear it at their next change | An `initial` value on a field its inputs clear. |
 | `initial_in_view` | — | a view's records are computed, and none is created | An `initial` value on a view's field. |
@@ -476,8 +478,9 @@ What a refusal is about.
 | `writes_nothing` | — | it writes nothing | A write effect that sets nothing. |
 | `aggregate_here` | `name` (String) | {name}() folds a set of records and has no meaning here | An aggregate where no set of records is. |
 | `aggregate_needs_field` | `name` (String) | {name}() needs a field | An aggregate other than `count` with no argument. |
-| `bucket_arguments` | — | date_bucket() takes a calendar unit quoted ('day', 'week', 'month', 'quarter' or 'year') and no origin, or a width above zero and the origin its windows are counted from, as in date_bucket(t, 30d, origin) | A `date_bucket` given neither a unit nor a width and an origin. |
+| `bucket_arguments` | — | date_bucket() takes a calendar unit quoted ('day', 'week', 'month', 'quarter' or 'year'), and no origin but the time zone it is cut in quoted or none, or a width above zero and the origin its windows are counted from, as in date_bucket(t, 'day', 'Europe/Berlin') or date_bucket(t, 30d, origin) | A `date_bucket` given neither a unit nor a width and an origin. |
 | `bucket_unit` | `unit` (String) | date_bucket() knows no unit '{unit}'; the units are 'day', 'week', 'month', 'quarter' and 'year', and a width is written unquoted, as in date_bucket(t, 30d, origin) | A `date_bucket` unit it does not know. |
+| `bucket_zone` | `zone` (String) | date_bucket() knows no time zone '{zone}'; a zone is named as the IANA time-zone database names it, as in 'Europe/Berlin' | A `date_bucket` zone the time-zone database does not name. |
 | `bucket_unit_text` | `value` (Operand) | date_bucket() takes its unit as text, not {value} | A `date_bucket` unit that is no text. |
 | `call_arity` | `name` (String), `given` (usize) | {name}() does not take {given} argument(s) | A call with a number of arguments its function does not take. |
 | `call_takes_field` | `name` (String) | {name}() takes one field name | A call that takes a field name given something else. |

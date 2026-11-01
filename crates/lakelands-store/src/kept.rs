@@ -18,7 +18,7 @@ use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{VIEW_KEPT_SETTING as SETTING, kept_name, order_name};
 use lakelands_api::write::{Declaration, ObjectSetDecl};
 use lakelands_api::{FieldName, Position, RecordKey, Result, Timestamp, TypeName};
-use lakelands_core::expr::aggregate::{Entry, Folds, Grouping, Keeping, KeptFolds, Row};
+use lakelands_core::expr::aggregate::{Entry, Folds, Grouping, Keeping, KeptFolds, Row, key_value};
 use lakelands_core::expr::{self, Place};
 use serde::{Deserialize, Serialize};
 
@@ -127,7 +127,9 @@ struct Src {
     /// records.
     view: bool,
     filter: Option<Expr>,
-    group_by: Vec<FieldName>,
+    /// What each of the view's group values is of a member: its field's
+    /// value, or a term's over it, as the computation groups.
+    group_by: Vec<(FieldName, Option<Expr>)>,
     measures: Vec<(FieldName, Expr)>,
     keeping: Keeping,
 }
@@ -151,32 +153,33 @@ impl Kept {
         let v = decl.view.as_deref()?;
         lakelands_api::expr::keepable(v, |t| o.ty(t).ok()).ok()?;
         let mut settings = BTreeSet::new();
-        let mut source =
-            |ty: &TypeName, filter: Option<&Condition>, by: &[FieldName], m: &[Measure]| {
-                let filter = filter.map(|w| condition(w, Place::View, &[]));
-                let filter = filter.transpose().ok()?;
-                let measured =
-                    |m: &Measure| Ok((m.name.clone(), condition(&m.expr, Place::Group, &[])?));
-                let measures: Result<Vec<(FieldName, Expr)>> = m.iter().map(measured).collect();
-                let measures = measures.ok()?;
-                let read = filter.iter().chain(measures.iter().map(|(_, e)| e));
-                read.for_each(|e| lakelands_core::derive::settings(e, &mut settings));
-                Some(Src {
-                    ty: ty.clone(),
-                    view: o.ty(ty).is_ok_and(|t| t.view.is_some()),
-                    filter,
-                    group_by: by.to_vec(),
-                    keeping: Keeping::of(&measures),
-                    measures,
-                })
-            };
-        let own = source(&v.source, v.r#where.as_ref(), &v.group_by, &v.measures)?;
+        let mut source = |ty: &TypeName, filter: Option<&Condition>, by: Vec<_>, m: &[Measure]| {
+            let filter = filter.map(|w| condition(w, Place::View, &[]));
+            let filter = filter.transpose().ok()?;
+            let measured =
+                |m: &Measure| Ok((m.name.clone(), condition(&m.expr, Place::Group, &[])?));
+            let measures: Result<Vec<(FieldName, Expr)>> = m.iter().map(measured).collect();
+            let measures = measures.ok()?;
+            let read = filter.iter().chain(measures.iter().map(|(_, e)| e));
+            read.for_each(|e| lakelands_core::derive::settings(e, &mut settings));
+            Some(Src {
+                ty: ty.clone(),
+                view: o.ty(ty).is_ok_and(|t| t.view.is_some()),
+                filter,
+                group_by: by,
+                keeping: Keeping::of(&measures),
+                measures,
+            })
+        };
+        let by = lakelands_core::expr::aggregate::group_keys(&v.group_by).ok()?;
+        let own = source(&v.source, v.r#where.as_ref(), by, &v.measures)?;
         let mut sources = vec![own];
         for m in &v.merge {
-            let merged = source(&m.source, m.r#where.as_ref(), &m.group_by, &m.measures)?;
+            let by = m.group_by.iter().map(|f| (f.clone(), None)).collect();
+            let merged = source(&m.source, m.r#where.as_ref(), by, &m.measures)?;
             sources.push(merged);
         }
-        let key = v.group_by.clone();
+        let key = v.group_names();
         let decl = TypeDecl {
             key,
             ..decl.clone()
@@ -549,8 +552,8 @@ impl At<'_> {
         if !filter.is_none_or(|w| crate::reads::holds(w, &fields, meta, self.settings, EPOCH)) {
             return None;
         }
-        let value = |f: &FieldName| fields.get(f).cloned().unwrap_or(Value::Null);
-        let own = &kept.view().group_by;
+        let value = |k| key_value(k, (&fields, meta), Some(self.settings), EPOCH);
+        let own = &kept.decl.key;
         let by: Row = (own.iter().zip(&src.group_by))
             .map(|(to, from)| (to.clone(), value(from)))
             .collect();
@@ -687,11 +690,11 @@ impl Work {
         settings: &BTreeMap<String, Value>,
     ) -> expr::eval::Result<Row> {
         let (kept, folds) = (&self.kept, &g.folds[face]);
-        let own = &kept.view().group_by;
+        let own = &kept.decl.key;
         let mut given = Row::new();
         for (src, folds) in kept.sources.iter().zip(folds).skip(1) {
             let by: Row = (src.group_by.iter().zip(own))
-                .map(|(to, from)| (to.clone(), g.by[from].clone()))
+                .map(|((to, _), from)| (to.clone(), g.by[from].clone()))
                 .collect();
             given.extend(src.keeping.measures(
                 folds,
@@ -1275,7 +1278,7 @@ fn faced(
     };
     if flagged || inexact_below(at, staged, &kept)? {
         let value = |f: &FieldName| (f.clone(), r.fields.get(f).cloned().unwrap_or(Value::Null));
-        let by: Row = kept.view().group_by.iter().map(value).collect();
+        let by: Row = kept.decl.key.iter().map(value).collect();
         match computed(at, staged, &kept, key, &by)? {
             Some(Some(fields)) => r.fields = fields,
             Some(None) => return Ok(Some(None)),
@@ -1311,11 +1314,10 @@ fn computed(
     key: &RecordKey,
     by: &Row,
 ) -> Result<Option<Option<Row>>> {
-    let own = &kept.view().group_by;
+    let own = &kept.decl.key;
     let mut folds = Vec::with_capacity(kept.sources.len());
     for src in &kept.sources {
-        let keys = src.group_by.iter().map(|f| (f.clone(), None)).collect();
-        let mut members = Grouping::new(keys, &src.measures, EPOCH);
+        let mut members = Grouping::new(src.group_by.clone(), &src.measures, EPOCH);
         let ty = match src.view {
             true => kept_name(&src.ty),
             false => src.ty.clone(),
@@ -1344,7 +1346,7 @@ fn computed(
     let none = Folds::default();
     let measured = |i: usize, given: Row| {
         let src: &Src = &kept.sources[i];
-        let value = |(to, from): (&FieldName, &FieldName)| {
+        let value = |((to, _), from): (&(FieldName, _), &FieldName)| {
             (to.clone(), by.get(from).cloned().unwrap_or(Value::Null))
         };
         let own: Row = src.group_by.iter().zip(own).map(value).collect();

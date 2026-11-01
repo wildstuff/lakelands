@@ -39,6 +39,21 @@ would have to reproduce one.
   group fields' kinds, and one digest for a view with no group field.
   A group field computed at the read is refused, as above. A view over
   a view is kept while that view is.
+- **A group may be a bucket term.** A view's `group_by` lists source
+  fields, and at most one term among them, written as an aggregate's
+  named group key is: `{"name": "hour", "expr": "date_bucket(at, 1h,
+  '2026-01-01T00:00:00Z')"}`, one `date_bucket` over one source field
+  of instants or dates, its other arguments written out, under a name
+  the view type declares as a field. Its records, key, reads, kept rows
+  and the sets and triggers on it are those of the twin view grouped by
+  an equal derived field of the source (066), and the source type does
+  not change: `describe` of the source is the same before and after.
+  `describe` of the view shows its `group_by` as declared, the term
+  with its name and expression. Another expression and a second term
+  are refused `group_term`; a merged source and a bundle's view group
+  by fields alone, and a view grouped by a term that merges a source is
+  refused `group_term_merged`, since no group of the merged source would
+  meet the term.
 - **Under a name no type can bear.** A view's kept records are put under
   `sys:kept.<view>`, which holds a character no type name may. No write,
   link, walk, preflight or fold reaches them by a type's name: a
@@ -309,3 +324,7 @@ that already walks the type.
   bucket of time beside them (lakelands#1614): the seek by the group's
   digest needs nothing of the group fields' kinds.
 - Amended by 098 and 099 (lakelands#1652), proposed for 0.23.0.
+- A view's group may hold one `date_bucket` term over a source field,
+  answered as its twin grouped by a derived field, a trigger on it too;
+  until then the source needed the derived field (lakelands#1636,
+  lakelands#1666).

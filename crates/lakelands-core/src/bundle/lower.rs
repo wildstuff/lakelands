@@ -15,6 +15,7 @@ use lakelands_api::ontology::{
     RelationDecl, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
     ViewDecl, ViewParam, ViewSource,
 };
+use lakelands_api::read::GroupKey;
 use lakelands_api::write::{
     AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl, SettingDecl,
 };
@@ -445,6 +446,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             .collect();
         let filter = l.opt_cond("view, `where`", v.filter);
         let group_by = l.names(Naming::Field, v.group_by.0);
+        let group_by = group_by.into_iter().map(GroupKey::Field).collect();
         let measures = l.measures("", v.measures);
         let merge = v
             .merge
