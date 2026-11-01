@@ -1,5 +1,8 @@
 # 099 — Work beside the writer runs in parts
 
+Decided on lakelands#1649, lakelands#1651 and lakelands#1652, for 0.23.0; the operator's
+choices are on lakelands#1578.
+
 ## What is decided
 
 **Proposed** on lakelands#1652, for 0.23.0, one design with lakelands#1649 and
@@ -142,7 +145,7 @@ they emptied together is not retired; and what both selected is counted twice. S
   takes the same road; until now it had none, and a crash between its parts could not
   be told from a smaller purge.
 - **The door answers when the act is whole,** with time spent off the writer. A caller
-  who drops does not stop the job. An earlier answer is an open choice.
+  who drops does not stop the job. An earlier answer was decided against (lakelands#1578, 2026-11-01): the door answers when the act is whole.
 
 ### A report is read at its position, and the log does not move behind it
 
@@ -207,8 +210,8 @@ is judged by the rule, with `written_before`'s `before` taken in that turn, and 
 after it is selected: there is no gap for a write between preflight and act. The act's
 event is the line.
 
-Whether a selected write should instead stale the report is an open choice below; the
-row that it is never left behind holds either way.
+A selected write is taken in and does not stale the report (decided, lakelands#1578, 2026-11-01); the
+row that it is never left behind holds.
 
 **Plan, declaration and migrate can follow,** and each reaches differently:
 
@@ -481,9 +484,9 @@ Three things hold that table to what it says:
 
 So the bound it can state is **about 300 ms a turn, and about 2 s where a rebuild's swap or a
 seal falls**, at the sizes above. The numbers are `limits`, and R1 measures them on a quiet
-machine. That is longer than an ordinary write, which is open choice 5. lakelands#1639's act
+machine. That is longer than an ordinary write, which the operator accepted (lakelands#1578, 2026-11-01). lakelands#1639's act
 takes this road as an act that retires. It gets its parts, its `act_whole` and its restate from
-R1 to R5. It is designed after the operator's choice on the series form (098).
+R1 to R5. The operator chose no-go on the series form (098), so it is designed on records.
 
 ### The memory engine
 
@@ -509,7 +512,7 @@ lakelands#1649:
 - **Ask 3, stale only when a write reaches the selection,** changes: a write the selection
   selects is taken in; a report goes stale only on a write that changes what it said about a
   key. Reason: a forget of a source still writing would never pass, and "never left behind"
-  is what the addendum asks. An open choice below.
+  is what the addendum asks. Decided by the operator (lakelands#1578, 2026-11-01).
 
 lakelands#1651:
 
@@ -650,25 +653,27 @@ The build:
 - `SET_OVER_A_BUILDING_VIEW_REFUSED`: and a trigger.
 - `CHOSEN_ORDER_BESIDE_SORT_INDEX`.
 
-### Open for the operator
+### Decided by the operator
 
-1. **The series form: no-go recommended.** In 098, with its numbers.
+Decided on 2026-11-01 (lakelands#1578): every recommendation below was taken.
+
+1. **The series form: no-go.** In 098, with its numbers.
 2. **A write a selection selects, between report and act.** Taken in, or stale. Both leave nothing
    behind. Stale makes a forget of a source that still writes wait for a quiet moment that may
-   not come. **Taken in recommended**, with `taken_since` saying what the report did not count.
+   not come. **Taken in, decided**, with `taken_since` saying what the report did not count.
 3. **When an act answers.** When it is whole, or at the first turn, with erasure done and a
    restate owed. The first gives a caller one answer, after minutes at worst; the second holds no
-   request open, and a caller then needs a status. **When it is whole recommended:** a caller
+   request open, and a caller then needs a status. **When it is whole, decided:** a caller
    that drops loses nothing, and a repeat answers where the job stands.
 4. **When a setting's write answers.** When the build is whole, or at once with `building`
-   in `describe`. **When it is whole recommended,** as with acts; a large type's operator may drop
+   in `describe`. **When it is whole, decided,** as with acts; a large type's operator may drop
    the call, and the build goes on.
 5. **lakelands#1649's headline against this bound.** No longer than an ordinary write, 85 ms at
    worst, or about 300 ms a turn and about 2 s at a seal or a swap. To hold the headline, a seal
    would hash at the append and keep a running digest, reckoned at 60 and 60 lines; a swap's last
    tail would need more catch-up passes and could shrink but not vanish, since the next write needs
    the new file; and pages and parts would be a quarter of their size, with four times the turns.
-   **The stated bound as `limits`, with the headline restated to it, recommended:** a seal already
+   **The stated bound as `limits`, with the headline of lakelands#1649 restated to it, decided:** a seal already
    holds any write for 0.51 s today (098), a swap falls only on a shape the scoped pass cannot do,
    and the turns are `limits` a host can lower. R1 measures them on a quiet machine first.
 

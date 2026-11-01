@@ -1,5 +1,8 @@
 # 098 — A lake stores what it cannot derive
 
+Decided on lakelands#1649, lakelands#1651 and lakelands#1652, for 0.23.0; the operator's
+choices are on lakelands#1578.
+
 ## What is decided
 
 **Proposed** on lakelands#1652, for 0.23.0, one design with lakelands#1649 and
@@ -395,8 +398,8 @@ block with its range, count, minimum, maximum, first, last and sum.
   one folds a block, which changes lakelands#1634 and lakelands#1636. Grants: a mask
   reaches a column, not a record. `as_of`: a late write moves a block's position. A
   forget or a removal takes a block apart.
-- **Its go or no-go** is the first open choice below. Until it is taken lakelands#1639
-  is not designed.
+- **Its go or no-go** was decided: no-go (lakelands#1578, 2026-11-01). lakelands#1639
+  is designed on records.
 
 ### What this changes in record 097
 
@@ -496,9 +499,11 @@ bytes are in no page of the file after the reclaim, by the scoped pass and by th
 with every connection that deleted checked for `secure_delete`. One beside the suite on the log: a binary of 0.22.x refuses a lake of
 23 by its format.
 
-### Open for the operator
+### Decided by the operator
 
-**The series form: no-go recommended.** By the operator's target, candles and
+Decided on 2026-11-01 (lakelands#1578): every recommendation below was taken.
+
+**The series form: no-go.** By the operator's target, candles and
 selected series, a lake's rows stay within what the record form carries, and what
 that target pays for is the roll-up, which this record cuts by six to ten. With 723
 B a tick (reckoned, above), 6 B a tick in a block (reckoned), 252 trading days:
