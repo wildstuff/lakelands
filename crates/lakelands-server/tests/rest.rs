@@ -878,9 +878,9 @@ async fn a_refused_record_is_quarantined_listed_and_dismissed_over_rest() {
         "POST /lakes/finance/ingest/bank?quarantine_refused&delivery=q1",
         "authorization: Bearer k-owner",
         "content-type: application/x-ndjson",
-        r#"{"type":"invoice","key":"INV-Q1","fields":{"amount":"1.00"}}"#,
-        r#"{"type":"invoice","key":"INV-Q2","fields":{"amount":"2.00","status":"x"}}"#,
-        r#"{"type":"invoice","key":"INV-Q3","fields":{"amount":"3.00"},"delivery":"item-3"}"#,
+        r#"{"type":"invoice","key":"INV-Q1","fields":{"amount":"1.00"},"line":0}"#,
+        r#"{"type":"invoice","key":"INV-Q2","fields":{"amount":"2.00","status":"x"},"line":1}"#,
+        r#"{"type":"invoice","key":"INV-Q3","fields":{"amount":"3.00"},"delivery":"item-3","line":2}"#,
     ];
     let (status, _, body) = exchange(addr, &block).await;
     assert_eq!(status, "200", "{body}");
