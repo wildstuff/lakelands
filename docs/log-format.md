@@ -1323,7 +1323,13 @@ form exactly as here; and `date_bucket`, whose two
 arguments are the value and its unit as a string literal (`day`, `week`,
 `month`, `quarter` or `year`), answering the instant at which the UTC
 bucket holding the value starts (the week from Monday, as ISO counts
-weeks). `retired`, with no arguments: true
+weeks). A third argument after a unit is a zone, a string literal the
+IANA time-zone database names (`Europe/Berlin`): the bucket is then cut in
+that zone's local calendar, at the start of the local day (its local
+midnight, or the first instant after it where the clocks skip it), the
+local Monday or the local first, as the database built into Lakelands
+gives the zone's offsets. A `date` value is that same date in the zone
+(lakelands#1667). `retired`, with no arguments: true
 when the write retires the record, in a trigger's guard only. `created`,
 with no arguments: true when the write found no live
 record under its key, a create or a revival, in a trigger's guard only. `param`, with one argument, a parameter's name as a string
@@ -1337,7 +1343,7 @@ with three arguments, the value, a width as a duration literal above
 zero, and the origin: the start of the window of that width holding the
 value, the windows counted from the origin in both directions,
 `origin + floor((value - origin) / width) * width`. A calendar unit
-takes no third argument and a width takes one. And `in_set`, with one
+takes a zone as its third argument, or none, and a width takes an origin. And `in_set`, with one
 argument, an object set's name as a string literal: true for a record
 where that set's filter holds for it, the filter read in the call's
 place when the condition is read, never stored membership, but in a

@@ -103,9 +103,15 @@ before it falls in the window that starts before it, and none is lost.
   database names it: `date_bucket(x, 'day', 'Europe/Berlin')` answers
   the instant of the local midnight that starts `x`'s local day, so a
   day is 23 or 25 hours long where the offset changes, a `week` starts
-  on the local Monday and a `month` on the local first. Only the copy
-  of that database built into Lakelands is read, never the host's, so
-  every engine and every host cuts the same instant. A zone the
+  on the local Monday and a `month` on the local first. A `date` has no
+  time of day: it is that same date in the zone, never the instant its
+  UTC midnight names, so `2030-07-15` is a day of July 15th in New York
+  as in Berlin. Only the copy of that database built into Lakelands is
+  read, never the host's, so every engine and every host cuts the same
+  instant. That copy is pinned with the release; a lake does not yet
+  record which copy cut its kept zoned buckets, so a release whose copy
+  changes a zone's rules would leave kept rows cut by the old ones, and
+  how a lake meets that is still open. A zone the
   database does not name is refused `bucket_zone` where the expression
   is declared or read, naming it; a quoted origin after a unit is
   refused so. A width takes no zone: its windows are counted from an
@@ -157,7 +163,8 @@ that pushes filters down into its own query language, complete.
   of `date_bucket` is written left: a lake is written in one format a
   release (lakelands#801).
 - A calendar unit may take a time zone, read from the database built
-  in; until then every calendar bucket was cut in UTC (lakelands#1667).
+  in; until then every calendar bucket was cut in UTC. A `date` is the
+  same date in the zone (lakelands#1667).
 - Corrected at the rewrite (lakelands#817): "`now()` and `today()` are
   the fold's clock in a derived field" was said of every derived field;
   052 computes one at the read, with the read's clock.

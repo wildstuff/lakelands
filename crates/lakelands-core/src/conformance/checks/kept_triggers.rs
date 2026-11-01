@@ -38,6 +38,11 @@ check!(
     given
 );
 
+check!(
+    KEPT_TRIGGER_ZONED = a_trigger_on_a_view_grouped_by_a_zoned_day_fires_as_on_its_twin,
+    "049, 066 and 017, extended (lakelands#1667): a trigger on a kept view grouped by a meter and `date_bucket(at, 'day', 'Europe/Berlin')` fires as its twin on a view grouped by an equal derived field: four readings of 60 litres in one ingest, across the night of 2030-03-31 when Berlin's clocks go forward, fire once, under the lax and the strict form, at the third reading, whose sum of 120 crosses the bound of 100 in Berlin's day from 2030-03-30T23:00Z, a day that holds readings of two UTC days, naming the meter and that day"
+);
+
 /// The invoices, the view `spent` of the open ones by customer, kept, and
 /// its triggers: `any`, `authored` by an upsert alone, `big` past 100,
 /// `rose` where the total grew, and `fresh` where the group arrives.
@@ -726,4 +731,91 @@ async fn a_trigger_on_a_view_grouped_by_a_term_fires_as_on_its_twin(
          they named {refused:?}"
     );
     head_unmoved(s, before, "the deliveries past the ceiling").await
+}
+
+/// The two lanes of a zoned day: a source without the day and its view
+/// grouped by the term, and the twin holding it derived; the twin suffix.
+const ZONED_LANES: [(&str, &str, &str); 2] = [
+    ("reading", "reading_day", ""),
+    ("reading_d", "reading_day_twin", "_twin"),
+];
+
+async fn a_trigger_on_a_view_grouped_by_a_zoned_day_fires_as_on_its_twin(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    let source = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}, "authority": "source"});
+    let bucket = "date_bucket(at, 'day', 'Europe/Berlin')";
+    for (ty, view, end) in ZONED_LANES {
+        let mut fields = vec![
+            source("meter", "text"),
+            source("at", "date_time"),
+            source("litres", "decimal"),
+        ];
+        let day = if end.is_empty() {
+            json!({"name": "day", "expr": bucket})
+        } else {
+            fields.push(json!({"name": "day", "type": {"kind": "date_time"},
+                "authority": "derived", "derived": bucket, "depends_on": ["at"]}));
+            json!("day")
+        };
+        l.declare_json(json!({"declare": "type", "name": ty, "fields": fields}))
+            .await?;
+        l.declare_json(json!({"declare": "type", "name": view, "key": ["meter", "day"],
+            "fields": [field("meter", "text"), field("day", "date_time"), field("litres_sum", "decimal")],
+            "view": {"source": ty, "group_by": ["meter", day],
+                     "measures": [{"name": "litres_sum", "expr": "sum(litres)"}]}}))
+            .await?;
+        l.set(&format!("view_kept.{view}"), json!(true)).await?;
+        for (name, strict) in [("crossing", false), ("strict", true)] {
+            l.declare_json(json!({"declare": "trigger", "name": format!("{name}{end}"),
+                "on": view, "when_strict": strict,
+                "when": "litres_sum > 100 and (created() or previous(litres_sum) <= 100)"}))
+                .await?;
+        }
+    }
+    // Berlin's day of 2030-03-31 runs from 2030-03-30T23:00Z to
+    // 2030-03-31T22:00Z: `z2` and `z3` are in it, `z1` and `z4` are not.
+    let readings = [
+        ("z1", "2030-03-30T22:30:00Z"),
+        ("z2", "2030-03-30T23:30:00Z"),
+        ("z3", "2030-03-31T21:30:00Z"),
+        ("z4", "2030-03-31T22:30:00Z"),
+    ];
+    let mut lanes = Vec::new();
+    for (ty, _, _) in ZONED_LANES {
+        let records = (readings.iter())
+            .map(|(k, at)| {
+                let f = json!({"meter": "m1", "at": at, "litres": "60"});
+                crate::conformance::fixture::source_record(ty, k, f)
+            })
+            .collect();
+        let from = s.head().await.must("the head")?.next();
+        l.ingest("meter", records)
+            .await
+            .must(&format!("four readings into `{ty}`"))?;
+        lanes.push(set_off_by(s, from).await?);
+    }
+    let [term, twin] = <[_; 2]>::try_from(lanes).expect("two lanes");
+    ensure!(
+        term == twin,
+        "four readings set off on the view grouped by Berlin's day what they do on its twin, \
+         {twin:?}; they set off {term:?}"
+    );
+    let day = Timestamp::parse("2030-03-30T23:00:00Z").ok();
+    let named = |key: &str| {
+        let parts = lakelands_api::key::key_components(&key.into());
+        let at = parts.get(1).and_then(|h| Timestamp::parse(h).ok());
+        parts.first().map(String::as_str) == Some("m1") && at.is_some() && at == day
+    };
+    let fired: Vec<_> = (term.iter())
+        .map(|(t, _, c, at)| (t.as_str(), *c, at.as_str()))
+        .collect();
+    ensure!(
+        fired == [("crossing", false, "z3"), ("strict", false, "z3")]
+            && term.iter().all(|(_, k, ..)| named(k)),
+        "four readings of 60 litres fire `crossing` and `strict` once, at `z3`, whose 120 \
+         crosses the bound of 100 in Berlin's day from 2030-03-30T23:00Z, naming `m1` and that \
+         day; they fired {term:?}"
+    );
+    Ok(())
 }

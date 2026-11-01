@@ -13,6 +13,7 @@ async-trait.workspace = true
 futures-core.workspace = true
 # The time zones a calendar `date_bucket` cuts local days in.
 jiff.workspace = true
+jiff-tzdb.workspace = true
 # The shortest round-trip digits of a double, for the canonical number form.
 ryu.workspace = true
 # Whether a number literal is one the evaluator holds exactly.

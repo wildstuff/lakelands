@@ -880,8 +880,12 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         Func::DateBucket => match (as_time(&vals[0]), &vals[1]) {
             (Some(t), Val::Text(unit)) => match vals.get(2) {
                 // Cut in a zone's local calendar; the declaration has
-                // refused a zone the database does not name.
-                Some(Val::Text(zone)) => match zone::local_start(t.0, unit, zone) {
+                // refused a zone the database does not name. A date, which
+                // has no time of day, is that same date in the zone.
+                Some(Val::Text(zone)) => match match &vals[0] {
+                    Val::Text(day) if day.len() == 10 => zone::date_start(t.0, unit, zone),
+                    _ => zone::local_start(t.0, unit, zone),
+                } {
                     Some(start) => Val::Time(Timestamp(start)),
                     None if !zone::known(zone) => {
                         return err(Case::BucketZone { zone: zone.clone() });

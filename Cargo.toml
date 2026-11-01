@@ -45,7 +45,10 @@ rust_decimal = "1"
 libm = "0.2"
 # The IANA time-zone database a calendar `date_bucket` cuts local days
 # by; bundled, so no zone is read from the host or its environment.
-jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
+# Pinned exactly, with the zone database it builds in: a kept zoned bucket
+# holds the offsets of this copy, and new rules would move its starts.
+jiff = { version = "=0.2.38", default-features = false, features = ["std", "tzdb-bundle-always"] }
+jiff-tzdb = "=0.1.9"
 ryu = "1"
 rust-stemmers = "1"
 serde = { version = "1", features = ["derive"] }

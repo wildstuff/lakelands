@@ -39,6 +39,11 @@ check!(
     "017, extended (lakelands#1667): date_bucket(x, unit, zone) cuts a calendar unit at local midnight in an IANA zone: in Europe/Berlin the day of 2030-03-31 is 23 hours long and that of 2030-10-27 25, a week starts on the local Monday and a month, a quarter and a year on the local first, and in America/Havana the day of 2030-03-10, whose midnight the clocks skip, starts at its 01:00; the same groups, counts and sums on every engine; a derived field, a view's group term and a trigger's `when` may call it, the trigger firing where the local day holds; without a zone a bucket is cut in UTC as before; a zone the database does not name is refused `bucket_zone`, naming it, at a read, a derived field, a view's group term, a view's `where` and a trigger's `when`"
 );
 
+check!(
+    ZONED_DATE = a_date_is_bucketed_as_the_same_date_in_a_zone,
+    "017, extended (lakelands#1667): a `date` has no time of day, so date_bucket(d, unit, zone) reads it as that same date in the zone, never as the instant of its UTC midnight: in America/New_York the day of 2030-07-15 starts at 2030-07-15T04:00Z, its week (it is a Monday) as well, and the month of 2030-07-01 at 2030-07-01T04:00Z; in Pacific/Honolulu July starts at 2030-07-01T10:00Z, and in Europe/Berlin the day of 2030-07-15 at 2030-07-14T22:00Z; the same in a find's group, a `where`, a derived field and a view's group term, on every engine"
+);
+
 /// The days of the lake, as `YYYY-MM-DD`.
 fn days() -> Vec<String> {
     let mut out = Vec::new();
@@ -507,5 +512,126 @@ async fn a_calendar_bucket_is_cut_at_local_midnight_in_a_named_zone(store: Store
         refused_like(&format!("{what} in an unknown zone"), answer, &refusal)?;
         head_unmoved(s, before, &format!("{what} in an unknown zone")).await?;
     }
+    Ok(())
+}
+
+/// Dates around a month's end and two Mondays, each of 1.25, and one
+/// undated.
+const DATED: [(&str, &str); 4] = [
+    ("a", "2030-06-30"),
+    ("b", "2030-07-01"),
+    ("c", "2030-07-14"),
+    ("d", "2030-07-15"),
+];
+
+async fn a_date_is_bucketed_as_the_same_date_in_a_zone(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    l.declare_json(json!({"declare": "type", "name": "entry", "fields": [
+        field("on", "date"), field("amount", "decimal"),
+        {"name": "local", "type": {"kind": "date_time"}, "authority": "derived",
+         "derived": "date_bucket(on, 'day', 'America/New_York')", "depends_on": ["on"]}]}))
+        .await?;
+    for (k, on) in DATED {
+        l.upsert("entry", k, json!({"on": on, "amount": "1.25"}))
+            .await?;
+    }
+    l.upsert("entry", "undated", json!({"amount": "1.25"}))
+        .await?;
+    // (the bucket's start, the entries in it), the undated last.
+    let want = |starts: &[(&str, u64)]| {
+        let mut out: Vec<_> = starts
+            .iter()
+            .map(|(at, n)| {
+                let total = dec("1.25") * rust_decimal::Decimal::from(*n);
+                (Some(format!("{at}:00:00.000000Z")), *n, total)
+            })
+            .collect();
+        out.push((None, 1, dec("1.25")));
+        out
+    };
+    for (unit, zone, starts) in [
+        (
+            "day",
+            "America/New_York",
+            &[
+                ("2030-06-30T04", 1),
+                ("2030-07-01T04", 1),
+                ("2030-07-14T04", 1),
+                ("2030-07-15T04", 1),
+            ][..],
+        ),
+        (
+            "week",
+            "America/New_York",
+            &[
+                ("2030-06-24T04", 1),
+                ("2030-07-01T04", 1),
+                ("2030-07-08T04", 1),
+                ("2030-07-15T04", 1),
+            ][..],
+        ),
+        (
+            "month",
+            "America/New_York",
+            &[("2030-06-01T04", 1), ("2030-07-01T04", 3)][..],
+        ),
+        (
+            "month",
+            "Pacific/Honolulu",
+            &[("2030-06-01T10", 1), ("2030-07-01T10", 3)][..],
+        ),
+        (
+            "day",
+            "Europe/Berlin",
+            &[
+                ("2030-06-29T22", 1),
+                ("2030-06-30T22", 1),
+                ("2030-07-13T22", 1),
+                ("2030-07-14T22", 1),
+            ][..],
+        ),
+    ] {
+        let bucket = format!("date_bucket(on, '{unit}', '{zone}')");
+        let got = groups(s, keyed(&bucket), &format!("grouping by `{bucket}`")).await?;
+        let want = want(starts);
+        ensure!(
+            got == want,
+            "grouped by `{bucket}`, find answered\n  {got:?}\nand expected are\n  {want:?}"
+        );
+    }
+    // A `where` selects New York's July: the three dates in it.
+    let mut july = keyed("date_bucket(on, 'month')");
+    july.filter = Some(Condition::Text(
+        "date_bucket(on, 'month', 'America/New_York') = '2030-07-01T04:00:00Z'".into(),
+    ));
+    let got = groups(s, july, "selecting New York's July").await?;
+    let expected = vec![(Some("2030-07-01T00:00:00.000000Z".into()), 3, dec("3.75"))];
+    ensure!(
+        got == expected,
+        "a `where` on New York's July selected {got:?}; expected are {expected:?}"
+    );
+    // A derived field holds New York's day of the date.
+    let d = l.read("entry", "d").await?;
+    ensure!(
+        crate::conformance::fixture::value(&d, "local")
+            == Some(&json!("2030-07-15T04:00:00.000000Z")),
+        "`d`, on 2030-07-15, is in New York's day from 2030-07-15T04:00Z; it holds {:?}",
+        d.fields
+    );
+    // A view's group term keeps the same day.
+    l.declare_json(json!({"declare": "type", "name": "daily", "key": ["day"],
+        "fields": [field("day", "date_time"), field("n", "number")],
+        "view": {"source": "entry", "measures": [{"name": "n", "expr": "count()"}],
+                 "group_by": [{"name": "day",
+                               "expr": "date_bucket(on, 'day', 'America/New_York')"}]}}))
+        .await?;
+    let key = lakelands_api::key::key_component(&json!("2030-07-15T04:00:00.000000Z"));
+    let day = l.read("daily", &key.unwrap_or_default()).await?;
+    ensure!(
+        crate::conformance::fixture::value(&day, "n") == Some(&json!(1)),
+        "the view grouped by New York's days holds one entry on 2030-07-15; it holds {:?}",
+        day.fields
+    );
     Ok(())
 }

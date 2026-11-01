@@ -1030,6 +1030,7 @@ dependencies = [
  "async-trait",
  "futures-core",
  "jiff",
+ "jiff-tzdb",
  "rust_decimal",
  "ryu",
  "serde",
