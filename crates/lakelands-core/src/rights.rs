@@ -27,6 +27,7 @@ use std::rc::Rc;
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{Authority, FieldDecl, RetiredBy, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::principal::{HiddenWhere, TypeGrants};
+use lakelands_api::read::GroupKey;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{
@@ -409,7 +410,9 @@ fn only_seen<'a>(
         None => (pairs, false),
         Some((source, (p, computed))) => {
             let stored = find(source).is_some_and(|d| d.view.is_none() && !ends_held(d));
-            let grouped = p.iter().all(|(f, _)| v.group_by.contains(f));
+            // A term is no field of the source: an `only` on what it reads
+            // is carried by no group value.
+            let grouped = p.iter().all(|(f, _)| v.group_by.contains(&GroupKey::Field(f.clone())));
             let carried = !computed && v.merge.is_empty() && stored && grouped;
             pairs.extend(p.iter().filter(|_| carried).cloned());
             (pairs, !carried)

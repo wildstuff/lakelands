@@ -309,6 +309,11 @@
    "kind": "type"
   },
   {
+   "code": "group_term",
+   "name": "f",
+   "second": true
+  },
+  {
    "code": "group_unkeyable",
    "field": "f"
   },

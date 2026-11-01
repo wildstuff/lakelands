@@ -235,6 +235,17 @@ impl GroupKey {
             GroupKey::Named { name, .. } => name,
         }
     }
+
+    /// The field its value comes from: the field, or the first one its
+    /// expression reads (its name where that does not parse).
+    pub fn source(&self) -> FieldName {
+        match self {
+            GroupKey::Field(f) => f.clone(),
+            GroupKey::Named { name, expr } => (expr.typed().ok())
+                .and_then(|e| e.fields_read().into_iter().next().cloned())
+                .unwrap_or_else(|| name.clone()),
+        }
+    }
 }
 
 impl From<&str> for GroupKey {

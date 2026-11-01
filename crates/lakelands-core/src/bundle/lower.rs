@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::error::Naming;
 use lakelands_api::expr::Condition;
+use lakelands_api::read::GroupKey;
 use lakelands_api::ontology::{
     Assignment, EmbedDecl, FieldDecl, FieldType, FunctionInput, Measure, Precondition,
     RelationDecl, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
@@ -445,6 +446,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             .collect();
         let filter = l.opt_cond("view, `where`", v.filter);
         let group_by = l.names(Naming::Field, v.group_by.0);
+        let group_by = group_by.into_iter().map(GroupKey::Field).collect();
         let measures = l.measures("", v.measures);
         let merge = v
             .merge

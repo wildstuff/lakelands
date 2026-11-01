@@ -339,20 +339,8 @@ impl Grouping {
     /// an expression's. A value the expression cannot compute for the
     /// record is null, the missing group.
     pub fn add(&mut self, (row, meta): Member<'_>, settings: Settings<'_>) {
-        let value = |(name, expr): &(FieldName, Option<Expr>)| {
-            let v = match expr {
-                None => row.get(name).cloned().unwrap_or(Value::Null),
-                Some(e) => {
-                    let scope = RecordScope {
-                        fields: row,
-                        meta,
-                        settings,
-                        now: self.now,
-                    };
-                    eval(e, &scope).map_or(Value::Null, |v| to_value(&v))
-                }
-            };
-            (name.clone(), v)
+        let value = |k: &(FieldName, Option<Expr>)| {
+            (k.0.clone(), key_value(k, (row, meta), settings, self.now))
         };
         let key: Row = self.keys.iter().map(value).collect();
         let group = (self.groups.entry(crate::canonical::of(&key)))
@@ -363,6 +351,28 @@ impl Grouping {
     /// The groups, in canonical key order.
     pub fn groups(self) -> Vec<(Row, Folds)> {
         self.groups.into_values().collect()
+    }
+}
+
+/// One resolved group key's value for a record: its field's, or its
+/// expression's, null where the expression cannot compute it.
+pub fn key_value(
+    (name, expr): &(FieldName, Option<Expr>),
+    (fields, meta): Member<'_>,
+    settings: Settings<'_>,
+    now: Timestamp,
+) -> Value {
+    match expr {
+        None => fields.get(name).cloned().unwrap_or(Value::Null),
+        Some(e) => {
+            let scope = RecordScope {
+                fields,
+                meta,
+                settings,
+                now,
+            };
+            eval(e, &scope).map_or(Value::Null, |v| to_value(&v))
+        }
     }
 }
 

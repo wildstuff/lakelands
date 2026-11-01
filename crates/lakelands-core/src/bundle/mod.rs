@@ -744,13 +744,13 @@ fn check_references(
         if let Some(v) = &t.view
             && let Some(source) = by_name.get(v.source.as_str())
         {
-            for g in &v.group_by {
+            for g in &v.group_names() {
                 want("view, `group_by`".into(), g.as_str(), source);
             }
         }
         if let Some(v) = &t.view
             && !t.key.is_empty()
-            && t.key != v.group_by
+            && t.key != v.group_names()
         {
             fail(
                 Problem::Contradiction,

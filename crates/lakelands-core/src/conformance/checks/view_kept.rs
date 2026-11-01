@@ -69,6 +69,13 @@ check!(
     given
 );
 
+check!(
+    KEPT_TERMS =
+        a_view_grouped_by_a_bucket_term_answers_as_its_twin_grouped_by_a_derived_field,
+    "049 and 017, extended (lakelands#1636): a view whose group holds a `date_bucket` term over a field of its source, under a name the view type declares, answers as its twin, the same view grouped by a field of that name derived by the same expression in a type that is its source's mirror, every write to the source written to the mirror too, read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: by a text and an hour, a text and a week of a date, an hour alone, a text and a day under a `where`, and a view over the first that groups by the text, all kept, `describe_type` saying `kept`, while members arrive, a bucket's first, last and least member is retired, members move to the next hour and the next day, a holder's instant goes null, a member is held and lifted, two are fed and their source purged, and a bucket's last member leaves; and `describe_type` of the source says the same before the views are declared, after they are and are kept, and after every write",
+    given
+);
+
 const SHAPES: &str = r#"
     type line g:text n:decimal
     type credit g:text n:decimal
@@ -554,6 +561,78 @@ const BUCKETS: &str = r#"
     put reading d1 {"on": "2026-01-06"}
 "#;
 
+const TERMS: &str = r#"
+    declare {"declare": "type", "name": "reading", "fields": [{"name": "meter", "type": {"kind": "text"}, "authority": "shared"}, {"name": "at", "type": {"kind": "date_time"}, "authority": "shared"}, {"name": "v", "type": {"kind": "decimal"}, "authority": "shared"}, {"name": "note", "type": {"kind": "text"}, "authority": "shared"}, {"name": "on", "type": {"kind": "date"}, "authority": "shared"}]}
+    unchanged reading
+    declare {"declare": "type", "name": "reading_d", "fields": [{"name": "meter", "type": {"kind": "text"}, "authority": "shared"}, {"name": "at", "type": {"kind": "date_time"}, "authority": "shared"}, {"name": "v", "type": {"kind": "decimal"}, "authority": "shared"}, {"name": "note", "type": {"kind": "text"}, "authority": "shared"}, {"name": "on", "type": {"kind": "date"}, "authority": "shared"}, {"name": "hour", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')", "depends_on": ["at"]}, {"name": "day", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'day')", "depends_on": ["at"]}, {"name": "week", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(on, 'week')", "depends_on": ["on"]}]}
+    mirror reading reading_d
+    view hourly = reading by meter:text hour:date_time | low:decimal=min(v); high:decimal=max(v); opened:decimal=first(v, at); closed:decimal=last(v, at); c:number=count() | {"terms": {"hour": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')"}}
+    view weekly = reading by meter:text week:date_time | early:text=first(note, on); late:text=last(note, on); c:number=count() | {"terms": {"week": "date_bucket(on, 'week')"}}
+    view hours = reading by hour:date_time | low:decimal=min(v); c:number=count() | {"terms": {"hour": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')"}}
+    view daily = reading by meter:text day:date_time | s:decimal=sum(v); c:number=count() | {"terms": {"day": "date_bucket(at, 'day')"}, "where": "v > 1"}
+    view metered = hourly by meter:text | top:decimal=max(high); n:number=count()
+    set view_kept.hourly true
+    set view_kept.weekly true
+    set view_kept.hours true
+    set view_kept.daily true
+    set view_kept.metered true
+    unchanged reading
+    row a view by a meter and a term over its readings' instant is made
+    put reading r1 {"meter": "m1", "at": "2026-01-01T00:10:00Z", "v": "5", "note": "a"}
+    put reading r2 {"meter": "m1", "at": "2026-01-01T00:50:00Z", "v": "2", "note": "b"}
+    put reading r3 {"meter": "m1", "at": "2026-01-01T01:20:00Z", "v": "7", "note": "c"}
+    put reading r4 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "1", "note": "d"}
+    put reading r5 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "3", "note": "e"}
+    put reading r6 {"meter": "m1", "v": "9", "note": "f"}
+    put reading r7 {"meter": "m1", "at": "2026-01-01T00:30:00Z", "note": "g"}
+    put reading d1 {"meter": "m1", "on": "2026-01-07", "note": "p"}
+    put reading d2 {"meter": "m1", "on": "2026-01-05", "note": "q"}
+    put reading d3 {"meter": "m1", "on": "2026-01-12", "note": "s"}
+    says hourly kept
+    says weekly kept
+    says hours kept
+    says daily kept
+    says metered kept
+    read hourly weekly hours daily metered
+    is hourly m1:2026-01-01T00%3A00%3A00.000000Z 2,5,5,2,3; m1:2026-01-01T01%3A00%3A00.000000Z 7,7,7,7,1; m2:2026-01-01T00%3A00%3A00.000000Z 1,3,1,1,2
+    row a bucket's first, last and least member is retired, one moves to the next hour and the next day, and an earlier one arrives
+    retire reading r2
+    put reading r1 {"at": "2026-01-01T01:05:00Z"}
+    put reading r8 {"meter": "m2", "at": "2026-01-01T00:05:00Z", "v": "4", "note": "h"}
+    put reading r5 {"v": "0"}
+    put reading r3 {"at": "2026-01-02T00:20:00Z"}
+    put reading d2 {"on": "2026-01-13"}
+    says hourly kept
+    says daily kept
+    read hourly weekly hours daily metered
+    row a member is held and lifted, its instant goes null, and one is fed and purged
+    hold reading r8
+    put reading r4 {"at": null}
+    lift reading r8
+    feed crm reading f1 {"meter": "m2", "at": "2026-01-01T02:10:00Z", "v": "8", "note": "k"}
+    feed crm reading f2 {"meter": "m3", "at": "2026-01-01T02:50:00Z", "v": "6", "note": "l"}
+    says hourly kept
+    read hourly hours daily metered
+    purge crm
+    says hourly kept
+    says hours kept
+    read hourly hours daily metered
+    row a bucket's last member leaves
+    retire reading r7
+    retire reading r3
+    retire reading r1
+    retire reading d1
+    says hourly kept
+    says weekly kept
+    read hourly weekly hours daily metered
+    unchanged reading
+    then
+    row the lake goes on after it
+    put reading r9 {"meter": "m2", "at": "2026-01-01T02:00:00Z", "v": "6", "note": "i"}
+    retire reading r5
+    put reading d3 {"on": "2026-01-06"}
+"#;
+
 /// Each check's function: its table, run by [`twin`].
 macro_rules! tables {
     ($($run:ident = $table:ident,)*) => {$(
@@ -569,6 +648,7 @@ tables! {
     a_kept_extreme_answers_as_its_twin_when_a_run_or_a_re_key_moves_its_holders = RUNS,
     a_kept_view_answers_every_ordered_page_from_its_order_index_as_its_twin_computes = ORDERS,
     a_kept_first_and_last_answer_as_their_twins_in_a_view_grouped_by_a_bucket_of_time = BUCKETS,
+    a_view_grouped_by_a_bucket_term_answers_as_its_twin_grouped_by_a_derived_field = TERMS,
 }
 
 /// A view of a table, declared as `name` and as `name_twin`.
@@ -579,6 +659,9 @@ struct Pair {
     /// Whether its source is a view of the table: its twin reads that
     /// view's twin.
     over: bool,
+    /// For a view grouped by a term, the type its twin reads: its
+    /// source's mirror, which holds the term as a derived field.
+    mirror: Option<String>,
     /// What it reads through: its own declaration, types, and settings
     /// (see [`setting`]).
     reads: Vec<String>,
@@ -611,6 +694,12 @@ struct Twin {
     valid_at: Option<(Timestamp, String)>,
     /// How many records are restricted.
     held: u32,
+    /// Each stored type every write to which a `mirror` line sends to
+    /// another type too.
+    mirrors: BTreeMap<String, String>,
+    /// What `describe_type` first said of each type an `unchanged` line
+    /// names.
+    described: BTreeMap<String, String>,
     /// The rows that failed, each with the first thing that failed it.
     red: Vec<String>,
 }
@@ -695,13 +784,15 @@ impl Twin {
             }
             for i in 1..=times {
                 let line = line.replace('#', &i.to_string());
-                if let Err(e) = self.line(store, &line).await {
-                    self.fail(format!("`{line}`: {e}"));
+                for line in [Some(line.clone()), self.mirrored(&line)].into_iter().flatten() {
+                    if let Err(e) = self.line(store, &line).await {
+                        self.fail(format!("`{line}`: {e}"));
+                    }
                 }
             }
             let words: Vec<&str> = line.splitn(4, ' ').collect();
             let wrote = match (word, words.get(1..3)) {
-                ("row" | "valid_at" | "is" | "was" | "says", _) => continue,
+                ("row" | "valid_at" | "is" | "was" | "says" | "mirror" | "unchanged", _) => continue,
                 ("set", Some(&[key, _])) | (_, Some(&[SETTING_TYPE, key])) => setting(key),
                 ("put" | "retire" | "hold" | "lift" | "view", Some(w)) => w[0].to_owned(),
                 ("feed", Some(w)) => w[1].to_owned(),
@@ -745,6 +836,20 @@ impl Twin {
         for (at, reached) in self.ends.clone() {
             self.same(store, when, Some(at), &reached, [1, 0, 0]).await;
         }
+    }
+
+    /// A write to a type a `mirror` line names, sent to its mirror: a
+    /// `feed` names its source before the type.
+    fn mirrored(&self, line: &str) -> Option<String> {
+        let mut words: Vec<&str> = line.splitn(4, ' ').collect();
+        let at = match words.first()? {
+            &"put" | &"retire" | &"hold" | &"lift" => 1,
+            &"feed" => 2,
+            _ => return None,
+        };
+        let mirror = self.mirrors.get(*words.get(at)?)?;
+        words[at] = mirror;
+        Some(words.join(" "))
     }
 
     /// The views of the table that `which` holds for.
@@ -815,6 +920,12 @@ impl Twin {
                 self.is(&l, p[0], p[1], valid_at).await?;
             }
             ("says", Ok(p), _) => says(&l, p[0], p[1]).await?,
+            ("mirror", Ok(p), _) => drop(self.mirrors.insert(p[0].into(), p[1].into())),
+            ("unchanged", ..) => {
+                let now = json!(l.describe_type(rest).await?).to_string();
+                let first = self.described.entry(rest.to_owned()).or_insert(now.clone());
+                ensure!(*first == now, "`describe_type` of `{rest}` was {first}, and is {now}");
+            }
             _ => return Err(bad("is no event, or is short".into())),
         }
         Ok(())
@@ -823,8 +934,11 @@ impl Twin {
     /// The declarations of a view and of its twin, from
     /// `name = source by field:kind .. | measure:kind=expr; .. | rest`,
     /// where a field a merged source fills has no `=expr` and `rest` is
-    /// the view's other members. Each carries a relation `of_<name>`,
-    /// derived from its first group field to its source's.
+    /// the view's other members. A group field `rest` names in `terms`
+    /// is that term in the view, and in its twin the field of that name
+    /// of the source's mirror, which its twin reads. Each carries a
+    /// relation `of_<name>`, derived from its first group field to its
+    /// source's, unless that field is a term.
     fn views(&mut self, spec: &str) -> Result<Vec<Value>, String> {
         let mut parts = spec.split(" | ");
         let head: Vec<&str> = parts.next().unwrap_or_default().split(' ').collect();
@@ -836,7 +950,13 @@ impl Twin {
             .map(|m| m.split_once('=').map_or((m, None), |(f, e)| (f, Some(e))))
             .collect();
         let rest = serde_json::from_str::<Value>(parts.next().unwrap_or("{}"));
-        let rest = rest.map_err(|e| e.to_string())?;
+        let mut rest = rest.map_err(|e| e.to_string())?;
+        let terms = rest.as_object_mut().and_then(|r| r.remove("terms"));
+        let terms = terms.unwrap_or_else(|| json!({}));
+        let mirror = self.mirrors.get(source).filter(|_| terms != json!({})).cloned();
+        if terms != json!({}) && mirror.is_none() {
+            return Err(format!("its source `{source}` has no mirror for its terms"));
+        }
         let inner = self.pairs.iter().find(|p| p.name == source);
         let kept = setting(&format!("{VIEW_KEPT_SETTING}{name}"));
         let over = inner.is_some();
@@ -857,31 +977,39 @@ impl Twin {
         fields.extend(measures.iter().flat_map(|(f, _)| kinds(f)));
         let called = |f: &str| f.split(':').next().unwrap_or_default().to_owned();
         let keys: Vec<String> = by.iter().map(|f| called(f)).collect();
+        let first = keys.first().filter(|k| terms.get(k.as_str()).is_none()).cloned();
+        let grouped = |end: &str| -> Vec<Value> {
+            let term = |k: &String| terms.get(k).filter(|_| end.is_empty());
+            let key = |k: &String| term(k).map_or(json!(k), |e| json!({"name": k, "expr": e}));
+            keys.iter().map(key).collect()
+        };
         let exprs = measures
             .iter()
             .filter_map(|(f, e)| Some((called(f), (*e)?)));
         let exprs: Vec<Value> = exprs.map(|(n, e)| json!({"name": n, "expr": e})).collect();
         let declared = |end: &str| {
             let read = if over { end } else { "" };
-            let by = json!([{"from": keys.first(), "to": keys.first()}]);
+            let by = json!([{"from": first, "to": first}]);
             let near = json!({"name": format!("of_{name}{end}"), "derived": {"match": by},
                               "target": format!("{source}{read}")});
-            let source = format!("{source}{read}");
-            let mut view = json!({"source": source, "group_by": keys, "measures": exprs});
+            let twin = mirror.as_ref().filter(|_| !end.is_empty());
+            let source = twin.cloned().unwrap_or(format!("{source}{read}"));
+            let group_by = grouped(end);
+            let mut view = json!({"source": source, "group_by": group_by, "measures": exprs});
             for (member, value) in rest.as_object().into_iter().flatten() {
                 view[member] = value.clone();
             }
-            let near = Value::from_iter(keys.first().map(|_| near));
+            let near = Value::from_iter(first.as_ref().map(|_| near));
             json!({"declare": "type", "name": format!("{name}{end}"), "key": keys,
                    "fields": fields, "view": view, "relations": near})
         };
         let declared = vec![declared(""), declared("_twin")];
         if !self.pairs.iter().any(|p| p.name == name) {
-            let (name, source, by) = (name.to_owned(), source.to_owned(), keys.first().cloned());
+            let (name, source, by) = (name.to_owned(), source.to_owned(), first);
             let measures = measures.iter().map(|(f, _)| called(f)).collect();
             let (seen, keys, asked, indexed) = Default::default();
             #[rustfmt::skip]
-            self.pairs.push(Pair { name, source, over, reads, by, seen, merged, measures, keys, asked, indexed });
+            self.pairs.push(Pair { name, source, over, mirror, reads, by, seen, merged, measures, keys, asked, indexed });
         }
         Ok(declared)
     }
@@ -935,9 +1063,11 @@ impl Twin {
             source.fields.insert(field.as_str().into(), Access::None);
         }
         for p in self.pairs.iter().filter(|p| !p.over) {
-            let source = blind.grants.types.entry(p.source.as_str().into());
-            let hidden = p.by.iter().map(|f| (f.as_str().into(), Access::None));
-            source.or_default().fields.extend(hidden);
+            for source in [Some(&p.source), p.mirror.as_ref()].into_iter().flatten() {
+                let source = blind.grants.types.entry(source.as_str().into());
+                let hidden = p.by.iter().map(|f| (f.as_str().into(), Access::None));
+                source.or_default().fields.extend(hidden);
+            }
         }
         for (p, end) in self.pairs.iter().flat_map(|p| [(p, ""), (p, "_twin")]) {
             let hidden = p.measures.first().map(|m| m.as_str().into());
@@ -956,11 +1086,11 @@ impl Twin {
             let Some((by, seen)) = p.by.as_ref().zip(p.seen.as_ref()) else {
                 continue;
             };
-            let source = only.grants.types.entry(p.source.as_str().into());
-            source
-                .or_default()
-                .only
-                .insert(by.as_str().into(), json!(seen));
+            for source in [Some(&p.source), p.mirror.as_ref()].into_iter().flatten() {
+                let source = only.grants.types.entry(source.as_str().into());
+                let only = &mut source.or_default().only;
+                only.insert(by.as_str().into(), json!(seen));
+            }
         }
         let readers = [
             ("the owner", owner(store)),
@@ -1213,7 +1343,11 @@ async fn said(
     if p.indexed {
         out.extend(paged(cat, who, &ty, p, at).await);
     }
-    let read = |(door, answer): (String, String)| (door, answer.replace("_twin", ""));
+    let mirror = |a: String| match &p.mirror {
+        Some(m) => a.replace(m.as_str(), &p.source),
+        None => a,
+    };
+    let read = |(door, answer): (String, String)| (door, mirror(answer.replace("_twin", "")));
     Ok(out.into_iter().map(read).collect())
 }
 

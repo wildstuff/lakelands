@@ -511,14 +511,14 @@ impl Sight<'_> {
 /// merged ones in order ([`source_reads`]). `None` when one of its
 /// conditions does not parse.
 pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTreeSet<FieldName>)>> {
-    std::iter::once((&v.source, v.r#where.as_ref(), &v.group_by, &v.measures))
+    std::iter::once((&v.source, v.r#where.as_ref(), v.group_sources(), &v.measures))
         .chain(
             v.merge
                 .iter()
-                .map(|m| (&m.source, m.r#where.as_ref(), &m.group_by, &m.measures)),
+                .map(|m| (&m.source, m.r#where.as_ref(), m.group_by.clone(), &m.measures)),
         )
         .map(|(source, filter, group_by, measures)| {
-            let names = source_reads(filter, group_by, measures)?;
+            let names = source_reads(filter, &group_by, measures)?;
             Some((source.clone(), names.into_iter().collect()))
         })
         .collect()
@@ -838,8 +838,8 @@ pub(crate) fn type_shown<'a>(
     let own = |t: &TypeDecl| {
         let fields = &mut t.fields.iter();
         let mut sources = t.key_sources().into_iter();
-        known(t, t.key_fields())
-            && sources.all(|(s, key)| find(s).is_none_or(|s| known(s, key)))
+        known(t, &t.key_fields())
+            && sources.all(|(s, key)| find(s).is_none_or(|s| known(s, &key)))
             && (shows(typed(t)) || fields.any(|f| shows(granted_access(who, t, f))))
     };
     let (mut asked, mut next) = (vec![&t.name], vec![t]);
