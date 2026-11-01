@@ -222,3 +222,103 @@ fn the_door_tells_each_principal_by_the_lakes_it_addresses() {
     assert!(err(&served).contains("`hr-only`"), "{}", err(&served));
     assert!(!err(&served).contains("`anywhere`"), "{}", err(&served));
 }
+
+#[test]
+fn a_grant_naming_a_field_the_type_does_not_declare_is_told_and_starts() {
+    let root = Lakes::with_articles("unknown-field");
+    let told = |out: &Output, field: &str| {
+        let said = err(out);
+        said.contains(&format!("`{field}`"))
+            && said.contains("`clerk`")
+            && said.contains("`article`")
+    };
+    for (field, grant) in [
+        ("topik", json!({"fields": {"topik": "none"}})),
+        (
+            "slgu",
+            json!({"hide_where": [{"field": "topic", "values": ["rivers"], "fields": {"slgu": "none"}}]}),
+        ),
+    ] {
+        root.configure(
+            clerk(json!({"default": "read", "types": {"article": grant}})),
+            json!({}),
+        );
+        for started in [root.serve_as_clerk(), root.read_as_clerk()] {
+            assert!(started.status.success(), "{}", err(&started));
+            assert!(
+                told(&started, field),
+                "`{field}` not told: {}",
+                err(&started)
+            );
+        }
+    }
+    // The fields as declared are not told.
+    let hiding = json!({"field": "topic", "values": ["rivers"], "fields": {"slug": "none"}});
+    root.configure(
+        clerk(json!({"default": "read", "types": {"article": {
+            "fields": {"slug": "read"}, "hide_where": [hiding]}}})),
+        json!({}),
+    );
+    for started in [root.serve_as_clerk(), root.read_as_clerk()] {
+        assert!(started.status.success(), "{}", err(&started));
+        assert!(!err(&started).contains("clerk"), "{}", err(&started));
+    }
+}
+
+/// Written by hand: a `Value` keeps the last of a repeated key.
+#[test]
+fn a_key_repeated_in_a_grant_stops_the_root() {
+    let root = Lakes::with_articles("repeated-key");
+    for (key, grants) in [
+        (
+            "topic",
+            r#"{"types": {"article": {"fields": {"topic": "none", "topic": "read"}}}}"#,
+        ),
+        (
+            "article",
+            r#"{"types": {"article": {"default": "none"}, "article": {}}}"#,
+        ),
+        (
+            "topic",
+            r#"{"types": {"article": {"only": {"topic": "rivers", "topic": "lakes"}}}}"#,
+        ),
+        (
+            "slug",
+            r#"{"types": {"article": {"hide_where": [{"field": "topic", "values": ["rivers"],
+                "fields": {"slug": "none", "slug": "read"}}]}}}"#,
+        ),
+    ] {
+        fs::write(
+            root.dir.join("lakelands.json"),
+            format!(
+                r#"{{"lakelands": 1, "owner": "owner", "principals": [
+                {{"name": "clerk", "kind": "agent", "id": "clerk", "grants": {grants}}}]}}"#
+            ),
+        )
+        .unwrap();
+        let before = root.lake_files();
+        for refused in [root.serve_as_clerk(), root.read_as_clerk()] {
+            let said = err(&refused);
+            assert!(!refused.status.success(), "`{key}` started: {said}");
+            assert!(said.contains(&format!("`{key}`")), "no key: {said}");
+            assert!(said.contains("`clerk`"), "no principal: {said}");
+        }
+        assert!(root.lake_files() == before, "`{key}` touched the lake");
+    }
+}
+
+/// A repeat met earlier, outside any grant, hides no repeat in a grant.
+#[test]
+fn a_repeat_outside_a_grant_hides_none_inside_one() {
+    let root = Lakes::with_articles("repeat-outside");
+    fs::write(
+        root.dir.join("lakelands.json"),
+        r#"{"lakelands": 1, "owner": "owner", "owner": "owner", "principals": [
+        {"name": "clerk", "kind": "agent", "id": "clerk", "grants": {"default": "read",
+         "types": {"article": {"fields": {"topic": "none", "topic": "read"}}}}}]}"#,
+    )
+    .unwrap();
+    let said = err(&root.read_as_clerk());
+    assert!(said.contains("repeats the key `topic`"), "{said}");
+    assert!(said.contains("`clerk`"), "{said}");
+}

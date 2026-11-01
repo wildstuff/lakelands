@@ -60,6 +60,18 @@ line does not tell an old name from a misspelling, because the list of
 renames is not on the facade, and a line is not worth widening it for.
 `verify` says nothing of this: it answers whether the log holds.
 
+A field name under a type grant's `fields`, or under `hide_where[].fields`,
+that the type declares in none of the lakes looked in is told the same
+way, naming the principal, the type and the field, and is not refused for
+the same two reasons: the declaration may come after the configuration,
+and a grant stands under a renamed field's old name.
+
+A key written twice in one of a grant's maps (`types`, `fields`, `only`,
+`only_any`, `hide_where[].fields`) stops the root as an unknown key does,
+naming the principal and the key, before any lake is opened. A map keeps
+the last value of a repeated key, so a restriction written first would
+drop without a word.
+
 ### A field has one access, the lowest over every name it has borne and everything it is built from
 
 #### A field may be granted `write_only`: written, and never read
