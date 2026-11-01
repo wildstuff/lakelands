@@ -195,6 +195,11 @@ joins through `keys`, which disfavours it a little; not by that much.
   index with an incremental sort took 0.49 ms for 1 000 rows, against 1.0 ms for
   today's bitmap over both indexes. It needs one more bound, `s.sort_key <= k`,
   beside today's `OR`.
+  Corrected by F8, measured on PostgreSQL 18 at 300k ticks, load 9 to 11 on 16
+  cores, the median of 60 reads of the second page: the old plan read
+  `sort_index_desc` alone, no bitmap, in 0.58 to 0.60 ms; the backward walk
+  takes 0.84 to 1.04 ms. The index goes for its 107 B a tick all the same:
+  the whole page takes 12 ms, and its records' 1 000 lookups are 11.7 of them.
 - **`text_index_key` goes.** Read: only deletes use it, and a delete knows the
   values its record held, so it goes by primary key.
   Corrected by F8 on PostgreSQL, where the tree said otherwise. A page under a
