@@ -197,6 +197,13 @@ joins through `keys`, which disfavours it a little; not by that much.
   beside today's `OR`.
 - **`text_index_key` goes.** Read: only deletes use it, and a delete knows the
   values its record held, so it goes by primary key.
+  Corrected by F8 on PostgreSQL, where the tree said otherwise. A page under a
+  text many records hold sought each holder's text row through it, comparing
+  the key in the column's collation; it now compares it bytewise and seeks
+  `text_index_value` by all four columns. The engine is handed a record's new
+  state only, so before a head moves its old values are read from the state
+  the head is at, and its text rows go by `text_index_value`, those the new
+  state holds again staying.
 - **`sort_index`'s primary key stays,** though it looks spare: read,
   `unsorted_after_sql`, `holders_in_order_sql` and `unsorted_holding_sql` seek it
   by key. A trial without it was withdrawn.

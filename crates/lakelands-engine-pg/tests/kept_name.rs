@@ -110,6 +110,8 @@ fn plans(
 /// key's state found by a seek, so none of its other states is read. With
 /// statistics the heads are walked in key order too, with no sort; without
 /// them the planner may sort the heads of a small table, one row a key.
+/// The count at the head reads its name's heads alone, which hold the
+/// flags it counts by.
 fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
     for (i, (head, plan)) in plans.iter().enumerate() {
         let has = |step: &str| plan.iter().any(|line| line.contains(step));
@@ -132,6 +134,11 @@ fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
             assert!(
                 has("Limit") && has("Index Scan Backward using outputs_pkey"),
                 "the read of a recorded output is not a seek of its latest state; {told}"
+            );
+        } else if i % 5 == 2 && *head {
+            assert!(
+                has("on records_head h") && !has("records x") && !has("records r"),
+                "a count at the head does not read the heads alone; {told}"
             );
         } else {
             // The heads, the outer side of the one join, each joined to
