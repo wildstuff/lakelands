@@ -433,9 +433,10 @@ fn each_event(
 /// events as they restore, each followed by a line feed, hashed as they
 /// are read.
 fn digest_of(db: &mut Db, names: &Names, first: i64) -> Result<Digest> {
-    let mut hash = Sha256::new();
+    let (mut hash, mut restorer) = (Sha256::new(), lakelands_core::log::Restorer::default());
     each_event(db, names, first, |_, event| {
-        let (restored, whole) = lakelands_core::log::restore_json(event)
+        let (restored, whole) = restorer
+            .restore_json(event)
             .map_err(|flaw| lakelands_core::damaged(Part::Log, Some(event.position), flaw))?;
         match whole {
             true => hash.update(&event.bytes),

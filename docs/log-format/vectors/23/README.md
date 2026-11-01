@@ -199,14 +199,17 @@ The files:
   naming another source than its own, `on_behalf_of` inside `context`,
   and a `record_ingested` whose `sealed` holds no box.
 - `framed.json`: the lake's next append, three `record_ingested` of
-  `erp` at positions 97 to 99, in the stored form a writer of format 23
-  writes (`docs/log-format.md` §1.2): `stored`, a frame line holding every
+  `erp` at positions 97 to 99, in the line form of a frame
+  (`docs/log-format.md` §1.2), which a reader of format 23 reads and a
+  writer puts inside a block (§1.5): `stored`, a frame line holding every
   member the three share, top-level and one level into `body`, and each
   event's line holding the rest, none with `position` or `prev`, which
   the event before it gives; and `events`, the canonical events those
   lines restore to, with their hashes and ingest ids. Each verifier makes
-  the writer's lines from the events and holds them to `stored`, and
-  restores `stored` byte for byte. Its `breaks` are the lines of one
+  the frame's lines from the events and holds them to `stored`, and
+  restores `stored` byte for byte; `log_vectors.rs` holds the writer's
+  block of the three to `stored`, each line leaving out its `hash` and its
+  ingest id. Its `breaks` are the lines of one
   segment a reader refuses, each for one flaw, named by its code, at the
   line `at` (null: at the segment's end), after the event `after` (null:
   at a segment's start): a frame line among a frame's lines, a line
@@ -232,15 +235,32 @@ The files:
   key, `a2` and `a3`, and `email` is in one box under the key HKDF-SHA-256
   derives from the two. `a2` is SHA-256 of `lakelands:vectors:apart2` and
   `a3` of `lakelands:vectors:apart3`, as `a1` is of
-  `lakelands:vectors:apart`. `stored` is the writer's form: a frame line
+  `lakelands:vectors:apart`. `stored` is the frame's form, as in
+  `framed.json`: a frame line
   holding what the two share, which leaves out `delivery` and `sealed.apart`
   and `sealed.box`, and each event's line holding its own of the three;
   `events` are the canonical events those lines restore to, with their
   hashes and ingest ids, made under `lakelands:ingest:v2` with the box.
-  Each verifier recomputes the events, makes the writer's lines from them
+  Each verifier recomputes the events, makes the frame's lines from them
   and holds them to `stored`, restores `stored` byte for byte, and holds
   each box to its form; `lakelands-store`'s `sealing` tests open each box
   under the version composed with its own key apart.
+- `blocks/log/00000000000000000000.jsonl`: a lake of its own, written by
+  the SQLite engine (`docs/log-format.md` §1.5): the append that makes
+  the lake (`lake_created`, `lease_taken` and the declarations of
+  `sys.setting` and `sys.aging_rule`, positions 0 to 3), the declarations
+  of `reading` and `note`, `meter`'s delivery of 1 003 `record_ingested`
+  in one append, positions 6 to 1 008, and an upsert at 1 009. The append
+  that makes the lake is whole lines, the only ones holding `position`
+  and `prev`; each later append of one is a line holding its `hash`; the
+  delivery is two blocks of 1 000 and 3 events, both naming its last
+  position as `end`. Each block's first line names its first position, the `prev`
+  before it, its last hash, its events and its sizes; its zlib stream
+  inflates to a frame line and a line an event leaving out `hash`, `v`,
+  `position`, `prev` and the ingest id. `verify.py` restores the events
+  and holds each block's lines to the writer's form of them;
+  `log_vectors.rs` holds the stored bytes to the store's writer, and both
+  verify the lake to its head.
 - `schema-hash.json`: a view type whose conditions are written as text,
   the shape object it hashes (conditions in typed form, Appendix B), the
   shape's canonical bytes, and the schema hash; and the hash of the same
@@ -262,8 +282,9 @@ Two implementations check them, sharing no code:
 
 `verify.py <dir>` checks a lake's log instead: an export
 (`lakelands export --to <dir>`) or a SQLite lake directory. It reads
-only `<dir>/log/`, restores each event from the stored form (§1.2),
-refusing every break of it, and checks every line is canonical, each
+only `<dir>/log/`, restores each event from the stored form (§1.2) or
+its block (§1.5), refusing every break of them and an append whose
+blocks stop before its `end`, and checks every line is canonical, each
 segment's digest is taken over its events as restored, the positions run
 from 0 and name their files in 20 digits, the hash chain, every
 checkpoint against the position, the hash and the files before it, and
@@ -295,16 +316,17 @@ serialiser: every line's `v`, `lake_created`'s `format`, each `prev` and
 `expected.json` and `further.json` repeat, the `misplaced` lines, the
 framed append, whose stored lines it writes again from its restamped
 events and whose breaks it moves to format N, the boxed ingest, the append
-of `apart.json` with its stored lines written again, both negative
-vectors, and `FORMAT` in `verify.py`.
+of `apart.json` with its stored lines written again, the blocks lake on
+its own chain, its blocks formed and compressed again with Python's zlib,
+every negative vector, and `FORMAT` in `verify.py`.
 It then checks what it wrote. No id changes: none is made from `v`. The
 repository's tests hold the result to `LOG_FORMAT_VERSION` and to the
 version `docs/log-format.md` opens with. Called without a number, or
 with something that is none, `--stamp` says how it is called and changes
 nothing.
 
-**Two negative vectors.** Each holds the first segment above with the
-event at position 6 changed and its hash made right, so only one rule
+**Negative vectors.** The first two each hold the first segment above
+with the event at position 6 changed and its hash made right, so only one rule
 is broken, and every verifier refuses it at position 6.
 `negative/known-at-goes-back/log/` gives it a `known_at` before the one
 of position 5 (§1.3):
@@ -316,6 +338,13 @@ of position 5 (§1.3):
 `negative/another-format/log/` writes it in the format before the
 release's, which `--stamp N` makes N - 1:
 - `python3 verify.py negative/another-format`;
+- `lakelands_core::export::verify`, in `log_vectors.rs`.
+
+`negative/torn-between-blocks/log/` is the blocks lake cut at its second
+block's first byte: the delivery's append stops after its first block,
+and every verifier refuses it at the second block's first position,
+1 006, for an append whose blocks end before its last position, 1 008:
+- `python3 verify.py negative/torn-between-blocks`;
 - `lakelands_core::export::verify`, in `log_vectors.rs`.
 
 The random ids at positions 0, 1, 2, 3, 6 and 7 are fixed values, so the

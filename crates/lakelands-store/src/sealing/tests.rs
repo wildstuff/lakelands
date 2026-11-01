@@ -737,7 +737,8 @@ async fn an_output_over_an_ingest_sealed_apart_does_not_read_a_leftover_row() {
     .await;
     let through = u32::try_from(lake.head().0 + 1 - city.0).unwrap();
     let read = lake.engine.read(city, through).unwrap();
-    let events = read.iter().map(crate::log::open);
+    let mut restorer = lakelands_core::log::Restorer::default();
+    let events = read.iter().map(|e| crate::log::open_with(&mut restorer, e));
     let outputs: Vec<_> = (events.map(Result::unwrap))
         .filter(|e| matches!(e.body, EventBody::OutputRecorded { .. }))
         .map(|e| e.sealed.map(|s| (s.key, s.apart)))

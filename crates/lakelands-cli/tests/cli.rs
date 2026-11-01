@@ -2269,35 +2269,27 @@ fn backup_grows_its_directory_and_restore_makes_the_lake_with_its_keys() {
         .last()
         .unwrap()
         .unwrap();
-    let text = fs::read_to_string(segment.path()).unwrap();
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    // The hash is of the event a line restores to (log-format §1.2).
-    let (mut replay, mut before, mut event) = (lakelands_core::log::Lines::default(), None, None);
-    for line in &lines {
-        let value = lakelands_core::log::line_of(line.as_bytes()).unwrap();
-        let after = before
-            .as_ref()
-            .map(|(p, h): &(lakelands_api::Position, String)| (*p, h));
-        let after = after.map(|(p, h)| (p, lakelands_api::event::Digest(h.clone())));
-        let restored = replay.line(value, after.as_ref().map(|(p, h)| (*p, h)));
-        if let Some((value, _)) = restored.unwrap() {
-            before = Some((
-                lakelands_api::Position(value["position"].as_u64().unwrap()),
-                value["hash"].as_str().unwrap().to_owned(),
-            ));
-            event = Some(value);
-        }
+    let file = fs::read(segment.path()).unwrap();
+    // The hash is of the event a line restores to (log-format §1.2); the
+    // last event, an append of one, is the segment's last line.
+    let mut restoring = lakelands_core::log::Restoring::new(&file[..], true);
+    let mut last = None;
+    while let Some(restored) = restoring.next_event().unwrap() {
+        last = Some(restored);
     }
-    let mut event = event.unwrap();
+    let last = last.unwrap();
+    let (mut event, at) = (last.event, last.unit as usize);
     event["id"] = event["id"].as_str().unwrap().to_uppercase().into();
     event.as_object_mut().unwrap().remove("hash");
     let hash = lakelands_core::canonical::sha256_hex(&event);
-    let mut last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
-    last["id"] = event["id"].clone();
-    last["hash"] = hash.into();
-    let last = String::from_utf8(lakelands_core::canonical::to_vec(&last)).unwrap();
-    *lines.last_mut().unwrap() = last;
-    fs::write(segment.path(), lines.join("\n") + "\n").unwrap();
+    let line = std::str::from_utf8(&file[at..]).unwrap().trim_end();
+    let mut line: serde_json::Value = serde_json::from_str(line).unwrap();
+    line["id"] = event["id"].clone();
+    line["hash"] = hash.into();
+    let mut bytes = file[..at].to_vec();
+    bytes.extend(lakelands_core::canonical::to_vec(&line));
+    bytes.push(b'\n');
+    fs::write(segment.path(), bytes).unwrap();
     let odd = odd.display().to_string();
     let refused = from.run(&["restore", &odd, "--check"]);
     let position = format!("damaged at position {now}: its `id` is not 32 lower-case hex");
@@ -3169,7 +3161,7 @@ limits.order_max_fields                 location  2 (default)
 limits.order_unused_secs                location  604800 (default)
 limits.order_chunk                      location  10000 (default)
 limits.forget_rebuild                   location  false (default)
-limits.seal_after_bytes                 location  268435456 (default)
+limits.seal_after_bytes                 location  67108864 (default)
 limits.quarantined_max                  location  10000 (default)
 engine.tuning.writer_cache_kb           location  65536 (default)
 engine.tuning.reader_cache_kb           location  16384 (default)

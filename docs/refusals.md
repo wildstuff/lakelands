@@ -1097,6 +1097,9 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `frame_short` | `events` (u64), `held` (u64) | a frame covers {events} events, and its segment holds {held} of them after it | A frame covers more events than its segment holds after it. |
 | `frame_in_frame` | — | a frame line stands among the lines a frame covers | A frame line stands among the lines a frame covers. |
 | `framed_twice` | `member` (String) | its line holds `{member}`, which its frame holds | An event's line holds a member its frame holds. |
+| `not_a_block` | — | a line holds `block` and is no block's first line: it holds `block` and `v` alone, `block` an object of `end`, `events`, `first`, `hash`, `prev`, `raw` and `stored`, `events` a count from 1 and `end` no position before the block's last | A line holds `block` and is no block's first line. |
+| `block_bytes` | — | a block's bytes do not inflate by zlib to the `raw` bytes of lines, each ended by a line feed, that its first line names | A block's bytes do not inflate to the lines its first line names. |
+| `append_short` | `end` (Position) | an append's blocks end before its last position {end} | An append's blocks end before its last position. |
 | `start_unheld` | — | it is a segment's first event line, and does not hold both its `position` and its `prev` | A segment's first event line does not hold its `position` and its `prev`. |
 | `known_at_back` | `known_at` (Timestamp), `before` (Timestamp) | its known_at {known_at} is before the {before} of the event before it | Its `known_at` is before that of the event before it. |
 | `integer_too_large` | `n` (Number) | the integer {n} in it is beyond ±(2^53 − 1), which not every reader reads exactly | It holds a number written as an integer beyond ±(2^53 − 1). |
