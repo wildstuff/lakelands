@@ -101,7 +101,7 @@ async fn write(l: &Lake, key: &str, datum: &str) -> Result<Result<String, String
             Case::ConstraintBroken { constraint, .. } => Ok(Err(constraint.to_string())),
             other => Err(Failure::new(format!("{key}: refused {other:?}"))),
         },
-        _ => Err(Failure::new(format!("{key} dated {datum}: {a:?}"))),
+        _ => Err(Failure::new(format!("{key} dated {datum}: {}", said(&a)))),
     }
 }
 
@@ -113,6 +113,14 @@ async fn day_of(l: &Lake, key: &str) -> Result<String, Failure> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned())
+}
+
+/// What a write answered, its error as the store says it.
+fn said<T: std::fmt::Debug>(a: &Result<T, Error>) -> String {
+    match a {
+        Ok(v) => format!("{v:?}"),
+        Err(e) => e.to_string(),
+    }
 }
 
 /// Admitted on `day`.
@@ -132,7 +140,8 @@ async fn today_is_the_day_of_the_lake_s_zone(store: Store, given: Given) -> Held
     let a = try_upsert(l.cat.as_ref(), &l.own, setting, "zone", mars).await;
     ensure!(
         matches!(invalid_case(&a), Some(Case::SettingZone { .. })),
-        "a zone the database does not name is refused `setting_zone`: {a:?}"
+        "a zone the database does not name is refused `setting_zone`: {}",
+        said(&a)
     );
     l.set("zone", json!("Europe/Berlin")).await?;
     l.declare_json(reading()).await?;
