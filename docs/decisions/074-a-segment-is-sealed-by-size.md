@@ -6,6 +6,9 @@
 
 ### The writer seals the active segment past `limits.seal_after_bytes`
 
+098 counts bytes as restored and takes the default to 64 MiB, since a
+seal digests restored events.
+
 A lake's `Location` carries `limits.seal_after_bytes`, 256 MiB by
 default. Where the engine reports its active segment's committed bytes
 and they reach the bound, the host that holds the writer seals the
@@ -90,3 +93,7 @@ The floor keeps a small bound from sealing on nearly every append.
   import.
 - It makes no position equal to a serial run's: the batched rows and
   the soak run with the bound at 0.
+
+## How it came to be
+
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

@@ -32,6 +32,9 @@ cut and are the next run's. A seal during the run reaches it as a
 
 ### A run into a backup writes only what follows its last line
 
+098's blocks are this run's unit: a run continues after its last whole
+block. The section on an upgrade goes with the operator's green field.
+
 Run again into its directory, the run finds the last whole line of its
 last file, passing over files that hold none. The line must be the
 lake's own event at the position it names, byte for byte as the feed
@@ -155,3 +158,4 @@ always at hand.
 
 - A run writing the form a copy of the log writes, and continuing after
   its last whole frame, accepted with 083 (lakelands#1413).
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

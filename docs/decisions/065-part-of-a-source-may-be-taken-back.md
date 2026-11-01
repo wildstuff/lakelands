@@ -349,6 +349,10 @@ record is refused as any write that leaves a required field empty is.
 
 ### It runs as 058's act runs
 
+099 changes this section: an act walks on a view, appends in parts, each
+its own turn, ends with `act_whole`, and restates by pages or beside.
+Its first turn destroys the keys and gives the source its new version.
+
 Under the writer's lock, in steps, each idempotent:
 1. the append;
 2. the destroy of the versions it shreds;
@@ -510,3 +514,4 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
 - A key apart per source and delivery, where a record names its own
   delivery, and a window's new keys asked for in one request (087,
   lakelands#1528).
+- Amended by 099 (lakelands#1652), proposed for 0.23.0.

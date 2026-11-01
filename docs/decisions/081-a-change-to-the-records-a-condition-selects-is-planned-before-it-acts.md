@@ -46,6 +46,10 @@ selected key with the version the plan read.
 
 ### `enact` changes what the plan showed, in one append, or nothing
 
+099 moves the re-selection to a view, and a report goes stale only by a
+write that reaches it: a selected key that moved, or a record that came
+to match.
+
 `enact` acts against the plan its caller was shown, named by its id. It
 selects again at the head, under the writer, and where the plan made now
 has another id it is refused `plan_stale`: a selected record changed, a
@@ -132,3 +136,7 @@ a count, tells the field record by record.
 - Not a new engine method. The selection is `find`'s read, and the
   writes are the doors' own events.
 - Not a change cut to its ceiling, and not one applied in parts.
+
+## How it came to be
+
+- Amended by 099 (lakelands#1652), proposed for 0.23.0.

@@ -4,6 +4,9 @@
 
 ### Every event is stored as its canonical bytes and names its predecessor's hash
 
+098 stores a block's events without each `hash`, restored on reading;
+what is hashed and chained here does not change.
+
 Every event is stored as its canonical bytes: its JSON under the JSON
 Canonicalization Scheme (RFC 8785). Its hash is SHA-256 over the
 canonical bytes of the event without its `hash` member, and every event
@@ -121,3 +124,4 @@ recorded point.
 - A stored form from which each event's canonical bytes are restored,
   and a digest over the restored bytes, accepted with 083
   (lakelands#1413).
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

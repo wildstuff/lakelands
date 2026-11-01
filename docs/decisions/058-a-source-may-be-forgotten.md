@@ -115,6 +115,10 @@ A type whose key holds personal data is given a surrogate key. `hosting.md` says
 
 ### The engine's storage is reclaimed
 
+099 takes the full `VACUUM` out of the act: the reclaim runs in turns on
+SQLite and off the writer on PostgreSQL, and `lakelands compact` keeps
+the full one.
+
 Deleting a row leaves its bytes in free pages until the engine reclaims them. So after the restatement, the act runs the engine's own reclaim, and its report says what it measured:
 - **SQLite:** `VACUUM`, which writes the database anew, so no freed page survives it, then a WAL truncate, which drops the old pages from the journal;
 - **PostgreSQL:** `VACUUM` of the tables it touched;
@@ -259,3 +263,4 @@ What it gives up is plaintext in the log for the fields that opt in. Those field
 - The act scrubs by rebuilding the projection after the keys are destroyed, where it was first written as an incremental scrub of every kept state before the keys were destroyed. The operator decided it (lakelands#1042): the projection is then the fold of the log and the key store by construction, and no second path has to stay equal to a rebuild. The price is the rebuild's time under the writer's lock, which the preflight names; an incremental scrub, for hosts that forget often on large lakes, is its own later step.
 - The preflight and the act read the source's events by the feed index, where each walked the whole log, the act under the writer's lock: about 6 s at 200 000 events, on either engine, to count what the source's 2 000 held (lakelands#1151).
 - The act refolds only the records its sources wrote where nothing else reads them, and rebuilds otherwise, saying why (lakelands#1120). The rebuild under the writer's lock grew with the lake, not with the source: about 32 s on SQLite and 129 s on PostgreSQL at 100 000 records to erase what one source of a hundred held. The fold stays one: the refold runs it over the records the source wrote, the rebuild over every record, and the suite compares them read for read. A host that wants the reference way sets `limits.forget_rebuild`.
+- Amended by 099 (lakelands#1652), proposed for 0.23.0.
