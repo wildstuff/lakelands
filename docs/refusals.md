@@ -753,6 +753,7 @@ What a refusal is about.
 | `setting_index_shape` | `type` (TypeName) | it holds an array of field names of `{type}`, or null for no index | An index setting that is no list. |
 | `setting_kept_holds` | — | it holds `true` for a view that is kept, or `false` | A `view_kept` setting that holds no boolean. |
 | `setting_key_period` | — | it holds `day`, `week` or `month`, the period a source's key is used for, or null for no period | A key period that names none. |
+| `setting_zone` | `value` (Value) | it holds a time zone as the IANA time-zone database names it, as 'Europe/Berlin', and {value} is none | A lake's zone the time-zone database does not name. |
 | `setting_unlisted` | `prefix` (String) | keys under `{prefix}.` are the store's own settings, and this is none of them | A key under the prefix of the store's own settings that names none of them. |
 | `setting_store_key` | `prefix` (String) | keys under `{prefix}` are the store's own settings; a host declares a key of its own | A host's setting declared under a key the store reads, or under the prefix of one. |
 | `setting_group_stamped` | — | the store writes a setting's group from its declaration; leave `group` out | A write of `sys.setting` naming a group other than the one the store stamps from the setting's declaration. |

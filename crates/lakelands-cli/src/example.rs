@@ -271,6 +271,7 @@ async fn make(
         example.name,
         "sqlite",
         &root::PgNew::default(),
+        None,
     )?;
     let root = root::Root::open(dir)?;
     let location = root.location(Some(example.name))?;

@@ -98,7 +98,9 @@
 //! Derived fields and guards are evaluated by the fold and must
 //! reproduce on replay (`docs/decisions/002-determinism-is-the-boundary.md`).
 //! In them, `now()` and `today()` mean the `known_at` of the event being
-//! folded, never the clock of the process replaying it. A constraint is
+//! folded, never the clock of the process replaying it, and `today()`
+//! cuts it in the lake's zone as the settings stood there, never as they
+//! stand at the replay. A constraint is
 //! judged by the write alone, and its clock is the write's; so is a
 //! guard's `preceding`, whose firing the log keeps. In a read, they
 //! mean the read's clock: the instant `valid_at` names, else as of a
@@ -255,7 +257,11 @@ pub enum ArithOp {
 pub enum Func {
     /// `now()`: see the determinism rule in the module documentation.
     Now,
-    /// `today()`: midnight UTC of `now()`.
+    /// `today()`: the day of the lake's calendar holding `now()`, cut at
+    /// local midnight in the zone its `zone` setting names in force where
+    /// it is read, `UTC` where it names none, and held as that date is, at
+    /// its UTC midnight
+    /// (`docs/decisions/101-a-lake-keeps-its-calendar-in-one-named-zone.md`).
     Today,
     /// `known_at(field)`: when the lake learned the field's value.
     KnownAt,

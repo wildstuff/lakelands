@@ -133,6 +133,11 @@ pub const SETTINGS: &[Setting] = &[
         ..lake("key_period", PerType::Source, "null")
     },
     Setting {
+        range: "a time zone as the IANA time-zone database names it, as `Europe/Berlin`",
+        says: "The zone the lake's calendar day is read in: `today()` in an expression, and the date `serve` ages the lake for. A write is judged in the zone in force where it is made. Unset or retired, the day is UTC's. A new lake starts in its location's `zone`, which the writer's first open records where the lake has recorded none.",
+        ..lake("zone", PerType::No, "\"UTC\"")
+    },
+    Setting {
         range: "a count, at most `max_limit`",
         says: "How many rows a list-shaped read returns when the caller names no limit.",
         ..location("limits.default_limit", "50")
@@ -331,11 +336,6 @@ pub const SETTINGS: &[Setting] = &[
         says: "Where `serve` answers `GET /metrics` in the Prometheus text format, apart from the door; absent, it measures nothing and listens for none.",
         cost: "a write on the memory engine took 22.6 µs measured against 22.3 µs unmeasured with one caller, and 12.6 µs either way with sixteen; on SQLite the difference is inside a commit's noise; a scrape reads each lake's counters and takes nothing from its writer",
         ..root("server.metrics.bind", "null")
-    },
-    Setting {
-        range: "`Z`, or `+HH:MM` or `-HH:MM` within fourteen hours",
-        says: "The UTC offset `serve` reads the date at, to age each lake it writes once a day.",
-        ..root("aging.utc_offset", "\"Z\"")
     },
     Setting {
         range: "seconds",

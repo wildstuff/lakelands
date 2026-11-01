@@ -265,9 +265,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and
   `lakelands serve` makes it daily when the root's `lakelands.json` has an
-  `aging` section: the date at its `utc_offset`, once at start and at each
-  rollover (`docs/seams.md` §aging). A rule moves the records whose field
-  holds its `from` to its `to`, and both are values, written as they are:
+  `aging` section: the day of the lake's calendar, read in the zone its
+  `zone` setting names (101), once at start and at each rollover
+  (`docs/seams.md` §aging). A rule moves the records whose field holds
+  its `from` to its `to`, and both are values, written as they are:
   a `to` of `concat('over', 'due')` is that text, never evaluated. A
   record whose field is null holds no `from`, so no rule moves it and the
   report does not count it. A host that wants such records aged gives the

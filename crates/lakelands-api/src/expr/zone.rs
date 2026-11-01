@@ -1,5 +1,7 @@
 //! The local calendar a `date_bucket` unit is cut in when it names a time
-//! zone, as in `date_bucket(t, 'day', 'Europe/Berlin')`.
+//! zone, as in `date_bucket(t, 'day', 'Europe/Berlin')`, and the lake's
+//! calendar day, which `today()` and aging read in the lake's `zone`
+//! (`docs/decisions/101-a-lake-keeps-its-calendar-in-one-named-zone.md`).
 //!
 //! A zone is named as the IANA time-zone database names it, and only that
 //! database's copy built into Lakelands is read: never the host's, nor a
@@ -46,6 +48,29 @@ pub fn local_start(t: i64, unit: &str, zone_name: &str) -> Option<i64> {
         .ok()?
         .to_zoned(tz.clone());
     start_of(local.date(), unit, tz)
+}
+
+/// The zone a lake reads its calendar day in where it names none.
+pub const UTC: &str = "UTC";
+
+/// The day of `zone`'s calendar holding the instant `t`, as a date is
+/// read: that date's UTC midnight, in microseconds since 1970. The day
+/// starts at local midnight, so it is 23 or 25 hours long where the offset
+/// changes. A zone the database does not name, which only a log written
+/// under another copy of the database can hold, and an instant outside
+/// the calendar are cut in UTC.
+pub fn day(t: i64, zone_name: &str) -> i64 {
+    const DAY: i64 = 86_400_000_000;
+    local_date(t, zone_name).unwrap_or_else(|| t.div_euclid(DAY) * DAY)
+}
+
+/// [`day`], where the zone and the instant are known.
+fn local_date(t: i64, zone_name: &str) -> Option<i64> {
+    let local = jiff::Timestamp::from_microsecond(t)
+        .ok()?
+        .to_zoned(zone(zone_name)?);
+    let midnight = local.date().to_zoned(TimeZone::UTC).ok()?;
+    Some(midnight.timestamp().as_microsecond())
 }
 
 /// As [`local_start`], for a `date` rather than an instant: the date is

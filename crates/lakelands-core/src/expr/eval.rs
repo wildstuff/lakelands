@@ -133,6 +133,14 @@ pub trait Scope {
     /// The clock `now()` and `today()` read.
     fn now(&self) -> Timestamp;
 
+    /// What `today()` reads: the day of the lake's calendar holding the
+    /// clock, cut in the zone its `zone` setting names (101).
+    fn today(&self) -> Timestamp {
+        let zone = self.setting(lakelands_api::seam::ZONE_SETTING);
+        let zone = lakelands_api::seam::zone(zone.as_ref());
+        Timestamp(zone::day(self.now().0, zone))
+    }
+
     /// In a verb: whether the path that begins at `relation` reaches a
     /// record. `None` outside a verb.
     fn exists(&self, _relation: &FieldName) -> Option<bool> {
@@ -460,6 +468,9 @@ impl Scope for Strict<'_> {
     }
     fn now(&self) -> Timestamp {
         self.inner.now()
+    }
+    fn today(&self) -> Timestamp {
+        self.inner.today()
     }
     fn exists(&self, relation: &FieldName) -> Option<bool> {
         self.inner.exists(relation)
@@ -814,10 +825,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
     let s = |i: usize| text(&vals[i]).unwrap_or_default();
     Ok(match func {
         Func::Now => Val::Time(scope.now()),
-        Func::Today => {
-            let day = 86_400_000_000;
-            Val::Time(Timestamp(scope.now().0.div_euclid(day) * day))
-        }
+        Func::Today => Val::Time(scope.today()),
         // The value in force on the day of `at`, else of the clock (090).
         Func::Setting => match &vals[0] {
             Val::Text(key) => {

@@ -1772,16 +1772,12 @@ fn the_root_configuration_carries_the_deliverer_and_refuses_an_endpoint_it_shoul
 }
 
 #[test]
-fn the_root_configuration_carries_the_ticker_and_refuses_an_offset_that_is_none() {
-    let config: lakelands_cli::Config = serde_json::from_str(
-        r#"{"lakelands": 1, "owner": "owner", "aging": {"utc_offset": "+01:00"}}"#,
-    )
-    .unwrap();
+fn the_root_configuration_carries_the_ticker_and_refuses_the_fixed_offset() {
+    let config: lakelands_cli::Config =
+        serde_json::from_str(r#"{"lakelands": 1, "owner": "owner", "aging": {"check_secs": 30}}"#)
+            .unwrap();
     let aging = config.aging.expect("the aging section reads");
-    assert_eq!(
-        (aging.utc_offset.as_str(), aging.check_secs),
-        ("+01:00", 60)
-    );
+    assert_eq!(aging.check_secs, 30);
     let unknown = serde_json::from_str::<lakelands_cli::Config>(
         r#"{"lakelands": 1, "owner": "owner", "aging": {"zone": "Europe/Vienna"}}"#,
     );
@@ -1790,16 +1786,18 @@ fn the_root_configuration_carries_the_ticker_and_refuses_an_offset_that_is_none(
         "an unknown key in the aging section is refused"
     );
 
+    // The date is the lake's own, read in its zone: a root that still
+    // names the fixed offset is refused, saying where the zone is set.
     let sh = Shell::on("aging-config", Backend::Store);
     sh.lake();
-    let config = r#"{"lakelands": 1, "owner": "owner", "aging": {"utc_offset": "CET"}}"#;
+    let config = r#"{"lakelands": 1, "owner": "owner", "aging": {"utc_offset": "+01:00"}}"#;
     fs::write(sh.root.join("lakelands.json"), config).unwrap();
     let s = sh.run(&["feed"]);
     assert_eq!(s.code, 1, "{}", s.out);
     assert!(
-        s.err.starts_with("error: <root>/lakelands.json: ")
-            && s.err
-                .contains("\n  what to do: fix the aging section of the configuration"),
+        s.err
+            .starts_with("error: <root>/lakelands.json: `aging.utc_offset` is gone")
+            && s.err.contains("lakelands settings set zone"),
         "{}",
         s.err
     );
@@ -3149,6 +3147,7 @@ lookup_index.<type>                     lake      null (default)
 search_weights.<type>                   lake      null (default)
 view_kept.<type>                        lake      false (default)
 key_period                              lake      null (default)
+zone                                    lake      "UTC" (default)
 limits.default_limit                    location  50 (default)
 limits.max_limit                        location  1000 (default)
 limits.max_depth                        location  16 (default)
@@ -3186,7 +3185,6 @@ server.bounds.principal_rate            root      not configured: lakelands.json
 server.bounds.principal_in_flight       root      not configured: lakelands.json has no `server.bounds`
 server.bounds.body_bytes                root      not configured: lakelands.json has no `server.bounds`
 server.metrics.bind                     root      not configured: lakelands.json has no `server.metrics`
-aging.utc_offset                        root      not configured: lakelands.json has no `aging`
 aging.check_secs                        root      not configured: lakelands.json has no `aging`
 deliver.poll_millis                     root      not configured: lakelands.json has no `deliver`
 deliver.batch                           root      not configured: lakelands.json has no `deliver`

@@ -190,6 +190,7 @@ impl LakeStore for DownStore {
     refuse!(restrict<'life1, 'life2>(ty: &'life1 TypeName, key: &'life2 RecordKey, reason: String) -> Position);
     refuse!(unrestrict<'life1, 'life2>(ty: &'life1 TypeName, key: &'life2 RecordKey) -> Position);
     refuse!(age<>(today: lakelands_api::Timestamp) -> lakelands_api::write::AgeReport);
+    refuse!(zone<>() -> String);
     refuse!(purge_source<'life1, 'life2, 'life3>(source: &'life1 lakelands_api::SourceId, ty: Option<&'life2 TypeName>, id: Option<&'life3 str>) -> lakelands_api::write::PurgeReport);
     refuse!(purge_preflight<'life1, 'life2>(source: &'life1 lakelands_api::SourceId, ty: Option<&'life2 TypeName>) -> lakelands_api::write::PurgeReport);
     refuse!(forget_source<'life1, 'life2>(source: &'life1 lakelands_api::SourceId, id: Option<&'life2 str>) -> lakelands_api::write::ForgetReport);

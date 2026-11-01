@@ -20,7 +20,8 @@ use lakelands_api::quarantine::{
 };
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search, SearchMode};
 use lakelands_api::seam::{
-    ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, Spread, VerbInvocation,
+    ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, SETTING_TYPE, Seams, Spread, VerbInvocation,
+    ZONE_SETTING,
 };
 use lakelands_api::write::{
     AgeReport, Change, CompactReport, Declaration, ForgetReport, ForgetSetReport, IngestOpts,
@@ -57,6 +58,7 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
 
 /// The lake [`open`] opens.
 pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<Lake>> {
+    let zone = location.zone.clone();
     let lake = exec::run(move || Lake::open(&location, seams, mode)).await?;
     let lake = Arc::new(lake);
     let owing = lake.clone();
@@ -65,7 +67,37 @@ pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> 
         Ok(())
     })
     .await?;
+    start_zone(&lake, zone).await?;
     Ok(lake)
+}
+
+/// Record `zone`, the zone the location starts a lake in, as the lake's
+/// `zone` setting, at a writer's open of a lake that never recorded one:
+/// a zone set since, or one retired, stands, and only the log says the
+/// zone from then on (101). It is written as any setting is, by the
+/// store for itself, and judged as one: a zone the database does not
+/// name refuses the open.
+async fn start_zone(lake: &Arc<Lake>, zone: Option<String>) -> Result<()> {
+    let Some(zone) = zone.filter(|_| lake.is_writer()) else {
+        return Ok(());
+    };
+    let (ty, key) = (TypeName::from(SETTING_TYPE), RecordKey::from(ZONE_SETTING));
+    let (held, at) = (lake.clone(), (ty.clone(), key.clone()));
+    let recorded = exec::run(move || Ok(held.engine.view(None)?.get(&at.0, &at.1)?.is_some()));
+    if recorded.await? {
+        return Ok(());
+    }
+    let patch = [
+        ("key".into(), ZONE_SETTING.into()),
+        ("value".into(), zone.into()),
+    ]
+    .into();
+    let doors = Doors::new(lake, WriteContext::default());
+    let host = lake.system("lakelands");
+    doors
+        .upsert(&host, &ty, &key, patch, Default::default())
+        .await?;
+    Ok(())
 }
 
 /// What a standby's tries come to ([`standby`]): `Ok` once it holds the
@@ -1234,6 +1266,17 @@ impl LakeStore for Store {
             report.position = report.position.max(last);
         }
         Ok(report)
+    }
+
+    async fn zone(&self) -> Result<String> {
+        let lake = self.lake.clone();
+        exec::run(move || {
+            let view = lake.engine.view(None)?;
+            let shape = lake.shape(view.as_ref())?;
+            let zone = shape.settings.get(ZONE_SETTING);
+            Ok(lakelands_api::seam::zone(zone).to_owned())
+        })
+        .await
     }
 
     async fn purge_preflight(

@@ -614,6 +614,11 @@ impl LakeStore for ForwardingLake {
         Err(self.read_only())
     }
 
+    async fn zone(&self) -> Result<String> {
+        self.caught_up().await?;
+        self.local.zone().await
+    }
+
     async fn purge_source(
         &self,
         _: &SourceId,

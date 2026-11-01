@@ -190,7 +190,8 @@ fn a_search_weight_out_of_range_weighs_nothing() {
 }
 
 /// What a location holds beside its settings is the list's location
-/// bindings, both ways: the engines' members and the key's handle.
+/// bindings, both ways: the engines' members and the key's handle; and
+/// the zone a new lake starts in, which is the lake setting's.
 #[test]
 fn the_location_s_bindings_are_the_list_s() {
     use crate::location::{EngineConfig, KeyHandle, Location};
@@ -216,11 +217,14 @@ fn the_location_s_bindings_are_the_list_s() {
     }
     pg.key = Some(KeyHandle("k".into()));
     pg.writers = vec![crate::location::WriterDoor::new("https://w")];
+    pg.zone = Some("Europe/Berlin".into());
     let mut members = std::collections::BTreeSet::new();
     for l in [sqlite, pg] {
         let v = serde_json::to_value(l).expect("it serialises");
         for (k, _) in v.as_object().expect("an object") {
-            if !matches!(k.as_str(), "lake" | "engine" | "limits") {
+            // `zone` is the first value of the lake setting `zone`, listed
+            // with it (101), and neither a binding nor a setting of its own.
+            if !matches!(k.as_str(), "lake" | "engine" | "limits" | "zone") {
                 members.insert(k.clone());
             }
         }

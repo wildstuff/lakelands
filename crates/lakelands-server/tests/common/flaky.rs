@@ -193,6 +193,9 @@ impl LakeStore for Store {
     async fn age(&self, today: lakelands_api::time::Timestamp) -> Result<AgeReport> {
         self.inner.age(today).await
     }
+    async fn zone(&self) -> Result<String> {
+        self.inner.zone().await
+    }
     async fn purge_source(
         &self,
         source: &SourceId,

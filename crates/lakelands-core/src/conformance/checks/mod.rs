@@ -172,6 +172,7 @@ mod withdraw;
 mod write_judged;
 mod writer_filled;
 mod writes_only;
+mod zone_today;
 
 /// Every check, in the order the suite runs them.
 pub const ALL: &[Check] = &[
@@ -329,6 +330,10 @@ pub const ALL: &[Check] = &[
     write_judged::WALK_JUDGES_THE_REST,
     write_judged::PRECEDING_SERIES_CHOSEN,
     write_judged::PRECEDING_IN_A_GUARD,
+    zone_today::ZONE_CUTS_TODAY,
+    zone_today::ZONE_ACROSS_THE_CHANGE,
+    zone_today::ZONE_IN_FORCE_AT_THE_WRITE,
+    zone_today::ZONE_UNSET_IS_UTC,
     upsert_preflight::UPSERT_JUDGED_AS_WRITTEN,
     upsert_preflight::UPSERT_JUDGED_ON_WHAT_IT_MAKES,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,

@@ -273,6 +273,9 @@ impl LakeStore for BreaksMidway {
     async fn age(&self, today: Timestamp) -> Result<AgeReport> {
         self.0.inner.age(today).await
     }
+    async fn zone(&self) -> Result<String> {
+        self.0.inner.zone().await
+    }
     async fn purge_source(
         &self,
         source: &SourceId,
