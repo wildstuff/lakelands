@@ -1,5 +1,7 @@
 # 100 — A guard may read the record in force
 
+Decided on lakelands#1640, for 0.23.0.
+
 ## What is decided
 
 **Proposed** on lakelands#1640, for 0.23.0. It stands on the tree records 098 and 099
@@ -183,8 +185,8 @@ Per 065 a firing stays in the log, and an act decides whether it is overruled. A
   `own_reads` already reads only this record's side (read: it goes by `children`).
 - **The rest of the `when` is decided again,** as now.
 - **What a log keeps.** A firing over an erased bound tells one bit of it. 058 says so of
-  every trigger over an erasable field, and this record repeats it for a bound. Open
-  choice 2 is the other answer, and it is not recommended.
+  every trigger over an erasable field, and this record repeats it for a bound. The
+  other answer, overruling it, was decided against (Decided by the operator, 2).
 
 **A write after an act's first turn does not read the erased value.** 099's seam takes a
 record from a refold through `redacted` where an owed act reaches it. Its poll rule, which
@@ -314,8 +316,9 @@ A bound of many versions costs that many times. The last but one is the worst ca
 it grows with K: 2 ms each candidate the act reaches and whose part has not landed, once
 a turn. A part that has landed shows `retired` and costs no refold. An ordinary tick
 pays the same until then, as a verb does in 099. So holding the read-through keeps the
-turn near 300 ms only up to about 75 bound versions in a part. Open choice 1 decides the
-rest; this record does not change 099's figure.
+turn near 300 ms only up to about 75 bound versions in a part. The operator decided the
+rest (Decided by the operator, 1): 099's bound is restated for this case, at 2 ms for each
+bound version an owed act reaches past about 75.
 
 **Against an ordinary write.** No turn bounds it, and the lock is the same. A delivery of
 500 at K = 1 024 with no order index holds the writer for seconds (measured: 6 to 7 s a
@@ -410,29 +413,30 @@ record is 890 and 2 100 and the whole is 12 391 and 12 682, over the reserve. Ea
 then measures its size and any raise goes by `docs/budgets.md`. If lines must go, G5's
 series row waits. Nothing else can: G1 to G3 are the ask, and G4 is what R2 owes.
 
-### Open for the operator
+### Decided by the operator
+
+Decided on 2026-11-01 (lakelands#1578): every recommendation below was taken.
 
 1. **Reading through against 099's "about 300 ms a turn", which the operator decided on
-   lakelands#1578. A decision is needed.** (a) Hold each read-through for the turn, as
-   this record does, and restate 099's bound for this case: a part adds 2 ms for each
+   lakelands#1578.** Each read-through is held per record and version for the turn, as
+   this record does, and 099's bound is restated for this case: a part adds 2 ms for each
    bound version an owed act reaches past about 75, up to about 1.2 s at 500 and about
-   2 ms × K for a partition passed over whole. Answers stay what the act leaves. (b) Pass
-   over any candidate an owed act reaches, with no refold. The bound holds with no memo,
-   but a removal of one field of a bound silences the guard on it for the length of the
-   act, and those missed firings stay missed. **Recommended: (a).** A turn that runs long
-   is seen and ends, a seal already takes about 2 s, and `on_changes` frees a host from
-   it. A firing missed in silence does neither.
-2. **A firing paired with an erased bound: stands or overruled.** Overruling would hide
-   the one bit the firing tells, but it needs the partition resolved as of the cause
-   under the grants and hidings of then, and the log does not name the bound.
-   **Recommended: it stands,** on 065's line for a predecessor, with 058's warning
-   repeated for a bound.
-3. **A large partition.** (a) `sort_index.box` or `series_index.box`, with K's figures in
-   `docs/hosting.md`. (b) A partition kept per append, as a read keeps 1 024: about 30
-   lines, about 620 ms for 3.1 s where 500 ticks share 100 series at K = 1 024
-   (reckoned), and no help to singles or to 500 series. (c) Refusing a pairing without
-   `series_index.T`: too strict, since a pairing of two matches has none, and it orders
-   two settings. **Recommended: (a),** the proper road and no new machinery.
+   2 ms × K for a partition passed over whole. Answers stay what the act leaves. The
+   other road, passing over any candidate an owed act reaches with no refold, was not
+   taken: the bound would hold with no memo, but a removal of one field of a bound would
+   silence the guard on it for the length of the act, and those missed firings would stay
+   missed. A turn that runs long is seen and ends, a seal already takes about 2 s, and
+   `on_changes` frees a host from it. A firing missed in silence does neither.
+2. **A firing paired with an erased bound stands.** Overruling would hide the one bit the
+   firing tells, but it needs the partition resolved as of the cause under the grants and
+   hidings of then, and the log does not name the bound. The firing stands, on 065's line
+   for a predecessor, with 058's warning extended to a bound.
+3. **A large partition** is served by `sort_index.box` or `series_index.box`, with K's
+   figures in `docs/hosting.md`: the proper road and no new machinery. A partition kept
+   per append, as a read keeps 1 024 (about 30 lines, about 620 ms for 3.1 s where 500
+   ticks share 100 series at K = 1 024, reckoned, and no help to singles or to 500
+   series), was not taken. Nor was refusing a pairing without `series_index.T`: too
+   strict, since a pairing of two matches has none, and it orders two settings.
 
 ## Why
 
