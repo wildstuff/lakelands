@@ -53,14 +53,35 @@ pub fn ingest_id(
     version_before: u64,
     patch: &Patch,
 ) -> EventId {
-    id_of(&[
-        b"lakelands:ingest:v1",
-        source.as_str().as_bytes(),
-        ty.as_str().as_bytes(),
-        key.as_str().as_bytes(),
-        version_before.to_string().as_bytes(),
-        &canonical::of(patch),
-    ])
+    let patch = canonical::of(patch);
+    let (source, ty, key) = (source.as_str(), ty.as_str(), key.as_str());
+    ingest_of(
+        [source, ty, key].map(str::as_bytes),
+        version_before,
+        &patch,
+        None,
+    )
+}
+
+/// An ingested record's id (`docs/log-format.md` §3) from its parts as
+/// bytes: its source, type and key, the version before, the patch's
+/// canonical bytes and, where its sealed members are in one box, the box
+/// as stored. [`ingest_id`], [`boxed_ingest_id`] and [`derived_id`] build
+/// it here alone.
+pub(crate) fn ingest_of(
+    [source, ty, key]: [&[u8]; 3],
+    version_before: u64,
+    patch: &[u8],
+    boxed: Option<&[u8]>,
+) -> EventId {
+    let before = version_before.to_string();
+    let tag: &[u8] = match boxed {
+        None => b"lakelands:ingest:v1",
+        Some(_) => b"lakelands:ingest:v2",
+    };
+    let mut parts = vec![tag, source, ty, key, before.as_bytes(), patch];
+    parts.extend(boxed);
+    id_of(&parts)
 }
 
 /// The id of an ingested record whose sealed members are in one box
@@ -76,15 +97,10 @@ pub fn boxed_ingest_id(
     patch: &Patch,
     boxed: &str,
 ) -> EventId {
-    id_of(&[
-        b"lakelands:ingest:v2",
-        source.as_str().as_bytes(),
-        ty.as_str().as_bytes(),
-        key.as_str().as_bytes(),
-        version_before.to_string().as_bytes(),
-        &canonical::of(patch),
-        boxed.as_bytes(),
-    ])
+    let patch = canonical::of(patch);
+    let (source, ty, key) = (source.as_str(), ty.as_str(), key.as_str());
+    let parts = [source, ty, key].map(str::as_bytes);
+    ingest_of(parts, version_before, &patch, Some(boxed.as_bytes()))
 }
 
 /// The id of a version of a quarantined record (`docs/log-format.md` §3): SHA-256 under `lakelands:quarantined:v1`
@@ -100,16 +116,41 @@ pub fn quarantined_id(
     boxed: Option<&str>,
     refusal: &lakelands_api::Error,
 ) -> EventId {
-    let refusal = serde_json::to_value(refusal).unwrap_or_default();
+    let refusal = canonical::of(&serde_json::to_value(refusal).unwrap_or_default());
+    let (source, delivery) = (id.source.as_str(), id.delivery.as_str());
+    let at = ([source, delivery].map(str::as_bytes), id.index);
+    let boxed = boxed.unwrap_or_default().as_bytes();
+    quarantined_of(
+        at,
+        version_before.into(),
+        &canonical::of(cells),
+        boxed,
+        &refusal,
+    )
+}
+
+/// A quarantined record's version's id (`docs/log-format.md` §3) from its
+/// parts as bytes: its id's source and delivery, and its index, the
+/// version before, the cells' canonical bytes, the box as stored or empty
+/// and the refusal's canonical bytes. [`quarantined_id`] and
+/// [`derived_id`] build it here alone.
+pub(crate) fn quarantined_of(
+    ([source, delivery], index): ([&[u8]; 2], u64),
+    version_before: u64,
+    cells: &[u8],
+    boxed: &[u8],
+    refusal: &[u8],
+) -> EventId {
+    let (index, before) = (index.to_string(), version_before.to_string());
     id_of(&[
         b"lakelands:quarantined:v1",
-        id.source.as_str().as_bytes(),
-        id.delivery.as_str().as_bytes(),
-        id.index.to_string().as_bytes(),
-        version_before.to_string().as_bytes(),
-        &canonical::of(cells),
-        boxed.unwrap_or_default().as_bytes(),
-        &canonical::of(&refusal),
+        source,
+        delivery,
+        index.as_bytes(),
+        before.as_bytes(),
+        cells,
+        boxed,
+        refusal,
     ])
 }
 

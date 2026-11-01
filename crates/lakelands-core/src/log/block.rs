@@ -32,7 +32,7 @@ use lakelands_api::event::{Digest, EventId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Framed, Lines, format_of, id_of, is_frame, json_of, line_of, restored};
+use super::{Framed, Lines, format_of, is_frame, json_of, line_of, restored};
 use crate::canonical;
 
 /// The most events a block holds.
@@ -133,47 +133,33 @@ pub fn derived_id(event: &Value) -> Option<EventId> {
     fn text<'a>(v: &'a Value, name: &str) -> Option<&'a [u8]> {
         v.get(name)?.as_str().map(str::as_bytes)
     }
-    let before = body.get("version")?.as_u64()?.checked_sub(1)?.to_string();
-    fn boxed(sealed: Option<&Value>) -> &[u8] {
-        sealed.and_then(|s| text(s, "box")).unwrap_or_default()
-    }
+    let before = body.get("version")?.as_u64()?.checked_sub(1)?;
     match body.get("kind")?.as_str()? {
         "record_ingested" => {
-            let (source, ty, key) = (
+            let parts = [
                 text(event, "source")?,
                 text(body, "type")?,
                 text(body, "key")?,
-            );
-            let patch = canonical::to_vec(body.get("patch")?);
-            let mut parts: Vec<&[u8]> = vec![
-                &b"lakelands:ingest:v1"[..],
-                source,
-                ty,
-                key,
-                before.as_bytes(),
-                &patch,
             ];
-            if let Some(sealed) = event.get("sealed") {
-                parts[0] = &b"lakelands:ingest:v2"[..];
-                parts.push(boxed(Some(sealed)));
-            }
-            Some(id_of(&parts))
+            let patch = canonical::to_vec(body.get("patch")?);
+            let boxed = event
+                .get("sealed")
+                .map(|s| text(s, "box").unwrap_or_default());
+            Some(super::ingest_of(parts, before, &patch, boxed))
         }
         "record_quarantined" => {
             let id = body.get("id")?;
-            let index = id.get("index")?.as_u64()?.to_string();
+            let at = (
+                [text(id, "source")?, text(id, "delivery")?],
+                id.get("index")?.as_u64()?,
+            );
             let cells = canonical::to_vec(body.get("cells")?);
             let refusal = canonical::to_vec(body.get("refusal")?);
-            Some(id_of(&[
-                b"lakelands:quarantined:v1",
-                text(id, "source")?,
-                text(id, "delivery")?,
-                index.as_bytes(),
-                before.as_bytes(),
-                &cells,
-                boxed(body.get("sealed")),
-                &refusal,
-            ]))
+            let boxed = body
+                .get("sealed")
+                .and_then(|s| text(s, "box"))
+                .unwrap_or_default();
+            Some(super::quarantined_of(at, before, &cells, boxed, &refusal))
         }
         _ => None,
     }
