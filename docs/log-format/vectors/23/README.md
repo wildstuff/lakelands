@@ -211,7 +211,8 @@ The files:
   line `at` (null: at the segment's end), after the event `after` (null:
   at a segment's start): a frame line among a frame's lines, a line
   holding `body.type` its frame holds, a segment ending inside a frame, a
-  frame holding `position`, a frame of format 23 over a line of 22, a
+  frame holding `position`, a line of format 22 under a frame of 23,
+  refused for its format before its frame is read, a
   `position` and a `prev` that are not the ones the event before gives,
   and a segment's first event line holding neither.
 - `boxed.json`: the event after the framed append, a `record_ingested`

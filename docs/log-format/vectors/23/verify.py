@@ -176,6 +176,10 @@ def restored(lines, need, before=None):
         except ValueError as e:
             need(False, f"the line is JSON ({e})")
         need(canon(read, lambda why: need(False, why)) == line, "the line is canonical")
+        # A line's format is read before anything else in it, a frame
+        # line's as an event's: a line of another format is refused for
+        # that, under a frame or not (log-format §1.2 and §6).
+        need(read.get("v") == FORMAT, f"a line of format {read.get('v')} is not the one format, {FORMAT}")
         if "events" in read or "frame" in read:
             need(left == 0, "a frame line stands among the lines a frame covers")
             v, n, members = read.get("v"), read.get("events"), read.get("frame")
@@ -186,12 +190,9 @@ def restored(lines, need, before=None):
                  "a frame line holds `events` from 1, `frame` and `v` alone, and its frame no member a frame never holds")
             frame, left = read, n
             continue
-        v = read.get("v")
         event = dict(read)
         if before is None:
             need("position" in read and "prev" in read, "a segment's first event line holds its `position` and its `prev`")
-        if left:
-            need(v == frame["v"], f"a line of format {v} is covered by a frame of format {frame['v']}")
         for name, value in (frame["frame"].items() if left else ()):
             if name in NESTED:
                 held = event.setdefault(name, {})
@@ -223,7 +224,7 @@ BREAKS = {
     "framed_twice": "which its frame holds",
     "frame_short": "of a frame's lines still to come",
     "not_a_frame": "a frame line holds `events` from 1",
-    "frame_other": "is covered by a frame of format",
+    "format_other": "is not the one format",
     "position": "is not the position after",
     "prev_hash": "does not name the hash of the event before it",
     "start_unheld": "a segment's first event line holds its `position` and its `prev`",
@@ -682,7 +683,6 @@ def verify_dir(root):
             digested.update(canonical(event) + b"\n")
             need(event.get("position") == position, f"the line is position {event.get('position')}")
             v = event.get("v")
-            need(v == FORMAT, f"format {v} is the one format, {FORMAT}")
             kind = event["body"].get("kind")
             made = event["body"].get("format") if kind == "lake_created" else v
             need(made == v, f"`lake_created` says format {made}, and its line is in format {v}")
@@ -841,7 +841,7 @@ def stamp(n):
         entry["stored"] = [moved(json.loads(line)) for line in entry["stored"]]
         entry["after"] = entry["after"] and framed["after"]
         flaw = entry["refused"]["flaw"]
-        for name in ("frame", "v") if flaw["code"] == "frame_other" else ():
+        for name in ("reads", "v") if flaw["code"] == "format_other" else ():
             flaw[name] += n - FORMAT
     path.write_text(json.dumps(framed, indent=2, ensure_ascii=False) + "\n", "utf-8")
 

@@ -193,7 +193,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 778, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 783, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -1211,7 +1211,7 @@ const BREAKS: [&str; 8] = [
     "framed_twice",
     "frame_short",
     "not_a_frame",
-    "frame_other",
+    "format_other",
     "position",
     "prev_hash",
     "start_unheld",

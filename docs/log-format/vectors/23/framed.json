@@ -109,8 +109,8 @@
       }
     },
     {
-      "shows": "frame_other",
-      "about": "A frame of this format covers a full event of the format before.",
+      "shows": "format_other",
+      "about": "A frame of this format covers a full event of the format before: the line's format is read first, and the line is refused for it.",
       "after": {
         "position": 96,
         "hash": "56e36fa490cae9e782d4360c97b0d7859257085022fb6cc5c492d1f3555a4a0f"
@@ -124,8 +124,8 @@
       "refused": {
         "at": 1,
         "flaw": {
-          "code": "frame_other",
-          "frame": 23,
+          "code": "format_other",
+          "reads": 23,
           "v": 22
         }
       }
