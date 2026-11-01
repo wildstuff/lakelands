@@ -304,6 +304,12 @@ pub fn seek_statements() -> [String; 2] {
     [RECORD_AT.to_owned(), projection::RECORDS.ends_latest()]
 }
 
+/// The statement of the feed read by one key and one type, as the view runs
+/// it, for the engine's own test of its plan: it must take the key's index.
+pub fn keyed_routes_statement() -> String {
+    projection::keyed_routes_sql()
+}
+
 /// The statement of each first page the view reads from an index in the
 /// page's order, and of the read of one record, as the view runs it, for
 /// the engine's own test of their plans: none may sort (lakelands#580).

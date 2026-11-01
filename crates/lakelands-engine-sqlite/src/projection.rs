@@ -346,6 +346,35 @@ pub(crate) fn name_id(conn: &Connection, name: &str) -> Result<i64> {
     Ok(id.expect("a name just inserted is held"))
 }
 
+/// The statement of a read of the feed index with a test per `(column,
+/// names)`. Where `lead` is `key`, the other columns are tested on their
+/// values, not their index (`+`): `ty` holds few values over many rows, and
+/// a planner that takes `routes_ty` reads the whole type to find a key's
+/// rows, where `routes_key` reads the key's alone.
+fn routes_sql(tests: &[(&str, usize)], lead: Option<&str>) -> String {
+    let tests: Vec<String> = tests
+        .iter()
+        .map(|(column, n)| {
+            let plus = if lead == Some("key") && *column != "key" {
+                "+"
+            } else {
+                ""
+            };
+            format!("AND {plus}{column} IN ({})", vec!["?"; *n].join(", "))
+        })
+        .collect();
+    format!(
+        "SELECT DISTINCT at FROM routes WHERE 1 {} AND at BETWEEN ? AND ? ORDER BY at LIMIT ?",
+        tests.join(" ")
+    )
+}
+
+/// The statement of a scoped forget's read of a source's routes: one key,
+/// one type, for the engine's own test of its plan.
+pub(crate) fn keyed_routes_sql() -> String {
+    routes_sql(&[("key", 1), ("ty", 1)], Some("key"))
+}
+
 /// The positions from `from` through `through` of the feed index's rows
 /// whose `column` is `value`, in order and at most `limit`, each row
 /// checked against the filter's other lists (`lakelands_core::feed::Seek`).
@@ -363,6 +392,13 @@ pub(crate) fn routes(
         ("ty", filter.types.iter().map(TypeName::as_str).collect()),
         ("key", filter.keys.iter().map(RecordKey::as_str).collect()),
     ];
+    let lead = by.map(|(c, _)| c).or_else(|| {
+        lists
+            .iter()
+            .find(|(_, v)| !v.is_empty())
+            .map(|(c, _)| *c)
+            .filter(|c| *c == "key")
+    });
     let mut args: Vec<Value> = Vec::new();
     let mut tests = Vec::new();
     for (column, values) in by.iter().map(|(c, v)| (*c, vec![*v])).chain(
@@ -375,16 +411,12 @@ pub(crate) fn routes(
         if held.is_empty() {
             return Ok(Vec::new());
         }
-        let marks = vec!["?"; held.len()].join(", ");
-        tests.push(format!("AND {column} IN ({marks})"));
+        tests.push((column, held.len()));
         args.extend(held);
     }
     let (from, through, limit) = (from.0 as i64, through.0 as i64, i64::from(limit.max(1)));
     args.extend([from, through, limit].map(Value::Integer));
-    let statement = format!(
-        "SELECT DISTINCT at FROM routes WHERE 1 {} AND at BETWEEN ? AND ? ORDER BY at LIMIT ?",
-        tests.join(" ")
-    );
+    let statement = routes_sql(&tests, lead);
     column(conn, &statement, params_from_iter(args), |at: i64| {
         Ok(Position(at as u64))
     })
