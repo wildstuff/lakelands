@@ -10,7 +10,7 @@ fn a_tail_with_a_corrupt_last_line_reads_no_further_than_its_window() {
     let n = WINDOW * 2;
     let mut text = format!(
         "{{\"v\":{},\"events\":{},\"frame\":{{}}}}\n",
-        crate::log::FRAMED_FROM,
+        lakelands_api::event::LOG_FORMAT_VERSION,
         n + 1
     );
     (0..n).for_each(|i| text += &format!("{{\"position\":{i}}}\n"));

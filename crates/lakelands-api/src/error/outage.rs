@@ -711,52 +711,24 @@ catalog! {
         CreatedInAnother { format: u64, reads: u64 } => "its `lake_created` says log format {format}, another than its own line's or one this release does not read; it writes format {reads}",
         /// Its fence is below the fence of the event before it.
         FenceBelow { fence: u64, floor: u64 } => "it carries fence {fence}, below the fence {floor} of the event before it: fences never fall",
-        /// Its log format differs from the event's before it where no new writer upgraded the lake.
-        FormatStep { v: u64, before: u64 } => "written in log format {v} after an event in format {before}: a lake's format rises only at a new writer's `lease_taken`, whose next event is the `lake_upgraded` from the one to the other",
         /// `context` carries `cause`, which the envelope carries.
         CauseInContext => "`context` carries `cause`, which the envelope carries",
         /// `context` carries `on_behalf_of`, which the envelope carries.
         OnBehalfOfInContext => "`context` carries `on_behalf_of`, which the envelope carries",
-        /// An event of a format before 21 carries `on_behalf_of`.
-        OnBehalfOfBefore { v: u32 } => "an event of format {v} carries `on_behalf_of`, which format 21 added",
-        /// An event of a format before 22 carries `context.occasion`.
-        OccasionBefore { v: u32 } => "an event of format {v} carries `context.occasion`, which format 22 added",
         /// The envelope carries the origin `initial`, a field's alone.
         InitialOrigin => "the envelope carries the origin `initial`, a field's alone",
         /// An event other than `record_ingested` and `output_recorded` carries `sealed`.
         SealedOn { kind: String } => "a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries",
         /// A `record_ingested` whose `sealed` names another source than its envelope.
         SealsAnother { sealed: SourceId } => "a `record_ingested` carries `sealed` naming the source `{sealed}`, which is not its own: an ingest is sealed under its own source's key",
-        /// An event of a format before 16 carries `sealed`.
-        SealedBefore { v: u32 } => "an event of format {v} carries `sealed`, which format 16 added",
-        /// A `source_forgotten` in a format before the one that added it.
-        ForgottenBefore { v: u32 } => "an event of format {v} is a `source_forgotten`, which format 16 added",
-        /// A `trigger_fired` before format 17 carries `change` or `created`.
-        ChangeBefore { v: u32 } => "a `trigger_fired` of format {v} carries `change` or `created`, which format 17 added",
-        /// A `trigger_dropped` in a format before the one that added it.
-        DroppedBefore { v: u32 } => "an event of format {v} is a `trigger_dropped`, which format 17 added",
-        /// An event other than a `record_ingested` of format 17 on, or a `record_quarantined`, carries `delivery`.
-        DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on or a `record_quarantined` carries",
-        /// A `record_quarantined` or a `quarantine_closed` in a format before the one that added it.
-        QuarantinedBefore { kind: String, v: u32 } => "an event of format {v} is a `{kind}`, which format 21 added",
-        /// `periods` written on `sys.setting` before format 21.
-        SettingPeriodsBefore { v: u32 } => "an event of format {v} writes `periods` of `sys.setting`, which format 21 added",
-        /// `from` or `period` proposed for `sys.setting` before format 21.
-        SettingMembersBefore { v: u32 } => "a `write_proposed` of format {v} carries `from` or `period` for `sys.setting`, which format 21 added",
-        /// `setting` read on a date before format 21.
-        SettingAtBefore { v: u32 } => "a `declared` of format {v} calls `setting` with two arguments, which format 21 added",
-        /// A `values_removed` event in a format before the one that added it.
-        RemovedBefore { v: u32 } => "an event of format {v} is a `values_removed`, which format 17 added",
-        /// An event of a format before 18 carries `apart`.
-        ApartBefore { v: u32 } => "an event of format {v} carries `apart`, which format 18 added",
-        /// An event other than a `record_ingested` of format 20 on carries `sealed.box`.
-        BoxedOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `sealed.box`, which only a `record_ingested` of format 20 on carries",
-        /// A box that names no member, holds a member the patch holds
-        /// too, or is not padded base64 of at least the tag's 16 bytes.
-        BoxForm => "a `sealed.box` names no member in `sealed.fields`, or one the patch holds too, or is not padded base64 of at least 16 bytes",
-        /// A `values_removed` of a format before 18 selects by `seen_before`
-        /// or by a set of deliveries.
-        SelectsLater { v: u32, by: String } => "a `values_removed` of format {v} selects by `{by}`, which format 18 added",
+        /// An event other than a `record_ingested` or a `record_quarantined` carries `delivery`.
+        DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` or a `record_quarantined` carries",
+        /// An event other than a `record_ingested` carries `sealed.box`.
+        BoxedOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `sealed.box`, which only a `record_ingested` carries",
+        /// A `record_ingested`'s `sealed` with no box, or a box that names
+        /// no member, holds a member the patch holds too, or is not padded
+        /// base64 of at least the tag's 16 bytes.
+        BoxForm => "a `record_ingested` carries `sealed` with no `box`, or a `sealed.box` names no member in `sealed.fields`, or one the patch holds too, or is not padded base64 of at least 16 bytes",
         /// An event other than `record_ingested` carries `upstream`.
         UpstreamOn { kind: String } => "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries",
         /// The hash does not match the event.
@@ -968,8 +940,6 @@ catalog! {
         } => "lake `{lake}`'s projection [has layout {found}|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild`",
         /// The lake's log is written in the format of another release: nothing reads it and nothing is appended.
         LogFormat { lake: String, found: u64, reads: u64, oldest: Option<u64> } => "lake `{lake}` is written in log format {found}, and this release reads log format[s {oldest} to] {reads} and writes {reads}; nothing was read from it and nothing appended",
-        /// The lake's log is written in an older format this release reads, and only a writer's open upgrades it.
-        LogUpgradeOwed { lake: String, found: u64, reads: u64 } => "lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade --lake {lake}`, and it is read; nothing was read from it",
         /// The lake holds a type of the host's vocabulary in an older form, one without fields the vocabulary has since added, and only a writer's open declares it again.
         VocabularyUpgradeOwed { lake: String, #[serde(rename = "type")] ty: TypeName } => "lake `{lake}` holds `{ty}` without fields the host vocabulary has since added to it: a writer's open declares it again, so open it once for writing, and it is read; nothing was read from it",
         /// The lake could not be compacted while a reader holds a snapshot.
@@ -1016,7 +986,7 @@ catalog! {
         } => "{part} is damaged[ at position {position}]: {flaw}",
         /// The storage failed.
         Storage { doing: Doing, part: Part, detail: Detail } => "the storage failed while {doing} {part}: {detail}",
-        /// The disk, the volume or the database server written to had no room left: free space there, then repeat what failed, a writer's open by opening the lake again. A writer's open refused with it, and not with it as the cause of `not_folded`, appended nothing, so a lake that owed an upgrade still owes it.
+        /// The disk, the volume or the database server written to had no room left: free space there, then repeat what failed, a writer's open by opening the lake again. A writer's open refused with it, and not with it as the cause of `not_folded`, appended nothing.
         NoRoom {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             part: Option<Part>,

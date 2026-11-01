@@ -57,9 +57,9 @@
 //! and name the format. 0.19.0 checks the active segment's last group
 //! against its hashes as lines of its own format, and a line of 20 that
 //! shares a frame fails that check, so it takes such a group for a
-//! crash's tail. The store writes the append that makes a lake, and the
-//! one that upgrades it, whole (`docs/log-format.md` §1.2): where a
-//! lake's only events of a new format are that append, still its last,
+//! crash's tail. The store writes the append that makes a lake whole
+//! (`docs/log-format.md` §1.2): where a lake's only events are that
+//! append, still its last,
 //! the group passes and it names the format. 0.20.0 judges the ends by
 //! `v` and the last group by `hash`, not by `id`; an event whose `id` it
 //! would take empty is of 21, which it refuses by its format before its

@@ -155,8 +155,7 @@ impl Lake {
     /// opens it, until [`Turn::take_over`] takes the lease.
     pub(crate) fn standby(location: &Location, seams: Seams) -> Result<Lake> {
         let opener = opener(location, &seams)?;
-        let written = log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
-        log::read_as_is(&location.lake, written)?;
+        log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
         let read = opener.open(location, OpenMode::Read)?;
         let engine: Arc<dyn LakeEngine> = Arc::new(Standby::new(opener, location, read));
         let lake = Lake::assemble(location, seams, engine, None);

@@ -1159,8 +1159,8 @@ pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Fai
 
 /// `build-ahead`: build the projection this release lays out beside the
 /// lake's, while an older release still serves it, saying first how much
-/// room it takes; the writer's open that upgrades the lake then folds only
-/// what was written since, and swaps it in. `discard` removes a build
+/// room it takes; this release's writer's open then folds only what was
+/// written since, and swaps it in. `discard` removes a build
 /// ahead instead.
 pub async fn build_ahead(
     out: Out<'_>,
@@ -1189,7 +1189,7 @@ pub async fn build_ahead(
         out,
         format!(
             "built {lake}'s projection ahead through position {through}: {events} events \
-             folded in {secs:.1} s{from}; `lakelands upgrade` with this release folds what is \
+             folded in {secs:.1} s{from}; a writer's open with this release folds what is \
              written after it and swaps it in"
         ),
     )
@@ -1226,146 +1226,8 @@ async fn room(
     };
     Ok(format!(
         "building ahead takes about {mib:.1} MiB {place}, as much as the projection beside it, \
-         until the upgrade puts it in that one's place"
+         until a writer's open puts it in that one's place"
     ))
-}
-
-fn spoke(out: Out<'_>, line: impl std::fmt::Display) -> Result<u8, Failure> {
-    put(out, line).map(|()| 0)
-}
-
-/// `upgrade`: say which log format the lake is written in, as a
-/// read-only open finds it, and, where it is older than the one this
-/// release writes, open it for writing once: that open appends
-/// `lake_upgraded` and writes the new format from there; the events
-/// before stay as they were written. A lake in this release's format
-/// whose projection an older build laid out is opened for writing once
-/// too, which rebuilds the projection. `check` stops before that open.
-/// A declared lake no command has written is no lake yet, as `verify`
-/// says it, and exits 3 as `verify` does; the rest exit 0.
-pub async fn upgrade(
-    out: Out<'_>,
-    err: Out<'_>,
-    location: lakelands_api::Location,
-    seams: lakelands_api::seam::Seams,
-    check: bool,
-    open: &crate::Opener<'_>,
-) -> Result<u8, Failure> {
-    use lakelands_api::engine::OpenMode;
-    use lakelands_api::error::Situation;
-    use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION as TO};
-    let lake = location.lake.clone();
-    // A lake already in this release's format opens to read; an older one
-    // is refused by its format, and a projection an older build laid out
-    // by its layout, which the refusal names.
-    let from = match open(location.clone(), OpenMode::Read, seams.clone()).await {
-        Ok(_) => {
-            return spoke(
-                out,
-                format!("{lake} is written in log format {TO}: nothing to upgrade"),
-            );
-        }
-        Err(e) => match e.situation() {
-            Some(Situation::LogUpgradeOwed { found, .. }) => *found,
-            Some(Situation::ProjectionLayout {
-                found: Some(found),
-                wanted,
-                ..
-            }) if found < wanted => {
-                let found = *found;
-                if check {
-                    let said = format!(
-                        "{lake} is written in log format {TO}, its projection in layout \
-                         {found}: an open for writing rebuilds it; nothing was opened for writing"
-                    );
-                    return spoke(out, said);
-                }
-                let started = std::time::Instant::now();
-                let store = open(location, OpenMode::Write, seams).await?;
-                let secs = started.elapsed().as_secs_f64();
-                // Another writer may have rebuilt it since the read-only open.
-                let said = match store.rebuilt_at_open() {
-                    Some(why)
-                        if why.contains("a build ahead had folded")
-                            && why.contains("folded the whole log again") =>
-                    {
-                        format!(
-                            "rebuilt the projection of {lake} from layout {found} in {secs:.1} s, \
-                         folding what was written after the build ahead, then the whole log \
-                         again: the log held an act erasing values after the build ahead"
-                        )
-                    }
-                    Some(why) if why.contains("removed the build ahead") => format!(
-                        "rebuilt the projection of {lake} from layout {found} in {secs:.1} s, \
-                         folding the whole log in place: another handle read the projection, \
-                         so the build ahead could not be swapped in and was removed"
-                    ),
-                    Some(why) if why.contains("build ahead") => format!(
-                        "rebuilt the projection of {lake} from layout {found} in {secs:.1} s, \
-                         folding only what was written after the build ahead"
-                    ),
-                    Some(_) => {
-                        format!(
-                            "rebuilt the projection of {lake} from layout {found} in {secs:.1} s"
-                        )
-                    }
-                    None => format!(
-                        "{lake}'s projection: another writer rebuilt it from layout {found}"
-                    ),
-                };
-                return spoke(out, said);
-            }
-            Some(Situation::NoLake { .. }) => {
-                let what = format!("there is no lake `{lake}` to upgrade yet");
-                let todo = "a lake is made by the first command that writes to it, and is written \
-                            in this release's format from the start; there is nothing to upgrade";
-                let _ = write!(err, "{}", Failure::new(what, todo));
-                return Ok(3);
-            }
-            _ => return Err(e.into()),
-        },
-    };
-    if check {
-        return spoke(
-            out,
-            format!(
-                "{lake} is written in log format {from}: an open for writing appends \
-                 `lake_upgraded` from {from} to {TO}, and rebuilds the projection where an \
-                 older build laid it out; nothing was opened for writing"
-            ),
-        );
-    }
-    let started = std::time::Instant::now();
-    let store = open(location, OpenMode::Write, seams).await?;
-    let head = store.head().await?;
-    let secs = started.elapsed().as_secs_f64();
-    // What this open appended: its own `lease_taken` is the last one in
-    // the log, and the marker, where it upgraded, is the event after it.
-    // Another writer may have upgraded the lake since the read-only open.
-    let from_tail = Position(head.0.saturating_sub(64));
-    let tail = store
-        .feed()
-        .poll(from_tail, &FeedFilter::default(), 128)
-        .await?;
-    let leased = (tail.events.iter()).rposition(|e| matches!(e.body, EventBody::LeaseTaken { .. }));
-    let marked = leased
-        .and_then(|i| tail.events.get(i + 1))
-        .and_then(|e| match e.body {
-            EventBody::LakeUpgraded { from, to } => Some((from, to)),
-            _ => None,
-        });
-    match marked {
-        Some((from, to)) => spoke(
-            out,
-            format!(
-                "upgraded {lake} from log format {from} to {to} through position {head} in {secs:.1} s"
-            ),
-        ),
-        None => spoke(
-            out,
-            format!("{lake} is written in log format {TO}: another writer upgraded it from {from}"),
-        ),
-    }
 }
 
 /// `compact`: give back the storage the projection no longer uses, and

@@ -17,7 +17,6 @@ use lakelands_api::error::{Case, Detail, Error, Flaw, Result};
 use lakelands_api::event::{
     Digest, Event, EventBody, EventId, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
 };
-use lakelands_api::write::Selection;
 use lakelands_api::{
     IdempotencyKey, LakeId, Patch, Position, ProposalId, RecordKey, SourceId, TypeName,
 };
@@ -58,8 +57,8 @@ pub fn ingest_id(
     ])
 }
 
-/// The id of an ingested record whose sealed members are in one box, from
-/// format 20 (`docs/log-format.md` §3): [`ingest_id`]'s parts under
+/// The id of an ingested record whose sealed members are in one box
+/// (`docs/log-format.md` §3): [`ingest_id`]'s parts under
 /// `lakelands:ingest:v2`, and the box as stored. The same values against
 /// the same state seal to the same box, so a redelivery keeps its id.
 #[doc(hidden)]
@@ -82,8 +81,7 @@ pub fn boxed_ingest_id(
     ])
 }
 
-/// The id of a version of a quarantined record, from format 21
-/// (`docs/log-format.md` §3): SHA-256 under `lakelands:quarantined:v1`
+/// The id of a version of a quarantined record (`docs/log-format.md` §3): SHA-256 under `lakelands:quarantined:v1`
 /// over the source, the id's delivery and index, the version before, the
 /// cells as stored, the box as stored or empty, and the refusal's
 /// canonical bytes. The same cells refused the same way at the same
@@ -174,153 +172,12 @@ pub fn positional_id(lake: &LakeId, position: Position) -> EventId {
 }
 
 /// Whether this release reads an event written in log format `v`: from
-/// [`OLDEST_LOG_FORMAT`], the first a release with real installations
-/// wrote, to the one it writes
+/// [`OLDEST_LOG_FORMAT`], the format a release kept its promise from, to
+/// the one it writes
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 #[doc(hidden)]
 pub fn reads_format(v: u64) -> bool {
     (u64::from(OLDEST_LOG_FORMAT)..=u64::from(LOG_FORMAT_VERSION)).contains(&v)
-}
-
-/// The log format that first holds `sealed` and `source_forgotten` (058).
-const SEALED_FROM: u32 = 16;
-
-/// The log format that first holds `apart`, a delivery's key outside its
-/// source's versions, and a selection by `seen_before` or by `deliveries`
-/// (065).
-const APART_FROM: u32 = 18;
-
-/// The log format that first seals a record's members in one box (083).
-const BOXED_FROM: u32 = 20;
-
-/// The log format that first holds a quarantined record (085).
-const QUARANTINED_FROM: u32 = 21;
-
-/// The log format that first holds `on_behalf_of` (088).
-const ON_BEHALF_OF_FROM: u32 = 21;
-
-/// The log format that first holds `context.occasion` (088).
-const OCCASION_FROM: u32 = 22;
-
-/// The log format that first holds a setting's values from dates (090).
-const PERIODS_FROM: u32 = 21;
-
-/// An event as log format `v` wrote it, its members as the format this
-/// release writes says them, for the release's own structs to read. Its
-/// `v` stays the one it was written in, and its bytes and hash are the
-/// stored ones: a converter changes what an event is read as, never the
-/// log. Each step of the format is one function here, from 14 on.
-///
-/// - **14 → 15:** none. Format 15 lets a verb's path read across a
-///   reference or a relation's link (055); a log of format 14 holds no
-///   such declaration, and nothing else of an event changed.
-/// - **15 → 16:** none. Format 16 is 0.15.0's one step: a log of format
-///   15 holds none of the forms it adds, each named here by its change:
-///   an event's `sealed` and a field's `erasable` (058), so each value of
-///   format 15 is plaintext; and a set's `where` and a trigger's `when`
-///   that read across an edge (055).
-/// - **16 → 17:** none. Format 17 is 0.16.0's one step, taken before any
-///   form it adds (lakelands#1164): a log of format 16 holds none of them.
-///   `docs/log-format.md` §6 names each, by the change that adds it.
-/// - **17 → 18:** none. Format 18 is 0.17.0's one step, taken before any
-///   form it adds (lakelands#1214): a log of format 17 holds none of them,
-///   a field's `admits` (069) and a verb's `granted` (070) among them.
-/// - **18 → 19:** none. Format 19 is 0.18.0's one step, taken before any
-///   form it adds (lakelands#1330): a log of format 18 holds none of them,
-///   a verb's `preconditions` and `payload.<name>` in its `requires` (028)
-///   among them.
-/// - **19 → 20:** none. Format 20 is 0.20.0's one step, taken before any
-///   form it adds (lakelands#1409): a log of format 19 holds none of them,
-///   a proposal of a change to the records a condition selects (081) among
-///   them.
-/// - **20 → 21:** none. Format 21 is 0.21.0's one step, taken before any
-///   form it adds (lakelands#1502): a log of format 20 holds none of them,
-///   a `record_quarantined` and a `quarantine_closed` (085) among them.
-/// - **21 → 22:** none. Format 22 is 0.22.0's one step (lakelands#1584): a
-///   log of format 21 holds no `context.occasion` (088).
-#[doc(hidden)]
-pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
-    debug_assert!(reads_format(v), "format {v} is not one this release reads");
-    event
-}
-
-/// A walk along a log's formats: a lake's format changes only where a
-/// new writer upgrades it, and never falls. The format rises at the new
-/// writer's `lease_taken`, the first event it appends, and that writer's
-/// next event is the `lake_upgraded` from the format before to the new
-/// one; a `lake_upgraded` anywhere else, and any other change, is a flaw
-/// at its position (`docs/log-format.md` §6).
-#[derive(Clone, Copy, Debug, Default)]
-#[doc(hidden)]
-pub struct FormatSteps {
-    /// The format of the event before, if one was read.
-    before: Option<u32>,
-    /// The step a `lease_taken` began, which the next event must mark.
-    owed: Option<(u32, u32)>,
-    /// Whether the walk began right after a `lease_taken`, whose step, if
-    /// it began one, it could not see.
-    leased: bool,
-}
-
-impl FormatSteps {
-    /// A walk that begins after `prev`, if any: a range that starts
-    /// inside the log, `verify` from a position. Right after a
-    /// `lease_taken` it takes a `lake_upgraded` whose `to` is the format
-    /// there without knowing the format before the lease: a `verify` of
-    /// the whole log is what judges the step.
-    pub fn after(prev: Option<&Event>) -> FormatSteps {
-        FormatSteps {
-            before: prev.map(|e| e.v),
-            owed: None,
-            leased: prev.is_some_and(|e| matches!(e.body, EventBody::LeaseTaken { .. })),
-        }
-    }
-
-    /// Judge the next event of the log.
-    pub fn next(&mut self, event: &Event) -> Option<Flaw> {
-        let (before, owed, v) = (self.before, self.owed.take(), event.v);
-        let leased = std::mem::take(&mut self.leased);
-        self.before = Some(v);
-        let upgraded = |from: u32, to: u32| matches!(event.body, EventBody::LakeUpgraded { from: f, to: t } if f == from && t == to);
-        let flaw = |before: u32| {
-            Some(Flaw::FormatStep {
-                v: v.into(),
-                before: before.into(),
-            })
-        };
-        if let Some((from, to)) = owed {
-            return (!(v == to && upgraded(from, to)))
-                .then(|| flaw(from))
-                .flatten();
-        }
-        let before = before?;
-        // Right after a lease the walk did not see rise: its marker.
-        let unseen = matches!(event.body,
-            EventBody::LakeUpgraded { from, to } if from < to && to == v && v == before);
-        if leased && unseen {
-            return None;
-        }
-        let marker = matches!(event.body, EventBody::LakeUpgraded { .. });
-        let leased = matches!(event.body, EventBody::LeaseTaken { .. });
-        if v == before && !marker {
-            return None;
-        }
-        if v > before && leased {
-            self.owed = Some((before, v));
-            return None;
-        }
-        flaw(before)
-    }
-
-    /// The step a `lease_taken` began and no `lake_upgraded` marked yet,
-    /// at the end of what was read: a flaw where the log ends there.
-    pub fn unmarked(&self) -> Option<Flaw> {
-        let (from, to) = self.owed?;
-        Some(Flaw::FormatStep {
-            v: to.into(),
-            before: from.into(),
-        })
-    }
 }
 
 /// The flaw of a `lake_created` that says another log format than its
@@ -355,8 +212,7 @@ fn padded(b: &str) -> bool {
 /// Why an event carries a member where it never sits, if it does:
 /// `cause` inside `context`, since a host's cause is the envelope's
 /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); and
-/// `on_behalf_of` inside `context`, or on an event of a format before 21,
-/// and `context.occasion` before 22
+/// `on_behalf_of` inside `context`
 /// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`); and
 /// `upstream` on any kind but `record_ingested`, since only a source's
 /// record is read from another lake (`docs/log-format.md` §1.1); and the
@@ -364,21 +220,16 @@ fn padded(b: &str) -> bool {
 /// (`docs/decisions/050-a-field-declares-its-initial-value.md`); and an
 /// output both carried and named by `output_at`, or neither
 /// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`); and
-/// `sealed` on any kind but `record_ingested` and `output_recorded`, or
-/// on an event of a format before 16
+/// `sealed` on any kind but `record_ingested` and `output_recorded`
 /// (`docs/decisions/058-a-source-may-be-forgotten.md`); and a
 /// `record_ingested` whose `sealed` names another source than its own,
-/// whose values would be kept under that source's key (058); and `delivery` on
-/// any kind but `record_ingested`, or before format 17
-/// (`docs/log-format.md` §1.1); and a `trigger_dropped`, or a
-/// `trigger_fired`'s `change` or `created`, before format 17; and `apart`,
-/// in `sealed` or on a `values_removed`, and a `values_removed` selecting
-/// by `seen_before` or by `deliveries`, before format 18 (065); and
-/// `sealed.box` on any but a `record_ingested` of format 20 on, or of a
-/// form a reader without the key refuses (`docs/log-format.md` §1.4).
-/// No door
-/// puts any there; a reader holds the rule for a log written by something
-/// else.
+/// whose values would be kept under that source's key (058); and
+/// `delivery` on any kind but `record_ingested` and `record_quarantined`
+/// (`docs/log-format.md` §1.1); and `sealed.box` on any but a
+/// `record_ingested`, and a `record_ingested`'s `sealed` with no box, or
+/// one of a form a reader without the key refuses (`docs/log-format.md`
+/// §1.4). No door puts any there; a reader holds the
+/// rule for a log written by something else.
 #[doc(hidden)]
 pub fn misplaced(event: &Event) -> Option<Flaw> {
     if event.context.cause.is_some() {
@@ -386,14 +237,6 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     }
     if event.context.on_behalf_of.is_some() {
         return Some(Flaw::OnBehalfOfInContext);
-    }
-    if event.on_behalf_of.is_some() && event.v < ON_BEHALF_OF_FROM {
-        let v = event.v;
-        return Some(Flaw::OnBehalfOfBefore { v });
-    }
-    if event.context.occasion.is_some() && event.v < OCCASION_FROM {
-        let v = event.v;
-        return Some(Flaw::OccasionBefore { v });
     }
     if let EventBody::OutputRecorded {
         output, output_at, ..
@@ -413,10 +256,6 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if event.sealed.is_some() && !seals {
         return Some(Flaw::SealedOn { kind });
     }
-    if event.sealed.is_some() && event.v < SEALED_FROM {
-        let v = event.v;
-        return Some(Flaw::SealedBefore { v });
-    }
     let named = event.sealed.as_ref().and_then(|s| s.source.as_ref());
     if let (EventBody::RecordIngested { .. }, Some(sealed)) = (&event.body, named)
         && event.source.as_ref() != Some(sealed)
@@ -424,118 +263,23 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
         let sealed = sealed.clone();
         return Some(Flaw::SealsAnother { sealed });
     }
-    if matches!(event.body, EventBody::SourceForgotten { .. }) && event.v < SEALED_FROM {
-        let v = event.v;
-        return Some(Flaw::ForgottenBefore { v });
-    }
-    if matches!(event.body, EventBody::ValuesRemoved { .. }) && event.v < 17 {
-        let v = event.v;
-        return Some(Flaw::RemovedBefore { v });
-    }
-    let apart = match &event.body {
-        EventBody::ValuesRemoved { apart, .. } => !apart.is_empty(),
-        _ => false,
-    };
-    let apart = apart || event.sealed.as_ref().is_some_and(|s| !s.apart.is_empty());
-    if apart && event.v < APART_FROM {
-        let v = event.v;
-        return Some(Flaw::ApartBefore { v });
-    }
     let boxed = event.sealed.as_ref().is_some_and(|s| s.boxed.is_some());
-    let ingest = matches!(event.body, EventBody::RecordIngested { .. });
-    if boxed && (!ingest || event.v < BOXED_FROM) {
-        let (kind, v) = (kind.clone(), event.v);
-        return Some(Flaw::BoxedOn { kind, v });
+    let ingested = matches!(event.body, EventBody::RecordIngested { .. });
+    if boxed && !ingested {
+        return Some(Flaw::BoxedOn { kind, v: event.v });
     }
     if let (EventBody::RecordIngested { patch, .. }, Some(sealed)) = (&event.body, &event.sealed)
-        && let Some(b) = &sealed.boxed
         && (sealed.fields.is_empty()
             || sealed.fields.iter().any(|f| patch.contains_key(f))
-            || !padded(b))
+            || !sealed.boxed.as_deref().is_some_and(padded))
     {
         return Some(Flaw::BoxForm);
     }
-    if let EventBody::ValuesRemoved { selection, .. } = &event.body
-        && event.v < APART_FROM
-    {
-        let by = match selection {
-            Selection::SeenBefore(_) => "seen_before",
-            Selection::Deliveries(_) => "deliveries",
-            _ => "",
-        };
-        if !by.is_empty() {
-            let (v, by) = (event.v, by.to_owned());
-            return Some(Flaw::SelectsLater { v, by });
-        }
-    }
-    let told = |c: &Option<_>, m: &Option<bool>| c.is_some() || m.is_some();
-    if let EventBody::TriggerFired {
-        change, created, ..
-    } = &event.body
-        && told(change, created)
-        && event.v < 17
-    {
-        let v = event.v;
-        return Some(Flaw::ChangeBefore { v });
-    }
-    if matches!(event.body, EventBody::TriggerDropped { .. }) && event.v < 17 {
-        let v = event.v;
-        return Some(Flaw::DroppedBefore { v });
-    }
-    let quarantine = matches!(
-        event.body,
-        EventBody::RecordQuarantined { .. } | EventBody::QuarantineClosed { .. }
-    );
-    if quarantine && event.v < QUARANTINED_FROM {
-        let (kind, v) = (kind.clone(), event.v);
-        return Some(Flaw::QuarantinedBefore { kind, v });
-    }
-    if event.v < PERIODS_FROM
-        && let Some(flaw) = dated_setting(&event.body, event.v)
-    {
-        return Some(flaw);
-    }
     let quarantined = matches!(event.body, EventBody::RecordQuarantined { .. });
-    let ingested = matches!(event.body, EventBody::RecordIngested { .. });
-    if event.delivery.is_some() && !quarantined && (!ingested || event.v < 17) {
-        let v = event.v;
-        return Some(Flaw::DeliveryOn { kind, v });
+    if event.delivery.is_some() && !quarantined && !ingested {
+        return Some(Flaw::DeliveryOn { kind, v: event.v });
     }
     (event.upstream.is_some() && !ingested).then_some(Flaw::UpstreamOn { kind })
-}
-
-/// What of a setting's values from dates `body` holds, of format `v`,
-/// before the format that added them (090): `periods` written on
-/// `sys.setting`, `from` or `period` in a proposal of it, and `setting`
-/// read on a date in a declaration.
-fn dated_setting(body: &EventBody, v: u32) -> Option<Flaw> {
-    use lakelands_api::write::ProposedWrite;
-    let setting = |ty: &lakelands_api::TypeName| ty.as_str() == lakelands_api::seam::SETTING_TYPE;
-    match body {
-        EventBody::RecordUpserted { ty, patch, .. }
-        | EventBody::RecordIngested { ty, patch, .. }
-            if setting(ty) && patch.contains_key("periods") =>
-        {
-            Some(Flaw::SettingPeriodsBefore { v })
-        }
-        EventBody::WriteProposed {
-            write: ProposedWrite::Upsert { ty, patch, .. },
-            ..
-        } if setting(ty) && (patch.contains_key("from") || patch.contains_key("period")) => {
-            Some(Flaw::SettingMembersBefore { v })
-        }
-        EventBody::Declared { declaration, .. } => {
-            let conditions = declaration.conditions().into_iter();
-            let dated = |(_, c): (String, &lakelands_api::expr::Condition)| {
-                c.typed().is_ok_and(|e| !e.settings_read(true).is_empty())
-            };
-            conditions
-                .into_iter()
-                .any(dated)
-                .then_some(Flaw::SettingAtBefore { v })
-        }
-        _ => None,
-    }
 }
 
 /// An event body's kind, as the log writes it.
@@ -545,11 +289,6 @@ fn event_kind(body: &EventBody) -> String {
         .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_owned))
         .unwrap_or_else(|| "unknown".to_owned())
 }
-
-/// The first log format whose lines are a stored form with frames and
-/// derived members (`docs/log-format.md` §1.2): a line of a format before
-/// it is a full event, taken as it stands.
-pub const FRAMED_FROM: u64 = 20;
 
 /// The top-level members a frame never holds.
 const UNFRAMED: [&str; 5] = ["hash", "id", "position", "prev", "v"];
@@ -581,10 +320,9 @@ pub struct Framed {
 
 impl Framed {
     /// The frame `line` is, a line read as [`line_of`] reads one: it holds
-    /// `events`, `frame` and `v` alone, `v` from [`FRAMED_FROM`] on,
-    /// `events` a count from 1, and `frame` an object of members a frame
-    /// may hold, with no empty `body` or `sealed`; anything else is
-    /// [`Flaw::NotAFrame`].
+    /// `events`, `frame` and `v` alone, `events` a count from 1, and `frame`
+    /// an object of members a frame may hold, with no empty `body` or
+    /// `sealed`; anything else is [`Flaw::NotAFrame`].
     pub fn of(line: Value) -> std::result::Result<Framed, Flaw> {
         let Value::Object(mut line) = line else {
             return Err(Flaw::NotAFrame);
@@ -602,7 +340,6 @@ impl Framed {
             Some(_) => false,
         };
         let fits = line.is_empty()
-            && v >= FRAMED_FROM
             && (1..=u64::from(u32::MAX)).contains(&events)
             && !members.keys().any(|k| UNFRAMED.contains(&k.as_str()))
             && NESTED.iter().all(nested);
@@ -635,12 +372,11 @@ pub fn line_of(bytes: &[u8]) -> std::result::Result<Value, Flaw> {
 /// [`line_of`] reads one: its frame's members added to it, those under
 /// `body` and `sealed` merged into its own one level deep, and, where it
 /// holds none, the `position` and the `prev` of `derived`, those the
-/// event before it gives. A line of a format before [`FRAMED_FROM`] is a
-/// full event and is taken as it stands. A frame line, a frame whose
-/// format is not the line's, and a member the line holds that its frame
-/// holds too, are refused; what is no event is left to its reader. It
-/// answers too whether the line was the whole event: its frame added
-/// nothing, and nor did `derived`.
+/// event before it gives. A frame line, a frame whose format is not the
+/// line's, and a member the line holds that its frame holds too, are
+/// refused; what is no event is left to its reader. It answers too whether
+/// the line was the whole event: its frame added nothing, and nor did
+/// `derived`.
 pub fn restored(
     line: Value,
     frame: Option<&Framed>,
@@ -658,9 +394,6 @@ pub fn restored(
     let Value::Object(mut event) = line else {
         return Ok((line, true));
     };
-    if v < FRAMED_FROM {
-        return Ok((Value::Object(event), true));
-    }
     let whole = frame.is_none() && event.contains_key("position") && event.contains_key("prev");
     for (name, value) in frame.map(|f| &f.members).into_iter().flatten() {
         let twice = |member: String| Err(Flaw::FramedTwice { member });
@@ -794,9 +527,9 @@ impl Lines {
     /// it in the segment, none at its first: `None` for a frame line, and
     /// else the event it restores. A frame line among the lines a frame
     /// covers, what [`restored`] refuses, a `position` or a `prev` that is
-    /// not the one `before` gives, and a segment's first event line of a
-    /// format from [`FRAMED_FROM`] on that does not hold both, are
-    /// refused. It answers too whether the line was the whole event.
+    /// not the one `before` gives, and a segment's first event line that
+    /// does not hold both, are refused. It answers too whether the line was
+    /// the whole event.
     pub fn line(
         &mut self,
         line: Value,
@@ -812,10 +545,7 @@ impl Lines {
             return Ok(None);
         }
         let holds = |name| line.get(name).is_some();
-        if before.is_none()
-            && format_of(&line) >= FRAMED_FROM
-            && !(holds("position") && holds("prev"))
-        {
+        if before.is_none() && !(holds("position") && holds("prev")) {
             return Err(Flaw::StartUnheld);
         }
         let derived = before.map(|(p, hash)| (p.next(), hash));
@@ -856,19 +586,18 @@ impl Lines {
 
 /// The stored form of `events`, the canonical values of events that
 /// follow each other in one segment, as one run (§1.2): a frame line,
-/// where they are two or more, all of one format from [`FRAMED_FROM`] on,
-/// holding exactly the members they all share; and each event's line,
-/// which leaves out what the frame holds and, where `holds` says it does
-/// not hold them, its `position` and its `prev`. `holds` is asked of each
-/// event by its index in the run and its value, and answers whether its
-/// line holds `position`, and whether it holds `prev`; an event of a
-/// format before [`FRAMED_FROM`] keeps every member.
+/// where they are two or more, all of one format, holding exactly the
+/// members they all share; and each event's line, which leaves out what
+/// the frame holds and, where `holds` says it does not hold them, its
+/// `position` and its `prev`. `holds` is asked of each event by its index
+/// in the run and its value, and answers whether its line holds `position`,
+/// and whether it holds `prev`.
 pub fn stored_form(
     events: &[Value],
     holds: impl Fn(usize, &Value) -> (bool, bool),
 ) -> (Option<Vec<u8>>, Vec<Vec<u8>>) {
     let v = events.first().map_or(0, format_of);
-    let framed = events.len() >= 2 && v >= FRAMED_FROM && events.iter().all(|e| format_of(e) == v);
+    let framed = events.len() >= 2 && events.iter().all(|e| format_of(e) == v);
     let shared = match framed {
         true => shared(events),
         false => Map::new(),
@@ -878,12 +607,10 @@ pub fn stored_form(
             return canonical::to_vec(event);
         };
         let mut line = members.clone();
-        if format_of(event) >= FRAMED_FROM {
-            let (position, prev) = holds(i, event);
-            for (name, keep) in [("position", position), ("prev", prev)] {
-                if !keep {
-                    line.remove(name);
-                }
+        let (position, prev) = holds(i, event);
+        for (name, keep) in [("position", position), ("prev", prev)] {
+            if !keep {
+                line.remove(name);
             }
         }
         for (name, value) in &shared {
@@ -948,20 +675,17 @@ fn shared(events: &[Value]) -> Map<String, Value> {
 /// store's writer's form (§1.2): framed where they are two or more, with
 /// exactly the members they all share, and each line holding `position`
 /// and `prev` only where it is a segment's first event, the `lake_created`
-/// at position 0 or a `checkpoint`. An append that holds a `lake_created`
-/// or a `lake_upgraded` begins the lake's format and is left whole, each
-/// line its event's canonical bytes: the release before reads it as lines
-/// of its own form and names the format, even while it is the last.
+/// at position 0 or a `checkpoint`. The append that holds a `lake_created`
+/// is left whole, each line its event's canonical bytes: a release that
+/// does not read the format finds its number on the first line, even while
+/// it is the last.
 pub fn frame_append(events: &mut [CanonicalEvent]) {
     let values: Vec<Value> = events
         .iter()
         .map(|e| serde_json::from_slice(&e.bytes).expect("an event's canonical bytes are JSON"))
         .collect();
-    let begins = |e: &Value| {
-        let kind = e.pointer("/body/kind").and_then(Value::as_str);
-        matches!(kind, Some("lake_created" | "lake_upgraded"))
-    };
-    if values.iter().any(begins) {
+    let makes = |e: &Value| e.pointer("/body/kind") == Some(&"lake_created".into());
+    if values.iter().any(makes) {
         return;
     }
     let first = |_: usize, e: &Value| {
@@ -1019,8 +743,8 @@ pub fn frame_fault(events: &[CanonicalEvent]) -> Result<()> {
 
 /// The last position of the append that wrote `stored`: where the frame
 /// covering it ends, else its own, since the store's writer frames every
-/// append of two or more events (§1.2, 083). An append left whole, and a
-/// line of a format before the writer framed, reads as one of its own.
+/// append of two or more events (§1.2, 083). An append left whole reads
+/// as one of its own.
 pub fn append_end(stored: &CanonicalEvent) -> Position {
     stored.frame.as_ref().map_or(stored.position, |f| {
         Position(f.first.0 + u64::from(f.events.max(1)) - 1)

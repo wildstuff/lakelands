@@ -108,36 +108,9 @@ fn an_event_of_another_format_is_refused_by_both_numbers() {
             assert!(e.to_string().contains(&said), "{e}");
         }
     }
-    // An older format this release reads opens, at its own number; a tip
-    // below the first event's format is not read in any.
-    let mut older = good.clone();
-    let mut v: serde_json::Value = serde_json::from_slice(&older.bytes).unwrap();
-    (v["v"], v["body"]["format"]) = (json!(oldest), json!(oldest));
-    v.as_object_mut().unwrap().remove("hash");
-    let hash = canonical::sha256_hex(&v);
-    v["hash"] = json!(hash);
-    (older.hash, older.bytes) = (Digest(hash), canonical::to_vec(&v));
-    assert_eq!(open(&older).map(|e| e.v), Ok(OLDEST_LOG_FORMAT));
-    let ends = (older.clone(), older.clone());
-    assert_eq!(
-        one_format(&"finance".into(), Some(&ends)).ok(),
-        Some(OLDEST_LOG_FORMAT)
-    );
-    let fell = one_format(&"finance".into(), Some(&(good.clone(), older))).unwrap_err();
-    assert!(
-        matches!(fell.situation(), Some(Situation::LogFormat { found, oldest: Some(o), .. })
-            if *found == oldest && *o == oldest),
-        "{fell}"
-    );
     let ends = (good.clone(), good);
-    assert_eq!(
-        one_format(&"finance".into(), Some(&ends)).ok(),
-        Some(LOG_FORMAT_VERSION)
-    );
-    assert_eq!(
-        one_format(&"finance".into(), None).ok(),
-        Some(LOG_FORMAT_VERSION)
-    );
+    assert!(one_format(&"finance".into(), Some(&ends)).is_ok());
+    assert!(one_format(&"finance".into(), None).is_ok());
 }
 
 /// A lake says the format it was created in at position 0. One that

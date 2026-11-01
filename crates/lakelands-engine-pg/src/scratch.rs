@@ -20,10 +20,8 @@
 //! scratch's schema dropped. The log shares the lake's schema, so the
 //! tables move, not the schema: every reader goes on naming the same one.
 //! The swap also makes the log's tables this build has and the lake does
-//! not (`frames`, for a lake an older build made): a rebuild's open does
-//! not make them, so a lake the swap fails to change is left as the
-//! older build can open it, and the upgrade the open then appends finds
-//! them (071, lakelands#1467).
+//! not: a rebuild's open does not make them, so a lake the swap fails to
+//! change is left as the older build can open it (071, lakelands#1467).
 
 use lakelands_api::error::Result;
 use lakelands_api::id::{LakeId, Position};

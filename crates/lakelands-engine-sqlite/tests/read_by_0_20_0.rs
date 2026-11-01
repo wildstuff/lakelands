@@ -1,4 +1,4 @@
-//! A lake of format 21, its index lines naming `id` empty, is read by
+//! A lake this build makes, its index lines naming `id` empty, is read by
 //! 0.20.0 far enough to be refused by its format, not called damaged
 //! (lakelands#1517, decision 086). `older` is 0.20.0's reader of the ends,
 //! its rules copied from v0.20.0's `src/log.rs` (`parse_line`, `whole`,
@@ -7,7 +7,7 @@
 
 mod read_by;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use lakelands_api::Location;
 use lakelands_api::engine::OpenMode;
@@ -104,7 +104,7 @@ fn named_as_0_20_0(dir: &Path) {
     }
 }
 
-/// A lake this build made: both ends by 21, every `id` named empty; named
+/// A lake this build made: both ends by its format, every `id` named empty; named
 /// as 0.20.0 wrote them, the next appends mix lines of both, read whole.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lake_this_build_made_is_read_by_0_20_0_up_to_its_format() {
@@ -132,26 +132,5 @@ async fn a_lake_this_build_made_is_read_by_0_20_0_up_to_its_format() {
     }
     store.verify(None, None).await.unwrap();
     store.close().await.unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_lake_of_20_upgraded_is_read_by_0_20_0_up_to_its_format() {
-    let vectors =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/20");
-    let dir = read_by::scratch("0-20-0", "upgraded");
-    let location = Location::sqlite("vectors", &dir);
-    lakelands_store::import(location.clone(), seams(), vectors)
-        .await
-        .unwrap();
-    for opens in 0..2 {
-        if opens > 0 {
-            let store = lakelands_store::open(location.clone(), seams(), OpenMode::Write);
-            store.await.unwrap().close().await.unwrap();
-        }
-        let (first, tip, _) = older(&dir).unwrap();
-        let reads = u64::from(LOG_FORMAT_VERSION);
-        assert_eq!((first, tip), (20, reads), "after {opens} opens");
-    }
     let _ = std::fs::remove_dir_all(&dir);
 }

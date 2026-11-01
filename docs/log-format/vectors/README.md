@@ -5,22 +5,18 @@ answers `expected.json` and `further.json` say for it, and `verify.py`,
 which reads that format alone and shares no code with Lakelands. Each
 directory's own `README.md` says what it holds.
 
-The highest number is the format this tree writes (`LOG_FORMAT_VERSION`).
-Every lower one is a format a release shipped, which every later release
-reads: it is kept as that release's tag holds it, byte for byte, and
-never edited. `kept` names each with its tag and its path there, and
-`scripts/gates/vectors-kept.sh` holds the directory to it.
-`crates/lakelands-core/tests/log_vectors.rs` runs every directory's own
-`verify.py` over its own log, and recomputes the newest with the
+The promise begins at format 23: nothing of a format before it is kept
+or read. The highest number is the format this tree writes
+(`LOG_FORMAT_VERSION`). Every lower one, from 23 on, is a format a release
+shipped, which every later release reads: it is kept as that release's tag
+holds it, byte for byte, and never edited. `kept` names each with its tag
+and its path there, and `scripts/gates/vectors-kept.sh` holds the directory
+to it. `crates/lakelands-core/tests/log_vectors.rs` runs every directory's
+own `verify.py` over its own log, and recomputes the newest with the
 release's code.
 
 **A format step** (`docs/log-format.md` §6) copies the newest directory
 to the next number and runs `python3 verify.py --stamp N` in the copy.
-The stamp leaves `further.json`'s `lake_upgraded` line stepping between
-the two formats before, and its own check fails on it: that line's
-`from` and `to`, its `about` and the copy's README entry for it are put
-right by hand, and the stamp is run again, which rewrites its hash and
-then passes.
 At the release that ships it, the step adds the directory it leaves
 behind to `kept`, with that release's tag. The paths that name the
 newest directory move with it:

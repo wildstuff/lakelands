@@ -50,7 +50,7 @@
 //! rest follows through `import`.
 //! The projection is folded under the import's lease as a rebuild folds
 //! it, and nothing is appended: the head is the export's. No segment is
-//! sealed by size, the re-open that upgrades an older export included.
+//! sealed by size.
 //! The lease is given up, and the host opens the lake as always; that
 //! open takes a lease greater than every fence in the log and continues
 //! it, and may seal a segment past its bound
@@ -71,7 +71,7 @@ use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, Lease, OpenMode};
 use lakelands_api::error::{Case, Detail, Doing, Flaw, Part, Said, Situation};
-use lakelands_api::event::{Digest, LOG_FORMAT_VERSION};
+use lakelands_api::event::Digest;
 use lakelands_api::location::Location;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Error, LakeId, Position, Result, SourceId};
@@ -425,18 +425,6 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
     written?;
     released?;
     drop(engine);
-    // An export of an older format is upgraded as any lake is: by a
-    // writer's open, whose lease is above every fence the export holds
-    // (`docs/log-format.md` §6). Its events stay as they were written,
-    // and it seals nothing by size: the head is the export's (074).
-    let ends = crate::lake::opener(location, &seams)?.log_ends(location)?;
-    if crate::log::one_format(&location.lake, ends.as_ref())? < LOG_FORMAT_VERSION {
-        let mut location = location.clone();
-        location.limits.seal_after_bytes = 0;
-        Lake::open(&location, seams, OpenMode::Write)?
-            .turn()
-            .close()?;
-    }
     Ok(Imported {
         lake: location.lake.clone(),
         through: verified.through,

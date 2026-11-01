@@ -1,11 +1,4 @@
-# The vector directories of the formats a release shipped. Each is kept
-# as the tag that shipped it holds it, byte for byte, and never edited
-# (`scripts/gates/vectors-kept.sh`): <format> <tag> <its path at the tag>.
-14 v0.13.0 docs/log-format/vectors
-15 v0.14.0 docs/log-format/vectors/15
-16 v0.15.0 docs/log-format/vectors/16
-17 v0.16.0 docs/log-format/vectors/17
-18 v0.17.0 docs/log-format/vectors/18
-19 v0.18.0 docs/log-format/vectors/19
-20 v0.20.0 docs/log-format/vectors/20
-21 v0.21.0 docs/log-format/vectors/21
+# The vector directories of the formats a release shipped, from format 23
+# on. Each is kept as the tag that shipped it holds it, byte for byte, and
+# never edited (`scripts/gates/vectors-kept.sh`):
+# <format> <tag> <its path at the tag>.

@@ -79,32 +79,17 @@ pub(crate) struct Names {
     log: Option<String>,
     /// Where the lake's parts are made.
     pub(crate) at: lakelands_api::location::PgTablespaces,
-    /// Which of [`HEX_COLUMNS`] `log` keeps as their bytes, a bit each, as
-    /// the catalogue said at open and after a conversion: shared by every
-    /// copy, and a scratch's with its lake's.
-    bytes: std::sync::Arc<std::sync::atomic::AtomicU8>,
 }
 
 /// The tables of the log and the lease, which a scratch reads in the
 /// lake's schema.
 const LOG_TABLES: [&str; 4] = ["lease", "segments", "log", "frames"];
 
-/// The columns of `log` the store hands as hex digits: `bytea` from
-/// 0.21.0 on, `text` in a log 0.20.0 or before made and not yet converted
-/// (`crate::log::convert`).
-pub(crate) const HEX_COLUMNS: [&str; 3] = ["id", "prev", "hash"];
-
 impl Names {
     /// The tables of the lake `target` names.
     pub(crate) fn of(target: &Target) -> Result<Names> {
         let (schema, log, at) = (target.quoted_schema()?, None, target.tablespaces.clone());
-        let bytes = Default::default();
-        Ok(Names {
-            schema,
-            log,
-            at,
-            bytes,
-        })
+        Ok(Names { schema, log, at })
     }
 
     /// The tables of a scratch in the schema written as `quoted`, beside
@@ -115,48 +100,18 @@ impl Names {
             schema: quoted,
             log: Some(live.schema.clone()),
             at: live.at.clone(),
-            bytes: live.bytes.clone(),
         }
-    }
-
-    /// Find from the catalogue which of [`HEX_COLUMNS`] `log` keeps as
-    /// bytes: at a handle's open, and after a conversion commits.
-    pub(crate) fn find_bytes(&self, db: &mut Db) -> Result<()> {
-        let kept: Vec<String> = db.column(
-            "SELECT attname::text FROM pg_catalog.pg_attribute WHERE attrelid = to_regclass($1) \
-             AND atttypid = 'bytea'::regtype AND NOT attisdropped",
-            &[&self.t("log")],
-        )?;
-        let bits = (HEX_COLUMNS.iter().enumerate())
-            .filter(|(_, c)| kept.iter().any(|k| k == *c))
-            .fold(0, |bits, (i, _)| bits | 1 << i);
-        self.bytes.store(bits, std::sync::atomic::Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// Whether `log` keeps `column`, one of [`HEX_COLUMNS`], as bytes.
-    fn in_bytes(&self, column: &str) -> bool {
-        let name = column.rsplit('.').next().unwrap_or(column);
-        let bit = HEX_COLUMNS.iter().position(|c| *c == name);
-        let bit = bit.expect("a column of `log` the store hands as hex");
-        self.bytes.load(std::sync::atomic::Ordering::Relaxed) & 1 << bit != 0
     }
 
     /// `column` of `log`, `id`, `prev` or `hash` (perhaps qualified), as
-    /// SQL reads it: the hex digits it spells, whichever type it is kept in.
-    pub(crate) fn hex(&self, column: &str) -> String {
-        match self.in_bytes(column) {
-            true => format!("encode({column}, 'hex')"),
-            false => column.to_owned(),
-        }
+    /// SQL reads it: the hex digits its bytes spell.
+    pub(crate) fn hex(column: &str) -> String {
+        format!("encode({column}::bytea, 'hex')")
     }
 
-    /// `digits`, an expression of hex digits, as `column` of `log` keeps it.
-    pub(crate) fn kept(&self, column: &str, digits: &str) -> String {
-        match self.in_bytes(column) {
-            true => format!("decode({digits}, 'hex')"),
-            false => digits.to_owned(),
-        }
+    /// `digits`, an expression of hex digits, as a column of `log` keeps it.
+    pub(crate) fn kept(digits: &str) -> String {
+        format!("decode({digits}, 'hex')")
     }
 
     /// The clause that makes a table or an index in `space`, if named.
@@ -342,6 +297,7 @@ CREATE TABLE IF NOT EXISTS {s}.log (
     id BYTEA NOT NULL, prev BYTEA NOT NULL, hash BYTEA NOT NULL, bytes BYTEA NOT NULL
 );
 CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
+CREATE INDEX IF NOT EXISTS log_id ON {s}.log (id);
 CREATE TABLE IF NOT EXISTS {s}.frames (
     first BIGINT PRIMARY KEY, events INT NOT NULL, bytes BYTEA NOT NULL
 );"

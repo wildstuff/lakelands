@@ -21,11 +21,6 @@
 //! that writes the token, after it: a writer under an older token that
 //! was appending has committed by then or is refused, so what the new
 //! writer carries into its appends is the log's end (`crate::log`).
-//!
-//! A writer's take converts, in that transaction and before any append, a
-//! log a release before 0.21.0 kept (`crate::log::convert`); a rebuild's
-//! handle converts it in its swap or its `clear`, so a rebuild refused
-//! before either leaves the lake as it found it.
 
 use lakelands_api::engine::Lease;
 use lakelands_api::error::{Error, Result, Situation};
@@ -39,13 +34,12 @@ use crate::projection::Names;
 const KEY: &str = "hashtextextended('lakelands lease ' || $1, 0)";
 
 /// Take the lease for `holder` on the lease connection, with what its
-/// appends carry, or say who holds it; `converts`, converting the log.
+/// appends carry, or say who holds it.
 pub(crate) fn take(
     db: &mut Db,
     names: &Names,
     schema: &str,
     holder: &str,
-    converts: bool,
 ) -> Result<(Lease, Carried)> {
     let locked: bool = db
         .query_one(&format!("SELECT pg_try_advisory_lock({KEY})"), &[&schema])?
@@ -66,9 +60,6 @@ pub(crate) fn take(
         return Err(Error::unavailable(Situation::LeaseLocked { holder, fence }));
     }
     let taken = db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
-        if converts && log::convert(db, names)? {
-            names.find_bytes(db)?;
-        }
         let row = db.query_one(
             &format!(
                 "INSERT INTO {t} (one, fence, holder) VALUES (1, 1, $1) \
@@ -86,10 +77,6 @@ pub(crate) fn take(
         Ok((Lease { fence, holder }, carried))
     });
     if taken.is_err() {
-        // A conversion rolled back leaves the columns as they were.
-        if converts {
-            let _ = names.find_bytes(db);
-        }
         let _ = release_lock(db, schema);
     }
     taken
