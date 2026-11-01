@@ -5,7 +5,7 @@
 //! Everything the CLI knows comes from these files and its flags; it
 //! reads no environment variable.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -162,6 +162,107 @@ fn grant_holder(text: &str) -> Option<String> {
     let file: serde_json::Value = serde_json::from_str(text).ok()?;
     let name = file.get(list)?.get(index)?.get("name")?.as_str()?;
     Some(name.to_owned())
+}
+
+/// The first key a map of a principal's grant repeats in a configuration's
+/// `text`, with the principal's name: a map keeps its last value for a key
+/// written twice, so a restriction written first would drop without a word.
+fn repeated_in_a_grant(text: &str) -> Option<(String, String)> {
+    use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+    use std::cell::RefCell;
+
+    type Found = RefCell<Option<(Vec<String>, String)>>;
+    struct Walk<'a> {
+        path: Vec<String>,
+        found: &'a Found,
+    }
+    impl<'de> DeserializeSeed<'de> for Walk<'_> {
+        type Value = ();
+        fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+    impl<'de> Visitor<'de> for Walk<'_> {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("any JSON")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_str<E>(self, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_unit<E>(self) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+            let mut index = 0;
+            loop {
+                let mut path = self.path.clone();
+                path.push(index.to_string());
+                let next = Walk {
+                    path,
+                    found: self.found,
+                };
+                if seq.next_element_seed(next)?.is_none() {
+                    return Ok(());
+                }
+                index += 1;
+            }
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            let mut seen = BTreeSet::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if !seen.insert(key.clone()) {
+                    let mut found = self.found.borrow_mut();
+                    if found.is_none() {
+                        *found = Some((self.path.clone(), key.clone()));
+                    }
+                }
+                let mut path = self.path.clone();
+                path.push(key);
+                map.next_value_seed(Walk {
+                    path,
+                    found: self.found,
+                })?;
+            }
+            Ok(())
+        }
+    }
+
+    let found = Found::default();
+    let read = &mut serde_json::Deserializer::from_str(text);
+    DeserializeSeed::deserialize(
+        Walk {
+            path: Vec::new(),
+            found: &found,
+        },
+        read,
+    )
+    .ok()?;
+    let (path, key) = found.into_inner()?;
+    let [list, index, field, ..] = &path[..] else {
+        return None;
+    };
+    if list != "principals" || field != "grants" {
+        return None;
+    }
+    let file: serde_json::Value = serde_json::from_str(text).ok()?;
+    let name = file
+        .get(list)?
+        .get(index.parse::<usize>().ok()?)?
+        .get("name")?;
+    Some((name.as_str()?.to_owned(), key))
 }
 
 /// Create a root. Refuses to overwrite an existing one.
@@ -464,6 +565,16 @@ impl Root {
             }
             Err(e) => return Err(io(&file, e)),
         };
+        if let Some((name, key)) = repeated_in_a_grant(&text) {
+            return Err(Failure::new(
+                format!(
+                    "{}: the grant of principal `{name}` repeats the key `{key}`",
+                    show(&file)
+                ),
+                "write each key of a grant once: a repeated key keeps its last value, so a \
+                 restriction written first would drop instead of stopping the root",
+            ));
+        }
         let config: Config = serde_json::from_str(&text).map_err(|e| match grant_holder(&text) {
             Some(name) => Failure::new(
                 format!(
@@ -700,8 +811,13 @@ impl Root {
                 .await
             {
                 Ok(told) => {
-                    let names = told.data.types.into_iter().map(|t| t.name);
-                    declared.push((lake, names.collect::<BTreeSet<_>>()));
+                    let types: BTreeMap<_, BTreeSet<_>> = told
+                        .data
+                        .types
+                        .into_iter()
+                        .map(|t| (t.name, t.fields.into_iter().map(|f| f.name).collect()))
+                        .collect();
+                    declared.push((lake, types));
                 }
                 Err(e) => eprintln!("lakelands: the grants were not checked against `{lake}`: {e}"),
             }
@@ -709,8 +825,8 @@ impl Root {
         for entry in whom {
             let lakes = || declared.iter().filter(|d| entry.addresses(d.0));
             let list = lakes().map(|d| format!("`{}`", d.0)).collect::<Vec<_>>();
-            for ty in entry.grants.types.keys() {
-                if !list.is_empty() && !lakes().any(|d| d.1.contains(ty)) {
+            for (ty, grant) in &entry.grants.types {
+                if !list.is_empty() && !lakes().any(|d| d.1.contains_key(ty)) {
                     eprintln!(
                         "lakelands: the grant of principal `{}` on `{ty}` names a type none of \
                          these lakes declares: {}. It has no effect until one does, unless the \
@@ -718,6 +834,21 @@ impl Root {
                         entry.name,
                         list.join(", ")
                     );
+                    continue;
+                }
+                let hidden = grant.hide_where.iter().flat_map(|h| h.fields.keys());
+                for field in grant.fields.keys().chain(hidden).collect::<BTreeSet<_>>() {
+                    if !list.is_empty()
+                        && !lakes().any(|d| d.1.get(ty).is_some_and(|f| f.contains(field)))
+                    {
+                        eprintln!(
+                            "lakelands: the grant of principal `{}` on `{ty}` names a field `{field}` \
+                             that the type declares in none of these lakes: {}. It has no effect \
+                             until one does, unless the name is a renamed field's old one",
+                            entry.name,
+                            list.join(", ")
+                        );
+                    }
                 }
             }
         }
