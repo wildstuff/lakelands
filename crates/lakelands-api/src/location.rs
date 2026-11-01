@@ -349,7 +349,10 @@ pub struct Limits {
     /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
     pub forget_rebuild: bool,
     /// The bytes past which the writer seals the active segment after an
-    /// append, on an engine that reports its size; 0 never seals by size,
+    /// append, on an engine that reports its size, counted as its events
+    /// restore, a block by its `raw` and never by its stored bytes
+    /// (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`); 0
+    /// never seals by size,
     /// and a bound below [`Limits::SEAL_FLOOR`] is read as it
     /// (`docs/decisions/074-a-segment-is-sealed-by-size.md`).
     pub seal_after_bytes: u64,
@@ -397,7 +400,7 @@ impl Default for Limits {
             order_unused_secs: 604_800,
             order_chunk: 10_000,
             forget_rebuild: false,
-            seal_after_bytes: 256 << 20,
+            seal_after_bytes: 64 << 20,
             quarantined_max: 10_000,
         }
     }

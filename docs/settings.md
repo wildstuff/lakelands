@@ -209,11 +209,11 @@ Whether a forgetting always rebuilds the projection; off, it refolds only the re
 
 ### `limits.seal_after_bytes`
 
-The active segment's size past which the writer seals it after an append, as `checkpoint` does, on an engine that reports the size (SQLite); a writer's open seals one already past it. PostgreSQL and memory never seal by size.
+The active segment's size, its lines and its blocks counted as they inflate (each block's `raw`, never what it stores), past which the writer seals it after an append, as `checkpoint` does, on an engine that reports the size (SQLite); a writer's open seals one already past it. PostgreSQL and memory never seal by size.
 
 - **Takes:** bytes: 0 never seals by size, and a bound below 1048576 (1 MiB) is read as 1 MiB.
-- **Default:** `268435456`.
-- **Cost:** each seal holds the writer as a `checkpoint` does, about 2 ms a MiB of the segment: the write that crosses 256 MiB waited 0.51 s on SQLite, against 16 ms for a write of 1 MiB; every checkpoint lists each sealed segment, so a small bound makes many seals and long checkpoints.
+- **Default:** `67108864`.
+- **Cost:** each seal holds the writer as a `checkpoint` does while it restores and hashes every event of the segment: the write that crossed 64 MiB of ticks, 511 000 events in 8.8 MB of blocks, waited 9.3 s on SQLite under load 7 to 12, against 24 ms for a write of 249 ticks; every checkpoint lists each sealed segment, so a small bound makes many seals and long checkpoints.
 
 ### `limits.quarantined_max`
 

@@ -118,15 +118,15 @@ restored exactly
   whose n lines stands a frame line; a line that holds a member its
   frame holds; a `position` or a `prev` that is not the one the event
   before gives; a segment's first event line that does not hold both.
-- **The writer's form** (083, lakelands#1413). The store frames each
-  append (§4.1) of two or more events, with exactly the members all its
-  events share, and writes `position` and `prev` only on a segment's
-  first event line; an append of one event has no frame. An append that
-  holds a `lake_created`, the one that begins the lake's format, is
-  stored whole: no frame, each line its event's canonical bytes
-  (lakelands#1477). An older release reads the number on the first line
-  and names the format (§6) instead of taking the append for a crash's
-  tail. A
+- **The writer's form** (083, 098). The store writes each append
+  (§4.1) of two or more events as blocks (§1.5), each block's lines
+  framed with exactly the members all its events share; an append of
+  one event is one line, holding `position` and `prev` only where it is
+  a segment's first event. An append that holds a `lake_created`, the
+  one that begins the lake's format, is stored whole: no frame and no
+  block, each line its event's canonical bytes (lakelands#1477). An
+  older release reads the number on the first line and names the format
+  (§6) instead of taking the append for a crash's tail. A
   copy of the log writes a form of its own (§4.2). A reader judges no form against
   the appends: it cannot see where an append ended, and two forms of the
   same events restore the same bytes, hash and digest alike, so either
@@ -373,6 +373,74 @@ each sealed member, or of its box. `docs/log-format/vectors/23/` holds
 ingests whose members are sealed in a box (`boxed.json`), a quarantined
 record whose cell is sealed in one, and a sealed output, under a key
 its README names.
+
+### 1.5 Blocks
+
+An append of two or more events is stored as **blocks**
+(`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`): the
+writer cuts its events, in order, into runs of at most 1 000 events
+whose lines (below) take at most 1 MiB, a run closing before the event
+that would pass either, and stores each run as one block. A block is two
+parts, one after the other in its segment:
+
+```text
+{"block":{"end":E,"events":n,"first":F,"hash":H,"prev":P,"raw":r,"stored":z},"v":23}\n
+<z bytes: the zlib stream (RFC 1950) of the block's r bytes of lines>\n
+```
+
+- **The first line** is canonical JSON with exactly the members `block`
+  and `v`, and `block` exactly the seven shown, so a reader of any
+  release reads the format on it first (§6). `first` is the position of
+  the block's first event and `n`, at least 1, how many it holds; `prev`
+  is the `hash` before its first event and `hash` its last event's;
+  `end` is the last position of the append the block belongs to, at
+  least `first + n − 1`, the same in every block of the append; `raw` is
+  how many bytes its lines take and `stored` how many its zlib stream
+  takes. The stream follows the first line's line feed, and one line
+  feed follows the stream.
+- **The lines** the stream inflates to are, each followed by a line
+  feed: a frame line (§1.2) where the block's events share members, then
+  one line an event, in order. A line is the event's line of §1.2 less
+  `hash`, `position`, `prev` and `v`, which the block decides, and less
+  `id` where the event decides it (below). The writer compresses at
+  zlib level 6; a reader inflates any valid stream, and the level is no
+  part of the format.
+- **Restoring.** A reader restores the block's events in order: an
+  event's `position` is `first` and then one more each event, its
+  `prev` the block's `prev` and then the `hash` of the event before it,
+  its `v` the block's; its frame's members are added as §1.2 says; its
+  `id`, where its line holds none, is the one its members decide; and
+  its `hash` is computed over the event so restored (§1.2). Each
+  restores to the same canonical bytes, `hash` and `id` as the event
+  appended, and those bytes are what a segment's digest is over (§4.2).
+- **The id a line leaves out.** The writer leaves out `id` where it is
+  the id §3 computes from the event's own members: a
+  `record_ingested`'s, from its `source`, `type`, `key`, version before,
+  patch and, where it holds `sealed`, its box; a
+  `record_quarantined`'s, from its `id` members, version before, cells,
+  box and refusal. Every other `id` stays on its line, and so does one
+  that is not the computed one.
+- **An append's blocks** follow each other with nothing between them,
+  and the last of them ends at `end`. An append of one event, and the
+  append that holds a `lake_created`, has no block.
+- **A break.** Each of these is a break at the block's first event: a
+  first line that is not canonical or holds another member; `first` or
+  `prev` that is not the one the event before gives; a stream that does
+  not inflate to exactly `raw` bytes ending in a line feed, that is not
+  `stored` bytes long, or that is not followed by a line feed; lines
+  more or fewer than `n`, or a frame line that says another `n`; and a
+  last restored `hash` that is not the block's. A line in a block that is
+  not canonical, holds `hash`, `position`, `prev` or `v`, holds a member
+  its frame holds, or is a frame or block line, is a break at the event
+  it stands for. A file that ends inside an append's blocks, before one
+  reaching its `end` (a crash's tail, or a copy cut short), is a break
+  at the first missing position, `append_short` naming the `end`; a
+  plain line where the next block of an open append is due is the same
+  break.
+
+The feed tells each event of a block the append it belongs to by `end`.
+An engine that recovers from a crash drops the blocks of an append whose
+`end` never arrived, and so drops the whole append.
 
 ## 2. Kinds
 
@@ -931,35 +999,38 @@ or one group-commit window of an ingest.
 ### 4.2 Segments
 
 The log is cut into **segments**, each a run of consecutive events. A
-file-based engine keeps each segment as one file of lines (§1.2) named
+file-based engine keeps each segment as one file of lines (§1.2) and
+blocks (§1.5) named
 by its first position in 20 decimal digits:
 `log/00000000000000000000.jsonl`, `log/00000000000000183211.jsonl`, and
 so on. The last segment is **active** and takes appends; the others are
 **sealed** and never change. An engine may keep files of its own beside
 `log/`, such as an index or its lease; a verifier reads only `log/`. An engine that keeps events elsewhere (a
-table, an object store) keeps each line of the stored form (§1.2)
-unchanged, frames included, and can export its segments as exactly
-these files. An export
+table, an object store) keeps each line and block of the stored form
+(§1.2, §1.5) unchanged, frames included, and can export its segments as
+exactly these files. An export
 (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`)
 may write an `export.json` manifest beside `log/`; it is optional, not
 part of the format, and never trusted.
 
 A segment's **digest** is SHA-256 over the canonical bytes of its events
-as restored (§1.2), in order, each followed by one line feed, and
-nothing else. A segment that holds a frame or a derived member has no
-file of those bytes, and its digest is the same whatever stored form
+as restored (§1.2, §1.5), in order, each followed by one line feed,
+and nothing else; never over a block's stored bytes. A segment that
+holds a frame, a block or a derived member has no file of those bytes, and its digest is the same whatever stored form
 holds its events. The first segment's
 first event is `lake_created`; every later one's is a `checkpoint`.
 
 **A copy of the log writes a form of its own** (083). An export and a backup read the log through the
 feed, which answers events, not lines, and names where each append ends.
-They frame each append of two or more events whole, with the members
-all of it share, and every event line they write holds its `position`;
-`prev` stands only on a segment's first event line. An import
-restores the events and appends each frame as one append, and each
-event no frame covers as one of its own, as any writer does, so its
-lake holds the writer's form (§1.2) and its feed names the appends the
-copy framed. A copy holds one append at a time, so what it holds
+They write each append of two or more events as its blocks, as the
+writer does (§1.5), and every event on a line of its own holds its
+`position`; `prev` stands only on a segment's first line. An import
+carries the blocks unchanged: it restores the events and appends each
+append's blocks as one append, and each event on a line as one of its
+own, as any writer does, so its lake holds the writer's form (§1.2) and
+its feed names the appends the copy held. A backup that finds its last
+file ending inside an append writes that append again from its first
+position. A copy holds one append at a time, so what it holds
 follows the lake's largest append. Each copy's digests are its log's, and every
 checkpoint it holds stays true.
 
@@ -969,15 +1040,20 @@ sealed segment's last hash and lists every sealed segment's range and
 digest. A segment is sealed by a `checkpoint` the host asks for, or by
 the writer once the active segment passes the size its host set
 (`docs/decisions/074-a-segment-is-sealed-by-size.md`); the two are one
-seal, and a reader cannot tell them apart.
+seal, and a reader cannot tell them apart. The size is counted as the
+segment's events restore, each line's bytes and its line feed and each
+block's `raw`, never a block's stored bytes, so a bound sizes the
+digest a seal computes (`limits.seal_after_bytes`, 64 MiB unless set).
 
 ### 4.3 Verifying
 
 A reader verifies a log by restoring each event from the stored form
-(§1.2), recomputing its hash and checking its `prev` against the event
-before it. A frame that was changed is a break at the first event it
-covers, since each of its members is in the bytes of every event it
-restores. A segment's first event line holds its own `position` and
+(§1.2, §1.5), recomputing its hash and checking its `prev` against the
+event before it. A frame that was changed is a break at the first event
+it covers, since each of its members is in the bytes of every event it
+restores. A block holds no hash of its own events but its last, so a
+changed byte inside it is a break at the block, where the hashes it
+restores no longer reach its `hash`. A segment's first event line holds its own `position` and
 `prev`, so a reader starts a segment from that line. From a
 checkpoint, a reader can verify every later segment without the earlier
 ones: the checkpoint's `hash` stands in for the chain before it. The
