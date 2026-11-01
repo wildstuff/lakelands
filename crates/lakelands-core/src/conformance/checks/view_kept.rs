@@ -70,8 +70,7 @@ check!(
 );
 
 check!(
-    KEPT_TERMS =
-        a_view_grouped_by_a_bucket_term_answers_as_its_twin_grouped_by_a_derived_field,
+    KEPT_TERMS = a_view_grouped_by_a_bucket_term_answers_as_its_twin_grouped_by_a_derived_field,
     "049 and 017, extended (lakelands#1636): a view whose group holds a `date_bucket` term over a field of its source, under a name the view type declares, answers as its twin, the same view grouped by a field of that name derived by the same expression in a type that is its source's mirror, every write to the source written to the mirror too, read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: by a text and an hour, a text and a week of a date, an hour alone, a text and a day under a `where`, a text and a day of Europe/Berlin and a week of it alone (lakelands#1667), and a view over the first that groups by the text, all kept, `describe_type` saying `kept`, while members arrive, a bucket's first, last and least member is retired, members move to the next hour and the next day, a holder's instant goes null, a member is held and lifted, two are fed and their source purged, readings arrive around Berlin's changes of offset, a day of 23 hours and one of 25, and one moves across a local midnight, and a bucket's last member leaves; and `describe_type` of the source says the same before the views are declared, after they are and are kept, and after every write",
     given
 );
@@ -801,7 +800,10 @@ impl Twin {
             }
             for i in 1..=times {
                 let line = line.replace('#', &i.to_string());
-                for line in [Some(line.clone()), self.mirrored(&line)].into_iter().flatten() {
+                for line in [Some(line.clone()), self.mirrored(&line)]
+                    .into_iter()
+                    .flatten()
+                {
                     if let Err(e) = self.line(store, &line).await {
                         self.fail(format!("`{line}`: {e}"));
                     }
@@ -809,7 +811,9 @@ impl Twin {
             }
             let words: Vec<&str> = line.splitn(4, ' ').collect();
             let wrote = match (word, words.get(1..3)) {
-                ("row" | "valid_at" | "is" | "was" | "says" | "mirror" | "unchanged", _) => continue,
+                ("row" | "valid_at" | "is" | "was" | "says" | "mirror" | "unchanged", _) => {
+                    continue;
+                }
                 ("set", Some(&[key, _])) | (_, Some(&[SETTING_TYPE, key])) => setting(key),
                 ("put" | "retire" | "hold" | "lift" | "view", Some(w)) => w[0].to_owned(),
                 ("feed", Some(w)) => w[1].to_owned(),
@@ -941,7 +945,10 @@ impl Twin {
             ("unchanged", ..) => {
                 let now = json!(l.describe_type(rest).await?).to_string();
                 let first = self.described.entry(rest.to_owned()).or_insert(now.clone());
-                ensure!(*first == now, "`describe_type` of `{rest}` was {first}, and is {now}");
+                ensure!(
+                    *first == now,
+                    "`describe_type` of `{rest}` was {first}, and is {now}"
+                );
             }
             _ => return Err(bad("is no event, or is short".into())),
         }
@@ -970,7 +977,11 @@ impl Twin {
         let mut rest = rest.map_err(|e| e.to_string())?;
         let terms = rest.as_object_mut().and_then(|r| r.remove("terms"));
         let terms = terms.unwrap_or_else(|| json!({}));
-        let mirror = self.mirrors.get(source).filter(|_| terms != json!({})).cloned();
+        let mirror = self
+            .mirrors
+            .get(source)
+            .filter(|_| terms != json!({}))
+            .cloned();
         if terms != json!({}) && mirror.is_none() {
             return Err(format!("its source `{source}` has no mirror for its terms"));
         }
@@ -994,7 +1005,10 @@ impl Twin {
         fields.extend(measures.iter().flat_map(|(f, _)| kinds(f)));
         let called = |f: &str| f.split(':').next().unwrap_or_default().to_owned();
         let keys: Vec<String> = by.iter().map(|f| called(f)).collect();
-        let first = keys.first().filter(|k| terms.get(k.as_str()).is_none()).cloned();
+        let first = keys
+            .first()
+            .filter(|k| terms.get(k.as_str()).is_none())
+            .cloned();
         let grouped = |end: &str| -> Vec<Value> {
             let term = |k: &String| terms.get(k).filter(|_| end.is_empty());
             let key = |k: &String| term(k).map_or(json!(k), |e| json!({"name": k, "expr": e}));

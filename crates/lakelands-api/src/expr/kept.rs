@@ -31,8 +31,14 @@ pub fn keepable<'a>(
         let name = p.name.clone();
         return Err(Case::KeptParam { name }.into());
     }
-    let own = (&view.source, &view.r#where, view.group_sources(), &view.measures);
-    let merged = (view.merge.iter()).map(|s| (&s.source, &s.r#where, s.group_by.clone(), &s.measures));
+    let own = (
+        &view.source,
+        &view.r#where,
+        view.group_sources(),
+        &view.measures,
+    );
+    let merged =
+        (view.merge.iter()).map(|s| (&s.source, &s.r#where, s.group_by.clone(), &s.measures));
     for (source, filter, group_by, measures) in std::iter::once(own).chain(merged) {
         let fields = declared(source).map_or(&[][..], |t| &t.fields);
         // A field computed at the read moves with the clock as well.

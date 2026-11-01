@@ -491,8 +491,10 @@ fn reading_type(ty: &str, litres: &str) -> Value {
         field("litres", litres),
     ];
     if ty == "reading_d" {
-        fields.push(json!({"name": "hour", "type": {"kind": "date_time"}, "authority": "derived",
-            "derived": format!("date_bucket(at, 1h, '{ORIGIN}')"), "depends_on": ["at"]}));
+        fields.push(
+            json!({"name": "hour", "type": {"kind": "date_time"}, "authority": "derived",
+            "derived": format!("date_bucket(at, 1h, '{ORIGIN}')"), "depends_on": ["at"]}),
+        );
     }
     json!({"name": ty, "fields": fields})
 }
@@ -518,7 +520,9 @@ async fn set_off_by(
             } => {
                 let at = e.cause.and_then(|c| by.get(&c)).cloned();
                 let at = at.ok_or_else(|| {
-                    Failure::new(format!("`{trigger}` fired, caused by no reading of the delivery"))
+                    Failure::new(format!(
+                        "`{trigger}` fired, caused by no reading of the delivery"
+                    ))
                 })?;
                 let trigger = trigger.to_string().replace("_twin", "");
                 out.push((trigger, key.to_string(), created.unwrap_or_default(), at));
@@ -536,8 +540,7 @@ async fn a_trigger_on_a_view_grouped_by_a_term_fires_as_on_its_twin(
 ) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
-    super::settings::declared(&l, "litre_bound", "decimal", json!("100"))
-        .await?;
+    super::settings::declared(&l, "litre_bound", "decimal", json!("100")).await?;
     let bucket = format!("date_bucket(at, 1h, '{ORIGIN}')");
     for (source, view, _) in LANES {
         let mut ty = reading_type(source, "decimal");
@@ -567,7 +570,10 @@ async fn a_trigger_on_a_view_grouped_by_a_term_fires_as_on_its_twin(
     let before = s.head().await.must("the head")?;
     for (_, view, end) in LANES {
         let [t, _] = triggers(view, end);
-        let r = l.cat.declare(&l.own, serde_json::from_value(t).expect("a trigger")).await;
+        let r = l
+            .cat
+            .declare(&l.own, serde_json::from_value(t).expect("a trigger"))
+            .await;
         let want = json!({"code": "watches_view", "type": view,
             "at": [{"code": "trigger", "name": format!("crossing{end}")}]});
         refused_like(&format!("a trigger on `{view}`, not kept"), r, &want)?;
@@ -618,7 +624,10 @@ async fn a_trigger_on_a_view_grouped_by_a_term_fires_as_on_its_twin(
         .map(|i| (format!("r{i}"), reading("m1", now + i * 1_000_000, "15")))
         .collect();
     let got = deliver(&l, "ten readings of `m1`'s hour", &ten).await?;
-    let fired: Vec<_> = got.iter().map(|(t, _, c, at)| (t.as_str(), *c, at.as_str())).collect();
+    let fired: Vec<_> = got
+        .iter()
+        .map(|(t, _, c, at)| (t.as_str(), *c, at.as_str()))
+        .collect();
     ensure!(
         fired == [("crossing", false, "r7"), ("strict", false, "r7")]
             && got.iter().all(|(_, k, ..)| named(k, "m1", now)),
@@ -627,7 +636,10 @@ async fn a_trigger_on_a_view_grouped_by_a_term_fires_as_on_its_twin(
     );
     let next = [("n1".to_owned(), reading("m1", now + hour, "150"))];
     let got = deliver(&l, "a new hour's first reading past the bound", &next).await?;
-    let fired: Vec<_> = got.iter().map(|(t, _, c, at)| (t.as_str(), *c, at.as_str())).collect();
+    let fired: Vec<_> = got
+        .iter()
+        .map(|(t, _, c, at)| (t.as_str(), *c, at.as_str()))
+        .collect();
     ensure!(
         fired == [("crossing", true, "n1")] && named(&got[0].1, "m1", now + hour),
         "a new hour of `m1` whose first reading is past the bound fires `crossing`, the group \
@@ -654,7 +666,10 @@ async fn a_trigger_on_a_view_grouped_by_a_term_fires_as_on_its_twin(
     deliver(&l, "two readings `m9` sums inexactly", &wide).await?;
     let one = [("w3".to_owned(), reading("m9", now + 2, "1"))];
     let got = deliver(&l, "a reading into the inexact `m9`", &one).await?;
-    let fired: Vec<_> = got.iter().map(|(t, _, c, at)| (t.as_str(), *c, at.as_str())).collect();
+    let fired: Vec<_> = got
+        .iter()
+        .map(|(t, _, c, at)| (t.as_str(), *c, at.as_str()))
+        .collect();
     ensure!(
         fired == [("crossing", false, "w3")],
         "a reading into the inexact `m9` fires `crossing` as at a group that arrived, without \
@@ -666,7 +681,9 @@ async fn a_trigger_on_a_view_grouped_by_a_term_fires_as_on_its_twin(
     for (source, view, end) in LANES {
         let key = format!("view_kept.{view}").into();
         let off = patch(json!({"value": false}));
-        let r = (l.cat).upsert(&l.own, &setting, &key, off, WriteOpts::default()).await;
+        let r = (l.cat)
+            .upsert(&l.own, &setting, &key, off, WriteOpts::default())
+            .await;
         let want = json!({"code": "view_kept_for_set", "type": view,
             "at": [{"code": "trigger", "name": format!("crossing{end}")}]});
         refused_like(&format!("`view_kept.{view}` written false"), r, &want)?;
@@ -684,7 +701,10 @@ async fn a_trigger_on_a_view_grouped_by_a_term_fires_as_on_its_twin(
     let two = [("m2", "t1"), ("m3", "t2")].map(|(m, k)| (k.to_owned(), reading(m, now, "150")));
     let mut refused = Vec::new();
     for (source, _, end) in LANES {
-        let records = two.iter().map(|(k, f)| crate::conformance::fixture::source_record(source, k, f.clone())).collect();
+        let records = two
+            .iter()
+            .map(|(k, f)| crate::conformance::fixture::source_record(source, k, f.clone()))
+            .collect();
         let r = l.ingest("meter", records).await;
         let named = match &r {
             Err(lakelands_api::Error::Refused {

@@ -412,7 +412,9 @@ fn only_seen<'a>(
             let stored = find(source).is_some_and(|d| d.view.is_none() && !ends_held(d));
             // A term is no field of the source: an `only` on what it reads
             // is carried by no group value.
-            let grouped = p.iter().all(|(f, _)| v.group_by.contains(&GroupKey::Field(f.clone())));
+            let grouped = p
+                .iter()
+                .all(|(f, _)| v.group_by.contains(&GroupKey::Field(f.clone())));
             let carried = !computed && v.merge.is_empty() && stored && grouped;
             pairs.extend(p.iter().filter(|_| carried).cloned());
             (pairs, !carried)

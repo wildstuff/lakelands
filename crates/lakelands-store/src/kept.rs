@@ -153,25 +153,24 @@ impl Kept {
         let v = decl.view.as_deref()?;
         lakelands_api::expr::keepable(v, |t| o.ty(t).ok()).ok()?;
         let mut settings = BTreeSet::new();
-        let mut source =
-            |ty: &TypeName, filter: Option<&Condition>, by: Vec<_>, m: &[Measure]| {
-                let filter = filter.map(|w| condition(w, Place::View, &[]));
-                let filter = filter.transpose().ok()?;
-                let measured =
-                    |m: &Measure| Ok((m.name.clone(), condition(&m.expr, Place::Group, &[])?));
-                let measures: Result<Vec<(FieldName, Expr)>> = m.iter().map(measured).collect();
-                let measures = measures.ok()?;
-                let read = filter.iter().chain(measures.iter().map(|(_, e)| e));
-                read.for_each(|e| lakelands_core::derive::settings(e, &mut settings));
-                Some(Src {
-                    ty: ty.clone(),
-                    view: o.ty(ty).is_ok_and(|t| t.view.is_some()),
-                    filter,
-                    group_by: by,
-                    keeping: Keeping::of(&measures),
-                    measures,
-                })
-            };
+        let mut source = |ty: &TypeName, filter: Option<&Condition>, by: Vec<_>, m: &[Measure]| {
+            let filter = filter.map(|w| condition(w, Place::View, &[]));
+            let filter = filter.transpose().ok()?;
+            let measured =
+                |m: &Measure| Ok((m.name.clone(), condition(&m.expr, Place::Group, &[])?));
+            let measures: Result<Vec<(FieldName, Expr)>> = m.iter().map(measured).collect();
+            let measures = measures.ok()?;
+            let read = filter.iter().chain(measures.iter().map(|(_, e)| e));
+            read.for_each(|e| lakelands_core::derive::settings(e, &mut settings));
+            Some(Src {
+                ty: ty.clone(),
+                view: o.ty(ty).is_ok_and(|t| t.view.is_some()),
+                filter,
+                group_by: by,
+                keeping: Keeping::of(&measures),
+                measures,
+            })
+        };
         let by = lakelands_core::expr::aggregate::group_keys(&v.group_by).ok()?;
         let own = source(&v.source, v.r#where.as_ref(), by, &v.measures)?;
         let mut sources = vec![own];

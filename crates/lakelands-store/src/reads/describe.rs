@@ -925,7 +925,14 @@ impl<'a> Reader<'a> {
     fn probe_view(&self, v: &lakelands_api::ontology::ViewDecl, read: bool) -> Result<()> {
         let own = (&v.source, v.r#where.as_ref(), &v.group_by, &v.measures);
         let merged = v.merge.iter();
-        let merged = merged.map(|m| (&m.source, m.r#where.as_ref(), field_keys(&m.group_by), &m.measures));
+        let merged = merged.map(|m| {
+            (
+                &m.source,
+                m.r#where.as_ref(),
+                field_keys(&m.group_by),
+                &m.measures,
+            )
+        });
         let own = (own.0, own.1, own.2.clone(), own.3);
         for (source, filter, group_by, measures) in std::iter::once(own).chain(merged) {
             let (source, ..) =

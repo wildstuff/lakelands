@@ -102,7 +102,11 @@ pub fn view_shape(view: &ViewDecl) -> Result<Value, ViewConditionError> {
             Ok(json!({"name": name, "expr": typed(expr, at)?}))
         }
     });
-    if view.group_by.iter().any(|k| matches!(k, GroupKey::Named { .. })) {
+    if view
+        .group_by
+        .iter()
+        .any(|k| matches!(k, GroupKey::Named { .. }))
+    {
         shape["group_by"] = json!(terms.collect::<Result<Vec<_>, ViewConditionError>>()?);
     }
     // Parameters and merged sources join the shape only when declared, so

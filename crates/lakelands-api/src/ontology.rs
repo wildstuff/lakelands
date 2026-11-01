@@ -11,11 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Beyond, Case, Place, Said};
 use crate::expr::{Condition, Func};
-use crate::read::GroupKey;
 use crate::id::{
     ConstraintName, FieldName, ParamName, PreconditionName, RelationName, SourceId, TriggerName,
     TypeName, ValueTypeName, VerbName,
 };
+use crate::read::GroupKey;
 
 /// A host's own marks on a declaration: a map from a namespaced key
 /// (`acme.icon`) to a JSON value. Lakelands stores, replays and describes

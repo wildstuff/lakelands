@@ -469,8 +469,10 @@ async fn a_calendar_bucket_is_cut_at_local_midnight_in_a_named_zone(store: Store
     for (key, fires) in [("c", true), ("d", false)] {
         let at = l.upsert("entry", key, json!({"amount": "2"})).await?;
         let events = crate::conformance::fixture::events_from(s, at.position()).await?;
-        let fired = events.iter().any(|e| matches!(&e.body,
-            EventBody::TriggerFired { trigger, .. } if trigger.as_str() == "sunday"));
+        let fired = events.iter().any(|e| {
+            matches!(&e.body,
+            EventBody::TriggerFired { trigger, .. } if trigger.as_str() == "sunday")
+        });
         ensure!(
             fired == fires,
             "a trigger whose `when` is Berlin's day of 2030-03-31 fires at `{key}`: {fires}; \
@@ -481,7 +483,9 @@ async fn a_calendar_bucket_is_cut_at_local_midnight_in_a_named_zone(store: Store
     let unknown = "Mars/Olympus";
     let refusal = json!({"code": "bucket_zone", "zone": unknown});
     let bucket = format!("date_bucket(on, 'day', '{unknown}')");
-    let read = cat.find(own, &TypeName::from("entry"), keyed(&bucket)).await;
+    let read = cat
+        .find(own, &TypeName::from("entry"), keyed(&bucket))
+        .await;
     refused_like("a read grouped by an unknown zone", read, &refusal)?;
     let mut viewed = local("Europe/Berlin");
     viewed["name"] = json!("seen");

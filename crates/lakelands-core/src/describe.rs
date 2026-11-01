@@ -511,17 +511,25 @@ impl Sight<'_> {
 /// merged ones in order ([`source_reads`]). `None` when one of its
 /// conditions does not parse.
 pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTreeSet<FieldName>)>> {
-    std::iter::once((&v.source, v.r#where.as_ref(), v.group_sources(), &v.measures))
-        .chain(
-            v.merge
-                .iter()
-                .map(|m| (&m.source, m.r#where.as_ref(), m.group_by.clone(), &m.measures)),
+    std::iter::once((
+        &v.source,
+        v.r#where.as_ref(),
+        v.group_sources(),
+        &v.measures,
+    ))
+    .chain(v.merge.iter().map(|m| {
+        (
+            &m.source,
+            m.r#where.as_ref(),
+            m.group_by.clone(),
+            &m.measures,
         )
-        .map(|(source, filter, group_by, measures)| {
-            let names = source_reads(filter, &group_by, measures)?;
-            Some((source.clone(), names.into_iter().collect()))
-        })
-        .collect()
+    }))
+    .map(|(source, filter, group_by, measures)| {
+        let names = source_reads(filter, &group_by, measures)?;
+        Some((source.clone(), names.into_iter().collect()))
+    })
+    .collect()
 }
 
 /// The fields a view reads of one source, in the order a read probes

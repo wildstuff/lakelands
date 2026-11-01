@@ -1105,7 +1105,13 @@ fn view_kinds(o: &Ontology, owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Resu
         };
         let by = (v.group_by.iter()).filter(|_| source == &v.source);
         let by = by.map(|g| {
-            let on = [owner, &[Place::Group { name: g.name().clone() }]].concat();
+            let on = [
+                owner,
+                &[Place::Group {
+                    name: g.name().clone(),
+                }],
+            ]
+            .concat();
             let e = match g {
                 GroupKey::Field(f) => Ok(path(f)),
                 GroupKey::Named { expr, .. } => condition(expr, Eval::View, &on),

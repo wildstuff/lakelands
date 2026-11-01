@@ -36,7 +36,9 @@ pub fn known(name: &str) -> bool {
 /// for an instant outside the calendar.
 pub fn local_start(t: i64, unit: &str, zone_name: &str) -> Option<i64> {
     let tz = zone(zone_name)?;
-    let local = jiff::Timestamp::from_microsecond(t).ok()?.to_zoned(tz.clone());
+    let local = jiff::Timestamp::from_microsecond(t)
+        .ok()?
+        .to_zoned(tz.clone());
     let day = local.date();
     let first = |month: i8| Date::new(day.year(), month, 1).ok();
     let starts: Date = match unit {
