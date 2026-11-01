@@ -1544,3 +1544,84 @@ fn a_fence_that_falls_is_refused_where_it_falls() {
         "{verified:?}"
     );
 }
+
+/// A block leaves out the id its event decides (`docs/log-format.md` §3),
+/// and a reader derives it from the event's members: on every ingest and
+/// every quarantined version of the vectors' lake and of `boxed.json`, in
+/// a box and not, the id derived is the one the writer's typed function
+/// gives, and the one the line holds.
+#[test]
+fn every_id_a_block_leaves_out_is_derived_as_the_writer_makes_it() {
+    let mut lines: Vec<String> = Vec::new();
+    for seg in read_json("expected.json")["segments"].as_array().unwrap() {
+        let text = fs::read_to_string(vectors().join(str_of(seg, "file"))).unwrap();
+        lines.extend(text.lines().map(str::to_owned));
+    }
+    lines.extend(further("events").into_iter().map(|e| e.line));
+    lines.push(str_of(&read_json("boxed.json"), "line").to_owned());
+    let mut seen: HashMap<(&str, bool), usize> = HashMap::new();
+    for line in &lines {
+        let value: Value = serde_json::from_str(line).unwrap();
+        let event: Event = serde_json::from_value(value.clone()).unwrap();
+        let at = event.position.0;
+        let (kind, made) = match &event.body {
+            EventBody::RecordIngested {
+                ty,
+                key,
+                version,
+                patch,
+                ..
+            } => {
+                let source = event.source.as_ref().expect("an ingest names its source");
+                let before = version.0 - 1;
+                let boxed = event
+                    .sealed
+                    .as_ref()
+                    .map(|s| s.boxed.as_deref().unwrap_or_default());
+                let made = match boxed {
+                    Some(b) => log::boxed_ingest_id(source, ty, key, before, patch, b),
+                    None => log::ingest_id(source, ty, key, before, patch),
+                };
+                (("ingest", boxed.is_some()), made)
+            }
+            EventBody::RecordQuarantined {
+                id,
+                version,
+                cells,
+                sealed,
+                refusal,
+                ..
+            } => {
+                let boxed = sealed.as_ref().and_then(|s| s.boxed.as_deref());
+                let made = log::quarantined_id(id, version - 1, cells, boxed, refusal);
+                (("quarantined", boxed.is_some()), made)
+            }
+            _ => {
+                assert_eq!(
+                    log::derived_id(&value),
+                    None,
+                    "position {at}: no id derived"
+                );
+                continue;
+            }
+        };
+        assert_eq!(made, event.id, "position {at}: the typed id is the line's");
+        assert_eq!(
+            log::derived_id(&value),
+            Some(made),
+            "position {at}: the id derived is the typed one"
+        );
+        *seen.entry(kind).or_default() += 1;
+    }
+    for kind in [
+        ("ingest", false),
+        ("ingest", true),
+        ("quarantined", false),
+        ("quarantined", true),
+    ] {
+        assert!(
+            seen.contains_key(&kind),
+            "the vectors hold no {kind:?}: {seen:?}"
+        );
+    }
+}
