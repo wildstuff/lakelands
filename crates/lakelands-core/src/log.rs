@@ -478,16 +478,76 @@ pub fn restored(
 /// and `prev` the engine keeps beside it. A frame that does not say what
 /// the engine keeps of it, or does not cover the event, is
 /// [`Flaw::Disagrees`]. It answers too whether the event's line was the
-/// whole event, so that its canonical bytes are the line's.
+/// whole event, so that its canonical bytes are the line's. A reader of
+/// more than one event restores them with one [`Restorer`].
 pub fn restore(stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
-    restore_read(stored, true)
+    Restorer::default().restore(stored)
 }
 
 /// [`restore`] with the line and the frame read as JSON alone, in no
 /// format judged: what an engine, which keeps events of any format, checks
 /// an event's hash and digests a segment with.
 pub fn restore_json(stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
-    restore_read(stored, false)
+    Restorer::default().restore_json(stored)
+}
+
+/// A reader of events at the engine seam, which keeps the last block it
+/// restored an event from (§1.5): the block is inflated whole once, every
+/// byte of it checked by its zlib stream and its sizes, and each event it
+/// holds is restored from its line there, the line the engine hands beside
+/// it checked against it. An engine that changed a byte of a block, past
+/// its first line too, is caught at the first event read from it.
+#[derive(Debug, Default)]
+pub struct Restorer {
+    kept: Option<block::Kept>,
+}
+
+impl Restorer {
+    /// [`restore`], from the block it keeps where the event's frame holds
+    /// it.
+    pub fn restore(&mut self, stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
+        self.read(stored, true)
+    }
+
+    /// [`restore_json`], from the block it keeps where the event's frame
+    /// holds it.
+    pub fn restore_json(
+        &mut self,
+        stored: &CanonicalEvent,
+    ) -> std::result::Result<(Value, bool), Flaw> {
+        self.read(stored, false)
+    }
+
+    /// [`restore`], each line read as [`line_of`] reads one, `strict`, else
+    /// as JSON alone. An event a block holds is restored from the block.
+    fn read(
+        &mut self,
+        stored: &CanonicalEvent,
+        strict: bool,
+    ) -> std::result::Result<(Value, bool), Flaw> {
+        let read = if strict { line_of } else { json_of };
+        let frame = match &stored.frame {
+            None => None,
+            Some(f) => {
+                if let Some(kept) = self.kept.as_ref().filter(|k| k.holds(f, strict)) {
+                    return kept.restore(stored);
+                }
+                if let Some(kept) = block::Kept::of(f, strict) {
+                    let kept = self.kept.insert(kept?);
+                    return kept.restore(stored);
+                }
+                let framed = Framed::of(read(&f.bytes)?)?;
+                let within = stored.position.0.checked_sub(f.first.0);
+                let covers = within.is_some_and(|i| i < u64::from(f.events));
+                if framed.events != u64::from(f.events) || !covers {
+                    return Err(Flaw::Disagrees);
+                }
+                Some(framed)
+            }
+        };
+        let derived = Some((stored.position, &stored.prev));
+        restored(read(&stored.bytes)?, frame.as_ref(), derived)
+    }
 }
 
 /// A line read as JSON alone.
@@ -497,39 +557,17 @@ fn json_of(bytes: &[u8]) -> std::result::Result<Value, Flaw> {
     })
 }
 
-/// [`restore`], each line read as [`line_of`] reads one, `strict`, else
-/// as JSON alone. An event a block holds is restored from the block
-/// (§1.5).
-fn restore_read(stored: &CanonicalEvent, strict: bool) -> std::result::Result<(Value, bool), Flaw> {
-    let read = if strict { line_of } else { json_of };
-    let frame = match &stored.frame {
-        None => None,
-        Some(f) => {
-            if let Some(restored) = block::restore_one(stored, f, strict) {
-                return restored;
-            }
-            let framed = Framed::of(read(&f.bytes)?)?;
-            let within = stored.position.0.checked_sub(f.first.0);
-            let covers = within.is_some_and(|i| i < u64::from(f.events));
-            if framed.events != u64::from(f.events) || !covers {
-                return Err(Flaw::Disagrees);
-            }
-            Some(framed)
-        }
-    };
-    let derived = Some((stored.position, &stored.prev));
-    restored(read(&stored.bytes)?, frame.as_ref(), derived)
-}
-
 /// A segment's digest (§4.2): SHA-256 over the canonical bytes of its
 /// events as [`restore_json`] restores them, each followed by a line feed;
 /// a line that is its whole event is hashed as it is kept.
 pub fn digest_of<'a>(
     events: impl IntoIterator<Item = &'a CanonicalEvent>,
 ) -> std::result::Result<Digest, (Position, Flaw)> {
-    let mut hash = Sha256::new();
+    let (mut hash, mut restorer) = (Sha256::new(), Restorer::default());
     for event in events {
-        let (restored, whole) = restore_json(event).map_err(|flaw| (event.position, flaw))?;
+        let (restored, whole) = restorer
+            .restore_json(event)
+            .map_err(|flaw| (event.position, flaw))?;
         match whole {
             true => hash.update(&event.bytes),
             false => hash.update(canonical::to_vec(&restored)),

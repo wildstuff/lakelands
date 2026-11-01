@@ -131,11 +131,11 @@ async fn an_append_of_more_than_a_block_holds_restores_every_event(
         "the delivery's {n} events are stored as the blocks {want:?}, by their first position, \
          their events and their `end`, and they are stored as {blocks:?}"
     );
-    let mut left_out = 0;
+    let (mut left_out, mut restorer) = (0, crate::log::Restorer::default());
     for e in &stored {
         let line: Value = serde_json::from_slice(&e.bytes)
             .map_err(|err| Failure::new(format!("the line of {} is JSON: {err}", e.position)))?;
-        let restored = crate::log::restore(e);
+        let restored = restorer.restore(e);
         let Ok((event, _)) = restored else {
             return Err(Failure::new(format!(
                 "the event at {} restores, and it is refused as {restored:?}",
@@ -265,8 +265,9 @@ async fn the_append_that_creates_a_lake_is_stored_whole(store: Store, given: Giv
          {} events of 0 through {made}",
         stored.len()
     );
+    let mut restorer = crate::log::Restorer::default();
     for e in &stored {
-        let restored = crate::log::restore(e);
+        let restored = restorer.restore(e);
         let whole = restored.as_ref().is_ok_and(|(r, whole)| {
             *whole
                 && crate::canonical::to_vec(r) == e.bytes
@@ -346,8 +347,9 @@ async fn an_append_of_events_that_share_members_is_framed_and_one_event_is_not(
         "the upsert's one event is stored as its line alone, with no frame, and it is stored as \
          {one:?}"
     );
+    let mut restorer = crate::log::Restorer::default();
     for e in &stored {
-        let restored = crate::log::restore(e);
+        let restored = restorer.restore(e);
         ensure!(
             restored
                 .as_ref()

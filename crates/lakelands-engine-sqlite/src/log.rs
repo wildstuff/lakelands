@@ -380,8 +380,9 @@ fn whole(dir: &Path, first: u64, group: Vec<Entry>) -> Result<bool> {
         Err(e) if matches!(e.situation(), Some(Situation::Damaged { .. })) => return Ok(false),
         read => read?,
     };
+    let mut restorer = lakelands_core::log::Restorer::default();
     for event in events {
-        let restored = lakelands_core::log::restore_json(&event);
+        let restored = restorer.restore_json(&event);
         if !restored.is_ok_and(|(r, _)| lakelands_core::engines::hash_of(r) == event.hash.0) {
             return Ok(false);
         }

@@ -931,9 +931,10 @@ fn framed(
 fn restored_all(
     stored: &[CanonicalEvent],
 ) -> std::result::Result<Vec<serde_json::Value>, lakelands_api::error::Flaw> {
+    let mut restorer = crate::log::Restorer::default();
     stored
         .iter()
-        .map(|e| crate::log::restore_json(e).map(|(event, _)| event))
+        .map(|e| restorer.restore_json(e).map(|(event, _)| event))
         .collect()
 }
 

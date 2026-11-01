@@ -11,9 +11,11 @@
 //! before but on a segment's first line
 //! ([`lakelands_core::log::frame_append`]). Reading back, it restores the
 //! event from its line, its block and the members the engine keeps beside
-//! them, recomputes the hash and checks the link, so an engine that
-//! altered a byte, of a line or of a block, is caught at the first read of
-//! an event it restores.
+//! them, recomputes the hash and checks the link. A block is inflated whole
+//! and kept while its events are read ([`lakelands_core::log::Restorer`]),
+//! and the line the engine hands beside it must be the block's, so an
+//! engine that altered a byte, of a line or anywhere in a block, is caught
+//! at the first read of an event it restores.
 
 use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::error::{Case, Detail, Flaw, Part};
@@ -22,6 +24,7 @@ use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::{Error, IdempotencyKey, LakeId, Position, Result, SourceId, Timestamp};
 use lakelands_core::canonical;
+use lakelands_core::log::Restorer;
 
 /// Everything about an event the writer decides; the store fills in the
 /// rest (format version, lake, position, id, link, fence, hash).
@@ -257,8 +260,15 @@ fn corrupt(position: Position, flaw: Flaw) -> Error {
 /// version than the release's one is refused before anything else of it
 /// is read (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 pub fn open(stored: &CanonicalEvent) -> Result<Event> {
+    open_with(&mut Restorer::default(), stored)
+}
+
+/// [`open`], the event restored by `restorer`, which keeps the last block
+/// it restored one from: what a reader of more than one event opens them
+/// with.
+pub fn open_with(restorer: &mut Restorer, stored: &CanonicalEvent) -> Result<Event> {
     let at = stored.position;
-    let (value, whole) = lakelands_core::log::restore(stored).map_err(|f| corrupt(at, f))?;
+    let (value, whole) = restorer.restore(stored).map_err(|f| corrupt(at, f))?;
     let hash = hash_without_hash(value.clone());
     // Where the line is the whole event its bytes are the stored ones,
     // already checked: no second pass.

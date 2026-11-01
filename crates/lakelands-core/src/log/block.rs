@@ -259,19 +259,6 @@ pub fn inflate(block: &Block, z: &[u8]) -> Result<Vec<u8>, Flaw> {
     whole.then_some(out).ok_or(Flaw::BlockBytes)
 }
 
-/// The first line a block's stored bytes inflate to, inflating no further.
-fn first_line(z: &[u8]) -> Result<Vec<u8>, Flaw> {
-    let mut line = Vec::new();
-    let mut lines = io::BufReader::new(ZlibDecoder::new(z)).take(4 * BLOCK_BYTES as u64);
-    lines
-        .read_until(b'\n', &mut line)
-        .map_err(|_| Flaw::BlockBytes)?;
-    match line.pop() {
-        Some(b'\n') => Ok(line),
-        _ => Err(Flaw::BlockBytes),
-    }
-}
-
 /// One event's line in a block restored (§1.5): `v` the block's, the
 /// members `frame` holds, the `position` and `prev` given, the `id` its
 /// members decide where it holds none, and `hash` given, or computed
@@ -320,46 +307,102 @@ fn read_line(bytes: &[u8], strict: bool) -> Result<Value, Flaw> {
     }
 }
 
-/// The event at the engine seam whose frame holds a block's bytes,
-/// restored from its line and the block: the block's first line read as
-/// [`line_of`] reads one, `strict`, else as JSON alone, and its frame line
-/// inflated alone. A block that does not say what the frame does, or does
-/// not hold the event, is [`Flaw::Disagrees`]. The hash is the one the
-/// engine keeps, which the reader checks.
-pub(super) fn restore_one(
-    stored: &CanonicalEvent,
-    frame: &Frame,
+/// A block at the engine seam inflated once and kept, so that the events
+/// it holds are restored from it one by one: the frame whose bytes hold
+/// it, how its first line was read, what that line says and its format,
+/// its frame line, and its lines inflated with where each event's line
+/// begins among them, the one past the last too.
+#[derive(Debug)]
+pub(super) struct Kept {
+    frame: Arc<Frame>,
     strict: bool,
-) -> Option<Result<(Value, bool), Flaw>> {
-    if !is_block_bytes(&frame.bytes) {
-        return None;
+    block: Block,
+    v: u64,
+    framed: Option<Framed>,
+    raw: Vec<u8>,
+    starts: Vec<usize>,
+}
+
+impl Kept {
+    /// The block whose bytes `frame` holds, none where it holds a frame's
+    /// line, inflated whole: its first line read as [`line_of`] reads one,
+    /// `strict`, else as JSON alone, its frame line too. A block that does
+    /// not say what the frame does is [`Flaw::Disagrees`]; one whose bytes
+    /// do not inflate to the lines it says, [`Flaw::BlockBytes`].
+    pub(super) fn of(frame: &Arc<Frame>, strict: bool) -> Option<Result<Kept, Flaw>> {
+        is_block_bytes(&frame.bytes).then(|| Kept::read(frame, strict))
     }
-    let restore = || {
+
+    fn read(frame: &Arc<Frame>, strict: bool) -> Result<Kept, Flaw> {
         let (head, z) = split(&frame.bytes)?;
-        let (block, v) = Block::of(&if strict {
+        let head = if strict {
             line_of(head)?
         } else {
             json_of(head)?
-        })?;
-        let within = stored.position.0.checked_sub(block.first.0);
+        };
+        let (block, v) = Block::of(&head)?;
         if block.first != frame.first
             || block.events != u64::from(frame.events)
             || block.stored != z.len() as u64
-            || !within.is_some_and(|i| i < block.events)
         {
             return Err(Flaw::Disagrees);
         }
-        let first = read_line(&first_line(z)?, strict)?;
+        let raw = inflate(&block, z)?;
+        let feeds = raw.iter().enumerate().filter(|(_, b)| **b == b'\n');
+        let mut starts: Vec<usize> = std::iter::once(0)
+            .chain(feeds.map(|(at, _)| at + 1))
+            .collect();
+        let first = read_line(&raw[..starts[1] - 1], strict)?;
         let framed = match is_frame(&first) {
             true => Some(Framed::of(first)?),
             false => None,
         };
-        let line = read_line(&stored.bytes, strict)?;
+        if framed.is_some() {
+            starts.remove(0);
+        }
+        if starts.len() as u64 != block.events + 1
+            || framed.as_ref().is_some_and(|f| f.events != block.events)
+        {
+            return Err(Flaw::BlockBytes);
+        }
+        let frame = frame.clone();
+        Ok(Kept {
+            frame,
+            strict,
+            block,
+            v,
+            framed,
+            raw,
+            starts,
+        })
+    }
+
+    /// Whether it is the block `frame` holds, read as `strict` says: the
+    /// same frame, or one of the same bytes.
+    pub(super) fn holds(&self, frame: &Arc<Frame>, strict: bool) -> bool {
+        self.strict == strict && (Arc::ptr_eq(&self.frame, frame) || self.frame == *frame)
+    }
+
+    /// The event at the engine seam restored from its line in the block:
+    /// the line the engine hands beside it must be the block's, or the
+    /// engine's record of the event is [`Flaw::Disagrees`] with the block,
+    /// and so must its position fall in the block. The hash is the one the
+    /// engine keeps, which the reader checks.
+    pub(super) fn restore(&self, stored: &CanonicalEvent) -> Result<(Value, bool), Flaw> {
+        let within = stored.position.0.checked_sub(self.block.first.0);
+        let at = within
+            .filter(|i| *i < self.block.events)
+            .ok_or(Flaw::Disagrees)? as usize;
+        let line = &self.raw[self.starts[at]..self.starts[at + 1] - 1];
+        if stored.bytes != line {
+            return Err(Flaw::Disagrees);
+        }
+        let line = read_line(line, self.strict)?;
         let derived = (stored.position, &stored.prev);
-        let event = in_block(line, v, framed.as_ref(), derived, Some(&stored.hash))?;
+        let framed = self.framed.as_ref();
+        let event = in_block(line, self.v, framed, derived, Some(&stored.hash))?;
         Ok((event, false))
-    };
-    Some(restore())
+    }
 }
 
 /// An event restored from a block: its value and its canonical bytes.

@@ -305,6 +305,43 @@ fn an_append_of_two_or_more_is_a_block_that_restores_every_event() {
     );
 }
 
+/// A reader restores a block's events from the block inflated whole, so a
+/// byte of the block changed past what its first lines inflate from, or a
+/// line handed beside the block that is not the block's, is refused at the
+/// first event read from it; and one [`Restorer`] inflates the block once
+/// for every event it holds.
+#[test]
+fn a_block_is_restored_whole_and_every_line_handed_is_checked_against_it() {
+    let (values, mut events) = append(FORMAT, 0, &"0".repeat(64), BLOCK_EVENTS as u64);
+    frame_append(&mut events);
+    let frame = events[0].frame.clone().expect("a block");
+    assert_eq!(frame.events as usize, BLOCK_EVENTS);
+    let mut bytes = frame.bytes.clone();
+    let near_end = bytes.len() - 8;
+    bytes[near_end] ^= 0x10;
+    let changed = Arc::new(Frame {
+        bytes,
+        ..Frame::clone(&frame)
+    });
+    for at in [0, BLOCK_EVENTS - 1] {
+        let mut e = events[at].clone();
+        e.frame = Some(changed.clone());
+        assert_eq!(restore(&e).err(), Some(Flaw::BlockBytes), "event {at}");
+        assert_eq!(restore_json(&e).err(), Some(Flaw::BlockBytes), "event {at}");
+    }
+    let mut handed = events[1].clone();
+    handed.bytes = events[0].bytes.clone();
+    assert_eq!(restore(&handed).err(), Some(Flaw::Disagrees));
+    assert_eq!(restore_json(&handed).err(), Some(Flaw::Disagrees));
+    let mut restorer = Restorer::default();
+    for (i, e) in events.iter().enumerate() {
+        let restored = restorer.restore(e).map(|(v, _)| v);
+        assert_eq!(restored.as_ref(), Ok(&values[i]), "event {i}");
+        assert_eq!(restorer.restore_json(e), restore_json(e), "event {i}");
+    }
+    assert_eq!(restorer.restore(&handed).err(), Some(Flaw::Disagrees));
+}
+
 #[test]
 fn a_block_leaves_out_an_id_its_event_decides() {
     let bodies = (0..2).map(|k| {

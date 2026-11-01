@@ -1111,8 +1111,9 @@ fn the_writers_lines(append: &Value, last: &Event) -> Vec<CanonicalEvent> {
             .map(|l| l.as_bytes())
             .collect::<Vec<_>>()
     );
+    let mut restorer = log::Restorer::default();
     for (event, line) in appended.iter().zip(&lines) {
-        let (restored, _) = log::restore(event).unwrap();
+        let (restored, _) = restorer.restore(event).unwrap();
         assert_eq!(
             canonical::to_vec(&restored),
             line.as_bytes(),
