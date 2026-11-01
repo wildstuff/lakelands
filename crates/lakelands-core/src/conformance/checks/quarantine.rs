@@ -39,6 +39,24 @@ pub(super) fn kept(delivery: &str) -> IngestOpts {
     }
 }
 
+/// `records` with the line each would have as a place: its count among
+/// the records of its own delivery, so a quarantining delivery's ids are
+/// the places' (085, extended).
+pub(super) fn lined(records: Vec<SourceRecord>) -> Vec<SourceRecord> {
+    let mut places = std::collections::BTreeMap::new();
+    let mut at = |r: &SourceRecord| {
+        let n = places.entry(r.delivery.clone()).or_insert(0u64);
+        *n += 1;
+        *n - 1
+    };
+    (records.into_iter())
+        .map(|r| SourceRecord {
+            line: r.line.or_else(|| Some(at(&r))),
+            ..r
+        })
+        .collect()
+}
+
 /// `records` fed from `source` by `who` under `opts`.
 pub(super) async fn fed(
     l: &Lake,
@@ -47,6 +65,12 @@ pub(super) async fn fed(
     opts: IngestOpts,
     records: Vec<SourceRecord>,
 ) -> Result<Vec<Committed>, Error> {
+    // A run keys its rows by place, which needs no line (085, extended).
+    let records = if opts.run.is_some() {
+        records
+    } else {
+        lined(records)
+    };
     lakelands_api::ingest_all_with(l.cat.as_ref(), who, &source.into(), opts, records).await
 }
 
@@ -677,6 +701,7 @@ async fn ends_alike(
         quarantine_refused: true,
         ..opts.clone()
     };
+    let records = lined(records);
     let feed = |opts| lakelands_api::ingest_all_with(cat, who, &source, opts, records.clone());
     let (with, without) = (feed(asked).await, feed(opts).await);
     match with {

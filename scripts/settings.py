@@ -197,7 +197,9 @@ def page(settings, bound):
         "setting: it steers no behaviour of the lake, and a lake moved or restored names it "
         "anew. Each is kept beside the settings of its layer. The rest of `lakelands.json` is "
         "neither: `lakelands` is the file's format number, and `owner` and `principals` say "
-        "who the root's callers are and what each may do.",
+        "who the root's callers are and what each may do; a grant holding a key this build "
+        "does not know stops the root, and one naming a type no lake declares is told at "
+        "start-up (`docs/decisions/006-grants-not-roles.md`).",
         "",
     ]
     for b in bound:

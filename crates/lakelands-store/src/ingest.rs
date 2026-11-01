@@ -1000,6 +1000,19 @@ pub fn run(
                         if r.delivery.is_some() && r.delivery == named {
                             r.delivery = None;
                         }
+                        // Places count per call, so under a delivery only
+                        // a line keeps two calls' records apart (085).
+                        if quarantine
+                            && !by_run
+                            && r.line.is_none()
+                            && (named.is_some() || r.delivery.is_some())
+                        {
+                            let path = "line".to_owned();
+                            let said = Said::from(Case::QuarantineLineMissing);
+                            let e = Error::invalid(said.within(Place::Member { path }));
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
                         batch.push(r);
                         deadline.get_or_insert_with(|| tokio::time::Instant::now() + WINDOW);
                     }

@@ -1633,6 +1633,11 @@ catalog! {
         /// names no line, so its place would not tell it from the run's
         /// other rows.
         HostLineMissing => "a record the host refused under a named run or delivery names its `line`, which keys it apart from the other rows of the run",
+        /// A record of an ingest that asks `quarantine_refused` under a
+        /// delivery that names no line: its place counts per call, so two
+        /// calls of one delivery would quarantine different records under
+        /// one id.
+        QuarantineLineMissing => "a record of an ingest that quarantines its refused records under a delivery names its `line`, which keys it apart from the delivery's other records across calls",
         /// A host's cause past the head.
         CausePastHead { cause: Position, head: Option<Position> } => "the cause {cause} is past the lake's head [{head}|(none)]",
         /// A host's `on_behalf_of` that is not a principal the store may

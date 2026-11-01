@@ -28,6 +28,38 @@ what is shared is what the lake declares, before any rule of who is
 shown what. A principal's grants, its renames followed and its `only`
 are applied per read.
 
+#### A grant that is not understood stops the root
+
+A grant exists to narrow what a principal may do, so a part of one that
+is read past takes a restriction away without a word: `onyl` for `only`
+leaves its holder reading every record. `Grants`, `TypeGrants` and
+`HiddenWhere` therefore refuse a key they do not know. A root whose
+`lakelands.json` holds such a key does not open, for `serve`, `--as` or
+any other command: the refusal names the key, the principal and the
+place in the file, and comes before any lake is opened, so nothing is
+appended. A configuration written for a later build, holding a key this
+build does not know, is refused the same way, since this build could
+not apply it.
+
+No event and no proposal holds a grant. Grants reach the store on a
+call, from the resolver, and the log records only what they decided, so
+strict types stop no old log folding. A host that keeps grants of its
+own is refused the same key when it reads them through these types.
+
+A grant under a type name no lake declares is told and starts. It cannot
+be refused: a configuration may name a type before it is declared, and a
+grant stands under a renamed type's old name, where it still holds. So a
+process acting as a configured principal says so on standard error at
+its start, at every start until a lake declares the name, naming the
+principal, the type and the lakes it looked in. `serve` with its HTTP
+door tells of every principal, over the lakes each addresses. `serve`
+without a door and a command given `--as` have one lake open and act as
+one principal, so they tell of that principal and look in that lake
+alone, and a type only another lake declares is told there too. The
+line does not tell an old name from a misspelling, because the list of
+renames is not on the facade, and a line is not worth widening it for.
+`verify` says nothing of this: it answers whether the log holds.
+
 ### A field has one access, the lowest over every name it has borne and everything it is built from
 
 #### A field may be granted `write_only`: written, and never read
