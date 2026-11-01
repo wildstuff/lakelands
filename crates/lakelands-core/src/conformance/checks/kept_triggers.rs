@@ -32,6 +32,12 @@ check!(
     "049, extended (lakelands#1185): where the fold has flagged a group as not exact, or a view it reads through holds such a group, a trigger on the view reads no row before: `created()` holds and `previous` has no value, and the firing does not say `created`"
 );
 
+check!(
+    KEPT_TRIGGER_TERM = a_trigger_on_a_view_grouped_by_a_term_fires_as_on_its_twin,
+    "049 and 066, extended (lakelands#1666): a trigger on a kept view grouped by a meter and a `date_bucket` term over the hour of a source that holds no hour field answers at every point as its twin on a view grouped by an equal derived field: declared before the view is kept it is refused `watches_view`; the setting written `false` is refused `view_kept_for_set` and a migration of a field the view reads `view_source_stepped`, each naming the trigger and appending nothing; ten readings of one meter's hour in one ingest are judged record by record, and a guard reading the write's clock, the bound of the hour's day, `created()` and `previous` fires once, at the reading whose sum crosses the bound, naming the meter and the hour, under its lax and its strict form; a new hour whose first reading is past the bound fires under the lax guard and not the strict one, which reads no `previous`; readings of a year before fire nothing, their hour outside the guard's window; a group whose sum the fold cannot keep exactly fires as one that arrived; and past a ceiling of one a delivery that would fire twice is refused `too_large` naming the trigger and appends nothing",
+    given
+);
+
 /// The invoices, the view `spent` of the open ones by customer, kept, and
 /// its triggers: `any`, `authored` by an upsert alone, `big` past 100,
 /// `rose` where the total grew, and `fresh` where the group arrives.
@@ -463,4 +469,241 @@ async fn a_trigger_on_an_inexact_group_fires_as_on_a_group_that_arrived(store: S
         "`i4` making `c2` fires {want:?}, `book` having no row before; it fired {got:?}"
     );
     Ok(())
+}
+
+/// The origin the readings' hours are counted from.
+const ORIGIN: &str = "2026-01-01T00:00:00Z";
+
+/// The two lanes: a source without an hour and its view grouped by the
+/// term, and the twin source holding the hour derived and its view
+/// grouped by that field; the suffix of the twin's names.
+const LANES: [(&str, &str, &str); 2] = [
+    ("reading", "reading_1h", ""),
+    ("reading_d", "reading_1h_twin", "_twin"),
+];
+
+/// The source of a lane, its litres a `litres` kind of a decimal or not.
+fn reading_type(ty: &str, litres: &str) -> Value {
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}, "authority": "source"});
+    let mut fields = vec![
+        field("meter", "text"),
+        field("at", "date_time"),
+        field("litres", litres),
+    ];
+    if ty == "reading_d" {
+        fields.push(json!({"name": "hour", "type": {"kind": "date_time"}, "authority": "derived",
+            "derived": format!("date_bucket(at, 1h, '{ORIGIN}')"), "depends_on": ["at"]}));
+    }
+    json!({"name": ty, "fields": fields})
+}
+
+/// What a delivery set off on a lane: each firing's trigger, its twin
+/// suffix dropped, the group's key, whether it says `created`, and the
+/// key of the reading whose event caused it, sorted.
+async fn set_off_by(
+    s: &dyn LakeStore,
+    from: Position,
+) -> Result<Vec<(String, String, bool, String)>, Failure> {
+    let (mut by, mut out) = (BTreeMap::new(), Vec::new());
+    for e in events_from(s, from).await? {
+        match e.body {
+            EventBody::RecordIngested { key, .. } => {
+                by.insert(e.position, key.to_string());
+            }
+            EventBody::TriggerFired {
+                trigger,
+                key,
+                created,
+                ..
+            } => {
+                let at = e.cause.and_then(|c| by.get(&c)).cloned();
+                let at = at.ok_or_else(|| {
+                    Failure::new(format!("`{trigger}` fired, caused by no reading of the delivery"))
+                })?;
+                let trigger = trigger.to_string().replace("_twin", "");
+                out.push((trigger, key.to_string(), created.unwrap_or_default(), at));
+            }
+            _ => {}
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+async fn a_trigger_on_a_view_grouped_by_a_term_fires_as_on_its_twin(
+    store: Store,
+    given: Given,
+) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    super::settings::declared(&l, "litre_bound", "decimal", json!("100"))
+        .await?;
+    let bucket = format!("date_bucket(at, 1h, '{ORIGIN}')");
+    for (source, view, _) in LANES {
+        let mut ty = reading_type(source, "decimal");
+        ty["declare"] = json!("type");
+        l.declare_json(ty).await?;
+        let hour = match source {
+            "reading" => json!({"name": "hour", "expr": bucket}),
+            _ => json!("hour"),
+        };
+        l.declare_json(json!({"declare": "type", "name": view, "key": ["meter", "hour"],
+            "fields": [field("meter", "text"), field("hour", "date_time"), field("litres_sum", "decimal")],
+            "view": {"source": source, "group_by": ["meter", hour],
+                     "measures": [{"name": "litres_sum", "expr": "sum(litres)"}]}}))
+            .await?;
+    }
+    let below = "setting('litre_bound', hour)";
+    let when = format!(
+        "hour >= date_bucket(now(), 1h, '{ORIGIN}') - 1h and litres_sum > {below} \
+         and (created() or previous(litres_sum) <= {below})"
+    );
+    let triggers = |view: &str, end: &str| {
+        [("crossing", false), ("strict", true)].map(|(name, strict)| {
+            json!({"declare": "trigger", "name": format!("{name}{end}"), "on": view,
+                "when": when, "when_strict": strict})
+        })
+    };
+    let before = s.head().await.must("the head")?;
+    for (_, view, end) in LANES {
+        let [t, _] = triggers(view, end);
+        let r = l.cat.declare(&l.own, serde_json::from_value(t).expect("a trigger")).await;
+        let want = json!({"code": "watches_view", "type": view,
+            "at": [{"code": "trigger", "name": format!("crossing{end}")}]});
+        refused_like(&format!("a trigger on `{view}`, not kept"), r, &want)?;
+    }
+    head_unmoved(s, before, "the refused triggers").await?;
+    for (_, view, end) in LANES {
+        l.set(&format!("view_kept.{view}"), json!(true)).await?;
+        for t in triggers(view, end) {
+            l.declare_json(t).await?;
+        }
+    }
+    // Each delivery goes to both lanes; what each set off is the same.
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_micros() as i64);
+    let hour = 3_600_000_000;
+    let now = micros - micros.rem_euclid(hour);
+    let reading = |meter: &str, at: i64, litres: &str| {
+        let at = Timestamp(at).to_string();
+        json!({"meter": meter, "at": at, "litres": litres})
+    };
+    let deliver = async |l: &Lake, what: &str, readings: &[(String, Value)]| {
+        let mut lanes = Vec::new();
+        for (source, _, _) in LANES {
+            let records = (readings.iter())
+                .map(|(k, f)| crate::conformance::fixture::source_record(source, k, f.clone()))
+                .collect();
+            let from = s.head().await.must("the head")?.next();
+            l.ingest("meter", records)
+                .await
+                .must(&format!("{what} into `{source}`"))?;
+            lanes.push(set_off_by(s, from).await?);
+        }
+        let [term, twin] = <[_; 2]>::try_from(lanes).expect("two lanes");
+        ensure!(
+            term == twin,
+            "{what} sets off on the view grouped by the term what it does on its twin, \
+             {twin:?}; it set off {term:?}"
+        );
+        Ok::<_, Failure>(term)
+    };
+    let named = |key: &str, meter: &str, at: i64| {
+        let parts = lakelands_api::key::key_components(&key.into());
+        let hour = parts.get(1).and_then(|h| Timestamp::parse(h).ok());
+        parts.first().map(String::as_str) == Some(meter) && hour == Some(Timestamp(at))
+    };
+    let ten: Vec<_> = (1..=10)
+        .map(|i| (format!("r{i}"), reading("m1", now + i * 1_000_000, "15")))
+        .collect();
+    let got = deliver(&l, "ten readings of `m1`'s hour", &ten).await?;
+    let fired: Vec<_> = got.iter().map(|(t, _, c, at)| (t.as_str(), *c, at.as_str())).collect();
+    ensure!(
+        fired == [("crossing", false, "r7"), ("strict", false, "r7")]
+            && got.iter().all(|(_, k, ..)| named(k, "m1", now)),
+        "ten readings of 15 litres into `m1`'s hour fire `crossing` and `strict` once, at `r7`, \
+         whose 105 crosses the bound of 100, naming `m1` and the hour; they fired {got:?}"
+    );
+    let next = [("n1".to_owned(), reading("m1", now + hour, "150"))];
+    let got = deliver(&l, "a new hour's first reading past the bound", &next).await?;
+    let fired: Vec<_> = got.iter().map(|(t, _, c, at)| (t.as_str(), *c, at.as_str())).collect();
+    ensure!(
+        fired == [("crossing", true, "n1")] && named(&got[0].1, "m1", now + hour),
+        "a new hour of `m1` whose first reading is past the bound fires `crossing`, the group \
+         arriving, and not `strict`, which reads no `previous`; it fired {got:?}"
+    );
+    let year = now - 366 * 24 * hour;
+    let old: Vec<_> = (1..=10)
+        .map(|i| (format!("y{i}"), reading("m1", year + i * 1_000_000, "15")))
+        .collect();
+    let got = deliver(&l, "last year's readings", &old).await?;
+    ensure!(
+        got.is_empty(),
+        "readings of an hour a year before cross the bound outside the window, and fire nothing; they fired {got:?}"
+    );
+    // A group whose sum the fold cannot keep exactly has no row before.
+    let (big, back) = (
+        "70000000000000000000000000000",
+        "-69999999999999999999999999890",
+    );
+    let wide = [
+        ("w1".to_owned(), reading("m9", now, big)),
+        ("w2".to_owned(), reading("m9", now + 1, back)),
+    ];
+    deliver(&l, "two readings `m9` sums inexactly", &wide).await?;
+    let one = [("w3".to_owned(), reading("m9", now + 2, "1"))];
+    let got = deliver(&l, "a reading into the inexact `m9`", &one).await?;
+    let fired: Vec<_> = got.iter().map(|(t, _, c, at)| (t.as_str(), *c, at.as_str())).collect();
+    ensure!(
+        fired == [("crossing", false, "w3")],
+        "a reading into the inexact `m9` fires `crossing` as at a group that arrived, without \
+         saying `created`, and not `strict`, which reads no `previous`; it fired {got:?}"
+    );
+    // What would unkeep the views is refused, naming the trigger.
+    let before = s.head().await.must("the head")?;
+    let setting = TypeName::from(lakelands_api::seam::SETTING_TYPE);
+    for (source, view, end) in LANES {
+        let key = format!("view_kept.{view}").into();
+        let off = patch(json!({"value": false}));
+        let r = (l.cat).upsert(&l.own, &setting, &key, off, WriteOpts::default()).await;
+        let want = json!({"code": "view_kept_for_set", "type": view,
+            "at": [{"code": "trigger", "name": format!("crossing{end}")}]});
+        refused_like(&format!("`view_kept.{view}` written false"), r, &want)?;
+        let to = serde_json::from_value(reading_type(source, "number")).expect("a type");
+        let r = l.cat.migrate(&l.own, migration(to)).await;
+        let want = json!({"code": "view_source_stepped", "type": view, "source": source,
+            "at": [{"code": "trigger", "name": format!("crossing{end}")}]});
+        refused_like(&format!("`{source}.litres` migrated to a number"), r, &want)?;
+    }
+    head_unmoved(s, before, "the refused writes").await?;
+    // Two new hours past the bound fire twice, past a ceiling of one.
+    let store = at_one_set_change(&given, store, "opening at a ceiling of one").await?;
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let before = s.head().await.must("the head")?;
+    let two = [("m2", "t1"), ("m3", "t2")].map(|(m, k)| (k.to_owned(), reading(m, now, "150")));
+    let mut refused = Vec::new();
+    for (source, _, end) in LANES {
+        let records = two.iter().map(|(k, f)| crate::conformance::fixture::source_record(source, k, f.clone())).collect();
+        let r = l.ingest("meter", records).await;
+        let named = match &r {
+            Err(lakelands_api::Error::Refused {
+                field: Some(field),
+                reason: Refusal::TooLarge { max: 1 },
+            }) => Some(field.to_string().replace(end, "")),
+            _ => None,
+        };
+        ensure!(
+            named.is_some(),
+            "two new hours past the bound into `{source}` under a ceiling of one are refused \
+             too_large naming the trigger; it answered {r:?}"
+        );
+        refused.push(named);
+    }
+    ensure!(
+        refused[0] == refused[1],
+        "the delivery past the ceiling names the trigger on the term's view as on its twin's; \
+         they named {refused:?}"
+    );
+    head_unmoved(s, before, "the deliveries past the ceiling").await
 }

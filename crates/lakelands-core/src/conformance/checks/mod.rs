@@ -598,6 +598,7 @@ pub const ALL: &[Check] = &[
     kept_triggers::KEPT_TRIGGER_REFUSED,
     kept_triggers::KEPT_TRIGGER_BOUND,
     kept_triggers::KEPT_TRIGGER_INEXACT,
+    kept_triggers::KEPT_TRIGGER_TERM,
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,

@@ -323,5 +323,6 @@ that already walks the type.
   digest needs nothing of the group fields' kinds.
 - Amended by 098 and 099 (lakelands#1652), proposed for 0.23.0.
 - A view's group may hold one `date_bucket` term over a source field,
-  answered as its twin grouped by a derived field; until then the
-  source needed the derived field (lakelands#1636).
+  answered as its twin grouped by a derived field, a trigger on it too;
+  until then the source needed the derived field (lakelands#1636,
+  lakelands#1666).
