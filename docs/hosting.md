@@ -2059,7 +2059,9 @@ What the numbers say, on SQLite at 1 000 000 records:
 - A lake keeps about 390 bytes of log a record and 1.7 KB of projection and index with
   no roll-up, 5.3 KB with one and 13.3 KB with three: the log is under 3% of what
   three roll-ups keep.
-- The guard roughly halves ingest with no roll-up and costs 20% to 35% with more.
+- The guard cuts ingest by more than half with no roll-up (4 386 to 1 839 records a
+  second), by 20% with one (754 to 603) and by about 9% with three (179 to 163), where
+  the fold already dominates.
 - Reading a busy series' last hour raw takes about 1 s at 1 000 000 records; from a roll-up, under 5 ms.
 
 Which of lakelands#1516 and lakelands#1524 this workload needs: lakelands#1516 (append and
