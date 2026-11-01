@@ -463,8 +463,11 @@ mod tests {
         ) -> lakelands_api::Result<Vec<lakelands_api::read::VectorCoverage>> {
             self.inner.vector_coverage(ty).await
         }
+        // UTC at once, not read through the store: the loop's checks are
+        // counted on a paused clock, and a read that waits on the engine
+        // would make the count depend on how fast the host runs it.
         async fn zone(&self) -> lakelands_api::Result<String> {
-            self.inner.zone().await
+            Ok(zone::UTC.to_owned())
         }
         async fn position_at(
             &self,
