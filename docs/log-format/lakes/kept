@@ -1,14 +1,3 @@
-# The lakes a release of each format made through its doors, which every
-# later release reads (`upgrade::LAKE_<N>_READ`, `upgrade::LAKE_14_MIGRATED_READ`),
-# each never edited:
+# The lakes a release of each format made through its doors, from format
+# 23 on, which every later release reads, each never edited:
 # <format>[-<name>] <SHA-256 over "<path in the directory> <blob id>" lines, in byte order>
-14 18dd1a9579ff692b5a529e79f905616d9a39b2c042c1c2ca56347ebe1fa13335
-14-migrated e91fb0366cc7ae6a4f8b6362724dbc22aec621f2e3f494f82f6501e13718e7cb
-15 f0fcf3b181fe3c7e5b854948d13dc9d71e70c3dbbe2e63577e7a4d08a3e690fb
-16 a385d050f9fc5b62542d4f5a31f1bb3bb5ca8c164b056e4d98c0b008dcdb3ae3
-17 9d3f892aaac0504d0687a601e43892606099d79c4856a77631334e5b415b20ee
-18 cd589302f46db3db73e4c3fa68110047032b7ae8a8caca1bb5ef944a4b29cb16
-19 7be6e88c04698d45aad2ec17aacc979e0f8a2d99fac421fbb137833045d0d2ef
-20 ad78e795b3716500769ff726f234cf6a383ea691928b8780f4738e6c65c892f5
-21 d460b03210ba73f739dd53d918509d3753bde83ec1ae9bd36476cb9afec26dfb
-22 b6fdae73c15936a64fb5e620a2d06a812593b952970a9b165f2dc2b7f3579081

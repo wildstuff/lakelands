@@ -1812,10 +1812,10 @@ pub fn layout(lake: &LakeId, found: Option<u64>, wanted: u64) -> Result<()> {
 
 /// The number a projection stores for each event kind of the format, in
 /// the order the format lists them. A code is never reused or moved: a
-/// kind a later format adds takes the next number.
-pub const KIND_CODES: [(&str, i64); 24] = [
+/// kind a later format adds takes the next number, and 2, a kind no format
+/// from 23 on holds, stays unused.
+pub const KIND_CODES: [(&str, i64); 23] = [
     ("lake_created", 1),
-    ("lake_upgraded", 2),
     ("lease_taken", 3),
     ("declared", 4),
     ("migrated", 5),

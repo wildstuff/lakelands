@@ -21,7 +21,6 @@ impl Lake {
             self.read_events(Position(from.0 - 1), 1)?.pop()
         };
         let mut before = prev.as_ref().map(|e| (e.position, e.hash.clone()));
-        let mut formats = lakelands_core::log::FormatSteps::after(prev.as_ref());
         let mut fence = prev.as_ref().map(|e| e.fence);
         let mut known = prev.map(|e| e.known_at);
         let segments = self.engine.segments()?;
@@ -58,11 +57,6 @@ impl Lake {
                     return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
                 known = Some(e.known_at);
-                // A lake's format changes only where a new writer upgrades
-                // it, and never falls (054).
-                if let Some(flaw) = formats.next(&e) {
-                    return Err(damaged(Part::Log, Some(e.position), flaw));
-                }
                 // Fences never fall (`docs/log-format.md` §4): the engines
                 // refuse a fall at append and at import, and this finds one
                 // written below them.
@@ -91,11 +85,6 @@ impl Lake {
         }
         let last =
             last.ok_or_else(|| Error::refused(None, Refusal::OutOfRange { head: self.head() }))?;
-        // A writer's `lease_taken` that raised the format at the head, with
-        // no `lake_upgraded` after it.
-        if let Some(flaw) = formats.unmarked().filter(|_| last.position == self.head()) {
-            return Err(damaged(Part::Log, Some(last.position), flaw));
-        }
         Ok(lakelands_api::Verification {
             from,
             through: last.position,

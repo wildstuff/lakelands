@@ -442,12 +442,12 @@ fn command() -> Command {
         .subcommand(Command::new("rebuild").about("Rebuild the lake's projection from the log beside it, and put it in the old one's place"))
         .subcommand(
             Command::new("build-ahead")
-                .about("Build the projection this release lays out beside the lake's, from its log, while an older release still serves it: the upgrade's open then folds only what was written since, and swaps it in")
+                .about("Build the projection this release lays out beside the lake's, from its log, while an older release still serves it: this release's writer's open then folds only what was written since, and swaps it in")
                 .after_help(
                     "It says how much room it takes before it starts. It opens the lake's log and \
                      its own scratch only, never the projection or the lease, so it runs beside the \
-                     writer; run again, it goes on from where it stopped. `lakelands upgrade` with \
-                     this release swaps the build in, once the older release is stopped.",
+                     writer; run again, it goes on from where it stopped. A writer's open with this \
+                     release swaps the build in, once the older release is stopped.",
                 )
                 .arg(
                     Arg::new("discard")
@@ -457,16 +457,6 @@ fn command() -> Command {
                 ),
         )
         .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
-        .subcommand(
-            Command::new("upgrade")
-                .about("Open the lake for writing once, which upgrades one written in an older log format, the events staying as they were written, and rebuilds a projection an older build laid out")
-                .arg(
-                    Arg::new("check")
-                        .long("check")
-                        .action(ArgAction::SetTrue)
-                        .help("Say what an upgrade would do, and open nothing"),
-                ),
-        )
         .subcommand(
             Command::new("verify")
                 .about("Check the lake's log: every event's hash and every checkpoint; it only reads, beside a running serve")
@@ -645,9 +635,6 @@ where
     };
     if m.subcommand_name() == Some("verify") {
         return verify(&m, out, err, open).await;
-    }
-    if m.subcommand_name() == Some("upgrade") {
-        return upgrade(&m, out, err, open).await;
     }
     if let Some(("restore", sub)) = m.subcommand()
         && sub.get_flag("check")
@@ -1129,41 +1116,6 @@ async fn verify(m: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write, open: 
         }
     }
     0
-}
-
-/// `upgrade` reads the log's ends first, to say what it does; with
-/// `--check` it opens nothing (`docs/log-format.md` §6). Exit 0 it said,
-/// 3 there is no lake yet (as `verify` exits), 1 it failed.
-async fn upgrade(
-    m: &ArgMatches,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-    open: &Opener<'_>,
-) -> u8 {
-    let sub = m
-        .subcommand_matches("upgrade")
-        .expect("the upgrade command");
-    let root_dir = PathBuf::from(m.get_one::<String>("root").map_or(".", String::as_str));
-    let run = async {
-        let root = root::Root::open(&root_dir)?;
-        let location = root.location(sub.get_one::<String>("lake").map(String::as_str))?;
-        commands::upgrade(
-            out,
-            err,
-            location,
-            root.seams(),
-            sub.get_flag("check"),
-            open,
-        )
-        .await
-    };
-    match run.await {
-        Ok(code) => code,
-        Err(f) => {
-            let _ = write!(err, "{f}");
-            1
-        }
-    }
 }
 
 /// Whether `e` says the place holds no lake yet, or one whose making

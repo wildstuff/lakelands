@@ -533,7 +533,6 @@ struct Chain {
     next: Position,
     prev: Digest,
     known_at: Option<lakelands_api::Timestamp>,
-    formats: crate::log::FormatSteps,
     fence: u64,
     sealed: Vec<(Position, Position, String)>,
     lines: crate::log::Lines,
@@ -557,7 +556,7 @@ impl Chain {
         }
         let v = value.get("v").and_then(Value::as_u64).unwrap_or(0);
         // An export of a format this release does not read is not read in
-        // part; an older one it reads is read through its converter.
+        // part.
         if !crate::log::reads_format(v) {
             let reads = LOG_FORMAT_VERSION.into();
             return damaged(at, Flaw::FormatOther { v, reads });
@@ -570,11 +569,10 @@ impl Chain {
         else {
             return Ok(None);
         };
-        let read = crate::log::converted(v, value.clone());
-        let converted = canonical::to_vec(&read);
+        let bytes = canonical::to_vec(&value);
         // The parser's own words, which name the member it does not know:
         // an export is verified for its operator, from its own files.
-        let event: Event = serde_json::from_value(read).or_else(|e| {
+        let event: Event = serde_json::from_value(value.clone()).or_else(|e| {
             damaged(
                 at,
                 Flaw::NotAnEvent {
@@ -582,7 +580,7 @@ impl Chain {
                 },
             )
         })?;
-        if canonical::of(&event) != converted {
+        if canonical::of(&event) != bytes {
             return damaged(at, Flaw::NotOneForm);
         }
         // No number written as an integer beyond ±(2^53 − 1) (log-format
@@ -596,9 +594,6 @@ impl Chain {
         }
         let flaw = crate::log::misplaced(&event);
         if let Some(flaw) = flaw.or_else(|| crate::log::created_in_another(&event)) {
-            return damaged(at, flaw);
-        }
-        if let Some(flaw) = self.formats.next(&event) {
             return damaged(at, flaw);
         }
         // Fences never fall (log-format §4).
@@ -685,7 +680,6 @@ pub fn verify(dir: &Path) -> Result<Verification> {
         next: Position::GENESIS,
         prev: Digest::zero(),
         known_at: None,
-        formats: crate::log::FormatSteps::default(),
         fence: 0,
         sealed: Vec::new(),
         lines: crate::log::Lines::default(),
@@ -740,11 +734,6 @@ pub fn verify(dir: &Path) -> Result<Verification> {
     }
     if chain.next == Position::GENESIS {
         return damaged(Position::GENESIS, Flaw::NoSegmentFile);
-    }
-    // A writer's `lease_taken` that raised the format ends the log with no
-    // `lake_upgraded` after it.
-    if let Some(flaw) = chain.formats.unmarked() {
-        return damaged(Position(chain.next.0 - 1), flaw);
     }
     Ok(Verification {
         from: Position::GENESIS,

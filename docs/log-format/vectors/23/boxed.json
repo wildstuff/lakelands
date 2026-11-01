@@ -1,0 +1,9 @@
+{
+  "about": "An ingest of `hr` after the framed append, its sealed member `email` sealed in one box (log-format §1.4): the patch leaves it out, `sealed.fields` names it, and `sealed.box` is the base64 of AES-256-GCM-SIV under `hr`'s version `1`, the vectors' key, over the canonical bytes of the object of the members, `{\"email\":\"cleo@example.org\"}`, its nonce made from the source, the type, the key and the version before. Its id is made under `lakelands:ingest:v2`, the box among its parts.",
+  "after": {
+    "position": 99,
+    "hash": "ee6de01c67b19597e700db4c9292531a8bebf19f7e4ad57fc9c84137b0451d97"
+  },
+  "line": "{\"body\":{\"key\":\"c6\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"id\":\"c6\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"33e0968231d7b005592213f96d8caf0c4d4336b4feed76f1fa6d97e8ea293015\",\"id\":\"65daa08ad76397d48cfae6fc602340ec\",\"known_at\":\"2026-10-05T09:00:57.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":100,\"prev\":\"ee6de01c67b19597e700db4c9292531a8bebf19f7e4ad57fc9c84137b0451d97\",\"sealed\":{\"box\":\"EIsMtFzi52zkiNtFj/afRnwgRJJQq+25kPQ/tWJvUGasJWOAwHiZ4asF1UQ=\",\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"hr\",\"v\":23,\"writer\":\"service:hr\"}",
+  "hash": "33e0968231d7b005592213f96d8caf0c4d4336b4feed76f1fa6d97e8ea293015"
+}

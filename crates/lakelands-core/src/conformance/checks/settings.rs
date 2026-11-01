@@ -901,11 +901,10 @@ async fn a_setting_read_without_a_date_is_read_on_the_clock(store: Store) -> Hel
 
 check!(
     SETTING_UNDATED_AS_BEFORE = an_undated_setting_reads_as_before,
-    "090 (lakelands#1549): a setting with no periods answers `setting('k', d)` as `setting('k')` on any day, `describe` tells it no `periods` and its record holds none; a lake of format 20 imported and opened by a writer declares `sys.setting` once more, one version on, and appends no other event of its own",
-    given
+    "090 (lakelands#1549): a setting with no periods answers `setting('k', d)` as `setting('k')` on any day, `describe` tells it no `periods` and its record holds none"
 );
 
-async fn an_undated_setting_reads_as_before(store: Store, given: Given) -> Held {
+async fn an_undated_setting_reads_as_before(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("t", vec![field("x", StorageKind::Number)]))
         .await?;
@@ -929,45 +928,6 @@ async fn an_undated_setting_reads_as_before(store: Store, given: Given) -> Held 
         "`k` holds 5 and no periods: `setting('k', d)` differs from `setting('k')` on \
          {wrong:?}, `describe` tells {periods:?} periods, and the record is {:?}",
         record.fields
-    );
-    // The kept lake of format 20, imported and opened by a writer.
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/20");
-    let lake = lakelands_api::LakeId::from("kept20");
-    let keys = super::erasable::Keys::from_file(&dir.join("keys/kept20.keys.json"), &lake)?;
-    let seams = super::erasable::with(&Arc::new(keys));
-    let imported = (given.import)(dir.clone(), lake, None, seams).await;
-    let imported = imported.map_err(|e| Failure::new(format!("importing lake 20: {e}")))?;
-    // The import opens it for writing: what its release made ends at
-    // the head its answers name.
-    let answers = std::fs::read(dir.join("answers.json")).ok();
-    let answers = answers.and_then(|a| serde_json::from_slice::<Value>(&a).ok());
-    let made = answers.and_then(|a| a["head"].as_u64()).unwrap_or(0) as usize;
-    let ty = lakelands_api::seam::SETTING_TYPE;
-    let setting = |e: &Event| match &e.body {
-        EventBody::Declared {
-            declaration: Declaration::Type(t),
-            version,
-            ..
-        } if t.name.as_str() == ty => Some((
-            *version,
-            t.fields.iter().any(|f| f.name.as_str() == "periods"),
-        )),
-        _ => None,
-    };
-    let log = log_events(imported.store.as_ref()).await?;
-    let (before, after) = log.split_at((made + 1).min(log.len()));
-    let was = before.iter().rev().find_map(setting).map(|(v, _)| v);
-    let own = ["lease_taken", "lake_upgraded"];
-    let tail: Vec<_> = after
-        .iter()
-        .filter(|e| !own.contains(&e.body.kind()))
-        .collect();
-    let kinds: Vec<_> = tail.iter().map(|e| e.body.kind()).collect();
-    let declared = (tail.len() == 1).then(|| setting(tail[0])).flatten();
-    ensure!(
-        declared.is_some() && declared == was.map(|v| (v + 1, true)),
-        "a writer's open of lake 20 appends, beside its lease and upgrade, one `declared` of \
-         `{ty}` with `periods`, one version on from {was:?}: {kinds:?}, {declared:?}"
     );
     Ok(())
 }

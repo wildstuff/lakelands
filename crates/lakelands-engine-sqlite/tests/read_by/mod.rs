@@ -1,6 +1,6 @@
-//! What the readers of 0.19.0 and 0.20.0 share, as both releases have it
-//! in `crates/lakelands-engine-sqlite/src/log.rs`, kept fixed here: the
-//! shape of an index line and the segments it reads them from.
+//! What the readers of 0.19.0, 0.20.0 and 0.22.0 share, as those releases
+//! have it in `crates/lakelands-engine-sqlite/src/log.rs`, kept fixed
+//! here: the shape of an index line and the segments it reads them from.
 
 #![allow(dead_code)]
 

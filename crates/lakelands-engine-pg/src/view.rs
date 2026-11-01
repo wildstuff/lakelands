@@ -1410,7 +1410,7 @@ impl ProjectionView for PgView<'_> {
                  least($2, coalesce((SELECT n FROM {meta} WHERE k = 'folded'), -1))) \
                  FROM unnest($1::text[]) AS i",
                 log = r.names.t("log"),
-                id = r.names.kept("id", "i"),
+                id = Names::kept("i"),
                 meta = r.names.t("meta"),
             );
             let rows = r.db.query(&query, &[&all, &r.at])?;

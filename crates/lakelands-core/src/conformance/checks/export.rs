@@ -145,20 +145,8 @@ check!(
 );
 
 check!(
-    ON_BEHALF_OF_FROM_21 = an_on_behalf_of_out_of_its_place_is_refused_naming_it,
-    "088 (lakelands#1489) and log-format §1.1: `on_behalf_of` sits in the envelope from format 21, never inside `context`; an export whose line carries it in `context`, or whose last line is of format 20 and carries it, its hash made right, is refused by its verification and its import at that position, naming the member",
-    given
-);
-
-check!(
-    OCCASION_FROM_22 = an_occasion_before_its_format_is_refused_naming_it,
-    "088, extended (lakelands#1584), and log-format §1.1: `context.occasion` is of format 22; an export whose last line is of format 21 and carries it, its hash made right, is refused by its verification and its import at that position, naming the member",
-    given
-);
-
-check!(
-    SETTING_PERIODS_FROM_21 = a_dated_setting_of_format_20_is_refused_naming_it,
-    "090 (lakelands#1549) and log-format §1.3: a setting's values from dates are of format 21; an export whose last line, of format 20, its hash made right, writes `periods` on `sys.setting`, proposes a write of it with `from`, or declares a call of `setting` on a date, is refused by its verification and its import at that position, naming the format",
+    ON_BEHALF_OF_PLACE = an_on_behalf_of_out_of_its_place_is_refused_naming_it,
+    "088 (lakelands#1489) and log-format §1.1: `on_behalf_of` sits in the envelope, never inside `context`; an export whose line carries it in `context`, its hash made right, is refused by its verification and its import at that position, naming the member",
     given
 );
 
@@ -1315,35 +1303,10 @@ async fn an_on_behalf_of_out_of_its_place_is_refused_naming_it(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
-    let cases: [Misplaced; 2] = [
-        (
-            "carries `on_behalf_of` in its `context`",
-            Flaw::OnBehalfOfInContext,
-            |e| e["context"]["on_behalf_of"] = json!("human:alice"),
-        ),
-        (
-            "is of format 20 and carries `on_behalf_of`",
-            Flaw::OnBehalfOfBefore { v: 20 },
-            |e| {
-                e["v"] = json!(20);
-                e["on_behalf_of"] = json!("human:alice");
-            },
-        ),
-    ];
-    misplaced_refused(store, given, &cases).await
-}
-
-async fn an_occasion_before_its_format_is_refused_naming_it(
-    store: Store,
-    given: crate::conformance::Given,
-) -> Held {
     let cases: [Misplaced; 1] = [(
-        "is of format 21 and carries `context.occasion`",
-        Flaw::OccasionBefore { v: 21 },
-        |e| {
-            e["v"] = json!(21);
-            e["context"]["occasion"] = json!("live");
-        },
+        "carries `on_behalf_of` in its `context`",
+        Flaw::OnBehalfOfInContext,
+        |e| e["context"]["on_behalf_of"] = json!("human:alice"),
     )];
     misplaced_refused(store, given, &cases).await
 }
@@ -1627,6 +1590,127 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
             "an open for {mode:?}, whose fold reads the event in another format at {at}, is \
              refused as `format_other` at that position, the tip where it was ({tip:?}) and \
              the lease free; it answered {e:?}, and the lake is {after:?}"
+        );
+    }
+    Ok(())
+}
+
+check!(
+    OLDER_FORMAT_REFUSED =
+        a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_read,
+    "098 and the log format §6: a release reads one format and older ones are not read at all. A lake every line of which is of format 22 and which says so in its `lake_created` is refused at an open in every mode as `log_format`, naming the lake, 22 and the one format this release reads, leaving its log, its projection and its lease as they were; an export of format 22 is refused by its verification and its import as damaged at position 0, naming 22, and no lake is left behind it",
+    given
+);
+
+async fn a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_read(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use crate::conformance::Lines;
+    use crate::conformance::fixture::canonical_line;
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::seam::Seams;
+    const OLDER: u32 = 22;
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let scratch = Scratch::new(given.scratch.clone());
+    let l = Lake::of(store.as_ref());
+    l.declare(type_of("note", &[("body", Text)])).await?;
+    l.upsert("note", "n1", json!({"body": "x"})).await?;
+    let events = log_events(store.as_ref()).await?;
+    // The export first: the lake's own, every line of it in format 22,
+    // its hash and the next one's `prev` made right.
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let file = match files(&from)?.as_slice() {
+        [one] => one.clone(),
+        more => {
+            return Err(Failure::new(format!(
+                "a small lake's export is one file: {more:?}"
+            )));
+        }
+    };
+    let mut prev = Value::Null;
+    let mut older = Vec::new();
+    for line in lines_of(&from, &file)? {
+        let line = rehashed(&line, |e| {
+            e["v"] = json!(OLDER);
+            if !prev.is_null() {
+                e["prev"] = prev.clone();
+            }
+            if e["body"]["kind"] == "lake_created" {
+                e["body"]["format"] = json!(OLDER);
+            }
+        })?;
+        let event: Value = serde_json::from_slice(&line)
+            .map_err(|e| Failure::new(format!("an exported line is not JSON: {e}")))?;
+        prev = event["hash"].clone();
+        older.push(line);
+    }
+    rewrite(&from, &file, &older)?;
+    let lake: lakelands_api::LakeId = format!("{}_{OLDER}", store.lake()).into();
+    let verified = export::verify(&from);
+    let imported = (given.import)(from, lake.clone(), None, import_seams()).await;
+    let imported = refused(imported, "an export of format 22")?;
+    let want = Flaw::FormatOther {
+        v: OLDER.into(),
+        reads: reads.into(),
+    };
+    for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
+        ensure!(
+            e.as_ref().and_then(damaged) == Some(&want)
+                && matches!(e.as_ref().and_then(Error::situation),
+                    Some(Situation::Damaged { position: Some(p), .. })
+                        if *p == Position::GENESIS),
+            "{door} of an export of format {OLDER} is refused at position 0, naming the format \
+             and the one this release reads; it answered {e:?}"
+        );
+    }
+    // Then a lake: the same events laid in a log of their own, as a
+    // release of that format left them.
+    let mut prev = None;
+    let older: Vec<_> = (events.into_iter())
+        .map(|mut event| {
+            event.v = OLDER;
+            if let Some(prev) = prev.take() {
+                event.prev = prev;
+            }
+            if let EventBody::LakeCreated { format } = &mut event.body {
+                *format = OLDER;
+            }
+            let line = canonical_line(event);
+            prev = Some(line.hash.clone());
+            line
+        })
+        .collect();
+    let mut lines: Option<Lines> = Some(Box::new(move |_, _| (older, 0)));
+    let mut first = None;
+    for mode in [OpenMode::Read, OpenMode::Write, OpenMode::Rebuild] {
+        let lines = lines.take();
+        let lines = lines.unwrap_or_else(|| Box::new(|_, _| (Vec::new(), 0)));
+        let c = (given.continued)(None, lake.clone(), lines, mode, Seams::default());
+        let c = c
+            .await
+            .map_err(|e| Failure::new(format!("laying the older lake below the store: {e}")))?;
+        let e = c.opened.err();
+        ensure!(
+            matches!(e.as_ref().and_then(Error::situation),
+                Some(Situation::LogFormat { lake: l, found, reads: r, oldest })
+                    if l == lake.as_str() && *found == u64::from(OLDER)
+                        && *r == u64::from(reads) && *oldest == Some(u64::from(reads))),
+            "a lake of format {OLDER} is refused at an open for {mode:?} as `log_format`, naming \
+             the lake, that format and the one this release reads, {reads}; it answered {e:?}"
+        );
+        let before = &*first.get_or_insert(c.before.clone());
+        ensure!(
+            before.tip.is_some()
+                && c.before.lease_free
+                && c.before == *before
+                && c.after.as_ref() == Some(before),
+            "an open for {mode:?} of a lake of format {OLDER} reads nothing of it and leaves \
+             its tip, its projection and its free lease as they were, {before:?}; they are \
+             {:?} and {:?}",
+            c.before,
+            c.after
         );
     }
     Ok(())
@@ -2220,7 +2304,7 @@ async fn a_framed_export_whose_stored_form_breaks_is_refused_naming_the_flaw(
     with(
         "a line of the format before its frame's",
         p + 1,
-        Flaw::FrameOther { frame: v, v: v - 1 },
+        Flaw::FormatOther { v: v - 1, reads: v },
         &|l| {
             l[second] = changed(&l[second], |e| e["v"] = json!(v - 1))?;
             Ok(())
@@ -2392,64 +2476,6 @@ async fn a_backup_stopped_among_a_frames_lines_writes_its_run_again_whole(
             "the backup stopped after {what}, run again, restores the lake at its head {want:?}, \
              and it restores {got:?}"
         );
-    }
-    Ok(())
-}
-
-async fn a_dated_setting_of_format_20_is_refused_naming_it(
-    store: Store,
-    given: crate::conformance::Given,
-) -> Held {
-    let scratch = Scratch::new(given.scratch.clone());
-    let l = Lake::of(store.as_ref());
-    let ty = lakelands_api::seam::SETTING_TYPE;
-    super::settings::declared(&l, "rate", "number", json!(1)).await?;
-    let v = 20;
-    for n in 0..3 {
-        let (said, flaw) = match n {
-            0 => {
-                let period = json!({"key": "rate", "from": "2026-07-01", "value": 2});
-                l.upsert(ty, "rate", period).await?;
-                ("a dated setting", Flaw::SettingPeriodsBefore { v })
-            }
-            1 => {
-                let write = ProposedWrite::Upsert {
-                    ty: ty.into(),
-                    key: "rate".into(),
-                    patch: patch(json!({"key": "rate", "from": "2026-08-01", "value": 3})),
-                    opts: Default::default(),
-                };
-                let proposed = l.cat.propose(&l.own, write, "a period".into()).await;
-                proposed.must("proposing a period")?;
-                ("a proposed period", Flaw::SettingMembersBefore { v })
-            }
-            _ => {
-                let at = fixture::derived("at", Number, "setting('rate', due)", &["due"]);
-                let due = fixture::field("due", StorageKind::Date);
-                l.declare(type_decl("dated", vec![due, at])).await?;
-                ("a setting read on a date", Flaw::SettingAtBefore { v })
-            }
-        };
-        let head = store.head().await.must("reading the head")?;
-        let dir = scratch.dir(&format!("dated-{n}"));
-        write(store.as_ref(), &dir).await?;
-        let active = files(&dir)?.pop().unwrap_or_default();
-        let mut lines = lines_of(&dir, &active)?;
-        let last = lines.len() - 1;
-        lines[last] = rehashed(&lines[last], |e| e["v"] = json!(v))?;
-        rewrite(&dir, &active, &lines)?;
-        let verified = export::verify(&dir);
-        let imported = (given.import)(dir, "dated".into(), None, import_seams()).await;
-        let imported = refused(imported, &format!("{said} of format 20"))?;
-        for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
-            ensure!(
-                e.as_ref().and_then(damaged) == Some(&flaw)
-                    && matches!(e.as_ref().and_then(Error::situation),
-                        Some(Situation::Damaged { position: Some(p), .. }) if *p == head),
-                "{door} of an export whose last line is {said} of format 20 is refused at \
-                 {head} as {flaw:?}; it answered {e:?}"
-            );
-        }
     }
     Ok(())
 }

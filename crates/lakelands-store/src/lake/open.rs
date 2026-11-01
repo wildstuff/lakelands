@@ -89,14 +89,9 @@ impl Lake {
         let opener = opener(location, &seams)?;
         // A lake of a format this release does not read is not opened: its
         // engine judges, makes and changes nothing of it, in any mode (054).
-        // One of an older format it reads is upgraded by a writer's open,
-        // and is not read as it is.
-        let written = log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
-        if mode == OpenMode::Read {
-            log::read_as_is(&location.lake, written)?;
-        }
+        log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
         // A writer's open of a projection an older build laid out rebuilds
-        // it, as an upgrade's open is the place a release pays for its
+        // it, as a writer's open is the place a release pays for its
         // steps; a reader's, and one of a newer layout or of none, is
         // refused (004).
         let (engine, rebuilt_at_open) = match opener.open(location, mode) {
@@ -130,7 +125,7 @@ impl Lake {
             lake.reclaim_kept();
         }
         // The rebuild folds beside the projection and swaps the scratch in
-        // (071): an upgrade's goes on from where a build ahead stopped, an
+        // (071): a writer's goes on from where a build ahead stopped, an
         // open to rebuild folds the whole log. Either is folded as the
         // catch-up below would fold it in place, where the engine keeps no
         // scratch.
@@ -212,8 +207,8 @@ impl Lake {
     }
 
     /// Build the projection this release lays out beside the one the lake
-    /// at `location` answers from, ahead of the writer's open that upgrades
-    /// it, while an older release still holds its lease (071). It opens
+    /// at `location` answers from, ahead of the writer's open that swaps it
+    /// in, while an older release still holds its lease (071). It opens
     /// the log and the scratch only, never the projection or the lease, so
     /// it runs beside any writer; run again, it goes on from where it
     /// stopped. The writer's open of a projection an older build laid out
@@ -343,13 +338,13 @@ impl Turn<'_> {
     /// What a writer does once it holds `lease` and has folded the log,
     /// on its open and on a standby's taking over: it finishes a
     /// forgetting a crash left half done, then appends the lake's
-    /// creation, the `lease_taken`, an upgrade's step and the types the
+    /// creation, the `lease_taken` and the types the
     /// lake may hold and does not, and seals past the bound. Answers
     /// whether finishing the forgetting folded the whole log again.
     ///
     /// Everything else that can refuse the open runs before the append,
-    /// so an open refused before it leaves the log as it was: a lake that
-    /// owed an upgrade still owes it (lakelands#1564). The append is the
+    /// so an open refused before it leaves the log as it was
+    /// (lakelands#1564). The append is the
     /// last step that can fail: one that fails says what it left
     /// (`append_failed`), one whose fold fails after the log took it says
     /// so (`not_folded`), and the seal after it refuses nothing.
@@ -380,20 +375,6 @@ impl Turn<'_> {
                 holder: lease.holder.clone(),
             },
         ));
-        // A lake written in an older format is written in this one from
-        // here on, the step marked right after the new writer's lease.
-        // The events before it stay as they were written; the step from
-        // 14 changes no fold, so the projection stays
-        // (`docs/log-format.md` §6).
-        // Judged by the tip read under the lease: another writer may
-        // have upgraded the lake since its ends were read.
-        let tip = w.tip.as_ref().map(|t| t.0);
-        let tip = tip.map(|p| self.read_events(p, 1)).transpose()?;
-        let newest = tip.and_then(|t| t.first().map(|e| e.v));
-        if let Some(newest) = newest.filter(|v| *v < LOG_FORMAT_VERSION) {
-            let (from, to) = (newest, LOG_FORMAT_VERSION);
-            drafts.push(Draft::system(now, EventBody::LakeUpgraded { from, to }));
-        }
         // The system types this lake may hold and does not hold yet are
         // declared on every open for writing, so a host type added after
         // the lake was created reaches it too.

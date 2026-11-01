@@ -8,7 +8,7 @@
 //! and runs through exactly one blocking hand-off, in `exec`.
 //!
 //! A host builds on `open`, `import` and the [`Imported`] it answers,
-//! `written_in` and [`ExprBacking`]. The modules are the store's own; those
+//! and [`ExprBacking`]. The modules are the store's own; those
 //! the workspace's tests reach are `#[doc(hidden)]`, and a release changes
 //! them without notice.
 
@@ -45,7 +45,7 @@ pub mod writes;
 
 pub use backing::ExprBacking;
 pub use doors::{
-    REACH_POLL, Standing, build_ahead, discard_ahead, import, open, room_ahead, standby, written_in,
+    REACH_POLL, Standing, build_ahead, discard_ahead, import, open, room_ahead, standby,
 };
 pub use import::{Imported, check_events};
 #[doc(hidden)]

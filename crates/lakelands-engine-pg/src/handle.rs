@@ -122,9 +122,6 @@ pub struct PgLake {
     /// On a handle onto the scratch, its schema, unquoted (`scratch.rs`);
     /// the lease connection holds the builder's lock.
     scratch: Option<String>,
-    /// Opened to rebuild: its take of the lease converts no log; its swap
-    /// or its `clear` does (`lease.rs`).
-    rebuild: bool,
 }
 
 impl PgLake {
@@ -146,11 +143,6 @@ impl PgLake {
             let marked = format!("SELECT n FROM {} WHERE k = 'layout'", names.t("meta"));
             let found: Option<i64> = reader.query_opt(&marked, &[])?.and_then(|r| r.get(0));
             engines::layout(&lake, found.map(|v| v as u64), projection::LAYOUT)?;
-        }
-        // What the log keeps as bytes, before the sweep below reads it; a
-        // lake this open makes is asked again once `prepare` has made it.
-        if exists {
-            names.find_bytes(&mut reader)?;
         }
         let read = mode == OpenMode::Read;
         let read = read.then(|| vector_index::find(&mut reader, false).ok());
@@ -193,8 +185,7 @@ impl PgLake {
             }
         };
         read_on(&readers, &turns, &target, |db| {
-            check_name(db, &names, &target.schema, &lake)?;
-            names.find_bytes(db)
+            check_name(db, &names, &target.schema, &lake)
         })?;
         let (builder, suspect) = match &writing {
             Some(w) => {
@@ -233,7 +224,6 @@ impl PgLake {
             builder,
             suspect: Mutex::new(suspect),
             scratch: None,
-            rebuild: mode == OpenMode::Rebuild,
         })
     }
 
@@ -253,7 +243,6 @@ impl PgLake {
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         }
         check_name(&mut reader, &live, &target.schema, &lake)?;
-        live.find_bytes(&mut reader)?;
         drop((reader, turn));
         let bare = target.scratch_schema();
         let names = Names::beside(Target::quote(&bare), &live);
@@ -309,7 +298,6 @@ impl PgLake {
             builder: None,
             suspect: Mutex::new(tip),
             scratch: Some(bare),
-            rebuild: false,
         })
     }
 
@@ -366,13 +354,9 @@ impl PgLake {
                 }));
             }
             db.batch(&scratch::swap_sql(&self.names, &names))?;
-            let converted = self.rebuild && log::convert(db, &self.names)?;
-            Ok((Some(marked), converted))
+            Ok(Some(marked))
         });
-        let (swapped, converted) = self.lost(&db, None, swapped, None)?;
-        if converted {
-            self.names.find_bytes(&mut db)?;
-        }
+        let swapped = self.lost(&db, None, swapped, None)?;
         *lock(&self.heads) = None;
         writing.unanalysed.store(0, Ordering::Relaxed);
         Ok(swapped)
@@ -543,7 +527,6 @@ pub(crate) fn log_ends(target: &Target) -> Result<Option<(CanonicalEvent, Canoni
     if !matches!(shape(&mut db, &target.schema, false)?, Shape::Lake) {
         return Ok(None);
     }
-    names.find_bytes(&mut db)?;
     let Some((tip, _)) = log::tip(&mut db, &names)? else {
         return Ok(None);
     };
@@ -804,7 +787,6 @@ impl LakeEngine for PgLake {
             &self.names,
             &self.target.schema,
             holder,
-            !self.rebuild,
         )?;
         *lock(&writing.carried) = Some(carried);
         *held = Some(lease.clone());
@@ -1221,9 +1203,6 @@ impl ProjectionStore for PgLake {
     /// transaction is abandoned.
     fn clear(&self) -> Result<()> {
         let writing = self.writing()?;
-        // A rebuild's handle converts the log here, under its lease, if its
-        // swap has not (`lease.rs`); `held` is locked before the rest.
-        let converts = self.rebuild && lock(&self.held).is_some();
         *lock(&self.transaction) = None;
         // The tables start empty again, and so does the count (module doc).
         writing.unanalysed.store(0, Ordering::Relaxed);
@@ -1248,14 +1227,7 @@ impl ProjectionStore for PgLake {
             chosen = engines::CHOSEN_THROUGH,
             stats = projection::TEXT_STATS,
         );
-        let converted = db.transaction("BEGIN", |db| {
-            db.batch(&cleared)?;
-            Ok(converts && log::convert(db, &self.names)?)
-        })?;
-        if converted {
-            self.names.find_bytes(&mut db)?;
-        }
-        Ok(())
+        db.transaction("BEGIN", |db| db.batch(&cleared))
     }
 
     /// `VACUUM (ANALYZE)` over the projection's tables and its `meta`,
@@ -1368,6 +1340,5 @@ pub fn export(location: &lakelands_api::Location, dir: &std::path::Path) -> Resu
         return Err(Error::unavailable(Situation::NoLake { lake, schema }));
     }
     check_name(&mut db, &names, &target.schema, &location.lake)?;
-    names.find_bytes(&mut db)?;
     log::export(&mut db, &names, dir)
 }

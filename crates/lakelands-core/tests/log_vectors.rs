@@ -15,8 +15,8 @@
 //! the two segments, then the events of `further.json`, each following the
 //! one before it and each named for what it shows. A format step copies
 //! the directory to the next number and stamps the copy
-//! (`verify.py --stamp N`); the directory of every format a release
-//! shipped stays as its tag holds it, and its own `verify.py` is run here.
+//! (`verify.py --stamp N`); the directory of every format from 23 on stays
+//! as its tag holds it, and its own `verify.py` is run here.
 
 use std::collections::HashMap;
 use std::fs;
@@ -24,9 +24,7 @@ use std::path::PathBuf;
 
 use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::error::{Flaw, Situation};
-use lakelands_api::event::{
-    ChangeKind, DepthBound, Digest, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
-};
+use lakelands_api::event::{ChangeKind, DepthBound, Digest, Event, EventBody, LOG_FORMAT_VERSION};
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{KeyId, Position};
 use lakelands_api::ontology::{AtIngest, TypeDecl, VerbScope};
@@ -430,7 +428,7 @@ const SHOWN: [&str; 89] = [
     "date_value",
     "output_carried",
     "output_named",
-    "lake_upgraded",
+    "retired_date_record",
     "erasable",
     "sealed_ingest",
     "sealed_output",
@@ -494,7 +492,7 @@ const LAST: u64 = 96;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
-const MISPLACED: [&str; 7] = [
+const MISPLACED: [&str; 8] = [
     "upstream_on_another_kind",
     "cause_in_context",
     "output_twice",
@@ -502,6 +500,7 @@ const MISPLACED: [&str; 7] = [
     "delivery_on_another_kind",
     "sealed_for_another_source",
     "on_behalf_of_in_context",
+    "sealed_without_box",
 ];
 
 /// Whether the event is what its entry of `further.json` says it shows,
@@ -655,10 +654,9 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                 ..
             }
         ),
-        "lake_upgraded" => matches!(
-            &event.body,
-            B::LakeUpgraded { from, to } if *to == event.v && *from + 1 == *to
-        ),
+        "retired_date_record" => {
+            matches!(&event.body, B::RecordRetired { key, version, .. } if key == "d1" && version.0 == 2)
+        }
         "constraints" => matches!(declared, Some(D::Type(t)) if {
             let at: Vec<_> = t.constraints.iter().map(|c| c.at_ingest).collect();
             at == [AtIngest::Admit, AtIngest::Refuse] && line.contains("previous(status)")
@@ -667,8 +665,10 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             matches!(declared, Some(D::Type(t)) if t.fields.iter().any(|f| f.erasable))
         }
         "sealed_ingest" => {
-            let sealed = event.sealed.as_ref().map(|s| s.fields.as_slice());
-            matches!(&event.body, B::RecordIngested { .. }) && sealed == Some(&["email".into()])
+            matches!(&event.body, B::RecordIngested { .. })
+                && event.sealed.as_ref().is_some_and(|s| {
+                    s.fields.len() == 1 && s.fields[0] == "email" && s.boxed.is_some()
+                })
         }
         "sealed_output" => {
             let source = event.sealed.as_ref().and_then(|s| s.source.as_ref());
@@ -799,8 +799,8 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         "removal_by_time_retires" => {
             matches!(&event.body, B::RecordRetired { key, .. } if key == "INV-3")
         }
-        // A report of format 17 counts what it computes again, under its
-        // own id at the head it was made at (062).
+        // A report counts what it computes again, under its own id at the
+        // head it was made at (062).
         "proposed_migrate_recomputed" => {
             matches!(proposed, Some(ProposedWrite::Migrate { report, .. })
             if report.recomputed == Some(1)
@@ -813,10 +813,9 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         // alone (065, lakelands#1214).
         "sealed_apart" => {
             matches!(&event.body, B::RecordIngested { key, .. } if key == "c5")
-                && event
-                    .sealed
-                    .as_ref()
-                    .is_some_and(|s| s.key == "1" && s.apart == [KeyId::from("a1")])
+                && event.sealed.as_ref().is_some_and(|s| {
+                    s.key == "1" && s.apart == [KeyId::from("a1")] && s.boxed.is_some()
+                })
                 && event.delivery.as_ref().map(|d| d.as_str()) == Some("late")
         }
         "sealed_apart_output" => {
@@ -995,6 +994,7 @@ fn every_misplaced_line_is_refused_for_the_member_it_misplaces() {
                     sealed: "web".into()
                 }
             ),
+            "sealed_without_box" => assert_eq!(flaw, Flaw::BoxForm),
             other => panic!("`further.json` misplaces `{other}`, which this test has no check for"),
         }
     }
@@ -1185,16 +1185,6 @@ fn an_ingest_whose_members_are_in_one_box_follows_the_framed_append() {
         log::ingest_id(source, ty, key, version.0 - 1, patch),
         event.id
     );
-    let mut before = event.clone();
-    before.v = 19;
-    assert_eq!(
-        log::misplaced(&before),
-        Some(Flaw::BoxedOn {
-            kind: "record_ingested".into(),
-            v: 19
-        }),
-        "a box before format 20"
-    );
 }
 
 /// `apart.json`, one append of two ingests, each in a delivery of its own
@@ -1226,20 +1216,6 @@ const BREAKS: [&str; 8] = [
     "prev_hash",
     "start_unheld",
 ];
-
-/// `delivery` on a `record_ingested` of a format before 17, which has no
-/// such member: the vectors' delivery line, its format set back, is
-/// refused naming its format.
-#[test]
-fn a_delivery_before_format_17_is_misplaced() {
-    let line = further("events")
-        .into_iter()
-        .find(|e| e.shows == "delivery");
-    let mut event: Event = serde_json::from_str(&line.expect("a delivery line").line).unwrap();
-    event.v = 16;
-    let flaw = log::misplaced(&event).expect("refused");
-    assert!(matches!(flaw, Flaw::DeliveryOn { v: 16, .. }), "{flaw}");
-}
 
 /// The negative vector `negative/known-at-goes-back`: the first segment
 /// of the vectors with the last event's `known_at` set before the one
@@ -1274,7 +1250,7 @@ fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
 /// The negative vector `negative/another-format`: the first segment of
 /// the vectors with the last event written in the format before this
 /// release's, its hash made right. `export::verify` refuses it at that
-/// position by both numbers: a lake's format never falls
+/// position naming the format and what it reads
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`),
 /// and `verify.py`, which reads the one format, refuses it there too.
 #[test]
@@ -1301,8 +1277,8 @@ fn the_negative_vector_in_another_format_is_refused_at_its_position() {
         Err(lakelands_api::Error::Unavailable { situation }) => assert!(
             matches!(
                 &*situation,
-                Situation::Damaged { position: Some(at), flaw: Flaw::FormatStep { v, before }, .. }
-                    if at.0 == 6 && *v == reads - 1 && *before == reads
+                Situation::Damaged { position: Some(at), flaw: Flaw::FormatOther { v, reads: r }, .. }
+                    if at.0 == 6 && *v == reads - 1 && *r == reads
             ),
             "{situation}"
         ),
@@ -1312,11 +1288,11 @@ fn the_negative_vector_in_another_format_is_refused_at_its_position() {
     }
 }
 
-/// The vectors are kept for every format from 14, the first a release
-/// with real installations wrote, to the one this release writes, with no
-/// gap; and each directory's own `verify.py`, which reads that format
-/// alone, passes over its own log. `scripts/gates/vectors-kept.sh` holds
-/// that a shipped one is as its tag holds it.
+/// The vectors are kept for every format from 23 to the one this release
+/// writes, with no gap; and each directory's own `verify.py`, which reads
+/// that format alone, passes over its own log.
+/// `scripts/gates/vectors-kept.sh` holds that a shipped one is as its tag
+/// holds it.
 #[test]
 fn the_vectors_of_every_format_a_release_reads_are_kept_and_verify() {
     let mut formats: Vec<u32> = fs::read_dir(every_format())
@@ -1324,7 +1300,7 @@ fn the_vectors_of_every_format_a_release_reads_are_kept_and_verify() {
         .filter_map(|e| e.unwrap().file_name().to_str()?.parse().ok())
         .collect();
     formats.sort_unstable();
-    let want: Vec<u32> = (14..=LOG_FORMAT_VERSION).collect();
+    let want: Vec<u32> = (23..=LOG_FORMAT_VERSION).collect();
     assert_eq!(formats, want, "the vector directories by format");
     for n in formats {
         let dir = every_format().join(n.to_string());
@@ -1340,88 +1316,6 @@ fn the_vectors_of_every_format_a_release_reads_are_kept_and_verify() {
             "format {n}'s verify.py over its own vectors: {}{}",
             String::from_utf8_lossy(&run.stdout),
             String::from_utf8_lossy(&run.stderr)
-        );
-    }
-}
-
-/// Every line of a kept format's vectors, its log and `further.json`'s,
-/// as JSON.
-fn lines_of(n: u32) -> Vec<Value> {
-    let dir = every_format().join(n.to_string());
-    let mut lines = Vec::new();
-    for seg in ["00000000000000000000.jsonl", "00000000000000000007.jsonl"] {
-        let text = fs::read_to_string(dir.join("log").join(seg)).unwrap();
-        lines.extend(
-            text.lines()
-                .map(|l| serde_json::from_str::<Value>(l).unwrap()),
-        );
-    }
-    let further: Value =
-        serde_json::from_slice(&fs::read(dir.join("further.json")).unwrap()).unwrap();
-    for e in further["events"].as_array().unwrap() {
-        lines.push(serde_json::from_str(str_of(e, "line")).unwrap());
-    }
-    lines
-}
-
-/// The steps from each older format to this release's change no event:
-/// 14 → 15 lets a verb's path read across a reference or a relation's
-/// link (055), which a log of format 14 never declares, and 15 → 16,
-/// 16 → 17, 17 → 18, 18 → 19, 19 → 20 and 20 → 21 add forms a log of the
-/// format before never holds.
-/// So every line of each older format's vectors, of every kind they hold,
-/// is read as it was written, `v` included, and decodes into this
-/// release's structs; the kinds each holds are named, so a kind the
-/// vectors miss is seen.
-#[test]
-fn the_steps_from_every_older_format_change_no_event_of_any_kind() {
-    for n in OLDEST_LOG_FORMAT..LOG_FORMAT_VERSION {
-        the_step_from(n);
-    }
-}
-
-fn the_step_from(n: u32) {
-    let mut kinds = std::collections::BTreeSet::new();
-    for line in lines_of(n) {
-        let v = line["v"].as_u64().unwrap();
-        assert_eq!(v, u64::from(n));
-        let read = log::converted(v, line.clone());
-        assert_eq!(read, line, "the step from {n} changed {line}");
-        let event: Event = serde_json::from_value(read).unwrap();
-        assert_eq!(canonical::of(&event), canonical::to_vec(&line));
-        kinds.insert(event.body.kind());
-    }
-    let held: Vec<_> = kinds.iter().map(|k| k.to_string()).collect();
-    assert_eq!(held.len(), kinds.len());
-    let some = [
-        "lake_created",
-        "lease_taken",
-        "declared",
-        "migrated",
-        "record_ingested",
-        "record_upserted",
-        "checkpoint",
-        "write_proposed",
-    ];
-    for kind in some {
-        assert!(
-            held.iter().any(|k| k == kind),
-            "format {n}'s vectors hold no `{kind}`: {held:?}"
-        );
-    }
-}
-
-/// Each older format's vectors verify as an export does, through the
-/// converter: the chain, every hash over the bytes as written, and every
-/// rule of the format, by the same verifier an import runs.
-#[test]
-fn the_vectors_of_every_older_format_verify_as_an_export_of_that_format() {
-    for n in OLDEST_LOG_FORMAT..LOG_FORMAT_VERSION {
-        let dir = every_format().join(n.to_string());
-        let verified = lakelands_core::export::verify(&dir).unwrap();
-        assert_eq!(
-            verified.through.0, 7,
-            "format {n}: the two segments run through position 7"
         );
     }
 }

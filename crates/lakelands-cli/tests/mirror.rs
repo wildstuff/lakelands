@@ -218,9 +218,6 @@ struct Two {
     main: Arc<dyn LakeStore>,
     crm_at: Location,
     main_at: Location,
-    /// The engine, and every further lake's location handed out on it.
-    engine: Engine,
-    more: Vec<Location>,
     seams: Seams,
     dir: PathBuf,
     restricted: bool,
@@ -291,21 +288,11 @@ impl Two {
             main,
             crm_at,
             main_at,
-            engine: engine.clone(),
-            more: Vec::new(),
             seams,
             dir,
             restricted: false,
             grants: writer_grants(),
         }
-    }
-
-    /// The location of a further lake `name` on the same engine, whose
-    /// schema is dropped with the two (lakelands#1011).
-    fn lake(&mut self, name: &str) -> Location {
-        let at = location(&self.engine, &self.dir, name);
-        self.more.push(at.clone());
-        at
     }
 
     fn config(&self, start: Start) -> MirrorConfig {
@@ -462,7 +449,6 @@ impl Drop for Two {
     fn drop(&mut self) {
         let schemas: Vec<(String, String)> = [&self.crm_at, &self.main_at]
             .into_iter()
-            .chain(&self.more)
             .filter_map(schema)
             .collect();
         if schemas.is_empty() {
@@ -684,86 +670,6 @@ async fn a_source_lake_of_another_format_is_refused_at_its_open() {
              nothing was read from it and nothing appended"
         );
         assert!(e.to_string().contains(&said), "{e}");
-    }
-}
-
-/// A source lake the release before wrote whole, in format 14, is not
-/// read as it is: the open a mirror makes of its source, read-only, is
-/// refused with the way, on every engine; its first writer's open
-/// upgrades it (`docs/log-format.md` §6).
-#[tokio::test]
-async fn a_source_lake_of_the_format_before_is_refused_until_it_is_upgraded() {
-    use lakelands_api::canonical;
-    use lakelands_api::error::Situation;
-    use lakelands_api::event::{LOG_FORMAT_VERSION as NEW, OLDEST_LOG_FORMAT as OLD};
-    for engine in engines() {
-        let mut two = Two::new("format14", &engine).await;
-        let at = two.lake("older");
-        let name = match engine {
-            Engine::Memory => "memory",
-            Engine::Sqlite => "sqlite",
-            Engine::Postgres(_) => "pg",
-        };
-        let opener = two.seams.engines.iter().find(|e| e.name() == name).unwrap();
-        let seam = opener.open(&at, OpenMode::Create).unwrap();
-        let lease = seam.take_lease("the release before").unwrap();
-        let older = |e: lakelands_api::engine::CanonicalEvent, format: bool| {
-            let mut v: Value = serde_json::from_slice(&e.bytes).unwrap();
-            v["v"] = json!(OLD);
-            if format {
-                v["body"]["format"] = json!(OLD);
-            }
-            v.as_object_mut().unwrap().remove("hash");
-            let hash = canonical::sha256_hex(&v);
-            v["hash"] = json!(hash);
-            lakelands_api::engine::CanonicalEvent {
-                hash: lakelands_api::event::Digest(hash),
-                bytes: canonical::to_vec(&v),
-                ..e
-            }
-        };
-        let made = lakelands_store::log::Draft::system(
-            lakelands_api::Timestamp(1),
-            EventBody::LakeCreated { format: OLD },
-        );
-        let zero = lakelands_api::event::Digest::zero();
-        let (_, made) =
-            lakelands_store::log::seal(&at.lake, lakelands_api::Position(0), &zero, 0, made);
-        let made = older(made, true);
-        let taken = lakelands_store::log::Draft::system(
-            lakelands_api::Timestamp(2),
-            EventBody::LeaseTaken {
-                fence: lease.fence,
-                holder: lease.holder.clone(),
-            },
-        );
-        let (_, taken) = lakelands_store::log::seal(
-            &at.lake,
-            lakelands_api::Position(1),
-            &made.hash,
-            lease.fence,
-            taken,
-        );
-        seam.append(&lease, &[made, older(taken, false)]).unwrap();
-        seam.release_lease(&lease).unwrap();
-        drop(seam);
-        let Err(e) = lakelands_store::open(at.clone(), two.seams.clone(), OpenMode::Read).await
-        else {
-            panic!(
-                "{}: a source lake in format {OLD} opened as it is",
-                engine.name()
-            );
-        };
-        assert!(
-            matches!(e.situation(), Some(Situation::LogUpgradeOwed { lake, found, reads })
-                if lake == "older" && *found == u64::from(OLD) && *reads == u64::from(NEW)),
-            "{}: {e:?}",
-            engine.name()
-        );
-        let writer = lakelands_store::open(at.clone(), two.seams.clone(), OpenMode::Write).await;
-        writer.unwrap().close().await.unwrap();
-        let reader = lakelands_store::open(at, two.seams.clone(), OpenMode::Read).await;
-        assert!(reader.is_ok(), "{}: {:?}", engine.name(), reader.err());
     }
 }
 
