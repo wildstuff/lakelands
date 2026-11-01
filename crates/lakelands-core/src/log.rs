@@ -459,10 +459,7 @@ fn json_of(bytes: &[u8]) -> std::result::Result<Value, Flaw> {
 /// [`restore`], each line read as [`line_of`] reads one, `strict`, else
 /// as JSON alone. An event a block holds is restored from the block
 /// (§1.5).
-fn restore_read(
-    stored: &CanonicalEvent,
-    strict: bool,
-) -> std::result::Result<(Value, bool), Flaw> {
+fn restore_read(stored: &CanonicalEvent, strict: bool) -> std::result::Result<(Value, bool), Flaw> {
     let read = if strict { line_of } else { json_of };
     let frame = match &stored.frame {
         None => None,
@@ -611,7 +608,11 @@ pub fn stored_form(
     form(events, |i, event| {
         let (position, prev) = holds(i, event);
         let names = [("position", !position), ("prev", !prev)];
-        names.into_iter().filter(|(_, l)| *l).map(|(n, _)| n).collect()
+        names
+            .into_iter()
+            .filter(|(_, l)| *l)
+            .map(|(n, _)| n)
+            .collect()
     })
 }
 

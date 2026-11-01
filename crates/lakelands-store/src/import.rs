@@ -70,12 +70,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, Lease, OpenMode};
-use lakelands_core::log::Fault;
 use lakelands_api::error::{Case, Detail, Doing, Flaw, Part, Said, Situation};
 use lakelands_api::event::Digest;
 use lakelands_api::location::Location;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Error, LakeId, Position, Result, SourceId};
+use lakelands_core::log::Fault;
 use serde::Deserialize as _;
 use sha2::{Digest as _, Sha256};
 

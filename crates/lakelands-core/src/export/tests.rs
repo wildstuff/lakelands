@@ -45,7 +45,14 @@ fn a_tail_torn_between_blocks_reads_back_to_the_start_of_its_append() {
     text.extend_from_slice(&blocks[1].bytes[..blocks[1].bytes.len() / 2]);
     fs::write(&path, &text).unwrap();
     let tail = tail(&path).unwrap().unwrap();
-    assert_eq!((tail.position, tail.run, tail.cut), (Position(last), Position(1), cut));
-    assert_eq!(canonical::to_vec(&tail.line), held, "the block's last event, restored");
+    assert_eq!(
+        (tail.position, tail.run, tail.cut),
+        (Position(last), Position(1), cut)
+    );
+    assert_eq!(
+        canonical::to_vec(&tail.line),
+        held,
+        "the block's last event, restored"
+    );
     fs::remove_dir_all(&dir).unwrap();
 }

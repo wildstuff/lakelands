@@ -14,7 +14,8 @@ use crate::conformance::fixture::{self, source_record, type_of};
 use crate::conformance::prelude::*;
 
 check!(
-    APPEND_OF_ONE_STAYS_A_LINE = an_append_of_events_that_share_members_is_framed_and_one_event_is_not,
+    APPEND_OF_ONE_STAYS_A_LINE =
+        an_append_of_events_that_share_members_is_framed_and_one_event_is_not,
     "098 and log-format §1.2, §1.5: the writer stores an append of two or more events as one block, its first position the append's first, covering every event of the append, and each event's line; an append of one event is stored as its line alone, with no block, holding its `hash` and neither `position` nor `prev`; each restores to an event of its hash",
     given
 );
@@ -209,7 +210,12 @@ async fn the_active_segment_is_sized_by_its_restored_bytes(store: Store, given: 
                 (raw, kept) = (raw + block.raw, kept + f.bytes.len() as u64 + 1);
             }
             Some(_) => {}
-            None => (raw, kept) = (raw + e.bytes.len() as u64 + 1, kept + e.bytes.len() as u64 + 1),
+            None => {
+                (raw, kept) = (
+                    raw + e.bytes.len() as u64 + 1,
+                    kept + e.bytes.len() as u64 + 1,
+                )
+            }
         }
     }
     ensure!(
@@ -327,7 +333,9 @@ async fn an_append_of_events_that_share_members_is_framed_and_one_event_is_not(
             .map(|e| e.frame.as_deref())
             .collect::<Vec<_>>()
     );
-    let line: Option<Value> = one.first().and_then(|e| serde_json::from_slice(&e.bytes).ok());
+    let line: Option<Value> = one
+        .first()
+        .and_then(|e| serde_json::from_slice(&e.bytes).ok());
     let line = line.unwrap_or_default();
     ensure!(
         one.len() == 1

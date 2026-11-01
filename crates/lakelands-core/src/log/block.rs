@@ -139,9 +139,20 @@ pub fn derived_id(event: &Value) -> Option<EventId> {
     }
     match body.get("kind")?.as_str()? {
         "record_ingested" => {
-            let (source, ty, key) = (text(event, "source")?, text(body, "type")?, text(body, "key")?);
+            let (source, ty, key) = (
+                text(event, "source")?,
+                text(body, "type")?,
+                text(body, "key")?,
+            );
             let patch = canonical::to_vec(body.get("patch")?);
-            let mut parts: Vec<&[u8]> = vec![&b"lakelands:ingest:v1"[..], source, ty, key, before.as_bytes(), &patch];
+            let mut parts: Vec<&[u8]> = vec![
+                &b"lakelands:ingest:v1"[..],
+                source,
+                ty,
+                key,
+                before.as_bytes(),
+                &patch,
+            ];
             if let Some(sealed) = event.get("sealed") {
                 parts[0] = &b"lakelands:ingest:v2"[..];
                 parts.push(boxed(Some(sealed)));
@@ -266,7 +277,9 @@ pub fn inflate(block: &Block, z: &[u8]) -> Result<Vec<u8>, Flaw> {
 fn first_line(z: &[u8]) -> Result<Vec<u8>, Flaw> {
     let mut line = Vec::new();
     let mut lines = io::BufReader::new(ZlibDecoder::new(z)).take(4 * BLOCK_BYTES as u64);
-    lines.read_until(b'\n', &mut line).map_err(|_| Flaw::BlockBytes)?;
+    lines
+        .read_until(b'\n', &mut line)
+        .map_err(|_| Flaw::BlockBytes)?;
     match line.pop() {
         Some(b'\n') => Ok(line),
         _ => Err(Flaw::BlockBytes),
@@ -290,7 +303,10 @@ fn in_block(
     let Value::Object(mut members) = line else {
         return Ok(line);
     };
-    if let Some(member) = ["hash", "position", "prev", "v"].iter().find(|m| members.contains_key(**m)) {
+    if let Some(member) = ["hash", "position", "prev", "v"]
+        .iter()
+        .find(|m| members.contains_key(**m))
+    {
         return Err(Flaw::FramedTwice {
             member: (*member).to_owned(),
         });
@@ -334,7 +350,11 @@ pub(super) fn restore_one(
     }
     let restore = || {
         let (head, z) = split(&frame.bytes)?;
-        let (block, v) = Block::of(&if strict { line_of(head)? } else { json_of(head)? })?;
+        let (block, v) = Block::of(&if strict {
+            line_of(head)?
+        } else {
+            json_of(head)?
+        })?;
         let within = stored.position.0.checked_sub(block.first.0);
         if block.first != frame.first
             || block.events != u64::from(frame.events)
@@ -356,6 +376,9 @@ pub(super) fn restore_one(
     Some(restore())
 }
 
+/// An event restored from a block: its value and its canonical bytes.
+type Held = (Value, Vec<u8>);
+
 /// Each event a block restores (§1.5) after the event `before`, none at a
 /// segment's first, each its value and its canonical bytes: the block
 /// follows `before`, its bytes inflate whole, every line is read, canonical
@@ -367,7 +390,7 @@ fn restore_block(
     (block, v, z): (&Block, u64, &[u8]),
     before: Option<(Position, &Digest)>,
     strict: bool,
-) -> Result<(Vec<(Value, Vec<u8>)>, Option<Flaw>), Flaw> {
+) -> Result<(Vec<Held>, Option<Flaw>), Flaw> {
     if let Some((position, hash)) = before {
         if block.first != position.next() {
             let (expected, found) = (position.next(), Some(block.first));
@@ -401,7 +424,8 @@ fn restore_block(
             return Ok((out, Some(flaw)));
         }
     }
-    if out.len() as u64 != block.events || frame.as_ref().is_some_and(|f| f.events != block.events) {
+    if out.len() as u64 != block.events || frame.as_ref().is_some_and(|f| f.events != block.events)
+    {
         return Err(Flaw::BlockBytes);
     }
     if prev != block.hash {
@@ -462,7 +486,9 @@ pub fn read_unit(input: &mut impl BufRead) -> Result<Option<Unit>, Fault> {
     let mut z = Vec::new();
     let read = input.take(block.stored).read_to_end(&mut z);
     let mut feed = [0];
-    if read.map_err(Fault::Io)? as u64 != block.stored || input.read(&mut feed).map_err(Fault::Io)? == 0 {
+    if read.map_err(Fault::Io)? as u64 != block.stored
+        || input.read(&mut feed).map_err(Fault::Io)? == 0
+    {
         return Err(Fault::Short);
     }
     match feed {
@@ -496,7 +522,7 @@ pub struct Restoring<R> {
     strict: bool,
     lines: Lines,
     before: Option<(Position, Digest)>,
-    held: std::vec::IntoIter<(Value, Vec<u8>)>,
+    held: std::vec::IntoIter<Held>,
     end: Position,
     open: Option<Position>,
     read: u64,
@@ -538,7 +564,12 @@ impl<R: BufRead> Restoring<R> {
         loop {
             if let Some((event, bytes)) = self.held.next() {
                 let (end, unit) = (self.end, self.unit);
-                return Ok(Some(Restored { event, bytes, end, unit }));
+                return Ok(Some(Restored {
+                    event,
+                    bytes,
+                    end,
+                    unit,
+                }));
             }
             if let Some(flaw) = self.broken.take() {
                 return Err(Fault::Flaw(flaw));
@@ -559,14 +590,25 @@ impl<R: BufRead> Restoring<R> {
                         true => line_of(&bytes),
                         false => json_of(&bytes),
                     };
-                    let Some((event, whole)) = self.lines.line(value.map_err(flaw)?, before).map_err(flaw)? else {
+                    let Some((event, whole)) = self
+                        .lines
+                        .line(value.map_err(flaw)?, before)
+                        .map_err(flaw)?
+                    else {
                         continue;
                     };
                     let position = event.get("position").and_then(Value::as_u64).unwrap_or(0);
-                    let hash = event.get("hash").and_then(Value::as_str).unwrap_or_default();
+                    let hash = event
+                        .get("hash")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
                     self.before = Some((Position(position), Digest(hash.to_owned())));
                     self.end = Position(position + self.lines.left());
-                    let bytes = if whole { bytes } else { canonical::to_vec(&event) };
+                    let bytes = if whole {
+                        bytes
+                    } else {
+                        canonical::to_vec(&event)
+                    };
                     self.held = vec![(event, bytes)].into_iter();
                 }
                 Unit::Block(block, v, line, z) => {

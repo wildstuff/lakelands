@@ -1104,7 +1104,13 @@ fn the_writers_lines(append: &Value, last: &Event) -> Vec<CanonicalEvent> {
     let said: Vec<String> = stored.iter().enumerate().map(less).collect();
     assert_eq!(written, said, "the writer's block holds the frame's lines");
     let held: Vec<&[u8]> = appended.iter().map(|e| &e.bytes[..]).collect();
-    assert_eq!(held, written[1..].iter().map(|l| l.as_bytes()).collect::<Vec<_>>());
+    assert_eq!(
+        held,
+        written[1..]
+            .iter()
+            .map(|l| l.as_bytes())
+            .collect::<Vec<_>>()
+    );
     for (event, line) in appended.iter().zip(&lines) {
         let (restored, _) = log::restore(event).unwrap();
         assert_eq!(
@@ -1223,7 +1229,13 @@ fn an_append_of_two_deliveries_sealed_apart_is_stored_as_the_writer_frames_it() 
 
 /// The blocks lake's one segment file, `blocks/` or a negative vector's.
 fn blocks_file(dir: &str) -> Vec<u8> {
-    fs::read(vectors().join(dir).join("log").join(format!("{:020}.jsonl", 0))).unwrap()
+    fs::read(
+        vectors()
+            .join(dir)
+            .join("log")
+            .join(format!("{:020}.jsonl", 0)),
+    )
+    .unwrap()
 }
 
 /// The units of a segment file's bytes, in order.
@@ -1251,7 +1263,10 @@ fn the_blocks_lake_verifies_and_its_blocks_are_the_writers() {
     let last = events.last().unwrap();
     assert_eq!(
         (verified.through.0, &verified.hash.0),
-        (last["position"].as_u64().unwrap(), &str_of(last, "hash").to_owned())
+        (
+            last["position"].as_u64().unwrap(),
+            &str_of(last, "hash").to_owned()
+        )
     );
     let (mut lines, mut blocks) = (Vec::new(), Vec::new());
     for unit in units_of(&file) {
@@ -1276,7 +1291,12 @@ fn the_blocks_lake_verifies_and_its_blocks_are_the_writers() {
     };
     assert_eq!(
         (one.events, one.end, two.first, two.end),
-        (log::BLOCK_EVENTS as u64, two.last(), one.last().next(), two.last())
+        (
+            log::BLOCK_EVENTS as u64,
+            two.last(),
+            one.last().next(),
+            two.last()
+        )
     );
     // The writer's blocks for the delivery's events.
     let from = one.first.0 as usize;
@@ -1294,12 +1314,21 @@ fn the_blocks_lake_verifies_and_its_blocks_are_the_writers() {
         .collect();
     log::frame_append(&mut appended);
     for (block, z) in &blocks {
-        let frame = appended[(block.first.0 as usize) - from].frame.clone().unwrap();
+        let frame = appended[(block.first.0 as usize) - from]
+            .frame
+            .clone()
+            .unwrap();
         let written = log::block_of(&frame).unwrap().unwrap();
         let head = frame.bytes.len() - written.stored as usize;
         assert_eq!(
-            log::Block { stored: 0, ..written.clone() },
-            log::Block { stored: 0, ..block.clone() },
+            log::Block {
+                stored: 0,
+                ..written.clone()
+            },
+            log::Block {
+                stored: 0,
+                ..block.clone()
+            },
             "at {}: its first line",
             block.first
         );
@@ -1318,7 +1347,10 @@ fn the_blocks_lake_verifies_and_its_blocks_are_the_writers() {
 /// its last position, and so does `verify.py`.
 #[test]
 fn the_negative_vector_torn_between_blocks_is_refused_at_its_second_block() {
-    let (whole, torn) = (blocks_file("blocks"), blocks_file("negative/torn-between-blocks"));
+    let (whole, torn) = (
+        blocks_file("blocks"),
+        blocks_file("negative/torn-between-blocks"),
+    );
     let blocks: Vec<(log::Block, u64)> = {
         let mut input = &whole[..];
         let mut at = Vec::new();
@@ -1332,7 +1364,11 @@ fn the_negative_vector_torn_between_blocks_is_refused_at_its_second_block() {
         }
     };
     let (second, cut) = &blocks[1];
-    assert_eq!(torn, whole[..*cut as usize], "cut at the second block's first byte");
+    assert_eq!(
+        torn,
+        whole[..*cut as usize],
+        "cut at the second block's first byte"
+    );
     let dir = vectors().join("negative/torn-between-blocks");
     match lakelands_core::export::verify(&dir) {
         Err(lakelands_api::Error::Unavailable { situation }) => assert!(

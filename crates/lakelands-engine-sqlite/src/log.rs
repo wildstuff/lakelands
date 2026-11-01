@@ -404,14 +404,22 @@ impl Inflated {
     /// The block whose bytes, `bytes`, begin at byte `offset` of the
     /// segment beginning at `segment`, inflated.
     fn of(at: (u64, u64), bytes: Vec<u8>) -> std::result::Result<Inflated, Flaw> {
-        let feed = bytes.iter().position(|b| *b == b'\n').ok_or(Flaw::NotABlock)?;
+        let feed = bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .ok_or(Flaw::NotABlock)?;
         let head = serde_json::from_slice(&bytes[..feed]).map_err(|e| Flaw::NotJson {
             detail: Detail::json(&e),
         })?;
         let (block, _) = Block::of(&head)?;
         let raw = lakelands_core::log::inflate(&block, &bytes[feed + 1..])?;
         let mut starts = vec![0];
-        starts.extend(raw.iter().enumerate().filter(|(_, b)| **b == b'\n').map(|(i, _)| i + 1));
+        starts.extend(
+            raw.iter()
+                .enumerate()
+                .filter(|(_, b)| **b == b'\n')
+                .map(|(i, _)| i + 1),
+        );
         let framed = raw.starts_with(b"{\"events\":");
         if framed {
             starts.remove(0);
@@ -770,7 +778,11 @@ fn lines_of(events: &[CanonicalEvent], mut offset: u64, first: u64) -> (Vec<u8>,
             }
         };
         let (position, fence, hash) = (event.position.0, event.fence, &event.hash.0);
-        let prev = if position == first { &event.prev.0[..] } else { "" };
+        let prev = if position == first {
+            &event.prev.0[..]
+        } else {
+            ""
+        };
         let line = serde_json::json!(["e", position, fence, at, len, id, prev, hash]);
         index.extend_from_slice(line.to_string().as_bytes());
         index.push(b'\n');
@@ -1030,7 +1042,10 @@ impl Log {
         let Some(active) = self.segments.last_mut() else {
             return Ok(());
         };
-        let (through, raw) = active.raw.filter(|(t, _)| *t <= active.end).unwrap_or((0, 0));
+        let (through, raw) = active
+            .raw
+            .filter(|(t, _)| *t <= active.end)
+            .unwrap_or((0, 0));
         let more = match through < active.end {
             true => raw_of(&segment_path(&self.dir, active.first), through, active.end)?,
             false => 0,
@@ -1145,14 +1160,22 @@ impl Log {
         (active.checked, active.unproven) = ((active.end, active.index_read), false);
         active.index_read += index.len() as u64;
         active.count += events.len() as u64;
-        active.raw = active.raw.filter(|(t, _)| *t == active.end).map(|(t, raw)| {
-            let added: u64 = events.iter().map(|e| match &e.frame {
-                Some(f) if f.first == e.position => block_of(f).and_then(Result::ok).map_or(0, |b| b.raw),
-                Some(_) => 0,
-                None => e.bytes.len() as u64 + 1,
-            }).sum();
-            (t + lines.len() as u64, raw + added)
-        });
+        active.raw = active
+            .raw
+            .filter(|(t, _)| *t == active.end)
+            .map(|(t, raw)| {
+                let added: u64 = events
+                    .iter()
+                    .map(|e| match &e.frame {
+                        Some(f) if f.first == e.position => {
+                            block_of(f).and_then(Result::ok).map_or(0, |b| b.raw)
+                        }
+                        Some(_) => 0,
+                        None => e.bytes.len() as u64 + 1,
+                    })
+                    .sum();
+                (t + lines.len() as u64, raw + added)
+            });
         active.end += lines.len() as u64;
         active.last_hash = events.last().map(|e| e.hash.0.clone());
         Ok(())

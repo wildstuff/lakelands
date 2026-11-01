@@ -155,14 +155,22 @@ async fn a_lake_of_blocks_torn_or_whole_is_refused_by_0_22_by_its_format() {
     let last = &groups[groups.len() - 1];
     let at = last[0].offset as usize;
     assert!(
-        segment[at..].starts_with(b"{\"block\":") && last.iter().all(|e| e.offset == last[0].offset),
+        segment[at..].starts_with(b"{\"block\":")
+            && last.iter().all(|e| e.offset == last[0].offset),
         "the last append is one block"
     );
-    let path = dir.join("log").join(format!("{:020}.jsonl", firsts[firsts.len() - 1]));
+    let path = dir
+        .join("log")
+        .join(format!("{:020}.jsonl", firsts[firsts.len() - 1]));
     for torn in [false, true] {
         if torn {
             let len = (at + (segment.len() - at) / 2) as u64;
-            std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(len).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(len)
+                .unwrap();
         }
         assert_eq!(
             refused_by(&dir),

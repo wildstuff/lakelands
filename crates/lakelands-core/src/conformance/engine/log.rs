@@ -75,7 +75,8 @@ engine_check!(
 );
 
 engine_check!(
-    BLOCK_DIGEST_OVER_RESTORED_EVENTS = a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored,
+    BLOCK_DIGEST_OVER_RESTORED_EVENTS =
+        a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored,
     "log format §1.5 and §4.2: a segment holding whole lines and blocks reads back as appended, and its digest is SHA-256 over its events as they restore, each event's canonical bytes followed by a line feed, never over a block's stored bytes"
 );
 
@@ -1093,13 +1094,21 @@ fn edit_line(stored: &mut [CanonicalEvent], at: usize, edit: impl FnOnce(&mut Va
         .map_err(|e| Failure::new(format!("a stored line is JSON: {e}")))?;
     edit(&mut line);
     let edited = crate::canonical::to_vec(&line);
-    let frame = stored[at].frame.clone().ok_or_else(|| broken("is carried"))?;
+    let frame = stored[at]
+        .frame
+        .clone()
+        .ok_or_else(|| broken("is carried"))?;
     let block = crate::log::block_of(&frame).and_then(|b| b.ok());
     let block = block.ok_or_else(|| broken("is one"))?;
     let feed = frame.bytes.iter().position(|b| *b == b'\n').unwrap_or(0);
-    let raw = crate::log::inflate(&block, &frame.bytes[feed + 1..]).map_err(|_| broken("inflates"))?;
+    let raw =
+        crate::log::inflate(&block, &frame.bytes[feed + 1..]).map_err(|_| broken("inflates"))?;
     let mut lines: Vec<&[u8]> = raw[..raw.len() - 1].split(|b| *b == b'\n').collect();
-    let framed = usize::from(lines.first().is_some_and(|l| l.starts_with(b"{\"events\":")));
+    let framed = usize::from(
+        lines
+            .first()
+            .is_some_and(|l| l.starts_with(b"{\"events\":")),
+    );
     lines[at - (frame.first.0 - stored[0].position.0) as usize + framed] = &edited;
     let mut raw = Vec::new();
     for l in lines {
@@ -1107,9 +1116,17 @@ fn edit_line(stored: &mut [CanonicalEvent], at: usize, edit: impl FnOnce(&mut Va
         raw.push(b'\n');
     }
     let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
-    let z = z.write_all(&raw).and_then(|()| z.finish()).map_err(|_| broken("compresses"))?;
+    let z = z
+        .write_all(&raw)
+        .and_then(|()| z.finish())
+        .map_err(|_| broken("compresses"))?;
     let (raw, stored_bytes) = (raw.len() as u64, z.len() as u64);
-    let mut bytes = crate::log::Block { raw, stored: stored_bytes, ..block }.line(FORMAT);
+    let mut bytes = crate::log::Block {
+        raw,
+        stored: stored_bytes,
+        ..block
+    }
+    .line(FORMAT);
     bytes.push(b'\n');
     bytes.extend(z);
     let edited_frame = std::sync::Arc::new(Frame {
@@ -1117,7 +1134,10 @@ fn edit_line(stored: &mut [CanonicalEvent], at: usize, edit: impl FnOnce(&mut Va
         ..Frame::clone(&frame)
     });
     stored[at].bytes = edited;
-    for e in stored.iter_mut().filter(|e| e.frame.as_ref() == Some(&frame)) {
+    for e in stored
+        .iter_mut()
+        .filter(|e| e.frame.as_ref() == Some(&frame))
+    {
         e.frame = Some(edited_frame.clone());
     }
     Ok(())

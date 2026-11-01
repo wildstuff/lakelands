@@ -47,7 +47,8 @@ check!(
 );
 
 check!(
-    APPEND_TORN_BETWEEN_BLOCKS = an_append_torn_between_its_blocks_is_refused_and_a_backup_writes_it_again,
+    APPEND_TORN_BETWEEN_BLOCKS =
+        an_append_torn_between_its_blocks_is_refused_and_a_backup_writes_it_again,
     "098 and log-format §1.5: a copy whose last append, a delivery of 1 100 records stored in two blocks, ends after its first block is refused by verify and by an import as `damaged` at the second block's first position, naming `append_short` with the append's `end`; a backup stopped there writes that append again from its first position, so it holds the files an export of the head writes and restores the lake",
     given
 );
@@ -2249,14 +2250,19 @@ fn stood(dir: &Path, file: &str) -> Result<Vec<Stood>, Failure> {
     let bytes = read(dir, file)?;
     let broken = |e: String| Failure::new(format!("{file} of the export is not read: {e}"));
     let (mut input, mut out) = (bytes.as_slice(), Vec::new());
-    while let Some(unit) = crate::log::read_unit(&mut input).map_err(|e| broken(format!("{e:?}")))? {
+    while let Some(unit) =
+        crate::log::read_unit(&mut input).map_err(|e| broken(format!("{e:?}")))?
+    {
         out.push(match unit {
             crate::log::Unit::Line(line) => Stood::Line(line),
             crate::log::Unit::Block(block, _, head, z) => {
                 let raw = crate::log::inflate(&block, &z).map_err(|f| broken(format!("{f:?}")))?;
                 let head = serde_json::from_slice(&head).map_err(|e| broken(e.to_string()))?;
                 let body = raw.strip_suffix(b"\n").unwrap_or(&raw);
-                Stood::Block(head, body.split(|b| *b == b'\n').map(<[u8]>::to_vec).collect())
+                Stood::Block(
+                    head,
+                    body.split(|b| *b == b'\n').map(<[u8]>::to_vec).collect(),
+                )
             }
         });
     }
@@ -2277,8 +2283,12 @@ fn unstood(units: &[Stood]) -> Vec<u8> {
                     raw.extend_from_slice(line);
                     raw.push(b'\n');
                 }
-                let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
-                let z = z.write_all(&raw).and_then(|()| z.finish()).unwrap_or_default();
+                let mut z =
+                    flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+                let z = z
+                    .write_all(&raw)
+                    .and_then(|()| z.finish())
+                    .unwrap_or_default();
                 let mut head = head.clone();
                 head["block"]["raw"] = json!(raw.len());
                 head["block"]["stored"] = json!(z.len());
@@ -2325,7 +2335,9 @@ async fn a_framed_export_whose_stored_form_breaks_is_refused_naming_the_flaw(
         return Err(Failure::new(format!(
             "the block of {file} names its first position, and its events, which share \
              `known_at`, begin with a frame line; they are {head} and {:?}",
-            lines.first().map(|l| String::from_utf8_lossy(l).into_owned())
+            lines
+                .first()
+                .map(|l| String::from_utf8_lossy(l).into_owned())
         )));
     };
     let known_at = frame["frame"]["known_at"].clone();
@@ -2389,7 +2401,11 @@ async fn a_framed_export_whose_stored_form_breaks_is_refused_naming_the_flaw(
             Ok(())
         },
     )?;
-    for (member, value) in [("position", json!(p + 1)), ("v", json!(1)), ("known_at", known_at)] {
+    for (member, value) in [
+        ("position", json!(p + 1)),
+        ("v", json!(1)),
+        ("known_at", known_at),
+    ] {
         with(
             "a line in a block holding a member its block or its frame decides",
             p + 1,
@@ -2427,13 +2443,23 @@ async fn a_framed_export_whose_stored_form_breaks_is_refused_naming_the_flaw(
         + 1
         + head["block"]["stored"].as_u64().unwrap_or(0) as usize / 2;
     bytes[at] ^= 0x10;
-    breaks.push(("a byte of a block's stored bytes changed", p, Flaw::BlockBytes, bytes));
+    breaks.push((
+        "a byte of a block's stored bytes changed",
+        p,
+        Flaw::BlockBytes,
+        bytes,
+    ));
     // The file's first line, its lake's creation, holding no `prev`.
     let mut first = units.clone();
     if let Stood::Line(line) = &mut first[0] {
         *line = changed(line, |e| _ = e.as_object_mut().map(|e| e.remove("prev")))?;
     }
-    breaks.push(("the file's first line holding no `prev`", 0, Flaw::StartUnheld, unstood(&first)));
+    breaks.push((
+        "the file's first line holding no `prev`",
+        0,
+        Flaw::StartUnheld,
+        unstood(&first),
+    ));
     for (i, (what, at, flaw, bytes)) in breaks.into_iter().enumerate() {
         let dir = scratch.dir(&format!("broken-{i}"));
         copied(&from, &dir)?;
@@ -2480,7 +2506,10 @@ async fn a_backup_stopped_among_a_frames_lines_writes_its_run_again_whole(
     let after = start + head;
     for (cut, what) in [
         (after, "its block's first line"),
-        (after + (bytes.len() - 1 - after) / 2, "half its block's stored bytes"),
+        (
+            after + (bytes.len() - 1 - after) / 2,
+            "half its block's stored bytes",
+        ),
         (bytes.len() - 1, "its block but its last line feed"),
     ] {
         let tear = |dir: &Path| {
@@ -2577,7 +2606,10 @@ async fn an_append_torn_between_its_blocks_is_refused_and_a_backup_writes_it_aga
          at {second}, naming {flaw:?}, and it answered {said:?}"
     );
     let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
-    let e = refused(imported, "an import of a copy torn between an append's blocks")?;
+    let e = refused(
+        imported,
+        "an import of a copy torn between an append's blocks",
+    )?;
     ensure!(
         damaged(&e) == Some(&flaw),
         "an import of a copy torn between an append's blocks is refused as `damaged`, naming \
