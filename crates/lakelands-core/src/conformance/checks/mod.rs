@@ -89,6 +89,7 @@ mod paths;
 mod pattern_tree;
 mod plan;
 mod positions;
+mod projection_form;
 mod proposal_names;
 mod proposals;
 mod provenance;
@@ -198,6 +199,9 @@ pub const ALL: &[Check] = &[
     paging::MISSING_SORT_VALUES_LAST,
     paging::UNNAMED_LIMIT,
     paging::EACH_HOLDER_ONCE,
+    projection_form::FLAGS_FOLLOW_THE_STATE,
+    projection_form::KEY_ORDER_THROUGH_KEYS,
+    projection_form::DESCENDING_WITHOUT_ITS_INDEX,
     landing::MEASURE_LANDS,
     paths::PATH_STEPS,
     paths::PATH_NOT_REACHED,

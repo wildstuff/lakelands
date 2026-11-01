@@ -79,7 +79,7 @@ async fn a_shared_base_is_one_row_a_lone_one_inline_and_a_forgetting_leaves_none
     let count = |sql: &str| -> i64 { db.query_row(sql, [], |r| r.get(0)).unwrap() };
     let base = |key: &str| -> (String, String) {
         let sql = "SELECT json_type(state, '$.base'), json_extract(state, '$.base') \
-                   FROM records WHERE ty = 'note' AND key = ?1";
+                   FROM records WHERE id = (SELECT id FROM keys WHERE ty = 'note' AND key = ?1)";
         db.query_row(sql, [key], |r| {
             Ok((r.get(0)?, r.get::<_, rusqlite::types::Value>(1)?))
         })

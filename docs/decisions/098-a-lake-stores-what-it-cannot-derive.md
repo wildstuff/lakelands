@@ -162,6 +162,14 @@ integer. A tick's key is `symbol:at:seq`, so today each record lands at a random
 place in `records`' primary key, `records_at` and `routes_key`. An id given in
 order lands at their right edge. That is the commit row of the layer table.
 
+As built (lakelands#1672), where the tree differs from the sketch: `keys` has a
+unique index on `id`, since `changed()` and a feed name a record by its key and
+reach it from `records` and `routes` by id. `records` keeps `ty` beside `id`:
+its primary key is `(id, since)`, `records_at` is `(ty, until, id)` and
+`records_since` stays `(ty, since)`, so a type's reads seek one index and join
+`keys` only for the page they answer. `routes.key` holds the id of the key under
+the route's type, or under the empty name where the route names none.
+
 `sort_index` and `text_index` keep the text key, since their readers need "the key
 ascends inside a tie" (041, read) and the order of a walk by key. So integer ids
 everywhere stay out.
@@ -195,6 +203,10 @@ joins through `keys`, which disfavours it a little; not by that much.
   index with an incremental sort took 0.49 ms for 1 000 rows, against 1.0 ms for
   today's bitmap over both indexes. It needs one more bound, `s.sort_key <= k`,
   beside today's `OR`.
+  As built on SQLite (lakelands#1672): the backward walk sorts each run of tied
+  values by key ascending, a temporary b-tree for the last term of the order, so
+  a window down costs what a window up does plus a sort of the longest run of
+  ties it crosses; a field most records share costs that sort on every page.
 - **`text_index_key` goes.** Read: only deletes use it, and a delete knows the
   values its record held, so it goes by primary key.
 - **`sort_index`'s primary key stays,** though it looks spare: read,
@@ -303,6 +315,14 @@ only on a new file or a full `VACUUM`. `secure_delete` is not one of them.
   holds it. A rewrite took 6 to 8 µs a row against 5.5 to 16, no measurable
   difference. A value goes from its page at the delete, and
   `ERASED_VALUE_LEAVES_THE_FILE` is the row.
+  As built (lakelands#1672), the setting alone is not enough: the test found the
+  erased value's search term still in the file after the checkpoint, since the
+  full-text table keeps a deleted row's terms, marked deleted, until a merge.
+  The table's own `secure-delete` option, which the table keeps, removes them
+  at the delete; the projection sets it as it is made, beside its layout.
+  `auto_vacuum` and `page_size` are set only on a file that holds no page yet:
+  set again on a file that holds them, `auto_vacuum` writes its header, so a
+  writer refused at its open would have changed the file.
 - **`page_size` stays 4 096.** Measured, unpaired, on the general record: 8 192
   held 604.5 B against 623.6 today, and 516.6 against 518.7 on the set.
 

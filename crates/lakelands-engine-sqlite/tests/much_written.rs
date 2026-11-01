@@ -57,13 +57,25 @@ fn a_put_and_a_read_of_a_much_written_key_take_the_steps_of_a_key_written_once()
     let mut db = rusqlite::Connection::open(dir.join("projection.db")).unwrap();
     let (head, middle) = (OTHERS + STATES + 1, OTHERS + STATES / 2);
     let mut steps = Vec::new();
-    for statement in seek_statements() {
+    for (read, statement) in seek_statements().into_iter().enumerate() {
         for at in [head, middle] {
             let tx = db.transaction().unwrap();
             let mut taken = Vec::new();
             for key in ["a", "k00001"] {
+                // The read names the key; the ending, its number.
+                let id: i64 = (tx.query_row(
+                    "SELECT id FROM keys WHERE ty = 't' AND key = ?1",
+                    [key],
+                    |r| r.get(0),
+                ))
+                .unwrap();
                 let mut s = tx.prepare(&statement).unwrap();
-                let mut rows = s.query(rusqlite::params!["t", key, at as i64]).unwrap();
+                let mut rows = if read == 0 {
+                    s.query(rusqlite::params!["t", key, at as i64])
+                } else {
+                    s.query(rusqlite::params![id, at as i64])
+                }
+                .unwrap();
                 while rows.next().unwrap().is_some() {}
                 drop(rows);
                 taken.push(s.get_status(StatementStatus::VmStep));

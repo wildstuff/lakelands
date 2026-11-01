@@ -123,9 +123,20 @@ pub(crate) fn connect(
     if writer {
         // The journal and its synchronisation are fixed, not tuning: the
         // projection is rebuilt from the log, and the fold's crash safety
-        // rests on a write-ahead journal committed whole.
+        // rests on a write-ahead journal committed whole. A new file is
+        // made with pages of 4 KiB and incremental vacuum, which the file
+        // holds; a file made before is left as it is, since setting either
+        // again writes its header. A connection that deletes overwrites
+        // what it deletes, so an erased value leaves the file with its
+        // page: the setting is the connection's, not the file's.
+        let pages: i64 = (conn.query_row("PRAGMA page_count", [], |r| r.get(0))).map_err(sql)?;
+        if pages == 0 {
+            conn.execute_batch("PRAGMA page_size = 4096; PRAGMA auto_vacuum = INCREMENTAL;")
+                .map_err(sql)?;
+        }
         conn.execute_batch(&format!(
-            "PRAGMA journal_mode = WAL;
+            "PRAGMA secure_delete = ON;
+             PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA wal_autocheckpoint = {};",
             tuning.wal_autocheckpoint_pages
@@ -839,8 +850,11 @@ impl ProjectionStore for SqliteLake {
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         engines::head_only(name)?;
         self.stage(at, |conn, _| {
-            let gone = conn.execute("DELETE FROM records WHERE ty = ?1", [name.as_str()]);
-            gone.map(drop).map_err(sql)
+            let gone = "DELETE FROM records WHERE ty = ?1; DELETE FROM keys WHERE ty = ?1";
+            for statement in gone.split("; ") {
+                conn.execute(statement, [name.as_str()]).map_err(sql)?;
+            }
+            Ok(())
         })
     }
 
@@ -903,9 +917,12 @@ impl ProjectionStore for SqliteLake {
     fn mark_applied(&self, applied: &Applied) -> Result<()> {
         let at = applied.at.0 as i64;
         self.stage(applied.at, |conn, _| {
-            conn.prepare_cached("INSERT OR IGNORE INTO applied (id, at) VALUES (?1, ?2)")
-                .and_then(|mut s| s.execute(params![applied.id.0, at]))
-                .map_err(sql)?;
+            if applied.id.of_form() {
+                let insert = "INSERT OR IGNORE INTO applied (id, at) VALUES (unhex(?1), ?2)";
+                conn.prepare_cached(insert)
+                    .and_then(|mut s| s.execute(params![applied.id.0, at]))
+                    .map_err(sql)?;
+            }
             let mut route = conn
                 .prepare_cached(
                     "INSERT INTO routes (at, kind, ty, key, source) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -916,7 +933,10 @@ impl ProjectionStore for SqliteLake {
             let source = source.map(|s| projection::name_id(conn, s)).transpose()?;
             for a in &applied.about {
                 let ty = a.ty.as_ref().map(|t| projection::name_id(conn, t.as_str()));
-                let key = a.key.as_ref().map(RecordKey::as_str);
+                let named = a.ty.as_ref().map_or("", TypeName::as_str);
+                let key =
+                    (a.key.as_ref()).map(|k| projection::make_key_id(conn, named, k.as_str()));
+                let key = key.transpose()?.map(|(id, _)| id);
                 route
                     .execute(params![at, kind, ty.transpose()?, key, source])
                     .map_err(sql)?;
