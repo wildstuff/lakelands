@@ -196,8 +196,8 @@ pub trait LakeEngine: Send + Sync {
 
     /// The bytes the active segment has committed, as its events restore
     /// (each line's bytes and its line feed, each block's `raw`, never a
-    /// block's stored bytes), as this handle last read them, with no I/O:
-    /// what the store seals by size against `limits.seal_after_bytes`
+    /// block's stored bytes), as this handle last read them: what the
+    /// store seals by size against `limits.seal_after_bytes`
     /// (`docs/decisions/074-a-segment-is-sealed-by-size.md`,
     /// `docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`). An engine
     /// whose segment is nothing to move or back up on its own answers

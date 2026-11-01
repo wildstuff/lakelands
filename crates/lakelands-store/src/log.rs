@@ -5,13 +5,15 @@
 //! the event to its predecessor, and hands the engine the canonical bytes
 //! of the whole event (`docs/decisions/020-events-are-hash-chained-over-canonical-bytes.md`).
 //! It writes each append in the log's stored form
-//! (`docs/log-format.md` §1.2): framed where it is two or more events,
-//! and `position` and `prev` left to the event before but on a segment's
-//! first line ([`lakelands_core::log::frame_append`]). Reading back, it
-//! restores the event from its line, its frame and the members the engine
-//! keeps beside them, recomputes the hash and checks the link, so an
-//! engine that altered a byte, of a line or of a frame, is caught at the
-//! first read of an event it restores.
+//! (`docs/log-format.md` §1.2, §1.5): blocks where it is two or more
+//! events, each compressed with its lines framed and the members the
+//! block decides left out, and `position` and `prev` left to the event
+//! before but on a segment's first line
+//! ([`lakelands_core::log::frame_append`]). Reading back, it restores the
+//! event from its line, its block and the members the engine keeps beside
+//! them, recomputes the hash and checks the link, so an engine that
+//! altered a byte, of a line or of a block, is caught at the first read of
+//! an event it restores.
 
 use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::error::{Case, Detail, Flaw, Part};
@@ -248,7 +250,7 @@ fn corrupt(position: Position, flaw: Flaw) -> Error {
     lakelands_core::damaged(Part::Log, Some(position), flaw)
 }
 
-/// Restore a stored event and verify it: its line and its frame are
+/// Restore a stored event and verify it: its line and its block are
 /// canonical and restore it (`lakelands_core::log::restore`), the hash is
 /// the hash of the restored event without it, and the members the engine
 /// keeps beside the line agree with it. An event in another format

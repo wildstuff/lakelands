@@ -26,17 +26,19 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::event::LOG_FORMAT_VERSION;
 use lakelands_api::ontology::StorageKind::Text;
 use lakelands_core::conformance::fixture::{Lake, source_record, sourced, type_decl};
-use read_by::{Old, seams};
+use read_by::seams;
 use serde_json::{Value, json};
 
 /// The log formats 0.22.x reads, the oldest to the one it writes.
 const READS: RangeInclusive<u64> = 14..=22;
 
-/// The first and last committed lines of the log in `dir`, as JSON. Every
-/// way 0.22.x would call the log damaged first, or find no event in it,
-/// is an error here.
-fn ends(dir: &Path) -> Result<(Value, Value), String> {
-    let (firsts, mut lines) = (read_by::segments(dir), Vec::new());
+/// The first and last committed events of the log in `dir`, as JSON
+/// where their bytes read as JSON: 0.22.x reads the bytes an index line
+/// points at as one line, and a block's are none, so its last event is
+/// unread there, as `one_format` leaves it. Every way 0.22.x would call
+/// the log damaged first, or find no event in it, is an error here.
+fn ends(dir: &Path) -> Result<(Value, Option<Value>), String> {
+    let (firsts, mut counted) = (read_by::segments(dir), Vec::new());
     for (i, &first) in firsts.iter().enumerate() {
         let (segment, mut groups) = read_by::groups(dir, first)?;
         // `refresh`: the active segment's last group counts where it is whole.
@@ -46,19 +48,20 @@ fn ends(dir: &Path) -> Result<(Value, Value), String> {
         if i + 1 == firsts.len() && !read_by::whole(&segment, before.as_deref(), last) {
             groups.pop();
         }
-        let counted: Vec<Old> = groups.into_iter().flatten().collect();
-        for (n, e) in counted.iter().enumerate() {
+        for (n, e) in groups.into_iter().flatten().enumerate() {
             if e.position != first + n as u64 {
                 return Err(format!("segment {first}: line {n} names {}", e.position));
             }
             let (from, to) = (e.offset as usize, (e.offset + e.len) as usize);
             let line = segment.get(from..to).ok_or("a line past its segment")?;
-            lines.push(serde_json::from_slice::<Value>(line).map_err(|e| e.to_string())?);
+            counted.push(line.to_vec());
         }
     }
     let none = "no committed event: no lake to 0.22.x";
-    let first = lines.first().cloned().ok_or(none)?;
-    Ok((first, lines.pop().ok_or(none)?))
+    let first = counted.first().ok_or(none)?;
+    let first = serde_json::from_slice::<Value>(first).map_err(|e| e.to_string())?;
+    let tip = counted.last().and_then(|l| serde_json::from_slice(l).ok());
+    Ok((first, tip))
 }
 
 /// The format `one_format` of 0.22.x refuses the log in `dir` by, if any:
@@ -68,7 +71,7 @@ fn refused_by(dir: &Path) -> Result<Option<u64>, String> {
     let v = |line: &Value| line.get("v").and_then(Value::as_u64).unwrap_or(0);
     let made = first.pointer("/body/kind") == Some(&json!("lake_created"));
     let created = (first.pointer("/body/format").filter(|_| made)).map(|f| f.as_u64().unwrap_or(0));
-    let said = [Some(v(&first)), created, Some(v(&tip))];
+    let said = [Some(v(&first)), created, tip.as_ref().map(v)];
     Ok(said.into_iter().flatten().find(|f| !READS.contains(f)))
 }
 
@@ -86,10 +89,10 @@ async fn a_lake_just_made_is_refused_by_0_22_by_its_format() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A lake past its first append and past a seal: framed lines and a
-/// second segment change nothing of what 0.22.x judges.
+/// A lake past its first append and past a seal: blocks and a second
+/// segment change nothing of what 0.22.x judges.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_lake_sealed_and_framed_is_refused_by_0_22_by_its_format() {
+async fn a_lake_sealed_in_blocks_is_refused_by_0_22_by_its_format() {
     let dir = read_by::scratch("0-22-0", "sealed");
     let mut location = Location::sqlite("lake", &dir);
     location.limits.seal_after_bytes = 1 << 20;
@@ -109,19 +112,63 @@ async fn a_lake_sealed_and_framed_is_refused_by_0_22_by_its_format() {
     drop((l, store));
     let firsts = read_by::segments(&dir);
     assert!(firsts.len() > 1, "the lake was sealed");
-    // The active segment's last group, framed lines and all, is whole to
-    // 0.22.x: it counts, and is no crash's tail.
+    // The active segment's last group is a block, which 0.22.x does not
+    // find whole: a crash's tail to it, not counted.
     let (segment, groups) = read_by::groups(&dir, firsts[firsts.len() - 1]).unwrap();
     let before = groups.iter().rev().nth(1).and_then(|g| g.last());
     let (last, before) = (&groups[groups.len() - 1], before.map(|e| e.hash.as_str()));
     assert!(
-        read_by::whole(&segment, before, last),
-        "0.22.x counts the last group"
+        !read_by::whole(&segment, before, last),
+        "0.22.x does not count the last group"
     );
     assert_eq!(
         refused_by(&dir),
         Ok(Some(u64::from(LOG_FORMAT_VERSION))),
         "0.22.x refuses the lake by its format"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A lake whose appends of more than one event are blocks: 0.22.x reads
+/// a block's bytes as one line, which they are not, so it takes the last
+/// group for a crash's tail and the event before it for no line, and
+/// still judges the first event's `v`. So too where the last block is
+/// torn, its commit line written and its bytes not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lake_of_blocks_torn_or_whole_is_refused_by_0_22_by_its_format() {
+    let dir = read_by::scratch("0-22-0", "blocks");
+    let store = lakelands_store::open(Location::sqlite("lake", &dir), seams(), OpenMode::Create);
+    let store = store.await.unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("note", vec![sourced("text", Text)]))
+        .await
+        .unwrap();
+    for i in 0..2 {
+        let records =
+            (0..5).map(|j| source_record("note", &format!("n{i}-{j}"), json!({ "text": "t" })));
+        l.ingest("load", records.collect()).await.unwrap();
+    }
+    store.close().await.unwrap();
+    drop((l, store));
+    let firsts = read_by::segments(&dir);
+    let (segment, groups) = read_by::groups(&dir, firsts[firsts.len() - 1]).unwrap();
+    let last = &groups[groups.len() - 1];
+    let at = last[0].offset as usize;
+    assert!(
+        segment[at..].starts_with(b"{\"block\":") && last.iter().all(|e| e.offset == last[0].offset),
+        "the last append is one block"
+    );
+    let path = dir.join("log").join(format!("{:020}.jsonl", firsts[firsts.len() - 1]));
+    for torn in [false, true] {
+        if torn {
+            let len = (at + (segment.len() - at) / 2) as u64;
+            std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(len).unwrap();
+        }
+        assert_eq!(
+            refused_by(&dir),
+            Ok(Some(u64::from(LOG_FORMAT_VERSION))),
+            "0.22.x refuses the lake by its format, its last block torn: {torn}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

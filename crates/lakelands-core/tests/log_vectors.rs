@@ -193,7 +193,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 783, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 793, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -1028,9 +1028,10 @@ fn read_stored(stored: &[Value], after: &Value) -> Result<Vec<Value>, (Option<us
 
 /// The append `append` holds after the event `last`: each event canonical,
 /// in the chain, its hash and its ingest id (under `v2` with its box, if
-/// it has one) recomputed; the writer's lines for them, framed, are its
-/// `stored`; and those restore, at the seam and read in order, to the
-/// events byte for byte. Answers the framed events.
+/// it has one) recomputed; the writer's block of them holds its `stored`,
+/// each event's line less its `hash` and ingest id; and those restore, at
+/// the seam and as `stored` read in order, to the events byte for byte.
+/// Answers the events as the writer stores them.
 fn the_writers_lines(append: &Value, last: &Event) -> Vec<CanonicalEvent> {
     assert_eq!(append["after"]["position"], last.position.0, "it follows");
     assert_eq!(str_of(&append["after"], "hash"), last.hash.0, "it follows");
@@ -1079,16 +1080,31 @@ fn the_writers_lines(append: &Value, last: &Event) -> Vec<CanonicalEvent> {
         });
     }
     log::frame_append(&mut appended);
-    let frame = appended[0].frame.clone().expect("an append is framed");
+    let frame = appended[0].frame.clone().expect("an append is a block");
     assert_eq!(
         (frame.first, frame.events),
         (appended[0].position, lines.len() as u32)
     );
-    let written = std::iter::once(&frame.bytes).chain(appended.iter().map(|e| &e.bytes));
-    let written: Vec<&str> = written.map(|b| std::str::from_utf8(b).unwrap()).collect();
+    // The writer's block holds the frame's lines, each event's leaving out
+    // its `hash`, its ingest id and its `v`, which the block decides.
+    let block = log::block_of(&frame).expect("a block").unwrap();
+    let head = frame.bytes.len() - block.stored as usize;
+    let inflated = log::inflate(&block, &frame.bytes[head..]).unwrap();
+    let written: Vec<&str> = std::str::from_utf8(&inflated).unwrap().lines().collect();
     let stored = append["stored"].as_array().unwrap();
-    let said: Vec<&str> = stored.iter().map(|l| l.as_str().unwrap()).collect();
-    assert_eq!(written, said, "the writer's lines");
+    let less = |(i, l): (usize, &Value)| {
+        let mut line: Value = serde_json::from_str(l.as_str().unwrap()).unwrap();
+        if i > 0 {
+            line.as_object_mut()
+                .unwrap()
+                .retain(|k, _| !["hash", "id", "v"].contains(&k.as_str()));
+        }
+        String::from_utf8(canonical::to_vec(&line)).unwrap()
+    };
+    let said: Vec<String> = stored.iter().enumerate().map(less).collect();
+    assert_eq!(written, said, "the writer's block holds the frame's lines");
+    let held: Vec<&[u8]> = appended.iter().map(|e| &e.bytes[..]).collect();
+    assert_eq!(held, written[1..].iter().map(|l| l.as_bytes()).collect::<Vec<_>>());
     for (event, line) in appended.iter().zip(&lines) {
         let (restored, _) = log::restore(event).unwrap();
         assert_eq!(
@@ -1105,9 +1121,9 @@ fn the_writers_lines(append: &Value, last: &Event) -> Vec<CanonicalEvent> {
 }
 
 /// `framed.json`, one append in the stored form (§1.2) after the last
-/// event of `further.json`. Its events recompute; the store's writer frames
-/// them as its `stored` lines, which restore to them byte for byte, at the
-/// seam and read in order; and each of its breaks is refused at its line
+/// event of `further.json`. Its events recompute; the store's writer puts
+/// its `stored` lines in a block, less what the block decides, and they
+/// restore to them byte for byte, at the seam and read in order; and each of its breaks is refused at its line
 /// for the flaw it names.
 #[test]
 fn a_framed_append_is_stored_as_the_writer_frames_it_and_every_break_is_refused() {
@@ -1203,6 +1219,144 @@ fn an_append_of_two_deliveries_sealed_apart_is_stored_as_the_writer_frames_it() 
     let own = |v: &Value| (v["sealed"]["apart"].clone(), v["delivery"].clone());
     let (a, b) = (own(&held[0]), own(&held[1]));
     assert!(!a.0.is_null() && !a.1.is_null() && a.0 != b.0 && a.1 != b.1);
+}
+
+/// The blocks lake's one segment file, `blocks/` or a negative vector's.
+fn blocks_file(dir: &str) -> Vec<u8> {
+    fs::read(vectors().join(dir).join("log").join(format!("{:020}.jsonl", 0))).unwrap()
+}
+
+/// The units of a segment file's bytes, in order.
+fn units_of(file: &[u8]) -> Vec<log::Unit> {
+    let mut input = file;
+    std::iter::from_fn(|| log::read_unit(&mut input).unwrap()).collect()
+}
+
+/// `blocks/`, a lake the SQLite engine wrote whose delivery is more than a
+/// block holds (log-format §1.5): it verifies to its head; each append of
+/// one is a line holding its `hash`, and `position` and `prev` at position
+/// 0 alone; the delivery is two blocks naming its end; and each block is
+/// the store's writer's for the events it restores, its first line alike
+/// but for `stored` and its lines inflated alike, whatever zlib wrote them.
+#[test]
+fn the_blocks_lake_verifies_and_its_blocks_are_the_writers() {
+    let file = blocks_file("blocks");
+    let verified = lakelands_core::export::verify(&vectors().join("blocks")).unwrap();
+    let mut read = log::Restoring::new(&file[..], true);
+    let mut events = Vec::new();
+    while let Some(r) = read.next_event().unwrap() {
+        events.push(r.event);
+    }
+    read.end().unwrap();
+    let last = events.last().unwrap();
+    assert_eq!(
+        (verified.through.0, &verified.hash.0),
+        (last["position"].as_u64().unwrap(), &str_of(last, "hash").to_owned())
+    );
+    let (mut lines, mut blocks) = (Vec::new(), Vec::new());
+    for unit in units_of(&file) {
+        match unit {
+            log::Unit::Line(bytes) => lines.push(serde_json::from_slice::<Value>(&bytes).unwrap()),
+            log::Unit::Block(block, _, _, z) => blocks.push((block, z)),
+        }
+    }
+    // The append that makes the lake is whole lines, the only ones that
+    // hold `position` and `prev`; every line holds its `hash`.
+    let holds = |l: &Value, m: &str| l.get(m).is_some();
+    let whole: Vec<u64> = (lines.iter())
+        .filter(|l| holds(l, "position") || holds(l, "prev"))
+        .map(|l| l["position"].as_u64().unwrap())
+        .collect();
+    let made = (0..whole.len() as u64).collect::<Vec<_>>();
+    assert_eq!(whole, made, "the making append's lines alone are whole");
+    let chained = lines[..made.len()].iter().all(|l| holds(l, "prev"));
+    assert!(made.len() > 1 && chained && lines.iter().all(|l| holds(l, "hash")));
+    let [(one, _), (two, _)] = &blocks[..] else {
+        panic!("two blocks: {}", blocks.len());
+    };
+    assert_eq!(
+        (one.events, one.end, two.first, two.end),
+        (log::BLOCK_EVENTS as u64, two.last(), one.last().next(), two.last())
+    );
+    // The writer's blocks for the delivery's events.
+    let from = one.first.0 as usize;
+    let mut appended: Vec<CanonicalEvent> = events[from..=two.last().0 as usize]
+        .iter()
+        .map(|e| CanonicalEvent {
+            position: Position(e["position"].as_u64().unwrap()),
+            id: lakelands_api::event::EventId(str_of(e, "id").to_owned()),
+            prev: Digest(str_of(e, "prev").to_owned()),
+            hash: Digest(str_of(e, "hash").to_owned()),
+            fence: e["fence"].as_u64().unwrap(),
+            bytes: canonical::to_vec(e),
+            frame: None,
+        })
+        .collect();
+    log::frame_append(&mut appended);
+    for (block, z) in &blocks {
+        let frame = appended[(block.first.0 as usize) - from].frame.clone().unwrap();
+        let written = log::block_of(&frame).unwrap().unwrap();
+        let head = frame.bytes.len() - written.stored as usize;
+        assert_eq!(
+            log::Block { stored: 0, ..written.clone() },
+            log::Block { stored: 0, ..block.clone() },
+            "at {}: its first line",
+            block.first
+        );
+        assert_eq!(
+            log::inflate(&written, &frame.bytes[head..]).unwrap(),
+            log::inflate(block, z).unwrap(),
+            "at {}: its lines",
+            block.first
+        );
+    }
+}
+
+/// The negative vector `negative/torn-between-blocks`: the blocks lake cut
+/// at its second block's first byte. `export::verify` refuses it at the
+/// second block's first position for an append whose blocks end before
+/// its last position, and so does `verify.py`.
+#[test]
+fn the_negative_vector_torn_between_blocks_is_refused_at_its_second_block() {
+    let (whole, torn) = (blocks_file("blocks"), blocks_file("negative/torn-between-blocks"));
+    let blocks: Vec<(log::Block, u64)> = {
+        let mut input = &whole[..];
+        let mut at = Vec::new();
+        loop {
+            let offset = (whole.len() - input.len()) as u64;
+            match log::read_unit(&mut input).unwrap() {
+                None => break at,
+                Some(log::Unit::Block(block, ..)) => at.push((block, offset)),
+                Some(_) => {}
+            }
+        }
+    };
+    let (second, cut) = &blocks[1];
+    assert_eq!(torn, whole[..*cut as usize], "cut at the second block's first byte");
+    let dir = vectors().join("negative/torn-between-blocks");
+    match lakelands_core::export::verify(&dir) {
+        Err(lakelands_api::Error::Unavailable { situation }) => assert!(
+            matches!(
+                &*situation,
+                Situation::Damaged { position: Some(at), flaw: Flaw::AppendShort { end }, .. }
+                    if *at == second.first && *end == second.end
+            ),
+            "{situation}"
+        ),
+        other => panic!("an append torn between its blocks is refused, and it answered {other:?}"),
+    }
+    let run = std::process::Command::new("python3")
+        .arg(vectors().join("verify.py"))
+        .arg(&dir)
+        .output()
+        .expect("this test runs verify.py over a directory and needs python3");
+    let said = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(1), "{said}");
+    let want = format!(
+        "FAIL position {}: an append's blocks end before its last position {}",
+        second.first, second.end
+    );
+    assert!(said.lines().any(|l| l == want), "{want}:\n{said}");
 }
 
 /// The breaks of `framed.json`, by the code of the flaw each is refused for.

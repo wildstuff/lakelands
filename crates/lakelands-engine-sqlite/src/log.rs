@@ -2,14 +2,15 @@
 //!
 //! **Segments.** The log is kept as `docs/log-format.md` §4.2 names it:
 //! `log/<first position in 20 digits>.jsonl`, its stored form (§1.2), each
-//! line followed by one line feed, nothing else: each event's line as the
-//! store handed it, and an append's frame line before the first event it
-//! covers. The last file is the active segment and takes appends; every
-//! other file is sealed and never changes. A lake directory can therefore
-//! be verified by anyone holding the format, with nothing of this engine.
-//! A segment's digest is over its events as the store restores them, not
-//! over the file's bytes, which are those only where every line is its
-//! whole event.
+//! unit followed by one line feed, nothing else: an event's line as the
+//! store handed it where an append is one event, and each block of an
+//! append of more (§1.5) once, before the first event it holds. The last
+//! file is the active segment and takes appends; every other file is
+//! sealed and never changes. A lake directory can therefore be verified
+//! by anyone holding the format, with nothing of this engine. A segment's
+//! digest is over its events as the store restores them, not over the
+//! file's bytes, and it is sealed by the bytes they restore to, not by
+//! what its blocks store.
 //!
 //! **A segment after the first comes to exist with its first events in
 //! it.** A seal writes the next segment's index whole, its event lines
@@ -28,42 +29,36 @@
 //! again, and a crash of the machine may still take the segment with it.
 //!
 //! **The index.** An append also hands the engine each event's position,
-//! id, `prev`, `hash` and fence beside its bytes, and its frame, and a
+//! id, `prev`, `hash` and fence beside its bytes, and its block, and a
 //! read must give them back unchanged. They are kept in
 //! `index/<first>.idx`, one JSON line per event — its members and where
-//! its bytes lie — and one commit line closing each append. An event
-//! line names its `id` empty: the event's line holds it on every line, a
-//! frame never, right after its top-level `hash`, whose value the index
-//! line holds, and a read takes it from there
+//! its bytes lie — and one commit line closing each append. An event a
+//! line holds names its `id` empty: the line holds it, right after its
+//! top-level `hash`, whose value the index line holds, and a read takes it
+//! from there
 //! (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
-//! An event line names `prev` only at a segment's first event: every other
-//! one names it empty, and it is the hash on the line before it. A reader
-//! takes an event line that names `id` or `prev`, as an index of an
-//! earlier release wrote every one, and a segment may hold lines of both. A frame has no line of its own: an
-//! event's bytes begin where the line before it ends, and where they
-//! begin later, the bytes between are the frame line that covers it, and
-//! each event line after it in its append that names `prev` empty. An
-//! event that follows one a frame covers and is covered by none names its
-//! `prev`, so the engine counts a frame's events without reading its
-//! bytes.
+//! An event a block holds names its `id`, which its line in the block may
+//! leave out, and where its bytes lie are the block's: a read inflates a
+//! block once and takes each of its events' lines from it. An event line
+//! names `prev` only at a segment's first event: every other one names it
+//! empty, and it is the hash on the line before it. A reader takes an
+//! event line that names `id` or `prev`, as an index of an earlier release
+//! wrote every one, and a segment may hold lines of both.
 //!
-//! **An index line has the shapes 0.19.0 and 0.20.0 read.** Both read
-//! a lake's index far enough to find its first and last events, and then
-//! judge their format; a line they do not know stops them first, and
-//! they call the lake damaged
+//! **An index line has the shapes 0.19.0 to 0.22.0 read.** Each reads a
+//! lake's index far enough to find its first and last events, and then
+//! judges their format; a line it does not know stops it first, and it
+//! calls the lake damaged
 //! (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-//! A frame found by its gap and an `id` and a `prev` named empty keep
-//! every line in the eight members they read, so they reach the judgment
-//! and name the format. 0.19.0 checks the active segment's last group
-//! against its hashes as lines of its own format, and a line of 20 that
-//! shares a frame fails that check, so it takes such a group for a
-//! crash's tail. The store writes the append that makes a lake whole
-//! (`docs/log-format.md` §1.2): where a lake's only events are that
-//! append, still its last,
-//! the group passes and it names the format. 0.20.0 judges the ends by
-//! `v` and the last group by `hash`, not by `id`; an event whose `id` it
-//! would take empty is of 21, which it refuses by its format before its
-//! store reads one.
+//! Every index line keeps the eight members they read, an `id` and a
+//! `prev` named empty among them, and a block's event's names the
+//! block's offset and length. Each reads the bytes an index line
+//! points at as one line, and a block's are none: the active segment's
+//! last group, where it is a block, fails the check of its hashes and is
+//! a crash's tail to them, and the last event they count may be a block's
+//! too, which they leave unread. The store writes the append that makes a
+//! lake whole (`docs/log-format.md` §1.2), so they judge the format by
+//! the first event's line, and refuse a lake of 23 by it.
 //!
 //! **All or none.** An append writes its lines to the segment, then its
 //! index lines and the commit line, and syncs the two files at once. Only
@@ -256,7 +251,9 @@ struct Segment {
     checked: (u64, u64),
     /// The bytes its committed events restore to, through the byte of the
     /// file it is measured to: each line's and each block's `raw`. The
-    /// writer measures it as it recovers, and an append adds its own.
+    /// writer measures it as it recovers, an append adds its own, and any
+    /// other handle measures it as it is asked
+    /// ([`Log::active_raw`]).
     raw: Option<(u64, u64)>,
 }
 
@@ -1023,15 +1020,22 @@ impl Log {
         }
         self.refresh()?;
         self.cut()?;
+        self.measure()
+    }
+
+    /// Measures what the active segment's committed events restore to
+    /// where this handle has not: from the byte it measured through, or
+    /// from the segment's first where it measured none or past its end.
+    fn measure(&mut self) -> Result<()> {
         let Some(active) = self.segments.last_mut() else {
             return Ok(());
         };
         let (through, raw) = active.raw.filter(|(t, _)| *t <= active.end).unwrap_or((0, 0));
-        if through < active.end {
-            let path = segment_path(&self.dir, active.first);
-            let more = raw_of(&path, through, active.end)?;
-            active.raw = Some((active.end, raw + more));
-        }
+        let more = match through < active.end {
+            true => raw_of(&segment_path(&self.dir, active.first), through, active.end)?,
+            false => 0,
+        };
+        active.raw = Some((active.end, raw + more));
         Ok(())
     }
 
@@ -1076,16 +1080,14 @@ impl Log {
         Ok(())
     }
 
-    /// The bytes the active segment's committed events restore to, as the
-    /// writer last measured them: each line's and each block's `raw`
-    /// (`docs/log-format.md` §1.5); where it has not, the bytes its file
-    /// holds.
-    pub(crate) fn active_raw(&self) -> Option<u64> {
-        let active = self.segments.last()?;
-        Some(match active.raw {
-            Some((through, raw)) if through == active.end => raw,
-            _ => active.end,
-        })
+    /// The bytes the active segment's committed events restore to, through
+    /// what this handle last read: each line's and each block's `raw`
+    /// (`docs/log-format.md` §1.5). A writer measures them as it recovers
+    /// and adds each append's; any other handle measures what it has not
+    /// as it is asked, and answers none where that read fails.
+    pub(crate) fn active_raw(&mut self) -> Option<u64> {
+        self.measure().ok()?;
+        self.segments.last()?.raw.map(|(_, raw)| raw)
     }
 
     /// The last event's position and hash.
