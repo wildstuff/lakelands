@@ -147,6 +147,7 @@ fn a_box_belongs_to_a_record_ingested() {
     let alone = json!({"id": "c1", "email": BOX});
     for (sealed, patch) in [
         (json!({"key": "1", "fields": ["email"]}), &alone),
+        (json!({"key": "1", "fields": ["email"]}), &id),
         (json!({"key": "1", "box": BOX}), &id),
         (json!({"key": "1", "fields": ["email"], "box": BOX}), &both),
         (json!({"key": "1", "fields": ["email"], "box": "AAAA"}), &id),

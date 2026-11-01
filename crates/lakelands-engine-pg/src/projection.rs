@@ -297,6 +297,7 @@ CREATE TABLE IF NOT EXISTS {s}.log (
     id BYTEA NOT NULL, prev BYTEA NOT NULL, hash BYTEA NOT NULL, bytes BYTEA NOT NULL
 );
 CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
+CREATE INDEX IF NOT EXISTS log_id ON {s}.log (id);
 CREATE TABLE IF NOT EXISTS {s}.frames (
     first BIGINT PRIMARY KEY, events INT NOT NULL, bytes BYTEA NOT NULL
 );"

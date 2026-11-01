@@ -649,8 +649,8 @@ MISPLACED = {
         lambda e: e["body"]["kind"] == "output_recorded" and "output" in e["body"] and "output_at" in e["body"]),
     "sealed_for_another_source": shows("`sealed` on a `record_ingested` naming another source than its envelope, which a reader refuses")(
         lambda e: e["body"]["kind"] == "record_ingested" and e["sealed"].get("source", e.get("source")) != e.get("source")),
-    "sealed_without_box": shows("`sealed` on a `record_ingested` with no box, its member sealed in the patch, which a reader refuses")(
-        lambda e: e["body"]["kind"] == "record_ingested" and "box" not in e["sealed"] and "email" in e["body"]["patch"]),
+    "sealed_without_box": shows("`sealed` on a `record_ingested` with no box, the patch not holding its member, which a reader refuses")(
+        lambda e: e["body"]["kind"] == "record_ingested" and "box" not in e["sealed"] and "email" not in e["body"]["patch"]),
 }
 
 

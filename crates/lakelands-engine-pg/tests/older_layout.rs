@@ -167,9 +167,10 @@ fn as_text(s: &str) -> String {
     )
 }
 
-/// A lake as 0.20.0 left it, on text columns, is refused in every mode by
-/// its format, where its ends are read: no statement fails on the columns'
-/// type, and nothing of the schema changes.
+/// A lake made holds the index on `id` that answers an applied id. A lake
+/// as 0.20.0 left it, on text columns and without that index, is refused
+/// in every mode by its format, where its ends are read: no statement
+/// fails on the columns' type, and nothing of the schema changes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_log_on_text_columns_is_refused_by_its_format() {
     let Some(url) = common::url_or_skip("log of 0.20.0") else {
@@ -181,6 +182,14 @@ async fn a_log_on_text_columns_is_refused_by_its_format() {
     let store = open(&location, OpenMode::Create).await.unwrap();
     store.close().await.unwrap();
     drop(store);
+    let indexed = format!(
+        "SELECT count(*) FROM pg_indexes WHERE schemaname = '{schema}' AND indexname = 'log_id'"
+    );
+    let indexed = tokio::task::block_in_place(|| one(&url, &indexed));
+    assert_eq!(
+        indexed, 1,
+        "a lake made answers an applied id from its index on `id`"
+    );
     tokio::task::block_in_place(|| {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
         client.batch_execute(&as_text(&s)).unwrap();

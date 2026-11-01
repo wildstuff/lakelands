@@ -574,8 +574,8 @@
     },
     {
       "shows": "sealed_without_box",
-      "about": "Position 42 with `email` sealed in the patch and no box: a reader refuses it, since a `record_ingested` keeps what it seals in its box (§1.4).",
-      "line": "{\"body\":{\"key\":\"c1\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"email\":\"7UznJB/dSYmb/ymD7WMsqVK99xq5zyUwORU0Knp96RoL\",\"id\":\"c1\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"e7e3ac0be5ccd8f174015119d571d3e2896fe0dbc6307e356d3e8420611b2f71\",\"id\":\"2c936f69cf5a059a0662dd7875cf8886\",\"known_at\":\"2026-10-05T09:00:13.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":42,\"prev\":\"2b541f0a49b01fc080db06a1a1e477e6cc5d73b4300ff24c4d0e56371296667e\",\"sealed\":{\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"crm\",\"v\":23,\"writer\":\"service:crm\"}"
+      "about": "Position 42 with `email` sealed and no box, the patch holding only `id`: a reader refuses it for the missing box alone, since a `record_ingested` keeps what it seals in its box (§1.4).",
+      "line": "{\"body\":{\"key\":\"c1\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"id\":\"c1\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"44ee281969415dd00fa31949eeb8442b94490c4c6c5ddb7006c3a2608ec1f72b\",\"id\":\"2c936f69cf5a059a0662dd7875cf8886\",\"known_at\":\"2026-10-05T09:00:13.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":42,\"prev\":\"2b541f0a49b01fc080db06a1a1e477e6cc5d73b4300ff24c4d0e56371296667e\",\"sealed\":{\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"crm\",\"v\":23,\"writer\":\"service:crm\"}"
     }
   ]
 }
