@@ -374,8 +374,8 @@ act. This road opens it on every act, for seconds by pages and minutes beside a 
 takes from the projection has a field by an owed act's source, and for a removal an owed act
 selects the event at that field's `meta.position`, the write takes the record from a refold
 of its own events through `redacted`. That is a page of one key, kept in memory, not stored.
-Verbs, `requires`, a computed field's inputs and ingest's old state all come through that one
-seam. So no erased value goes back into the log, no backing is called with one, and no output
+Verbs, `requires`, a computed field's inputs, ingest's old state and the resolvers of
+`preceding` and `in_force` all come through that one seam. So no erased value goes back into the log, no backing is called with one, and no output
 is sealed under a destroyed key.
 
 The cost is one test per record while nothing is owed by its source, O(fields), and on a
@@ -383,11 +383,9 @@ record that is reached, its versions at up to 2 ms each on 23 (reckoned, from 09
 read). It needs only the acts in the lists, so it holds from the writer's open, before the
 runner has walked again. A read does not do this: it would pay the test on every row of every
 page, so it answers old values, as 065 says. A trigger's firing over an old value is held by
-the poll rule above. The row is `WRITE_READS_THROUGH_AN_OWED_ACT`.
-
-100 changes this for a guard. `stands` keeps a conjunct that reads `preceding` or
-`in_force`, so the poll rule does not hold it: both resolvers read through this seam, and
-`preceding`'s half lands in R2 whatever becomes of 100.
+the poll rule above, but for a conjunct of `preceding` or `in_force`: `stands` keeps that as its
+write decided it, so those two read through, and `preceding`'s half lands in R2 whatever
+becomes of 100. The row is `WRITE_READS_THROUGH_AN_OWED_ACT`.
 
 ### Builds of `sort_index`, `lookup_index` and `view_kept`
 
@@ -707,3 +705,8 @@ Decided on 2026-11-01 (lakelands#1578): every recommendation below was taken.
   measures its own.
 - **Not the design of lakelands#1639.**
 - **Not a change to what a forget takes,** what the log holds or what `verify` promises.
+
+## How it came to be
+
+- Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
+  `in_force` read through an owed act, which the poll rule does not hold.

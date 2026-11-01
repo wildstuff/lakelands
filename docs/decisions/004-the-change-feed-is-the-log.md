@@ -169,7 +169,8 @@ and `previous(f)`, the value before the write, which is null for a record
 the write creates (or revives from retirement). A transition is a guard,
 `previous(status) = 'open' and status = 'closed'`, and fires on that
 transition only. A guard reads no other record, but the one before it
-in its series (below). A trigger may also cap
+in its series (below) and the one in force of another type, `in_force`,
+resolved the same way (100). A trigger may also cap
 the depth of the reactions that name its firing as their cause
 (`docs/decisions/021-the-write-context-belongs-to-the-host.md`, extended).
 Past that depth, or the lake's, the write appends `trigger_dropped` in
@@ -270,9 +271,6 @@ flag, without changing what fires. Making strict the default would
 change what fires for triggers whose declarations did not change.
 
 ### A guard may read the record before it in its series
-
-100 adds the record in force of another type: a guard may call
-`in_force` too, resolved the same way.
 
 A guard may read `preceding(f, by, match…)`, the record before this one
 in a series of its type, as a constraint reads it (059):
