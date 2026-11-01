@@ -9,9 +9,12 @@
 //!
 //! `refused_by` below is that reader, its rules copied as v0.22.0 has them
 //! in `crates/lakelands-store/src/log.rs` (`one_format`) and
-//! `crates/lakelands-engine-sqlite/src/log.rs` (`parse_line`, `ends`), and
-//! kept fixed here: it does not move with this build, so no 0.22 build is
-//! needed to run it.
+//! `crates/lakelands-engine-sqlite/src/log.rs` (`parse_line`, `ends`, and
+//! the check its `refresh` asks of the active segment's last group,
+//! `whole`, in `read_by`), and kept fixed here: it does not move with this
+//! build, so no 0.22 build is needed to run it. A last group 0.22.x does
+//! not find whole is a crash's tail to it, so a lake whose only group that
+//! is would be no lake to 0.22.x, not one refused by its format.
 
 mod read_by;
 
@@ -30,11 +33,19 @@ use serde_json::{Value, json};
 const READS: RangeInclusive<u64> = 14..=22;
 
 /// The first and last committed lines of the log in `dir`, as JSON. Every
-/// way 0.22.x would call the log damaged first is an error here.
+/// way 0.22.x would call the log damaged first, or find no event in it,
+/// is an error here.
 fn ends(dir: &Path) -> Result<(Value, Value), String> {
-    let mut lines = Vec::new();
-    for first in read_by::segments(dir) {
-        let (segment, groups) = read_by::groups(dir, first)?;
+    let (firsts, mut lines) = (read_by::segments(dir), Vec::new());
+    for (i, &first) in firsts.iter().enumerate() {
+        let (segment, mut groups) = read_by::groups(dir, first)?;
+        // `refresh`: the active segment's last group counts where it is whole.
+        let before = groups.iter().rev().nth(1).and_then(|g| g.last());
+        let before = before.map(|e| e.hash.clone());
+        let last = groups.last().map(Vec::as_slice).unwrap_or_default();
+        if i + 1 == firsts.len() && !read_by::whole(&segment, before.as_deref(), last) {
+            groups.pop();
+        }
         let counted: Vec<Old> = groups.into_iter().flatten().collect();
         for (n, e) in counted.iter().enumerate() {
             if e.position != first + n as u64 {
@@ -45,8 +56,9 @@ fn ends(dir: &Path) -> Result<(Value, Value), String> {
             lines.push(serde_json::from_slice::<Value>(line).map_err(|e| e.to_string())?);
         }
     }
-    let first = lines.first().cloned().ok_or("no committed event")?;
-    Ok((first, lines.pop().ok_or("no committed event")?))
+    let none = "no committed event: no lake to 0.22.x";
+    let first = lines.first().cloned().ok_or(none)?;
+    Ok((first, lines.pop().ok_or(none)?))
 }
 
 /// The format `one_format` of 0.22.x refuses the log in `dir` by, if any:
@@ -95,7 +107,17 @@ async fn a_lake_sealed_and_framed_is_refused_by_0_22_by_its_format() {
     }
     store.close().await.unwrap();
     drop((l, store));
-    assert!(read_by::segments(&dir).len() > 1, "the lake was sealed");
+    let firsts = read_by::segments(&dir);
+    assert!(firsts.len() > 1, "the lake was sealed");
+    // The active segment's last group, framed lines and all, is whole to
+    // 0.22.x: it counts, and is no crash's tail.
+    let (segment, groups) = read_by::groups(&dir, firsts[firsts.len() - 1]).unwrap();
+    let before = groups.iter().rev().nth(1).and_then(|g| g.last());
+    let (last, before) = (&groups[groups.len() - 1], before.map(|e| e.hash.as_str()));
+    assert!(
+        read_by::whole(&segment, before, last),
+        "0.22.x counts the last group"
+    );
     assert_eq!(
         refused_by(&dir),
         Ok(Some(u64::from(LOG_FORMAT_VERSION))),
