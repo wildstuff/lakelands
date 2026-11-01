@@ -86,4 +86,20 @@ async fn a_zone_the_database_does_not_name_refuses_the_open() {
     let opened = open(&opener, "mars", Some("Mars/Olympus_Mons"), OpenMode::Create).await;
     let e = opened.err().expect("refused");
     assert!(e.to_string().contains("time zone"), "{e}");
+    // Refused before the open: the `Create` made no lake.
+    let after = open(&opener, "mars", None, OpenMode::Write).await;
+    assert!(after.is_err(), "the refused create left no lake to open");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rebuild_s_open_records_no_zone() {
+    let opener = MemoryOpener::new();
+    let lake = open(&opener, "rebuilt", None, OpenMode::Create)
+        .await
+        .unwrap();
+    lake.close().await.unwrap();
+    let rebuilt = open(&opener, "rebuilt", Some("Europe/Berlin"), OpenMode::Rebuild)
+        .await
+        .unwrap();
+    assert_eq!(rebuilt.zone().await.unwrap(), "UTC");
 }

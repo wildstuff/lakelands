@@ -34,6 +34,18 @@ check!(
     given
 );
 
+check!(
+    ZONE_AGING_IS_THE_DATE_HANDED = aging_reads_the_date_handed_west_of_utc_too,
+    "101 (lakelands#1665): in a lake whose `zone` is `America/New_York`, `age` handed 2030-03-15 reads `today()` in a rule's `when` as 2030-03-15, the date handed, not cut again in the zone, where it would be 2030-03-14: a rule `due <= today()` moves a bill due 2030-03-15 and leaves one due 2030-03-16, and the report names 2030-03-15",
+    given
+);
+
+check!(
+    ZONE_AT_THE_READ = a_read_cuts_today_in_the_zone_in_force_at_its_position,
+    "101 (lakelands#1665): a field computed at the read as `today()`, read `valid_at` 2030-03-14T23:30Z, holds 2030-03-15 as of a position where the lake's `zone` is `Europe/Berlin` and 2030-03-14 at the head after it is set to `America/New_York`; a `find` whose `where` is `datum = today()` answers the reading dated each day at each",
+    given
+);
+
 /// The probe's instant: 00:30 of 2030-03-15 in Berlin.
 const PROBE: &str = "2030-03-14T23:30:00Z";
 
@@ -259,4 +271,104 @@ fn get_at(key: &str) -> lakelands_api::Get {
         at: ReadAt::default(),
         params: Default::default(),
     }
+}
+
+async fn aging_reads_the_date_handed_west_of_utc_too(store: Store, _given: Given) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.set("zone", json!("America/New_York")).await?;
+    l.declare_json(
+        json!({"declare": "type", "name": "bill", "key": ["no"], "fields": [
+            {"name": "no", "type": {"kind": "text"}},
+            {"name": "due", "type": {"kind": "date"}},
+            {"name": "state", "type": {"kind": "text"}},
+        ]}),
+    )
+    .await?;
+    for (no, due) in [("B-1", "2030-03-15"), ("B-2", "2030-03-16")] {
+        l.upsert("bill", no, json!({"due": due, "state": "open"}))
+            .await?;
+    }
+    let rule = json!({"on": "bill", "field": "state", "from": "open", "to": "due",
+                      "when": "due <= today()"});
+    let aging_rule = lakelands_api::seam::AGING_RULE_TYPE;
+    l.upsert(aging_rule, "falls_due", rule).await?;
+    let handed = Timestamp::from_date(2030, 3, 15).expect("a date of the calendar");
+    let report = store.age(handed).await.must("aging 2030-03-15")?;
+    let mut states = Vec::new();
+    for no in ["B-1", "B-2"] {
+        let r = l.read("bill", no).await?;
+        states.push(r.fields.get("state").cloned().unwrap_or(Value::Null));
+    }
+    ensure!(
+        report.date == handed && report.transitions == 1 && states == [json!("due"), json!("open")],
+        "aged for 2030-03-15 in New York, `today()` in the rule is the date handed: the bill \
+         due that day moves and the next day's stays: {:?} on {}, moved {}",
+        states,
+        report.date,
+        report.transitions
+    );
+    Ok(())
+}
+
+async fn a_read_cuts_today_in_the_zone_in_force_at_its_position(
+    store: Store,
+    _given: Given,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.set("zone", json!("Europe/Berlin")).await?;
+    l.declare_json(
+        json!({"declare": "type", "name": "reading", "key": ["no"], "fields": [
+            {"name": "no", "type": {"kind": "text"}},
+            {"name": "datum", "type": {"kind": "date"}},
+            {"name": "day", "type": {"kind": "date"}, "authority": "derived",
+             "derived": "today()", "computed_at": "read"},
+        ]}),
+    )
+    .await?;
+    for (no, datum) in [("R-14", "2030-03-14"), ("R-15", "2030-03-15")] {
+        l.upsert("reading", no, json!({"datum": datum})).await?;
+    }
+    let berlin = store.head().await.must("the head")?;
+    l.set("zone", json!("America/New_York")).await?;
+    let probe = Timestamp::parse(PROBE).map_err(|e| Failure::new(format!("{PROBE}: {e}")))?;
+    let mut seen = Vec::new();
+    for as_of in [Some(berlin), None] {
+        let at = ReadAt {
+            as_of,
+            valid_at: Some(probe),
+            clock: None,
+        };
+        let get = lakelands_api::Get {
+            at,
+            ..get_at("R-14")
+        };
+        let got = l.cat.get(&l.own, &"reading".into(), get).await;
+        let got = got.must("reading `R-14`")?;
+        let day = got.data.fields.get("day").cloned().unwrap_or(Value::Null);
+        let find = lakelands_api::Find {
+            filter: Some("datum = today()".into()),
+            at,
+            ..Default::default()
+        };
+        let found = l.cat.find(&l.own, &"reading".into(), find).await;
+        let found = found.must("finding the reading dated today")?;
+        let keys: Vec<String> = match &found.data {
+            lakelands_api::Found::Records { rows, .. } => {
+                rows.iter().map(|r| r.key.to_string()).collect()
+            }
+            other => return Err(Failure::new(format!("a page of records: {other:?}"))),
+        };
+        seen.push((day, keys));
+    }
+    let want = vec![
+        (json!("2030-03-15"), vec!["R-15".to_owned()]),
+        (json!("2030-03-14"), vec!["R-14".to_owned()]),
+    ];
+    ensure!(
+        seen == want,
+        "at 2030-03-14T23:30Z a read cuts the day in the zone in force at its position: \
+         Berlin's 2030-03-15 as of the position before the change, New York's 2030-03-14 at \
+         the head: {seen:?}"
+    );
+    Ok(())
 }

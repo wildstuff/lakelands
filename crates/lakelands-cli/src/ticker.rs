@@ -99,7 +99,8 @@ pub struct Ticker {
     clock: Arc<dyn Clock>,
     /// The date last aged, once a run succeeded.
     aged: Option<Timestamp>,
-    /// The date last tried, aged or not.
+    /// The date the last check tried, aged or not; none where it could
+    /// not read the lake's zone, so its failure names no date.
     tried: Option<Timestamp>,
 }
 
@@ -133,7 +134,11 @@ impl Ticker {
     pub async fn tick(&mut self) -> Option<lakelands_api::Result<AgeReport>> {
         let today = match self.today().await {
             Ok(today) => today,
-            Err(e) => return Some(Err(e)),
+            Err(e) => {
+                // No date was tried: the failure names none, not the last.
+                self.tried = None;
+                return Some(Err(e));
+            }
         };
         if self.aged == Some(today) {
             return None;

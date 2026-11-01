@@ -58,7 +58,13 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
 
 /// The lake [`open`] opens.
 pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<Lake>> {
+    // A zone the database does not name is refused before anything is
+    // opened, so a `Create` makes no lake it then refuses.
     let zone = location.zone.clone();
+    if let Some(z) = &zone {
+        let z = serde_json::Value::from(z.as_str());
+        lakelands_api::seam::check_setting(ZONE_SETTING, Some(&z), &|_| None, &|_| None)?;
+    }
     let lake = exec::run(move || Lake::open(&location, seams, mode)).await?;
     let lake = Arc::new(lake);
     let owing = lake.clone();
@@ -67,7 +73,10 @@ pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> 
         Ok(())
     })
     .await?;
-    start_zone(&lake, zone).await?;
+    // A rebuild's open writes nothing of its own: it refolds the log.
+    if matches!(mode, OpenMode::Create | OpenMode::Write) {
+        start_zone(&lake, zone).await?;
+    }
     Ok(lake)
 }
 
@@ -75,8 +84,9 @@ pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> 
 /// `zone` setting, at a writer's open of a lake that never recorded one:
 /// a zone set since, or one retired, stands, and only the log says the
 /// zone from then on (101). It is written as any setting is, by the
-/// store for itself, and judged as one: a zone the database does not
-/// name refuses the open.
+/// store for itself, and judged as one. Only an open in `Create` or
+/// `Write` records it; a standby that takes the lease over finds the zone
+/// its lake's first writer recorded.
 async fn start_zone(lake: &Arc<Lake>, zone: Option<String>) -> Result<()> {
     let Some(zone) = zone.filter(|_| lake.is_writer()) else {
         return Ok(());

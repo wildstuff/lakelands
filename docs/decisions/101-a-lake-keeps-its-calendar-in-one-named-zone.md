@@ -29,8 +29,12 @@ writer's first open records it as the lake's `zone` setting, written by
 the store for itself as any setting is written, where the lake has never
 recorded a `zone`, live or retired. From then on the log alone says the
 zone: no later open reads the location's, so a location copied for a
-moved or restored lake changes nothing. A zone the database does not
-name refuses the open, and `lake new` refuses it before writing the
+moved or restored lake changes nothing. Only an open that creates or
+writes the lake records it: a rebuild's open refolds the log and writes
+nothing of its own, and a standby that takes the lease over finds the
+zone the lake's first writer recorded. A zone the database does not name
+refuses the open before the engine is opened, so a create that is
+refused makes no lake, and `lake new` refuses it before writing the
 location.
 
 No zone comes from the process's environment (`TZ`), from the host's
@@ -121,6 +125,11 @@ and the log decides from then on.
   back to writes already made, and cannot be scheduled for a later day.
 - **Not the host's.** The environment, the host's locale and its
   system zone are never read.
+- **Not every calendar reading.** `date_bucket(t, unit)` with no zone
+  cuts in UTC, as before; a zone is named as its third argument. A
+  function backed by an expression (`expr`) computes from its inputs
+  alone, with no lake settings, so `today()` in it is UTC's; a computed
+  field that wants the lake's day reads `today()` itself.
 - **Not a frozen database.** The zone database is the one the build
   bundles. A later database that redraws a zone's past offsets would
   cut an instant of that past differently in a field a rebuild computes

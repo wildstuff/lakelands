@@ -17,9 +17,12 @@ use jiff::tz::{TimeZone, TimeZoneDatabase};
 
 // INTERIM: lakelands#1667 — the database is the copy jiff-tzdb 0.1.9
 // builds in, pinned exactly; a lake does not record which copy cut its
-// kept zoned buckets, so a new copy with new rules would leave kept rows
-// cut by the old ones. Recording the copy in the lake, or re-folding kept
-// zoned views when it changes, is still to be decided.
+// kept zoned buckets, nor the days `today()` cut in its zone (101), so a
+// new copy with new rules would leave kept rows cut by the old ones, and
+// a rebuild under it would cut again, by the new rules, a field computed
+// at the write from `today()` at an instant whose offset they redrew.
+// Recording the copy in the lake, or re-folding what a zone cut when it
+// changes, is still to be decided.
 
 /// The built-in database; it keeps every zone it has read.
 fn database() -> &'static TimeZoneDatabase {
