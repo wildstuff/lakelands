@@ -214,11 +214,12 @@ fn unbound_source(on: &[Place], source: &TypeDecl) -> Result<()> {
     }
 }
 
-/// A view's merged sources: each declared, read once and not as the view's
-/// own source, not a view with parameters, grouped by as many fields as the
-/// view, each of the kind of the main source's field it lines up with and
-/// one a key may be, with measures named uniquely in the view. The
-/// parameters their expressions read are added to `read`.
+/// A view's merged sources: none where the view groups by a term, and
+/// each declared, read once and not as the view's own source, not a view
+/// with parameters, grouped by as many fields as the view, each of the
+/// kind of the main source's field it lines up with and one a key may be,
+/// with measures named uniquely in the view. The parameters their
+/// expressions read are added to `read`.
 fn merged_sources(
     o: &Ontology,
     owner: &[Place],
@@ -226,6 +227,13 @@ fn merged_sources(
     main: &TypeDecl,
     read: &mut BTreeSet<String>,
 ) -> Result<()> {
+    let term = v.group_by.iter().find_map(|k| match k {
+        GroupKey::Named { name, .. } => Some(name.clone()),
+        GroupKey::Field(_) => None,
+    });
+    if let (Some(name), false) = (term, v.merge.is_empty()) {
+        return Err(Error::invalid(at(owner, Case::GroupTermMerged { name })));
+    }
     let mut names: Vec<&FieldName> = v.measures.iter().map(|m| &m.name).collect();
     for (i, m) in v.merge.iter().enumerate() {
         let merged = Place::MergedSource {

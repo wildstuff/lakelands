@@ -523,6 +523,7 @@ pub const ALL: &[Check] = &[
     view_kept::KEPT_ORDER,
     view_kept::KEPT_BUCKETS,
     view_kept::KEPT_TERMS,
+    view_kept::TERM_REFUSED,
     keys::KEY_AND_KEY_FIELDS_AGREE,
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,

@@ -237,7 +237,8 @@ impl GroupKey {
     }
 
     /// The field its value comes from: the field, or the first one its
-    /// expression reads (its name where that does not parse).
+    /// expression reads. A term that does not parse, which a declaration
+    /// refuses, answers its own name; a read parses its terms first.
     pub fn source(&self) -> FieldName {
         match self {
             GroupKey::Field(f) => f.clone(),

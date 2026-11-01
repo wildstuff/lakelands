@@ -314,6 +314,10 @@
    "second": true
   },
   {
+   "code": "group_term_merged",
+   "name": "f"
+  },
+  {
    "code": "group_unkeyable",
    "field": "f"
   },

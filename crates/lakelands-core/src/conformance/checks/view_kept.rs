@@ -75,6 +75,11 @@ check!(
     given
 );
 
+check!(
+    TERM_REFUSED = a_group_term_that_is_no_bucket_of_a_source_field_is_refused,
+    "049, extended (lakelands#1636): a view's group term that is no `date_bucket` over one field of its source holding an instant or a date is refused `group_term`, naming it: another function, a bucket of a text field, a bucket of a field the source does not hold and a bucket of an expression; a second term is refused `group_term` saying it is the second; a view grouped by a term that merges a source is refused `group_term_merged`, naming the term; each appends nothing"
+);
+
 const SHAPES: &str = r#"
     type line g:text n:decimal
     type credit g:text n:decimal
@@ -1433,4 +1438,72 @@ fn told<T: serde::Serialize>(answer: lakelands_api::Result<Reply<T>>) -> String 
     };
     told["next_cursor"] = json!(told.get("next_cursor").is_some_and(|c| !c.is_null()));
     told.to_string()
+}
+
+async fn a_group_term_that_is_no_bucket_of_a_source_field_is_refused(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    for ty in ["reading", "credit"] {
+        l.declare_json(json!({"declare": "type", "name": ty, "fields": [
+            field("meter", "text"), field("at", "date_time"), field("v", "decimal")]}))
+            .await?;
+    }
+    // A view of `reading` keyed by its groups' names, each a field.
+    let view = |group_by: Value| {
+        let names: Vec<&str> = (group_by.as_array().into_iter().flatten())
+            .filter_map(|g| g.as_str().or_else(|| g["name"].as_str()))
+            .collect();
+        let mut fields: Vec<_> = (names.iter())
+            .map(|n| field(n, if *n == "meter" { "text" } else { "date_time" }))
+            .collect();
+        fields.push(field("n", "number"));
+        json!({"declare": "type", "name": "hourly", "key": names, "fields": fields,
+            "view": {"source": "reading", "group_by": group_by,
+                     "measures": [{"name": "n", "expr": "count()"}]}})
+    };
+    let term = |name: &str, expr: &str| json!({"name": name, "expr": expr});
+    let hour = term("hour", "date_bucket(at, 1h, '2026-01-01T00:00:00Z')");
+    let mut merged = view(json!(["meter", hour]));
+    merged["view"]["merge"] = json!([{"source": "credit", "group_by": ["meter", "at"],
+        "measures": [{"name": "c", "expr": "count()"}]}]);
+    if let Some(fields) = merged["fields"].as_array_mut() {
+        fields.push(field("c", "number"));
+    }
+    let not = |expr: &str| {
+        let want = json!({"code": "group_term", "name": "hour", "second": false});
+        (
+            expr.to_owned(),
+            view(json!(["meter", term("hour", expr)])),
+            want,
+        )
+    };
+    let cases = [
+        not("lower(meter)"),
+        not("date_bucket(meter, 'day')"),
+        not("date_bucket(gone, 'day')"),
+        not("date_bucket(at + 1h, 'day')"),
+        (
+            "a second term".to_owned(),
+            view(json!([
+                "meter",
+                hour,
+                term("day", "date_bucket(at, 'day')")
+            ])),
+            json!({"code": "group_term", "name": "day", "second": true}),
+        ),
+        (
+            "a merged source".to_owned(),
+            merged,
+            json!({"code": "group_term_merged", "name": "hour"}),
+        ),
+    ];
+    for (what, declared, want) in cases {
+        let before = s.head().await.must("the head")?;
+        let declared = serde_json::from_value::<Declaration>(declared)
+            .map_err(|e| Failure::new(format!("a view grouped by `{what}` does not read: {e}")))?;
+        let answer = l.cat.declare(&l.own, declared).await;
+        refused_like(&format!("a view grouped by `{what}`"), answer, &want)?;
+        head_unmoved(s, before, &format!("a view grouped by `{what}`")).await?;
+    }
+    Ok(())
 }

@@ -51,7 +51,9 @@ would have to reproduce one.
   `describe` of the view shows its `group_by` as declared, the term
   with its name and expression. Another expression and a second term
   are refused `group_term`; a merged source and a bundle's view group
-  by fields alone.
+  by fields alone, and a view grouped by a term that merges a source is
+  refused `group_term_merged`, since no group of the merged source would
+  meet the term.
 - **Under a name no type can bear.** A view's kept records are put under
   `sys:kept.<view>`, which holds a character no type name may. No write,
   link, walk, preflight or fold reaches them by a type's name: a

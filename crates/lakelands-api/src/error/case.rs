@@ -1038,6 +1038,9 @@ catalog! {
         /// A view's group term that is not one `date_bucket` over a field
         /// of instants or dates, or is its second term.
         GroupTerm { name: FieldName, second: bool } => "its group term `{name}` [{?second}is its second, and a view groups by one term at most|is no `date_bucket` over one field of its source that holds an instant or a date, its other arguments written out]",
+        /// A view grouped by a term that merges a source, whose groups are
+        /// fields.
+        GroupTermMerged { name: FieldName } => "its group term `{name}` meets no group of a merged source, which groups by fields alone; group the view by fields, or merge into a view without a term",
         /// A view grouped by a field no key may be.
         GroupUnkeyable { field: FieldName } => "it groups by `{field}`, whose kind cannot be part of a key",
         /// An `initial` value on a field its inputs clear.

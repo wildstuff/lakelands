@@ -409,7 +409,7 @@ this object:
 
 ```
 {
-  "key":       [field names, in declared order; of a view, its `group_by`],
+  "key":       [field names, in declared order; of a view, its `group_by`'s names],
   "fields":    [{ "name", "type", "required" }, ...],
   "relations": [{ "name", "target", "cardinality", "fields": [...] }, ...],
   "view":      { "source", "where", "group_by", "measures": [{ "name", "expr" }] }
@@ -448,7 +448,14 @@ this object:
 - `view` is `{ "source", "where", "group_by", "measures" }` with every
   member present: `where` is `null` when absent, `group_by` is `[]` when
   empty. `group_by` and `measures` keep their declared order: a measure
-  may read the measures before it, so their order is meaning. A view
+  may read the measures before it, so their order is meaning. A view's
+  group is a field name or one term, `{ "name", "expr" }`, a
+  `date_bucket` over a source field whose `name` is a field of the view
+  (lakelands#1636). The term is written as that object with `expr` in
+  its typed form (Appendix B), and the view's `key` holds its `name`. A
+  view grouped by field names alone writes `group_by` as the list of
+  those names, so its hash is the one it had before a group could hold a
+  term. A view
   that declares parameters has a fifth member, `params`, the list of
   `{ "name", "kind" }` in declared order; a view without them has no
   `params` member, so its hash is the one it had before views could take

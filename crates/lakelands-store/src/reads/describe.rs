@@ -979,7 +979,10 @@ impl<'a> Reader<'a> {
             })
             .collect::<Result<_>>()?;
         // What it reads of the source is what `describe` shows it by; one
-        // that cannot be read there is read by no one.
+        // that cannot be read there is read by no one. A group term that
+        // does not parse is refused as a condition is, never probed by its
+        // name.
+        aggregate::group_keys(group_by).map_err(Error::invalid)?;
         let by: Vec<FieldName> = group_by.iter().map(GroupKey::source).collect();
         let probed = lakelands_core::describe::source_reads(filter, &by, m);
         let mut probed = probed.ok_or_else(|| Error::refused(None, Refusal::NotGranted))?;
