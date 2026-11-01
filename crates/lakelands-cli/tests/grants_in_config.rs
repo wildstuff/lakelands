@@ -306,3 +306,19 @@ fn a_key_repeated_in_a_grant_stops_the_root() {
         assert!(root.lake_files() == before, "`{key}` touched the lake");
     }
 }
+
+/// A repeat met earlier, outside any grant, hides no repeat in a grant.
+#[test]
+fn a_repeat_outside_a_grant_hides_none_inside_one() {
+    let root = Lakes::with_articles("repeat-outside");
+    fs::write(
+        root.dir.join("lakelands.json"),
+        r#"{"lakelands": 1, "owner": "owner", "owner": "owner", "principals": [
+        {"name": "clerk", "kind": "agent", "id": "clerk", "grants": {"default": "read",
+         "types": {"article": {"fields": {"topic": "none", "topic": "read"}}}}}]}"#,
+    )
+    .unwrap();
+    let said = err(&root.read_as_clerk());
+    assert!(said.contains("repeats the key `topic`"), "{said}");
+    assert!(said.contains("`clerk`"), "{said}");
+}

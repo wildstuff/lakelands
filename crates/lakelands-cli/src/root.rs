@@ -167,6 +167,8 @@ fn grant_holder(text: &str) -> Option<String> {
 /// The first key a map of a principal's grant repeats in a configuration's
 /// `text`, with the principal's name: a map keeps its last value for a key
 /// written twice, so a restriction written first would drop without a word.
+/// A `serde_json::Value` cannot tell: it has kept the last value by then, so
+/// the text is walked as it is read.
 fn repeated_in_a_grant(text: &str) -> Option<(String, String)> {
     use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
     use std::cell::RefCell;
@@ -223,7 +225,13 @@ fn repeated_in_a_grant(text: &str) -> Option<(String, String)> {
         fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
             let mut seen = BTreeSet::new();
             while let Some(key) = map.next_key::<String>()? {
-                if !seen.insert(key.clone()) {
+                // Only a repeat inside a principal's grant counts: one met
+                // earlier elsewhere must not hide a later one in a grant.
+                let in_a_grant = matches!(
+                    &self.path[..],
+                    [list, _, field, ..] if list == "principals" && field == "grants"
+                );
+                if !seen.insert(key.clone()) && in_a_grant {
                     let mut found = self.found.borrow_mut();
                     if found.is_none() {
                         *found = Some((self.path.clone(), key.clone()));
