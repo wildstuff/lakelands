@@ -699,7 +699,6 @@ impl Lake {
         })?;
         match &e.body {
             EventBody::LakeCreated { .. }
-            | EventBody::LakeUpgraded { .. }
             | EventBody::LeaseTaken { .. }
             | EventBody::Checkpoint { .. }
             | EventBody::VerbCalled { .. }
@@ -839,9 +838,7 @@ impl Lake {
             } => {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
                 let decl = Declaration::Type(migration.to.clone());
-                // From format 15 on (lakelands#1070): a log of format 14
-                // folds as it was written, and a rebuild answers as its lake did.
-                let again = e.v >= 15 && computing_changed(&before, &migration.to);
+                let again = computing_changed(&before, &migration.to);
                 w.ontology.put_at(
                     decl.clone(),
                     *version,
@@ -1463,7 +1460,7 @@ impl Lake {
     /// No rebuild is refused for a reader (071): where the engine would
     /// refuse the swap while another handle reads the projection, the log
     /// is not folded beside it, and the caller folds in place, as before
-    /// 071 — an upgrade's open too, whose build ahead is then removed, as
+    /// 071 — a writer's open too, whose build ahead is then removed, as
     /// it is where a reader came between the build and the swap.
     pub(super) fn rebuilt_beside(&self, w: &mut Writer, how: Beside) -> Result<Swapped> {
         let lease = w.lease.clone().ok_or_else(no_lease)?;

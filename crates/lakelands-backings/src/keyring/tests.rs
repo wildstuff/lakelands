@@ -72,140 +72,39 @@ fn a_destroyed_source_has_no_key_and_gets_none() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Each key the log of the kept lake of `format` seals under
-/// (`docs/log-format/lakes/<format>/`), as its source and whether the
-/// key file the lake ships gives it, in the log's order, with the keyring
-/// over that file.
-fn kept_lake_sealed(format: u32) -> (FileKeyring, LakeId, Vec<(String, bool)>) {
-    let lake = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/lakes")
-        .join(format.to_string());
-    let log = std::fs::read_to_string(lake.join("log/00000000000000000000.jsonl")).unwrap();
-    let ring = FileKeyring::new(lake.join("keys"));
-    let id = LakeId::from(format!("kept{format}").as_str());
-    let mut sealed = Vec::new();
-    // From format 20 a frame holds what the events it covers share.
-    let (mut frame, mut covered) = (serde_json::Value::Null, 0);
-    for line in log.lines() {
-        let event: serde_json::Value = serde_json::from_str(line).unwrap();
-        if event.get("frame").is_some() {
-            (covered, frame) = (event["events"].as_u64().unwrap(), event["frame"].clone());
-            continue;
-        }
-        let shared = covered > 0;
-        covered = covered.saturating_sub(1);
-        let held = |path: &dyn Fn(&serde_json::Value) -> &serde_json::Value| {
-            let own = path(&event).as_str();
-            let own = own.or_else(|| path(&frame).as_str().filter(|_| shared));
-            own.map(str::to_owned)
-        };
-        let (Some(source), Some(key)) = (held(&|e| &e["source"]), held(&|e| &e["sealed"]["key"]))
-        else {
-            continue;
-        };
-        let (source, key) = (
-            SourceId::from(source.as_str()),
-            lakelands_api::id::KeyId::from(key.as_str()),
-        );
-        let given = ring.key(&id, &source, &key).unwrap();
-        sealed.push((source.to_string(), given.is_some()));
-    }
-    (ring, id, sealed)
-}
-
-/// The key file the kept lake of format 16 ships
-/// (`docs/log-format/lakes/16/keys/`) is read by this keyring as it is:
-/// every key the lake's log seals under is given for a source kept, and
-/// none for the source it forgot, which is destroyed. A change to the
-/// file's form that would no longer read it turns this red.
+/// A key file as a lake of format 23 holds one is read by this keyring
+/// as it is: `crm`'s version and `hr`'s key apart are given, and `web`,
+/// which is destroyed, gives none. A change to the file's form that would
+/// no longer read it turns this red.
 #[test]
-fn the_kept_lakes_key_file_is_read_as_written() {
-    let (ring, kept16, sealed) = kept_lake_sealed(16);
-    assert_eq!(
-        sealed,
-        [("crm".to_owned(), true), ("web".to_owned(), false)]
+fn a_key_file_is_read_as_written() {
+    let dir = scratch("as-written");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (version, apart) = ("11".repeat(16), "22".repeat(16));
+    let (held, held_apart) = ("ab".repeat(32), "cd".repeat(32));
+    let file = serde_json::json!({"sources": {
+        "crm": {"keys": [[version, held]]},
+        "hr": {"keys": [], "apart": [[apart, held_apart]]},
+        "web": {"keys": [], "destroyed": true},
+    }});
+    std::fs::write(dir.join("kept.keys.json"), file.to_string()).unwrap();
+    let (ring, lake) = (FileKeyring::new(&dir), LakeId::from("kept"));
+    let (crm, hr, web) = (
+        SourceId::from("crm"),
+        SourceId::from("hr"),
+        SourceId::from("web"),
     );
+    let key = ring.key(&lake, &crm, &version.as_str().into()).unwrap();
+    assert_eq!(key.unwrap().0, [0xab; 32]);
+    let key = ring.key(&lake, &hr, &apart.as_str().into()).unwrap();
+    assert_eq!(key.unwrap().0, [0xcd; 32]);
     assert!(
-        ring.ids(&kept16, &SourceId::from("web"))
+        ring.key(&lake, &web, &version.as_str().into())
             .unwrap()
-            .is_empty()
+            .is_none()
     );
-}
-
-/// The key file of the kept lake of format 17 is read as written too:
-/// `crm`'s key is given, the forgotten `web`'s is not, and of `ledger`'s
-/// two versions the first, which taking back what it wrote before `p5`
-/// destroyed (065), is not and the second is, the one version `ledger`
-/// holds.
-#[test]
-fn the_kept_lake_of_format_17s_key_file_is_read_as_written() {
-    let (ring, kept17, sealed) = kept_lake_sealed(17);
-    let given = |s: &str, g: bool| (s.to_owned(), g);
-    assert_eq!(
-        sealed,
-        [
-            given("crm", true),
-            given("web", false),
-            given("ledger", false),
-            given("ledger", true)
-        ]
-    );
-    let ledger = ring.ids(&kept17, &SourceId::from("ledger")).unwrap();
-    assert_eq!(ledger.len(), 1);
-    assert!(
-        ring.ids(&kept17, &SourceId::from("web"))
-            .unwrap()
-            .is_empty()
-    );
-}
-
-/// The key file of the kept lake of format 18 is read as written too:
-/// `ledger`'s second version and `hr`'s key are given, `web`'s and
-/// `ledger`'s first are not.
-#[test]
-fn the_kept_lake_of_format_18s_key_file_is_read_as_written() {
-    let (ring, kept18, sealed) = kept_lake_sealed(18);
-    let given = |s: &str, g: bool| (s.to_owned(), g);
-    assert!(sealed.contains(&given("hr", true)));
-    assert!(sealed.contains(&given("ledger", true)));
-    assert!(sealed.contains(&given("ledger", false)));
-    let ids = |s: &str| ring.ids(&kept18, &SourceId::from(s)).unwrap();
-    assert_eq!(ids("ledger").len(), 1);
-    assert!(ids("web").is_empty());
-}
-
-/// The key file of the kept lake of format 19 is read as written too:
-/// `ledger`'s second version and `hr`'s key are given, `web`'s and
-/// `ledger`'s first are not.
-#[test]
-fn the_kept_lake_of_format_19s_key_file_is_read_as_written() {
-    let (ring, kept19, sealed) = kept_lake_sealed(19);
-    let given = |s: &str, g: bool| (s.to_owned(), g);
-    assert!(sealed.contains(&given("hr", true)));
-    assert!(sealed.contains(&given("ledger", true)));
-    assert!(sealed.contains(&given("ledger", false)));
-    let ids = |s: &str| ring.ids(&kept19, &SourceId::from(s)).unwrap();
-    assert_eq!(ids("ledger").len(), 1);
-    assert!(ids("web").is_empty());
-}
-
-/// The key file of the kept lake of format 20 is read as written too:
-/// `crm`'s key is given, the forgotten `web`'s is not, though the three
-/// records `crm` ingested in one append are sealed in boxes under it.
-#[test]
-fn the_kept_lake_of_format_20s_key_file_is_read_as_written() {
-    let (ring, kept20, sealed) = kept_lake_sealed(20);
-    let given = |s: &str, g: bool| (s.to_owned(), g);
-    assert_eq!(
-        sealed,
-        [given("crm", true), given("crm", true), given("web", false)]
-    );
-    assert_eq!(ring.ids(&kept20, &SourceId::from("crm")).unwrap().len(), 1);
-    assert!(
-        ring.ids(&kept20, &SourceId::from("web"))
-            .unwrap()
-            .is_empty()
-    );
+    assert!(ring.ids(&lake, &web).unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A version destroyed goes with every older one, from another keyring

@@ -8,16 +8,11 @@
 //! and the next writer's open rebuilds nothing. A projection layout 6
 //! kept under a vector index (unit vectors in `vectors`, a partial HNSW
 //! index per field there, the field's mark in `meta`, no graph) is
-//! rebuilt with its graphs, and its pages are what they were. A lake of
-//! format 19, its log without `frames` and its projection one layout
-//! back, as 0.19.0 left it, is upgraded by the first writer's open
-//! (lakelands#1467). A lake 0.20.0 left, of format 20 with its `id`,
-//! `prev` and `hash` as text beside `applied`, is read as it is and
-//! converted in place by the first writer's open, once, as it upgrades,
-//! every event, digest and export as before (lakelands#1518). One whose
-//! edges table holds no edge of an array of keys answers them after the
-//! first writer's open, which converts its log and rebuilds
-//! (lakelands#1551).
+//! rebuilt with its graphs, and its pages are what they were. A
+//! projection whose edges table holds no edge of an array of keys answers
+//! them after the first writer's open, which rebuilds (lakelands#1551). A
+//! log an older release left, its `id`, `prev` and `hash` as text, is
+//! refused by its format, not by a statement that cannot read it.
 
 mod common;
 
@@ -25,7 +20,6 @@ use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
 use lakelands_api::error::Situation;
-use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION};
 use lakelands_api::id::TypeName;
 use lakelands_api::ontology::{
     Authority, FieldDecl,
@@ -37,8 +31,8 @@ use lakelands_api::read::ReadAt;
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::fixture::{
-    Lake, array_walks, computed_by, learnings, log_events, reads_all, restrict, source_record,
-    sourced, type_decl, vector,
+    Lake, array_walks, computed_by, learnings, reads_all, restrict, source_record, sourced,
+    type_decl, vector,
 };
 use lakelands_core::engines::Elements;
 use lakelands_engine_pg::PgOpener;
@@ -157,119 +151,8 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
 }
 
 /// The tables of a lake 0.19.0 made, which opens no schema holding others.
-const V0_19_TABLES: &str = "applied declarations declarations_head edges full_text graph_keys \
-    graphs lease log lookup_fields members meta outputs proposals records records_head routes \
-    segments sort_index text_index vectors";
-
-/// The first writer's open of a lake as 0.19.0 left it: a log of format
-/// 19 with no `frames` table, under a projection one layout back. It
-/// rebuilds the projection, makes the log's tables this build adds and
-/// appends the upgrade, in one try (lakelands#1467).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_format_19_lake_an_older_build_laid_out_upgrades_on_the_first_writers_open() {
-    let Some(url) = common::url_or_skip("format 19 upgrade") else {
-        return;
-    };
-    let schema = common::fresh_schema();
-    let location = common::location(&url, "vectors", &schema);
-    let vectors =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/19");
-    lakelands_store::import(location.clone(), seams(), vectors)
-        .await
-        .unwrap();
-    // The import upgraded the log: its events after the vectors' eight,
-    // and every table and the layout 0.19.0 did not have, are taken back.
-    let s = format!("\"{schema}\"");
-    let older = format!(
-        "DELETE FROM {s}.log WHERE position > 7; \
-         DO $$ DECLARE t TEXT; BEGIN FOR t IN SELECT tablename FROM pg_tables \
-         WHERE schemaname = '{schema}' AND tablename <> ALL (string_to_array('{V0_19_TABLES}', ' ')) \
-         LOOP EXECUTE format('DROP TABLE {s}.%I', t); END LOOP; END $$; \
-         DROP TABLE {s}.routes; \
-         CREATE TABLE {s}.routes (at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, \
-         key TEXT, source TEXT); \
-         UPDATE {s}.meta SET n = 7 WHERE k IN ('folded', 'layout'); {}",
-        as_text(&s)
-    );
-    let tables = format!(
-        "SELECT string_agg(tablename, ' ' ORDER BY tablename COLLATE \"C\") FROM pg_tables \
-         WHERE schemaname = '{schema}'"
-    );
-    let as_left = tokio::task::block_in_place(|| {
-        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-        client.batch_execute(&older).unwrap();
-        client.query_one(&tables, &[]).unwrap().get::<_, String>(0)
-    });
-    assert_eq!(as_left, V0_19_TABLES, "the lake holds 0.19.0's tables");
-    // A rebuild refused before its swap leaves the lake as 0.19.0 opens
-    // it: here, while another session holds the builder's lock.
-    let (locked, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
-    let holder = {
-        let (url, schema, locked) = (url.clone(), schema.clone(), locked.0);
-        std::thread::spawn(move || {
-            let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-            let builder =
-                "SELECT pg_advisory_lock(hashtextextended('lakelands rebuild ' || $1, 0))";
-            client.query_one(builder, &[&schema]).unwrap();
-            locked.send(()).unwrap();
-            let _ = release.1.recv();
-        })
-    };
-    tokio::task::block_in_place(|| locked.1.recv()).unwrap();
-    let refused = open(&location, OpenMode::Write).await.err();
-    assert!(
-        matches!(
-            refused.as_ref().and_then(|e| e.situation()),
-            Some(Situation::Rebuilding { .. })
-        ),
-        "the writer's open is refused while the builder's lock is held: {refused:?}"
-    );
-    let unchanged = tokio::task::block_in_place(|| {
-        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-        client.query_one(&tables, &[]).unwrap().get::<_, String>(0)
-    });
-    assert_eq!(
-        unchanged, V0_19_TABLES,
-        "a refused upgrade leaves 0.19.0's tables and no other"
-    );
-    let left = tokio::task::block_in_place(|| kept(&url, &schema));
-    assert_eq!(left, AS_TEXT, "a refused upgrade leaves the log's columns");
-    drop(release.0);
-    tokio::task::block_in_place(|| holder.join()).unwrap();
-    let store = open(&location, OpenMode::Write).await.unwrap();
-    let why = store.rebuilt_at_open();
-    assert!(
-        why.as_ref().is_some_and(|w| w.contains("layout 7")),
-        "the writer's open says why it rebuilt: {why:?}"
-    );
-    let log = log_events(store.as_ref()).await.unwrap();
-    let marked = log.iter().filter(
-        |e| matches!(e.body, EventBody::LakeUpgraded { from: 19, to } if to == LOG_FORMAT_VERSION),
-    );
-    assert_eq!(marked.count(), 1, "one `lake_upgraded` from 19: {log:?}");
-    let frames = format!(
-        "SELECT count(*) FROM pg_tables WHERE schemaname = '{schema}' AND tablename = 'frames'"
-    );
-    assert_eq!(
-        tokio::task::block_in_place(|| one(&url, &frames)),
-        1,
-        "the upgrade makes `frames`"
-    );
-    store.verify(None, None).await.unwrap();
-    let kept = tokio::task::block_in_place(|| kept(&url, &schema));
-    assert_eq!(kept, CONVERTED, "the rebuild's swap converts the log");
-    store.close().await.unwrap();
-    let store = open(&location, OpenMode::Write).await.unwrap();
-    assert_eq!(
-        store.rebuilt_at_open(),
-        None,
-        "the next writer's open rebuilds nothing"
-    );
-    store.close().await.unwrap();
-    common::drop_schema(&url, &schema);
-}
-
-/// The log taken back to 0.20.0's: text columns, `applied`, no `log_id`.
+/// The log taken back to 0.20.0's: its formats in `v`, text columns,
+/// `applied`, no `log_id`.
 fn as_text(s: &str) -> String {
     format!(
         "DROP INDEX {s}.log_id; \
@@ -277,183 +160,56 @@ fn as_text(s: &str) -> String {
          ALTER COLUMN prev TYPE text USING encode(prev, 'hex'), \
          ALTER COLUMN hash TYPE text USING encode(hash, 'hex'); \
          CREATE TABLE {s}.applied (id TEXT PRIMARY KEY, at BIGINT NOT NULL); \
-         INSERT INTO {s}.applied SELECT id, min(position) FROM {s}.log GROUP BY id"
+         INSERT INTO {s}.applied SELECT id, min(position) FROM {s}.log GROUP BY id; \
+         UPDATE {s}.log SET bytes = convert_to(replace(replace(convert_from(bytes, 'UTF8'), \
+         '\"v\":{now}', '\"v\":20'), '\"format\":{now}', '\"format\":20'), 'UTF8')",
+        now = lakelands_api::event::LOG_FORMAT_VERSION,
     )
 }
 
-const AS_TEXT: &str = "text text text t f";
-const CONVERTED: &str = "bytea bytea bytea f t";
-
-/// The types of `hash`, `id` and `prev`, `applied` there, `log_id` there.
-fn kept(url: &str, schema: &str) -> String {
-    let s = format!("\"{schema}\"");
-    let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
-    let kept = format!(
-        "SELECT concat_ws(' ', (SELECT string_agg(format_type(atttypid, NULL), ' ' \
-         ORDER BY attname) FROM pg_attribute WHERE attrelid = '{s}.log'::regclass \
-         AND attname IN ('hash', 'id', 'prev')), to_regclass('{s}.applied') IS NOT NULL, \
-         to_regclass('{s}.log_id') IS NOT NULL)"
-    );
-    client.query_one(&kept, &[]).unwrap().get(0)
-}
-
-/// `log`'s rows, hex as hex in either type, the digests, the table's file.
-fn rows(url: &str, schema: &str) -> (String, String, i64) {
-    let s = format!("\"{schema}\"");
-    let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
-    let hex = |c: &str| format!("ltrim({c}::text, '\\x')");
-    let rows = format!(
-        "SELECT (SELECT string_agg(concat_ws(' ', position, segment, fence, {}, {}, {}, \
-         encode(bytes, 'hex')), E'\\n' ORDER BY position) FROM {s}.log), \
-         (SELECT string_agg(first || ' ' || coalesce(digest, '-'), ',' ORDER BY first) \
-         FROM {s}.segments), (SELECT relfilenode::int8 FROM pg_class WHERE oid = '{s}.log'::regclass)",
-        hex("id"),
-        hex("prev"),
-        hex("hash")
-    );
-    let row = client.query_one(&rows, &[]).unwrap();
-    (row.get(0), row.get(1), row.get(2))
-}
-
-/// The files of an export's `log/`, each with its bytes, in order.
-fn exported(location: &Location, dir: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
-    let _ = std::fs::remove_dir_all(dir);
-    lakelands_engine_pg::export(location, dir).unwrap();
-    let files = std::fs::read_dir(dir.join("log"))
-        .unwrap()
-        .map(|f| f.unwrap());
-    let read = |f: std::fs::DirEntry| (f.file_name(), std::fs::read(f.path()).unwrap());
-    let mut files: Vec<_> = files.map(read).collect();
-    files.sort();
-    files
-}
-
-/// A lake as 0.20.0 left it, of format 20 on text columns beside
-/// `applied`: its ends are read as they are and a reader is refused
-/// until it is upgraded; a conversion that fails, on an id not of its
-/// form or a `prev` that spells no bytes, leaves it; the first writer's
-/// open converts it as it takes the lease and appends one `lake_upgraded`
-/// from 20, every event, digest and export as before, each id the log
-/// held answering where it stands; the open after rewrites nothing.
+/// A lake made holds the index on `id` that answers an applied id. A lake
+/// as 0.20.0 left it, on text columns and without that index, is refused
+/// in every mode by its format, where its ends are read: no statement
+/// fails on the columns' type, and nothing of the schema changes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_lake_0_20_0_left_is_converted_in_place_by_the_first_writers_open() {
-    use lakelands_api::engine::EngineOpener;
-    use lakelands_api::error::{Flaw, Part};
-    use lakelands_api::event::EventId;
-    use lakelands_api::id::Position;
+async fn a_log_on_text_columns_is_refused_by_its_format() {
     let Some(url) = common::url_or_skip("log of 0.20.0") else {
         return;
     };
     let schema = common::fresh_schema();
     let s = format!("\"{schema}\"");
-    let location = common::location(&url, "vectors", &schema);
-    let run = |sql: &str| {
-        let connect = || postgres::Client::connect(&url, postgres::NoTls).unwrap();
-        tokio::task::block_in_place(|| connect().batch_execute(sql).unwrap());
-    };
-    let kept = || tokio::task::block_in_place(|| kept(&url, &schema));
-    let engine = |mode| tokio::task::block_in_place(|| PgOpener.open(&location, mode).unwrap());
-    // Two segments, the first sealed: the vectors' eight events, and none
-    // of the import's upgrade.
-    let vectors =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/20");
-    lakelands_store::import(location.clone(), seams(), vectors)
-        .await
-        .unwrap();
-    run(&format!(
-        "DELETE FROM {s}.log WHERE position > 7; DROP TABLE {s}.quarantined; \
-         UPDATE {s}.meta SET n = 7 WHERE k = 'folded'"
-    ));
-    let events = tokio::task::block_in_place(|| engine(OpenMode::Read).read(Position(0), 100));
-    let events = events.unwrap();
-    let scratch = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(&schema);
-    let taken = |at: &str| {
-        let export = || exported(&location, &scratch.join(at));
-        tokio::task::block_in_place(|| (rows(&url, &schema), export()))
-    };
-    let (before, export) = taken("before");
-    run(&as_text(&s));
-    assert_eq!(kept(), AS_TEXT);
-    // Read as it is, both ends by 20; a reader of the store is refused.
-    let ends = PgOpener.log_ends(&location).unwrap().unwrap();
-    let v = |e: &[u8]| serde_json::from_slice::<serde_json::Value>(e).unwrap()["v"].clone();
-    assert_eq!([&ends.0, &ends.1], [&events[0], &events[7]], "the ends");
-    assert_eq!([v(&ends.0.bytes), v(&ends.1.bytes)], [json!(20), json!(20)]);
-    let read = tokio::task::block_in_place(|| engine(OpenMode::Read).read(Position(0), 100));
-    assert_eq!(read.unwrap(), events, "the engine reads it as it is");
-    let refused = open(&location, OpenMode::Read).await.err();
-    assert!(
-        matches!(
-            refused.as_ref().and_then(|e| e.situation()),
-            Some(Situation::LogUpgradeOwed { found: 20, .. })
-        ),
-        "a reader waits for the writer: {refused:?}"
+    let location = common::location(&url, "older", &schema);
+    let store = open(&location, OpenMode::Create).await.unwrap();
+    store.close().await.unwrap();
+    drop(store);
+    let indexed = format!(
+        "SELECT count(*) FROM pg_indexes WHERE schemaname = '{schema}' AND indexname = 'log_id'"
     );
-    // Two conversions that fail, each leaving the log as it was.
-    let planted = [
-        "SET id = upper(id) WHERE position = 3",
-        "SET id = lower(id)",
-        "SET prev = 'zz' || prev WHERE position = 5",
-        "SET prev = ltrim(prev, 'z')",
-    ];
-    for (n, [plant, undo]) in planted.as_chunks().0.iter().enumerate() {
-        run(&format!("UPDATE {s}.log {plant}"));
-        let refused = open(&location, OpenMode::Write).await.err().unwrap();
-        let situation = refused.situation();
-        assert!(
-            n > 0
-                || matches!(situation, Some(Situation::Damaged { part: Part::Log, position: Some(p), flaw: Flaw::IdNotOfForm }) if p.0 == 3),
-            "an id not of its form is refused where it is: {refused:?}"
-        );
-        assert_eq!(kept(), AS_TEXT, "left as it was: {refused:?}");
-        run(&format!("UPDATE {s}.log {undo}"));
-    }
-    let store = open(&location, OpenMode::Write).await.unwrap();
-    assert_eq!(kept(), CONVERTED);
+    let indexed = tokio::task::block_in_place(|| one(&url, &indexed));
     assert_eq!(
-        store.rebuilt_at_open(),
-        None,
-        "converted as it takes the lease"
+        indexed, 1,
+        "a lake made answers an applied id from its index on `id`"
     );
-    let read = log_events(store.as_ref()).await.unwrap();
-    let marked = read.iter().filter(
-        |e| matches!(e.body, EventBody::LakeUpgraded { from: 20, to } if to == LOG_FORMAT_VERSION),
-    );
-    assert_eq!(marked.count(), 1, "one `lake_upgraded` from 20: {read:?}");
-    store.verify(None, None).await.unwrap();
-    store.close().await.unwrap();
-    let (after, again) = taken("after");
-    // The open appended its `lease_taken` and `lake_upgraded` after them.
-    assert!(after.0.starts_with(&before.0), "every event as before");
-    assert_eq!(after.1, before.1, "every segment's digest as before");
-    let (sealed, active) = export.split_at(export.len() - 1);
-    assert_eq!(again.len(), export.len(), "the export's files as before");
-    assert_eq!(&again[..sealed.len()], sealed, "the sealed ones'");
-    assert_eq!(again[sealed.len()].0, active[0].0);
-    assert!(again[sealed.len()].1.starts_with(&active[0].1));
-    let reader = engine(OpenMode::Read);
-    let read = tokio::task::block_in_place(|| reader.read(Position(0), 100)).unwrap();
-    assert_eq!(read[..events.len()], events[..]);
-    // Each id the log held before answers where it stands.
-    let mut ids: Vec<EventId> = events.iter().map(|e| e.id.clone()).collect();
-    ids.push(EventId(format!("{:032x}", 1)));
-    let applied = tokio::task::block_in_place(|| reader.view(None)?.applied_many(&ids));
-    let mut at: Vec<_> = events.iter().map(|e| Some(e.position)).collect();
-    at.push(None);
-    assert_eq!(applied.unwrap(), at, "each id where it stands");
-    drop(reader);
-    let first = tokio::task::block_in_place(|| rows(&url, &schema));
-    let store = open(&location, OpenMode::Write).await.unwrap();
-    store.close().await.unwrap();
-    let second = tokio::task::block_in_place(|| rows(&url, &schema));
-    assert_eq!(second.2, first.2, "the next open rewrites nothing");
-    let _ = std::fs::remove_dir_all(&scratch);
+    tokio::task::block_in_place(|| {
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        client.batch_execute(&as_text(&s)).unwrap();
+    });
+    for mode in [OpenMode::Read, OpenMode::Write, OpenMode::Rebuild] {
+        let refused = open(&location, mode).await.err().unwrap();
+        assert!(
+            matches!(
+                refused.situation(),
+                Some(Situation::LogFormat { found: 20, .. })
+            ),
+            "{mode:?}: {refused:?}"
+        );
+    }
     common::drop_schema(&url, &schema);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_lake_0_20_0_left_holding_an_array_answers_its_edges_after_the_first_writers_open() {
-    let Some(url) = common::url_or_skip("array edges of 0.20.0") else {
+async fn a_projection_without_an_array_s_edges_answers_them_after_the_first_writers_open() {
+    let Some(url) = common::url_or_skip("array edges of an older layout") else {
         return;
     };
     let schema = common::fresh_schema();
@@ -471,27 +227,20 @@ async fn a_lake_0_20_0_left_holding_an_array_answers_its_edges_after_the_first_w
     let before = store.head().await.unwrap();
     store.close().await.unwrap();
     drop((l, store));
-    // 0.20.0 read no array: its edges table holds y's edge and none of x's.
+    // An older build read no array: its edges table holds y's edge and
+    // none of x's.
     let layout = format!("SELECT n FROM {s}.meta WHERE k = 'layout'");
     let wanted = tokio::task::block_in_place(|| one(&url, &layout));
     let back = format!(
-        "{}; DELETE FROM {s}.edges WHERE src_key = 'x'; UPDATE {s}.meta SET n = {} WHERE k = 'layout'",
-        as_text(&s),
+        "DELETE FROM {s}.edges WHERE src_key = 'x'; UPDATE {s}.meta SET n = {} WHERE k = 'layout'",
         wanted - 1
     );
     let edges = tokio::task::block_in_place(|| {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
         client.batch_execute(&back).unwrap();
-        (
-            kept(&url, &schema),
-            one(&url, &format!("SELECT count(*) FROM {s}.edges")),
-        )
+        one(&url, &format!("SELECT count(*) FROM {s}.edges"))
     });
-    assert_eq!(
-        edges,
-        (AS_TEXT.to_owned(), 1),
-        "the log on text, y's edge kept"
-    );
+    assert_eq!(edges, 1, "y's edge kept");
     let refused = open(&location, OpenMode::Read).await.err().unwrap();
     assert!(
         matches!(refused.situation(), Some(Situation::ProjectionLayout { found, wanted: w, .. })
@@ -504,10 +253,6 @@ async fn a_lake_0_20_0_left_holding_an_array_answers_its_edges_after_the_first_w
         why.as_ref()
             .is_some_and(|w| w.contains(&format!("layout {}", wanted - 1))),
         "the writer's open says why it rebuilt: {why:?}"
-    );
-    assert_eq!(
-        tokio::task::block_in_place(|| kept(&url, &schema)),
-        CONVERTED
     );
     let head = array_walks(store.as_ref(), None).await;
     assert!(

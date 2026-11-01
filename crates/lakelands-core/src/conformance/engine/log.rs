@@ -75,8 +75,8 @@ engine_check!(
 );
 
 engine_check!(
-    MIXED_DIGEST = a_segment_of_older_lines_and_framed_ones_is_digested_over_its_events_restored,
-    "log format §1.2 and §4.2: a segment holding whole lines of the format before 20 and framed appends of 20 reads back as appended, and its digest is SHA-256 over its events as they restore, each event's canonical bytes followed by a line feed"
+    MIXED_DIGEST = a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored,
+    "log format §1.2 and §4.2: a segment holding whole lines and framed appends reads back as appended, and its digest is SHA-256 over its events as they restore, each event's canonical bytes followed by a line feed"
 );
 
 engine_check!(
@@ -154,7 +154,7 @@ fn an_append_that_returned_is_read_by_the_next_handle(
     let lease = writer.take_lease("the writer").must("taking the lease")?;
     // One event, a framed run, and a run across a seal (086).
     let mut events = chain(0, 1, &Digest::zero(), &lease);
-    let (run, _) = framed(20, 1, 4, &events[0].hash, &lease);
+    let (run, _) = framed(FORMAT, 1, 4, &events[0].hash, &lease);
     let first = chain(5, 2, &run[3].hash, &lease);
     let more = chain(7, 2, &first[1].hash, &lease);
     (writer.append(&lease, &events))
@@ -880,6 +880,9 @@ fn an_import_is_refused_once_the_log_holds_an_appended_event(engine: &dyn LakeEn
     Ok(())
 }
 
+/// The format the frames here are written in.
+const FORMAT: u64 = lakelands_api::event::LOG_FORMAT_VERSION as u64;
+
 /// `n` chained events of format `v` from position `start`, following
 /// `prev`, under `lease`, sharing `known_at` and their body's `kind`, as
 /// one append stores them (`crate::log::frame_append`), and the events
@@ -937,10 +940,10 @@ fn a_framed_append_comes_back_unchanged_read_from_within_it(engine: &dyn LakeEng
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let first = chain(0, 1, &Digest::zero(), &lease);
     engine.append(&lease, &first).must("appending one event")?;
-    let (stored, events) = framed(20, 1, 4, &first[0].hash, &lease);
+    let (stored, events) = framed(FORMAT, 1, 4, &first[0].hash, &lease);
     ensure!(
         stored.iter().all(|e| e.frame.is_some()),
-        "four events of format 20 that share members are stored with a frame, and they are \
+        "four events that share members are stored with a frame, and they are \
          stored as {:?}",
         render(&stored)
     );
@@ -979,7 +982,7 @@ fn a_framed_append_comes_back_unchanged_read_from_within_it(engine: &dyn LakeEng
 
 fn an_append_that_holds_a_frame_in_part_is_refused_whole(engine: &dyn LakeEngine) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
-    let (stored, _) = framed(20, 0, 3, &Digest::zero(), &lease);
+    let (stored, _) = framed(FORMAT, 0, 3, &Digest::zero(), &lease);
     let refused = |answer: lakelands_api::Result<()>, position: u64, what: &str| -> Held {
         let case = crate::conformance::fixture::invalid_case(&answer);
         ensure!(
@@ -1032,20 +1035,23 @@ fn an_append_that_holds_a_frame_in_part_is_refused_whole(engine: &dyn LakeEngine
     Ok(())
 }
 
-fn a_segment_of_older_lines_and_framed_ones_is_digested_over_its_events_restored(
+fn a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored(
     engine: &dyn LakeEngine,
 ) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
-    let (older, mut events) = framed(19, 0, 2, &Digest::zero(), &lease);
+    let whole = chain(0, 2, &Digest::zero(), &lease);
+    let read = |e: &CanonicalEvent| serde_json::from_slice::<serde_json::Value>(&e.bytes);
+    let events: std::result::Result<Vec<_>, _> = whole.iter().map(read).collect();
+    let mut events = events.map_err(|e| Failure::new(format!("a line is JSON: {e}")))?;
     ensure!(
-        older.iter().all(|e| e.frame.is_none()),
-        "events of format 19 are stored as whole lines, and they are stored as {:?}",
-        render(&older)
+        whole.iter().all(|e| e.frame.is_none()),
+        "events appended one by one are stored as whole lines, and they are stored as {:?}",
+        render(&whole)
     );
-    engine
-        .append(&lease, &older)
-        .must("appending two events of format 19")?;
-    let (newer, more) = framed(20, 2, 3, &older[1].hash, &lease);
+    for line in whole.chunks(1) {
+        engine.append(&lease, line).must("appending one event")?;
+    }
+    let (newer, more) = framed(FORMAT, 2, 3, &whole[1].hash, &lease);
     engine
         .append(&lease, &newer)
         .must("appending three events framed")?;
@@ -1066,7 +1072,7 @@ fn a_segment_of_older_lines_and_framed_ones_is_digested_over_its_events_restored
          as restored, {digest}"
     );
     let log = engine.read(Position(0), 10).must("reading the log")?;
-    let want = [older, newer, next].concat();
+    let want = [whole, newer, next].concat();
     ensure!(
         log == want,
         "the log reads back {:?}; it must be what was appended, {:?}",
@@ -1122,17 +1128,19 @@ fn a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_whe
                 })
             },
         ),
+        ("the frame says no format", 0, Flaw::NotAFrame, |s| {
+            edit_frame(s, |f| {
+                f.as_object_mut().map(|m| m.remove("v"));
+            })
+        }),
         (
-            "the frame says format 19, which frames none",
-            0,
-            Flaw::NotAFrame,
-            |s| edit_frame(s, |f| f["v"] = json!(19)),
-        ),
-        (
-            "the second event's line says format 19 under a frame of 20",
+            "the second event's line says the format before its frame's",
             1,
-            Flaw::FrameOther { frame: 20, v: 19 },
-            |s| edit_line(s, 1, |l| l["v"] = json!(19)),
+            Flaw::FrameOther {
+                frame: FORMAT,
+                v: FORMAT - 1,
+            },
+            |s| edit_line(s, 1, |l| l["v"] = json!(FORMAT - 1)),
         ),
         (
             "the second event's line holds `frame`, as a frame line does",
@@ -1153,7 +1161,7 @@ fn a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_whe
         };
         let engine = own.as_deref().unwrap_or(engine);
         let lease = engine.take_lease("conformance").must("taking the lease")?;
-        let (mut stored, _) = framed(20, 0, 3, &Digest::zero(), &lease);
+        let (mut stored, _) = framed(FORMAT, 0, 3, &Digest::zero(), &lease);
         plant(&mut stored)?;
         engine
             .append(&lease, &stored)

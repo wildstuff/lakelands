@@ -442,6 +442,8 @@ pub type Continue = Arc<
 
 /// The lines a [`Continue`] appends, made from the log's tip and the
 /// fence of the lease they are appended under; none, to append nothing.
+/// Where the lake is not made yet they are its log from the start, and
+/// the tip they are told means nothing.
 /// With them, how many positions past the tip they leave the projection
 /// is then committed through, as no fold leaves it: 0 leaves the
 /// projection where it is.
@@ -507,22 +509,26 @@ pub fn continue_below(
     location: &lakelands_api::Location,
     lines: Lines,
 ) -> lakelands_api::Result<Below> {
-    let engine = opener.open(location, lakelands_api::engine::OpenMode::Write)?;
-    let lease = engine.take_lease("another release")?;
-    let appended = match engine.tip()? {
-        Some(tip) => {
-            let (lines, ahead) = lines(tip, lease.fence);
-            engine.append(&lease, &lines).and_then(|()| {
-                let Some((tip, _)) = engine.tip()?.filter(|_| ahead > 0) else {
-                    return Ok(());
-                };
-                let projection = engine.projection();
-                projection.begin()?;
-                projection.commit(lakelands_api::Position(tip.0 + ahead))
-            })
-        }
-        None => Ok(()),
+    use lakelands_api::engine::OpenMode;
+    let mode = match opener.log_ends(location)? {
+        Some(_) => OpenMode::Write,
+        None => OpenMode::Create,
     };
+    let engine = opener.open(location, mode)?;
+    let lease = engine.take_lease("another release")?;
+    let start = (
+        lakelands_api::Position::GENESIS,
+        lakelands_api::event::Digest::zero(),
+    );
+    let (lines, ahead) = lines(engine.tip()?.unwrap_or(start), lease.fence);
+    let appended = engine.append(&lease, &lines).and_then(|()| {
+        let Some((tip, _)) = engine.tip()?.filter(|_| ahead > 0) else {
+            return Ok(());
+        };
+        let projection = engine.projection();
+        projection.begin()?;
+        projection.commit(lakelands_api::Position(tip.0 + ahead))
+    });
     engine.release_lease(&lease)?;
     drop(engine);
     appended?;

@@ -13,10 +13,10 @@ use lakelands_api::{LakeId, Result, SourceId, Timestamp};
 
 use super::{Apart, Ciphers, Keys, List, cipher, digest, open, rotates, seal, turns};
 
-/// The lines of `vectors/22/further.json` that show `shows`.
+/// The lines of `vectors/23/further.json` that show `shows`.
 fn line(shows: &str) -> Event {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/22/further.json");
+        .join("../../docs/log-format/vectors/23/further.json");
     let further: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let entries = further["events"].as_array().unwrap();
     let entry = entries.iter().find(|e| e["shows"] == shows).unwrap();
@@ -28,26 +28,17 @@ fn key() -> DataKey {
     DataKey(Sha256::digest(b"lakelands:vectors:key").into())
 }
 
-/// The vectors' ingest of each member sealed alone opens under their key
-/// to its plaintext, and sealed again its member goes into a box the
-/// patch leaves out, which opens to the same plaintext (083).
+/// The vectors' sealed ingest opens under their key to its plaintext,
+/// and sealing it again gives the box the log holds (083).
 #[test]
-fn the_vectors_sealed_ingest_opens_and_seals_again_in_a_box() {
+fn the_vectors_sealed_ingest_opens_and_seals_again_to_its_box() {
     let stored = line("sealed_ingest");
     let mut plain = stored.clone();
     open(&mut plain, &cipher(&key())).unwrap();
-    let EventBody::RecordIngested { patch, .. } = &plain.body else {
-        panic!("an ingest")
-    };
-    assert_eq!(patch["email"], json!("ada@example.org"));
-    let opened = plain.clone();
+    assert_eq!(patch_of(&plain)["email"], json!("ada@example.org"));
     let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
     seal(&mut plain.body, &mut sealed, &source, &cipher(&key()));
-    assert_eq!(patch_of(&plain).get("email"), None);
-    assert!(sealed.boxed.is_some());
-    plain.sealed = Some(sealed);
-    open(&mut plain, &cipher(&key())).unwrap();
-    assert_eq!(plain.body, opened.body);
+    assert_eq!((plain.body, Some(sealed)), (stored.body, stored.sealed));
 }
 
 /// The patch of an ingest.
@@ -61,7 +52,7 @@ fn patch_of(e: &Event) -> &lakelands_api::Patch {
 /// `boxed.json`'s ingest, its members sealed in one box.
 fn boxed() -> Event {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/22/boxed.json");
+        .join("../../docs/log-format/vectors/23/boxed.json");
     let boxed: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     serde_json::from_str(boxed["line"].as_str().unwrap()).unwrap()
 }
@@ -168,10 +159,9 @@ fn apart() -> DataKey {
 }
 
 /// The vectors' ingest sealed apart opens under its version composed
-/// with the delivery's key, to its plaintext, and under neither alone,
-/// and sealed again in a box opens only under both too;
-/// its output's input is the HMAC of the call under the composed key
-/// (065, lakelands#1214).
+/// with the delivery's key, to its plaintext, and under neither alone;
+/// sealed again it gives the box the log holds; and its output's input
+/// is the HMAC of the call under the composed key (065, lakelands#1214).
 #[test]
 fn the_vectors_ingest_sealed_apart_opens_only_under_both_keys() {
     let both = super::compose(&key(), &[apart()]);
@@ -181,17 +171,10 @@ fn the_vectors_ingest_sealed_apart_opens_only_under_both_keys() {
     }
     let mut plain = stored.clone();
     open(&mut plain, &cipher(&both)).unwrap();
-    let EventBody::RecordIngested { patch, .. } = &plain.body else {
-        panic!("an ingest")
-    };
-    assert_eq!(patch["email"], json!("bea@example.org"));
-    let opened = plain.clone();
+    assert_eq!(patch_of(&plain)["email"], json!("bea@example.org"));
     let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
     seal(&mut plain.body, &mut sealed, &source, &cipher(&both));
-    plain.sealed = Some(sealed);
-    assert!(open(&mut plain.clone(), &cipher(&key())).is_err());
-    open(&mut plain, &cipher(&both)).unwrap();
-    assert_eq!(plain.body, opened.body);
+    assert_eq!((plain.body, Some(sealed)), (stored.body, stored.sealed));
     let mut e = line("sealed_apart_output");
     let call = json!({"function": "shout", "inputs": {"email": "bea@example.org"}, "config": {}});
     let EventBody::OutputRecorded { input, .. } = &e.body else {
@@ -206,9 +189,8 @@ fn the_vectors_ingest_sealed_apart_opens_only_under_both_keys() {
     assert_eq!(output.as_ref(), Some(&json!("BEA@EXAMPLE.ORG")));
 }
 
-/// A version composed with no key apart is the version itself, so a
-/// value sealed before format 18 opens as it was sealed; composed with
-/// keys apart it depends on each of them and on their order.
+/// A version composed with no key apart is the version itself; composed
+/// with keys apart it depends on each of them and on their order.
 #[test]
 fn a_version_composed_with_no_key_apart_is_itself() {
     let other = DataKey(Sha256::digest(b"another").into());
@@ -818,7 +800,7 @@ fn the_vectors_quarantined_box_opens_and_seals_to_the_same_bytes() {
 #[test]
 fn each_box_of_two_deliveries_sealed_apart_opens_under_its_own_composed_key() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/22/apart.json");
+        .join("../../docs/log-format/vectors/23/apart.json");
     let apart: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let composed = |name: &str| {
         let apart = DataKey(Sha256::digest(name.as_bytes()).into());

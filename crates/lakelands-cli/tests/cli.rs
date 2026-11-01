@@ -1296,141 +1296,27 @@ fn rebuild_prints_the_position_it_rebuilt_through() {
     }
 }
 
-/// `upgrade` reads the log's ends: a lake in the format this release
-/// writes needs none, with `--check` or without. A lake of an older
-/// format is upgraded by the open it makes, which
-/// `crates/lakelands-store/tests/lake.rs` holds.
+/// There is no command that upgrades a lake: a lake of an older format is
+/// refused and its profile made anew (`docs/log-format.md` §6).
 #[test]
-fn upgrade_says_a_lake_of_this_release_s_format_needs_none() {
-    let v = lakelands_api::event::LOG_FORMAT_VERSION;
-    let sh = Shell::on("upgrade", Backend::Store);
+fn upgrade_is_no_command() {
+    let sh = Shell::on("no-upgrade", Backend::Store);
     sh.lake();
-    sh.run(&["apply", &sh.fixture()]);
-    let said = format!("finance is written in log format {v}: nothing to upgrade\n");
-    ok(&sh.run(&["upgrade", "--check"]), &said);
-    ok(&sh.run(&["upgrade"]), &said);
-}
-
-/// `upgrade` on a lake the release before wrote whole, in format 14:
-/// `--check` says what an open for writing does and opens none; the
-/// upgrade says the step it took; run again it has none to take.
-#[test]
-fn upgrade_takes_a_lake_of_the_format_before_one_step_once() {
-    use lakelands_api::engine::EngineOpener;
-    use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION as NEW, OLDEST_LOG_FORMAT as OLD};
-    use lakelands_api::{Position, Timestamp};
-    let sh = Shell::on("upgrade-14", Backend::Store);
-    sh.lake();
-    // The lake's location, as the root keeps it, its directory under it.
-    let file = sh.root.join("lakes").join("finance.json");
-    let mut at: lakelands_api::Location =
-        serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
-    if let lakelands_api::location::EngineConfig::Sqlite { dir, .. } = &mut at.engine
-        && dir.is_relative()
-    {
-        *dir = sh.root.join(&*dir);
-    }
-    // The release before's writer: `lake_created` and its lease, in 14.
-    let engine = lakelands_engine_sqlite::SqliteOpener
-        .open(&at, OpenMode::Create)
-        .unwrap();
-    let lease = engine.take_lease("the release before").unwrap();
-    let older = |e: lakelands_api::engine::CanonicalEvent, format: bool| {
-        let mut v: serde_json::Value = serde_json::from_slice(&e.bytes).unwrap();
-        v["v"] = serde_json::json!(OLD);
-        if format {
-            v["body"]["format"] = serde_json::json!(OLD);
-        }
-        v.as_object_mut().unwrap().remove("hash");
-        let hash = lakelands_api::canonical::sha256_hex(&v);
-        v["hash"] = serde_json::json!(hash);
-        lakelands_api::engine::CanonicalEvent {
-            hash: lakelands_api::event::Digest(hash),
-            bytes: lakelands_api::canonical::to_vec(&v),
-            ..e
-        }
-    };
-    let id = &"finance".into();
-    let made =
-        lakelands_store::log::Draft::system(Timestamp(1), EventBody::LakeCreated { format: OLD });
-    let (_, made) = lakelands_store::log::seal(
-        id,
-        Position(0),
-        &lakelands_api::event::Digest::zero(),
-        0,
-        made,
-    );
-    let made = older(made, true);
-    let (fence, holder) = (lease.fence, "the release before".to_owned());
-    let taken =
-        lakelands_store::log::Draft::system(Timestamp(2), EventBody::LeaseTaken { fence, holder });
-    let (_, taken) = lakelands_store::log::seal(id, Position(1), &made.hash, fence, taken);
-    engine.append(&lease, &[made, older(taken, false)]).unwrap();
-    engine.release_lease(&lease).unwrap();
-    drop(engine);
-    // The refusal names a command that runs, and advises it.
-    let owed = sh.run(&["verify"]);
-    let named = "lakelands upgrade --lake finance";
-    assert!(owed.err.contains(&format!("`{named}`")), "{}", owed.err);
+    let run = sh.run(&["upgrade"]);
     assert!(
-        owed.err.contains("what to do: run `lakelands upgrade`"),
-        "{}",
-        owed.err
-    );
-    ok(
-        &sh.run(&["upgrade", "--check"]),
-        &format!(
-            "finance is written in log format {OLD}: an open for writing appends `lake_upgraded` \
-             from {OLD} to {NEW}, and rebuilds the projection where an older build laid it \
-             out; nothing was opened for writing\n"
-        ),
-    );
-    let run = sh.run(&named.split_whitespace().skip(1).collect::<Vec<_>>());
-    let said = format!("upgraded finance from log format {OLD} to {NEW} through position ");
-    assert!(
-        run.code == 0 && run.out.starts_with(&said),
+        run.code != 0 && run.err.contains("unrecognized subcommand 'upgrade'"),
         "{} {}{}",
         run.code,
         run.out,
         run.err
     );
-    ok(
-        &sh.run(&["upgrade"]),
-        &format!("finance is written in log format {NEW}: nothing to upgrade\n"),
-    );
 }
 
-/// `upgrade` on a lake declared and not yet written says what `verify`
-/// says, and exits as it does.
+/// A writing command on a lake whose projection an older build laid out
+/// (lakelands#1151): its open rebuilds the projection, once.
 #[test]
-fn upgrade_says_a_lake_no_command_has_written_is_not_there_yet() {
-    let sh = Shell::on("upgrade-unwritten", Backend::Store);
-    sh.lake();
-    for args in [&["upgrade", "--check"][..], &["upgrade"]] {
-        let run = sh.run(args);
-        assert_eq!((run.code, run.out.as_str()), (3, ""));
-        assert!(
-            run.err
-                .starts_with("error: there is no lake `finance` to upgrade yet\n"),
-            "{}",
-            run.err
-        );
-        assert!(
-            run.err
-                .contains("what to do: a lake is made by the first command that writes"),
-            "{}",
-            run.err
-        );
-    }
-    assert_eq!(sh.run(&["verify"]).code, 3);
-}
-
-/// `upgrade` on a lake of this release's format whose projection an
-/// older build laid out (lakelands#1151): `--check` says the open for
-/// writing rebuilds it and opens none; the upgrade rebuilds it once.
-#[test]
-fn upgrade_rebuilds_a_projection_an_older_build_laid_out() {
-    let sh = Shell::on("upgrade-layout", Backend::Store);
+fn a_writing_command_rebuilds_a_projection_an_older_build_laid_out() {
+    let sh = Shell::on("older-layout", Backend::Store);
     sh.lake();
     let file = sh.root.join("lakes").join("finance.json");
     let mut at: lakelands_api::Location =
@@ -1461,23 +1347,8 @@ fn upgrade_rebuilds_a_projection_an_older_build_laid_out() {
     ))
     .unwrap();
     drop(db);
-    let v = lakelands_api::event::LOG_FORMAT_VERSION;
-    ok(
-        &sh.run(&["upgrade", "--check"]),
-        &format!(
-            "finance is written in log format {v}, its projection in layout {older}: an open \
-             for writing rebuilds it; nothing was opened for writing\n"
-        ),
-    );
-    let run = sh.run(&["upgrade"]);
-    let said = format!("rebuilt the projection of finance from layout {older} in ");
-    assert!(
-        run.code == 0 && run.out.starts_with(&said),
-        "{} {}{}",
-        run.code,
-        run.out,
-        run.err
-    );
+    let run = sh.run(&["apply", &sh.fixture()]);
+    assert_eq!(run.code, 0, "{}{}", run.out, run.err);
     // The disk, not the shell's store: the projection is laid out anew.
     let db = rusqlite::Connection::open(&path).unwrap();
     let now: i64 =
@@ -1499,11 +1370,11 @@ fn upgrade_rebuilds_a_projection_an_older_build_laid_out() {
 /// (lakelands#1322): it says the room it takes before it starts and opens
 /// the log and its own scratch only, so the projection, unreadable while
 /// it runs, is not opened and the writer keeps its lease and writes on;
-/// `upgrade` of the projection marked a layout back then folds only what
-/// was written after the build. `--discard` removes a build ahead, and
+/// the next writer's open of the projection marked a layout back takes the
+/// build up, which is then gone. `--discard` removes a build ahead, and
 /// says so where none is kept.
 #[test]
-fn build_ahead_builds_beside_the_writer_and_the_upgrade_goes_on_from_it() {
+fn build_ahead_builds_beside_the_writer_and_the_next_writer_goes_on_from_it() {
     use std::os::unix::fs::PermissionsExt;
     let sh = Shell::on("build-ahead", Backend::Store);
     sh.lake();
@@ -1541,20 +1412,8 @@ fn build_ahead_builds_beside_the_writer_and_the_upgrade_goes_on_from_it() {
     db.execute("UPDATE meta SET v = v - 1 WHERE k = 'layout'", [])
         .unwrap();
     drop(db);
-    let run = sh.run(&["upgrade"]);
-    assert!(
-        run.code == 0
-            && run
-                .out
-                .starts_with("rebuilt the projection of finance from layout ")
-            && run
-                .out
-                .ends_with(", folding only what was written after the build ahead\n"),
-        "{} {}{}",
-        run.code,
-        run.out,
-        run.err
-    );
+    let run = sh.run(&["ingest", &bank, "--source", "bank"]);
+    assert_eq!(run.code, 0, "{}{}", run.out, run.err);
     let none = "finance kept no projection built ahead: nothing was removed\n";
     ok(&sh.run(&["build-ahead", "--discard"]), none);
     assert_eq!(sh.run(&["build-ahead"]).code, 0);

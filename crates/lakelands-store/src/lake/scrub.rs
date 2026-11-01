@@ -568,7 +568,6 @@ pub(crate) fn plan(
                 }
             }
             EventBody::LakeCreated { .. }
-            | EventBody::LakeUpgraded { .. }
             | EventBody::LeaseTaken { .. }
             | EventBody::Checkpoint { .. }
             | EventBody::VerbCalled { .. }

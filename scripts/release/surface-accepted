@@ -14,3 +14,14 @@ lakelands-api	derive_trait_impl_removed	type WriteContext no longer derives Copy
 lakelands-api	enum_variant_missing	variant Beyond::Clock
 lakelands-api	enum_variant_missing	variant Case::KeptExtremeGroupedBy
 lakelands-api	enum_variant_missing	variant Case::KeptExtremeUngrouped
+lakelands-api	enum_variant_missing	variant EventBody::LakeUpgraded
+lakelands-api	enum_variant_missing	variant Flaw::ApartBefore
+lakelands-api	enum_variant_missing	variant Flaw::ChangeBefore
+lakelands-api	enum_variant_missing	variant Flaw::DroppedBefore
+lakelands-api	enum_variant_missing	variant Flaw::ForgottenBefore
+lakelands-api	enum_variant_missing	variant Flaw::FormatStep
+lakelands-api	enum_variant_missing	variant Flaw::RemovedBefore
+lakelands-api	enum_variant_missing	variant Flaw::SealedBefore
+lakelands-api	enum_variant_missing	variant Flaw::SelectsLater
+lakelands-api	enum_variant_missing	variant Situation::LogUpgradeOwed
+lakelands-store	function_missing	function lakelands_store::written_in

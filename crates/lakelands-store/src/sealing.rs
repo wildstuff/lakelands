@@ -4,14 +4,13 @@
 //!
 //! What is sealed is AES-256-GCM-SIV over canonical bytes, written as the
 //! base64 of the cipher's output. A record event's members are sealed
-//! together, the object of them in one box the patch leaves out, from
-//! format 20 (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
+//! together, the object of them in one box the patch leaves out
+//! (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
 //! one tag a record, not one a field, and erasing loses nothing by it, as
-//! the members were under one key already. Up to format 19 each member
-//! was sealed alone, and still opens so. The nonce is made from where the
+//! the members are under one key already. The nonce is made from where the
 //! values stand: the source, the type, the record key and the version
-//! before the event, and, for a member alone, the field; or, for a
-//! recorded output, the seam and the input. So the same values against
+//! before the event; or, for a recorded output, the seam and the input.
+//! So the same values against
 //! the same state seal to the same bytes, and a redelivery keeps its
 //! ingest id, while two records or two versions never share one. The fold
 //! makes the nonce again from the event, so a sealed value moved to
@@ -506,8 +505,7 @@ pub fn cipher(key: &DataKey) -> Aes256GcmSiv {
 /// One key from a version of a source's key and the keys of deliveries
 /// sealed apart that seal with it (065): HKDF-SHA-256 with an empty salt
 /// over the version's bytes then each apart key's, info
-/// `lakelands:apart:v1`. With none apart it is the version itself, so a
-/// value sealed before format 18 opens as it was sealed.
+/// `lakelands:apart:v1`. With none apart it is the version itself.
 pub fn compose(version: &DataKey, apart: &[DataKey]) -> DataKey {
     if apart.is_empty() {
         return version.clone();
@@ -750,12 +748,11 @@ fn nonce(parts: &[&[u8]]) -> [u8; 12] {
 }
 
 /// The nonce of what a source's key seals in `body`, by its place: a
-/// record's box, from its source, type, key and version before, or, up to
-/// format 19, its member `field` alone; a quarantined record's box, from
-/// its source, the word `quarantined`, its id's delivery and index and its
+/// record's box, from its source, type, key and version before; a
+/// quarantined record's box, from its source, the word `quarantined`, its id's delivery and index and its
 /// version before (085); or a recorded output, from its source, seam and
 /// input. No other event holds a sealed value.
-fn place(source: &SourceId, body: &EventBody, field: Option<&str>) -> Option<[u8; 12]> {
+fn place(source: &SourceId, body: &EventBody) -> Option<[u8; 12]> {
     let source = source.as_str().as_bytes();
     match body {
         EventBody::RecordIngested {
@@ -763,11 +760,7 @@ fn place(source: &SourceId, body: &EventBody, field: Option<&str>) -> Option<[u8
         } => {
             let before = version.0.saturating_sub(1).to_string();
             let parts = [source, ty.as_str().as_bytes(), key.as_str().as_bytes()];
-            let parts = [&parts[..], &[before.as_bytes()]].concat();
-            Some(match field {
-                Some(f) => nonce(&[&parts[..], &[f.as_bytes()]].concat()),
-                None => nonce(&parts),
-            })
+            Some(nonce(&[&parts[..], &[before.as_bytes()]].concat()))
         }
         EventBody::RecordQuarantined { id, version, .. } => {
             let (index, before) = (id.index.to_string(), version.saturating_sub(1).to_string());
@@ -794,7 +787,7 @@ pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, cipher
             .expect("AES-256-GCM-SIV seals any value");
         STANDARD.encode(sealed)
     };
-    let Some(n) = place(source, body, None) else {
+    let Some(n) = place(source, body) else {
         return;
     };
     match body {
@@ -812,9 +805,8 @@ pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, cipher
 }
 
 /// Open in place what `event`'s `sealed` names under `cipher`'s key: a
-/// record's box back into its patch, each member sealed alone up to
-/// format 19, or a recorded output. A value that does not open under it, or a box that
-/// does not hold exactly the members `sealed` names, none of them in the
+/// record's box back into its patch, or a recorded output. A value that
+/// does not open under it, or a box that does not hold exactly the members `sealed` names, none of them in the
 /// patch, is answered as such, at the event's position.
 pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
     let Some(sealed) = event.sealed.clone() else {
@@ -830,11 +822,7 @@ pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
         let plain = cipher.decrypt(&Nonce::from(n), b.as_slice()).ok()?;
         serde_json::from_slice(&plain).ok()
     };
-    let at = |f: Option<&str>| place(&source, &event.body, f);
-    let each: Option<Vec<_>> = (sealed.fields.iter())
-        .map(|f| at(Some(f.as_str())))
-        .collect();
-    let (Some(whole), Some(each)) = (at(None), each) else {
+    let Some(whole) = place(&source, &event.body) else {
         return Ok(());
     };
     match (&mut event.body, &sealed.boxed) {
@@ -852,13 +840,6 @@ pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
                 return Err(unsealable());
             }
             patch.extend(members.into_iter().map(|(f, v)| (f.as_str().into(), v)));
-        }
-        (EventBody::RecordIngested { patch, .. }, None) => {
-            for (f, n) in sealed.fields.iter().zip(each) {
-                if let Some(v) = patch.get_mut(f) {
-                    *v = opened(v, n).ok_or_else(unsealable)?;
-                }
-            }
         }
         (
             EventBody::OutputRecorded {

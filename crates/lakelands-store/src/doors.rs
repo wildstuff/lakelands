@@ -117,7 +117,7 @@ pub async fn standby(
 }
 
 /// Build the projection this release lays out beside the lake at
-/// `location`, ahead of the writer's open that upgrades it
+/// `location`, ahead of the writer's open that swaps it in
 /// ([`Lake::build_ahead`]).
 pub async fn build_ahead(location: Location, seams: Seams) -> Result<crate::lake::Built> {
     exec::run(move || Lake::build_ahead(&location, seams)).await
@@ -135,20 +135,6 @@ pub async fn room_ahead(location: Location, seams: Seams) -> Result<u64> {
 /// ([`Lake::discard_ahead`]).
 pub async fn discard_ahead(location: Location, seams: Seams) -> Result<bool> {
     exec::run(move || Lake::discard_ahead(&location, seams)).await
-}
-
-/// The log format the newest event of the lake at `location` is written
-/// in, read from the log's ends alone, nothing opened or folded; `None`
-/// where there is no lake. A lake of a format this release does not read
-/// is refused as an open refuses it. Below the format the release writes,
-/// a writer's open upgrades it (`docs/log-format.md` §6).
-pub async fn written_in(location: Location, seams: Seams) -> Result<Option<u32>> {
-    exec::run(move || {
-        let ends = crate::lake::opener(&location, &seams)?.log_ends(&location)?;
-        let Some(ends) = ends else { return Ok(None) };
-        crate::log::one_format(&location.lake, Some(&ends)).map(Some)
-    })
-    .await
 }
 
 /// Import the export in `dir` as a new lake at `location`, on any engine

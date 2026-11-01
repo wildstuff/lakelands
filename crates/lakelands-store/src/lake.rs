@@ -191,7 +191,6 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         | EventBody::RecordRetired { ty, .. } => setting(ty),
         EventBody::OutputRecorded { field, .. } => field.as_ref().is_some_and(|f| setting(&f.0)),
         EventBody::LakeCreated { .. }
-        | EventBody::LakeUpgraded { .. }
         | EventBody::LeaseTaken { .. }
         | EventBody::RecordQuarantined { .. }
         | EventBody::QuarantineClosed { .. }
@@ -1007,18 +1006,6 @@ impl Lake {
     pub fn read_ended(&self, from: Position, limit: u32) -> Result<Vec<(Event, Position)>> {
         let mut out = Vec::new();
         let mut at = from;
-        // The format of the event before the first one read: a fall is
-        // judged at the first event of a range too. A single lookup (a
-        // search's probe, a record's version) reads no event more.
-        let mut before = match from.0.checked_sub(1).filter(|_| limit > 1) {
-            Some(p) => self
-                .engine
-                .read(Position(p), 1)?
-                .first()
-                .and_then(log::written_format)
-                .filter(|v| lakelands_core::log::reads_format(*v)),
-            None => None,
-        };
         loop {
             let want = (limit as usize - out.len()).min(PAGE as usize) as u32;
             if want == 0 {
@@ -1030,16 +1017,6 @@ impl Lake {
             }
             for stored in &batch {
                 let e = log::open(stored)?;
-                // A lake's format never falls: refused where it is read,
-                // as an event of another format is (054).
-                if let Some(b) = before.filter(|b| u64::from(e.v) < *b) {
-                    let flaw = Flaw::FormatStep {
-                        v: e.v.into(),
-                        before: b,
-                    };
-                    return Err(damaged(Part::Log, Some(e.position), flaw));
-                }
-                before = Some(e.v.into());
                 out.push((e, lakelands_core::log::append_end(stored)));
             }
             at = Position(batch.last().expect("not empty").position.0 + 1);
@@ -1908,7 +1885,6 @@ fn reads_a_record(body: &EventBody) -> bool {
         // A quarantined record's row, which no record reads (085).
         | EventBody::RecordQuarantined { .. }
         | EventBody::QuarantineClosed { .. }
-        | EventBody::LakeUpgraded { .. }
         | EventBody::LeaseTaken { .. }
         | EventBody::Checkpoint { .. }
         | EventBody::VerbCalled { .. }

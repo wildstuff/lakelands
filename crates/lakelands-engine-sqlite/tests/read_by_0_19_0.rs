@@ -1,4 +1,4 @@
-//! A lake of format 20 is read by 0.19.0 far enough that it is refused by
+//! A lake this build makes is read by 0.19.0 far enough that it is refused by
 //! its format, not called damaged (lakelands#1468,
 //! `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 //!
@@ -9,9 +9,8 @@
 //! another shape stops it there and it calls the lake damaged. In the
 //! active segment it checks the last group's lines against their hashes,
 //! and reads a group that fails the check as a crash's tail, not counted.
-//! The store writes the append that creates a lake, and the one that
-//! upgrades it, whole, so that group passes the check while it is the
-//! lake's only one of 20.
+//! The store writes the append that creates a lake whole, so that group
+//! passes the check while it is the lake's only one.
 //!
 //! `older` below is that reader, its rules copied as v0.19.0 has them in
 //! `crates/lakelands-engine-sqlite/src/log.rs` (`parse_line`, `whole`,
@@ -22,7 +21,7 @@
 
 mod read_by;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use lakelands_api::Location;
 use lakelands_api::engine::OpenMode;
@@ -150,44 +149,6 @@ async fn a_lake_this_build_made_is_read_by_0_19_0_up_to_its_format() {
         (reads, reads),
         "0.19.0 judges both ends by format {reads}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_lake_of_19_upgraded_is_read_by_0_19_0_up_to_its_format() {
-    let vectors =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/19");
-    let dir = read_by::scratch("0-19-0", "upgraded");
-    let location = Location::sqlite("vectors", &dir);
-    lakelands_store::import(location.clone(), seams(), vectors.clone())
-        .await
-        .unwrap();
-    // As written: every line of format 19 is in its segment file byte for
-    // byte.
-    for name in ["00000000000000000000.jsonl", "00000000000000000007.jsonl"] {
-        let kept = std::fs::read(vectors.join("log").join(name)).unwrap();
-        let held = std::fs::read(dir.join("log").join(name)).unwrap();
-        assert!(
-            held.starts_with(&kept),
-            "{name} holds the lines of format 19 as written"
-        );
-    }
-    // The import's own writer's open upgraded it, and a later one appends
-    // its own `lease_taken`. The upgrade's append is whole, so 0.19.0
-    // counts it even while it is the last and finds 20 from the import on.
-    for opens in 0..2 {
-        if opens > 0 {
-            let store = lakelands_store::open(location.clone(), seams(), OpenMode::Write);
-            store.await.unwrap().close().await.unwrap();
-        }
-        let (first, tip) = older(&dir).unwrap();
-        assert_eq!(
-            (v(&first), v(&tip)),
-            (19, u64::from(LOG_FORMAT_VERSION)),
-            "0.19.0 judges the upgraded lake's tip by 20 after {opens} writer's open(s) more"
-        );
-        assert!(!framed(&dir), "the upgrade's append is whole");
-    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

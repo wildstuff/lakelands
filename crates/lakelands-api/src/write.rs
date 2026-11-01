@@ -1987,8 +1987,7 @@ pub struct ForgetReport {
     /// a reclaim's the projection's, so the act may still differ from it.
     pub expected_ms: u64,
     /// Whether `expected_ms` leaves the reclaim out because this lake has
-    /// not timed one yet (a lake upgraded from a release that kept none,
-    /// before its first reclaim): the act may take longer than it says.
+    /// not timed one yet (before its first reclaim): the act may take longer than it says.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reclaim_untimed: bool,
     /// The head after the act, or the head the preflight read.
@@ -2039,8 +2038,7 @@ pub struct ForgetSetReport {
     /// and one reclaim, and the preflight's own walk for the whole set.
     pub expected_ms: u64,
     /// Whether `expected_ms` leaves the reclaim out because this lake has
-    /// not timed one yet (a lake upgraded from a release that kept none,
-    /// before its first reclaim): the act may take longer than it says.
+    /// not timed one yet (before its first reclaim): the act may take longer than it says.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reclaim_untimed: bool,
     /// The head after the act, or the head the preflight read.
@@ -2217,8 +2215,7 @@ pub struct RemoveReport {
     /// preflight's own walk, as [`ForgetReport::expected_ms`].
     pub expected_ms: u64,
     /// Whether `expected_ms` leaves the reclaim out because this lake has
-    /// not timed one yet (a lake upgraded from a release that kept none,
-    /// before its first reclaim): the act may take longer than it says.
+    /// not timed one yet (before its first reclaim): the act may take longer than it says.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reclaim_untimed: bool,
     /// The head after the act, or the head the preflight read.

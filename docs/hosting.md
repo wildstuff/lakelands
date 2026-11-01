@@ -864,11 +864,9 @@ moment before, and opens a moment later.
   upgrade drill measured the first writer's open at 19.9 s on SQLite,
   59.2 s on PostgreSQL and 68.1 s on PostgreSQL with pgvector, and the
   second open at 0.008 s and about 0.06 s; a lake of another size or
-  shape is not extrapolated from these. `lakelands upgrade` runs that open at a moment
-  the operator picks, also for a lake already in this release's log
-  format, and `lakelands upgrade --check` names the layout it found.
-- **Build ahead, and the upgrade folds only the tail.** The upgrade
-  step for a release whose engine lays the projection out anew:
+  shape is not extrapolated from these.
+- **Build ahead, and the first open folds only the tail.** The step
+  for a release whose engine lays the projection out anew:
   1. With the new release, run `lakelands build-ahead` while the old one
      still serves the lake. It folds the log into the scratch beside the
      projection (`projection.db.rebuild` in the projection's directory on
@@ -882,8 +880,8 @@ moment before, and opens a moment later.
      on from where it stopped; run it again just before step 2 if the old
      release forgot a source or removed values since.
   2. Stop every process of the old release, readers too.
-  3. Run `lakelands upgrade` (or the host's own writer's open). The open
-     folds only what was written after the build and swaps the scratch
+  3. Run any command that writes (or the host's own writer's open). The
+     open folds only what was written after the build and swaps the scratch
      in, saying so (`folding only what was written after the build
      ahead`). At 100 000 records, from stopping the old release to the
      first answer under the new one, with 1 000 written after the build
@@ -891,9 +889,7 @@ moment before, and opens a moment later.
      on SQLite, 7.9 s and 0.13 s on PostgreSQL; with a 64-dimension
      vector and an eight-field order index, 12.6 s and 0.35 s on SQLite,
      29.9 s and 0.31 s on PostgreSQL. The build ahead itself takes about
-     what the open took without it. On PostgreSQL from 0.20.0 the open
-     also rewrites the log's columns (below), and a build ahead still
-     running fails on its next read: let it end first.
+     what the open took without it.
 
   On PostgreSQL the swap is one transaction of some 30 ms, and waits for
   every transaction reading the projection's tables; a reader that
@@ -908,11 +904,10 @@ moment before, and opens a moment later.
   what the full rebuild answers, but not at the tail's cost. A removal
   of values after the build, and a forget the lake's rates do not scope,
   makes the open fold the whole log again after the swap, as the old
-  release did when it made it: the upgrade then takes as long as one
-  without the build ahead, and both the open and `lakelands upgrade`
-  say so (`then the whole log again`). Running `lakelands build-ahead`
-  again after the act folds the whole log beside the old release
-  instead, and the upgrade is short again.
+  release did when it made it: the open then takes as long as one
+  without the build ahead, and says so (`then the whole log again`).
+  Running `lakelands build-ahead` again after the act folds the whole
+  log beside the old release instead, and the open is short again.
 
   On SQLite a projection another handle reads (a reader of either
   release left running) cannot be swapped. The open then folds the whole
@@ -924,7 +919,7 @@ moment before, and opens a moment later.
   without a reader, it folds beside and the room is taken until the
   swap. PostgreSQL's swap waits for its readers instead, as above.
   Nothing removes a build ahead on its own: it is the operator's room,
-  kept for the upgrade it was made for; `lakelands build-ahead
+  kept for the open it was made for; `lakelands build-ahead
   --discard` gives it back.
 - **A reader waits for the writer.** A read-only open of it is refused
   before anything is read, naming the number found, the number wanted
@@ -937,47 +932,21 @@ moment before, and opens a moment later.
   `LakeStore::rebuild` on an open lake does the same for a lake that
   opened.
 
-**A lake outlives a release from log format 14 on.** A release writes
-one log format and reads every one from 14, the format of the first
-release with real installations, to it (`docs/log-format.md` §6;
-`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-- **An older lake is upgraded by its first writer's open.** The open
-  appends one `lake_upgraded` after its `lease_taken` and writes the new
-  format from there; the events before stay as they were written, so
-  every export and checkpoint the host holds stays true. Where the step
-  changes how events fold, the same open rebuilds the projection, and
-  holds the writer that long: at 100 000 events about 7 s on SQLite and
-  35 s on PostgreSQL; a step that changes no fold, as 14 to 15, costs
-  one append. `lakelands upgrade` runs that open by itself at a moment
-  the operator picks, and `lakelands upgrade --check` says what it would
-  do and opens nothing.
-- **Take a backup into a new directory before, and stop every older
-  process first.** There is no downgrade: a lake a release upgraded is
-  not opened by the release before, and neither is a backup run after
-  the upgrade, which holds its `lake_upgraded`: so the way back is
-  `lakelands backup --to <new dir>` before the upgrade, kept apart from
-  the backup that grows
-  (`docs/decisions/077-a-backup-is-an-export-that-grows.md`). A writer of the release before that still holds the lake is
-  refused at its next append once the upgrade's lease is taken (its
-  fence is below it), so stop every older process before the first
-  writer of the new release opens the lake.
-- **On PostgreSQL, 0.21.0's first writer's open rewrites the log's
-  columns once.** It keeps `id`, `prev` and `hash` as bytes, indexes
-  `log (id)` and drops `applied`, in one transaction under the lease
-  (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
-  At 1 000 000 events, a `log` of 509 MB, it took 2.7 s on a local
-  disk and, until it committed, room about the size of that table again
-  (485 MB) and as much WAL; it grows with the log. The log and `applied`
-  are then about 27 % smaller. The rewrite lifts
-  `engine.tuning.statement_timeout_secs` for its own transaction, so a
-  timeout shorter than it does not refuse every writer's open. A 0.20.0
-  process, a reader too, cannot read on after it, and neither can a
-  0.21.0 handle opened before it, a build ahead or a reader: stop every
-  one first. A conversion that fails leaves the lake as 0.20.0 left it.
-- **A reader waits for the writer.** A read-only open of a lake not yet
-  upgraded is refused before anything is read, naming the way
-  (`log_upgrade_owed` in `docs/refusals.md`); so is a mirror of such a
-  source, whose open is a reader's.
+**A release reads one log format, and from 0.23.0 no older lake opens.**
+Format 23 starts anew: an older lake or export is refused by its format,
+nothing of it is read, and no command translates it (`log_format` and
+`format_other` in `docs/refusals.md`; `docs/log-format.md` §6;
+`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`). Profiles
+are made anew, and `lakelands upgrade` is gone.
+- **The way back is the release that wrote the lake.** A lake of format
+  23 is refused by a release before it, by the format on its first line,
+  and a lake of an older format stays what it was, for the release that
+  wrote it.
+- **Take a backup into a new directory before a new release, and stop
+  every older process first.** `lakelands backup --to <new dir>`, kept
+  apart from the backup that grows
+  (`docs/decisions/077-a-backup-is-an-export-that-grows.md`), is the
+  copy a release that refuses the lake leaves you.
 - **A host's vocabulary may gain fields and be reworded, and nothing
   else.** Between its releases a host may add optional fields to a type
   of its vocabulary the lake holds, anywhere among its fields. The first
@@ -1010,25 +979,9 @@ release with real installations, to it (`docs/log-format.md` §6;
   lacks the fields the lake now holds. Upgrade the writer first and the
   readers right after it, and let a refused reader retry once it runs
   the new release.
-- **An export of an older release imports**, and the import upgrades
-  the new lake the same way, by a writer's open after the events are in.
-  Should that open fail, the events stay and a second import is refused
-  as `import_not_empty`: the lake is whole, and the next writer's open,
-  or `lakelands upgrade`, finishes the upgrade.
-- **A lake made from an edited export is refused at its first 0.17.0
-  open.** A `record_ingested` whose `sealed` names another source than
-  its envelope's is written by no writer, so a lake holds one only
-  through an import of an export someone edited. 0.17.0 rebuilds the
-  projection at that open and refuses the lake as damaged, naming the
-  event (`seals_another` in `docs/refusals.md`); `lakelands rebuild`
-  meets the same line and refuses it the same way. The way out is to
-  import the export as its writer wrote it, or to restore a backup taken
-  before that import: a backup taken after it holds the same line.
-  Until then the release before still opens and exports the lake once
-  its own `lakelands rebuild` has run, since the refused open already
-  laid the projection out anew: before that rebuild it refuses the
-  projection's layout.
-- **A format this release does not read**, older than 14 or newer than
+- **An export of an older format is refused** by its format, before any
+  of it is written, and the lake it was to fill stays empty.
+- **A format this release does not read**, older than 23 or newer than
   the release, is refused at the open in every mode, naming the lake,
   the formats read and the one written (`log_format`). The store reads
   the two ends of the log before it opens the lake's engine, so such a
