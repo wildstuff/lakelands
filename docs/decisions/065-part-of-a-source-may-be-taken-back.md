@@ -123,7 +123,9 @@ a forgotten value.
     and is not decided again, unless the record then holds an erased
     value it reads on it; a predecessor taken back overrules nothing,
     since which record came before is the write's to judge, in the
-    writer's sight then (004, 059). A trigger with no `when`, or
+    writer's sight then (004, 059). A conjunct that reads `in_force` is
+    held the same way: a bound taken back overrules nothing (100). A
+    trigger with no `when`, or
     withdrawn at its cause, stands.
   - **What it costs.** Only a reaction before the lake's last act, or
     sharing its time as every event of its append does, is decided: each
@@ -515,3 +517,4 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
   delivery, and a window's new keys asked for in one request (087,
   lakelands#1528).
 - Amended by 099 (lakelands#1652), proposed for 0.23.0.
+- Amended by 100 (lakelands#1640), proposed for 0.23.0.

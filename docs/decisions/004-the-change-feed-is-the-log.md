@@ -169,7 +169,8 @@ and `previous(f)`, the value before the write, which is null for a record
 the write creates (or revives from retirement). A transition is a guard,
 `previous(status) = 'open' and status = 'closed'`, and fires on that
 transition only. A guard reads no other record, but the one before it
-in its series (below). A trigger may also cap
+in its series (below) and the one in force of another type, `in_force`,
+resolved the same way (100). A trigger may also cap
 the depth of the reactions that name its firing as their cause
 (`docs/decisions/021-the-write-context-belongs-to-the-host.md`, extended).
 Past that depth, or the lake's, the write appends `trigger_dropped` in
@@ -616,3 +617,4 @@ own pace, and adding one changes nothing in the lake.
   resolved in its write's decision by the writer's sight, as a
   constraint's is; before, `preceding` was a constraint's alone and a
   guard read no other record (lakelands#1604).
+- Amended by 100 (lakelands#1640), proposed for 0.23.0.
