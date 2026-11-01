@@ -4,7 +4,7 @@ Decided on lakelands#1640, for 0.23.0.
 
 ## What is decided
 
-**Proposed** on lakelands#1640, for 0.23.0. It stands on the tree records 098 and 099
+**Decided** on lakelands#1640, for 0.23.0. It stands on the tree records 098 and 099
 leave: format 23, the road of parts, candles and selected series as records. It amends
 004, 052, 058, 065 and 099. No code lands with it.
 

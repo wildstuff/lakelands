@@ -5,7 +5,7 @@ choices are on lakelands#1578.
 
 ## What is decided
 
-**Proposed** on lakelands#1652, for 0.23.0, one design with lakelands#1649 and
+**Decided** on lakelands#1652, for 0.23.0, one design with lakelands#1649 and
 lakelands#1651, lines 11, 12 and 13 of epic lakelands#1578. It answers part 3 of the
 brief and stands on `docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`. It
 amends 039, 041, 049, 057, 058, 065, 066, 076 and 081. No code lands with it.
