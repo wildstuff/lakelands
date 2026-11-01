@@ -224,76 +224,35 @@ fn append_of(
     (values, events)
 }
 
-/// The block a frame at the seam holds, its stored bytes inflated.
-fn opened(frame: &Frame) -> (Block, Vec<Vec<u8>>) {
-    let at = frame.bytes.iter().position(|b| *b == b'\n').unwrap();
-    let (block, v) = Block::of(&serde_json::from_slice(&frame.bytes[..at]).unwrap()).unwrap();
-    assert_eq!(v, FORMAT);
-    let raw = inflate(&block, &frame.bytes[at + 1..]).unwrap();
-    let lines = raw[..raw.len() - 1]
-        .split(|b| *b == b'\n')
-        .map(<[u8]>::to_vec);
-    (block, lines.collect())
-}
-
 #[test]
-fn an_append_of_two_or_more_is_a_block_that_restores_every_event() {
+fn a_framed_append_restores_to_the_events_it_was_made_from() {
     let (values, mut events) = append(FORMAT, 0, &"0".repeat(64), 3);
     let made: Vec<Vec<u8>> = events.iter().map(|e| e.bytes.clone()).collect();
     frame_append(&mut events);
-    let frame = events[0].frame.clone().expect("a block");
+    let frame = events[0].frame.clone().expect("framed");
     assert_eq!((frame.first, frame.events), (Position(0), 3));
-    let (block, lines) = opened(&frame);
-    assert_eq!(
-        (
-            block.end,
-            block.events,
-            block.first,
-            &block.hash,
-            &block.prev
-        ),
-        (
-            Position(2),
-            3,
-            Position(0),
-            &events[2].hash,
-            &Digest::zero()
-        )
-    );
-    let raw: usize = lines.iter().map(|l| l.len() + 1).sum();
-    assert_eq!(block.raw, raw as u64);
-    assert_eq!(
-        block.stored as usize,
-        frame.bytes.len() - frame.bytes.iter().position(|b| *b == b'\n').unwrap() - 1
-    );
-    // Its frame line, then each event's line, which is the event's bytes
-    // at the seam and leaves out what the block decides.
+    let line: Value = serde_json::from_slice(&frame.bytes).unwrap();
     let shared = json!({"body": {"kind": "record_ingested", "patch": {"f": 1}, "type": "t", "version": 1},
                         "fence": 1, "known_at": "2026-01-01T00:00:00.000000Z", "lake": "l",
                         "origin": "direct", "writer": "agent:a"});
-    let line: Value = serde_json::from_slice(&lines[0]).unwrap();
     assert_eq!(line, json!({"events": 3, "frame": shared, "v": FORMAT}));
-    assert_eq!(
-        &lines[1..],
-        events.iter().map(|e| e.bytes.clone()).collect::<Vec<_>>()
-    );
-    for e in &events {
-        let line: Value = serde_json::from_slice(&e.bytes).unwrap();
-        for name in ["hash", "position", "prev", "v"] {
-            assert!(line.get(name).is_none(), "{name}");
-        }
-        assert!(line.get("id").is_some(), "an id no member decides is kept");
-    }
+    // The first line, position 0, holds `position` and `prev`; the rest derive them.
+    let held = |e: &CanonicalEvent, name| {
+        serde_json::from_slice::<Value>(&e.bytes)
+            .unwrap()
+            .get(name)
+            .is_some()
+    };
+    assert!(held(&events[0], "position") && held(&events[0], "prev"));
+    assert!(!held(&events[1], "position") && !held(&events[2], "prev"));
     assert_eq!(frame_fault(&events), Ok(()));
-    assert_eq!(append_end(&events[0]), Position(2));
     for (i, e) in events.iter().enumerate() {
-        let (restored, whole) = restore(e).unwrap();
-        assert!(!whole);
+        let (restored, _) = restore(e).unwrap();
         assert_eq!(canonical::to_vec(&restored), made[i], "event {i}");
         assert_eq!(restored, values[i]);
         assert_eq!(crate::engines::hash_of(restored), e.hash.0);
     }
-    // The digest is over the restored events, as the plain lines are.
+    // The digest is over the restored events, as the unframed lines are.
     let mut whole = append(FORMAT, 0, &"0".repeat(64), 3).1;
     assert_eq!(digest_of(&events), digest_of(&whole));
     whole.truncate(1);
@@ -302,93 +261,6 @@ fn an_append_of_two_or_more_is_a_block_that_restores_every_event() {
     assert_eq!(
         digest_of(&whole).unwrap().0,
         canonical::hex(&Sha256::digest(&file))
-    );
-}
-
-/// A reader restores a block's events from the block inflated whole, so a
-/// byte of the block changed past what its first lines inflate from, or a
-/// line handed beside the block that is not the block's, is refused at the
-/// first event read from it; and one [`Restorer`] inflates the block once
-/// for every event it holds.
-#[test]
-fn a_block_is_restored_whole_and_every_line_handed_is_checked_against_it() {
-    let (values, mut events) = append(FORMAT, 0, &"0".repeat(64), BLOCK_EVENTS as u64);
-    frame_append(&mut events);
-    let frame = events[0].frame.clone().expect("a block");
-    assert_eq!(frame.events as usize, BLOCK_EVENTS);
-    let mut bytes = frame.bytes.clone();
-    let near_end = bytes.len() - 8;
-    bytes[near_end] ^= 0x10;
-    let changed = Arc::new(Frame {
-        bytes,
-        ..Frame::clone(&frame)
-    });
-    for at in [0, BLOCK_EVENTS - 1] {
-        let mut e = events[at].clone();
-        e.frame = Some(changed.clone());
-        assert_eq!(restore(&e).err(), Some(Flaw::BlockBytes), "event {at}");
-        assert_eq!(restore_json(&e).err(), Some(Flaw::BlockBytes), "event {at}");
-    }
-    let mut handed = events[1].clone();
-    handed.bytes = events[0].bytes.clone();
-    assert_eq!(restore(&handed).err(), Some(Flaw::Disagrees));
-    assert_eq!(restore_json(&handed).err(), Some(Flaw::Disagrees));
-    let mut restorer = Restorer::default();
-    for (i, e) in events.iter().enumerate() {
-        let restored = restorer.restore(e).map(|(v, _)| v);
-        assert_eq!(restored.as_ref(), Ok(&values[i]), "event {i}");
-        assert_eq!(restorer.restore_json(e), restore_json(e), "event {i}");
-    }
-    assert_eq!(restorer.restore(&handed).err(), Some(Flaw::Disagrees));
-}
-
-#[test]
-fn a_block_leaves_out_an_id_its_event_decides() {
-    let bodies = (0..2).map(|k| {
-        json!({"kind": "record_ingested", "type": "t", "key": format!("k{k}"), "version": 3,
-               "patch": {"f": 1}})
-    });
-    let (_, mut events) = append_of(FORMAT, 0, &"0".repeat(64), bodies.collect());
-    for e in &mut events {
-        let mut value: Value = serde_json::from_slice(&e.bytes).unwrap();
-        value["source"] = "bank".into();
-        let key = value["body"]["key"].as_str().unwrap().to_owned();
-        let patch = serde_json::from_value(json!({"f": 1})).unwrap();
-        e.id = ingest_id(&"bank".into(), &"t".into(), &key.as_str().into(), 2, &patch);
-        assert_eq!(derived_id(&value), Some(e.id.clone()));
-        value["id"] = e.id.0.clone().into();
-        value.as_object_mut().unwrap().remove("hash");
-        e.hash = Digest(crate::engines::hash_of(value.clone()));
-        value["hash"] = e.hash.0.clone().into();
-        e.bytes = canonical::to_vec(&value);
-    }
-    events[1].prev = events[0].hash.clone();
-    let mut value: Value = serde_json::from_slice(&events[1].bytes).unwrap();
-    value["prev"] = events[0].hash.0.clone().into();
-    value.as_object_mut().unwrap().remove("hash");
-    events[1].hash = Digest(crate::engines::hash_of(value.clone()));
-    value["hash"] = events[1].hash.0.clone().into();
-    events[1].bytes = canonical::to_vec(&value);
-    let made: Vec<Vec<u8>> = events.iter().map(|e| e.bytes.clone()).collect();
-    frame_append(&mut events);
-    for (e, made) in events.iter().zip(made) {
-        let line: Value = serde_json::from_slice(&e.bytes).unwrap();
-        assert!(line.get("id").is_none(), "the id the event decides");
-        let (restored, _) = restore(e).unwrap();
-        assert_eq!(canonical::to_vec(&restored), made);
-    }
-    // A sealed ingest's id is over its box too, and a quarantined
-    // record's over its own members.
-    let mut sealed = json!({"body": {"kind": "record_ingested", "type": "t", "key": "k", "version": 1,
-                                     "patch": {}}, "source": "bank", "sealed": {"key": "k1", "box": BOX}});
-    let patch = serde_json::from_value(json!({})).unwrap();
-    let boxed = boxed_ingest_id(&"bank".into(), &"t".into(), &"k".into(), 0, &patch, BOX);
-    assert_eq!(derived_id(&sealed), Some(boxed));
-    sealed["body"]["kind"] = "record_upserted".into();
-    assert_eq!(
-        derived_id(&sealed),
-        None,
-        "an authored write's id is no member's"
     );
 }
 
@@ -421,11 +293,11 @@ fn the_append_that_makes_a_lake_is_kept_whole() {
 fn a_segment_reads_whole_lines_and_framed_ones_in_order() {
     let (whole, _) = append(FORMAT, 0, &"0".repeat(64), 2);
     let last = Digest(whole[1]["hash"].as_str().unwrap().to_owned());
-    let (newer, _) = append(FORMAT, 2, &last.0, 3);
-    let (frame, framed) = stored_form(&newer, |_, _| (false, false));
+    let (newer, mut framed) = append(FORMAT, 2, &last.0, 3);
+    frame_append(&mut framed);
     let mut file = vec![canonical::to_vec(&whole[0]), canonical::to_vec(&whole[1])];
-    file.extend(frame);
-    file.extend(framed);
+    file.push(framed[0].frame.as_ref().unwrap().bytes.clone());
+    file.extend(framed.iter().map(|e| e.bytes.clone()));
     let (mut lines, mut before) = (Lines::default(), None::<(Position, Digest)>);
     let mut read = Vec::new();
     for bytes in &file {
@@ -466,10 +338,12 @@ fn refusal(file: &[Vec<u8>]) -> Option<Flaw> {
 
 #[test]
 fn every_break_of_a_framed_segment_is_refused() {
-    let (values, _) = append(FORMAT, 0, &"0".repeat(64), 3);
-    let (frame, lines) = stored_form(&values, |i, _| (i == 0, i == 0));
-    let frame = frame.unwrap();
-    let file: Vec<Vec<u8>> = std::iter::once(frame.clone()).chain(lines).collect();
+    let (_, mut events) = append(FORMAT, 0, &"0".repeat(64), 3);
+    frame_append(&mut events);
+    let frame = events[0].frame.as_ref().unwrap().bytes.clone();
+    let file: Vec<Vec<u8>> = std::iter::once(frame.clone())
+        .chain(events.iter().map(|e| e.bytes.clone()))
+        .collect();
     assert_eq!(refusal(&file), None);
     let edit = |i: usize, f: &dyn Fn(&mut Value)| {
         let mut file = file.clone();
@@ -547,189 +421,29 @@ fn every_break_of_a_framed_segment_is_refused() {
 }
 
 #[test]
-fn an_append_holds_each_block_it_shares_whole() {
+fn an_append_holds_each_frame_it_shares_whole() {
     let (_, mut events) = append(FORMAT, 0, &"0".repeat(64), 3);
     frame_append(&mut events);
     let refused = |events: &[CanonicalEvent]| frame_fault(events).err().map(|e| format!("{e:?}"));
     assert_eq!(refused(&events), None);
     assert!(
         refused(&events[..2]).is_some(),
-        "a block past the append's last event"
+        "a frame past the append's last event"
     );
     assert!(
         refused(&events[1..]).is_some(),
-        "a block begun before the append"
+        "a frame begun before the append"
     );
     let mut unframed = events.clone();
     unframed[1].frame = None;
     assert!(
         refused(&unframed).is_some(),
-        "an event the block holds without it"
+        "an event the frame covers without it"
     );
-    // A frame that is no block, and a block whose `end` is not the
-    // append's last position.
-    let (values, _) = append(FORMAT, 0, &"0".repeat(64), 3);
-    let line = stored_form(&values, |_, _| (false, false)).0.unwrap();
-    let mut plain = events.clone();
-    let frame = Arc::new(Frame {
-        bytes: line,
-        ..events[0].frame.as_deref().unwrap().clone()
-    });
-    plain.iter_mut().for_each(|e| e.frame = Some(frame.clone()));
-    assert!(refused(&plain).is_some(), "a frame line, no block");
-    let (_, mut longer) = append(FORMAT, 0, &"0".repeat(64), 4);
-    frame_append(&mut longer);
-    let mut short = events.clone();
-    let frame = Arc::new(Frame {
-        events: 3,
-        ..longer[0].frame.as_deref().unwrap().clone()
-    });
-    short.iter_mut().for_each(|e| e.frame = Some(frame.clone()));
-    assert!(
-        refused(&short).is_some(),
-        "a block that ends past the append"
-    );
-}
-
-/// The bytes of a segment file of `units`, each followed by a line feed.
-fn file_of(units: &[Vec<u8>]) -> Vec<u8> {
-    units
-        .iter()
-        .flat_map(|u| u.iter().copied().chain(*b"\n"))
-        .collect()
-}
-
-/// What a strict reader of a segment file says of it: the events it
-/// restores, or the first refusal, `None` for a tear.
-fn read_file(bytes: &[u8]) -> std::result::Result<Vec<Value>, Option<Flaw>> {
-    let mut reader = Restoring::new(bytes, true);
-    let mut out = Vec::new();
-    loop {
-        match reader.next_event() {
-            Ok(Some(r)) => out.push(r.event),
-            Ok(None) => break,
-            Err(Fault::Flaw(flaw)) => return Err(Some(flaw)),
-            Err(_) => return Err(None),
-        }
-    }
-    reader.end().map_err(Some)?;
-    Ok(out)
-}
-
-/// A block's bytes as `frame` holds them, its first line and its lines
-/// changed by `head` and `lines`, and its `raw` and `stored` made theirs.
-fn reblocked(
-    frame: &Frame,
-    head: &dyn Fn(&mut Value),
-    lines: &dyn Fn(&mut Vec<Vec<u8>>),
-) -> Vec<u8> {
-    let (block, mut inner) = opened(frame);
-    lines(&mut inner);
-    let raw = file_of(&inner);
-    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
-    std::io::Write::write_all(&mut z, &raw).unwrap();
-    let z = z.finish().unwrap();
-    let mut first = json!({"block": block, "v": FORMAT});
-    first["block"]["raw"] = raw.len().into();
-    first["block"]["stored"] = z.len().into();
-    head(&mut first);
-    let mut bytes = canonical::to_vec(&first);
-    bytes.push(b'\n');
-    bytes.extend(z);
-    bytes
-}
-
-#[test]
-fn a_file_of_lines_and_blocks_restores_every_event_and_every_break_is_refused() {
-    let n = BLOCK_EVENTS as u64 + 2;
-    let (values, mut events) = append(FORMAT, 0, &"0".repeat(64), n);
-    let first = events[0].bytes.clone();
-    frame_append(&mut events[1..]);
-    let blocks: Vec<Vec<u8>> = events[1..]
-        .iter()
-        .filter_map(|e| e.frame.as_ref().filter(|f| f.first == e.position))
-        .map(|f| f.bytes.clone())
-        .collect();
-    assert_eq!(blocks.len(), 2, "an append of more than a block's events");
-    let file = |b: &[Vec<u8>]| file_of(&[vec![first.clone()], b.to_vec()].concat());
-    assert_eq!(read_file(&file(&blocks)), Ok(values));
-    let frame = |i: usize| events[1 + i * BLOCK_EVENTS].frame.clone().unwrap();
-    let with = |i: usize, bytes: Vec<u8>| {
-        let mut b = blocks.clone();
-        b[i] = bytes;
-        read_file(&file(&b)).err().flatten()
-    };
-    let head = |i: usize, f: &dyn Fn(&mut Value)| with(i, reblocked(&frame(i), f, &|_| ()));
-    let inner = |i: usize, f: &dyn Fn(&mut Vec<Vec<u8>>)| with(i, reblocked(&frame(i), &|_| (), f));
-    // An append torn between its blocks, and a block torn.
-    assert_eq!(
-        read_file(&file(&blocks[..1])),
-        Err(Some(Flaw::AppendShort {
-            end: Position(n - 1)
-        }))
-    );
-    let mut torn = file(&blocks);
-    torn.truncate(torn.len() - 9);
-    assert_eq!(read_file(&torn), Err(None));
-    // A changed byte of its stored bytes, its sizes, and its first line.
-    let mut flipped = blocks[1].clone();
-    *flipped.last_mut().unwrap() ^= 1;
-    assert_eq!(with(1, flipped), Some(Flaw::BlockBytes));
-    assert_eq!(
-        head(0, &|h| h["block"]["raw"] = 7.into()),
-        Some(Flaw::BlockBytes)
-    );
-    assert_eq!(
-        head(0, &|h| h["block"]["hash"] = "0".repeat(64).into()),
-        Some(Flaw::HashMismatch)
-    );
-    assert_eq!(
-        head(0, &|h| h["block"]["prev"] = "1".repeat(64).into()),
-        Some(Flaw::PrevHash)
-    );
-    assert!(matches!(
-        head(1, &|h| h["block"]["first"] = 5.into()),
-        Some(Flaw::Position { .. })
-    ));
-    assert_eq!(
-        head(1, &|h| h["block"]["end"] = (n + 4).into()),
-        Some(Flaw::AppendShort {
-            end: Position(n - 1)
-        })
-    );
-    assert_eq!(head(0, &|h| h["extra"] = 1.into()), Some(Flaw::NotABlock));
-    assert_eq!(
-        head(0, &|h| h["block"]["events"] = 0.into()),
-        Some(Flaw::NotABlock)
-    );
-    // A line that holds what the block decides, a line too many or too
-    // few, and a line changed.
-    let position = inner(0, &|l| {
-        let mut line: Value = serde_json::from_slice(&l[1]).unwrap();
-        line["position"] = 1.into();
-        l[1] = canonical::to_vec(&line);
-    });
-    assert_eq!(
-        position,
-        Some(Flaw::FramedTwice {
-            member: "position".into()
-        })
-    );
-    assert_eq!(inner(1, &|l| l.push(l[0].clone())), Some(Flaw::BlockBytes));
-    assert_eq!(inner(1, &|l| drop(l.pop())), Some(Flaw::BlockBytes));
-    let changed = inner(0, &|l| {
-        let mut line: Value = serde_json::from_slice(&l[3]).unwrap();
-        line["body"]["key"] = "other".into();
-        l[3] = canonical::to_vec(&line);
-    });
-    assert_eq!(changed, Some(Flaw::HashMismatch));
-    // A plain line among an append's blocks.
-    let mut b = blocks.clone();
-    b.insert(1, first.clone());
-    assert_eq!(
-        read_file(&file(&b)).err().flatten(),
-        Some(Flaw::AppendShort {
-            end: Position(n - 1)
-        })
-    );
+    let mut feed = events.clone();
+    let mut bytes = feed[0].frame.as_ref().unwrap().as_ref().clone();
+    bytes.bytes.push(b'\n');
+    let bytes = Arc::new(bytes);
+    feed.iter_mut().for_each(|e| e.frame = Some(bytes.clone()));
+    assert!(refused(&feed).is_some(), "a frame with a line feed");
 }

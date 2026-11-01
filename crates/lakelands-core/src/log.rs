@@ -26,12 +26,6 @@ use sha2::{Digest as _, Sha256};
 use crate::canonical;
 
 pub use lakelands_api::key::record_key;
-
-mod block;
-pub use block::{
-    BLOCK_BYTES, BLOCK_EVENTS, Block, Fault, Restored, Restoring, Unit, block_of, derived_id,
-    inflate, is_block, read_unit,
-};
 #[doc(hidden)]
 pub use lakelands_api::key::{key_component, key_components, keyable};
 
@@ -53,35 +47,14 @@ pub fn ingest_id(
     version_before: u64,
     patch: &Patch,
 ) -> EventId {
-    let patch = canonical::of(patch);
-    let (source, ty, key) = (source.as_str(), ty.as_str(), key.as_str());
-    ingest_of(
-        [source, ty, key].map(str::as_bytes),
-        version_before,
-        &patch,
-        None,
-    )
-}
-
-/// An ingested record's id (`docs/log-format.md` §3) from its parts as
-/// bytes: its source, type and key, the version before, the patch's
-/// canonical bytes and, where its sealed members are in one box, the box
-/// as stored. [`ingest_id`], [`boxed_ingest_id`] and [`derived_id`] build
-/// it here alone.
-pub(crate) fn ingest_of(
-    [source, ty, key]: [&[u8]; 3],
-    version_before: u64,
-    patch: &[u8],
-    boxed: Option<&[u8]>,
-) -> EventId {
-    let before = version_before.to_string();
-    let tag: &[u8] = match boxed {
-        None => b"lakelands:ingest:v1",
-        Some(_) => b"lakelands:ingest:v2",
-    };
-    let mut parts = vec![tag, source, ty, key, before.as_bytes(), patch];
-    parts.extend(boxed);
-    id_of(&parts)
+    id_of(&[
+        b"lakelands:ingest:v1",
+        source.as_str().as_bytes(),
+        ty.as_str().as_bytes(),
+        key.as_str().as_bytes(),
+        version_before.to_string().as_bytes(),
+        &canonical::of(patch),
+    ])
 }
 
 /// The id of an ingested record whose sealed members are in one box
@@ -97,10 +70,15 @@ pub fn boxed_ingest_id(
     patch: &Patch,
     boxed: &str,
 ) -> EventId {
-    let patch = canonical::of(patch);
-    let (source, ty, key) = (source.as_str(), ty.as_str(), key.as_str());
-    let parts = [source, ty, key].map(str::as_bytes);
-    ingest_of(parts, version_before, &patch, Some(boxed.as_bytes()))
+    id_of(&[
+        b"lakelands:ingest:v2",
+        source.as_str().as_bytes(),
+        ty.as_str().as_bytes(),
+        key.as_str().as_bytes(),
+        version_before.to_string().as_bytes(),
+        &canonical::of(patch),
+        boxed.as_bytes(),
+    ])
 }
 
 /// The id of a version of a quarantined record (`docs/log-format.md` §3): SHA-256 under `lakelands:quarantined:v1`
@@ -116,41 +94,16 @@ pub fn quarantined_id(
     boxed: Option<&str>,
     refusal: &lakelands_api::Error,
 ) -> EventId {
-    let refusal = canonical::of(&serde_json::to_value(refusal).unwrap_or_default());
-    let (source, delivery) = (id.source.as_str(), id.delivery.as_str());
-    let at = ([source, delivery].map(str::as_bytes), id.index);
-    let boxed = boxed.unwrap_or_default().as_bytes();
-    quarantined_of(
-        at,
-        version_before.into(),
-        &canonical::of(cells),
-        boxed,
-        &refusal,
-    )
-}
-
-/// A quarantined record's version's id (`docs/log-format.md` §3) from its
-/// parts as bytes: its id's source and delivery, and its index, the
-/// version before, the cells' canonical bytes, the box as stored or empty
-/// and the refusal's canonical bytes. [`quarantined_id`] and
-/// [`derived_id`] build it here alone.
-pub(crate) fn quarantined_of(
-    ([source, delivery], index): ([&[u8]; 2], u64),
-    version_before: u64,
-    cells: &[u8],
-    boxed: &[u8],
-    refusal: &[u8],
-) -> EventId {
-    let (index, before) = (index.to_string(), version_before.to_string());
+    let refusal = serde_json::to_value(refusal).unwrap_or_default();
     id_of(&[
         b"lakelands:quarantined:v1",
-        source,
-        delivery,
-        index.as_bytes(),
-        before.as_bytes(),
-        cells,
-        boxed,
-        refusal,
+        id.source.as_str().as_bytes(),
+        id.delivery.as_str().as_bytes(),
+        id.index.to_string().as_bytes(),
+        version_before.to_string().as_bytes(),
+        &canonical::of(cells),
+        boxed.unwrap_or_default().as_bytes(),
+        &canonical::of(&refusal),
     ])
 }
 
@@ -478,76 +431,16 @@ pub fn restored(
 /// and `prev` the engine keeps beside it. A frame that does not say what
 /// the engine keeps of it, or does not cover the event, is
 /// [`Flaw::Disagrees`]. It answers too whether the event's line was the
-/// whole event, so that its canonical bytes are the line's. A reader of
-/// more than one event restores them with one [`Restorer`].
+/// whole event, so that its canonical bytes are the line's.
 pub fn restore(stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
-    Restorer::default().restore(stored)
+    restore_read(stored, line_of)
 }
 
 /// [`restore`] with the line and the frame read as JSON alone, in no
 /// format judged: what an engine, which keeps events of any format, checks
 /// an event's hash and digests a segment with.
 pub fn restore_json(stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
-    Restorer::default().restore_json(stored)
-}
-
-/// A reader of events at the engine seam, which keeps the last block it
-/// restored an event from (§1.5): the block is inflated whole once, every
-/// byte of it checked by its zlib stream and its sizes, and each event it
-/// holds is restored from its line there, the line the engine hands beside
-/// it checked against it. An engine that changed a byte of a block, past
-/// its first line too, is caught at the first event read from it.
-#[derive(Debug, Default)]
-pub struct Restorer {
-    kept: Option<block::Kept>,
-}
-
-impl Restorer {
-    /// [`restore`], from the block it keeps where the event's frame holds
-    /// it.
-    pub fn restore(&mut self, stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
-        self.read(stored, true)
-    }
-
-    /// [`restore_json`], from the block it keeps where the event's frame
-    /// holds it.
-    pub fn restore_json(
-        &mut self,
-        stored: &CanonicalEvent,
-    ) -> std::result::Result<(Value, bool), Flaw> {
-        self.read(stored, false)
-    }
-
-    /// [`restore`], each line read as [`line_of`] reads one, `strict`, else
-    /// as JSON alone. An event a block holds is restored from the block.
-    fn read(
-        &mut self,
-        stored: &CanonicalEvent,
-        strict: bool,
-    ) -> std::result::Result<(Value, bool), Flaw> {
-        let read = if strict { line_of } else { json_of };
-        let frame = match &stored.frame {
-            None => None,
-            Some(f) => {
-                if let Some(kept) = self.kept.as_ref().filter(|k| k.holds(f, strict)) {
-                    return kept.restore(stored);
-                }
-                if let Some(kept) = block::Kept::of(f, strict) {
-                    let kept = self.kept.insert(kept?);
-                    return kept.restore(stored);
-                }
-                let framed = Framed::of(read(&f.bytes)?)?;
-                let within = stored.position.0.checked_sub(f.first.0);
-                let covers = within.is_some_and(|i| i < u64::from(f.events));
-                if framed.events != u64::from(f.events) || !covers {
-                    return Err(Flaw::Disagrees);
-                }
-                Some(framed)
-            }
-        };
-        let derived = Some((stored.position, &stored.prev));
-        restored(read(&stored.bytes)?, frame.as_ref(), derived)
-    }
+    restore_read(stored, json_of)
 }
 
 /// A line read as JSON alone.
@@ -557,17 +450,36 @@ fn json_of(bytes: &[u8]) -> std::result::Result<Value, Flaw> {
     })
 }
 
+/// [`restore`], each line read by `read`.
+fn restore_read(
+    stored: &CanonicalEvent,
+    read: fn(&[u8]) -> std::result::Result<Value, Flaw>,
+) -> std::result::Result<(Value, bool), Flaw> {
+    let frame = match &stored.frame {
+        None => None,
+        Some(f) => {
+            let framed = Framed::of(read(&f.bytes)?)?;
+            let within = stored.position.0.checked_sub(f.first.0);
+            let covers = within.is_some_and(|i| i < u64::from(f.events));
+            if framed.events != u64::from(f.events) || !covers {
+                return Err(Flaw::Disagrees);
+            }
+            Some(framed)
+        }
+    };
+    let derived = Some((stored.position, &stored.prev));
+    restored(read(&stored.bytes)?, frame.as_ref(), derived)
+}
+
 /// A segment's digest (§4.2): SHA-256 over the canonical bytes of its
 /// events as [`restore_json`] restores them, each followed by a line feed;
 /// a line that is its whole event is hashed as it is kept.
 pub fn digest_of<'a>(
     events: impl IntoIterator<Item = &'a CanonicalEvent>,
 ) -> std::result::Result<Digest, (Position, Flaw)> {
-    let (mut hash, mut restorer) = (Sha256::new(), Restorer::default());
+    let mut hash = Sha256::new();
     for event in events {
-        let (restored, whole) = restorer
-            .restore_json(event)
-            .map_err(|flaw| (event.position, flaw))?;
+        let (restored, whole) = restore_json(event).map_err(|flaw| (event.position, flaw))?;
         match whole {
             true => hash.update(&event.bytes),
             false => hash.update(canonical::to_vec(&restored)),
@@ -684,23 +596,6 @@ pub fn stored_form(
     events: &[Value],
     holds: impl Fn(usize, &Value) -> (bool, bool),
 ) -> (Option<Vec<u8>>, Vec<Vec<u8>>) {
-    form(events, |i, event| {
-        let (position, prev) = holds(i, event);
-        let names = [("position", !position), ("prev", !prev)];
-        names
-            .into_iter()
-            .filter(|(_, l)| *l)
-            .map(|(n, _)| n)
-            .collect()
-    })
-}
-
-/// [`stored_form`], each event's line leaving out the members `leave`
-/// names of it, asked by its index in the run and its value.
-fn form(
-    events: &[Value],
-    leave: impl Fn(usize, &Value) -> Vec<&'static str>,
-) -> (Option<Vec<u8>>, Vec<Vec<u8>>) {
     let v = events.first().map_or(0, format_of);
     let framed = events.len() >= 2 && events.iter().all(|e| format_of(e) == v);
     let shared = match framed {
@@ -712,8 +607,11 @@ fn form(
             return canonical::to_vec(event);
         };
         let mut line = members.clone();
-        for name in leave(i, event) {
-            line.remove(name);
+        let (position, prev) = holds(i, event);
+        for (name, keep) in [("position", position), ("prev", prev)] {
+            if !keep {
+                line.remove(name);
+            }
         }
         for (name, value) in &shared {
             match (value, line.get_mut(name)) {
@@ -774,10 +672,10 @@ fn shared(events: &[Value]) -> Map<String, Value> {
 }
 
 /// Writes `events`, one append's, each holding its canonical bytes, in the
-/// store's writer's form: an append of two or more events as blocks
-/// (§1.5), and an event alone as its line (§1.2), holding `position` and
-/// `prev` only where it is a segment's first event, the `lake_created` at
-/// position 0 or a `checkpoint`. The append that holds a `lake_created`
+/// store's writer's form (§1.2): framed where they are two or more, with
+/// exactly the members they all share, and each line holding `position`
+/// and `prev` only where it is a segment's first event, the `lake_created`
+/// at position 0 or a `checkpoint`. The append that holds a `lake_created`
 /// is left whole, each line its event's canonical bytes: a release that
 /// does not read the format finds its number on the first line, even while
 /// it is the last.
@@ -790,55 +688,48 @@ pub fn frame_append(events: &mut [CanonicalEvent]) {
     if values.iter().any(makes) {
         return;
     }
-    if events.len() >= 2 {
-        return block::into_blocks(events, &values);
-    }
     let first = |_: usize, e: &Value| {
         let first = e.get("position") == Some(&0.into())
             || e.pointer("/body/kind") == Some(&"checkpoint".into());
         (first, first)
     };
-    let (_, lines) = stored_form(&values, first);
+    let (frame, lines) = stored_form(&values, first);
+    let frame = frame.map(|bytes| {
+        Arc::new(Frame {
+            first: events[0].position,
+            events: events.len() as u32,
+            bytes,
+        })
+    });
     for (event, line) in events.iter_mut().zip(lines) {
-        (event.bytes, event.frame) = (line, None);
+        (event.bytes, event.frame) = (line, frame.clone());
     }
 }
 
-/// Refuses `events`, one append's or the appends of one commit in order,
-/// unless every frame they share is held whole by them and in order: a
-/// frame is a block's bytes (§1.5), whose first line says the frame's
-/// first position and events; it begins at the position of the first event
-/// that carries it, which is no event of another frame's, and every event
-/// it covers carries it and no other does. The blocks of one append follow
-/// each other, each naming its last position as `end`, and the last one
-/// reaches it: no event alone on its line stands among them, and they end
-/// within `events`.
+/// Refuses `events`, an append's, unless every frame they share is held
+/// whole by them and in order: a frame begins at the position of the
+/// first event that carries it, which is no event of another frame's,
+/// every event it covers carries it and no other does, it covers no
+/// position past the append's last, and its bytes hold no line feed.
 pub fn frame_fault(events: &[CanonicalEvent]) -> Result<()> {
     let end = events.last().map_or(0, |e| e.position.0 + 1);
     // The frame the events now read carry, and how many more it covers.
     let mut open: Option<(&Arc<Frame>, u32)> = None;
-    // The `end` of the append whose blocks have not reached it.
-    let mut append: Option<Position> = None;
-    let fault = |position| Err(Error::invalid(Case::AppendFrame { position }));
     for event in events {
         let fits = match (&event.frame, open) {
-            (None, None) => append.is_none(),
+            (None, None) => true,
             (Some(f), None) => {
-                let block = block_of(f).and_then(|b| b.ok());
-                let fits = block.as_ref().is_some_and(|b| {
-                    b.first == f.first
-                        && b.events == u64::from(f.events)
-                        && b.end.0 < end
-                        && append.is_none_or(|a| a == b.end)
-                });
-                append = block.filter(|b| b.end > b.last()).map(|b| b.end);
-                f.first == event.position && f.events > 0 && fits
+                f.first == event.position
+                    && f.events > 0
+                    && f.first.0 + u64::from(f.events) <= end
+                    && !f.bytes.contains(&b'\n')
             }
             (Some(f), Some((held, _))) => f == held,
             (None, Some(_)) => false,
         };
         if !fits {
-            return fault(event.position);
+            let position = event.position;
+            return Err(Error::invalid(Case::AppendFrame { position }));
         }
         open = match (&event.frame, open) {
             (Some(_), Some((held, left))) => Some((held, left - 1)),
@@ -847,19 +738,17 @@ pub fn frame_fault(events: &[CanonicalEvent]) -> Result<()> {
         }
         .filter(|(_, left)| *left > 0);
     }
-    match (open, append, events.last()) {
-        (None, None, _) | (_, _, None) => Ok(()),
-        (_, _, Some(last)) => fault(last.position),
-    }
+    Ok(())
 }
 
-/// The last position of the append that wrote `stored`: the `end` its
-/// block says (§1.5), else its own, since the store's writer stores every
-/// append of two or more events as blocks. An append left whole reads as
-/// one of its own.
+/// The last position of the append that wrote `stored`: where the frame
+/// covering it ends, else its own, since the store's writer frames every
+/// append of two or more events (§1.2, 083). An append left whole reads
+/// as one of its own.
 pub fn append_end(stored: &CanonicalEvent) -> Position {
-    let block = stored.frame.as_ref().and_then(|f| block_of(f)?.ok());
-    block.map_or(stored.position, |b| b.end)
+    stored.frame.as_ref().map_or(stored.position, |f| {
+        Position(f.first.0 + u64::from(f.events.max(1)) - 1)
+    })
 }
 
 #[cfg(test)]

@@ -91,20 +91,23 @@ fn older(dir: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
         .ok_or_else(|| "no committed event".to_owned())
 }
 
-/// The `v` a line says, as 0.19.0's format check reads it: none where
-/// the bytes are no line, as a block's are, which its `one_format`
-/// leaves unread.
-fn v(line: &[u8]) -> Option<u64> {
-    let line: Value = serde_json::from_slice(line).ok()?;
-    Some(line.get("v").and_then(Value::as_u64).unwrap_or(0))
+/// The `v` a line says, as 0.19.0's format check reads it.
+fn v(line: &[u8]) -> u64 {
+    let line: Value = serde_json::from_slice(line).unwrap();
+    line.get("v").and_then(Value::as_u64).unwrap_or(0)
 }
 
-/// Whether a segment file holds a block.
-fn blocks(dir: &Path) -> bool {
+/// Whether a segment file holds a frame line.
+fn framed(dir: &Path) -> bool {
     let files = std::fs::read_dir(dir.join("log")).unwrap();
     files
         .map(|f| std::fs::read(f.unwrap().path()).unwrap())
-        .any(|bytes| bytes.windows(9).any(|w| w == b"{\"block\":"))
+        .any(|bytes| {
+            let lines = bytes.split(|b| *b == b'\n');
+            lines
+                .filter_map(|l| serde_json::from_slice::<Value>(l).ok())
+                .any(|l| l.get("frame").is_some())
+        })
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -118,7 +121,7 @@ async fn a_lake_this_build_made_is_read_by_0_19_0_up_to_its_format() {
     l.declare(type_decl("note", vec![sourced("text", Text)]))
         .await
         .unwrap();
-    // Appends of three records, each a block, around notes that take the
+    // Appends of three records, each framed, around notes that take the
     // first segment past its bound, so that a seal begins the next.
     for i in 0..12 {
         let text = if i % 3 == 0 {
@@ -137,16 +140,14 @@ async fn a_lake_this_build_made_is_read_by_0_19_0_up_to_its_format() {
         segments >= 2,
         "the lake was sealed: {segments} segment files"
     );
-    assert!(blocks(&dir), "the lake holds a block");
+    assert!(framed(&dir), "the lake holds a frame line");
 
-    // The last counted event is a block's, its bytes no line: 0.19.0
-    // judges the lake by its first end.
     let (first, tip) = older(&dir).unwrap();
     let reads = u64::from(LOG_FORMAT_VERSION);
     assert_eq!(
         (v(&first), v(&tip)),
-        (Some(reads), None),
-        "0.19.0 judges the first end by format {reads}"
+        (reads, reads),
+        "0.19.0 judges both ends by format {reads}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -162,9 +163,9 @@ async fn a_lake_just_made_is_read_by_0_19_0_up_to_its_format() {
     let reads = u64::from(LOG_FORMAT_VERSION);
     assert_eq!(
         (v(&first), v(&tip)),
-        (Some(reads), Some(reads)),
+        (reads, reads),
         "0.19.0 judges both ends of a lake just made by format {reads}"
     );
-    assert!(!blocks(&dir), "the creation's append is whole");
+    assert!(!framed(&dir), "the creation's append is whole");
     let _ = std::fs::remove_dir_all(&dir);
 }

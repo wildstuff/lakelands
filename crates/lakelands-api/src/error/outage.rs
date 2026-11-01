@@ -753,12 +753,6 @@ catalog! {
         FrameInFrame => "a frame line stands among the lines a frame covers",
         /// An event's line holds a member its frame holds.
         FramedTwice { member: String } => "its line holds `{member}`, which its frame holds",
-        /// A line holds `block` and is no block's first line.
-        NotABlock => "a line holds `block` and is no block's first line: it holds `block` and `v` alone, `block` an object of `end`, `events`, `first`, `hash`, `prev`, `raw` and `stored`, `events` a count from 1 and `end` no position before the block's last",
-        /// A block's bytes do not inflate to the lines its first line names.
-        BlockBytes => "a block's bytes do not inflate by zlib to the `raw` bytes of lines, each ended by a line feed, that its first line names",
-        /// An append's blocks end before its last position.
-        AppendShort { end: Position } => "an append's blocks end before its last position {end}",
         /// A segment's first event line does not hold its `position` and its `prev`.
         StartUnheld => "it is a segment's first event line, and does not hold both its `position` and its `prev`",
         /// Its `known_at` is before that of the event before it.

@@ -10,7 +10,6 @@ publish.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-flate2.workspace = true
 futures-core.workspace = true
 lakelands-api.workspace = true
 libm.workspace = true

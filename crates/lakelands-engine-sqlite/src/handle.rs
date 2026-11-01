@@ -633,7 +633,7 @@ impl LakeEngine for SqliteLake {
     }
 
     fn active_segment_bytes(&self) -> Option<u64> {
-        lock(&self.log).active_raw()
+        lock(&self.log).active_end()
     }
 
     fn projection(&self) -> &dyn ProjectionStore {
