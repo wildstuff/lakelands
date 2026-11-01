@@ -29,20 +29,26 @@ check!(
 );
 
 check!(
-    FRAMED_COPY = an_export_frames_each_append_and_imports_byte_for_byte,
-    "log-format §4.2 and 083, extended (lakelands#1540): an export frames each append of two or more events the feed tells, whole, and holds the others whole, every event line holding its `position` and only its file's first its `prev`; imported into a fresh lake, which restores each event and appends each frame as one append, it answers the head and verify as the lake it came from, its feed tells the same appends, and it exports the same files byte for byte",
+    EXPORT_IMPORT_KEEPS_APPENDS = an_export_frames_each_append_and_imports_byte_for_byte,
+    "098 and log-format §4.2: an export holds each append of two or more events the feed tells in blocks of its own and each other event on its line, every such line holding its `position` and only its file's first its `prev`; imported into a fresh lake, which restores each event and appends each append's blocks as one append, it answers the head and verify as the lake it came from, its feed tells the same appends, and it exports the same files byte for byte",
     given
 );
 
 check!(
     FRAMED_DAMAGE = a_framed_export_whose_stored_form_breaks_is_refused_naming_the_flaw,
-    "log-format §1.2 and §4.2: verifying an export, and importing it, refuses a frame line that is no frame, a frame line among the lines a frame covers, a line of another format than its frame's, a line holding a member its frame holds, a file that ends among a frame's lines, a file's first event line that holds no `prev`, and a line whose `position` or `prev` is not the one the line before gives, each naming its flaw and the position of the event it stands for",
+    "098 and log-format §1.5 and §4.2: verifying an export, and importing it, refuses a block's first line holding a member no block's holds, a block whose `hash`, `prev` or `first` is not the one its events and the line before give, a frame line among a block's event lines, a line in a block holding `position`, `v` or a member its frame holds, a line in a block changed, a line more than the block says, a byte of its stored bytes changed, and a file's first line that holds no `prev`, each naming its flaw and the position of the event it stands for",
     given
 );
 
 check!(
     BACKUP_FRAME_CUT = a_backup_stopped_among_a_frames_lines_writes_its_run_again_whole,
-    "077 and log-format §4.2: a backup whose file ends among the lines a frame covers, after its frame line or after some of its lines, a stopped run's, is cut at the frame line, and the next run writes that run again whole, so the backup holds the files an export of the head writes and restores the lake",
+    "077 and log-format §4.2: a backup whose file ends inside a block, after its first line, among its stored bytes or before its last line feed, a stopped run's, is cut at the block's first line, and the next run writes that run again whole, so the backup holds the files an export of the head writes and restores the lake",
+    given
+);
+
+check!(
+    APPEND_TORN_BETWEEN_BLOCKS = an_append_torn_between_its_blocks_is_refused_and_a_backup_writes_it_again,
+    "098 and log-format §1.5: a copy whose last append, a delivery of 1 100 records stored in two blocks, ends after its first block is refused by verify and by an import as `damaged` at the second block's first position, naming `append_short` with the append's `end`; a backup stopped there writes that append again from its first position, so it holds the files an export of the head writes and restores the lake",
     given
 );
 
@@ -640,24 +646,14 @@ fn refused_at(dir: &Path, position: Position, damage: &str) -> Held {
     Ok(())
 }
 
-/// A file's events as they are restored from its lines and its frames
-/// (log-format §1.2), each the canonical bytes of its whole event, without
-/// a line feed.
+/// A file's events as they are restored from its lines and its blocks
+/// (log-format §1.2, §1.5), each the canonical bytes of its whole event,
+/// without a line feed.
 pub(super) fn lines_of(dir: &Path, file: &str) -> Result<Vec<Vec<u8>>, Failure> {
-    let bytes = read(dir, file)?;
-    let mut lines = crate::log::Lines::default();
-    let mut events = Vec::new();
-    for line in bytes
-        .strip_suffix(b"\n")
-        .unwrap_or(&bytes)
-        .split(|b| *b == b'\n')
-    {
-        let read = lines.read(line).map_err(|flaw| {
-            Failure::new(format!("{file} of the export does not restore: {flaw:?}"))
-        })?;
-        events.extend(read);
-    }
-    Ok(events)
+    Ok(copy_lines(dir, file)?
+        .into_iter()
+        .map(|l| canonical::to_vec(&l.event))
+        .collect())
 }
 
 /// The bytes a file's digest is taken over: its events as restored, each
@@ -2053,45 +2049,44 @@ async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
     Ok(())
 }
 
-/// One event line of an export's file: the line as it stands, the event
-/// it restores to, and the frame, counted from 0 in the file, whose lines
-/// it is among.
-struct CopyLine {
-    line: Value,
-    event: Value,
-    frame: Option<usize>,
+/// One event of an export's file: the line it stands on, none for an
+/// event of a block, the event it restores to, and the block it is among,
+/// by the byte that block begins at, with the block's `end`.
+pub(super) struct CopyLine {
+    pub(super) line: Option<Value>,
+    pub(super) event: Value,
+    pub(super) block: Option<(u64, Position)>,
 }
 
-/// The event lines of an export's file, read in order, and how many
-/// events each frame line says it covers.
-fn copy_lines(dir: &Path, file: &str) -> Result<(Vec<CopyLine>, Vec<u64>), Failure> {
+/// The events of an export's file, restored in order (log-format §1.5).
+pub(super) fn copy_lines(dir: &Path, file: &str) -> Result<Vec<CopyLine>, Failure> {
     let bytes = read(dir, file)?;
-    let (mut lines, mut out, mut frames, mut left) =
-        (crate::log::Lines::default(), Vec::new(), Vec::new(), 0);
     let broken = |e: String| Failure::new(format!("{file} of the export does not restore: {e}"));
-    for raw in bytes
-        .strip_suffix(b"\n")
-        .unwrap_or(&bytes)
-        .split(|b| *b == b'\n')
-    {
-        let line: Value = serde_json::from_slice(raw).map_err(|e| broken(e.to_string()))?;
-        let event = lines.read(raw).map_err(|f| broken(format!("{f:?}")))?;
-        let Some(event) = event else {
-            left = line["events"].as_u64().unwrap_or(0);
-            frames.push(left);
-            continue;
+    let mut events = crate::log::Restoring::new(bytes.as_slice(), true);
+    let mut out = Vec::new();
+    while let Some(read) = events.next_event().map_err(|e| broken(format!("{e:?}")))? {
+        let at = bytes.get(read.unit as usize..).unwrap_or_default();
+        let first = at.split(|b| *b == b'\n').next().unwrap_or_default();
+        let first: Value = serde_json::from_slice(first).map_err(|e| broken(e.to_string()))?;
+        let (line, block) = match crate::log::is_block(&first) {
+            true => (None, Some((read.unit, read.end))),
+            false => (Some(first), None),
         };
-        let event = serde_json::from_slice(&event).map_err(|e| broken(e.to_string()))?;
-        let frame = (left > 0).then(|| frames.len() - 1);
-        left = left.saturating_sub(1);
-        out.push(CopyLine { line, event, frame });
+        out.push(CopyLine {
+            line,
+            event: read.event,
+            block,
+        });
     }
-    Ok((out, frames))
+    events.end().map_err(|f| broken(format!("{f:?}")))?;
+    Ok(out)
 }
 
 /// The last position of the append of each event of `store`'s log, by
 /// its position, as the feed tells it.
-async fn append_ends(store: &dyn LakeStore) -> Result<BTreeMap<Position, Position>, Failure> {
+pub(super) async fn append_ends(
+    store: &dyn LakeStore,
+) -> Result<BTreeMap<Position, Position>, Failure> {
     let (feed, mut from, mut ends) = (store.feed(), Position::GENESIS, BTreeMap::new());
     loop {
         let batch = feed.poll(from, &FeedFilter::default(), 100).await;
@@ -2110,48 +2105,55 @@ async fn append_ends(store: &dyn LakeStore) -> Result<BTreeMap<Position, Positio
 }
 
 /// Fails unless `dir`'s files hold their events in a copy's stored form
-/// (log-format §4.2), each append `ends` tells framed, and some frame
-/// among them.
-fn copy_form(dir: &Path, ends: &BTreeMap<Position, Position>) -> Held {
-    let mut framed = false;
+/// (log-format §4.2): each append of two or more events `ends` tells in
+/// blocks of its own, each other event on a line holding its position,
+/// only a file's first its `prev`, and some block among them.
+pub(super) fn copy_form(dir: &Path, ends: &BTreeMap<Position, Position>) -> Held {
+    let mut blocked = false;
+    let end = |l: &CopyLine| {
+        let at = l.event["position"].as_u64().map(Position);
+        at.and_then(|at| ends.get(&at).map(|end| (at, *end)))
+    };
     for file in files(dir)? {
-        let (lines, frames) = copy_lines(dir, &file)?;
-        framed |= !frames.is_empty();
-        ensure!(
-            frames.iter().all(|n| *n >= 2),
-            "each frame of {file} covers two events or more, and they cover {frames:?}"
-        );
+        let lines = copy_lines(dir, &file)?;
         for (i, l) in lines.iter().enumerate() {
             let at = &l.event["position"];
+            let shared = end(l).is_some_and(|(p, end)| {
+                end != p || p.0 > 0 && ends.get(&Position(p.0 - 1)) == Some(&end)
+            });
+            blocked |= l.block.is_some();
             ensure!(
-                l.line.get("position") == Some(at) && (l.line.get("prev").is_some() == (i == 0)),
-                "every event line of {file} holds its position, and only the first its `prev`; \
-                 the line of {at} is {}",
-                l.line
+                l.block.is_some() == shared,
+                "every event of {file} the feed tells in an append of two or more is in a block, \
+                 and only those; the event at {at} is {}",
+                if shared { "on a line" } else { "in a block" }
+            );
+            let Some(line) = &l.line else { continue };
+            ensure!(
+                line.get("position") == Some(at) && (line.get("prev").is_some() == (i == 0)),
+                "every event of {file} on a line holds its position, and only the file's first \
+                 its `prev`; the line of {at} is {line}"
             );
         }
         for pair in lines.windows(2) {
             let (a, b) = (&pair[0], &pair[1]);
-            let end = |l: &CopyLine| {
-                let at = l.event["position"].as_u64().map(Position);
-                at.and_then(|at| ends.get(&at)).copied()
-            };
-            let shared = end(a).is_some() && end(a) == end(b);
-            let together = a.frame.is_some() && a.frame == b.frame;
+            let shared = end(a).map(|e| e.1) == end(b).map(|e| e.1);
+            let of = |l: &CopyLine| l.block.map(|(_, end)| end);
+            let together = of(a).is_some() && of(a) == of(b);
             ensure!(
-                together == shared,
-                "in {file} the events at {} and {} are in one frame where the feed tells them of \
-                 one append, and only then, and they are framed {:?} and {:?}",
+                together == (shared && of(a).is_some()),
+                "in {file} the events at {} and {} are in the blocks of one append where the feed \
+                 tells them of one append, and only then, and they are in {:?} and {:?}",
                 a.event["position"],
                 b.event["position"],
-                a.frame,
-                b.frame
+                a.block,
+                b.block
             );
         }
     }
     ensure!(
-        framed,
-        "an export of a lake that ingested records in one delivery holds a frame, and it holds none"
+        blocked,
+        "an export of a lake that ingested records in one delivery holds a block, and it holds none"
     );
     Ok(())
 }
@@ -2226,20 +2228,68 @@ async fn an_export_frames_each_append_and_imports_byte_for_byte(
     Ok(())
 }
 
-/// A file's lines as they stand, frame lines among them, without their
-/// line feeds.
-fn raw_lines(dir: &Path, file: &str) -> Result<Vec<Vec<u8>>, Failure> {
-    let bytes = read(dir, file)?;
-    let body = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
-    Ok(body.split(|b| *b == b'\n').map(<[u8]>::to_vec).collect())
-}
-
 /// `line`, a line of an export's file, with `change` applied to it.
 fn changed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<Vec<u8>, Failure> {
     let mut value: Value = serde_json::from_slice(line)
         .map_err(|e| Failure::new(format!("an exported line is not JSON: {e}")))?;
     change(&mut value);
     Ok(canonical::to_vec(&value))
+}
+
+/// One unit of an export's file as it stands: a line, or a block as its
+/// first line and the lines its stored bytes inflate to.
+#[derive(Clone)]
+enum Stood {
+    Line(Vec<u8>),
+    Block(Value, Vec<Vec<u8>>),
+}
+
+/// The units of `file` of the export in `dir`, in order.
+fn stood(dir: &Path, file: &str) -> Result<Vec<Stood>, Failure> {
+    let bytes = read(dir, file)?;
+    let broken = |e: String| Failure::new(format!("{file} of the export is not read: {e}"));
+    let (mut input, mut out) = (bytes.as_slice(), Vec::new());
+    while let Some(unit) = crate::log::read_unit(&mut input).map_err(|e| broken(format!("{e:?}")))? {
+        out.push(match unit {
+            crate::log::Unit::Line(line) => Stood::Line(line),
+            crate::log::Unit::Block(block, _, head, z) => {
+                let raw = crate::log::inflate(&block, &z).map_err(|f| broken(format!("{f:?}")))?;
+                let head = serde_json::from_slice(&head).map_err(|e| broken(e.to_string()))?;
+                let body = raw.strip_suffix(b"\n").unwrap_or(&raw);
+                Stood::Block(head, body.split(|b| *b == b'\n').map(<[u8]>::to_vec).collect())
+            }
+        });
+    }
+    Ok(out)
+}
+
+/// `units` as a file's bytes, each block's lines compressed again and its
+/// `raw` and `stored` theirs, so that only what was changed is wrong.
+fn unstood(units: &[Stood]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut out = Vec::new();
+    for unit in units {
+        match unit {
+            Stood::Line(line) => out.extend_from_slice(line),
+            Stood::Block(head, lines) => {
+                let mut raw = Vec::new();
+                for line in lines {
+                    raw.extend_from_slice(line);
+                    raw.push(b'\n');
+                }
+                let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+                let z = z.write_all(&raw).and_then(|()| z.finish()).unwrap_or_default();
+                let mut head = head.clone();
+                head["block"]["raw"] = json!(raw.len());
+                head["block"]["stored"] = json!(z.len());
+                out.extend(canonical::to_vec(&head));
+                out.push(b'\n');
+                out.extend(z);
+            }
+        }
+        out.push(b'\n');
+    }
+    out
 }
 
 async fn a_framed_export_whose_stored_form_breaks_is_refused_naming_the_flaw(
@@ -2251,125 +2301,143 @@ async fn a_framed_export_whose_stored_form_breaks_is_refused_naming_the_flaw(
     let from = scratch.dir("from");
     write(store.as_ref(), &from).await?;
     let file = export::file_name(Position::GENESIS);
-    let raw = raw_lines(&from, &file)?;
-    // The file's first frame line, the position of its first event, how
-    // many it covers, and its format.
-    let values: Vec<Value> = raw
-        .iter()
-        .map(|l| serde_json::from_slice(l).unwrap_or(Value::Null))
-        .collect();
-    let Some(k) = values.iter().position(crate::log::is_frame) else {
+    let units = stood(&from, &file)?;
+    ensure!(
+        unstood(&units) == read(&from, &file)?,
+        "{file} of the export, its blocks compressed again at level 6, is the same bytes"
+    );
+    // The file's first block, the position of its first event, its frame
+    // line and the index of its first event's line.
+    let Some((k, head, lines)) = units.iter().enumerate().find_map(|(k, u)| match u {
+        Stood::Block(head, lines) => Some((k, head.clone(), lines.clone())),
+        Stood::Line(_) => None,
+    }) else {
         return Err(Failure::new(format!(
-            "{file} of an export of a lake that ingested records in one delivery holds a frame, \
+            "{file} of an export of a lake that ingested records in one delivery holds a block, \
              and it holds none"
         )));
     };
-    let (n, v) = (values[k]["events"].as_u64(), values[k]["v"].as_u64());
-    let p = values.get(k + 1).and_then(|l| l["position"].as_u64());
-    let (Some(n), Some(v), Some(p)) = (n, v, p) else {
+    let frame: Option<Value> = lines.first().and_then(|l| serde_json::from_slice(l).ok());
+    let (Some(p), Some(frame)) = (
+        head["block"]["first"].as_u64(),
+        frame.filter(crate::log::is_frame),
+    ) else {
         return Err(Failure::new(format!(
-            "the frame line of {file} says how many events it covers and its format, and the \
-             line after it its event's position; they are {} and {:?}",
-            values[k],
-            values.get(k + 1)
+            "the block of {file} names its first position, and its events, which share \
+             `known_at`, begin with a frame line; they are {head} and {:?}",
+            lines.first().map(|l| String::from_utf8_lossy(l).into_owned())
         )));
     };
-    let known_at = values[k]["frame"]["known_at"].clone();
-    let second = k + 2;
-    let mut breaks: Vec<(&str, u64, Flaw, Vec<Vec<u8>>)> = Vec::new();
-    let mut with = |what, at, flaw, edit: &dyn Fn(&mut Vec<Vec<u8>>) -> Held| -> Held {
-        let mut lines = raw.clone();
-        edit(&mut lines)?;
-        breaks.push((what, at, flaw, lines));
+    let known_at = frame["frame"]["known_at"].clone();
+    let second = 2;
+    type Edit<'a> = &'a dyn Fn(&mut Value, &mut Vec<Vec<u8>>) -> Held;
+    let mut breaks: Vec<(&str, u64, Flaw, Vec<u8>)> = Vec::new();
+    let mut with = |what, at, flaw, edit: Edit| -> Held {
+        let mut units = units.clone();
+        if let Stood::Block(head, lines) = &mut units[k] {
+            edit(head, lines)?;
+        }
+        breaks.push((what, at, flaw, unstood(&units)));
         Ok(())
     };
     with(
-        "a frame line holding a member no frame holds",
+        "a block's first line holding a member no block's first line holds",
         p,
-        Flaw::NotAFrame,
-        &|l| {
-            l[k] = changed(&l[k], |f| f["extra"] = json!(1))?;
+        Flaw::NotABlock,
+        &|h, _| {
+            h["extra"] = json!(1);
             Ok(())
         },
     )?;
     with(
-        "a frame line among the lines a frame covers",
-        p + 1,
-        Flaw::FrameInFrame,
-        &|l| {
-            l.insert(k + 2, l[k].clone());
+        "a block whose `hash` is not its last event's",
+        p,
+        Flaw::HashMismatch,
+        &|h, _| {
+            h["block"]["hash"] = json!(lakelands_api::event::Digest::zero().0);
             Ok(())
         },
     )?;
     with(
-        "a line of the format before its frame's",
-        p + 1,
-        Flaw::FormatOther { v: v - 1, reads: v },
-        &|l| {
-            l[second] = changed(&l[second], |e| e["v"] = json!(v - 1))?;
+        "a block whose `prev` is not the hash before it",
+        p,
+        Flaw::PrevHash,
+        &|h, _| {
+            h["block"]["prev"] = json!(lakelands_api::event::Digest::zero().0);
             Ok(())
         },
     )?;
     with(
-        "a line holding the `known_at` its frame holds",
-        p + 1,
-        Flaw::FramedTwice {
-            member: "known_at".into(),
-        },
-        &|l| {
-            l[second] = changed(&l[second], |e| e["known_at"] = known_at.clone())?;
-            Ok(())
-        },
-    )?;
-    with(
-        "the file ending after a frame's first line",
-        p + 1,
-        Flaw::FrameShort { events: n, held: 1 },
-        &|l| {
-            l.truncate(k + 2);
-            Ok(())
-        },
-    )?;
-    with(
-        "the file's first event line holding no `prev`",
-        0,
-        Flaw::StartUnheld,
-        &|l| {
-            let o = values
-                .iter()
-                .position(|l| !crate::log::is_frame(l))
-                .unwrap_or(0);
-            l[o] = changed(&l[o], |e| _ = e.as_object_mut().map(|e| e.remove("prev")))?;
-            Ok(())
-        },
-    )?;
-    with(
-        "a line holding a position the line before does not give",
-        p + 1,
+        "a block whose `first` is not the position the line before gives",
+        p,
         Flaw::Position {
-            expected: Position(p + 1),
+            expected: Position(p),
             found: Some(Position(p + 6)),
         },
-        &|l| {
-            l[second] = changed(&l[second], |e| e["position"] = json!(p + 6))?;
+        &|h, _| {
+            h["block"]["first"] = json!(p + 6);
+            h["block"]["end"] = json!(h["block"]["end"].as_u64().unwrap_or(0) + 6);
             Ok(())
         },
     )?;
     with(
-        "a line holding a `prev` that is not the hash before it",
+        "a frame line among a block's event lines",
         p + 1,
-        Flaw::PrevHash,
-        &|l| {
-            l[second] = changed(&l[second], |e| {
-                e["prev"] = json!(lakelands_api::event::Digest::zero().0)
-            })?;
+        Flaw::FrameInFrame,
+        &|_, l| {
+            l.insert(second, l[0].clone());
             Ok(())
         },
     )?;
-    for (i, (what, at, flaw, lines)) in breaks.into_iter().enumerate() {
+    for (member, value) in [("position", json!(p + 1)), ("v", json!(1)), ("known_at", known_at)] {
+        with(
+            "a line in a block holding a member its block or its frame decides",
+            p + 1,
+            Flaw::FramedTwice {
+                member: member.into(),
+            },
+            &|_, l| {
+                l[second] = changed(&l[second], |e| e[member] = value.clone())?;
+                Ok(())
+            },
+        )?;
+    }
+    with(
+        "a line in a block changed",
+        p,
+        Flaw::HashMismatch,
+        &|_, l| {
+            l[second] = changed(&l[second], |e| e["body"]["changed"] = json!(true))?;
+            Ok(())
+        },
+    )?;
+    with(
+        "a block holding an event line more than it says",
+        p,
+        Flaw::BlockBytes,
+        &|_, l| {
+            l.push(l[l.len() - 1].clone());
+            Ok(())
+        },
+    )?;
+    // A byte of the block's stored bytes changed.
+    let mut bytes = unstood(&units);
+    let at = unstood(&units[..k]).len()
+        + canonical::to_vec(&head).len()
+        + 1
+        + head["block"]["stored"].as_u64().unwrap_or(0) as usize / 2;
+    bytes[at] ^= 0x10;
+    breaks.push(("a byte of a block's stored bytes changed", p, Flaw::BlockBytes, bytes));
+    // The file's first line, its lake's creation, holding no `prev`.
+    let mut first = units.clone();
+    if let Stood::Line(line) = &mut first[0] {
+        *line = changed(line, |e| _ = e.as_object_mut().map(|e| e.remove("prev")))?;
+    }
+    breaks.push(("the file's first line holding no `prev`", 0, Flaw::StartUnheld, unstood(&first)));
+    for (i, (what, at, flaw, bytes)) in breaks.into_iter().enumerate() {
         let dir = scratch.dir(&format!("broken-{i}"));
         copied(&from, &dir)?;
-        rewrite(&dir, &file, &lines)?;
+        fs::write(dir.join(&file), bytes).map_err(|e| Failure::new(format!("damaging: {e}")))?;
         let said = export::verify(&dir);
         let named = match said.as_ref().err().and_then(Error::situation) {
             Some(Situation::Damaged { position, flaw, .. }) => Some((*position, flaw)),
@@ -2400,82 +2468,132 @@ async fn a_backup_stopped_among_a_frames_lines_writes_its_run_again_whole(
     let whole = scratch.dir("whole");
     backup(s, &whole).await?;
     let last = files(&whole)?.pop().unwrap_or_default();
-    let (lines, frames) = copy_lines(&whole, &last)?;
-    let Some(frame) = lines.last().and_then(|l| l.frame) else {
+    let lines = copy_lines(&whole, &last)?;
+    let Some((start, _)) = lines.last().and_then(|l| l.block) else {
         return Err(Failure::new(format!(
-            "the last line of {last} is among the lines of a frame, the last delivery's, and it \
-             is not; {} frames there",
-            frames.len()
+            "the last event of {last} is in a block, the last delivery's, and it is not"
         )));
     };
     let bytes = read(&whole, &last)?;
-    let feeds: Vec<usize> = bytes
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| **b == b'\n')
-        .map(|(i, _)| i + 1)
-        .collect();
-    // The frame line is the one before its first event line.
-    let first = lines
-        .iter()
-        .position(|l| l.frame == Some(frame))
-        .unwrap_or(0);
-    let frame_line = first + frame;
-    for (kept, what) in [
-        (0, "its frame line"),
-        (2, "two of its lines"),
-        (usize::MAX, "an append an earlier release framed in two"),
+    let start = start as usize;
+    let head = bytes[start..].iter().position(|b| *b == b'\n').unwrap_or(0) + 1;
+    let after = start + head;
+    for (cut, what) in [
+        (after, "its block's first line"),
+        (after + (bytes.len() - 1 - after) / 2, "half its block's stored bytes"),
+        (bytes.len() - 1, "its block but its last line feed"),
     ] {
-        let (dir, export) = (
-            scratch.dir(&format!("stopped-{kept}")),
-            scratch.dir(&format!("export-{kept}")),
-        );
-        copied(&whole, &dir)?;
-        let torn = match kept {
-            usize::MAX => {
-                // The append's frame as an earlier release wrote it: two,
-                // the second begun inside the append.
-                let events: Vec<Value> = lines
-                    .iter()
-                    .filter(|l| l.frame == Some(frame))
-                    .map(|l| l.event.clone())
-                    .collect();
-                let at = events.len() / 2;
-                let mut torn = bytes[..feeds[frame_line - 1]].to_vec();
-                for part in [&events[..at], &events[at..]] {
-                    let (frame, lines) = crate::log::stored_form(part, |_, _| (true, false));
-                    for line in frame.into_iter().chain(lines) {
-                        torn.extend(line);
-                        torn.push(b'\n');
-                    }
-                }
-                torn
-            }
-            _ => [
-                &bytes[..feeds[frame_line + kept]],
-                b"{\"body\":{".as_slice(),
-            ]
-            .concat(),
+        let tear = |dir: &Path| {
+            fs::write(dir.join(&last), &bytes[..cut])
+                .map_err(|e| Failure::new(format!("tearing: {e}")))
         };
-        fs::write(dir.join(&last), torn).map_err(|e| Failure::new(format!("tearing: {e}")))?;
-        let run = backup(s, &dir).await?;
-        ensure!(
-            as_exported(s, &dir, &export).await?
-                && (kept != usize::MAX || run.copied == 0 && run.again.is_some()),
-            "a backup stopped after {what} writes the frame's run again whole, counts the new \
-             events and holds the files an export of the head writes; it answered {run:?}"
-        );
-        let restored = (given.import)(dir.clone(), store.lake().clone(), None, import_seams());
-        let restored = restored
-            .await
-            .map_err(|e| Failure::new(format!("restoring the backup stopped after {what}: {e}")))?
-            .store;
-        let (want, got) = (s.head().await, restored.head().await);
-        ensure!(
-            want.as_ref().ok() == got.as_ref().ok(),
-            "the backup stopped after {what}, run again, restores the lake at its head {want:?}, \
-             and it restores {got:?}"
-        );
+        stopped_and_run_again(s, &given, (&whole, &scratch), tear, what).await?;
     }
+    Ok(())
+}
+
+/// Fails unless a backup of `s`, copied from `whole` and torn by `tear`,
+/// stopped after `what`, run again holds the files an export of the head
+/// writes, and restores the lake at its head.
+pub(super) async fn stopped_and_run_again(
+    s: &dyn LakeStore,
+    given: &crate::conformance::Given,
+    (whole, scratch): (&Path, &Scratch),
+    tear: impl Fn(&Path) -> Held,
+    what: &str,
+) -> Result<export::Backup, Failure> {
+    let tag = what.replace(|c: char| !c.is_ascii_alphanumeric(), "-");
+    let (dir, export) = (
+        scratch.dir(&format!("stopped-{tag}")),
+        scratch.dir(&format!("export-{tag}")),
+    );
+    copied(whole, &dir)?;
+    tear(&dir)?;
+    let run = backup(s, &dir).await?;
+    ensure!(
+        as_exported(s, &dir, &export).await?,
+        "a backup stopped after {what} writes its append's run again whole, counts the new \
+         events and holds the files an export of the head writes; it answered {run:?}"
+    );
+    let restored = (given.import)(dir.clone(), s.lake().clone(), None, import_seams());
+    let restored = restored
+        .await
+        .map_err(|e| Failure::new(format!("restoring the backup stopped after {what}: {e}")))?
+        .store;
+    let (want, got) = (s.head().await, restored.head().await);
+    ensure!(
+        want.as_ref().ok() == got.as_ref().ok(),
+        "the backup stopped after {what}, run again, restores the lake at its head {want:?}, \
+         and it restores {got:?}"
+    );
+    Ok(run)
+}
+
+async fn an_append_torn_between_its_blocks_is_refused_and_a_backup_writes_it_again(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (scratch, s) = (Scratch::new(given.scratch.clone()), store.as_ref());
+    let (before, delivered, head) = super::stored_form::big(s).await?;
+    // The file cut at the first byte of the delivery's second block: its
+    // last append ends after its first block, the note after it gone too.
+    let whole = scratch.dir("whole");
+    backup(s, &whole).await?;
+    let last = files(&whole)?.pop().unwrap_or_default();
+    let lines = copy_lines(&whole, &last)?;
+    let second = Position(before.0 + 1 + 1_000);
+    let at = |p: Position| {
+        lines
+            .iter()
+            .find(|l| l.event["position"].as_u64() == Some(p.0))
+            .and_then(|l| l.block)
+    };
+    let (Some((cut, end)), Some((first, _))) = (at(second), at(before.next())) else {
+        return Err(Failure::new(format!(
+            "the delivery of {last} is stored in two blocks, the second from {second}, and it \
+             is not"
+        )));
+    };
+    ensure!(
+        first < cut && end == delivered && head == delivered.next(),
+        "the delivery's blocks begin at bytes {first} and {cut} of {last}, each naming {delivered} \
+         as its `end`, and they name {end}"
+    );
+    let bytes = read(&whole, &last)?;
+    let torn = &bytes[..cut as usize];
+    // Verified, and imported, the file torn between the blocks is refused.
+    let dir = scratch.dir("torn");
+    copied(&whole, &dir)?;
+    fs::write(dir.join(&last), torn).map_err(|e| Failure::new(format!("tearing: {e}")))?;
+    let flaw = Flaw::AppendShort { end: delivered };
+    let said = export::verify(&dir);
+    let named = match said.as_ref().err().and_then(Error::situation) {
+        Some(Situation::Damaged { position, flaw, .. }) => Some((*position, flaw)),
+        _ => None,
+    };
+    ensure!(
+        named == Some((Some(second), &flaw)),
+        "verifying a copy whose last append is torn between its blocks is refused as `damaged` \
+         at {second}, naming {flaw:?}, and it answered {said:?}"
+    );
+    let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
+    let e = refused(imported, "an import of a copy torn between an append's blocks")?;
+    ensure!(
+        damaged(&e) == Some(&flaw),
+        "an import of a copy torn between an append's blocks is refused as `damaged`, naming \
+         {flaw:?}, and it answered {e}"
+    );
+    // A backup stopped there writes the append again whole.
+    let tear = |dir: &Path| {
+        fs::write(dir.join(&last), torn).map_err(|e| Failure::new(format!("tearing: {e}")))
+    };
+    let what = "the first of its last append's blocks";
+    let run = stopped_and_run_again(s, &given, (&whole, &scratch), tear, what).await?;
+    ensure!(
+        run.again == Some(before.next()),
+        "a backup stopped between an append's blocks writes that append again from its first \
+         position {}, and it answered {run:?}",
+        before.next()
+    );
     Ok(())
 }

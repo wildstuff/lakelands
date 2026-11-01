@@ -66,22 +66,22 @@ engine_check!(
 
 engine_check!(
     FRAMED_UNCHANGED = a_framed_append_comes_back_unchanged_read_from_within_it,
-    "log format §1.2: an append stored as a frame and the lines of what its events do not share comes back unchanged, each event with its frame, read from the frame's first position, from within it and one event at a time, and restores to the events it was made from"
+    "log format §1.5: an append stored as a block, its events' lines leaving out what the block decides, comes back unchanged, each event with its block, read from the block's first position, from within it and one event at a time, and restores to the events it was made from"
 );
 
 engine_check!(
     FRAME_HELD_WHOLE = an_append_that_holds_a_frame_in_part_is_refused_whole,
-    "log format §4.1: an append that does not hold each frame its events share whole and in order, from the frame's first position to its last, is refused as `append_frame` naming the position, and none of it is appended"
+    "log format §4.1 and §1.5: an append that does not hold each block its events share whole and in order, from the block's first position to its last, is refused as `append_frame` naming the position, and none of it is appended"
 );
 
 engine_check!(
-    MIXED_DIGEST = a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored,
-    "log format §1.2 and §4.2: a segment holding whole lines and framed appends reads back as appended, and its digest is SHA-256 over its events as they restore, each event's canonical bytes followed by a line feed"
+    BLOCK_DIGEST_OVER_RESTORED_EVENTS = a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored,
+    "log format §1.5 and §4.2: a segment holding whole lines and blocks reads back as appended, and its digest is SHA-256 over its events as they restore, each event's canonical bytes followed by a line feed, never over a block's stored bytes"
 );
 
 engine_check!(
-    FRAME_BROKEN = reopening a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_where_it_is_restored,
-    "log format §1.2 and §4.2: the engine keeps a frame and a line as they are handed, so a frame that is no frame, a line that holds a member its frame holds, a line of another format than its frame's and a frame line among the lines a frame covers come back unchanged and do not restore, and a seal of their segment, which digests its events as restored, is refused as `damaged` at the position of the event that does not restore, naming its flaw, and seals nothing"
+    BLOCK_CHANGED_IS_A_BREAK = reopening a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_where_it_is_restored,
+    "log format §1.5 and §4.2: the engine keeps a block and its lines as they are handed, so a line in a block that holds `hash`, `v` or a member its frame holds, and a frame line among a block's event lines, come back unchanged and do not restore, and a seal of their segment, which digests its events as restored, is refused as `damaged` at the position of the event that does not restore, naming its flaw, and seals nothing"
 );
 
 engine_check!(
@@ -1082,30 +1082,43 @@ fn a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored
     Ok(())
 }
 
-/// The line of the event at `at` among `stored`, edited by `edit`.
+/// The line of the event at `at` among `stored`, edited by `edit`, both
+/// as its event holds it and inside the block they share, whose stored
+/// bytes are compressed again and its `raw` and `stored` theirs, so that
+/// only the line is wrong.
 fn edit_line(stored: &mut [CanonicalEvent], at: usize, edit: impl FnOnce(&mut Value)) -> Held {
+    use std::io::Write as _;
+    let broken = |what: &str| Failure::new(format!("a framed append's block {what}"));
     let mut line: Value = serde_json::from_slice(&stored[at].bytes)
         .map_err(|e| Failure::new(format!("a stored line is JSON: {e}")))?;
     edit(&mut line);
-    stored[at].bytes = crate::canonical::to_vec(&line);
-    Ok(())
-}
-
-/// The frame `stored` share, edited by `edit`, carried by each of them.
-fn edit_frame(stored: &mut [CanonicalEvent], edit: impl FnOnce(&mut Value)) -> Held {
-    let frame = stored[0]
-        .frame
-        .clone()
-        .ok_or_else(|| Failure::new("a framed append's first event carries its frame"))?;
-    let mut line: Value = serde_json::from_slice(&frame.bytes)
-        .map_err(|e| Failure::new(format!("a stored frame is JSON: {e}")))?;
-    edit(&mut line);
-    let edited = std::sync::Arc::new(Frame {
-        bytes: crate::canonical::to_vec(&line),
+    let edited = crate::canonical::to_vec(&line);
+    let frame = stored[at].frame.clone().ok_or_else(|| broken("is carried"))?;
+    let block = crate::log::block_of(&frame).and_then(|b| b.ok());
+    let block = block.ok_or_else(|| broken("is one"))?;
+    let feed = frame.bytes.iter().position(|b| *b == b'\n').unwrap_or(0);
+    let raw = crate::log::inflate(&block, &frame.bytes[feed + 1..]).map_err(|_| broken("inflates"))?;
+    let mut lines: Vec<&[u8]> = raw[..raw.len() - 1].split(|b| *b == b'\n').collect();
+    let framed = usize::from(lines.first().is_some_and(|l| l.starts_with(b"{\"events\":")));
+    lines[at - (frame.first.0 - stored[0].position.0) as usize + framed] = &edited;
+    let mut raw = Vec::new();
+    for l in lines {
+        raw.extend_from_slice(l);
+        raw.push(b'\n');
+    }
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+    let z = z.write_all(&raw).and_then(|()| z.finish()).map_err(|_| broken("compresses"))?;
+    let (raw, stored_bytes) = (raw.len() as u64, z.len() as u64);
+    let mut bytes = crate::log::Block { raw, stored: stored_bytes, ..block }.line(FORMAT);
+    bytes.push(b'\n');
+    bytes.extend(z);
+    let edited_frame = std::sync::Arc::new(Frame {
+        bytes,
         ..Frame::clone(&frame)
     });
-    for e in stored {
-        e.frame = Some(edited.clone());
+    stored[at].bytes = edited;
+    for e in stored.iter_mut().filter(|e| e.frame.as_ref() == Some(&frame)) {
+        e.frame = Some(edited_frame.clone());
     }
     Ok(())
 }
@@ -1128,18 +1141,18 @@ fn a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_whe
                 })
             },
         ),
-        ("the frame says no format", 0, Flaw::NotAFrame, |s| {
-            edit_frame(s, |f| {
-                f.as_object_mut().map(|m| m.remove("v"));
-            })
-        }),
         (
-            "the second event's line says the format before its frame's",
+            "the second event's line holds `hash`, which its block decides",
             1,
-            Flaw::FrameOther {
-                frame: FORMAT,
-                v: FORMAT - 1,
+            Flaw::FramedTwice {
+                member: "hash".into(),
             },
+            |s| edit_line(s, 1, |l| l["hash"] = json!(Digest::zero().0)),
+        ),
+        (
+            "the second event's line holds `v`, which its block decides",
+            1,
+            Flaw::FramedTwice { member: "v".into() },
             |s| edit_line(s, 1, |l| l["v"] = json!(FORMAT - 1)),
         ),
         (

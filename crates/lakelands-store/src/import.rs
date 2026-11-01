@@ -35,10 +35,10 @@
 //! event is carried.
 //!
 //! **Then the events, as they are.** Each file's events are restored from
-//! its lines and frames (`docs/log-format.md` §1.2) and appended as the
-//! lake it came from appended them: each frame of the export is one
-//! append, and each event no frame covers one of its own, framed as the
-//! store frames one, so the imported lake's feed tells the same appends
+//! its lines and blocks (`docs/log-format.md` §1.2, §1.5) and appended as
+//! the lake it came from appended them: the blocks of one append are one
+//! append, and each event alone on its line one of its own, stored as the
+//! store stores one, so the imported lake's feed tells the same appends
 //! (083) and the stored form is the new lake's own. The first file's
 //! events go to `LakeEngine::import` in batches of at most [`BATCH`]
 //! bytes, each append whole, one larger than that alone, so what an
@@ -65,11 +65,12 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, Lease, OpenMode};
+use lakelands_core::log::Fault;
 use lakelands_api::error::{Case, Detail, Doing, Flaw, Part, Said, Situation};
 use lakelands_api::event::Digest;
 use lakelands_api::location::Location;
@@ -125,9 +126,9 @@ fn batched(
     hand(&batch)
 }
 
-/// The appends of a file's `events`, each the events one frame of the
-/// export covers or one event no frame covers, framed as the store's
-/// writer frames an append: an import keeps the appends the lake it came
+/// The appends of a file's `events`, each the events the blocks of one
+/// append hold or one event alone on its line, stored as the store's
+/// writer stores an append: an import keeps the appends the lake it came
 /// from wrote, as its feed tells them (083).
 fn appends(
     mut events: impl Iterator<Item = Result<(CanonicalEvent, Position)>>,
@@ -232,45 +233,56 @@ struct Sealed {
 /// An event of an export as [`events`] reads it.
 type Read = (CanonicalEvent, Envelope, Position);
 
-/// Each event of `path`, restored from its line and its frame
-/// (`docs/log-format.md` §1.2), as the event the store would append, its
-/// bytes the event's canonical bytes and framed by none, with its
-/// envelope and the last position its frame covers, its own where none
-/// covers it, in order.
+/// Each event of `path`, restored from its line or its block
+/// (`docs/log-format.md` §1.2, §1.5), as the event the store would append,
+/// its bytes the event's canonical bytes and framed by none, with its
+/// envelope and the last position of its append, its own where it is
+/// alone on its line, in order. A file that ends inside an append is
+/// refused.
 fn events(path: &Path) -> Result<impl Iterator<Item = Result<Read>> + '_> {
     let file = fs::File::open(path).map_err(|e| io(Doing::Open, path, e))?;
-    let (mut lines, mut before) = (
-        lakelands_core::log::Lines::default(),
-        None::<(Position, Digest)>,
-    );
-    let read = BufReader::new(file).split(b'\n').map(move |line| {
-        let line = line.map_err(|e| io(Doing::Read, path, e))?;
-        let damaged = |flaw| lakelands_core::damaged(Part::Export, None, flaw);
-        let value = lakelands_core::log::line_of(&line).map_err(damaged)?;
-        let after = before.as_ref().map(|(p, h)| (*p, h));
-        let Some((value, _)) = lines.line(value, after).map_err(damaged)? else {
-            return Ok(None);
+    let mut events = lakelands_core::log::Restoring::new(BufReader::new(file), true);
+    let mut done = false;
+    let damaged = |flaw| lakelands_core::damaged(Part::Export, None, flaw);
+    Ok(std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        let read = match events.next_event() {
+            Ok(Some(read)) => read,
+            Ok(None) => {
+                done = true;
+                return events.end().err().map(|flaw| Err(damaged(flaw)));
+            }
+            Err(fault) => {
+                done = true;
+                return Some(Err(match fault {
+                    Fault::Io(e) => io(Doing::Read, path, e),
+                    Fault::Short => damaged(Flaw::Truncated),
+                    Fault::Flaw(flaw) => damaged(flaw),
+                }));
+            }
         };
         // The parser's own words, which name the member it does not know:
         // an import's caller is the operator, and the export is its own.
-        let e = Envelope::deserialize(&value).map_err(|err| {
-            let detail = Detail::scrubbed(err);
-            damaged(Flaw::NotAnEvent { detail })
-        })?;
-        before = Some((e.position, e.hash.clone()));
+        let e = match Envelope::deserialize(&read.event) {
+            Ok(e) => e,
+            Err(err) => {
+                let detail = Detail::scrubbed(err);
+                return Some(Err(damaged(Flaw::NotAnEvent { detail })));
+            }
+        };
         let stored = CanonicalEvent {
             position: e.position,
             id: e.id.clone(),
             prev: e.prev.clone(),
             hash: e.hash.clone(),
             fence: e.fence,
-            bytes: lakelands_core::canonical::to_vec(&value),
+            bytes: read.bytes,
             frame: None,
         };
-        let end = Position(e.position.0 + lines.left());
-        Ok(Some((stored, e, end)))
-    });
-    Ok(read.filter_map(Result::transpose))
+        Some(Ok((stored, e, read.end)))
+    }))
 }
 
 /// What only an import checks, over the whole export, before anything is

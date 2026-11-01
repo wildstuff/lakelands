@@ -26,21 +26,24 @@
 //! (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
 //!
 //! Each file holds its events in a copy's stored form (§4.2): each append
-//! of two or more events, as the feed tells its end, framed whole, every
-//! event line holding its `position`, and `prev` only on the file's
-//! first.
+//! of two or more events, as the feed tells its end, in the blocks the
+//! store writes it in (§1.5), which come out the same for the same events,
+//! and every event alone on a line holding its `position`, and `prev` only
+//! on the file's first. A copy imported and exported again is the same
+//! files.
 //!
-//! [`verify`] reads only `log/`, a line at a time, each event restored
-//! from its line and its frame: canonical lines, consecutive positions, the hash chain from 64 zeros, every checkpoint
+//! [`verify`] reads only `log/`, a line or a block at a time, each event
+//! restored from its line or its block: canonical lines, consecutive positions, the hash chain from 64 zeros, every checkpoint
 //! against the files before it, one format version this release reads, and
 //! no member a reader of the lake refuses (`crate::log::misplaced`), so an
 //! import refuses it before it writes.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
+use std::io::{BufReader, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 
 use lakelands_api::catalog::Verification;
+use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::error::{Case, Detail, Doing, Flaw, Part};
 use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION};
 use lakelands_api::seam::{ChangeFeed, FeedFilter};
@@ -177,15 +180,28 @@ impl Segment {
         Ok(())
     }
 
-    /// Writes the run held, its `prev` only on the segment's first line.
+    /// Writes the run held: as the store's writer writes an append of two
+    /// or more events, in blocks, and else each event on its line, its
+    /// `prev` only on the segment's first.
     fn flush(&mut self) -> Result<()> {
         let first = self.first;
-        let holds = |_: usize, e: &Value| (true, e["position"].as_u64() == Some(first.0));
-        let (frame, lines) = crate::log::stored_form(&self.run, holds);
+        let mut stored: Vec<CanonicalEvent> = self.run.iter().map(stored_of).collect();
+        crate::log::frame_append(&mut stored);
+        let units: Vec<Vec<u8>> = match stored.iter().any(|e| e.frame.is_some()) {
+            true => stored
+                .iter()
+                .filter_map(|e| e.frame.as_ref().filter(|f| f.first == e.position))
+                .map(|f| f.bytes.clone())
+                .collect(),
+            false => {
+                let holds = |_: usize, e: &Value| (true, e["position"].as_u64() == Some(first.0));
+                crate::log::stored_form(&self.run, holds).1
+            }
+        };
         self.run.clear();
-        for line in frame.into_iter().chain(lines) {
+        for unit in units {
             self.out
-                .write_all(&line)
+                .write_all(&unit)
                 .and_then(|()| self.out.write_all(b"\n"))
                 .map_err(|e| io(Doing::Write, &self.path, e))?;
         }
@@ -206,6 +222,21 @@ impl Segment {
             last: self.last,
             digest: Digest(canonical::hex(&self.digest.finalize())),
         })
+    }
+}
+
+/// The event at the engine seam an event's canonical value is, as the
+/// store hands it to the writer's form.
+fn stored_of(event: &Value) -> CanonicalEvent {
+    let text = |name: &str| event[name].as_str().unwrap_or_default().to_owned();
+    CanonicalEvent {
+        position: Position(event["position"].as_u64().unwrap_or_default()),
+        id: lakelands_api::event::EventId(text("id")),
+        prev: Digest(text("prev")),
+        hash: Digest(text("hash")),
+        fence: event["fence"].as_u64().unwrap_or_default(),
+        bytes: canonical::to_vec(event),
+        frame: None,
     }
 }
 
@@ -350,11 +381,7 @@ pub async fn backup(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) ->
             Ok::<_, Error>(found.events.into_iter().find(|e| e.position == position))
         };
         let derived = |e: &Event| {
-            let restored = crate::log::restored(
-                tail.line.clone(),
-                tail.frame.as_ref(),
-                Some((held, &e.prev)),
-            );
+            let restored = crate::log::restored(tail.line.clone(), None, Some((held, &e.prev)));
             restored.is_ok_and(|(r, _)| canonical::to_vec(&r) == canonical::of(e))
         };
         if !at(held).await?.as_ref().is_some_and(derived) {
@@ -411,164 +438,106 @@ fn removed(paths: &[PathBuf]) -> Result<()> {
     paths.iter().try_for_each(gone)
 }
 
-/// The end of a backup's file: its last event line, the frame that
-/// covers it, the position it names, the first position of the run that
-/// holds it, and the byte that run begins at. A frame line that covers no
-/// line after it is a stopped run's.
+/// The end of a backup's file: its last event as its line holds it, or
+/// restored where a block holds it, the position it names, the first
+/// position of the append that holds it, and the byte that append begins
+/// at. What follows the last whole line or block is a stopped run's.
 struct Tail {
     line: Value,
-    frame: Option<crate::log::Framed>,
     position: Position,
     run: Position,
     cut: u64,
 }
 
-/// The most lines `tail` reads: past it, a last line no frame is seen to
-/// cover is taken as a run of its own.
-const WINDOW: usize = 1_002;
-
-/// The end of the file at `path`, read from its last lines, as many as
-/// reach back to the frame of the last event line; `None` where it holds
-/// no whole event line. A frame holds `lake`, which every event of one
-/// lake shares, so a line that holds it is one no frame covers.
+/// The end of the file at `path`, read forward a line or a block at a
+/// time, its blocks' bytes inflated only for the last; `None` where it
+/// holds no whole event.
 fn tail(path: &Path) -> Result<Option<Tail>> {
-    let parsed = |bytes: &[u8]| serde_json::from_slice::<Value>(bytes).ok();
-    let mut n = 64;
-    let (lines, framed) = loop {
-        let mut lines = last_lines(path, n)?;
-        let whole = lines.len() < n || n >= WINDOW;
-        while lines
-            .last()
-            .is_some_and(|(_, l)| parsed(l).is_some_and(|v| crate::log::is_frame(&v)))
-        {
-            lines.pop();
-        }
-        let Some((_, last)) = lines.last() else {
-            match whole {
-                true => return Ok(None),
-                false => {
-                    n = (n * 2).min(WINDOW);
-                    continue;
-                }
+    let failed = |e: std::io::Error| io(Doing::Read, path, e);
+    let mut file = BufReader::new(File::open(path).map_err(failed)?);
+    // The last whole unit and the byte it begins at, and the first
+    // position and byte of the append that holds it.
+    let (mut last, mut run, mut at) = (None, (Position(0), 0), 0u64);
+    loop {
+        let unit = match crate::log::read_unit(&mut file) {
+            Ok(Some(unit)) => unit,
+            Ok(None) | Err(crate::log::Fault::Short | crate::log::Fault::Flaw(_)) => break,
+            Err(crate::log::Fault::Io(e)) => return Err(failed(e)),
+        };
+        let (first, goes_on) = match &unit {
+            crate::log::Unit::Line(line) => {
+                let line = serde_json::from_slice::<Value>(line).ok();
+                let position = line.as_ref().and_then(|l| l.get("position")?.as_u64());
+                (position.map(Position), false)
+            }
+            crate::log::Unit::Block(block, ..) => {
+                let held = |l: &Option<(crate::log::Unit, u64)>| match l {
+                    Some((crate::log::Unit::Block(b, ..), _)) => {
+                        b.end == block.end && b.last().next() == block.first
+                    }
+                    _ => false,
+                };
+                (Some(block.first), held(&last))
             }
         };
-        if parsed(last).is_some_and(|v| v.get("lake").is_some()) {
-            break (lines, None);
+        let Some(first) = first else {
+            break;
+        };
+        if !goes_on {
+            run = (first, at);
         }
-        let framed = lines
-            .iter()
-            .enumerate()
-            .rev()
-            .skip(1)
-            .find_map(|(i, (at, l))| {
-                let frame = parsed(l).filter(crate::log::is_frame)?;
-                Some((i, *at, crate::log::Framed::of(frame).ok()))
-            });
-        if framed.is_some() || whole {
-            break (lines, framed);
-        }
-        n = (n * 2).min(WINDOW);
+        let len = match &unit {
+            crate::log::Unit::Line(line) => line.len() as u64 + 1,
+            crate::log::Unit::Block(block, _, line, _) => line.len() as u64 + block.stored + 2,
+        };
+        last = Some((unit, at));
+        at += len;
+    }
+    let Some((unit, _)) = last else {
+        return Ok(None);
     };
-    let (at, last) = lines.last().expect("an event line is held");
-    let line = parsed(last).unwrap_or_default();
+    let line = match unit {
+        crate::log::Unit::Line(line) => serde_json::from_slice(&line).unwrap_or_default(),
+        crate::log::Unit::Block(_, _, line, z) => {
+            let mut bytes = line;
+            bytes.push(b'\n');
+            bytes.extend_from_slice(&z);
+            bytes.push(b'\n');
+            let mut restoring = crate::log::Restoring::new(&bytes[..], false);
+            let mut event = Value::Null;
+            while let Ok(Some(restored)) = restoring.next_event() {
+                event = restored.event;
+            }
+            event
+        }
+    };
     let position = Position(line["position"].as_u64().unwrap_or(u64::MAX));
-    let after = |i: usize| (lines.len() - 1 - i) as u64;
-    let (frame, run, cut) = match framed {
-        Some((i, begins, Some(f))) if after(i) <= f.events => {
-            let first = position.0.saturating_sub(after(i) - 1);
-            (Some(f), Position(first), begins)
-        }
-        _ => (None, position, *at),
-    };
     Ok(Some(Tail {
         line,
-        frame,
         position,
-        run,
-        cut,
+        run: run.0,
+        cut: run.1,
     }))
 }
 
-/// The last `n` whole lines of the file at `path`, or all it holds, each
-/// without its line feed and with the byte it begins at, oldest first.
-fn last_lines(path: &Path, n: usize) -> Result<Vec<(u64, Vec<u8>)>> {
-    let failed = |e: std::io::Error| io(Doing::Read, path, e);
-    let mut file = File::open(path).map_err(failed)?;
-    let (len, mut back) = (file.metadata().map_err(failed)?.len(), 64 << 10);
-    loop {
-        let (from, mut bytes) = (len.saturating_sub(back), Vec::new());
-        file.seek(SeekFrom::Start(from)).map_err(failed)?;
-        file.read_to_end(&mut bytes).map_err(failed)?;
-        let feeds: Vec<usize> = bytes
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| **b == b'\n')
-            .map(|(i, _)| i)
-            .collect();
-        // A line begins after a line feed, or at the file's start.
-        let whole = feeds.len().saturating_sub(usize::from(from > 0));
-        if whole < n && from > 0 {
-            back *= 2;
-            continue;
-        }
-        let begins = feeds.iter().rev().skip(1).map(|i| i + 1);
-        let begins: Vec<usize> = begins
-            .chain((from == 0).then_some(0))
-            .take(whole.min(n))
-            .collect();
-        let lines = begins
-            .iter()
-            .rev()
-            .zip(feeds[feeds.len() - begins.len()..].iter());
-        return Ok(lines
-            .map(|(b, e)| (from + *b as u64, bytes[*b..*e].to_vec()))
-            .collect());
-    }
-}
-
 /// Where a verification stands: the next position, the hash before it,
-/// the last `known_at` (none before the first line), the files sealed so
-/// far, and where the reader of the file's lines stands.
+/// the last `known_at` (none before the first line), and the files sealed
+/// so far.
 struct Chain {
     next: Position,
     prev: Digest,
     known_at: Option<lakelands_api::Timestamp>,
     fence: u64,
     sealed: Vec<(Position, Position, String)>,
-    lines: crate::log::Lines,
 }
 
 impl Chain {
-    /// Check one line of the file `index` (from 0), which starts at `first`:
-    /// the canonical bytes of the event it restores, none for a frame line.
-    fn line(&mut self, line: &[u8], index: usize, first: Position) -> Result<Option<Vec<u8>>> {
+    /// Check one event of the file `index` (from 0), which starts at
+    /// `first`, as its line or its block restores it, every line read
+    /// canonical and in a format this release reads: an export of another
+    /// is not read in part. It answers the event's canonical bytes.
+    fn event(&mut self, value: Value, index: usize, first: Position) -> Result<Vec<u8>> {
         let at = self.next;
-        let value: Value = serde_json::from_slice(line).or_else(|e| {
-            damaged(
-                at,
-                Flaw::NotJson {
-                    detail: Detail::json(&e),
-                },
-            )
-        })?;
-        if canonical::to_vec(&value) != line {
-            return damaged(at, Flaw::NotCanonical);
-        }
-        let v = value.get("v").and_then(Value::as_u64).unwrap_or(0);
-        // An export of a format this release does not read is not read in
-        // part.
-        if !crate::log::reads_format(v) {
-            let reads = LOG_FORMAT_VERSION.into();
-            return damaged(at, Flaw::FormatOther { v, reads });
-        }
-        let before = (at != first).then(|| (Position(at.0 - 1), &self.prev));
-        let Some((value, _)) = self
-            .lines
-            .line(value, before)
-            .or_else(|flaw| damaged(at, flaw))?
-        else {
-            return Ok(None);
-        };
         let bytes = canonical::to_vec(&value);
         // The parser's own words, which name the member it does not know:
         // an export is verified for its operator, from its own files.
@@ -645,7 +614,7 @@ impl Chain {
         }
         self.prev = event.hash;
         self.next = at.next();
-        Ok(Some(restored))
+        Ok(restored)
     }
 }
 
@@ -682,7 +651,6 @@ pub fn verify(dir: &Path) -> Result<Verification> {
         known_at: None,
         fence: 0,
         sealed: Vec::new(),
-        lines: crate::log::Lines::default(),
     };
     for (index, path) in files.iter().enumerate() {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -698,31 +666,25 @@ pub fn verify(dir: &Path) -> Result<Verification> {
                 return damaged(first, Flaw::FileName { name });
             }
         }
-        let mut reader = BufReader::new(File::open(path).map_err(|e| io(Doing::Read, path, e))?);
+        let reader = BufReader::new(File::open(path).map_err(|e| io(Doing::Read, path, e))?);
+        let mut events = crate::log::Restoring::new(reader, true);
         let mut digest = Sha256::new();
-        let mut line = Vec::new();
-        chain.lines = crate::log::Lines::default();
         loop {
-            line.clear();
-            let n = reader
-                .read_until(b'\n', &mut line)
-                .map_err(|e| io(Doing::Read, path, e))?;
-            if n == 0 {
-                break;
-            }
-            if line.pop() != Some(b'\n') {
-                let name = name.to_string();
-                return damaged(chain.next, Flaw::NoLineFeed { name });
-            }
-            if let Some(event) = chain.line(&line, index, first)? {
-                digest.update(&event);
-                digest.update(b"\n");
-            }
+            let event = match events.next_event() {
+                Ok(Some(event)) => event,
+                Ok(None) => break,
+                Err(crate::log::Fault::Io(e)) => return Err(io(Doing::Read, path, e)),
+                Err(crate::log::Fault::Short) => {
+                    let name = name.to_string();
+                    return damaged(chain.next, Flaw::NoLineFeed { name });
+                }
+                Err(crate::log::Fault::Flaw(flaw)) => return damaged(chain.next, flaw),
+            };
+            let event = chain.event(event.event, index, first)?;
+            digest.update(&event);
+            digest.update(b"\n");
         }
-        chain
-            .lines
-            .end()
-            .or_else(|flaw| damaged(chain.next, flaw))?;
+        events.end().or_else(|flaw| damaged(chain.next, flaw))?;
         if chain.next == first {
             let name = name.to_string();
             return damaged(first, Flaw::NoEventIn { name });

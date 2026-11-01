@@ -26,6 +26,12 @@ use sha2::{Digest as _, Sha256};
 use crate::canonical;
 
 pub use lakelands_api::key::record_key;
+
+mod block;
+pub use block::{
+    BLOCK_BYTES, BLOCK_EVENTS, Block, Fault, Restored, Restoring, Unit, block_of, derived_id,
+    inflate, is_block, read_unit,
+};
 #[doc(hidden)]
 pub use lakelands_api::key::{key_component, key_components, keyable};
 
@@ -433,14 +439,14 @@ pub fn restored(
 /// [`Flaw::Disagrees`]. It answers too whether the event's line was the
 /// whole event, so that its canonical bytes are the line's.
 pub fn restore(stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
-    restore_read(stored, line_of)
+    restore_read(stored, true)
 }
 
 /// [`restore`] with the line and the frame read as JSON alone, in no
 /// format judged: what an engine, which keeps events of any format, checks
 /// an event's hash and digests a segment with.
 pub fn restore_json(stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
-    restore_read(stored, json_of)
+    restore_read(stored, false)
 }
 
 /// A line read as JSON alone.
@@ -450,14 +456,20 @@ fn json_of(bytes: &[u8]) -> std::result::Result<Value, Flaw> {
     })
 }
 
-/// [`restore`], each line read by `read`.
+/// [`restore`], each line read as [`line_of`] reads one, `strict`, else
+/// as JSON alone. An event a block holds is restored from the block
+/// (§1.5).
 fn restore_read(
     stored: &CanonicalEvent,
-    read: fn(&[u8]) -> std::result::Result<Value, Flaw>,
+    strict: bool,
 ) -> std::result::Result<(Value, bool), Flaw> {
+    let read = if strict { line_of } else { json_of };
     let frame = match &stored.frame {
         None => None,
         Some(f) => {
+            if let Some(restored) = block::restore_one(stored, f, strict) {
+                return restored;
+            }
             let framed = Framed::of(read(&f.bytes)?)?;
             let within = stored.position.0.checked_sub(f.first.0);
             let covers = within.is_some_and(|i| i < u64::from(f.events));
@@ -596,6 +608,19 @@ pub fn stored_form(
     events: &[Value],
     holds: impl Fn(usize, &Value) -> (bool, bool),
 ) -> (Option<Vec<u8>>, Vec<Vec<u8>>) {
+    form(events, |i, event| {
+        let (position, prev) = holds(i, event);
+        let names = [("position", !position), ("prev", !prev)];
+        names.into_iter().filter(|(_, l)| *l).map(|(n, _)| n).collect()
+    })
+}
+
+/// [`stored_form`], each event's line leaving out the members `leave`
+/// names of it, asked by its index in the run and its value.
+fn form(
+    events: &[Value],
+    leave: impl Fn(usize, &Value) -> Vec<&'static str>,
+) -> (Option<Vec<u8>>, Vec<Vec<u8>>) {
     let v = events.first().map_or(0, format_of);
     let framed = events.len() >= 2 && events.iter().all(|e| format_of(e) == v);
     let shared = match framed {
@@ -607,11 +632,8 @@ pub fn stored_form(
             return canonical::to_vec(event);
         };
         let mut line = members.clone();
-        let (position, prev) = holds(i, event);
-        for (name, keep) in [("position", position), ("prev", prev)] {
-            if !keep {
-                line.remove(name);
-            }
+        for name in leave(i, event) {
+            line.remove(name);
         }
         for (name, value) in &shared {
             match (value, line.get_mut(name)) {
@@ -672,10 +694,10 @@ fn shared(events: &[Value]) -> Map<String, Value> {
 }
 
 /// Writes `events`, one append's, each holding its canonical bytes, in the
-/// store's writer's form (§1.2): framed where they are two or more, with
-/// exactly the members they all share, and each line holding `position`
-/// and `prev` only where it is a segment's first event, the `lake_created`
-/// at position 0 or a `checkpoint`. The append that holds a `lake_created`
+/// store's writer's form: an append of two or more events as blocks
+/// (§1.5), and an event alone as its line (§1.2), holding `position` and
+/// `prev` only where it is a segment's first event, the `lake_created` at
+/// position 0 or a `checkpoint`. The append that holds a `lake_created`
 /// is left whole, each line its event's canonical bytes: a release that
 /// does not read the format finds its number on the first line, even while
 /// it is the last.
@@ -688,48 +710,55 @@ pub fn frame_append(events: &mut [CanonicalEvent]) {
     if values.iter().any(makes) {
         return;
     }
+    if events.len() >= 2 {
+        return block::into_blocks(events, &values);
+    }
     let first = |_: usize, e: &Value| {
         let first = e.get("position") == Some(&0.into())
             || e.pointer("/body/kind") == Some(&"checkpoint".into());
         (first, first)
     };
-    let (frame, lines) = stored_form(&values, first);
-    let frame = frame.map(|bytes| {
-        Arc::new(Frame {
-            first: events[0].position,
-            events: events.len() as u32,
-            bytes,
-        })
-    });
+    let (_, lines) = stored_form(&values, first);
     for (event, line) in events.iter_mut().zip(lines) {
-        (event.bytes, event.frame) = (line, frame.clone());
+        (event.bytes, event.frame) = (line, None);
     }
 }
 
-/// Refuses `events`, an append's, unless every frame they share is held
-/// whole by them and in order: a frame begins at the position of the
-/// first event that carries it, which is no event of another frame's,
-/// every event it covers carries it and no other does, it covers no
-/// position past the append's last, and its bytes hold no line feed.
+/// Refuses `events`, one append's or the appends of one commit in order,
+/// unless every frame they share is held whole by them and in order: a
+/// frame is a block's bytes (§1.5), whose first line says the frame's
+/// first position and events; it begins at the position of the first event
+/// that carries it, which is no event of another frame's, and every event
+/// it covers carries it and no other does. The blocks of one append follow
+/// each other, each naming its last position as `end`, and the last one
+/// reaches it: no event alone on its line stands among them, and they end
+/// within `events`.
 pub fn frame_fault(events: &[CanonicalEvent]) -> Result<()> {
     let end = events.last().map_or(0, |e| e.position.0 + 1);
     // The frame the events now read carry, and how many more it covers.
     let mut open: Option<(&Arc<Frame>, u32)> = None;
+    // The `end` of the append whose blocks have not reached it.
+    let mut append: Option<Position> = None;
+    let fault = |position| Err(Error::invalid(Case::AppendFrame { position }));
     for event in events {
         let fits = match (&event.frame, open) {
-            (None, None) => true,
+            (None, None) => append.is_none(),
             (Some(f), None) => {
-                f.first == event.position
-                    && f.events > 0
-                    && f.first.0 + u64::from(f.events) <= end
-                    && !f.bytes.contains(&b'\n')
+                let block = block_of(f).and_then(|b| b.ok());
+                let fits = block.as_ref().is_some_and(|b| {
+                    b.first == f.first
+                        && b.events == u64::from(f.events)
+                        && b.end.0 < end
+                        && append.is_none_or(|a| a == b.end)
+                });
+                append = block.filter(|b| b.end > b.last()).map(|b| b.end);
+                f.first == event.position && f.events > 0 && fits
             }
             (Some(f), Some((held, _))) => f == held,
             (None, Some(_)) => false,
         };
         if !fits {
-            let position = event.position;
-            return Err(Error::invalid(Case::AppendFrame { position }));
+            return fault(event.position);
         }
         open = match (&event.frame, open) {
             (Some(_), Some((held, left))) => Some((held, left - 1)),
@@ -738,17 +767,19 @@ pub fn frame_fault(events: &[CanonicalEvent]) -> Result<()> {
         }
         .filter(|(_, left)| *left > 0);
     }
-    Ok(())
+    match (open, append, events.last()) {
+        (None, None, _) | (_, _, None) => Ok(()),
+        (_, _, Some(last)) => fault(last.position),
+    }
 }
 
-/// The last position of the append that wrote `stored`: where the frame
-/// covering it ends, else its own, since the store's writer frames every
-/// append of two or more events (§1.2, 083). An append left whole reads
-/// as one of its own.
+/// The last position of the append that wrote `stored`: the `end` its
+/// block says (§1.5), else its own, since the store's writer stores every
+/// append of two or more events as blocks. An append left whole reads as
+/// one of its own.
 pub fn append_end(stored: &CanonicalEvent) -> Position {
-    stored.frame.as_ref().map_or(stored.position, |f| {
-        Position(f.first.0 + u64::from(f.events.max(1)) - 1)
-    })
+    let block = stored.frame.as_ref().and_then(|f| block_of(f)?.ok());
+    block.map_or(stored.position, |b| b.end)
 }
 
 #[cfg(test)]
