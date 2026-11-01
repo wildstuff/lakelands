@@ -271,6 +271,9 @@ change what fires for triggers whose declarations did not change.
 
 ### A guard may read the record before it in its series
 
+100 adds the record in force of another type: a guard may call
+`in_force` too, resolved the same way.
+
 A guard may read `preceding(f, by, match…)`, the record before this one
 in a series of its type, as a constraint reads it (059):
 `date_bucket(at, 1h, o) != date_bucket(preceding(at, at, meter), 1h, o)`
@@ -616,3 +619,4 @@ own pace, and adding one changes nothing in the lake.
   resolved in its write's decision by the writer's sight, as a
   constraint's is; before, `preceding` was a constraint's alone and a
   guard read no other record (lakelands#1604).
+- Amended by 100 (lakelands#1640), proposed for 0.23.0.

@@ -385,6 +385,10 @@ runner has walked again. A read does not do this: it would pay the test on every
 page, so it answers old values, as 065 says. A trigger's firing over an old value is held by
 the poll rule above. The row is `WRITE_READS_THROUGH_AN_OWED_ACT`.
 
+100 changes this for a guard. `stands` keeps a conjunct that reads `preceding` or
+`in_force`, so the poll rule does not hold it: both resolvers read through this seam, and
+`preceding`'s half lands in R2 whatever becomes of 100.
+
 ### Builds of `sort_index`, `lookup_index` and `view_kept`
 
 Measured today under the writer, contended: general 300k, `lookup_index` 2.59 s,

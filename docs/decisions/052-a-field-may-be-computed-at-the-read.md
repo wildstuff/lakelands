@@ -106,7 +106,8 @@ a view's `sum(kwh * price)` reads it as every read does.
 - **Only here.** Anywhere else (a constraint, a field computed at the
   write, a `find`'s `where`) it is refused `in_force_here`: a stored
   pairing would go stale when a tariff is written after the readings it
-  governs. Another form is refused `in_force_form`, a pair that cannot
+  governs. A trigger's `when` may call it, for a firing claims only what
+  held at its write (100). Another form is refused `in_force_form`, a pair that cannot
   pair `in_force_pair`, naming the field and both sides.
 - **Whose records.** The candidates are the records of `T` the reader's
   `find` on `T` would answer in the same read: at its position, so a
@@ -227,3 +228,4 @@ absent for it.
 - A field computed at the read may pair its record with the record of
   another type in force, `in_force`, read by the reader's sight at the
   read's position, as a view reads it (lakelands#1606).
+- Amended by 100 (lakelands#1640), proposed for 0.23.0.
