@@ -34,6 +34,11 @@ check!(
     "017, extended (lakelands#559): date_bucket(x, width, origin) answers the start of the window of that width holding x, the windows counted from the origin in both directions, the same on every engine; a width without its origin, a width that is not above zero, a quoted width and a calendar unit with an origin are refused as invalid, each naming what to write; a declaration may call it by a width"
 );
 
+check!(
+    ZONED = a_calendar_bucket_is_cut_at_local_midnight_in_a_named_zone,
+    "017, extended (lakelands#1667): date_bucket(x, unit, zone) cuts a calendar unit at local midnight in an IANA zone: in Europe/Berlin the day of 2030-03-31 is 23 hours long and that of 2030-10-27 25, a week starts on the local Monday and a month, a quarter and a year on the local first, and in America/Havana the day of 2030-03-10, whose midnight the clocks skip, starts at its 01:00; the same groups, counts and sums on every engine; a derived field, a view's group term and a trigger's `when` may call it, the trigger firing where the local day holds; without a zone a bucket is cut in UTC as before; a zone the database does not name is refused `bucket_zone`, naming it, at a read, a derived field, a view's group term, a view's `where` and a trigger's `when`"
+);
+
 /// The days of the lake, as `YYYY-MM-DD`.
 fn days() -> Vec<String> {
     let mut out = Vec::new();
@@ -323,5 +328,180 @@ async fn find_groups_records_by_windows_of_a_width_from_an_origin(store: Store) 
          the record holds {:?}",
         week.fields
     );
+    Ok(())
+}
+
+/// The entries around Europe/Berlin's changes of offset in 2030 and
+/// America/Havana's in March, each of 1.25, and one undated.
+const ZONED_ENTRIES: [(&str, &str); 9] = [
+    ("a", "2030-03-30T22:30:00Z"),
+    ("b", "2030-03-30T23:30:00Z"),
+    ("c", "2030-03-31T21:30:00Z"),
+    ("d", "2030-03-31T22:30:00Z"),
+    ("e", "2030-10-26T22:30:00Z"),
+    ("f", "2030-10-27T22:30:00Z"),
+    ("g", "2030-10-27T23:30:00Z"),
+    ("h", "2030-03-10T05:30:00Z"),
+    ("i", "2030-03-10T04:30:00Z"),
+];
+
+async fn a_calendar_bucket_is_cut_at_local_midnight_in_a_named_zone(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let Lake { cat, own } = &l;
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    let derived = |n: &str, e: &str| {
+        json!({"name": n, "type": {"kind": "date_time"}, "authority": "derived",
+               "derived": e, "depends_on": ["on"]})
+    };
+    l.declare_json(json!({"declare": "type", "name": "entry", "fields": [
+        field("on", "date_time"), field("amount", "decimal"),
+        derived("local", "date_bucket(on, 'day', 'Europe/Berlin')"),
+        derived("utc", "date_bucket(on, 'day')")]}))
+        .await?;
+    for (k, on) in ZONED_ENTRIES {
+        l.upsert("entry", k, json!({"on": on, "amount": "1.25"}))
+            .await?;
+    }
+    l.upsert("entry", "undated", json!({"amount": "1.25"}))
+        .await?;
+    // (the bucket's start, the entries in it), the undated last.
+    let want = |starts: &[(&str, u64)]| {
+        let mut out: Vec<_> = starts
+            .iter()
+            .map(|(at, n)| {
+                let total = dec("1.25") * rust_decimal::Decimal::from(*n);
+                (Some(format!("{at}.000000Z")), *n, total)
+            })
+            .collect();
+        out.push((None, 1, dec("1.25")));
+        out
+    };
+    for (unit, starts) in [
+        (
+            "day",
+            &[
+                ("2030-03-09T23:00:00", 2),
+                ("2030-03-29T23:00:00", 1),
+                ("2030-03-30T23:00:00", 2),
+                ("2030-03-31T22:00:00", 1),
+                ("2030-10-26T22:00:00", 2),
+                ("2030-10-27T23:00:00", 1),
+            ][..],
+        ),
+        (
+            "week",
+            &[
+                ("2030-03-03T23:00:00", 2),
+                ("2030-03-24T23:00:00", 3),
+                ("2030-03-31T22:00:00", 1),
+                ("2030-10-20T22:00:00", 2),
+                ("2030-10-27T23:00:00", 1),
+            ][..],
+        ),
+        (
+            "month",
+            &[
+                ("2030-02-28T23:00:00", 5),
+                ("2030-03-31T22:00:00", 1),
+                ("2030-09-30T22:00:00", 3),
+            ][..],
+        ),
+        (
+            "quarter",
+            &[
+                ("2029-12-31T23:00:00", 5),
+                ("2030-03-31T22:00:00", 1),
+                ("2030-09-30T22:00:00", 3),
+            ][..],
+        ),
+        ("year", &[("2029-12-31T23:00:00", 9)][..]),
+    ] {
+        let bucket = format!("date_bucket(on, '{unit}', 'Europe/Berlin')");
+        let got = groups(s, keyed(&bucket), &format!("grouping by `{bucket}`")).await?;
+        let want = want(starts);
+        ensure!(
+            got == want,
+            "grouped by `{bucket}`, find answered\n  {got:?}\nand expected are\n  {want:?}"
+        );
+    }
+    // Havana's clocks skip the midnight of 2030-03-10: its day starts at
+    // 01:00, 05:00 in UTC.
+    let mut havana = keyed("date_bucket(on, 'day', 'America/Havana')");
+    havana.filter = Some(Condition::Text("on < '2030-03-11T00:00:00Z'".into()));
+    let got = groups(s, havana, "grouping by Havana's days").await?;
+    let mut expected = want(&[("2030-03-09T05:00:00", 1), ("2030-03-10T05:00:00", 1)]);
+    expected.pop();
+    ensure!(
+        got == expected,
+        "grouped by Havana's days, find answered {got:?}; expected are {expected:?}"
+    );
+    // A derived field holds the local day; without a zone, the UTC day.
+    let c = l.read("entry", "c").await?;
+    let value = |f| crate::conformance::fixture::value(&c, f).cloned();
+    ensure!(
+        value("local") == Some(json!("2030-03-30T23:00:00.000000Z"))
+            && value("utc") == Some(json!("2030-03-31T00:00:00.000000Z")),
+        "`c`, at 2030-03-31T21:30Z, is in Berlin's day from 2030-03-30T23:00Z and in the UTC \
+         day of 2030-03-31; it holds {:?}",
+        c.fields
+    );
+    // A view's group term and a trigger's `when` may name a zone.
+    let local = |zone: &str| {
+        json!({"declare": "type", "name": "daily", "key": ["day"],
+               "fields": [field("day", "date_time"), field("n", "number")],
+               "view": {"source": "entry", "measures": [{"name": "n", "expr": "count()"}],
+                        "group_by": [{"name": "day",
+                                      "expr": format!("date_bucket(on, 'day', '{zone}')")}]}})
+    };
+    l.declare_json(local("Europe/Berlin")).await?;
+    let key = lakelands_api::key::key_component(&json!("2030-03-30T23:00:00.000000Z"));
+    let day = l.read("daily", &key.unwrap_or_default()).await?;
+    ensure!(
+        crate::conformance::fixture::value(&day, "n") == Some(&json!(2)),
+        "the view grouped by Berlin's days holds two entries on 2030-03-31; it holds {:?}",
+        day.fields
+    );
+    let trigger = |zone: &str| {
+        json!({"declare": "trigger", "name": "sunday", "on": "entry",
+               "when": format!("date_bucket(on, 'day', '{zone}') = '2030-03-30T23:00:00Z'")})
+    };
+    l.declare_json(trigger("Europe/Berlin")).await?;
+    for (key, fires) in [("c", true), ("d", false)] {
+        let at = l.upsert("entry", key, json!({"amount": "2"})).await?;
+        let events = crate::conformance::fixture::events_from(s, at.position()).await?;
+        let fired = events.iter().any(|e| matches!(&e.body,
+            EventBody::TriggerFired { trigger, .. } if trigger.as_str() == "sunday"));
+        ensure!(
+            fired == fires,
+            "a trigger whose `when` is Berlin's day of 2030-03-31 fires at `{key}`: {fires}; \
+             it fired: {fired}"
+        );
+    }
+    // A zone the database does not name, wherever date_bucket is called.
+    let unknown = "Mars/Olympus";
+    let refusal = json!({"code": "bucket_zone", "zone": unknown});
+    let bucket = format!("date_bucket(on, 'day', '{unknown}')");
+    let read = cat.find(own, &TypeName::from("entry"), keyed(&bucket)).await;
+    refused_like("a read grouped by an unknown zone", read, &refusal)?;
+    let mut viewed = local("Europe/Berlin");
+    viewed["name"] = json!("seen");
+    viewed["view"]["where"] = json!(format!("{bucket} is not null"));
+    for (what, declared) in [
+        (
+            "a derived field",
+            json!({"declare": "type", "name": "far", "fields": [
+                field("on", "date_time"), derived("day", &bucket)]}),
+        ),
+        ("a view's group term", local(unknown)),
+        ("a view's `where`", viewed),
+        ("a trigger's `when`", trigger(unknown)),
+    ] {
+        let before = s.head().await.must("the head")?;
+        let declared = serde_json::from_value::<Declaration>(declared)
+            .map_err(|e| Failure::new(format!("{what} does not read: {e}")))?;
+        let answer = cat.declare(own, declared).await;
+        refused_like(&format!("{what} in an unknown zone"), answer, &refusal)?;
+        head_unmoved(s, before, &format!("{what} in an unknown zone")).await?;
+    }
     Ok(())
 }

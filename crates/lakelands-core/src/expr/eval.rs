@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use lakelands_api::error::{Case, Operand};
-use lakelands_api::expr::{ArithOp, CmpOp, Expr, Func, Literal};
+use lakelands_api::expr::{ArithOp, CmpOp, Expr, Func, Literal, zone};
 pub use lakelands_api::expr::{Place, check};
 use lakelands_api::{FieldMeta, FieldName, Timestamp};
 use rust_decimal::prelude::ToPrimitive;
@@ -878,7 +878,20 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         Func::Abs => Val::Num(number(&vals[0])?.abs()),
         Func::Floor => Val::Num(number(&vals[0])?.floor()),
         Func::DateBucket => match (as_time(&vals[0]), &vals[1]) {
-            (Some(t), Val::Text(unit)) => Val::Time(bucket_start(t, unit)?),
+            (Some(t), Val::Text(unit)) => match vals.get(2) {
+                // Cut in a zone's local calendar; the declaration has
+                // refused a zone the database does not name.
+                Some(Val::Text(zone)) => match zone::local_start(t.0, unit, zone) {
+                    Some(start) => Val::Time(Timestamp(start)),
+                    None if !zone::known(zone) => {
+                        return err(Case::BucketZone { zone: zone.clone() });
+                    }
+                    // A unit it does not know, else an instant past the
+                    // calendar.
+                    None => return bucket_start(t, unit).and(Err(overflow())),
+                },
+                _ => Val::Time(bucket_start(t, unit)?),
+            },
             // The window of that width `t` falls in, counted from the origin
             // in both directions: an instant before it is in a window too.
             (Some(t), Val::Duration(w)) if *w > 0 => match vals.get(2).and_then(as_time) {

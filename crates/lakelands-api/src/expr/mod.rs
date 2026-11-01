@@ -115,6 +115,7 @@ mod check;
 mod kept;
 pub mod kind;
 mod rewrite;
+pub mod zone;
 pub use check::{Place, check};
 pub use kept::keepable;
 pub use parse::{ParseError, arity, func_by_name, func_name, parse, print};

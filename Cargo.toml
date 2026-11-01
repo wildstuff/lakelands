@@ -43,6 +43,9 @@ lakelands-engine-pg = { path = "crates/lakelands-engine-pg" }
 lakelands-engine-sqlite = { path = "crates/lakelands-engine-sqlite" }
 rust_decimal = "1"
 libm = "0.2"
+# The IANA time-zone database a calendar `date_bucket` cuts local days
+# by; bundled, so no zone is read from the host or its environment.
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 ryu = "1"
 rust-stemmers = "1"
 serde = { version = "1", features = ["derive"] }

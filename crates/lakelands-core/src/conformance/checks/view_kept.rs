@@ -72,7 +72,7 @@ check!(
 check!(
     KEPT_TERMS =
         a_view_grouped_by_a_bucket_term_answers_as_its_twin_grouped_by_a_derived_field,
-    "049 and 017, extended (lakelands#1636): a view whose group holds a `date_bucket` term over a field of its source, under a name the view type declares, answers as its twin, the same view grouped by a field of that name derived by the same expression in a type that is its source's mirror, every write to the source written to the mirror too, read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: by a text and an hour, a text and a week of a date, an hour alone, a text and a day under a `where`, and a view over the first that groups by the text, all kept, `describe_type` saying `kept`, while members arrive, a bucket's first, last and least member is retired, members move to the next hour and the next day, a holder's instant goes null, a member is held and lifted, two are fed and their source purged, and a bucket's last member leaves; and `describe_type` of the source says the same before the views are declared, after they are and are kept, and after every write",
+    "049 and 017, extended (lakelands#1636): a view whose group holds a `date_bucket` term over a field of its source, under a name the view type declares, answers as its twin, the same view grouped by a field of that name derived by the same expression in a type that is its source's mirror, every write to the source written to the mirror too, read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: by a text and an hour, a text and a week of a date, an hour alone, a text and a day under a `where`, a text and a day of Europe/Berlin and a week of it alone (lakelands#1667), and a view over the first that groups by the text, all kept, `describe_type` saying `kept`, while members arrive, a bucket's first, last and least member is retired, members move to the next hour and the next day, a holder's instant goes null, a member is held and lifted, two are fed and their source purged, readings arrive around Berlin's changes of offset, a day of 23 hours and one of 25, and one moves across a local midnight, and a bucket's last member leaves; and `describe_type` of the source says the same before the views are declared, after they are and are kept, and after every write",
     given
 );
 
@@ -564,18 +564,22 @@ const BUCKETS: &str = r#"
 const TERMS: &str = r#"
     declare {"declare": "type", "name": "reading", "fields": [{"name": "meter", "type": {"kind": "text"}, "authority": "shared"}, {"name": "at", "type": {"kind": "date_time"}, "authority": "shared"}, {"name": "v", "type": {"kind": "decimal"}, "authority": "shared"}, {"name": "note", "type": {"kind": "text"}, "authority": "shared"}, {"name": "on", "type": {"kind": "date"}, "authority": "shared"}]}
     unchanged reading
-    declare {"declare": "type", "name": "reading_d", "fields": [{"name": "meter", "type": {"kind": "text"}, "authority": "shared"}, {"name": "at", "type": {"kind": "date_time"}, "authority": "shared"}, {"name": "v", "type": {"kind": "decimal"}, "authority": "shared"}, {"name": "note", "type": {"kind": "text"}, "authority": "shared"}, {"name": "on", "type": {"kind": "date"}, "authority": "shared"}, {"name": "hour", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')", "depends_on": ["at"]}, {"name": "day", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'day')", "depends_on": ["at"]}, {"name": "week", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(on, 'week')", "depends_on": ["on"]}]}
+    declare {"declare": "type", "name": "reading_d", "fields": [{"name": "meter", "type": {"kind": "text"}, "authority": "shared"}, {"name": "at", "type": {"kind": "date_time"}, "authority": "shared"}, {"name": "v", "type": {"kind": "decimal"}, "authority": "shared"}, {"name": "note", "type": {"kind": "text"}, "authority": "shared"}, {"name": "on", "type": {"kind": "date"}, "authority": "shared"}, {"name": "hour", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')", "depends_on": ["at"]}, {"name": "day", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'day')", "depends_on": ["at"]}, {"name": "week", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(on, 'week')", "depends_on": ["on"]}, {"name": "lday", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'day', 'Europe/Berlin')", "depends_on": ["at"]}, {"name": "lweek", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'week', 'Europe/Berlin')", "depends_on": ["at"]}]}
     mirror reading reading_d
     view hourly = reading by meter:text hour:date_time | low:decimal=min(v); high:decimal=max(v); opened:decimal=first(v, at); closed:decimal=last(v, at); c:number=count() | {"terms": {"hour": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')"}}
     view weekly = reading by meter:text week:date_time | early:text=first(note, on); late:text=last(note, on); c:number=count() | {"terms": {"week": "date_bucket(on, 'week')"}}
     view hours = reading by hour:date_time | low:decimal=min(v); c:number=count() | {"terms": {"hour": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')"}}
     view daily = reading by meter:text day:date_time | s:decimal=sum(v); c:number=count() | {"terms": {"day": "date_bucket(at, 'day')"}, "where": "v > 1"}
     view metered = hourly by meter:text | top:decimal=max(high); n:number=count()
+    view local = reading by meter:text lday:date_time | low:decimal=min(v); closed:decimal=last(v, at); c:number=count() | {"terms": {"lday": "date_bucket(at, 'day', 'Europe/Berlin')"}}
+    view lweeks = reading by lweek:date_time | s:decimal=sum(v); c:number=count() | {"terms": {"lweek": "date_bucket(at, 'week', 'Europe/Berlin')"}}
     set view_kept.hourly true
     set view_kept.weekly true
     set view_kept.hours true
     set view_kept.daily true
     set view_kept.metered true
+    set view_kept.local true
+    set view_kept.lweeks true
     unchanged reading
     row a view by a meter and a term over its readings' instant is made
     put reading r1 {"meter": "m1", "at": "2026-01-01T00:10:00Z", "v": "5", "note": "a"}
@@ -617,6 +621,19 @@ const TERMS: &str = r#"
     says hourly kept
     says hours kept
     read hourly hours daily metered
+    row readings around Berlin's changes of offset arrive, one moves across a local midnight and one leaves
+    put reading z1 {"meter": "m1", "at": "2030-03-30T23:30:00Z", "v": "3"}
+    put reading z2 {"meter": "m1", "at": "2030-03-31T21:30:00Z", "v": "4"}
+    put reading z3 {"meter": "m1", "at": "2030-03-31T22:30:00Z", "v": "5"}
+    put reading z4 {"meter": "m2", "at": "2030-10-26T22:30:00Z", "v": "6"}
+    put reading z5 {"meter": "m2", "at": "2030-10-27T22:30:00Z", "v": "7"}
+    put reading z6 {"meter": "m2", "at": "2030-10-27T23:30:00Z", "v": "8"}
+    says local kept
+    says lweeks kept
+    put reading z2 {"at": "2030-03-31T22:10:00Z"}
+    retire reading z1
+    says local kept
+    read local lweeks hourly daily
     row a bucket's last member leaves
     retire reading r7
     retire reading r3

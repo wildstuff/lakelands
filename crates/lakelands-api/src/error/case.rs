@@ -1203,9 +1203,11 @@ catalog! {
         /// An aggregate other than `count` with no argument.
         AggregateNeedsField { name: String } => "{name}() needs a field",
         /// A `date_bucket` given neither a unit nor a width and an origin.
-        BucketArguments => "date_bucket() takes a calendar unit quoted ('day', 'week', 'month', 'quarter' or 'year') and no origin, or a width above zero and the origin its windows are counted from, as in date_bucket(t, 30d, origin)",
+        BucketArguments => "date_bucket() takes a calendar unit quoted ('day', 'week', 'month', 'quarter' or 'year'), and no origin but the time zone it is cut in quoted or none, or a width above zero and the origin its windows are counted from, as in date_bucket(t, 'day', 'Europe/Berlin') or date_bucket(t, 30d, origin)",
         /// A `date_bucket` unit it does not know.
         BucketUnit { unit: String } => "date_bucket() knows no unit '{unit}'; the units are 'day', 'week', 'month', 'quarter' and 'year', and a width is written unquoted, as in date_bucket(t, 30d, origin)",
+        /// A `date_bucket` zone the time-zone database does not name.
+        BucketZone { zone: String } => "date_bucket() knows no time zone '{zone}'; a zone is named as the IANA time-zone database names it, as in 'Europe/Berlin'",
         /// A `date_bucket` unit that is no text.
         BucketUnitText { #[serde(with = "closed")] value: Box<Operand> } => "date_bucket() takes its unit as text, not {value}",
         /// A call with a number of arguments its function does not take.

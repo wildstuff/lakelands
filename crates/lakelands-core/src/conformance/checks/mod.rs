@@ -667,6 +667,7 @@ pub const ALL: &[Check] = &[
     date_bucket::WHERE,
     date_bucket::DECLARED,
     date_bucket::WINDOWS,
+    date_bucket::ZONED,
     durations::DAYS,
     durations::LANDS,
     durations::VIEW_LANDS,
