@@ -495,7 +495,7 @@ How often a `serve` that stands by asks whether each lake's lease is free, to ta
 
 ## Bindings
 
-What says only where or how to connect, or which keys to use, is a binding and no setting: it steers no behaviour of the lake, and a lake moved or restored names it anew. Each is kept beside the settings of its layer. The rest of `lakelands.json` is neither: `lakelands` is the file's format number, and `owner` and `principals` say who the root's callers are and what each may do.
+What says only where or how to connect, or which keys to use, is a binding and no setting: it steers no behaviour of the lake, and a lake moved or restored names it anew. Each is kept beside the settings of its layer. The rest of `lakelands.json` is neither: `lakelands` is the file's format number, and `owner` and `principals` say who the root's callers are and what each may do; a grant holding a key this build does not know stops the root, and one naming a type no lake declares is told at start-up (`docs/decisions/006-grants-not-roles.md`).
 
 - **`engine.dir`** (the location): SQLite: the directory that holds the lake's log segments, and its projection where `engine.projection_dir` is absent.
 - **`engine.projection_dir`** (the location): SQLite: the directory that holds the lake's projection and the one a rebuild builds beside it, one lake's alone.

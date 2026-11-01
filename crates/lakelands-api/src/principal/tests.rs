@@ -270,3 +270,28 @@ fn dating_by_a_hidden_valid_time_holds_only_where_every_name_of_the_type_says_it
     assert!(at(None, true) && at(Some(true), true));
     assert!(!at(Some(false), true) && !at(Some(true), false));
 }
+
+#[test]
+fn a_grant_refuses_a_key_it_does_not_know_at_every_level() {
+    let refused = |grants: serde_json::Value, key: &str| {
+        let said = serde_json::from_value::<Grants>(grants).unwrap_err();
+        assert!(said.to_string().contains(key), "{said}");
+    };
+    let hiding = serde_json::json!({"field": "a", "values": ["x"], "fields": {"b": "none"}});
+    let mut extra = hiding.clone();
+    extra["notes"] = "no".into();
+    refused(serde_json::json!({"typez": {}}), "typez");
+    refused(serde_json::json!({"types": {"t": {"onyl": {}}}}), "onyl");
+    refused(
+        serde_json::json!({"types": {"t": {"hide_where": [extra]}}}),
+        "notes",
+    );
+    // What every key of the three types spells stays readable.
+    let whole = serde_json::json!({"default": "read", "review": true, "schema": true,
+        "ingest": true, "restricted": true, "types": {"t": {"default": "read",
+        "fields": {"a": "read"}, "only": {"a": "x"}, "only_any": {"b": ["x"]},
+        "writes_only": {"a": "x"}, "verbs": ["v"], "hide_where": [hiding],
+        "dates_by_hidden_valid_time": true, "whole_sets_only": true}}});
+    let read: Grants = serde_json::from_value(whole.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&read).unwrap(), whole);
+}

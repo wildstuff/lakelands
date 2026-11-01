@@ -5,6 +5,7 @@
 //! Everything the CLI knows comes from these files and its flags; it
 //! reads no environment variable.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use std::sync::Arc;
 use lakelands_api::engine::OpenMode;
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location, PgTlsMode};
-use lakelands_api::principal::{Grants, Principal, PrincipalKind};
+use lakelands_api::principal::{Grants, Principal, PrincipalKind, WriteContext};
 use lakelands_api::seam::{Credential, EmbedBackend, PrincipalResolver, Seams};
 use lakelands_server::HttpConfig;
 use lakelands_server::resolver::{Entry, StaticResolver};
@@ -136,6 +137,31 @@ pub struct Root {
 
 fn show(p: &Path) -> String {
     p.display().to_string()
+}
+
+/// The name of the principal whose grant stops a configuration's `text`
+/// being read, where a grant is what stops it: the reader of a grant does not
+/// know whose it is, so the file is read again for the place it stopped at.
+fn grant_holder(text: &str) -> Option<String> {
+    use serde_path_to_error::Segment;
+    let read = &mut serde_json::Deserializer::from_str(text);
+    let refused = serde_path_to_error::deserialize::<_, Config>(read).err()?;
+    let place: Vec<&Segment> = refused.path().iter().collect();
+    let [
+        Segment::Map { key: list },
+        Segment::Seq { index },
+        Segment::Map { key: field },
+        ..,
+    ] = place[..]
+    else {
+        return None;
+    };
+    if list != "principals" || field != "grants" {
+        return None;
+    }
+    let file: serde_json::Value = serde_json::from_str(text).ok()?;
+    let name = file.get(list)?.get(index)?.get("name")?.as_str()?;
+    Some(name.to_owned())
 }
 
 /// Create a root. Refuses to overwrite an existing one.
@@ -438,11 +464,19 @@ impl Root {
             }
             Err(e) => return Err(io(&file, e)),
         };
-        let config: Config = serde_json::from_str(&text).map_err(|e| {
-            Failure::new(
+        let config: Config = serde_json::from_str(&text).map_err(|e| match grant_holder(&text) {
+            Some(name) => Failure::new(
+                format!(
+                    "{}: the grant of principal `{name}` is not understood: {e}",
+                    show(&file)
+                ),
+                "correct the grant: a grant narrows what a principal may do, so one that is not \
+                 understood stops the root instead of dropping a restriction",
+            ),
+            None => Failure::new(
                 format!("{} is not a valid configuration: {e}", show(&file)),
                 "correct the file; `lakelands init` writes a valid one to start from",
-            )
+            ),
         })?;
         if let Some(server) = &config.server {
             server.check(&config.principals).map_err(|why| {
@@ -641,6 +675,54 @@ impl Root {
         Ok(())
     }
 
+    /// Tell, on standard error, each type a grant names that none of the
+    /// `held` lakes its principal addresses declares, for the principal
+    /// `only` names or for every one. A grant may be written before its type
+    /// is declared and stands under a renamed type's old name, so this is no
+    /// refusal; each is told at every start until a lake declares the name
+    /// (`006 § A grant that is not understood stops the root`).
+    pub async fn tell_undeclared(
+        &self,
+        held: &[Arc<dyn lakelands_api::LakeStore>],
+        only: Option<&str>,
+    ) {
+        let named = |e: &&Entry| only.is_none_or(|name| name == e.name);
+        let whom: Vec<&Entry> = self.config.principals.iter().filter(named).collect();
+        if whom.iter().all(|e| e.grants.types.is_empty()) {
+            return;
+        }
+        let mut declared = Vec::new();
+        for store in held {
+            let lake = store.lake();
+            let catalog = store.catalog(WriteContext::default());
+            match catalog
+                .describe(&self.owner(lake), Default::default())
+                .await
+            {
+                Ok(told) => {
+                    let names = told.data.types.into_iter().map(|t| t.name);
+                    declared.push((lake, names.collect::<BTreeSet<_>>()));
+                }
+                Err(e) => eprintln!("lakelands: the grants were not checked against `{lake}`: {e}"),
+            }
+        }
+        for entry in whom {
+            let lakes = || declared.iter().filter(|d| entry.addresses(d.0));
+            let list = lakes().map(|d| format!("`{}`", d.0)).collect::<Vec<_>>();
+            for ty in entry.grants.types.keys() {
+                if !list.is_empty() && !lakes().any(|d| d.1.contains(ty)) {
+                    eprintln!(
+                        "lakelands: the grant of principal `{}` on `{ty}` names a type none of \
+                         these lakes declares: {}. It has no effect until one does, unless the \
+                         name is a renamed type's old one",
+                        entry.name,
+                        list.join(", ")
+                    );
+                }
+            }
+        }
+    }
+
     /// Start a mirror for every connection whose target lake is among
     /// `lakes`, opening its source lake to read when this process does not
     /// hold it yet. Each runs until the process ends. A connection whose
@@ -793,6 +875,16 @@ impl Root {
         Ok(location)
     }
 
+    /// The root's owner, as a principal of `lake`.
+    fn owner(&self, lake: &LakeId) -> Principal {
+        Principal {
+            kind: PrincipalKind::Human,
+            id: self.config.owner.clone(),
+            lake: lake.clone(),
+            grants: Grants::owner(),
+        }
+    }
+
     /// The principal the CLI acts as in a lake: the owner, or the entry
     /// `--as` names, resolved by the default resolver.
     pub async fn principal(
@@ -801,12 +893,7 @@ impl Root {
         act_as: Option<&str>,
     ) -> Result<Principal, Failure> {
         let Some(name) = act_as else {
-            return Ok(Principal {
-                kind: PrincipalKind::Human,
-                id: self.config.owner.clone(),
-                lake: lake.clone(),
-                grants: Grants::owner(),
-            });
+            return Ok(self.owner(lake));
         };
         StaticResolver::new(self.config.principals.clone())
             .resolve(lake, &Credential::LocalUser(name.to_owned()))
