@@ -1,5 +1,7 @@
 //! The active segment is sealed by size where the store may seal it, and
-//! nowhere else (`docs/decisions/074-a-segment-is-sealed-by-size.md`).
+//! nowhere else (`docs/decisions/074-a-segment-is-sealed-by-size.md`),
+//! the size its lines and its blocks take inflated, never its blocks'
+//! stored bytes (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`).
 //!
 //! A seal the disk refuses leaves the write that crossed the bound
 //! answered as it landed, and is tried after the next append. A
@@ -17,7 +19,9 @@ use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind::Text;
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
-use lakelands_core::conformance::fixture::{Lake, log_events, type_of};
+use lakelands_core::conformance::fixture::{
+    Lake, log_events, source_record, sourced, type_decl, type_of,
+};
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
 
@@ -132,4 +136,52 @@ async fn a_read_only_open_and_an_import_seal_nothing_and_the_next_writer_does() 
         writer.close().await.unwrap();
     }
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_segment_of_blocks_is_sealed_by_what_its_blocks_inflate_to() {
+    let dir = scratch("inflated");
+    let store = lakelands_store::open(at(&dir, 1), seams(), OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("reading", vec![sourced("text", Text)]))
+        .await
+        .unwrap();
+    // Deliveries of 1 000 readings of a KiB each that zlib takes to a few
+    // bytes, each one append of blocks, until the segment is sealed.
+    let mut delivered = 0;
+    while checkpoints(store.as_ref()).await.is_empty() {
+        assert!(delivered < 4_000, "sealed by 4 000 readings");
+        let records = (delivered..delivered + 1_000)
+            .map(|i| {
+                let text = format!("{i}{}", "x".repeat(1 << 10));
+                source_record("reading", &format!("r{i}"), json!({ "text": text }))
+            })
+            .collect();
+        let opts = lakelands_api::IngestOpts {
+            commit_window: Some(1_000),
+            ..lakelands_api::IngestOpts::default()
+        };
+        let source = lakelands_api::SourceId::from("meter");
+        lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, opts, records)
+            .await
+            .unwrap();
+        delivered += 1_000;
+    }
+    store.close().await.unwrap();
+    // The sealed segment: its lines and its blocks inflated take a MiB
+    // and more, and the file that holds them a fraction of that.
+    let sealed = dir.join("log").join(format!("{:020}.jsonl", 0));
+    let file = std::fs::read(&sealed).unwrap();
+    let (mut units, mut raw) = (&file[..], 0);
+    while let Some(unit) = lakelands_core::log::read_unit(&mut units).unwrap() {
+        raw += unit.raw();
+    }
+    assert!(
+        raw >= 1 << 20 && (file.len() as u64) < raw / 4,
+        "a segment sealed at {raw} bytes inflated, {} stored",
+        file.len()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
