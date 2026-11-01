@@ -304,6 +304,24 @@ pub fn seek_statements() -> [String; 2] {
     [RECORD_AT.to_owned(), projection::RECORDS.ends_latest()]
 }
 
+/// The plan of the feed read the view makes for the keys and types of
+/// `filter` through `matching`, as it runs it, for the engine's own test
+/// of the index it takes: the plan of the read by `key`, one line a step.
+#[doc(hidden)]
+pub fn keyed_routes_plan(
+    conn: &rusqlite::Connection,
+    filter: &FeedFilter,
+    key: &str,
+) -> Result<Option<Vec<String>>> {
+    projection::routes_plan(
+        conn,
+        filter,
+        Some(("key", key)),
+        [Position(1), Position(u64::MAX >> 1)],
+        100,
+    )
+}
+
 /// The statement of each first page the view reads from an index in the
 /// page's order, and of the read of one record, as the view runs it, for
 /// the engine's own test of their plans: none may sort (lakelands#580).
