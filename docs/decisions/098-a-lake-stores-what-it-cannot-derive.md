@@ -127,14 +127,23 @@ one record a call gains nothing in the log; a fixed dictionary for it stays out.
   first of each.
 
 A block's events restore to the same canonical bytes, `hash` and `id`. Restoring
-one block costs one inflate and a hash an event: read, canonical form and SHA-256
-take 1.75 µs a tick (measured, load 3 to 4). So a read of one event in a full
-block costs about 2 ms (reckoned from those rates), where today it reads a line. A
-walk restores each block once and pays that per event. Who feels it is a read that
-jumps between blocks: a record's history pays up to 2 ms a version, and a poll
-pays it once for a block it starts inside. Reads of one event stay rare, as 083
-found; F3 keeps the last block restored in the reader. A fold needs no hash of an
-event it folds, so a rebuild can skip restoring them, reckoned and left to F4.
+one block costs one inflate and a hash an event. The reckoning took 1.75 µs a tick
+for read, canonical form and SHA-256, measured on lines (load 3 to 4), and so about
+2 ms for a read of one event in a full block. Measured on blocks, at load 7 to 11:
+
+- Restoring and hashing every event of a sealed segment of ticks takes about 14 µs
+  an event, eight times the reckoning. Inflating its blocks is about 1 % of that.
+- One reader restores a full block's events at 2.6 to 3.3 µs an event, without the
+  hash, because it inflates the block once and keeps it.
+- A read of one event in a full block inflates the whole block and costs 0.14 to
+  0.18 ms.
+
+Today that read reads a line. A walk restores each block once and pays the per-event
+cost. Who feels it is a read that jumps between blocks: a record's history pays it
+for each version, and a poll pays it once for the block it starts inside. Reads of
+one event stay rare, as 083 found; the reader keeps the last block it restored. A
+fold needs no hash of an event it folds, so a rebuild can skip restoring them. That
+is reckoned, not built.
 
 ### A segment is sized by what it restores
 
@@ -142,7 +151,12 @@ Read: 074's seal hashes the active segment under the writer, about 2 ms a MiB,
 0.51 s at 256 MiB. Its digest is over restored events, so with blocks the same 256
 MiB would hold about 10M ticks and the seal would take about 20 s (reckoned, 1.75
 µs an event and the inflate). `limits.seal_after_bytes` therefore counts `raw`, and
-its default falls to 64 MiB, about 400 000 ticks and 0.7 s (reckoned).
+its default falls to 64 MiB, reckoned at about 400 000 ticks and 0.7 s.
+
+Measured on SQLite with ticks delivered 249 at a time, the 64 MiB default sealed
+after 510 948 ticks, 8.8 MB on disk. The write that crossed it waited 9.3 to
+10.3 s (load 7 to 18), about 13 times the reckoning. The time goes to restoring
+and hashing each event for the digest, about 14 µs an event, not to the inflate.
 
 ### An index line a block, and a row a block
 
