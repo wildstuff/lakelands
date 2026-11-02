@@ -10,7 +10,10 @@
 //! by anyone holding the format, with nothing of this engine. A segment's
 //! digest is over its events as the store restores them, not over the
 //! file's bytes, and it is sealed by the bytes they restore to, not by
-//! what its blocks store.
+//! what its blocks store. The writer keeps the active segment's digest
+//! running as it appends, so that a seal restores none of its events: it
+//! reads the segment once as it takes the lease, and again only where
+//! another handle appended to it since.
 //!
 //! **A segment after the first comes to exist with its first events in
 //! it.** A seal writes the next segment's index whole, its event lines
@@ -37,13 +40,21 @@
 //! top-level `hash`, whose value the index line holds, and a read takes it
 //! from there
 //! (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
-//! An event a block holds names its `id`, which its line in the block may
-//! leave out, and where its bytes lie are the block's: a read inflates a
-//! block once and takes each of its events' lines from it. An event line
-//! names `prev` only at a segment's first event: every other one names it
-//! empty, and it is the hash on the line before it. A reader takes an
-//! event line that names `id` or `prev`, as an index of an earlier release
-//! wrote every one, and a segment may hold lines of both.
+//! An event a block holds names its `id` empty, and its `hash` too but at
+//! the block's last event, whose hash is the block's; where its bytes lie
+//! are the block's. A read inflates a block once, restores its events,
+//! which gives each its `id` and `hash`, and takes each event's line from
+//! it, the members its index line names checked against the block's. So
+//! an index line costs a block's event about 37 bytes, not the 130 its
+//! id and hash took. A block that does not restore to the
+//! `id`, `prev` and `hash` its events were handed with, found so as
+//! the append writes it, has lines that name `id` and `hash` each, so
+//! that a read gives it back as handed and the seal finds its flaw. An
+//! event line names `prev` only at a
+//! segment's first event: every other one names it empty, and it is the
+//! hash of the event before it. A reader takes an event line that names
+//! `id` or `prev`, as an index of an earlier release wrote every one, and
+//! a segment may hold lines of both.
 //!
 //! **An index line has the shapes 0.19.0 to 0.22.0 read.** Each reads a
 //! lake's index far enough to find its first and last events, and then
@@ -52,7 +63,12 @@
 //! (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 //! Every index line keeps the eight members they read, an `id` and a
 //! `prev` named empty among them, and a block's event's names the
-//! block's offset and length. Each reads the bytes an index line
+//! block's offset and length. A block keeps a line for each of its
+//! events, not one for all of them: each of those releases holds every
+//! line it reads to name the position after the line before it, and
+//! takes the count of a segment from the event line before its last
+//! commit line, which is the block's last and names its hash. A line for
+//! a block alone would make them call the lake damaged. Each reads the bytes an index line
 //! points at as one line, and a block's are none: the active segment's
 //! last group, where it is a block, fails the check of its hashes and is
 //! a crash's tail to them, and the last event they count may be a block's
@@ -209,7 +225,8 @@ struct Resume {
 impl Resume {
     /// Reads on over `line`: an event line, its `prev` found, is answered.
     /// A short event line with no event line before it names no `prev`,
-    /// and is damage.
+    /// and is damage. After a block's event whose line names its hash
+    /// empty, the `prev` found is empty too, and the block gives it.
     fn take(&mut self, path: &Path, line: Line) -> Result<Option<Entry>> {
         let Line::Event(mut e) = line else {
             return Ok(None);
@@ -255,6 +272,48 @@ struct Segment {
     /// other handle measures it as it is asked
     /// ([`Log::active_raw`]).
     raw: Option<(u64, u64)>,
+    /// Its digest as the writer keeps it running (module doc).
+    running: Option<Running>,
+}
+
+/// A segment's digest kept running by the writer: the hash over the
+/// canonical bytes of its committed events through byte `through` of its
+/// file, none where one of them did not restore, which the seal then
+/// reads again to say where; and the reader that keeps the block an
+/// append's events were restored from.
+#[derive(Debug, Default)]
+struct Running {
+    through: u64,
+    hash: Option<Sha256>,
+    restorer: lakelands_core::log::Restorer,
+}
+
+impl Running {
+    /// Adds the events of an append that ends at byte `through`, each of
+    /// its blocks restoring to what it was handed with where `restore`
+    /// says so. One that does not is digested as the file holds it, so the
+    /// seal reads the segment whole.
+    fn add(&mut self, events: &[CanonicalEvent], through: u64, restore: bool) {
+        self.through = through;
+        if !restore {
+            self.hash = None;
+        }
+        let Some(hash) = self.hash.as_mut() else {
+            return;
+        };
+        for event in events {
+            // As `lakelands_core::log::digest_of` restores each event.
+            match self.restorer.restore_json(event) {
+                Ok((_, true)) => hash.update(&event.bytes),
+                Ok((restored, false)) => hash.update(lakelands_core::canonical::to_vec(&restored)),
+                Err(_) => {
+                    self.hash = None;
+                    return;
+                }
+            }
+            hash.update(b"\n");
+        }
+    }
 }
 
 impl Segment {
@@ -307,6 +366,11 @@ fn parse_line(path: &Path, line: &[u8]) -> Result<Line> {
 /// segment is never held whole. A unit that does not restore is damage at
 /// the position it holds.
 fn digest_of(dir: &Path, segment: &Segment) -> Result<Digest> {
+    hash_of(dir, segment).map(|hash| Digest(lakelands_core::canonical::hex(&hash.finalize())))
+}
+
+/// [`digest_of`] before it is finished, which more events can extend.
+fn hash_of(dir: &Path, segment: &Segment) -> Result<Sha256> {
     let path = segment_path(dir, segment.first);
     let reading = |e| io_error(Doing::Read, Part::Log, e);
     let file = File::open(&path).map_err(reading)?;
@@ -332,7 +396,7 @@ fn digest_of(dir: &Path, segment: &Segment) -> Result<Digest> {
     }
     let flawed = |flaw| damaged_at(Part::Segment, Some(Position(next)), flaw);
     units.end().map_err(flawed)?;
-    Ok(Digest(lakelands_core::canonical::hex(&hash.finalize())))
+    Ok(hash)
 }
 
 /// The bytes the units of a segment file from byte `from` to `end`
@@ -363,7 +427,8 @@ fn short(_: &Path) -> lakelands_api::Error {
 /// Whether the segment beginning at `first` holds each of `group`'s lines
 /// and blocks whole: their bytes, the line feed after them, a block's
 /// inflating to its lines, and the event each restores to hashing to the
-/// hash its index line names. A crash can leave a commit line ahead of
+/// hash its index line names, or its block where the line leaves it to
+/// the block. A crash can leave a commit line ahead of
 /// the bytes it commits (module doc).
 fn whole(dir: &Path, first: u64, group: Vec<Entry>) -> Result<bool> {
     let reading = |e| io_error(Doing::Read, Part::Log, e);
@@ -392,13 +457,18 @@ fn whole(dir: &Path, first: u64, group: Vec<Entry>) -> Result<bool> {
 
 /// A block read and inflated: where its bytes begin in its segment, its
 /// frame as the seam holds it, its lines, and where each event's line
-/// begins among them, the one past the last too.
+/// begins among them, the one past the last too; and the hash before it
+/// and each event's `id` and `hash` as the block restores them, which a
+/// thin index names for none of its events but the last, or the flaw
+/// that keeps it from restoring.
 #[derive(Debug)]
 pub(crate) struct Inflated {
     at: (u64, u64),
     frame: Arc<Frame>,
     raw: Vec<u8>,
     starts: Vec<usize>,
+    prev: Digest,
+    events: std::result::Result<Vec<(EventId, Digest)>, Flaw>,
 }
 
 impl Inflated {
@@ -434,12 +504,35 @@ impl Inflated {
             events,
             bytes,
         });
+        let events = lakelands_core::log::block_events(&frame).map(|(_, events)| events);
         Ok(Inflated {
             at,
             frame,
             raw,
             starts,
+            prev: block.prev,
+            events,
         })
+    }
+
+    /// The `id`, `prev` and `hash` of the event at `position`, as the
+    /// block restores them: none where it does not hold it, the flaw where
+    /// it does not restore.
+    fn event(&self, position: u64) -> std::result::Result<Option<(EventId, Digest, Digest)>, Flaw> {
+        let events = self.events.as_ref().map_err(Clone::clone)?;
+        let Some(i) =
+            (position.checked_sub(self.frame.first.0)).and_then(|i| usize::try_from(i).ok())
+        else {
+            return Ok(None);
+        };
+        let Some((id, hash)) = events.get(i).cloned() else {
+            return Ok(None);
+        };
+        let prev = match i.checked_sub(1) {
+            None => self.prev.clone(),
+            Some(before) => events[before].1.clone(),
+        };
+        Ok(Some((id, prev, hash)))
     }
 
     /// The line of the event at `position`, if the block holds it.
@@ -452,8 +545,9 @@ impl Inflated {
 
 /// The events `entries` of the segment beginning at `first` name, their
 /// `prev` found, read from the segment file `file`: each line's bytes,
-/// and each block's once, inflated, the last one kept in `held` for the
-/// read after.
+/// and each block's once, inflated and restored, the last one kept in
+/// `held` for the read after. A block's event takes its `id`, `prev` and
+/// `hash` from the block; what its index line names of them must agree.
 fn events_at(
     (file, first): (&File, u64),
     entries: Vec<Entry>,
@@ -470,32 +564,55 @@ fn events_at(
             })
         };
         let at = (first, e.offset);
-        let (bytes, frame) = match held.as_ref().filter(|h| h.at == at) {
-            Some(h) => (h.line(e.position), Some(h.frame.clone())),
-            None => {
-                let bytes = read(e.offset, e.len)?;
-                match bytes.starts_with(b"{\"block\":") {
-                    false => (Some(bytes), None),
-                    true => {
-                        let h = held.insert(Inflated::of(at, bytes).map_err(flawed)?);
-                        (h.line(e.position), Some(h.frame.clone()))
-                    }
+        if !held.as_ref().is_some_and(|h| h.at == at) {
+            let bytes = read(e.offset, e.len)?;
+            match bytes.starts_with(b"{\"block\":") {
+                false => {
+                    let id = match e.id.is_empty() {
+                        true => id_in(&bytes, &e.hash),
+                        false => e.id,
+                    };
+                    out.push(CanonicalEvent {
+                        position,
+                        id: EventId(id),
+                        prev: Digest(e.prev.unwrap_or_default()),
+                        hash: Digest(e.hash),
+                        fence: e.fence,
+                        bytes,
+                        frame: None,
+                    });
+                    continue;
                 }
+                true => *held = Some(Inflated::of(at, bytes).map_err(flawed)?),
             }
-        };
-        let bytes = bytes.ok_or_else(|| flawed(Flaw::Disagrees))?;
-        let id = match e.id.is_empty() {
-            true => id_in(&bytes, &e.hash),
-            false => e.id,
+        }
+        let h = held.as_ref().ok_or_else(|| flawed(Flaw::Disagrees))?;
+        let bytes = h.line(e.position).ok_or_else(|| flawed(Flaw::Disagrees))?;
+        let line_prev = e.prev.unwrap_or_default();
+        let whole = !(e.id.is_empty() || e.hash.is_empty() || line_prev.is_empty());
+        let (id, prev, hash) = match h.event(e.position) {
+            // A block that does not restore to what it was handed with was
+            // indexed whole, and is given back as handed.
+            _ if whole => (EventId(e.id), Digest(line_prev), Digest(e.hash)),
+            Err(flaw) => return Err(flawed(flaw)),
+            Ok(None) => return Err(flawed(Flaw::Disagrees)),
+            Ok(Some((id, prev, hash))) => {
+                // An empty member is one the index leaves to the block.
+                let named = |line: &str, block: &str| line.is_empty() || line == block;
+                if !named(&e.id, &id.0) || !named(&e.hash, &hash.0) || !named(&line_prev, &prev.0) {
+                    return Err(flawed(Flaw::Disagrees));
+                }
+                (id, prev, hash)
+            }
         };
         out.push(CanonicalEvent {
             position,
-            id: EventId(id),
-            prev: Digest(e.prev.unwrap_or_default()),
-            hash: Digest(e.hash),
+            id,
+            prev,
+            hash,
             fence: e.fence,
             bytes,
-            frame,
+            frame: Some(h.frame.clone()),
         });
     }
     Ok(out)
@@ -753,34 +870,48 @@ pub(crate) fn ends(dir: &Path) -> Result<Option<(CanonicalEvent, CanonicalEvent)
 /// The lines `events` add to a segment file from byte `offset` on, each
 /// block's bytes once, before its first event's index line, and their
 /// index lines, closed by one commit line. An event a line holds names
-/// its `id` empty in the index, which the line holds (module doc); one a
-/// block holds names it, and its offset and length are the block's. An
-/// index line names `prev` where the event is its segment's first, at
-/// `first`; any other's is the hash of the event line before it.
-fn lines_of(events: &[CanonicalEvent], mut offset: u64, first: u64) -> (Vec<u8>, Vec<u8>) {
-    let (mut lines, mut index, mut block) = (Vec::new(), Vec::new(), (offset, 0));
+/// its `id` empty in the index, which the line holds (module doc). One a
+/// block holds names its `id` empty too, and its `hash` but at the
+/// block's last event, whose hash is the block's: the block restores
+/// both; its offset and length are the block's. A block that does not
+/// restore to what its events were handed with names both for each of
+/// them, so that it is read back as it was handed. An index line names
+/// `prev` where the event is its segment's first, at `first`; any other's
+/// is the hash of the event before it. The last of the three is whether
+/// every block restores so.
+fn lines_of(events: &[CanonicalEvent], mut offset: u64, first: u64) -> (Vec<u8>, Vec<u8>, bool) {
+    let (mut lines, mut index, mut block) = (Vec::new(), Vec::new(), (offset, 0, true));
+    let mut restore = true;
     for event in events {
-        let (at, len, id) = match &event.frame {
+        let (at, len, last) = match &event.frame {
             Some(frame) => {
                 if frame.first == event.position {
                     lines.extend_from_slice(&frame.bytes);
                     lines.push(b'\n');
-                    block = (offset, frame.bytes.len() as u64);
+                    block = (offset, frame.bytes.len() as u64, restores(frame, events));
+                    restore &= block.2;
                     offset += block.1 + 1;
                 }
-                (block.0, block.1, &event.id.0[..])
+                let last = frame.first.0 + u64::from(frame.events) - 1;
+                (block.0, block.1, event.position.0 == last || !block.2)
             }
             None => {
                 lines.extend_from_slice(&event.bytes);
                 lines.push(b'\n');
                 let len = event.bytes.len() as u64;
                 offset += len + 1;
-                (offset - len - 1, len, "")
+                (offset - len - 1, len, true)
             }
         };
-        let (position, fence, hash) = (event.position.0, event.fence, &event.hash.0);
+        let (position, fence) = (event.position.0, event.fence);
+        let hash = if last { &event.hash.0[..] } else { "" };
         let prev = if position == first {
             &event.prev.0[..]
+        } else {
+            ""
+        };
+        let id = if event.frame.is_some() && !block.2 {
+            &event.id.0[..]
         } else {
             ""
         };
@@ -789,7 +920,22 @@ fn lines_of(events: &[CanonicalEvent], mut offset: u64, first: u64) -> (Vec<u8>,
         index.push(b'\n');
     }
     index.extend_from_slice(&COMMITTED[1..]);
-    (lines, index)
+    (lines, index, restore)
+}
+
+/// Whether the block `frame` holds restores to the `id`, `prev` and
+/// `hash` its events among `events` were handed with.
+fn restores(frame: &Arc<Frame>, events: &[CanonicalEvent]) -> bool {
+    let Ok((block, restored)) = lakelands_core::log::block_events(frame) else {
+        return false;
+    };
+    let held = |e: &&CanonicalEvent| {
+        (e.frame.as_ref()).is_some_and(|f| Arc::ptr_eq(f, frame) || f == frame)
+    };
+    let held: Vec<&CanonicalEvent> = events.iter().filter(held).collect();
+    held.first().is_some_and(|e| e.prev == block.prev)
+        && held.len() == restored.len()
+        && (held.iter().zip(&restored)).all(|(e, (id, hash))| e.id == *id && e.hash == *hash)
 }
 
 impl Log {
@@ -1033,7 +1179,36 @@ impl Log {
         }
         self.refresh()?;
         self.cut()?;
-        self.measure()
+        self.measure()?;
+        self.run();
+        Ok(())
+    }
+
+    /// Takes the active segment's digest up where the writer does not
+    /// keep it through the segment's committed end: read once as it
+    /// takes the lease, and again only where another handle appended
+    /// since. Events that do not restore are not refused here but by the
+    /// seal, which reads them again.
+    fn run(&mut self) {
+        let Some(active) = self.segments.last_mut() else {
+            return;
+        };
+        if active
+            .running
+            .as_ref()
+            .is_some_and(|r| r.through == active.end)
+        {
+            return;
+        }
+        let hash = match active.end {
+            0 => Some(Sha256::new()),
+            _ => hash_of(&self.dir, active).ok(),
+        };
+        active.running = Some(Running {
+            through: active.end,
+            hash,
+            ..Running::default()
+        });
     }
 
     /// Measures what the active segment's committed events restore to
@@ -1138,7 +1313,7 @@ impl Log {
             let (named, position) = (Position(active.first), events[0].position);
             return Err(Error::invalid(Case::ActiveSegmentNamed { named, position }));
         }
-        let (lines, index) = lines_of(events, active.end, active.first);
+        let (lines, index, restore) = lines_of(events, active.end, active.first);
         let parts = [
             (segment_path.as_path(), &lines[..], active.end),
             (index_path.as_path(), &index[..], active.index_read),
@@ -1177,7 +1352,12 @@ impl Log {
                     .sum();
                 (t + lines.len() as u64, raw + added)
             });
-        active.end += lines.len() as u64;
+        let through = active.end + lines.len() as u64;
+        active.running = active.running.take().filter(|r| r.through == active.end);
+        if let Some(running) = active.running.as_mut() {
+            running.add(events, through, restore);
+        }
+        active.end = through;
         active.last_hash = events.last().map(|e| e.hash.0.clone());
         Ok(())
     }
@@ -1370,7 +1550,18 @@ impl Log {
         let Some(last) = active.last() else {
             return Ok(None);
         };
-        let digest = digest_of(&self.dir, active)?;
+        // The digest the writer kept running restores nothing; one not
+        // kept through the committed end is read whole.
+        let digest = match &active.running {
+            Some(Running {
+                through,
+                hash: Some(hash),
+                ..
+            }) if *through == active.end => {
+                Digest(lakelands_core::canonical::hex(&hash.clone().finalize()))
+            }
+            _ => digest_of(&self.dir, active)?,
+        };
         let sealed = SegmentDigest {
             first: Position(active.first),
             last: Position(last),
@@ -1378,7 +1569,7 @@ impl Log {
         };
         let events = lakelands_core::engines::first_of_next(first, &sealed)?;
         self.continues(fence, &events)?;
-        let (lines, index) = lines_of(&events, 0, last + 1);
+        let (lines, index, _) = lines_of(&events, 0, last + 1);
         let (segment, index_path) = (
             segment_path(&self.dir, last + 1),
             index_path(&self.dir, last + 1),
@@ -1403,7 +1594,8 @@ impl Log {
             let _ = fs::remove_file(&index_path);
             return Err(e);
         }
-        self.segments.last_mut().expect("checked above").digest = Some(digest);
+        let sealed_one = self.segments.last_mut().expect("checked above");
+        (sealed_one.digest, sealed_one.running) = (Some(digest), None);
         // The rename was the step: an error from here on says so.
         sync_dir(&log).map_err(|e| {
             let detail = Detail::io(&e);

@@ -150,7 +150,7 @@ fn state(at: u64) -> StoredRecord {
 /// in SQLite's own count of a statement's recompilations, for the two
 /// statements a fold and a read at a position run once for each record,
 /// each run as the engine runs it, on a connection the engine makes, for
-/// every key at its own position; the put's ending statement is rolled
+/// every key at its own position (a put's ending by the key's id); the put's ending statement is rolled
 /// back.
 #[test]
 fn a_kept_statement_run_again_with_other_values_is_not_compiled_again() {
@@ -171,13 +171,15 @@ fn a_kept_statement_run_again_with_other_values_is_not_compiled_again() {
     let mut conn = crate::handle::connect(&path, &tuning, true).unwrap();
     let tx = conn.transaction().unwrap();
     for at in 1..=RECORDS {
-        for statement in crate::seek_statements() {
-            let mut s = tx.prepare_cached(&statement).unwrap();
-            let mut rows = s
-                .query(params!["t", format!("k{at:03}"), at as i64])
-                .unwrap();
-            while rows.next().unwrap().is_some() {}
-        }
+        let [read, ending] = crate::seek_statements();
+        let mut s = tx.prepare_cached(&read).unwrap();
+        let mut rows = s
+            .query(params!["t", format!("k{at:03}"), at as i64])
+            .unwrap();
+        while rows.next().unwrap().is_some() {}
+        drop(rows);
+        let mut s = tx.prepare_cached(&ending).unwrap();
+        s.execute(params![at as i64, at as i64]).unwrap();
     }
     let compiled: Vec<i32> = crate::seek_statements()
         .iter()
@@ -193,4 +195,47 @@ fn a_kept_statement_run_again_with_other_values_is_not_compiled_again() {
         "the recompilations of the read of one record at a position and of a put's ending \
          statement, each run for {RECORDS} keys"
     );
+}
+
+/// Every connection that may delete overwrites what it deletes, and a new
+/// file holds pages of 4 KiB and incremental vacuum
+/// (`ERASED_VALUE_LEAVES_THE_FILE`): a writer's connection, which the
+/// writer, a scratch's fold and the writer after a swap each make, reads
+/// `secure_delete` on, which no file holds for the next connection; a
+/// reader's deletes nothing and is left as SQLite makes it.
+#[test]
+fn a_connection_that_deletes_overwrites_what_it_deletes() {
+    let dir = std::env::temp_dir().join(format!("lakelands-secure-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("projection.db");
+    let tuning = SqliteTuning::default();
+    let read = |conn: &rusqlite::Connection, pragma: &str| -> i64 {
+        conn.query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    let writer = crate::handle::connect(&path, &tuning, true).unwrap();
+    writer.execute_batch("CREATE TABLE t (x)").unwrap();
+    let settings = |conn| {
+        (
+            read(conn, "secure_delete"),
+            read(conn, "page_size"),
+            read(conn, "auto_vacuum"),
+        )
+    };
+    assert_eq!(settings(&writer), (1, 4096, 2), "the writer's connection");
+    let again = crate::handle::connect(&path, &tuning, true).unwrap();
+    assert_eq!(
+        settings(&again),
+        (1, 4096, 2),
+        "a second writer's connection"
+    );
+    let plain = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        read(&plain, "secure_delete"),
+        0,
+        "the file holds no `secure_delete`: only the connection's setup sets it"
+    );
+    drop((writer, again, plain));
+    let _ = std::fs::remove_dir_all(&dir);
 }

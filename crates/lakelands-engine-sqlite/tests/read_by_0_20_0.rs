@@ -48,12 +48,13 @@ fn older(dir: &Path) -> Result<(u64, Option<u64>, Vec<Old>), String> {
     Ok((first, vs.last().copied().flatten(), counted))
 }
 
-/// Whether each event line of `lines` names its `id` exactly where a
-/// block holds its event: one whose bytes another line points at too.
-fn named_in_blocks(lines: &[Old]) -> bool {
-    lines.iter().all(|l| {
-        let shared = lines.iter().filter(|o| o.offset == l.offset).count() > 1;
-        shared != l.id.is_empty()
+/// Whether every event line of `lines` names its `id` empty, and its
+/// `hash` empty exactly where a block holds its event and it is not the
+/// block's last: a line after it points at the same bytes.
+fn thinned_in_blocks(lines: &[Old]) -> bool {
+    lines.iter().enumerate().all(|(i, l)| {
+        let inner = lines.get(i + 1).is_some_and(|o| o.offset == l.offset);
+        l.id.is_empty() && inner == l.hash.is_empty()
     })
 }
 
@@ -77,7 +78,8 @@ async fn written(location: &Location, mode: OpenMode, from: usize) {
     store.close().await.unwrap();
 }
 
-/// Every index line in `dir` naming its event's id, as 0.20.0 wrote them.
+/// Every index line in `dir` naming its event's id, as 0.20.0 wrote them,
+/// but a block's event's, which 0.20.0 wrote none of.
 fn named_as_0_20_0(dir: &Path) {
     for file in std::fs::read_dir(dir.join("index")).unwrap() {
         let path = file.unwrap().path();
@@ -86,9 +88,13 @@ fn named_as_0_20_0(dir: &Path) {
         let mut named = String::new();
         for line in std::fs::read_to_string(&path).unwrap().lines() {
             let mut e: Value = serde_json::from_str(line).unwrap();
-            if e[0] == "e" && e[5] == "" {
-                let (from, len) = (e[3].as_u64().unwrap() as usize, e[4].as_u64().unwrap());
-                let held: Value = serde_json::from_slice(&segment[from..][..len as usize]).unwrap();
+            let (from, len) = (
+                e[3].as_u64().unwrap_or(0) as usize,
+                e[4].as_u64().unwrap_or(0),
+            );
+            let bytes = &segment[from..][..len as usize];
+            if e[0] == "e" && e[5] == "" && !bytes.starts_with(b"{\"block\":") {
+                let held: Value = serde_json::from_slice(bytes).unwrap();
                 e[5] = held["id"].clone();
             }
             named += &format!("{e}\n");
@@ -97,8 +103,8 @@ fn named_as_0_20_0(dir: &Path) {
     }
 }
 
-/// A lake this build made: judged by its first end's format, every `id` a
-/// line holds named empty and a block's named; named as 0.20.0 wrote
+/// A lake this build made: judged by its first end's format, every `id`
+/// named empty and a block's hashes but its last's; named as 0.20.0 wrote
 /// them, the next appends mix lines of both, read whole.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lake_this_build_made_is_read_by_0_20_0_up_to_its_format() {
@@ -111,7 +117,7 @@ async fn a_lake_this_build_made_is_read_by_0_20_0_up_to_its_format() {
     // The last counted event is a block's, its bytes no line: 0.20.0
     // judges the lake by its first.
     assert_eq!((first, tip), (reads, None), "the first end by {reads}");
-    assert!(named_in_blocks(&lines), "ids named in blocks alone");
+    assert!(thinned_in_blocks(&lines), "lines thinned in blocks");
     named_as_0_20_0(&dir);
     written(&location, OpenMode::Write, 6).await;
     let (_, _, lines) = older(&dir).unwrap();
