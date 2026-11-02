@@ -370,10 +370,11 @@ pub(crate) const LAKE_TABLES: [&str; 26] = [
 /// the lease and the lake's name stay.
 pub(crate) const PROJECTION_TABLES: &[&str] = LAKE_TABLES.split_at(5).1;
 
-/// The projection's tables an earlier layout had and this one does not:
-/// a layout that drops or renames a table names the old one here, so a
-/// lake that layout made still opens to be rebuilt, and the rebuild's
-/// `clear` or swap drops it (`scratch.rs`).
+/// The projection's tables an earlier build had and this one does not,
+/// which a rebuild's `clear` or swap drops where it meets them
+/// (`scratch.rs`). The list names what a lake this format can carry:
+/// `frames` went with the log this format reads, and a lake that holds
+/// one is not opened at all, so it is not named here.
 /// `applied` went with 0.21.0: an applied id is answered from the key of
 /// `ids` (`view.rs`).
 pub(crate) const RETIRED_TABLES: &[&str] = &["applied"];

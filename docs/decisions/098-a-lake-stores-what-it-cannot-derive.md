@@ -166,8 +166,9 @@ open, and goes on from there, so a lease taken in the middle of a segment seals 
 the digest the one that began it would have. On PostgreSQL (lakelands#1681) the
 running hash's state is kept beside the segment, in `segments.running`, tagged
 with a format and a version byte of its own; a tag the code does not know, from an
-older or a newer build, is no state, and the writer computes the segment's digest
-once on open and goes on from it. The 64 MiB default stays. Measured in the same
+older or a newer build, is no state: the writer goes on without one and writes the
+row NULL, so no later writer trusts it, and the seal digests the segment from its
+rows. The 64 MiB default stays. Measured in the same
 way, ticks 249 at a time, the write that crossed the bound waited 95.7, 145.2 and,
 with the thinned index below, 73.9 ms (load 16 to 23), where the build before it
 waited 8.0 s on the same 410 601 ticks (load 16 to 23).
@@ -191,7 +192,8 @@ store handed; where they do not, as a conformance check's planted break, it keep
 those events in a `kept` column, so the engine still hands back what it was handed.
 Measured on PostgreSQL 18 at 300 000 ticks (load 3 to 4 on 16 cores): `log` 72 B a
 tick, `ids` 126 B (its heap 60 B and its key 66 B), `segments` 0.1 B, 198 B
-together against 555.5 B before; the reckoning of 135 B left out the heap of
+together against 555.5 B before (the 540 B a tick read when this layout was drawn,
+measured again at 555.5); the reckoning of 135 B left out the heap of
 `ids`. The append's statements take 6.1 µs a tick, `ids` 4.3 of them. On the
 memory engine the seam's change was all.
 
