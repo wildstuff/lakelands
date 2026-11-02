@@ -10,7 +10,11 @@ lakelands-api	trait_method_added	trait method Catalog::dismiss_quarantined
 lakelands-api	trait_method_added	trait method Catalog::quarantined
 lakelands-api	trait_method_added	trait method LakeStore::zone
 lakelands-api	trait_method_added	trait method ProjectionStore::put_quarantined
+lakelands-api	trait_method_added	trait method ProjectionStore::put_thinned
+lakelands-api	trait_method_added	trait method ProjectionStore::put_thinned_act
 lakelands-api	trait_method_added	trait method ProjectionView::quarantined
+lakelands-api	trait_method_added	trait method ProjectionView::thinned_acts
+lakelands-api	trait_method_added	trait method ProjectionView::thinned_at
 lakelands-api	derive_trait_impl_removed	type WriteContext no longer derives Copy
 lakelands-api	enum_variant_missing	variant Beyond::Clock
 lakelands-api	enum_variant_missing	variant Case::KeptExtremeGroupedBy

@@ -171,6 +171,16 @@ impl ProjectionView for CountingView<'_> {
     ) -> Result<lakelands_api::engine::Matched> {
         self.inner.of_source(source, from, through, limit)
     }
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        self.inner.thinned_acts(ty)
+    }
+    fn thinned_at(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
+        self.inner.thinned_at(ty, key)
+    }
 }
 
 impl LakeEngine for Counting {

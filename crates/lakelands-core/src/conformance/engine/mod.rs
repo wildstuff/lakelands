@@ -202,6 +202,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::OPEN_TRANSACTION,
     projection::VIEW_KEEPS_POSITION,
     projection::SAME_POSITION,
+    projection::THINNED_TABLES,
     projection::PUT_BEFORE_A_LATER_STATE,
     projection::VECTOR_PUT_BEFORE_A_LATER_STATE,
     projection::PUTS_IN_ONE_TRANSACTION,

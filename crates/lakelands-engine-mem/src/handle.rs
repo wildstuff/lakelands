@@ -315,6 +315,28 @@ impl ProjectionStore for MemoryLake {
         self.stage(Put::Quarantined { row, at })
     }
 
+    fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
+        self.stage(Put::ThinnedAct {
+            act: act.clone(),
+            at,
+        })
+    }
+
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: lakelands_api::time::Timestamp,
+        at: Position,
+    ) -> Result<()> {
+        self.stage(Put::Thinned {
+            ty: ty.clone(),
+            key: key.clone(),
+            before,
+            at,
+        })
+    }
+
     fn put_membership(
         &self,
         set: &str,

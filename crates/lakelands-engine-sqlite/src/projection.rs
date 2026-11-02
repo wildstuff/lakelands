@@ -173,10 +173,19 @@ CREATE TABLE IF NOT EXISTS text_lengths (
     held INTEGER NOT NULL, tokens INTEGER NOT NULL,
     PRIMARY KEY (ty, key, field)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS thinned_types (
+    ty TEXT NOT NULL, \"by\" TEXT NOT NULL, \"before\" INTEGER NOT NULL,
+    at INTEGER NOT NULL, through INTEGER NOT NULL, gone INTEGER NOT NULL,
+    PRIMARY KEY (ty, \"by\", \"before\")
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS thinned (
+    ty TEXT NOT NULL, key TEXT NOT NULL, \"before\" INTEGER NOT NULL, at INTEGER NOT NULL,
+    PRIMARY KEY (ty, key)
+) WITHOUT ROWID;
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
-pub(crate) const TABLES: [&str; 21] = [
+pub(crate) const TABLES: [&str; 23] = [
     "meta",
     "declarations",
     "keys",
@@ -198,6 +207,8 @@ pub(crate) const TABLES: [&str; 21] = [
     "vectors",
     "text_stats",
     "text_lengths",
+    "thinned_types",
+    "thinned",
 ];
 
 /// A history table: its name and the columns naming one thing in it.
@@ -545,7 +556,7 @@ fn routes_query(
 /// raised whenever a table changes so that a projection made before
 /// would answer wrongly, not fail: one made with another layout is never
 /// read, and is rebuilt from the log.
-pub(crate) const LAYOUT: u64 = 9;
+pub(crate) const LAYOUT: u64 = 10;
 
 /// The layout `conn`'s projection was made with: none where it holds no
 /// `meta`, or was made before projections were marked.

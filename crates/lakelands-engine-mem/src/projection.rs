@@ -27,8 +27,9 @@ use lakelands_api::id::{
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::quarantine::{QuarantineId, Quarantined};
 use lakelands_api::query::Edge;
-use lakelands_api::read::Direction;
+use lakelands_api::read::{Direction, ThinnedAct};
 use lakelands_api::record::{StoredRecord, Value};
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal};
 use lakelands_core::engines::{self, Elements};
 
@@ -187,6 +188,16 @@ pub(crate) enum Put {
     DroppedRecord(TypeName, RecordKey),
     /// Every state of a seam's output for one input, deleted.
     DroppedOutput(String, Digest),
+    /// A thinning act's row from `at`, keeping the `at` of a row already
+    /// begun.
+    ThinnedAct { act: ThinnedAct, at: Position },
+    /// A thinned record's tombstone from `at`.
+    Thinned {
+        ty: TypeName,
+        key: RecordKey,
+        before: Timestamp,
+        at: Position,
+    },
 }
 
 impl Put {
@@ -203,7 +214,9 @@ impl Put {
             | Put::HeadsEnded { at, .. }
             | Put::Proposal { at, .. }
             | Put::Quarantined { at, .. }
-            | Put::Output { at, .. } => *at,
+            | Put::Output { at, .. }
+            | Put::ThinnedAct { at, .. }
+            | Put::Thinned { at, .. } => *at,
         }
     }
 }
@@ -254,6 +267,12 @@ pub(crate) struct Projection {
     pub(crate) in_edges: BTreeMap<(TypeName, RecordKey), BTreeMap<EdgeFrom, Edge>>,
     /// Each head record's entries in `in_edges`: the target and the edge.
     in_edge_rows: BTreeMap<(TypeName, RecordKey), Vec<(Target, EdgeFrom)>>,
+    /// The thinning acts, one a type, field and horizon (`thinned_types`):
+    /// the position each began at and the act's row, moved by each part.
+    pub(crate) thinned_acts: BTreeMap<(TypeName, FieldName, Timestamp), (Position, ThinnedAct)>,
+    /// The records an act took (`thinned`), each key's horizon and the
+    /// position its act began at.
+    pub(crate) thinned: BTreeMap<(TypeName, RecordKey), (Timestamp, Position)>,
 }
 
 /// The feed's index of the log (`lakelands_core::feed`).
@@ -758,6 +777,26 @@ impl Projection {
                 let of = self.records.range(from..).map(|(id, _)| id);
                 let ids: Vec<_> = of.take_while(|(t, _)| *t == ty).cloned().collect();
                 ids.iter().for_each(|id| drop(self.records.remove(id)));
+            }
+            Put::ThinnedAct { act, at } => {
+                let key = (act.ty.clone(), act.by.clone(), act.before);
+                // A row already begun keeps the position it began at; each
+                // part moves `through` and `gone` alone.
+                self.thinned_acts
+                    .entry(key)
+                    .and_modify(|(_, row)| {
+                        row.through = act.through;
+                        row.gone = act.gone;
+                    })
+                    .or_insert((at, act));
+            }
+            Put::Thinned {
+                ty,
+                key,
+                before,
+                at,
+            } => {
+                self.thinned.entry((ty, key)).or_insert((before, at));
             }
         }
     }

@@ -23,7 +23,9 @@ use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::SqliteTuning;
 use lakelands_api::quarantine::Quarantined;
+use lakelands_api::read::ThinnedAct;
 use lakelands_api::record::{StoredRecord, Value};
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal};
 use lakelands_core::engines;
 use lakelands_core::engines::pool::{self, Pool, Taken};
@@ -874,6 +876,43 @@ impl ProjectionStore for SqliteLake {
                 t.sharing = engines::Sharing::default();
                 projection::drop_bases(conn)
             }
+        })
+    }
+
+    fn put_thinned_act(&self, act: &ThinnedAct, at: Position) -> Result<()> {
+        self.stage(at, |conn, _| {
+            projection::run(
+                conn,
+                "INSERT INTO thinned_types (ty, \"by\", \"before\", at, through, gone) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                 ON CONFLICT (ty, \"by\", \"before\") DO UPDATE SET \
+                 through = excluded.through, gone = excluded.gone",
+                params![
+                    act.ty.as_str(),
+                    act.by.as_str(),
+                    act.before.0,
+                    at.0 as i64,
+                    act.through.0 as i64,
+                    act.gone as i64,
+                ],
+            )
+        })
+    }
+
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: Timestamp,
+        at: Position,
+    ) -> Result<()> {
+        self.stage(at, |conn, _| {
+            projection::run(
+                conn,
+                "INSERT INTO thinned (ty, key, \"before\", at) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (ty, key) DO NOTHING",
+                params![ty.as_str(), key.as_str(), before.0, at.0 as i64],
+            )
         })
     }
 

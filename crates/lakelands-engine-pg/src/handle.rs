@@ -1180,6 +1180,20 @@ impl ProjectionStore for PgLake {
         self.stage(at, |b| b.quarantined(&row.id, at, state))
     }
 
+    fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
+        self.stage(at, |b| b.thinned_act(act, at))
+    }
+
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: lakelands_api::time::Timestamp,
+        at: Position,
+    ) -> Result<()> {
+        self.stage(at, |b| b.thinned(ty.as_str(), key.as_str(), before, at))
+    }
+
     fn put_membership(
         &self,
         set: &str,

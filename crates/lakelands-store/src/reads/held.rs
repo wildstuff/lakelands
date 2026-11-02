@@ -353,6 +353,18 @@ impl ProjectionView for HeldNow<'_> {
     ) -> Result<Matched> {
         self.then.of_source(source, from, through, limit)
     }
+
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        self.then.thinned_acts(ty)
+    }
+
+    fn thinned_at(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
+        self.then.thinned_at(ty, key)
+    }
 }
 
 #[cfg(test)]
