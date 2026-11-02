@@ -26,7 +26,7 @@
 //! A row prints per cell: writes a second and the p99 of a write for the
 //! callers' phase, records a second and the p99 of a call for the
 //! ingest's, and bytes a record kept in the log (the log's own files, or
-//! PostgreSQL's `log`, `frames` and `segments` with their indexes), in
+//! PostgreSQL's `log`, `ids` and `segments` with their indexes), in
 //! the projection (its tables, indexes left out) and in indexes (the
 //! projection's). Then the reads: one series' last hour and last day,
 //! raw and from the roll-up, the median of `--reads` reads. The bytes of
@@ -492,7 +492,7 @@ fn sizes_pg(url: &str, schema: &str) -> Option<(u64, u64, u64)> {
     let (mut log, mut proj, mut index) = (0u64, 0u64, 0u64);
     for r in rows {
         let (name, table, idx): (String, i64, i64) = (r.get(0), r.get(1), r.get(2));
-        if matches!(name.as_str(), "log" | "frames" | "segments") {
+        if matches!(name.as_str(), "log" | "ids" | "segments") {
             log += (table + idx) as u64;
         } else {
             proj += table as u64;
@@ -646,7 +646,8 @@ async fn cell(
     let _ = child.start_kill();
     let _ = child.wait().await;
     let bytes = match (&schema, pg) {
-        (Some(s), Some((url, true))) => sizes_pg(url, s),
+        // The blocking client runs its own runtime: off this one's worker.
+        (Some(s), Some((url, true))) => tokio::task::block_in_place(|| sizes_pg(url, s)),
         (Some(_), _) => None,
         (None, _) => sizes_sqlite(&root),
     };
@@ -672,9 +673,12 @@ async fn cell(
     );
     if let Some((url, _)) = pg
         && let Some(s) = schema
-        && let Ok(mut cl) = postgres::Client::connect(url, postgres::NoTls)
     {
-        let _ = cl.batch_execute(&format!("DROP SCHEMA IF EXISTS {s} CASCADE"));
+        tokio::task::block_in_place(|| {
+            if let Ok(mut cl) = postgres::Client::connect(url, postgres::NoTls) {
+                let _ = cl.batch_execute(&format!("DROP SCHEMA IF EXISTS {s} CASCADE"));
+            }
+        });
     }
     let _ = std::fs::remove_dir_all(&root);
 }

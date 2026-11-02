@@ -52,20 +52,20 @@ fn state(ty: &TypeName, key: &str, at: u64) -> StoredRecord {
     )
 }
 
-/// The plan of each statement the engine names for a kept name, at the
-/// head `last` and at the earlier position `at`, with the values a read
-/// binds, and as the server ran it (a plan not run does not show how the
-/// next key is found): the pages of the name with many keys, the count
-/// of the one with few (a count of most of a table is rightly planned as
-/// a read of the table). Under `analyse` the tables read are analysed
-/// first.
+/// The plan of each statement the engine names for a kept name, by the
+/// name of the statement, at the head `last` and at the earlier position
+/// `at`, with the values a read binds, and as the server ran it (a plan
+/// not run does not show how the next key is found): the pages of the
+/// name with many keys, the count of the one with few (a count of most
+/// of a table is rightly planned as a read of the table). Under
+/// `analyse` the tables read are analysed first.
 fn plans(
     url: &str,
     schema: &str,
     names: &[TypeName; 2],
     (last, at): (u64, u64),
     analyse: bool,
-) -> Vec<(bool, Vec<String>)> {
+) -> Vec<(&'static str, bool, Vec<String>)> {
     let (url, schema, names) = (url.to_owned(), schema.to_owned(), names.clone());
     let [many, few] = names.clone();
     std::thread::spawn(move || {
@@ -93,11 +93,11 @@ fn plans(
         for (head, at) in [(true, last as i64), (false, at as i64)] {
             let [first, later, count, by_key, output] = read_statements(&schema, head);
             let keys = vec!["a", "k00001", "none"];
-            out.push((head, explain(&first, &[&many, &at, &limit])));
-            out.push((head, explain(&later, &[&many, &at, &limit, &after])));
-            out.push((head, explain(&count, &[&few, &at, &true, &true])));
-            out.push((head, explain(&by_key, &[&many, &keys, &at])));
-            out.push((head, explain(&output, &[&SEAM, &"many", &at])));
+            out.push(("first", head, explain(&first, &[&many, &at, &limit])));
+            out.push(("later", head, explain(&later, &[&many, &at, &limit, &after])));
+            out.push(("count", head, explain(&count, &[&few, &at, &true, &true])));
+            out.push(("by_key", head, explain(&by_key, &[&many, &keys, &at])));
+            out.push(("output", head, explain(&output, &[&SEAM, &"many", &at])));
         }
         out
     })
@@ -110,16 +110,18 @@ fn plans(
 /// key's state found by a seek, so none of its other states is read. With
 /// statistics the heads are walked in key order too, with no sort; without
 /// them the planner may sort the heads of a small table, one row a key.
-fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
-    for (i, (head, plan)) in plans.iter().enumerate() {
+/// The count at the head reads its name's heads alone, which hold the
+/// flags it counts by.
+fn seeks(plans: &[(&str, bool, Vec<String>)], analysed: bool) {
+    for (what, head, plan) in plans {
         let has = |step: &str| plan.iter().any(|line| line.contains(step));
-        let told = format!("with statistics: {analysed}; at the head: {head}\n{plan:#?}");
+        let told = format!("{what}, with statistics: {analysed}; at the head: {head}\n{plan:#?}");
         // Only the read by keys sorts, the few records it read.
         assert!(
-            (i % 5 == 3 || !analysed || !has("Sort")) && !has("Seq Scan"),
+            (*what == "by_key" || !analysed || !has("Sort")) && !has("Seq Scan"),
             "a kept name's read sorts or reads a table whole; {told}"
         );
-        if i % 5 == 3 {
+        if *what == "by_key" {
             // By keys: each key's state sought by its type, key and
             // position, either index, cut at its first row. A kept name
             // keeps one state a key, so a seek of it reads one row.
@@ -130,12 +132,17 @@ fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
                         || has("Index Scan Backward using records_since")),
                 "a read by keys is not a seek of each key's latest state; {told}"
             );
-        } else if i % 5 == 4 {
+        } else if *what == "output" {
             // The output: the primary key read backward from the position,
             // cut at its first row.
             assert!(
                 has("Limit") && has("Index Scan Backward using outputs_pkey"),
                 "the read of a recorded output is not a seek of its latest state; {told}"
+            );
+        } else if *what == "count" && *head {
+            assert!(
+                has("on records_head h") && !has("records x") && !has("records r"),
+                "a count at the head does not read the heads alone; {told}"
             );
         } else {
             // The heads, the outer side of the one join, each joined to
@@ -174,7 +181,7 @@ fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
                 .any(|l| l.contains(seek) && l.contains("on records x"));
             assert!(
                 sought
-                    && (i % 5 == 2 && has("records_head_pkey")
+                    && (*what == "count" && has("records_head_pkey")
                         || has("using records_head_pkey on records_head h") && walked <= Some(11)),
                 "a kept name's read does not walk the heads in key order and seek each \
                  key's state by an index; {told}"

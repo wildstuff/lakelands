@@ -255,21 +255,23 @@ and every statement names it; no connection's `search_path` is set.
   record an ingest writes once, and its applied id once, so an ingest
   costs about two round trips per record there and about fifteen per
   window on the other two connections.
-- **The log.** It is kept as rows holding each event's line of the
-  stored form unchanged, and each frame once, in `frames`, keyed by the
-  first position it covers (a lake made before frames gains the table at
-  its next writer's open), and an append is one transaction that checks the fence
-  against the lease row. Each row's `id`, `prev` and `hash` are kept as
-  the bytes their hex digits spell, under an index on `id`, and read
-  back as the same hex; a log a release before 0.21.0 kept as text is
-  converted in place by the first writer's open, or a rebuild's swap or
-  `clear`, in one transaction, and read in either type until then
-  (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`). `lakelands_engine_pg::export` writes the
-  segments as the §4.2 files, which verify without the engine, for a
-  lake whose store cannot be opened, each line as the writer stored it
-  and each frame's line before its events'; they hold the events the
-  store's export writes, with the same digests, in the writer's form
-  where the store's export writes a copy's (`docs/log-format.md` §4.2).
+- **The log.** It is kept a row a unit of the stored form, a block or a
+  line alone, its bytes unchanged in `STORAGE EXTERNAL`, keyed by the
+  unit's first position beside its last, the `prev` its first event
+  names and its last event's `hash`; a unit whose bytes do not give back
+  the events handed keeps those in its `kept` column. Each event's id is
+  a row of `ids (id, at)`, whose key answers an applied id. An append is
+  one transaction that checks the fence against the lease row and moves
+  the active segment's digest on, kept running on its row of `segments`,
+  so a seal restores nothing. Ids and hashes are kept as the bytes their
+  hex digits spell and read back as the same hex
+  (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
+  `lakelands_engine_pg::export` writes the segments as the §4.2 files,
+  which verify without the engine, for a lake whose store cannot be
+  opened, each row's bytes as the writer stored them, a block whole;
+  they hold the events the store's export writes, with the same
+  digests, in the writer's form where the store's export writes a
+  copy's (`docs/log-format.md` §4.2).
   It is a raw copy of the log's lines and judges none of
   them, not their format either: what it writes is judged by whoever
   verifies or imports it.
@@ -404,8 +406,8 @@ indexes describe the head, and `ranked` reads them (below).
 | `proposals_before(filter, before)` | The proposals `proposals` answers, newest first, a page at a time (lakelands#1063): those whose latest state at the position matches `filter.state`, proposed before `before` (every one where none), at most `filter.limit`. A proposal's position is its own event's, so no two share one, and the last of a page continues the next. `filter.kind`, `filter.type`, `order_by` and `cursor` are not asked here: the store judges the kind and the type on the entry as its reader is shown it. SQLite and PostgreSQL read it on an index of the state's `position`, which the schema makes at a writer's open, so no projection is rebuilt for it. An engine that keeps no such read answers `None` (the default), and the store reads `proposals` whole. |
 | `is_member(set, type, key)` | Whether the record is in the object set at the position; false if never put. |
 | `members(set, type)` | The keys of the type's records that are in the object set at the position; empty for a set never put. One read: the store asks it once for a set before it walks a type (a set declared again, a migration, a re-key), where `is_member` for each record would be a statement each on PostgreSQL (lakelands#477). |
-| `applied(id)` | The position `id` was applied at, if that is at or before the view's position, for an event the log holds: the first position marked for it. PostgreSQL answers from an index on the log's `id`: the least position holding it, at or before the view's position and no further than the projection had folded in the same snapshot, so after a `clear` none until the refold reaches it, as on every engine (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`). |
-| `applied_many(ids)` | `applied` for many ids: one answer an id, in their order, an id asked twice answered twice. Provided, its default asks `applied` once an id; an engine answers them in one read, PostgreSQL in one statement over the log's index on `id`, since an ingest window asks every id it judges in one call (lakelands#1036). |
+| `applied(id)` | The position `id` was applied at, if that is at or before the view's position, for an event the log holds: the first position marked for it. PostgreSQL answers from the key of `ids (id, at)`: the least position holding it, at or before the view's position and no further than the projection had folded in the same snapshot, so after a `clear` none until the refold reaches it, as on every engine (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`). |
+| `applied_many(ids)` | `applied` for many ids: one answer an id, in their order, an id asked twice answered twice. Provided, its default asks `applied` once an id; an engine answers them in one read, PostgreSQL in one statement over the key of `ids`, since an ingest window asks every id it judges in one call (lakelands#1036). |
 | `matching(filter, from, through, limit)` | The positions in `[from, through]`, none past the view's position, whose applied events `filter` admits by the index `mark_applied` kept (`lakelands_core::feed::admits`), in order, each once, at most `limit`, and the last position decided: the last answered when `limit` is reached, else `through` or the view's position, or earlier where the engine bounds its work, and never past what the projection had folded where the index is read, in the same snapshot: a view taken before a rebuild's `clear` decides only what the refold has reached, and nothing (`through` none) where it has not reached `from`. An engine seeks a filter by its keys, else its types, else its kinds (`lakelands_core::feed::seek`), one ordered range a value, and checks the rest on each entry; one that checks a kind on every entry of a type decides at most `lakelands_core::feed::WINDOW` (65 536) positions at a time. |
 | `of_source(source, from, through, limit)` | The positions in `[from, through]` whose applied events are of `source`, by the same index, decided as `matching` decides them: in order, each once, at most `limit`, never past the view's position nor past what the projection had folded where the index is read. Forgetting a source reads its events by it, and walks the log from where it decides nothing (`docs/decisions/058-a-source-may-be-forgotten.md`). |
 | `output(seam, input)` | The recorded output valid at the position, if any, with the position it was recorded at: the latest recorded for that seam and input at or before it. The fold checks a fill that names an output by `output_at` against that position (`docs/decisions/053-a-recorded-output-is-recorded-once.md`). |

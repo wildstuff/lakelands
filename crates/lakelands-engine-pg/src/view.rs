@@ -138,14 +138,19 @@ fn records_after_sql(records: &str, head: bool, after: bool, narrow: bool) -> St
 }
 
 /// The statement of [`Read::count_in_force`]: the records of `$1` in force
-/// at `$2`, under the two flags `$3` and `$4`. A state holds a flag only
-/// where it is set.
+/// at `$2`, under the two flags `$3` and `$4`, read from the `flags`
+/// column ([`projection::flags`]). At the head a walk of the heads alone,
+/// which hold their states' flags; earlier, of the states in force.
 fn count_in_force_sql(records: &str, head: bool) -> String {
+    let (from, f) = match head {
+        true => (format!("{records}_head h WHERE h.since <= $2 AND"), "h"),
+        false => (format!("{} WHERE", in_force_sql(records, false)), "r"),
+    };
     format!(
-        "SELECT COUNT(*) FROM {} WHERE h.ty = $1 \
-         AND ($3 OR (r.state::jsonb -> 'retired') IS NULL) \
-         AND ($4 OR (r.state::jsonb -> 'restricted') IS NULL)",
-        in_force_sql(records, head)
+        "SELECT COUNT(*) FROM {from} h.ty = $1 \
+         AND ($3 OR {f}.flags & {retired} = 0) AND ($4 OR {f}.flags & {held} = 0)",
+        retired = projection::RETIRED,
+        held = projection::HELD,
     )
 }
 
@@ -200,7 +205,9 @@ struct Few {
 
 /// The bound a page in `dir` continues after, the sort key `$k` and the
 /// key `$key`, as a condition on the order index's row `s`, and that
-/// direction's order.
+/// direction's order. A page down walks the ascending index backward, so
+/// its bound holds `s.sort_key <= $k` beside the `OR`: the index's range
+/// starts there, and only a tie is then sorted by key.
 fn after_and_order(dir: Direction, k: u8, key: u8) -> (String, &'static str) {
     match dir {
         Direction::Asc => (
@@ -209,7 +216,8 @@ fn after_and_order(dir: Direction, k: u8, key: u8) -> (String, &'static str) {
         ),
         Direction::Desc => (
             format!(
-                "AND (s.sort_key < ${k} OR (s.sort_key = ${k} AND s.key COLLATE \"C\" > ${key}))"
+                "AND s.sort_key <= ${k} \
+                 AND (s.sort_key < ${k} OR (s.sort_key = ${k} AND s.key COLLATE \"C\" > ${key}))"
             ),
             "s.sort_key DESC, s.key COLLATE \"C\"",
         ),
@@ -241,7 +249,8 @@ fn sorted_after_sql(
         Holders::All => format!("{sorted} s WHERE"),
         Holders::Many(..) => format!(
             "{sorted} s WHERE EXISTS (SELECT 1 FROM {text} t \
-             WHERE t.ty = $1 AND t.field = $4 AND md5(t.value) = md5($5) AND t.key = s.key) AND"
+             WHERE t.ty = $1 AND t.field = $4 AND md5(t.value) = md5($5) \
+             AND t.key COLLATE \"C\" = s.key) AND"
         ),
         Holders::Few(..) => return few_sql(tables, dir, seek),
     };
@@ -502,7 +511,7 @@ impl Read<'_> {
 
     /// How many records of a type are in force at the view's position, the
     /// retired and the restricted ones only when asked, their flags read
-    /// from the stored state.
+    /// from the column beside the stored state.
     fn count_in_force(&mut self, ty: &TypeName, retired: bool, restricted: bool) -> Result<u64> {
         let query = count_in_force_sql(&self.names.t("records"), self.head);
         let counted: Vec<i64> = self
@@ -684,8 +693,8 @@ impl Read<'_> {
 
     /// At most `n` head records of a type with a row in the order index for
     /// `order`'s field, with their sort keys, in the index's order for its
-    /// direction, strictly after `from`: a seek into `sort_index_asc` or
-    /// `sort_index_desc`.
+    /// direction, strictly after `from`: a seek into `sort_index_asc`, read
+    /// backward for a page down.
     fn sorted_after(
         &mut self,
         ty: &TypeName,
@@ -1395,8 +1404,8 @@ impl ProjectionView for PgView<'_> {
 
     fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
         // One statement for every id: a round trip an id is most of an
-        // ingest window's time on a server. The log's index on `id`
-        // answers it: the least position holding the id, at or before the
+        // ingest window's time on a server. The `ids` table's key answers
+        // it: the least position holding the id, at or before the
         // view's and no further than the projection had folded in the
         // same snapshot, so none after a `clear` until the refold reaches
         // it. An id not of its form is held by no log this build keeps.
@@ -1407,10 +1416,10 @@ impl ProjectionView for PgView<'_> {
             .collect();
         self.single(vec![None; ids.len()], |r| {
             let query = format!(
-                "SELECT i, (SELECT min(position) FROM {log} WHERE id = {id} AND position <= \
+                "SELECT i, (SELECT min(at) FROM {ids} WHERE id = {id} AND at <= \
                  least($2, coalesce((SELECT n FROM {meta} WHERE k = 'folded'), -1))) \
                  FROM unnest($1::text[]) AS i",
-                log = r.names.t("log"),
+                ids = r.names.t("ids"),
                 id = Names::kept("i"),
                 meta = r.names.t("meta"),
             );

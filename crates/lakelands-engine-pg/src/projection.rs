@@ -83,7 +83,7 @@ pub(crate) struct Names {
 
 /// The tables of the log and the lease, which a scratch reads in the
 /// lake's schema.
-const LOG_TABLES: [&str; 4] = ["lease", "segments", "log", "frames"];
+const LOG_TABLES: [&str; 4] = ["lease", "segments", "log", "ids"];
 
 impl Names {
     /// The tables of the lake `target` names.
@@ -103,13 +103,14 @@ impl Names {
         }
     }
 
-    /// `column` of `log`, `id`, `prev` or `hash` (perhaps qualified), as
+    /// `column` of `log` or `ids`, `id`, `prev` or `hash` (perhaps qualified), as
     /// SQL reads it: the hex digits its bytes spell.
     pub(crate) fn hex(column: &str) -> String {
         format!("encode({column}::bytea, 'hex')")
     }
 
-    /// `digits`, an expression of hex digits, as a column of `log` keeps it.
+    /// `digits`, an expression of hex digits, as a column of `log` or `ids`
+    /// keeps it.
     pub(crate) fn kept(digits: &str) -> String {
         format!("decode({digits}, 'hex')")
     }
@@ -179,7 +180,7 @@ CREATE SCHEMA IF NOT EXISTS {s};
 CREATE INDEX IF NOT EXISTS declarations_since ON {s}.declarations (since);
 CREATE TABLE IF NOT EXISTS {s}.records (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, since BIGINT NOT NULL,
-    state TEXT NOT NULL,
+    state TEXT NOT NULL, flags SMALLINT NOT NULL,
     PRIMARY KEY (ty, key, since)
 ){pt};
 CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since, key);
@@ -223,7 +224,6 @@ CREATE TABLE IF NOT EXISTS {s}.text_index (
 ){pt};
 CREATE UNIQUE INDEX IF NOT EXISTS text_index_value
     ON {s}.text_index (ty, field, md5(value), key COLLATE \"C\");
-CREATE INDEX IF NOT EXISTS text_index_key ON {s}.text_index (ty, key);
 CREATE TABLE IF NOT EXISTS {s}.lookup_fields (
     ty TEXT NOT NULL, field TEXT NOT NULL, PRIMARY KEY (ty, field)
 ){pt};
@@ -243,8 +243,6 @@ CREATE TABLE IF NOT EXISTS {s}.sort_index (
     PRIMARY KEY (ty, key, field)
 ){pt};
 CREATE INDEX IF NOT EXISTS sort_index_asc ON {s}.sort_index (ty, field, sort_key, key COLLATE \"C\");
-CREATE INDEX IF NOT EXISTS sort_index_desc
-    ON {s}.sort_index (ty, field, sort_key DESC, key COLLATE \"C\");
 CREATE TABLE IF NOT EXISTS {s}.graphs (
     ty TEXT NOT NULL, field TEXT NOT NULL, class TEXT NOT NULL, dims INT NOT NULL,
     gen BIGINT, next BIGINT, stale BIGINT,
@@ -275,9 +273,9 @@ CREATE INDEX IF NOT EXISTS vectors_head ON {s}.vectors (ty, field, key) WHERE un
 
     /// The statements that create the log's tables and the lease's, if
     /// absent, in the lake's schema; none for a scratch, which reads them
-    /// there. A table a later build adds to the log (`frames`) is made by
-    /// the first writer's open of this build, by `clear`, and by the swap
-    /// of a rebuild (`scratch.rs`).
+    /// there. A table a later build adds to the log is made by the first
+    /// writer's open of this build, by `clear`, and by the swap of a
+    /// rebuild (`scratch.rs`).
     pub(crate) fn log_sql(&self) -> String {
         if self.log.is_some() {
             return String::new();
@@ -290,16 +288,14 @@ CREATE INDEX IF NOT EXISTS vectors_head ON {s}.vectors (ty, field, key) WHERE un
     fence BIGINT NOT NULL, holder TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS {s}.segments (
-    first BIGINT PRIMARY KEY, digest TEXT
+    first BIGINT PRIMARY KEY, digest TEXT, running BYTEA
 );
 CREATE TABLE IF NOT EXISTS {s}.log (
-    position BIGINT PRIMARY KEY, segment BIGINT NOT NULL, fence BIGINT NOT NULL,
-    id BYTEA NOT NULL, prev BYTEA NOT NULL, hash BYTEA NOT NULL, bytes BYTEA NOT NULL
+    position BIGINT PRIMARY KEY, last BIGINT NOT NULL, prev BYTEA NOT NULL,
+    hash BYTEA NOT NULL, bytes BYTEA STORAGE EXTERNAL NOT NULL, kept BYTEA
 );
-CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
-CREATE INDEX IF NOT EXISTS log_id ON {s}.log (id);
-CREATE TABLE IF NOT EXISTS {s}.frames (
-    first BIGINT PRIMARY KEY, events INT NOT NULL, bytes BYTEA NOT NULL
+CREATE TABLE IF NOT EXISTS {s}.ids (
+    id BYTEA NOT NULL, at BIGINT NOT NULL, PRIMARY KEY (id, at)
 );"
         )
     }
@@ -319,9 +315,14 @@ fn heads_sql(s: &str, pt: &str) -> String {
             });
             format!(
                 "CREATE TABLE IF NOT EXISTS {s}.{t}_head ({columns}, since BIGINT NOT NULL, \
-                 PRIMARY KEY ({ident})) WITH (fillfactor = 70){pt};\n",
+                 {flags}PRIMARY KEY ({ident})) WITH (fillfactor = 70){pt};\n",
                 t = h.table,
                 ident = h.ident.join(", "),
+                flags = if h.flags {
+                    "flags SMALLINT NOT NULL, "
+                } else {
+                    ""
+                },
             )
         })
         .collect()
@@ -332,7 +333,7 @@ fn heads_sql(s: &str, pt: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 10;
+pub(crate) const LAYOUT: u64 = 11;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
@@ -341,7 +342,7 @@ pub(crate) const LAKE_TABLES: [&str; 26] = [
     "lease",
     "segments",
     "log",
-    "frames",
+    "ids",
     "declarations",
     "records",
     "proposals",
@@ -369,13 +370,26 @@ pub(crate) const LAKE_TABLES: [&str; 26] = [
 /// the lease and the lake's name stay.
 pub(crate) const PROJECTION_TABLES: &[&str] = LAKE_TABLES.split_at(5).1;
 
-/// The projection's tables an earlier layout had and this one does not:
-/// a layout that drops or renames a table names the old one here, so a
-/// lake that layout made still opens to be rebuilt, and the rebuild's
-/// `clear` or swap drops it (`scratch.rs`).
-/// `applied` went with 0.21.0: an applied id is answered from the log's
-/// index on `id` (`view.rs`).
+/// The projection's tables an earlier build had and this one does not,
+/// which a rebuild's `clear` or swap drops where it meets them
+/// (`scratch.rs`). The list names what a lake this format can carry:
+/// `frames` went with the log this format reads, and a lake that holds
+/// one is not opened at all, so it is not named here.
+/// `applied` went with 0.21.0: an applied id is answered from the key of
+/// `ids` (`view.rs`).
 pub(crate) const RETIRED_TABLES: &[&str] = &["applied"];
+
+/// A record state's flags as `records` and `records_head` hold them, so
+/// that a count and a vector read test a column, not the state's JSON:
+/// [`RETIRED`] where it is retired, [`HELD`] where it is restricted.
+pub(crate) fn flags(r: &StoredRecord) -> i16 {
+    (if r.retired { RETIRED } else { 0 }) | (if r.restricted { HELD } else { 0 })
+}
+
+/// The flag of a retired state.
+pub(crate) const RETIRED: i16 = 1;
+/// The flag of a restricted state.
+pub(crate) const HELD: i16 = 2;
 
 /// A history table: its name and the columns naming one thing in it.
 pub(crate) struct History {
@@ -385,10 +399,15 @@ pub(crate) struct History {
     pub(crate) state: &'static str,
     /// Whether it keeps a heads table, for reads at the head.
     head: bool,
+    /// Whether its rows and heads hold a state's [`flags`] beside it.
+    flags: bool,
 }
 
 pub(crate) const DECLARATIONS: History = History::new("declarations", &["ident"], "text", true);
-pub(crate) const RECORDS: History = History::new("records", &["ty", "key"], "text", true);
+pub(crate) const RECORDS: History = History {
+    flags: true,
+    ..History::new("records", &["ty", "key"], "text", true)
+};
 pub(crate) const PROPOSALS: History = History::new("proposals", &["id"], "text", false);
 pub(crate) const QUARANTINED: History =
     History::new("quarantined", &["source", "delivery", "ix"], "text", false);
@@ -418,6 +437,7 @@ impl History {
             ident,
             state,
             head,
+            flags: false,
         }
     }
 
@@ -459,9 +479,13 @@ impl History {
     /// there is replaced.
     fn move_heads(&self, names: &Names, rows: &str) -> String {
         let columns = self.ident.join(", ");
+        let (flags, set) = match self.flags {
+            true => (", flags", ", flags = EXCLUDED.flags"),
+            false => ("", ""),
+        };
         format!(
-            "INSERT INTO {}_head AS h ({columns}, since) {rows} \
-             ON CONFLICT ({columns}) DO UPDATE SET since = EXCLUDED.since \
+            "INSERT INTO {}_head AS h ({columns}, since{flags}) {rows} \
+             ON CONFLICT ({columns}) DO UPDATE SET since = EXCLUDED.since{set} \
              WHERE h.since <= EXCLUDED.since",
             names.t(self.table)
         )
@@ -479,6 +503,7 @@ impl History {
         since: Position,
         state: &(dyn ToSql + Sync),
     ) -> Result<()> {
+        debug_assert!(!self.flags, "a history with flags is put with put_many");
         let n = self.ident.len();
         let at = since.0 as i64;
         let mut args: Vec<&(dyn ToSql + Sync)> = ident.to_vec();
@@ -507,12 +532,14 @@ impl History {
     ///
     /// Answers the things whose latest state is now a buffered one, each
     /// with whether the history held a state of it before; nothing where
-    /// the history keeps no heads.
+    /// the history keeps no heads. A history that keeps [`flags`] is
+    /// handed each row's in `flags`, in the rows' order; any other none.
     pub(crate) fn put_many<S: ToSql + Sync>(
         &self,
         db: &mut Db,
         names: &Names,
         rows: &BTreeMap<(Vec<String>, i64), S>,
+        flags: &[i16],
     ) -> Result<Vec<(Vec<String>, bool)>> {
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -535,32 +562,41 @@ impl History {
         args.push(&since);
         args.push(&states);
         let columns = self.ident.join(", ");
-        let arrays: Vec<String> = (1..=n).map(|i| format!("${i}::text[]")).collect();
+        let mut arrays: Vec<String> = (1..=n).map(|i| format!("${i}::text[]")).collect();
+        arrays.push(format!("${}::int8[], ${}::{}[]", n + 1, n + 2, self.state));
+        let (mut put, mut set) = (format!("{columns}, since, state"), "");
+        if self.flags {
+            debug_assert_eq!(flags.len(), rows.len(), "a row's flags beside it");
+            args.push(&flags);
+            arrays.push(format!("${}::int2[]", n + 3));
+            put.push_str(", flags");
+            set = ", flags = EXCLUDED.flags";
+        }
         // An upserted head reads `xmax` 0 when it was inserted: the thing
-        // had no state before.
+        // had no state before. A head takes its thing's latest buffered row.
+        let latest = match self.flags {
+            true => format!(
+                "SELECT DISTINCT ON ({columns}) {columns}, since, flags FROM b \
+                 ORDER BY {columns}, since DESC"
+            ),
+            false => format!("SELECT {columns}, max(since) FROM b GROUP BY {columns}"),
+        };
         let heads = match self.head {
             true => format!(
                 "{} RETURNING {columns}, xmax <> 0",
-                self.move_heads(
-                    names,
-                    &format!("SELECT {columns}, max(since) FROM b GROUP BY {columns}")
-                )
+                self.move_heads(names, &latest)
             ),
             false => "SELECT 1 WHERE false".to_owned(),
         };
         let answer = db.query(
             &format!(
                 "WITH b AS (\
-                   SELECT * FROM unnest({arrays}, ${s}::int8[], ${v}::{ty}[]) \
-                   AS b({columns}, since, state)\
+                   SELECT * FROM unnest({arrays}) AS b({put})\
                  ), put AS (\
-                   INSERT INTO {table} ({columns}, since, state) SELECT * FROM b \
-                   ON CONFLICT ({columns}, since) DO UPDATE SET state = EXCLUDED.state\
+                   INSERT INTO {table} ({put}) SELECT * FROM b \
+                   ON CONFLICT ({columns}, since) DO UPDATE SET state = EXCLUDED.state{set}\
                  ) {heads}",
                 arrays = arrays.join(", "),
-                s = n + 1,
-                v = n + 2,
-                ty = self.state,
                 table = names.t(self.table),
             ),
             &args,
@@ -1385,9 +1421,14 @@ type SortRows<'r> = (Vec<&'r str>, Vec<String>, Vec<&'r str>, Vec<Vec<u8>>);
 /// holds a row of it.
 ///
 /// A row stays only when the new rows hold it column for column, and no
-/// column of `text_index`, `full_text` or `sort_index` can be null, so `=`
-/// compares them whole. A row of `full_text` or `sort_index` that stayed is
-/// passed over by its key, not by a conflict: most of their rows are new
+/// column of `full_text` or `sort_index` can be null, so `=` compares them
+/// whole. `text_index` keeps no index by key: its old rows went before the
+/// heads moved, sought by value ([`Buffer::unindex_texts`]), and a state
+/// indexed again under a new declaration keeps the rows it held, which the
+/// insert passes over by conflict; a field the declaration no longer looks
+/// up keeps its rows until its value changes, and no read seeks them. A
+/// row of `full_text` or `sort_index` that stayed is passed over by its
+/// key, not by a conflict: most of their rows are new
 /// (a declaration drops a type's `sort_index` rows whole), and a plain
 /// insert is the cheaper one. `edges` has no key (a record may hold one
 /// link twice), so its rows go and come as before.
@@ -1457,7 +1498,7 @@ pub(crate) fn index_records(
         // statement names `sort_index` only when a record's type has one.
         let sorted = records.iter().any(|(head, _)| !head.sorted.is_empty());
         let (tys, keys): (Vec<&str>, Vec<&str>) = stale.iter().copied().unzip();
-        let mut params: Vec<&(dyn ToSql + Sync)> = vec![&tys, &keys, t1, t2, t3, t4, f1, f2, f3];
+        let mut params: Vec<&(dyn ToSql + Sync)> = vec![&tys, &keys, f1, f2, f3];
         params.extend(sort.iter().filter(|_| sorted));
         // The rows of the stale records in `table`, but for those among the
         // new rows `new`, which have `columns`.
@@ -1472,7 +1513,7 @@ pub(crate) fn index_records(
             )
         };
         let z = if sorted {
-            let new = "$10::text[], $11::text[], $12::text[], $13::bytea[]";
+            let new = "$6::text[], $7::text[], $8::text[], $9::bytea[]";
             let columns = ["ty", "field", "key", "sort_key"];
             format!(", z AS ({})", gone("sort_index", new, &columns))
         } else {
@@ -1481,16 +1522,11 @@ pub(crate) fn index_records(
         db.execute(
             &format!(
                 "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
-                 x AS ({x}), y AS ({y}){z} \
+                 y AS ({y}){z} \
                  DELETE FROM {edges} t USING d WHERE t.src_ty = d.ty AND t.src_key = d.key",
-                x = gone(
-                    "text_index",
-                    "$3::text[], $4::text[], $5::text[], $6::text[]",
-                    &["ty", "field", "value", "key"]
-                ),
                 y = gone(
                     "full_text",
-                    "$7::text[], $8::text[], $9::text[]",
+                    "$3::text[], $4::text[], $5::text[]",
                     &["ty", "token", "key"]
                 ),
                 edges = names.t("edges"),
@@ -1888,6 +1924,62 @@ impl Buffer {
         }
     }
 
+    /// Delete the exact-text rows of the head states the buffer drops or
+    /// moves its records' heads past, in one statement before any head
+    /// moves: each row sought by `text_index_value` with a value its head
+    /// state holds, so no index by key is kept for it. A row the record's
+    /// latest buffered state holds again stays, and is not written again
+    /// ([`index_records`]). A head a buffered state does not move past
+    /// keeps its rows.
+    fn unindex_texts(&self, db: &mut Db, names: &Names) -> Result<()> {
+        let mut moved: BTreeMap<(&str, &str), i64> = BTreeMap::new();
+        for (ident, at) in self.records.keys() {
+            moved.insert((&ident[0], &ident[1]), *at);
+        }
+        for (ty, key) in &self.dropped {
+            moved.insert((ty, key), i64::MAX);
+        }
+        if moved.is_empty() {
+            return Ok(());
+        }
+        let mut stay: [Vec<&str>; 4] = Default::default();
+        for ((ident, at), r) in &self.records {
+            let (ty, key) = (ident[0].as_str(), ident[1].as_str());
+            if moved.get(&(ty, key)) != Some(at) {
+                continue;
+            }
+            for (field, value) in &r.fields {
+                if let Some(value) = value.as_str() {
+                    for (column, v) in stay.iter_mut().zip([ty, field.as_str(), value, key]) {
+                        column.push(v);
+                    }
+                }
+            }
+        }
+        let ((tys, keys), since): ((Vec<&str>, Vec<&str>), Vec<i64>) = moved.into_iter().unzip();
+        let [s1, s2, s3, s4] = &stay;
+        db.execute(
+            &format!(
+                "WITH o AS (SELECT h.ty, f.key AS field, f.value #>> '{{}}' AS value, \
+                 h.key COLLATE \"C\" AS key \
+                 FROM unnest($1::text[], $2::text[], $3::int8[]) AS k(ty, key, since) \
+                 JOIN {heads} h ON h.ty = k.ty AND h.key = k.key AND h.since <= k.since \
+                 JOIN {records} r ON r.ty = h.ty AND r.key = h.key AND r.since = h.since \
+                 CROSS JOIN LATERAL jsonb_each(r.state::jsonb -> 'fields') f \
+                 WHERE jsonb_typeof(f.value) = 'string' \
+                 EXCEPT SELECT * FROM unnest($4::text[], $5::text[], $6::text[], $7::text[])) \
+                 DELETE FROM {text} t USING o WHERE t.ty = o.ty AND t.field = o.field \
+                 AND md5(t.value) = md5(o.value) AND t.key COLLATE \"C\" = o.key \
+                 AND t.value = o.value",
+                heads = names.t("records_head"),
+                records = names.t("records"),
+                text = names.t("text_index"),
+            ),
+            &[&tys, &keys, &since, s1, s2, s3, s4],
+        )?;
+        Ok(())
+    }
+
     /// Delete the rows of what the buffer dropped, in one statement.
     fn drop_rows(&self, db: &mut Db, names: &Names) -> Result<()> {
         if !self.dropped.is_empty() {
@@ -1908,11 +2000,10 @@ impl Buffer {
                 &format!(
                     "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
                      r AS ({}), h AS ({}), m AS ({} AND t.object_set IN ({sets})), \
-                     x AS ({}), y AS ({}), z AS ({}), v AS ({}) {}",
+                     y AS ({}), z AS ({}), v AS ({}) {}",
                     gone("records", "ty", "key"),
                     gone("records_head", "ty", "key"),
                     gone("members", "ty", "key"),
-                    gone("text_index", "ty", "key"),
                     gone("full_text", "ty", "key"),
                     gone("sort_index", "ty", "key"),
                     gone("vectors", "ty", "key"),
@@ -1961,6 +2052,7 @@ impl Buffer {
         touched: &mut Touched,
         put: u64,
     ) -> Result<u64> {
+        self.unindex_texts(db, names)?;
         self.drop_rows(db, names)?;
         for (ty, _) in &self.dropped {
             touched.erased.insert(TypeName::from(ty.as_str()));
@@ -1992,7 +2084,8 @@ impl Buffer {
                 Ok((k.clone(), state))
             })
             .collect::<Result<_>>()?;
-        let heads = RECORDS.put_many(db, names, &records)?;
+        let flagged: Vec<i16> = self.records.values().map(flags).collect();
+        let heads = RECORDS.put_many(db, names, &records, &flagged)?;
         // A head-only name's key is one row, written over in place, and its
         // head beside it.
         let (table, head) = (names.t("records"), names.t("records_head"));
@@ -2006,10 +2099,12 @@ impl Buffer {
         }
         if !self.heads.is_empty() {
             let (mut tys, mut keys, mut since, mut states) = (vec![], vec![], vec![], vec![]);
+            let mut flagged = vec![];
             for ((ty, key), (at, r)) in &self.heads {
                 tys.push(ty.as_str());
                 keys.push(key.as_str());
                 since.push(*at);
+                flagged.push(r.as_ref().map_or(0, flags));
                 let state = r
                     .as_ref()
                     .map(|r| engines::record_state(r, &BTreeMap::new(), &mut |b| base(b)));
@@ -2024,18 +2119,19 @@ impl Buffer {
             db.execute(
                 &format!(
                     "WITH b AS (SELECT * FROM \
-                     unnest($1::text[], $2::text[], $3::int8[], $4::text[]) AS b(ty, key, since, state) \
-                     WHERE state IS NOT NULL), \
-                     h AS (INSERT INTO {head} (ty, key, since) SELECT ty, key, since FROM b) \
-                     INSERT INTO {table} (ty, key, since, state) SELECT * FROM b"
+                     unnest($1::text[], $2::text[], $3::int8[], $4::text[], $5::int2[]) \
+                     AS b(ty, key, since, state, flags) WHERE state IS NOT NULL), \
+                     h AS (INSERT INTO {head} (ty, key, since, flags) \
+                     SELECT ty, key, since, flags FROM b) \
+                     INSERT INTO {table} (ty, key, since, state, flags) SELECT * FROM b"
                 ),
-                &[&tys, &keys, &since, &states],
+                &[&tys, &keys, &since, &states, &flagged],
             )?;
         }
-        PROPOSALS.put_many(db, names, &self.proposals)?;
-        QUARANTINED.put_many(db, names, &self.quarantined)?;
-        OUTPUTS.put_many(db, names, &self.outputs)?;
-        MEMBERS.put_many(db, names, &self.members)?;
+        PROPOSALS.put_many(db, names, &self.proposals, &[])?;
+        QUARANTINED.put_many(db, names, &self.quarantined, &[])?;
+        OUTPUTS.put_many(db, names, &self.outputs, &[])?;
+        MEMBERS.put_many(db, names, &self.members, &[])?;
         let mut latest = Vec::with_capacity(heads.len());
         let mut settings = Vec::new();
         for (ident, had) in &heads {

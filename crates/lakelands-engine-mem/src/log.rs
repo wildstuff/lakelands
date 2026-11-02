@@ -15,15 +15,17 @@
 //! than any before, so a writer that lost the lease and comes back is
 //! refused by its stale token rather than forking the chain.
 //!
-//! Segments are ranges of the log. Sealing closes the active one,
-//! digests it over its events as restored (each event's canonical bytes
-//! followed by a line feed, `docs/log-format.md` §4.2), and begins the
-//! next with its first events, in one change.
+//! Segments are ranges of the log. The active one's digest runs as its
+//! events are appended: over its events as restored, each event's
+//! canonical bytes followed by a line feed (`docs/log-format.md` §4.2).
+//! Sealing takes it, restoring nothing, and begins the next segment with
+//! its first events, in one change.
 
 use lakelands_api::engine::{CanonicalEvent, Lease};
 use lakelands_api::error::{Case, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::Position;
+use lakelands_core::log::Digesting;
 
 /// One lake's log, lease and segments.
 #[derive(Debug, Default)]
@@ -32,6 +34,8 @@ pub(crate) struct Log {
     events: Vec<CanonicalEvent>,
     /// The sealed segments, oldest first.
     sealed: Vec<SegmentDigest>,
+    /// The active segment's digest, over its events so far.
+    digesting: Digesting,
     /// The lease, while someone holds it.
     lease: Option<Lease>,
     /// The greatest fence ever handed out; 0 before the first take.
@@ -134,6 +138,7 @@ impl Log {
         lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
         lakelands_core::log::frame_fault(events)?;
         self.events.extend_from_slice(events);
+        self.digesting.add(events);
         Ok(())
     }
 
@@ -159,13 +164,12 @@ impl Log {
     ) -> Result<Option<SegmentDigest>> {
         self.check_lease(lease)?;
         let from = self.sealed.last().map_or(0, |s| s.last.0 + 1);
-        let active = &self.events[usize::try_from(from)
-            .unwrap_or(usize::MAX)
-            .min(self.events.len())..];
-        let Some(last) = active.last() else {
+        let Some(last) = self.events.last().filter(|e| e.position.0 >= from) else {
             return Ok(None);
         };
-        let digest = lakelands_core::log::digest_of(active)
+        let digest = self
+            .digesting
+            .digest()
             .map_err(|(at, flaw)| lakelands_core::damaged(Part::Log, Some(at), flaw))?;
         let segment = SegmentDigest {
             first: Position(from),
@@ -173,10 +177,14 @@ impl Log {
             digest,
         };
         let events = lakelands_core::engines::first_of_next(first, &segment)?;
-        if imported {
-            self.import(lease, &events)?;
-        } else {
-            self.append(lease, &events)?;
+        let running = std::mem::take(&mut self.digesting);
+        let added = match imported {
+            true => self.import(lease, &events),
+            false => self.append(lease, &events),
+        };
+        if let Err(e) = added {
+            self.digesting = running;
+            return Err(e);
         }
         self.sealed.push(segment.clone());
         Ok(Some(segment))

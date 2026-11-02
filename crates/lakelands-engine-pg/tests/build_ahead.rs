@@ -29,7 +29,7 @@ async fn open(location: &Location, mode: OpenMode) -> lakelands_api::Result<Arc<
     lakelands_store::open(location.clone(), seams(), mode).await
 }
 
-/// Hold every table of `schema` but the log's, its frames' and its meta
+/// Hold every table of `schema` but the log's, its ids' and its meta
 /// locked, the lease's too, in one session, until the sender returned is
 /// dropped.
 fn hold(url: &str, schema: &str) -> mpsc::Sender<()> {
@@ -42,7 +42,7 @@ fn hold(url: &str, schema: &str) -> mpsc::Sender<()> {
         let tables = tx
             .query(
                 "SELECT tablename FROM pg_tables WHERE schemaname = $1 \
-                 AND tablename NOT IN ('log', 'frames', 'meta', 'segments')",
+                 AND tablename NOT IN ('log', 'ids', 'meta', 'segments')",
                 &[&schema],
             )
             .unwrap();

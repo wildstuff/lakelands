@@ -733,3 +733,41 @@ fn a_file_of_lines_and_blocks_restores_every_event_and_every_break_is_refused() 
         })
     );
 }
+
+/// A running digest's state is taken up at the byte it was left at, and
+/// one written by another release is refused, so a seal digests its
+/// segment from the rows rather than trust a state it would read wrongly.
+#[test]
+fn a_running_digest_round_trips_through_its_tagged_state() {
+    let (_, events) = append(FORMAT, 0, &"0".repeat(64), 4);
+    let mut digesting = Digesting::default();
+    digesting.add(&events[..2]);
+    let state = digesting.state().expect("a state");
+    let mut carried = Digesting::of_state(&state).expect("the state reads back");
+    carried.add(&events[2..]);
+    assert_eq!(carried.digest(), digest_of(&events));
+    assert!(
+        Digesting::of_state(&state[1..]).is_none(),
+        "the hash's bytes untagged"
+    );
+    let mut other = state.clone();
+    other[0] = 2;
+    assert!(
+        Digesting::of_state(&other).is_none(),
+        "another version's state"
+    );
+    assert!(
+        Digesting::of_state(&state[..state.len() - 1]).is_none(),
+        "a state too short"
+    );
+}
+
+#[test]
+fn a_running_digest_whose_event_did_not_restore_keeps_no_state() {
+    let (_, mut events) = append(FORMAT, 0, &"0".repeat(64), 2);
+    events[1].bytes = b"not an event".to_vec();
+    let mut digesting = Digesting::default();
+    digesting.add(&events);
+    assert!(digesting.digest().is_err());
+    assert!(digesting.state().is_none());
+}
