@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Case;
 use crate::expr::Condition;
-use crate::id::{Cursor, FieldName, ParamName, Position, RecordKey};
+use crate::id::{Cursor, FieldName, ParamName, Position, RecordKey, TypeName};
 use crate::record::{Record, Value};
 use crate::time::Timestamp;
 
@@ -333,6 +333,23 @@ pub struct After {
     pub key: RecordKey,
 }
 
+/// One act that thinned a type past a horizon, as a read names what it
+/// can no longer answer (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ThinnedAct {
+    /// The type the act took records of.
+    pub ty: TypeName,
+    /// The field of instants or dates the act judged.
+    pub by: FieldName,
+    /// The horizon: the act took the records whose field was certainly
+    /// before it.
+    pub before: Timestamp,
+    /// The last position the act had got through.
+    pub through: Position,
+    /// How many records it had taken.
+    pub gone: u64,
+}
+
 /// The answer to `find`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape", rename_all = "snake_case")]
@@ -352,11 +369,28 @@ pub enum Found {
         /// the same position.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retired: Option<u64>,
+        /// The acts that thinned the type this page answers, oldest first;
+        /// for a view, those on its sources.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        thinned: Vec<ThinnedAct>,
+        /// How many of the type's or the view's groups a read at an
+        /// earlier position could not answer because they are stranded,
+        /// and so answer at the head alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stranded: Option<u64>,
     },
     /// Aggregated groups.
     Groups {
         /// One row per group.
         rows: Vec<Group>,
+        /// The acts that thinned the type or the view's sources, oldest
+        /// first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        thinned: Vec<ThinnedAct>,
+        /// How many groups the read could not answer because they are
+        /// stranded, and so answer at the head alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stranded: Option<u64>,
     },
 }
 
@@ -367,6 +401,10 @@ pub struct Group {
     pub by: BTreeMap<FieldName, Value>,
     /// The measures' results.
     pub values: BTreeMap<FieldName, Value>,
+    /// Whether the group is stranded: it held a member the act thinned,
+    /// so it answers its kept record and never a computation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stranded: bool,
 }
 
 /// `get`: one record by key.

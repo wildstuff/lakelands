@@ -149,6 +149,7 @@ mod stored_form;
 mod stored_vectors;
 mod streaming;
 mod taken_lease;
+mod thin;
 mod trigger_firing;
 mod triggers;
 mod upgrade;
@@ -1126,6 +1127,7 @@ pub const ALL: &[Check] = &[
     value_types::CONSTRAINT_AND_FORMAT,
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,
+    thin::THIN_REFUSALS,
     reactive_depth::TOO_DEEP,
     read_your_writes::REACHES,
     read_your_writes::REACHES_UNLEASED,

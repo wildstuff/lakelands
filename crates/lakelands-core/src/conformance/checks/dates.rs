@@ -172,7 +172,7 @@ async fn a_date_is_read_as_its_day_and_compares_as_its_midnight(store: Store) ->
     };
     let found = l.cat.find(&l.own, &"inv".into(), least).await;
     let groups = match found.must("the least and the greatest `due`")?.data {
-        lakelands_api::Found::Groups { rows } => rows,
+        lakelands_api::Found::Groups { rows, .. } => rows,
         other => return Err(Failure::new(format!("an aggregate answered {other:?}"))),
     };
     let values: Vec<_> = groups.iter().map(|g| json!(g.values)).collect();

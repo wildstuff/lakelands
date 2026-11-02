@@ -273,7 +273,7 @@ async fn over(
         ..Find::default()
     };
     let found = cat.find(&who, &"invoice".into(), find).await.unwrap().data;
-    let Found::Groups { rows } = found else {
+    let Found::Groups { rows, .. } = found else {
         panic!("an aggregate find answers groups, not {found:?}");
     };
     let mut out = BTreeMap::new();

@@ -122,7 +122,7 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
             vec![GroupKey::Field("overdue".into())];
         by.at = read_at(as_of);
         let groups = c.find(own, &"invoice".into(), by).await.map(|g| g.data);
-        let Ok(Found::Groups { rows }) = groups else {
+        let Ok(Found::Groups { rows, .. }) = groups else {
             return Err(Failure::new(format!(
                 "grouping by `overdue` answered {groups:?}"
             )));

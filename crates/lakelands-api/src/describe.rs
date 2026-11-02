@@ -150,6 +150,19 @@ pub struct TypeDescription {
     /// them once, in the lake's `value_types`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub value_types: Vec<ValueTypeDecl>,
+    /// The acts that thinned the type past a horizon, oldest first; for a
+    /// view, those on its sources
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinned: Vec<crate::read::ThinnedAct>,
+    /// How many of the type's or the view's groups are stranded: they
+    /// answer at the head alone.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stranded: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// One field, as the principal may see it: the declaration whole for a

@@ -135,7 +135,10 @@ impl<'a> Reader<'a> {
                     rows: vec![Group {
                         by: BTreeMap::new(),
                         values: values.collect(),
+                        stranded: false,
                     }],
+                    thinned: Vec::new(),
+                    stranded: None,
                 });
             }
             return self.aggregated(&decl, filter.as_ref(), a);
@@ -228,6 +231,8 @@ impl<'a> Reader<'a> {
             next_cursor,
             total,
             retired,
+            thinned: Vec::new(),
+            stranded: None,
         })
     }
 
@@ -383,7 +388,11 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        Ok(Found::Groups { rows: groups })
+        Ok(Found::Groups {
+            rows: groups,
+            thinned: Vec::new(),
+            stranded: None,
+        })
     }
 
     /// `get`.

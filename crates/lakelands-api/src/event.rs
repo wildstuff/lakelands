@@ -288,6 +288,24 @@ pub enum EventBody {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         apart: Vec<crate::id::KeyId>,
     },
+    /// One part of a thinning act: the records of a type a host thinned
+    /// past a horizon, each named by its key. The first part begins the
+    /// act and carries the horizon; a later part carries the same horizon
+    /// and the keys it takes. The log keeps every event, and a rebuild
+    /// folds the parts again
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    ValuesThinned {
+        /// The records' type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The field of instants or dates the act judged.
+        by: FieldName,
+        /// The horizon: every record whose field is certainly before it,
+        /// and whose key the act had not taken, is taken.
+        before: Timestamp,
+        /// The keys this part takes.
+        keys: Vec<RecordKey>,
+    },
     /// A record was retired.
     RecordRetired {
         /// The record's type.
@@ -536,6 +554,7 @@ kinds! {
     Checkpoint => "checkpoint",
     RecordQuarantined => "record_quarantined",
     QuarantineClosed => "quarantine_closed",
+    ValuesThinned => "values_thinned",
 }
 
 /// What kind of change fired a trigger (lakelands#1217): the write at the

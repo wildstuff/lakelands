@@ -568,7 +568,11 @@ pub fn answer(grouping: Grouping, agg: &Aggregate) -> Answer<Vec<Group>> {
     let group = |(by, folds): (Row, Folds)| -> Answer<Group> {
         // A measure of `find` names a field; no setting is read.
         let values = measures(&folds, &by, &calls, Row::new(), None, now)?;
-        Ok(Group { by, values })
+        Ok(Group {
+            by,
+            values,
+            stranded: false,
+        })
     };
     grouped.into_iter().map(group).collect()
 }

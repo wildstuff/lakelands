@@ -233,7 +233,7 @@ async fn a_measure_its_field_would_not_take_written_refuses_the_read(store: Stor
     find.aggregate = serde_json::from_value(by).ok();
     find.at = find_at(Some(then)).at;
     let groups = read("entry", find).await.must("aggregating `entry`")?.data;
-    let Found::Groups { rows } = &groups else {
+    let Found::Groups { rows, .. } = &groups else {
         return Err(Failure::new(format!(
             "an aggregate answers groups: {groups:?}"
         )));

@@ -91,6 +91,10 @@ pub struct Record {
     /// Fields that hold a value this principal may not read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masked: Vec<FieldName>,
+    /// Whether this is a kept view's record for a group that a thinning
+    /// stranded: the group answers its kept record, and at the head alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stranded: bool,
     /// Per-field provenance, filled when the read asked `with: meta`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub meta: BTreeMap<FieldName, FieldMeta>,

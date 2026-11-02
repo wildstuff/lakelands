@@ -2155,6 +2155,42 @@ pub struct RemovedField {
     pub shredded: u64,
 }
 
+/// A thinning act's cut: the field of instants or dates the host judges,
+/// and the horizon past which the records are taken
+/// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Thin {
+    /// The field of instants or dates.
+    pub by: FieldName,
+    /// The horizon: every record whose field is certainly before it, and
+    /// whose key the act had not taken, is taken.
+    pub before: Timestamp,
+}
+
+/// What `LakeStore::thin_values` took, or what
+/// `LakeStore::thin_values_preflight` says it would
+/// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). It
+/// repeats no key: the log's parts name them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThinReport {
+    /// The type the act took records of.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The field of instants or dates it judged.
+    pub by: FieldName,
+    /// The horizon.
+    pub before: Timestamp,
+    /// The records it took, or would take.
+    pub records: u64,
+    /// The last position the act had got through.
+    pub through: Position,
+    /// The projection's storage in bytes before and after the act's
+    /// reclaim, where the engine measures it; absent on a preflight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaimed: Option<CompactReport>,
+}
+
 /// What `LakeStore::remove_values` took back, or what
 /// `LakeStore::remove_values_preflight` says it would
 /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).

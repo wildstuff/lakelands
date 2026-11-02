@@ -1630,6 +1630,52 @@ catalog! {
         /// A field's weight out of range.
         WeightRange { field: FieldName } => "the weight of `{field}` must be above 0 and at most 1000000",
 
+        // ---- thinning
+        /// A thinning act's field that holds neither an instant nor a
+        /// date.
+        ThinBy {
+            #[serde(rename = "type")]
+            ty: TypeName,
+            field: FieldName,
+        } => "`{ty}` cannot be thinned by `{field}`: the field is neither of instants nor of dates",
+        /// A record a thinning act took: a write, an ingest, a retirement
+        /// or a read of its key.
+        Thinned {
+            #[serde(rename = "type")]
+            ty: TypeName,
+            key: RecordKey,
+            before: Timestamp,
+        } => "`{ty}` `{key}` was thinned before {before}, so its values are out of the projection: it is not written, corrected, retired or read through it, and the log keeps what it held",
+        /// A group a read at an earlier position cannot answer: it held a
+        /// member a thinning took, and a stranded group answers at the
+        /// head alone.
+        StrandedAtHeadOnly {
+            #[serde(rename = "type")]
+            ty: TypeName,
+            position: Position,
+        } => "`{ty}` at position {position} cannot be answered: its group held a member that was thinned, and a stranded group answers at the head alone",
+        /// A view made a kept one over a type whose records a thinning
+        /// took.
+        KeptOverThinned {
+            view: TypeName,
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "`{view}` cannot be kept: records of its source `{ty}` were thinned, and its make would count the live ones alone",
+        /// A thinning that would strand a kept group that is not exact.
+        KeptNotExact {
+            view: TypeName,
+            #[serde(rename = "type")]
+            ty: TypeName,
+            group: RecordKey,
+        } => "the group `{group}` of `{ty}` that `{view}` keeps is not exact, and thinning would strand it: make the view exact first, or thin another way",
+        /// A view made again over a source whose records a thinning took,
+        /// by an event that changes what its stranded groups fold.
+        StrandedMake {
+            view: TypeName,
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "`{view}` cannot be made again over `{ty}`: its stranded groups' records would answer a rule the event no longer states, and the records they were computed from are gone; end the view first",
+
         // ---- writes
         /// A call a verb's executor declined by the host's policy.
         CallDeclined {

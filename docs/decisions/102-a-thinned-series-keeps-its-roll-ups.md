@@ -56,7 +56,7 @@ is a promise of speed.
   `aac038fc` by the seam gate's rule (read); the two new facade methods
   and these four make 100 of 110.
 - **Refusals.** `ThinBy { ty, field }`; `Thinned { ty, key, before }`;
-  `StrandedAtHeadOnly { ty, at }`; `KeptOverThinned { view, ty }`;
+  `StrandedAtHeadOnly { ty, position }`; `KeptOverThinned { view, ty }`;
   `KeptNotExact { view, ty, group }`; `StrandedMake { view, ty }`.
 - **No new limit.** The act reads `part_events`, `part_tail`,
   `page_events` and `order_chunk` as 099 sets them.
@@ -553,3 +553,44 @@ Decided on 2026-11-02 (lakelands#1578): every recommendation below was taken.
   with a horizon.
 - **Not a promise of these bytes or times.** They are reckoned; S7
   measures them on every engine, and the suite holds the behaviour.
+
+## As built
+
+**S1 (lakelands#1695), the kind, the public types and the refusals.**
+Nothing performs the act: a `values_thinned` part is declared, folded to
+its mark and changed nowhere else.
+
+- **The kind joins format 23's list last**, after `quarantine_closed`, so
+  that no kind's stored code moves: `KIND_CODES` gains
+  `values_thinned` as 25. Its variant sits beside `ValuesRemoved` in
+  `EventBody`, where it is read. `LOG_FORMAT_VERSION` and
+  `OLDEST_LOG_FORMAT` stay 23.
+- **The public types**, as this record names them: the selection `Thin`,
+  `ThinReport`, `ThinnedAct`, `stranded` on `Record` and `Group`,
+  `thinned` and `stranded` on both `Found` variants, and on
+  `TypeDescription`. Each new member is omitted from the wire where it
+  is empty or false, so a page or a description with nothing to say
+  reads as it did before.
+- **The six refusals** are in the catalog with their ids and sentences,
+  and `THIN_REFUSALS` is the suite's row for them: every engine runs it,
+  and it fails when an id, a sentence or a name the sentence says
+  drifts. The act's own rows are S5's, S6's and S7's.
+- **`docs/log-format.md` states the kind now**, though the build plan
+  gives the page to S2: `api/tests/contract.rs` holds that every kind in
+  `KINDS` is on the page, so S1 cannot be green without it. The page says
+  the fold's effect and the two tables land with the act.
+- **Two corrections where the tree holds a rule the sketch did not name:**
+  `StrandedAtHeadOnly` takes `position`, not `at`, because the refusals
+  catalog reserves `at` for a `Place`'s position and refuses it as a
+  case's parameter; and the suite's row for the six refusals is S1's, as
+  the issue asks for a row per refusal before any of them is raised.
+- **Compile-necessary arms outside S1's files**, which the issue's
+  ownership list did not name: `ends_a_range` and `reads_a_record` in
+  `lake.rs` (the kind changes no shape, and a fold of it reads the
+  records it takes), and one no-op arm in `lake/fold.rs` (the act's fold
+  is S3's). The pattern updates in the suite and in the store's tests are
+  the new members' rest patterns or their defaults.
+- **Measured**: product 99 980 of the 108 500 base and specification
+  184 149 of the 191 500 base; seam 94 of 110. S1's own lines:
+  product +181 −3, specification +349 −26; the plan's 160 and 180 were
+  the sketch, and the row's extra is the wire tests and the suite row.

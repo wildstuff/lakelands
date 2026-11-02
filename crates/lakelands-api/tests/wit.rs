@@ -40,14 +40,17 @@ use lakelands_api::query::{
     Axis, Depth, Edge, Hit, Hits, Matched, Pattern, Projection, QueryResult, Search, SearchMode,
     Span, Start, Step, Unranked, VectorTerm, Walk,
 };
-use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
+use lakelands_api::read::{
+    AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy, ThinnedAct,
+};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
     AgeReport, Breach, Carried, Carrier, CompactReport, DecidedAt, Declaration, DeclarationKind,
     FieldConversion, FieldFill, FunctionDecl, InForce, Migration, MigrationReport, Misfit,
     ObjectSetDecl, Proposal, ProposalFilter, ProposalKind, ProposalState, ProposedWrite,
-    PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, Restated, RuleRun,
-    TypeRetired, ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse, Withdrawal,
+    PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, Restated, RuleRun, Thin,
+    ThinReport, TypeRetired, ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse,
+    Withdrawal,
 };
 use lakelands_api::{
     Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, IngestOpts,
@@ -453,7 +456,36 @@ fn record() -> Record {
         version: Version(1),
         fields: [("f".into(), json!(1))].into(),
         masked: vec!["g".into()],
+        stranded: true,
         meta: [("f".into(), field_meta())].into(),
+    }
+}
+
+fn thinned_act() -> ThinnedAct {
+    ThinnedAct {
+        ty: "invoice".into(),
+        by: "at".into(),
+        before: t(),
+        through: Position(9),
+        gone: 4,
+    }
+}
+
+fn thin() -> Thin {
+    Thin {
+        by: "at".into(),
+        before: t(),
+    }
+}
+
+fn thin_report() -> ThinReport {
+    ThinReport {
+        ty: "invoice".into(),
+        by: "at".into(),
+        before: t(),
+        records: 4,
+        through: Position(9),
+        reclaimed: Some(compact_report()),
     }
 }
 
@@ -668,6 +700,8 @@ fn hidden_where() -> HiddenWhere {
 
 fn type_description() -> TypeDescription {
     TypeDescription {
+        thinned: vec![thinned_act()],
+        stranded: 1,
         constraints: vec![constraint_decl()],
         value_types: vec![ValueTypeDecl {
             name: "money".into(),
@@ -1137,6 +1171,9 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ("upstream", members(&upstream())),
         ("field_meta", members(&field_meta())),
         ("record", members(&record())),
+        ("thinned_act", members(&thinned_act())),
+        ("thin", members(&thin())),
+        ("thin_report", members(&thin_report())),
         (
             "source_record",
             members(&SourceRecord {
@@ -1184,6 +1221,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             members(&Group {
                 by: [("f".into(), json!(1))].into(),
                 values: [("m".into(), json!(1))].into(),
+                stranded: true,
             }),
         ),
         (
@@ -2179,8 +2217,14 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     next_cursor: None,
                     total: Some(3),
                     retired: Some(1),
+                    thinned: vec![thinned_act()],
+                    stranded: Some(2),
                 },
-                Found::Groups { rows: vec![] },
+                Found::Groups {
+                    rows: vec![],
+                    thinned: vec![thinned_act()],
+                    stranded: Some(2),
+                },
             ],
             Some("shape"),
         ),

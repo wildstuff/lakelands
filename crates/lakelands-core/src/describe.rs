@@ -1249,6 +1249,7 @@ impl Sight<'_> {
                     .collect(),
             },
             fields,
+            ..Default::default()
         })
     }
 
