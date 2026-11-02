@@ -1969,6 +1969,10 @@
    "code": "setting_key_period"
   },
   {
+   "code": "setting_zone",
+   "value": 1
+  },
+  {
    "code": "setting_unlisted",
    "prefix": "s"
   },

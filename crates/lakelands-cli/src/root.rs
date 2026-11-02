@@ -55,9 +55,9 @@ pub struct Config {
     /// changes to. Absent, nothing is delivered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deliver: Option<lakelands_backings::DeliverConfig>,
-    /// The ticker: the UTC offset `serve` reads the date at, and how
-    /// often it looks whether the date rolled over, to age each lake it
-    /// writes once a day. Absent, `serve` ages nothing, and aging is
+    /// The ticker: how often `serve` looks whether a lake's date, read in
+    /// the lake's own zone, rolled over, to age each lake it writes once a
+    /// day. Absent, `serve` ages nothing, and aging is
     /// `lakelands age --today` or the host's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aging: Option<crate::ticker::AgingConfig>,
@@ -583,6 +583,13 @@ impl Root {
                  restriction written first would drop instead of stopping the root",
             ));
         }
+        if let Some(why) = crate::ticker::AgingConfig::gone(&text) {
+            return Err(Failure::new(
+                format!("{}: {why}", show(&file)),
+                "remove `utc_offset` from the aging section, and name each lake's zone with \
+                 `lakelands settings set zone <IANA name>`, as `Europe/Berlin`",
+            ));
+        }
         let config: Config = serde_json::from_str(&text).map_err(|e| match grant_holder(&text) {
             Some(name) => Failure::new(
                 format!(
@@ -665,8 +672,16 @@ impl Root {
         self.dir.join("lakes").join(format!("{lake}.json"))
     }
 
-    /// Write a new lake's location. Refuses to overwrite one.
-    pub fn new_lake(&self, id: &str, engine: &str, pg: &PgNew) -> Result<Location, Failure> {
+    /// Write a new lake's location, starting it in `zone` where one is
+    /// given (101). Refuses to overwrite one, and a zone the database does
+    /// not name.
+    pub fn new_lake(
+        &self,
+        id: &str,
+        engine: &str,
+        pg: &PgNew,
+        zone: Option<String>,
+    ) -> Result<Location, Failure> {
         let valid = lakelands_core::names::is_lake_id(id);
         if !valid {
             return Err(Failure::new(
@@ -692,7 +707,17 @@ impl Root {
                 "leave them out, or choose `--engine postgres`",
             ));
         }
-        let location = match engine {
+        if let Some(zone) = zone
+            .as_deref()
+            .filter(|z| !lakelands_api::expr::zone::known(z))
+        {
+            return Err(Failure::new(
+                format!("`{zone}` is not a time zone the IANA time-zone database names"),
+                "name one as the database does, as `Europe/Berlin` or `America/New_York`, or \
+                 leave `--zone` out for UTC",
+            ));
+        }
+        let mut location = match engine {
             "sqlite" => {
                 let lakes = self.config.lakes_dir.as_deref();
                 Location::sqlite(id, lakes.unwrap_or(Path::new("lakes")).join(id))
@@ -706,6 +731,7 @@ impl Root {
                 ));
             }
         };
+        location.zone = zone;
         fs::create_dir_all(self.dir.join("lakes")).map_err(|e| io(&self.dir, e))?;
         write_new(&file, &location)?;
         Ok(location)

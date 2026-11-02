@@ -54,9 +54,13 @@ interface store {
         /// grant (a retention hold).
         restrict: func(%type: type-name, key: record-key, reason: string) -> result<position, error>;
         unrestrict: func(%type: type-name, key: record-key) -> result<position, error>;
-        /// Run every aging rule once for `today`, a date at UTC midnight,
-        /// and answer what it moved.
+        /// Run every aging rule once for `today`, a date held at its UTC
+        /// midnight, and answer what it moved.
         age: func(today: timestamp) -> result<age-report, error>;
+        /// The zone the lake reads its calendar day in at the head, as the
+        /// IANA database names it: its `zone` setting, `UTC` where it names
+        /// none (101).
+        zone: func() -> result<string, error>;
         /// Retire, in one append, every live record the source brought in,
         /// into the one type named where one is; a co-owned record refuses
         /// the whole purge. With a preflight's id, refused unless that

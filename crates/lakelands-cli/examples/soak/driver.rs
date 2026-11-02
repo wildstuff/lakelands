@@ -399,6 +399,7 @@ fn location(plan: &Plan, root: &Path, tag: &str) -> Location {
             key: None,
             limits: Limits::default(),
             writers: Vec::new(),
+            zone: None,
         },
     }
 }
