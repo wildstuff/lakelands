@@ -57,7 +57,7 @@ check!(
 
 check!(
     GUARD_IN_FORCE_KEEPS_ITS_FIELDS = the_fields_a_guard_pairs_by_are_kept,
-    "100: declaring `box` again or migrating it so that `from` goes, `symbol` becomes a number is refused `field_read_elsewhere` naming that field, and one that computes `hi` at the read `read_as_stored` naming `hi`, as for a field that pairs; and a trigger's author masked from `box.hi` is not granted the guard"
+    "100: declaring `box` again or migrating it so that `from` goes, `symbol` becomes a number is refused `field_read_elsewhere` naming that field, and one that computes `hi` at the read `read_as_stored` naming `hi`, as for a field that pairs; migrating `tick` so that `at` becomes text is refused `guard_in_force_pair` at the trigger; and a trigger's author masked from `box.hi` is not granted the guard"
 );
 
 check!(
@@ -616,6 +616,15 @@ async fn the_fields_a_guard_pairs_by_are_kept(store: Store) -> Held {
                 red.push(format!("without `{field}` as it is: {a:?}"));
             }
         }
+    }
+    // Its own type migrated so that `at` is text no longer orders with
+    // `box.from`: the guard's pairing is refused, named at the trigger.
+    let tick = typed("tick", "no symbol at price:number hand", json!([]));
+    let a = migrated(&l, tick).await?;
+    let want = json!({"code": "guard_in_force_pair",
+        "at": [{"code": "after_migration", "name": "tick"}, {"code": "trigger", "name": "up"}]});
+    if !invalid_like(&a, &want) {
+        red.push(format!("`tick` migrated so that `at` is text: {a:?}"));
     }
     let author = json!({"schema": true, "restricted": true, "default": "write",
         "types": {"box": {"fields": {"hi": "masked"}}}});
