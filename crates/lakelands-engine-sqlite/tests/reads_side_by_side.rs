@@ -20,6 +20,10 @@ use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
 
+/// The records a get cycles through: every hundredth of the 5 000 stored,
+/// so each key is one that exists.
+const KEYS: usize = 50;
+
 /// How long gets are tried for one inside a scan before the test fails.
 const BOUND: Duration = Duration::from_secs(60);
 
@@ -81,7 +85,7 @@ fn a_read_answers_while_another_holds_its_transaction_open() {
     let (mut inside, mut last, mut tried) = (0, 0, 0usize);
     let started = Instant::now();
     while inside == 0 && started.elapsed() < BOUND {
-        let i = tried % 50;
+        let i = tried % KEYS;
         tried += 1;
         // A scan begun after the last get's.
         let began = loop {
