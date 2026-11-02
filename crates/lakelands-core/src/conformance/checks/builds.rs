@@ -143,7 +143,7 @@ async fn a_setting_that_builds_in_parts_changes_no_answer_either_kind(
     store: Store,
     given: Given,
 ) -> Held {
-    let size = u64::from(given.large_lake.max(200).min(400));
+    let size = u64::from(given.large_lake.clamp(200, 400));
     let store = chunked(&given, store).await?;
     let l = rows(store.as_ref(), size).await?;
     let before = answers(&l, size).await?;
@@ -206,7 +206,7 @@ async fn a_page_beside_the_build_is_whole_and_never_a_part_built_index(
     store: Store,
     given: Given,
 ) -> Held {
-    let size = u64::from(given.large_lake.max(200).min(400));
+    let size = u64::from(given.large_lake.clamp(200, 400));
     let store = chunked(&given, store).await?;
     let l = rows(store.as_ref(), size).await?;
     let whole = u32::try_from(size).unwrap_or(u32::MAX);
@@ -255,7 +255,7 @@ async fn a_write_beside_the_build_is_answered_before_the_setting_is(
     store: Store,
     given: Given,
 ) -> Held {
-    let size = u64::from(given.large_lake.max(200).min(400));
+    let size = u64::from(given.large_lake.clamp(200, 400));
     let store = chunked(&given, store).await?;
     let l = rows(store.as_ref(), size).await?;
     let done = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -310,7 +310,7 @@ async fn a_record_written_beside_the_build_is_in_the_index_once_it_is_whole(
     store: Store,
     given: Given,
 ) -> Held {
-    let size = u64::from(given.large_lake.max(200).min(400));
+    let size = u64::from(given.large_lake.clamp(200, 400));
     let store = chunked(&given, store).await?;
     let l = rows(store.as_ref(), size).await?;
     let early = page(&l, "n", 50, 0).await?;
@@ -360,7 +360,7 @@ async fn a_record_written_beside_the_build_is_in_the_index_once_it_is_whole(
 }
 
 async fn a_record_retired_beside_the_build_is_not_in_the_index(store: Store, given: Given) -> Held {
-    let size = u64::from(given.large_lake.max(200).min(400));
+    let size = u64::from(given.large_lake.clamp(200, 400));
     let store = chunked(&given, store).await?;
     let l = rows(store.as_ref(), size).await?;
     let retired = "r00005";
@@ -401,7 +401,7 @@ async fn a_record_retired_beside_the_build_is_not_in_the_index(store: Store, giv
 }
 
 async fn a_rebuild_holds_the_setting_whole_at_its_event(store: Store, given: Given) -> Held {
-    let size = u64::from(given.large_lake.max(200).min(400));
+    let size = u64::from(given.large_lake.clamp(200, 400));
     let store = chunked(&given, store).await?;
     let l = rows(store.as_ref(), size).await?;
     let before = answers(&l, size).await?;
