@@ -198,6 +198,17 @@ O(tail + versions), under the writer, before anything is destroyed.
 *taken in*, so it is never left behind; a write that changes what the report said about
 a key goes stale; the rest does nothing.
 
+**The id the acts write, which purge takes first.** The report id stays an opaque
+string. Purge's is `<through>-<digest>`: `through` is the view's position when the
+report was read, and the digest is over the `made` positions of the records it selected
+there, with the source and type named. At the act the purge reads the selection out of
+the log as of `through` — the records as they stood when the report read them — takes
+in whatever the source made after it, and refuses `purge_report_stale` when a record of
+that selection is no longer the source's alone, or has gone. A write elsewhere enters neither the selection nor
+the digest, so it does not stale the report. The chain digest matched by prefix was the
+other way offered; the position and a digest of positions was taken as the simpler to
+say and to check.
+
 | Act | Selection | Taken in | Stale | Nothing |
 |---|---|---|---|---|
 | Forget | every event of its sources | any write by a selected source; a source's writes are refused after the first turn (058) | no write | everything else |
@@ -474,7 +485,7 @@ move a member from a built group to an unbuilt one.
 
 | Turn | ms, this machine, loaded | Held to | Grows with |
 |---|---:|---|---|
-| A part | 45 to 150, reckoned | `part_events` | its events |
+| A part | 94 to 128 on memory, 412 to 696 on SQLite, measured at 500 events in a debug run | `part_events` | its events |
 | First turn: tail and keys judged | 11 for 1 000 events, measured, then the key store's 9 to 70, measured | `part_tail` | the tail, the source's versions, the key store |
 | A page | a removal's 89 to 155, a forget's 25 to 59 on smaller lakes, measured | 256 records, `page_events` | its events, `wide`, `walks`; a forget's also with the lake |
 | A chunk of the sweep | as a build's, reckoned | `order_chunk` | its chunk, the tail |
@@ -740,8 +751,8 @@ is on it yet.
   first turn reads it under the writer and folds it before it turns. Three tries that each find it
   longer end the job unavailable, `TailOverran`, with nothing appended.
 - **`limits`** hold `part_events`, `part_tail` and `page_events` with the defaults above, and
-  `order_chunk` is 1 000. Nothing reads `part_events` or `page_events` yet, and their settings
-  rows say so: R2 and R4 read them.
+  `order_chunk` is 1 000. Nothing reads `page_events` yet, and its settings row says so: R4
+  reads it. `part_events` is read from R2, where purge appends in parts.
 - **The writer's open** asks every kind of job in `OWED` what the log and the lists owe, off the
   writer and after the open has answered, and sends it; a writer taken over from standby asks
   the same. `OWED` is empty; the open and the standby take the kinds they ask as an argument
@@ -761,11 +772,80 @@ is on it yet.
   on every engine, the `pg` leg included; the rows go into the suite with the steps that put an
   act and a build on the road.
 
+**R2, first pull (lakelands#1686).** Purge is the first act on the road; remove and forget
+keep their one-append path, with `act_whole` set on it, until the second pull.
+
+- **The act's frame.** `source_purged` opens a purge in the log and `act_whole` ends every act:
+  kind codes 25 and 26, appended last so no code moves, and the log format stays 23. An
+  append of nothing at all is still nothing: a purge with nothing to take and no close to
+  write appends no frame.
+- **The selection the frame keeps.** `sys:purged` is a list keyed by the act's position,
+  saying the source, the type if one was named, and whether the act is whole; each
+  `source_purged` adds an entry and its `act_whole` marks it. The fold of both kinds writes
+  the list, and the road's owed hook finds an unwhole entry and sends the act again with
+  the act's position as its window. The list holds every act the log has, closed or not, and
+  both frame events write it whole: no act is ever dropped from it.
+- **Parts.** The walk judges the selection off the writer, and the report is the walk's.
+  The first turn folds the tail past the walk's view into that selection — it reads again
+  only the keys the tail wrote — names the records outside it that refer in, and appends
+  `source_purged` beside the quarantine closes, recording the act's position. Each part
+  then takes up to `part_events` of the selection's records in type and key order, rereads
+  only those, and appends their retirements; one that went since the walk is dropped, and
+  one whose live version another hand made again is dropped too. The append that ends the
+  act carries `act_whole` where it fits. A record's retirements are never split across
+  parts, so one append may hold more than `part_events` for one record, never for more than
+  one. The door answers when the act is whole, through a oneshot, and settles the backed
+  calls the act's own appends caused.
+- **The report id.** `<through>-<digest>`, as restated under "A report is read at its
+  position": opaque, no public type changed, and stale when one of its positions has gone or
+  a record the report named is no longer the source's alone, or when the position it names
+  is past the log's head. A record the source made after that position that another hand now
+  holds is not the report's, so it does not stale it: the act answers `PurgeShared`, as a
+  purge without an id does.
+- **A turn is a write.** The road's turn takes the writer through `for_write`, which
+  catches a writer that was behind up before the act decides anything, and drains the list's
+  causes after each turn so the door can settle them.
+- **Resume at open.** The writer's open asks `OWED` after it answers, and purge's hook sends
+  an unwhole act; the same act runs again with `made < at`, where `at` is its
+  `source_purged`, and closes what the source still has open, since its first append carried
+  only the closes that fit. A resumed act has no caller waiting: the backed calls its
+  appends leave owed settle at the next write's orphan pass, not at the open. The look for
+  what the open owes holds the lake weakly, as the runner does between turns, so a look
+  stops with a lake let go.
+- **A lake let go.** The store facade, and the doors and batches taken from it, are the
+  caller's handles onto the lake: the lease goes when the last of them is dropped, as the
+  last handle's drop always gave it, though a job beside the writer still holds the lake
+  while it runs. The job stops at its next step and what it left stays owed in the log, so a
+  lake let go on its answer opens again at once. A lake held without a facade, as the road's
+  tests hold one, keeps the old rule: its lease goes when its last handle does.
+- **Rows taken on every engine:** `PREFLIGHT` and `REPORT_HEAD` restated for the token,
+  `RETIRES_WHAT_IT_BROUGHT` and the remove check's kind list for the frame, and
+  `ACT_WHOLE_ENDS_THE_ACT`, `PURGE_TAKES_A_WRITE_SINCE_ITS_REPORT`, `PURGE_MADE_SINCE_SHARED`,
+  `PURGE_STALE_ON_A_SHARED_KEY`, `ACT_RESUMES_AT_OPEN`, `ACT_APPENDS_IN_PARTS`,
+  `ACT_REPEAT_FINISHES_AND_APPENDS_NOTHING`, `ACT_REBUILD_SAME_LAKE`. The rows that need a
+  reader held at an owed act — `ACT_WALKS_OFF_THE_WRITER`, `ACT_BETWEEN_PARTS_EXPORTS`,
+  `ACT_BETWEEN_PARTS_VERIFIES`, `POLL_STOPS_BEFORE_AN_OWED_ACT`,
+  `ACT_TAIL_OVERRUN_MOVES_THE_VIEW` — wait for the second pull, which brings reading through
+  an owed act, as do the remove and forget rows.
+- **Measured** on the shared machine of this step, in a debug run, not a quiet one: a part of
+  500 retirements — the act's turns after its first, a mean over five, on 2 000 records —
+  took 94 to 128 ms on memory and 412 to 696 ms on SQLite (two runs each); PostgreSQL's run
+  is CI's. Twenty writes sent beside an act of parts of one retirement each waited for at
+  most the one part in front of them, every write finding at most one retirement in the log
+  before it: p50 1.6 ms, longest 2.0 ms on memory, p50 5.7 to 10.9 ms, longest 9.4 to 65 ms
+  on SQLite. Both figures are the store's
+  `a_write_waits_for_at_most_a_part_of_a_purge`, which runs on every engine; the `pg` leg
+  is CI's.
+
 ## How it came to be
 
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
   `in_force` read through an owed act, which the poll rule does not hold.
 - R1 built by lakelands#1675; what the tree took is under "As built".
+- R2's first pull built by lakelands#1686 with purge as the first act on the road, and the
+  report id as the position the report was read at beside a digest of the selection it
+  read there; remove and forget, and a write reading through an owed act, are the
+  second pull.
 - Amended by 102 (lakelands#1639), proposed for 0.23.0: a thinning act begins
   with `values_thinned`, and a write at a key it selected is refused rather
   than reading through the act.

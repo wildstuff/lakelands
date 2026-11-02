@@ -322,6 +322,8 @@ impl Lake {
             head: AtomicU64::new(0),
             heads: tokio::sync::watch::Sender::new(0),
             holds_lease: AtomicBool::new(false),
+            held: AtomicUsize::new(0),
+            owned: AtomicBool::new(false),
             shapes: Mutex::default(),
             rebuilds: AtomicU64::new(0),
             rebuilt_rate: AtomicU64::new(0),

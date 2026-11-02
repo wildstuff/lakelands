@@ -9451,10 +9451,11 @@ pub async fn an_aging_rule_moves_what_holds_from_once_a_date(store: Arc<dyn Lake
 }
 
 /// A preflight appends nothing and says what the purge would retire and
-/// which live records outside it refer into it; a purge that repeats its
-/// id is refused once the lake has moved, as not of this purge at this
-/// head, and purges under a fresh one, naming the same records
-/// (`docs/decisions/039-a-source-is-retracted-as-one.md`, extended).
+/// which live records outside it refer into it; a write elsewhere since
+/// leaves the id good, a purge that repeats an id whose act is done is
+/// refused as not of this purge at its position, and a purge after that
+/// appends nothing (`docs/decisions/039-a-source-is-retracted-as-one.md`,
+/// extended).
 pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stale(
     store: Arc<dyn LakeStore>,
 ) {
@@ -9541,27 +9542,56 @@ pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stal
         "a preflight appends nothing"
     );
     assert!(!seen.report_id.is_empty());
+    // A record written elsewhere between the report and the act names
+    // none of its selection: the act takes it up, and names `b3` among
+    // what it strands.
     bill("b3", "p1").await;
     let head = store.head().await.unwrap();
+    let done = store
+        .purge_source(&"crm".into(), None, Some(&seen.report_id))
+        .await
+        .unwrap();
+    assert_eq!(done.retired, 1, "{done:?}");
+    let got = named(&done);
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "`b3` refers into the purge too: {done:?}"
+    );
+    assert_eq!(got[0].0, "bill.billed_to");
+    assert_eq!(got[0].1, 2);
+    let mut first = got[0].2.clone();
+    first.sort();
+    assert_eq!(
+        first,
+        ["bill b1".to_owned(), "bill b3".to_owned()],
+        "`b3` refers into the purge too: {done:?}"
+    );
+    assert_eq!(got[1], want[1], "{done:?}");
+    let moved = store.head().await.unwrap();
+    assert!(moved > head, "the act appended: {moved} after {head}");
+    // The report is read at its position: an id already acted on names
+    // a selection the log no longer holds, and is stale.
     let stale = store
         .purge_source(&"crm".into(), None, Some(&seen.report_id))
         .await;
     assert_eq!(stale, Err(invalid(None, Case::PurgeReportStale)));
     assert_eq!(
         store.head().await.unwrap(),
-        head,
+        moved,
         "a stale purge appends nothing"
     );
     let again = store.purge_preflight(&"crm".into(), None).await.unwrap();
-    let done = store
+    assert_eq!(again.retired, 0, "{again:?}");
+    let nothing = store
         .purge_source(&"crm".into(), None, Some(&again.report_id))
         .await
         .unwrap();
-    assert_eq!((done.retired, named(&done)), (1, named(&again)), "{done:?}");
+    assert_eq!(nothing.retired, 0, "{nothing:?}");
     assert_eq!(
-        named(&done)[0].1,
-        2,
-        "`b3` refers into the purge too: {done:?}"
+        store.head().await.unwrap(),
+        moved,
+        "a purge with nothing to take appends nothing"
     );
 }
 

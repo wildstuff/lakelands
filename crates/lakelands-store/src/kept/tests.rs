@@ -63,7 +63,10 @@ impl Kept {
         };
         let lake = Lake::open(&Location::memory("kept"), seams, OpenMode::Create);
         let lake = Arc::new(lake.expect("the lake opens"));
-        let store = Store { lake: lake.clone() };
+        let store = Store {
+            lake: lake.clone(),
+            owns: false,
+        };
         let cat = store.catalog(WriteContext::default());
         let who = |id: &str, grants: Grants| Principal {
             kind: PrincipalKind::Human,

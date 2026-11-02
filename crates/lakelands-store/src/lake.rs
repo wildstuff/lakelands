@@ -26,7 +26,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{
@@ -206,6 +206,8 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         | EventBody::ObjectSetChanged { .. }
         | EventBody::SourceForgotten { .. }
         | EventBody::ValuesRemoved { .. }
+        | EventBody::SourcePurged { .. }
+        | EventBody::ActWhole { .. }
         | EventBody::Checkpoint { .. } => false,
     }
 }
@@ -286,6 +288,14 @@ pub struct Lake {
     /// The head again, for a wait on the next one (`ChangeFeed::wait`).
     heads: tokio::sync::watch::Sender<u64>,
     holds_lease: AtomicBool,
+    /// The caller's handles to the lake: the store facade and the doors
+    /// taken from it. The last one gone gives the lease up, though a job
+    /// beside the writer still holds the lake while it runs.
+    held: AtomicUsize,
+    /// Whether the lake is a caller's through a store facade at all: a lake
+    /// a test holds itself, as the road's tests do, gives its lease up when
+    /// its last handle goes, as it always did.
+    owned: AtomicBool,
     /// The shapes reads were answered with or a declaring append left, at
     /// most two, each with the positions it holds for: no event among them
     /// ends a range ([`ends_a_range`]). One a declaring append left is
@@ -372,7 +382,14 @@ thread_local! {
 pub(crate) fn owing<T>(work: impl FnOnce() -> Result<T>) -> Result<(T, BTreeSet<Position>)> {
     OWING.with(|o| o.borrow_mut().clear());
     let done = work()?;
-    Ok((done, OWING.with(|o| std::mem::take(&mut *o.borrow_mut()))))
+    Ok((done, owing_now()))
+}
+
+/// The causes of the appends and folds on this thread that no [`owing`]
+/// took, and their forgetting: a job on the road takes them at the end of
+/// each of its turns, whose catch-up folds as a write's does.
+pub(crate) fn owing_now() -> BTreeSet<Position> {
+    OWING.with(|o| std::mem::take(&mut *o.borrow_mut()))
 }
 
 pub(crate) fn wall_clock() -> Timestamp {
@@ -1471,6 +1488,56 @@ impl Lake {
     }
 }
 
+impl Lake {
+    /// The lake is a caller's now, through the store facade: its lease
+    /// lives while the facade, or a handle taken from it, is held, and not
+    /// a moment longer because a job beside the writer holds the lake.
+    pub(crate) fn take_ownership(&self) {
+        self.owned.store(true, Ordering::Release);
+        self.held.store(1, Ordering::Release);
+    }
+
+    /// One more of the caller's handles: the store facade or the doors
+    /// taken from it.
+    pub(crate) fn hold(&self) {
+        if self.owned.load(Ordering::Acquire) {
+            self.held.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// One of the caller's handles gone; the last gives the lease up, as
+    /// the last handle dropped would. A lake a test holds itself owns
+    /// nothing, and gives its lease up when its last handle goes.
+    pub(crate) fn release(&self) {
+        if self.owned.load(Ordering::Acquire) && self.held.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.let_go();
+        }
+    }
+
+    /// Whether the caller has let the lake go: it is a caller's through a
+    /// store facade, and no handle onto it is held.
+    pub(crate) fn is_let_go(&self) -> bool {
+        self.owned.load(Ordering::Acquire) && self.held.load(Ordering::Acquire) == 0
+    }
+
+    /// Give the lease up now, as the last handle dropped would: the last
+    /// of the caller's handles does this when it is dropped, so the jobs a
+    /// writer's open left beside it, which hold the lake while they run,
+    /// cannot keep a lake the caller let go from opening again. A job
+    /// still on the road stops at its next step, and what it left stays
+    /// owed in the log for the next open.
+    pub(crate) fn let_go(&self) {
+        let lease = {
+            let mut w = lakelands_core::lock(&self.writer);
+            w.lease.take()
+        };
+        if let Some(lease) = lease {
+            self.unleased();
+            let _ = self.engine.release_lease(&lease);
+        }
+    }
+}
+
 /// A lake whose last handle is dropped gives its lease up, as `close`
 /// would, so the lake can be opened for writing again.
 impl Drop for Lake {
@@ -1905,9 +1972,12 @@ fn reads_a_record(body: &EventBody) -> bool {
         // that key is not read.
         | EventBody::ObjectSetChanged { .. }
         // The list of forgotten sources is put; the records it erases are
-        // erased by the rebuild after it. So for an act of removal.
+        // erased by the rebuild after it. So for an act of removal, and for
+        // a purge's list and its whole's mark.
         | EventBody::SourceForgotten { .. }
-        | EventBody::ValuesRemoved { .. } => false,
+        | EventBody::ValuesRemoved { .. }
+        | EventBody::SourcePurged { .. }
+        | EventBody::ActWhole { .. } => false,
     }
 }
 
