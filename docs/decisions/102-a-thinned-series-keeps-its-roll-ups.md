@@ -583,9 +583,10 @@ its mark and changed nowhere else.
 - **Corrections where the tree holds a rule the sketch did not name:**
   `StrandedAtHeadOnly` takes `position`, not `at`, because the refusals
   catalog reserves `at` for a `Place`'s position and refuses it as a
-  case's parameter; `ThinnedAct`'s wire name is `type`; and the suite's
-  row for the six refusals is S1's, as the issue asks for a row per
-  refusal before any of them is raised.
+  case's parameter; `ThinnedAct`'s wire name is `type`; and the six
+  refusals share one suite row, S1's, because the issue's "a conformance
+  row" is read as one row that holds all six — it checks each id, each
+  sentence and every name a sentence says, so a drift in any fails it.
 - **Every file outside S1's plan list the tree forced, and why:**
   `api/src/describe.rs` carries `TypeDescription`'s two members, which
   this record's public-types bullet names — S2 is the engines' stored
