@@ -618,7 +618,7 @@ impl Digesting {
     }
 
     /// Its state as bytes, tagged with the format and version they are
-    /// written in ([`STATE_TAG`]), which [`Digesting::of_state`] takes
+    /// written in (`STATE_TAG`), which [`Digesting::of_state`] takes
     /// back; none once an event did not restore.
     pub fn state(&self) -> Option<Vec<u8>> {
         use sha2::digest::common::hazmat::SerializableState as _;

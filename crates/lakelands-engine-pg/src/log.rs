@@ -292,18 +292,20 @@ fn add(
         ),
         &[&ids, &ats],
     )?;
-    // A digest whose row is not there to follow the rows is known no more:
-    // the seal digests the segment from its rows.
-    if let Some(d) = &digesting {
-        let kept = db.query_opt(
-            &format!(
-                "UPDATE {} SET running = $2 WHERE first = $1 RETURNING first",
-                names.t("segments")
-            ),
-            &[&segment, &d.state()],
-        )?;
-        digesting = digesting.filter(|_| kept.is_some());
-    }
+    // The state on the segment's row follows this append, and is cleared
+    // where the digest is not known: a state a writer could not read, or
+    // could not carry, is one a later writer must not trust. A digest
+    // whose row is not there to follow the rows is known no more: the
+    // seal digests the segment from its rows.
+    let state = digesting.as_ref().and_then(Digesting::state);
+    let kept = db.query_opt(
+        &format!(
+            "UPDATE {} SET running = $2 WHERE first = $1 RETURNING first",
+            names.t("segments")
+        ),
+        &[&segment, &state],
+    )?;
+    digesting = digesting.filter(|_| kept.is_some());
     if imported && let Some(last) = events.last() {
         db.execute(
             &format!(

@@ -61,6 +61,29 @@ fn admin(url: &str, statements: &str) {
     client.batch_execute(statements).unwrap();
 }
 
+/// The active segment's running state, as the server holds it.
+fn running(url: &str, schema: &str) -> Option<Vec<u8>> {
+    let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
+    client
+        .query_one(
+            &format!("SELECT running FROM \"{schema}\".segments ORDER BY first DESC LIMIT 1"),
+            &[],
+        )
+        .unwrap()
+        .get(0)
+}
+
+/// Hand the active segment a running state, as another release would.
+fn set_running(url: &str, schema: &str, state: Option<&[u8]>) {
+    let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
+    client
+        .execute(
+            &format!("UPDATE \"{schema}\".segments SET running = $1"),
+            &[&state],
+        )
+        .unwrap();
+}
+
 /// The schema, dropped when the test ends, also when it fails.
 struct Schema<'u>(&'u str, String);
 
@@ -151,6 +174,13 @@ fn a_reopen_mid_segment_seals_to_the_same_digest() {
         engine.append(&lease, &second).unwrap();
         held.extend(second);
         at += 3;
+        let mut whole = lakelands_core::log::Digesting::default();
+        whole.add(&held);
+        assert_eq!(
+            running(&url, &kept.1),
+            whole.state(),
+            "segment {segment} keeps its state running"
+        );
         // The seal goes on from the state the reopened writer read on the
         // segment's row: with the log hidden behind a view that shows no
         // row, a seal that restored the segment would digest nothing.
@@ -181,4 +211,39 @@ fn a_reopen_mid_segment_seals_to_the_same_digest() {
     }
     let reader = open(OpenMode::Write);
     assert_eq!(reader.segments().unwrap(), sealed);
+}
+
+#[test]
+fn a_state_this_release_does_not_read_is_cleared_and_the_seal_reads_rows() {
+    let Some(url) = common::url_or_skip("a state not read") else {
+        return;
+    };
+    let kept = Schema(&url, common::fresh_schema());
+    let location = common::location(&url, "blocks", &kept.1);
+    let engine = PgOpener.open(&location, OpenMode::Create).unwrap();
+    let lease = engine.take_lease("first writer").unwrap();
+    let first = framed(0, 3, &Digest::zero(), lease.fence);
+    engine.append(&lease, &first).unwrap();
+    drop(engine);
+    // A state another release's format leaves: a writer that cannot read
+    // it must clear it, or a later one would trust it.
+    let mut state = running(&url, &kept.1).expect("the append keeps a state");
+    assert_eq!(state[0], 1, "the tag this release writes");
+    state[0] = 2;
+    set_running(&url, &kept.1, Some(&state));
+    let engine = PgOpener.open(&location, OpenMode::Write).unwrap();
+    let lease = engine.take_lease("second writer").unwrap();
+    let second = framed(3, 2, &first[2].hash, lease.fence);
+    engine.append(&lease, &second).unwrap();
+    assert_eq!(running(&url, &kept.1), None, "the state it could not read");
+    // With no state to seal by, the segment seals over its rows.
+    let all = [first, second].concat();
+    let next = chain(5, 1, &all[4].hash, &lease);
+    let got = seal(engine.as_ref(), &lease, &next).unwrap();
+    let digest = lakelands_core::log::digest_of(&all).unwrap();
+    let got = got.expect("the segment sealed");
+    assert_eq!(
+        (got.first, got.last, &got.digest),
+        (Position(0), Position(4), &digest)
+    );
 }
