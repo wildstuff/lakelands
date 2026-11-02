@@ -273,6 +273,7 @@ impl Walked {
                 meta: Some(&is.meta),
                 settings: Some(&w.settings),
                 preceding: None,
+                paired: None,
                 now,
             };
             if !expr::holds(&walk.holds, &scope).unwrap_or(false) {

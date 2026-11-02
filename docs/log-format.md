@@ -1446,12 +1446,16 @@ null where none is (lakelands#1552,
 identifiers, another stored type and its field; the second exactly the
 comparison `<=` of a path to that type's field and a field of the
 record's type; each further one exactly an `=` of the same shape. As
-the expression of a field computed at the read only, so no event holds
-its value: `f` on the record of `T`, of those the read would answer on
-`T`, that holds this record's value in each matched field and whose
-`by` is the greatest at or below this record's, the first by key among
-ties; null where none is (lakelands#1606,
-`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
+the expression of a field computed at the read and in the `when` of a
+trigger on a type that is no view, so a declaration holds the call and
+no event holds its value: `f` on the record of `T` that holds this
+record's value in each matched field and whose `by` is the greatest at
+or below this record's, the first by key among ties, of those the read
+would answer on `T` or, in a `when`, those the write's sights are
+answered; null where none is (lakelands#1606,
+`docs/decisions/052-a-field-may-be-computed-at-the-read.md`;
+lakelands#1676,
+`docs/decisions/100-a-guard-may-read-the-record-in-force.md`).
 
 **From text to typed form.**
 

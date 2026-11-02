@@ -66,9 +66,11 @@
 //! stored type `T` whose `by` is the greatest at or below this record's
 //! `by` among those that hold its values in every matched field, the first
 //! in key order among ties, of those its reader is answered; only a field
-//! computed at the read may call it, since a stored pairing would go stale
-//! when the paired record is written after the record it governs
-//! (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`). Its
+//! computed at the read and a trigger's `when` may call it, since a stored
+//! pairing would go stale when the paired record is written after the
+//! record it governs, while a firing claims only what held at its write
+//! (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`,
+//! `docs/decisions/100-a-guard-may-read-the-record-in-force.md`). Its
 //! `T.` paths are fields of `T`, no part of this record.
 //!
 //! **Durations.** The difference of two instants is a duration. A
@@ -278,8 +280,9 @@ pub enum Func {
     /// `by` or a matched field is null.
     Preceding,
     /// `in_force(T.f, T.by <= by, T.m = m, …)`: in a field computed at the
-    /// read, `f` of the record of another stored type `T` in force at this
-    /// record (the module doc); null where this `by` or a match is null.
+    /// read or a trigger's `when`, `f` of the record of another stored type
+    /// `T` in force at this record (the module doc); null where this `by` or
+    /// a match is null.
     InForce,
     /// `setting('key')`: the value of the lake's `sys.setting` record with
     /// that key, as it stood at the position being read or folded.

@@ -930,10 +930,14 @@ catalog! {
         PrecedingUnlooked { field: FieldName } => "a `preceding` matches its series on `{field}`, which is not text or a reference",
         /// A `preceding` ordered by a field whose kind has no order.
         PrecedingUnordered { field: FieldName } => "a `preceding` orders its series by `{field}`, whose kind has no order",
-        /// An `in_force` not of the form it pairs by.
+        /// A field's `in_force` not of the form it pairs by.
         InForceForm { field: FieldName } => "the field `{field}` pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of this record",
-        /// An `in_force` pair whose two fields cannot pair.
+        /// A field's `in_force` pair whose two fields cannot pair.
         InForcePair { field: FieldName, left: FieldName, right: FieldName } => "the field `{field}` pairs `{left}` with `{right}`: two fields of one kind, a match of text or a reference, an order bound of a kind with an order",
+        /// A trigger's `in_force` not of the form it pairs by.
+        GuardInForceForm => "its `when` pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of the trigger's type",
+        /// A trigger's `in_force` pair whose two fields cannot pair.
+        GuardInForcePair { left: FieldName, right: FieldName } => "its `when` pairs `{left}` with `{right}`: two fields of one kind, a match of text or a reference, an order bound of a kind with an order",
         /// A constraint that reads what can change without a write of the
         /// record.
         ConstraintReadsBeyond { constraint: ConstraintName, reads: Box<Beyond> } => "constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields",
@@ -1270,8 +1274,9 @@ catalog! {
         /// A `preceding` outside a constraint and a trigger's `when`, or
         /// over a view's rows.
         PrecedingHere => "preceding() has meaning in a type's constraint and in the `when` of a trigger on a type that is no view, over the record before it in its series",
-        /// An `in_force` outside a field computed at the read.
-        InForceHere => "in_force() has meaning in a field computed at the read, over another type's record in force",
+        /// An `in_force` outside a field computed at the read and a
+        /// trigger's `when`, or over a view's rows.
+        InForceHere => "in_force() has meaning in a field computed at the read and in the `when` of a trigger on a type that is no view, over another type's record in force",
         /// An `in_set` left where no set's filter stands.
         InSetHere => "in_set() has meaning in an object set's `where`, a trigger's `when` and a read's `where`",
         /// A negation of what has no negative.

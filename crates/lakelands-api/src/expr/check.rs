@@ -20,7 +20,8 @@ pub enum Place {
     /// `previous` have meaning.
     Write,
     /// A trigger's guard: a write, where `retired` and `preceding` have
-    /// meaning as well.
+    /// meaning as well, and `in_force`, which pairs the record as the write
+    /// leaves it with another type's record in force then.
     Guard,
     /// Over a group of records: a view measure, where aggregates have
     /// meaning.
@@ -110,7 +111,9 @@ pub fn check(e: &Expr, place: Place) -> Result<(), Case> {
                     return Err(Case::CallTakesField { name });
                 }
                 Func::Preceding if !guard => return Err(Case::PrecedingHere),
-                Func::InForce if place != Place::AtRead => return Err(Case::InForceHere),
+                Func::InForce if !matches!(place, Place::AtRead | Place::Guard) => {
+                    return Err(Case::InForceHere);
+                }
                 Func::Setting | Func::Param | Func::InSet if quoted(args.first()).is_none() => {
                     return Err(Case::CallTakesQuoted { name });
                 }
