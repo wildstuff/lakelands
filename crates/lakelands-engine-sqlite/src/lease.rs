@@ -5,10 +5,11 @@
 //! out and who holds it now, as one JSON object. Taking the lease takes an
 //! exclusive lock on that file without waiting: when another handle holds
 //! it — in this process or any other — the take fails at once, naming the
-//! holder the file records. The lock is the operating system's, so it is
-//! released when its process ends, however it ends, and a crashed writer
-//! never keeps the lake from the next one. The taker writes a token one
-//! greater than the file's and syncs it before it may append.
+//! holder the file records where the file can be read. The lock is the
+//! operating system's, so it is released when its process ends, however
+//! it ends, and a crashed writer never keeps the lake from the next one.
+//! The taker writes a token one greater than the file's and syncs it
+//! before it may append.
 //!
 //! The lock keeps two writers from holding the lease at once; the token is
 //! what refuses a stale writer. Every append and every seal is checked
@@ -70,20 +71,48 @@ pub(crate) struct LeaseFile {
     path: PathBuf,
 }
 
-fn read(file: &mut File) -> Result<Recorded> {
+/// What Windows answers a read with when another handle holds the file's
+/// lock: `ERROR_LOCK_VIOLATION`. No Unix read fails with it — there it is
+/// `EDOM`, which no file operation returns — so testing the number
+/// costs nothing on either.
+const LOCK_VIOLATION: i32 = 33;
+
+fn read_text(file: &mut File) -> std::io::Result<String> {
     let mut text = String::new();
-    file.seek(SeekFrom::Start(0))
-        .and_then(|_| file.read_to_string(&mut text))
-        .map_err(|e| io_error(Doing::Read, Part::LeaseFile, e))?;
+    file.seek(SeekFrom::Start(0))?;
+    file.read_to_string(&mut text)?;
+    Ok(text)
+}
+
+fn parse(text: &str) -> Result<Recorded> {
     if text.trim().is_empty() {
         return Ok(Recorded::default());
     }
-    serde_json::from_str(&text).map_err(|e| {
+    serde_json::from_str(text).map_err(|e| {
         let flaw = Flaw::NotJson {
             detail: Detail::json(&e),
         };
         damaged(Part::LeaseFile, None, flaw)
     })
+}
+
+fn read(file: &mut File) -> Result<Recorded> {
+    let text = read_text(file).map_err(|e| io_error(Doing::Read, Part::LeaseFile, e))?;
+    parse(&text)
+}
+
+/// The fence and holder a read of the file answers. A read the operating
+/// system refused because another handle holds the file's lock names no
+/// holder: Windows makes the lock cover the file's bytes, so a handle
+/// that does not hold the lease cannot read who does, and a caller that
+/// holds none is answered the same whether the file cannot be read or
+/// says nothing. Every other failure is still the storage's.
+fn answer(asked: std::io::Result<String>) -> Result<(u64, String)> {
+    match asked {
+        Ok(text) => parse(&text).map(|r| (r.fence, r.holder)),
+        Err(e) if e.raw_os_error() == Some(LOCK_VIOLATION) => Ok((0, String::new())),
+        Err(e) => Err(io_error(Doing::Read, Part::LeaseFile, e)),
+    }
 }
 
 fn write(file: &mut File, recorded: &Recorded) -> Result<()> {
@@ -113,9 +142,19 @@ impl LeaseFile {
             .map_err(|e| io_error(Doing::Open, Part::LeaseFile, e))
     }
 
-    /// Who the file says holds the lease, and with which token.
+    /// Who the file says holds the lease, and with which token: no holder
+    /// when another handle's lock refuses the read, which is all a caller
+    /// that does not hold the lease can be told.
     pub(crate) fn current(&self) -> Result<(u64, String)> {
-        let r = read(&mut self.open()?)?;
+        answer(read_text(&mut self.open()?))
+    }
+
+    /// Who the file says holds the lease, and with which token, read
+    /// through the file this handle holds locked: a holder must not open
+    /// a second handle for it, which Windows refuses while the lock is
+    /// held.
+    pub(crate) fn recorded(&self, held: &mut Held) -> Result<(u64, String)> {
+        let r = read(&mut held.file)?;
         Ok((r.fence, r.holder))
     }
 
