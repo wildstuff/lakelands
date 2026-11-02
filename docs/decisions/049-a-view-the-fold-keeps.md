@@ -166,7 +166,7 @@ one.
   never a member, at any size. A whole face whose folds are the open
   one's has no restricted member and takes the open face's holder.
 - **An order is read at the head only.** An engine keeps one entry for
-  each key of an order name in a table of its own, apart from the
+  each key of an order name in a place of its own, apart from the
   records: a put replaces the key's entry and an end deletes it
   (`put_order`, `docs/seams.md`; lakelands#1690). Only the fold reads
   it, at the head, by the key-ordered page every engine has. A log that

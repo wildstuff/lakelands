@@ -25,7 +25,7 @@ use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{kept_name, order_name};
 use lakelands_core::conformance::fixture::stored_record;
-use lakelands_engine_sqlite::{SqliteOpener, read_statements};
+use lakelands_engine_sqlite::{SqliteOpener, order_statements, read_statements};
 use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, StatementStatus, params_from_iter};
 use serde_json::json;
@@ -123,6 +123,35 @@ fn every_statement_of_a_kept_name_is_planned_as_a_seek() {
             "a kept name's read at an earlier position does not step from key to key through \
              `keys` and seek each key's state, in the order of the keys:\n  {statement}\n  \
              {plan:#?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An order's entry and its page are seeks of the `view_order` table's
+/// primary key, the page in the key order that key keeps, so nothing
+/// sorts: the entries stand apart from the records and cost a seek each.
+#[test]
+fn an_orders_entry_and_page_are_planned_as_a_seek() {
+    let (dir, engine) = lake("order-plans");
+    drop(engine);
+    let db = Connection::open(dir.join("projection.db")).unwrap();
+    let [at, page] = order_statements();
+    for (statement, step) in [
+        (
+            &at,
+            "SEARCH view_order USING PRIMARY KEY (name=? AND key=?)",
+        ),
+        (
+            &page,
+            "SEARCH view_order USING PRIMARY KEY (name=? AND key>?)",
+        ),
+    ] {
+        let plan = plan(&db, statement);
+        assert!(
+            plan.len() == 1 && plan[0] == step,
+            "an order's read is not one seek of the `view_order` key, with nothing sorting \
+             its page:\n  {statement}\n  {plan:#?}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -252,7 +281,8 @@ fn an_order_entry_is_kept_apart_from_the_records() {
     p.begin().unwrap();
     for at in 1..=40 {
         let entry = format!(r#"{{"v":"{at}"}}"#);
-        p.put_order(&name, &key(at), Some(entry.as_bytes())).unwrap();
+        p.put_order(&name, &key(at), Some(entry.as_bytes()))
+            .unwrap();
     }
     // A key put again replaces its entry.
     p.put_order(&name, &key(7), Some(br#"{"v":"7b"}"#)).unwrap();
@@ -408,10 +438,7 @@ async fn the_fold_keeps_an_extremes_order_apart_from_the_records() {
     }
     drop(store);
     let db = Connection::open(dir.join("projection.db")).unwrap();
-    let count = |sql: &str| {
-        db.query_row(sql, [], |r| r.get::<_, i64>(0))
-            .unwrap()
-    };
+    let count = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
     assert_eq!(
         (count("SELECT COUNT(*) FROM records WHERE ty = 'sys:order.ends'")
             + count("SELECT COUNT(*) FROM keys WHERE ty = 'sys:order.ends'")),

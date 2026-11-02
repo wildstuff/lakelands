@@ -203,11 +203,17 @@ impl ProjectionStore for Scoped {
     }
 
     fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
-        self.inner().put_order(name, key, entry)
+        match self.scoped() {
+            true => Ok(()),
+            false => self.inner().put_order(name, key, entry),
+        }
     }
 
     fn end_order(&self, name: &TypeName) -> Result<()> {
-        self.inner().end_order(name)
+        match self.scoped() {
+            true => Ok(()),
+            false => self.inner().end_order(name),
+        }
     }
 
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
@@ -974,3 +980,6 @@ impl Lake {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

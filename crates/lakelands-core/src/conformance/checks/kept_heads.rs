@@ -461,7 +461,7 @@ fn by_echo(r: &Record) -> bool {
 
 check!(
     ORDER_ENTRIES_APART = an_extremes_next_holder_is_read_after_a_delete_and_a_retire,
-    "098 (lakelands#1690): a kept view's `min` and `max` answer as their twin's after one source's values are taken back, the holder of its extreme among them, and after the holder that follows is retired in its turn; the group's next holder is read from the `view_order` table, which the fold keeps apart from the records, and `describe_type` says `kept` after each"
+    "098 (lakelands#1690): a kept view's `min` and `max` answer as their twin's after one source's values are taken back, the holder of its extreme among them, and after the holder that follows is retired in its turn, `describe_type` saying `kept` after each"
 );
 
 /// The kept view [`ORDER_ENTRIES_APART`] holds to, and its twin.
@@ -491,12 +491,9 @@ async fn an_extremes_next_holder_is_read_after_a_delete_and_a_retire(store: Stor
         .await?;
     // Two sources write the group's values; the owner writes the group
     // itself, so taking one source's values back leaves the other's.
-    l.ingest(
-        "crm",
-        vec![source_record("line", "a", json!({"n": 9}))],
-    )
-    .await
-    .must("feeding `crm`'s `a`")?;
+    l.ingest("crm", vec![source_record("line", "a", json!({"n": 9}))])
+        .await
+        .must("feeding `crm`'s `a`")?;
     l.ingest(
         "erp",
         vec![
@@ -535,10 +532,11 @@ async fn apart(l: &Lake, want: (u64, u64), when: &str, red: &mut Vec<String>) ->
     let at = find_at(None);
     let kept = l.all_found("ends", at.clone()).await?;
     let twin = l.all_found("ends_twin", at).await?;
-    let answers =
-        |rs: &[Record]| -> Vec<(RecordKey, BTreeMap<FieldName, Value>)> {
-            rs.iter().map(|r| (r.key.clone(), r.fields.clone())).collect()
-        };
+    let answers = |rs: &[Record]| -> Vec<(RecordKey, BTreeMap<FieldName, Value>)> {
+        rs.iter()
+            .map(|r| (r.key.clone(), r.fields.clone()))
+            .collect()
+    };
     if answers(&kept) != answers(&twin) {
         red.push(format!(
             "{when} `ends` answers {:?}, its twin {:?}",

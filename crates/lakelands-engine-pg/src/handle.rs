@@ -1163,7 +1163,9 @@ impl ProjectionStore for PgLake {
     }
 
     fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
-        self.stage(Position::GENESIS, |b| b.order(name.as_str(), key.as_str(), entry))
+        self.stage(Position::GENESIS, |b| {
+            b.order(name.as_str(), key.as_str(), entry)
+        })
     }
 
     fn end_order(&self, name: &TypeName) -> Result<()> {

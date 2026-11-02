@@ -114,6 +114,11 @@ engine_check!(
 );
 
 engine_check!(
+    ORDER_ENTRY = an_order_entry_keeps_one_state_for_each_key,
+    "seams §ProjectionStore and §ProjectionView (lakelands#1690): an order entry put at a key is read by `order` as the bytes it was put with, a put replaces the key's entry and none deletes it, and `order_page` answers the entries after a key in key order; a rolled-back transaction leaves the entries as they were; `end_order` deletes every entry of its name alone, keeping a sibling order and what is put after it in the same transaction, and the order holds none of the records"
+);
+
+engine_check!(
     WITHDRAWAL_IS_A_DECLARATION = a_withdrawal_is_a_declaration_in_force_under_the_same_name,
     "seams §ProjectionView (lakelands#1503): after a withdrawal is put at a position, `declarations()` answers it, and not the declaration it withdrew, as the one declaration in force under that name, since its own position"
 );
@@ -1232,6 +1237,108 @@ fn a_head_only_name_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Hel
          invalid, and `d` reads {doc:?}",
         counts.0,
         counts.1
+    );
+    Ok(())
+}
+
+fn an_order_entry_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Held {
+    let ty = TypeName::from(format!("{}pk", lakelands_api::seam::ORDER_PREFIX));
+    let sibling = TypeName::from(format!("{}px", lakelands_api::seam::ORDER_PREFIX));
+    let key = RecordKey::from;
+    fold(engine, 1, |p| {
+        p.put_order(&ty, &key("b"), Some(b"b1"))?;
+        p.put_order(&ty, &key("a"), Some(b"a1"))?;
+        p.put_order(&ty, &key("c"), Some(b"c1"))?;
+        p.put_order(&sibling, &key("a"), Some(b"s1"))
+    })?;
+    fold(engine, 2, |p| {
+        p.put_order(&ty, &key("b"), Some(b"b2"))?;
+        p.put_order(&ty, &key("c"), None)
+    })?;
+    let p = engine.projection();
+    let v = view(engine, None)?;
+    let read = |name: &TypeName, k: &str| {
+        v.order(name, &RecordKey::from(k))
+            .must("reading an order entry")
+    };
+    let (a, b, c, s) = (
+        read(&ty, "a")?,
+        read(&ty, "b")?,
+        read(&ty, "c")?,
+        read(&sibling, "a")?,
+    );
+    ensure!(
+        (a.as_deref(), b.as_deref(), c.as_deref(), s.as_deref())
+            == (Some(&b"a1"[..]), Some(&b"b2"[..]), None, Some(&b"s1"[..])),
+        "entries a, b and c were put at 1, then b again and c as none at 2: a, b and c read \
+         {a:?}, {b:?} and {c:?}, and the sibling's a reads {s:?}, where a put replaces the \
+         key's entry and none deletes it"
+    );
+    let page = |after: Option<&str>, n: u32| {
+        let after = after.map(RecordKey::from);
+        let rows = v
+            .order_page(&ty, after.as_ref(), n)
+            .must("reading a page of the order")?;
+        Ok::<_, Failure>(
+            rows.into_iter()
+                .map(|(k, e)| (k.as_str().to_owned(), e))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let first = page(None, 1)?;
+    let next = page(Some("a"), 5)?;
+    ensure!(
+        (first.as_slice(), next.as_slice())
+            == (
+                [("a".to_owned(), b"a1".to_vec())].as_slice(),
+                [("b".to_owned(), b"b2".to_vec())].as_slice()
+            ),
+        "a page of one from the start answered {first:?}, and a page after a answered \
+         {next:?}, where a page is the entries after a key in key order"
+    );
+    let records = v
+        .count(&ty, &lakelands_api::engine::Scan::default())
+        .must("counting the order's records")?;
+    let record = v
+        .get(&ty, &RecordKey::from("a"))
+        .must("reading the order as a record")?;
+    ensure!(
+        (records, &record) == (0, &None),
+        "the order `{ty}` holds entries a and b: its record table reads {record:?} and counts \
+         {records}, where the entries are kept apart from the records"
+    );
+    // A rollback leaves what the order held.
+    p.begin().must("beginning a transaction")?;
+    p.put_order(&ty, &RecordKey::from("d"), Some(b"d3"))
+        .must("putting d")?;
+    p.end_order(&ty).must("ending the name")?;
+    p.put_order(&ty, &RecordKey::from("e"), Some(b"e3"))
+        .must("putting e")?;
+    p.rollback();
+    let (a, d, e) = (read(&ty, "a")?, read(&ty, "d")?, read(&ty, "e")?);
+    ensure!(
+        (a.as_deref(), &d, &e) == (Some(&b"a1"[..]), &None, &None),
+        "a rolled-back transaction put d, ended the name and put e: a, d and e read {a:?}, \
+         {d:?} and {e:?}, where the rollback leaves a alone"
+    );
+    // `end_order` deletes its name alone and keeps what follows it.
+    fold(engine, 3, |p| {
+        p.end_order(&ty)?;
+        p.put_order(&ty, &RecordKey::from("e"), Some(b"e4"))
+    })?;
+    let (a, e, s) = (read(&ty, "a")?, read(&ty, "e")?, read(&sibling, "a")?);
+    let left = page(None, 5)?;
+    ensure!(
+        (a.as_deref(), e.as_deref(), s.as_deref(), left.as_slice())
+            == (
+                None,
+                Some(&b"e4"[..]),
+                Some(&b"s1"[..]),
+                [("e".to_owned(), b"e4".to_vec())].as_slice()
+            ),
+        "a transaction ended the order and put e: a and e read {a:?} and {e:?}, the page holds \
+         {left:?}, and the sibling's a reads {s:?}, where ending the order deletes its entries \
+         alone and keeps what is put after it"
     );
     Ok(())
 }

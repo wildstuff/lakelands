@@ -331,9 +331,12 @@ pub trait ProjectionStore: Send + Sync {
     /// there where `entry` is none: what the fold keeps of an extreme's
     /// members ([`crate::seam::order_name`]). The bytes are the entry as
     /// the store wrote it, which an engine hands back unchanged: they hold
-    /// the member's id and the value the extreme keeps, and nothing that a
+    /// the member's id and the member's value as the fold read it, and nothing
+    /// that a
     /// read of the lake answers. An engine keeps no state of an order entry
     /// and nothing indexes it; a key put again holds the new entry alone.
+    /// The name is not judged: the store names the order, and no door
+    /// writes one.
     fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()>;
 
     /// Delete every entry of the order `name` at once: what was put before

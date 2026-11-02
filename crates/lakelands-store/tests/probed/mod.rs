@@ -575,10 +575,7 @@ impl ProjectionStore for Probed {
         let mut orders = self.probe.orders.lock().unwrap();
         match entry {
             None => drop(orders.remove(&(name.clone(), key.clone()))),
-            Some(entry) => drop(orders.insert(
-                (name.clone(), key.clone()),
-                entry.to_vec(),
-            )),
+            Some(entry) => drop(orders.insert((name.clone(), key.clone()), entry.to_vec())),
         }
         self.inner.projection().put_order(name, key, entry)
     }

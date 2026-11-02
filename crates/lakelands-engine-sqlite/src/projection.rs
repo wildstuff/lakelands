@@ -1040,11 +1040,21 @@ pub(crate) fn order(
     name: &TypeName,
     key: &RecordKey,
 ) -> Result<Option<Vec<u8>>> {
-    one(
-        conn,
-        "SELECT entry FROM view_order WHERE name = ?1 AND key = ?2",
-        params![name.as_str(), key.as_str()],
-    )
+    one(conn, ORDER_AT, params![name.as_str(), key.as_str()])
+}
+
+/// The statement an order's entry is read by, as the engine runs it.
+pub(crate) const ORDER_AT: &str = "SELECT entry FROM view_order WHERE name = ?1 AND key = ?2";
+
+/// The statement a page of an order is read by, as the engine runs it:
+/// after a key, in key order, at most `n`.
+pub(crate) const ORDER_PAGE: &str =
+    "SELECT key, entry FROM view_order WHERE name = ?1 AND key > ?2 ORDER BY key LIMIT ?3";
+
+/// The statements an order's entry and its page are read by, for the
+/// engine's own tests of their plans (lakelands#1690).
+pub fn order_statements() -> [String; 2] {
+    [ORDER_AT.to_owned(), ORDER_PAGE.to_owned()]
 }
 
 /// At most `n` entries of the order `name` after `after`, in key order.
@@ -1055,11 +1065,7 @@ pub(crate) fn order_page(
     n: u32,
 ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
     let after = after.map(RecordKey::as_str).unwrap_or("");
-    let mut stmt = conn
-        .prepare_cached(
-            "SELECT key, entry FROM view_order WHERE name = ?1 AND key > ?2 ORDER BY key LIMIT ?3",
-        )
-        .map_err(sql)?;
+    let mut stmt = conn.prepare_cached(ORDER_PAGE).map_err(sql)?;
     let rows = stmt
         .query_map(params![name.as_str(), after, n], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))

@@ -933,7 +933,8 @@ impl Views {
                 at.put_order(&name, &key, entry.as_deref().map(str::as_bytes))?;
                 let was = orders.entries.insert(key.as_str().into(), entry);
                 if let Some(undo) = &mut staged.undo {
-                    undo.0.push(Undone::Entry(name.clone(), key.as_str().into(), was));
+                    undo.0
+                        .push(Undone::Entry(name.clone(), key.as_str().into(), was));
                 }
             }
             for key in std::mem::take(&mut work.touched) {

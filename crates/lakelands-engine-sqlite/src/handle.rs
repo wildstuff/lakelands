@@ -429,8 +429,15 @@ impl SqliteLake {
     /// release, lets no other handle take the lease meanwhile.
     fn check_lease(&self, lease: &Lease) -> Result<MutexGuard<'_, Option<Held>>> {
         self.writable()?;
-        let held = lock(&self.held);
-        let (fence, holder) = self.lease_file.current()?;
+        let mut held = lock(&self.held);
+        // The fence is read through the file this handle holds locked: a
+        // second handle is refused the read on Windows while the lock is
+        // held. One that holds no lease reads the path, and is told the
+        // lease is stale, unnamed, when that read is refused the same way.
+        let (fence, holder) = match held.as_mut() {
+            Some(h) => self.lease_file.recorded(h)?,
+            None => self.lease_file.current()?,
+        };
         if held.as_ref().is_some_and(|h| h.lease == *lease) && fence == lease.fence {
             return Ok(held);
         }
@@ -865,7 +872,9 @@ impl ProjectionStore for SqliteLake {
     }
 
     fn end_order(&self, name: &TypeName) -> Result<()> {
-        self.stage(Position::GENESIS, |conn, _| projection::end_order(conn, name))
+        self.stage(Position::GENESIS, |conn, _| {
+            projection::end_order(conn, name)
+        })
     }
 
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {

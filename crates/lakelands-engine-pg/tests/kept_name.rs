@@ -369,7 +369,8 @@ fn an_order_entry_is_kept_apart_from_the_records() {
     p.begin().unwrap();
     for at in 1..=40 {
         let entry = format!(r#"{{"v":{at}}}"#);
-        p.put_order(&name, &key(at), Some(entry.as_bytes())).unwrap();
+        p.put_order(&name, &key(at), Some(entry.as_bytes()))
+            .unwrap();
     }
     // A key put again replaces its entry.
     p.put_order(&name, &key(7), Some(br#"{"v":"7b"}"#)).unwrap();
@@ -421,14 +422,21 @@ fn an_order_entry_is_kept_apart_from_the_records() {
     p.begin().unwrap();
     p.put_order(&name, &key(7), None).unwrap();
     p.commit(Position(42)).unwrap();
-    assert!(engine.view(None).unwrap().order(&name, &key(7)).unwrap().is_none());
+    assert!(
+        engine
+            .view(None)
+            .unwrap()
+            .order(&name, &key(7))
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         common::settled(
             &url,
             &schema,
             &format!(
-            "SELECT count(*) FROM {schema}.view_order WHERE name = 'sys:order.v' AND $1 <> ''"
-        ),
+                "SELECT count(*) FROM {schema}.view_order WHERE name = 'sys:order.v' AND $1 <> ''"
+            ),
         ),
         39,
         "a key ended leaves no entry"
@@ -450,8 +458,8 @@ fn an_order_entry_is_kept_apart_from_the_records() {
             &url,
             &schema,
             &format!(
-            "SELECT count(*) FROM {schema}.view_order WHERE name = 'sys:order.v' AND $1 <> ''"
-        ),
+                "SELECT count(*) FROM {schema}.view_order WHERE name = 'sys:order.v' AND $1 <> ''"
+            ),
         ),
         0,
         "an order ended whole leaves no entry"
@@ -519,9 +527,7 @@ async fn the_fold_keeps_an_extremes_order_apart_from_the_records() {
     let records = common::settled(
         &url,
         &schema,
-        &format!(
-            "SELECT count(*) FROM {schema}.records WHERE ty = 'sys:order.ends' AND $1 <> ''"
-        ),
+        &format!("SELECT count(*) FROM {schema}.records WHERE ty = 'sys:order.ends' AND $1 <> ''"),
     );
     assert_eq!(records, 0, "the fold writes no `sys:order.` record");
     let entries = common::settled(

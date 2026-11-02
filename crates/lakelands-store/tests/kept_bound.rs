@@ -180,8 +180,8 @@ impl Peaks {
         self.read_of(lakelands_api::seam::order_name(&view.into()).as_str())
     }
 
-    /// The entries of the orders of `view` the engine holds, each its key
-    /// and what it holds.
+    /// The entries of the orders of `view` put since the last clear, each
+    /// its key and what it holds.
     fn entries(&self, view: &str) -> Vec<String> {
         let name = lakelands_api::seam::order_name(&view.into());
         let orders = self.probe.orders.lock().unwrap();

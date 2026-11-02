@@ -180,6 +180,19 @@ jobs:
         run: scripts/pg-live/up.sh | sed 's/^export //' >> "$GITHUB_ENV"
       - run: cargo nextest run --locked -p lakelands-engine-pg --test live_servers --no-tests=fail
 
+  # The SQLite engine's lease on the operating system whose file lock is
+  # mandatory: a read through a second handle is refused there while the
+  # lease is held, and must still be answered as a held lease, never as a
+  # storage failure (lakelands#1688).
+  sqlite-lease-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p lakelands-engine-sqlite --lib lease
+
   # Licences and advisories (deny.toml): one job each, so a new advisory
   # never hides a licence failure.
   deny:

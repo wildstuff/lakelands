@@ -780,9 +780,9 @@ fn the_vector_index_is_shared_by_every_handle_to_the_lake() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_fold_keeps_an_extremes_order_apart_from_the_records() {
     use lakelands_api::Location;
+    use lakelands_api::ontology::StorageKind;
     use lakelands_api::seam::{Seams, VIEW_KEPT_SETTING, order_name};
     use lakelands_core::conformance::fixture::{Lake, field, type_decl, view_of};
-    use lakelands_api::ontology::StorageKind;
     use std::sync::Arc;
 
     let opener = MemoryOpener::new();

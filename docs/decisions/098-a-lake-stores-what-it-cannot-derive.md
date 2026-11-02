@@ -353,11 +353,13 @@ Measured, SQLite, 100 000 ticks with three roll-ups, A/B, load 3 to 4:
 
 - **`sys:kept` keeps the head.** Read: an earlier read of a kept view computes
   already, and `describe`'s three earlier-position reads are what change with it.
-- **`view_order` holds an entry as bytes:** extreme, group, sort key and the
-  member's id, and no copy of a value. Read: a state of an order entry holds nothing
-  a member's record does not. It is the largest gain measured here, 5.6× in time and
-  4.5× in bytes over a `sys:kept` of heads, and with those heads 7.4× and 5.8× over
-  today. It is what candles run on.
+- **`view_order` holds an entry as bytes:** the member's value as the fold read
+  it, the member's id and, for `first` and `last`, the value they carry; the key it
+  is put at names the source's extreme (its call), the group, the face, the
+  member's place and its key, and no state of the member's record is written. Read: a seek hands the entry's own bytes on, so a
+  holder never reads its record again for the extreme. It is the largest gain
+  measured here, 5.6× in time and 4.5× in bytes over a `sys:kept` of heads, and with
+  those heads 7.4× and 5.8× over today. It is what candles run on.
 - **An extreme over a sorted field** could read its next holder from the source's
   order index and keep no entry. Reckoned; it waits for record 097's `series_index`.
 
@@ -677,10 +679,18 @@ candles.
   `sys:order.<view>` record any more, and no table of the records holds one.
 - **Tested.** `ORDER_ENTRIES_APART` runs on every engine: the extreme's next
   holder after one source's values are taken back, and after the holder that
-  follows is retired, the view kept at each, as its twin computes. Beside the
-  suite, each engine's own test folds a view and opens the projection: SQLite and
-  PostgreSQL count no `sys:order.` record and the `view_order` rows; the memory
-  engine's `sys:order.ends` scan is empty and its order table answers a page.
+  follows is retired, the view kept at each, as its twin computes. The engine
+  seam's own row, `ORDER_ENTRY`, puts, replaces, deletes and pages entries and
+  ends a name on each engine, keeps a sibling order, and reads none of it as a
+  record. A scoped refold writes no order entry: `Scoped` keeps `put_order` and
+  `end_order` from the engine as it keeps every write to a record its page does
+  not restate, since the view's own folds are kept from it too, and a store test
+  puts an entry and ends a name under a scope beside the entry it leaves.
+  Beside the suite, each engine's own test folds a view and opens the
+  projection: SQLite and PostgreSQL count no `sys:order.` record and the
+  `view_order` rows; the memory engine's `sys:order.ends` scan is empty and its
+  order answers a page; SQLite's plans the entry's and the page's statements as
+  seeks of `view_order`'s key.
 - **Measured** (SQLite, 100 000 ticks, three roll-ups, one machine, A/B):
 
 | kept storage | µs a tick | written, B a tick | after `VACUUM`, B a tick |
@@ -691,11 +701,14 @@ candles.
   The two times are two runs at one-minute loads of 7 and 18; the machine ran
   the rest of the fleet throughout, so the time column is contention-bound,
   while the bytes repeated exactly at every load. The order entries are half the
-  projection as written, and just under half after `VACUUM`.
-- **What differs from the sketch.** The entry is the bytes the fold already had,
-  opaque to the engine, so the engines gain a byte table and no serializer and
-  the entry stays JSON text; and F10 and F11 shipped as one pull request, F11
-  against the seam F10 proved on SQLite.
+  projection as written, and just over half after `VACUUM`.
+- **What differs from the sketch.** The sketch said an entry holds no copy of a
+  value; as built it holds the member's value as the fold read it (and, for
+  `first` and `last`, the value they carry), which is what lets a holder hand on its own
+  bytes, while the extreme, the group, the face and the place are in the key. The
+  entry is the bytes the fold already had, opaque to the engine, so the engines
+  gain a byte table and no serializer, and the entry stays JSON text. F10 and F11
+  shipped as one pull request, F11 against the seam F10 proved on SQLite.
 
 ## Why
 
