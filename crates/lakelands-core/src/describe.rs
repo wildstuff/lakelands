@@ -583,7 +583,16 @@ pub fn probed_types(d: &Declaration) -> std::collections::BTreeSet<TypeName> {
             named.chain(views.map(|(source, _)| source)).collect()
         }
         Declaration::ObjectSet(s) => [s.of.clone()].into(),
-        Declaration::Trigger(t) => [t.on.clone()].into(),
+        Declaration::Trigger(t) => {
+            let paired = t.when.iter().filter_map(parsed).flat_map(|e| {
+                let paired = e.pairings().unwrap_or_default();
+                paired
+                    .iter()
+                    .map(|p| TypeName::from(p.ty.as_str()))
+                    .collect::<Vec<_>>()
+            });
+            [t.on.clone()].into_iter().chain(paired).collect()
+        }
         Declaration::Verb(v) => [v.on.clone()].into(),
         _ => Default::default(),
     }
@@ -592,7 +601,8 @@ pub fn probed_types(d: &Declaration) -> std::collections::BTreeSet<TypeName> {
 /// The fields of `ty` whose values a declaration reads: a derived field's
 /// expression on `ty` itself, the fields a derived relation matches, its
 /// own and those of `ty` as its target, what a view reads of `ty` as a
-/// source ([`view_reads`]), a set's `where`, a trigger's `when`, and a
+/// source ([`view_reads`]), a set's `where`, a trigger's `when`, with the
+/// fields of another type its `in_force` reads (100), and a
 /// verb's conditions and what it sets its fields from (where
 /// `payload.<name>` is the call's and reads no field), each with what the
 /// sets it names read, as `sets` answers them. A condition that does not
@@ -628,7 +638,12 @@ pub fn declaration_probes(
                 .collect()
         }
         Declaration::ObjectSet(s) if &s.of == ty => of(&s.filter),
-        Declaration::Trigger(t) if &t.on == ty => t.when.as_ref().map(of).unwrap_or_default(),
+        Declaration::Trigger(t) => {
+            let on = t.when.as_ref().filter(|_| &t.on == ty);
+            let mut names = on.map(of).unwrap_or_default();
+            names.extend(t.when.as_ref().map(|w| paired(w, ty)).unwrap_or_default());
+            names
+        }
         Declaration::Verb(v) if &v.on == ty => {
             let own = |c: &Condition| parsed(c).map(|e| crate::derive::verb_reads(&e).0);
             let of = |c| {
@@ -656,21 +671,31 @@ pub fn declaration_probes(
 /// reaction says that its condition held. A field hidden on some records
 /// is not read: the reaction would say what it holds there (006).
 pub fn named_reactions(lake: &LakeDescription, set_off: &mut lakelands_api::write::SetOff) {
-    let reads = |ty: &TypeName, c: Option<&Condition>| {
+    let read = |ty: &TypeName, n: &FieldName| {
         let fields = lake.types.iter().find(|t| &t.name == ty).map(|t| &t.fields);
-        let read = |n: &FieldName| {
-            let told = |f: &&FieldDescription| f.access.reads() && f.hidden_where.is_empty();
-            fields.is_some_and(|f| f.iter().filter(told).any(|f| &f.name == n))
-        };
+        let told = |f: &&FieldDescription| f.access.reads() && f.hidden_where.is_empty();
+        fields.is_some_and(|f| f.iter().filter(told).any(|f| &f.name == n))
+    };
+    let reads = |ty: &TypeName, c: Option<&Condition>| {
         let sets = |n: &str| {
             let named = lake.object_sets.iter().find(|d| d.name == n);
             named.map(|d| d.filter.clone())
         };
-        c.is_none_or(|c| named(c, &sets).is_some_and(|names| names.iter().all(read)))
+        let names = |c| named(c, &sets);
+        c.is_none_or(|c| names(c).is_some_and(|names| names.iter().all(|n| read(ty, n))))
+    };
+    // A guard that pairs reads the fields of the type it pairs with, too.
+    let pairs = |c: Option<&Condition>| {
+        let paired = |e: Expr| {
+            let all = e.pairings().unwrap_or_default();
+            let ty = |p: &lakelands_api::expr::Pairing| TypeName::from(p.ty.as_str());
+            all.iter().all(|p| p.theirs().all(|n| read(&ty(p), n)))
+        };
+        c.and_then(parsed).is_none_or(paired)
     };
     let fired = |t: &lakelands_api::TriggerName| {
         let mut named = lake.triggers.iter().filter(|d| &d.name == t);
-        named.any(|d| reads(&d.on, d.when.as_ref()))
+        named.any(|d| reads(&d.on, d.when.as_ref()) && pairs(d.when.as_ref()))
     };
     set_off.fired.retain(fired);
     let listed = |s: &String| {
@@ -701,6 +726,18 @@ fn aggregated(e: &Expr, inside: bool, out: &mut std::collections::BTreeSet<Field
         }
         _ => crate::expr::children(e).for_each(|a| aggregated(a, inside, out)),
     }
+}
+
+/// The fields of `ty` a condition's `in_force` calls read of it.
+fn paired(c: &Condition, ty: &TypeName) -> std::collections::BTreeSet<FieldName> {
+    let Some(e) = parsed(c) else {
+        return Default::default();
+    };
+    let paired = e.pairings().unwrap_or_default();
+    let of_ty = paired.into_iter().filter(|p| p.ty.as_str() == ty.as_str());
+    of_ty
+        .flat_map(|p| p.theirs().cloned().collect::<Vec<_>>())
+        .collect()
 }
 
 /// A condition in its typed form; `None` when it does not parse.

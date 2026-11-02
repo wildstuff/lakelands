@@ -381,6 +381,7 @@ fn changed_and_previous_read_the_write() {
         meta: None,
         settings: None,
         preceding: None,
+        paired: None,
         now: Timestamp(0),
     };
     let holds_in = |t: &str| holds(&parse(t).unwrap(), &scope).unwrap();
@@ -409,6 +410,7 @@ fn retired_reads_whether_the_write_retires() {
         meta: None,
         settings: None,
         preceding: None,
+        paired: None,
         now: Timestamp(0),
     };
     let retire = WriteScope {
@@ -467,6 +469,7 @@ fn settings_and_provenance_come_from_the_scope() {
         meta: Some(&meta),
         settings: Some(&settings),
         preceding: None,
+        paired: None,
         now: Timestamp(0),
     };
     let v = eval(&parse("amount * setting('vat_rate')").unwrap(), &scope).unwrap();

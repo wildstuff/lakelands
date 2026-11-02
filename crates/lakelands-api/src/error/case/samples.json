@@ -130,6 +130,14 @@
    "right": "f"
   },
   {
+   "code": "guard_in_force_form"
+  },
+  {
+   "code": "guard_in_force_pair",
+   "left": "f",
+   "right": "f"
+  },
+  {
    "code": "constraint_reads_beyond",
    "constraint": "c",
    "reads": {
