@@ -645,10 +645,10 @@ its mark and changed nowhere else.
   position, which is another public-surface break. The round stopped at
   S2, where the issue's size rule sends it.
 - **Measured at S2's head**: product 101 668 of the 108 500 base and
-  specification 186 080 of the 191 500 base; seam 102 of 110; 6 of 20
+  specification 186 081 of the 191 500 base; seam 102 of 110; 6 of 20
   `cfg(feature)` sites; 1 012 checks through the doors and 89 through the
   engine seam; 1 018 refusal cases. S2's own lines: product +390 −10,
-  specification +127 −1; the plan's 100 and 120 were the sketch, and the
+  specification +128 −1; the plan's 100 and 120 were the sketch, and the
   extra is the wrappers' forwarding and the seam's row. Nothing was cut.
   Merging `develop` after S2 landed raised both `LAYOUT`s by one again,
   to 11 and 13, since the order's tables landed there from their own

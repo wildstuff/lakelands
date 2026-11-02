@@ -1261,16 +1261,17 @@ fn thinned_acts_and_tombstones_read_at_the_head(engine: &dyn LakeEngine) -> Held
         through: Position(through),
         gone,
     };
-    // The later act is written first, so the order the read answers is the
-    // position each act began at, not the order the puts came in.
+    // The later act is written first and carries the earlier horizon, so the
+    // order the read answers is the position each act began at, not its
+    // horizon nor the order the puts came in.
     fold(engine, 4, |p| {
-        p.put_thinned_act(&row(late, 4, 6), Position(4))
+        p.put_thinned_act(&row(early, 4, 6), Position(4))
     })?;
     fold(engine, 5, |p| {
-        p.put_thinned_act(&row(early, 1, 2), Position(2))
+        p.put_thinned_act(&row(late, 1, 2), Position(2))
     })?;
     fold(engine, 6, |p| {
-        let part = p.put_thinned_act(&row(early, 3, 5), Position(3));
+        let part = p.put_thinned_act(&row(late, 3, 5), Position(3));
         part.and_then(|()| p.put_thinned(&ty, &key, early, Position(3)))
     })?;
     fold(engine, 7, |p| p.put_thinned(&ty, &key, late, Position(5)))?;
@@ -1284,15 +1285,15 @@ fn thinned_acts_and_tombstones_read_at_the_head(engine: &dyn LakeEngine) -> Held
     };
     let (acts, taken) = read(None)?;
     let (earlier, taken_earlier) = read(Some(Position(1)))?;
-    let want = vec![row(early, 3, 5), row(late, 4, 6)];
+    let want = vec![row(late, 3, 5), row(early, 4, 6)];
     ensure!(
         acts == want && taken == Some(early) && earlier == want && taken_earlier == Some(early),
-        "an act beginning at 2 (through 1, gone 2, moved to through 3 and gone 5) and one \
-         beginning at 4 (through 4, gone 6), the later written first, with a tombstone for `a` \
-         at 3 and a second put of the key with the other horizon at 5, read {acts:?} and \
-         {taken:?} at the head, and {earlier:?} and {taken_earlier:?} at 1; both reads must \
-         answer the acts oldest by the position each began at, and `a`'s first horizon, since \
-         the marks are read at the head in every read"
+        "an act beginning at 2 (horizon 2 000, through 1, gone 2, moved to through 3 and gone \
+         5) and one beginning at 4 (horizon 1 000, through 4, gone 6), the later written first, \
+         with a tombstone for `a` at 3 and a second put of the key with the other horizon at 5, \
+         read {acts:?} and {taken:?} at the head, and {earlier:?} and {taken_earlier:?} at 1; \
+         both reads must answer the acts oldest by the position each began at, and `a`'s first \
+         horizon, since the marks are read at the head in every read"
     );
     Ok(())
 }
