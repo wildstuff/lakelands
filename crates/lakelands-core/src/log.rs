@@ -563,18 +563,85 @@ fn json_of(bytes: &[u8]) -> std::result::Result<Value, Flaw> {
 pub fn digest_of<'a>(
     events: impl IntoIterator<Item = &'a CanonicalEvent>,
 ) -> std::result::Result<Digest, (Position, Flaw)> {
-    let (mut hash, mut restorer) = (Sha256::new(), Restorer::default());
-    for event in events {
-        let (restored, whole) = restorer
-            .restore_json(event)
-            .map_err(|flaw| (event.position, flaw))?;
-        match whole {
-            true => hash.update(&event.bytes),
-            false => hash.update(canonical::to_vec(&restored)),
+    let mut digesting = Digesting::default();
+    digesting.add(events);
+    digesting.digest()
+}
+
+/// The byte [`Digesting::state`] puts before the running hash's bytes: the
+/// format and version of the state, so that a state a release would read
+/// differently is refused rather than read wrongly.
+const STATE_TAG: u8 = 1;
+
+/// A segment's digest (§4.2) kept running as its events are appended, so
+/// that a seal restores nothing: [`digest_of`] over every event added, or
+/// the first that did not restore, after which it takes no more.
+#[derive(Clone, Debug, Default)]
+pub struct Digesting {
+    hash: Sha256,
+    broken: Option<(Position, Flaw)>,
+}
+
+impl Digesting {
+    /// Adds `events`, one append's or more, restored as [`digest_of`]
+    /// restores them.
+    pub fn add<'a>(&mut self, events: impl IntoIterator<Item = &'a CanonicalEvent>) {
+        let mut restorer = Restorer::default();
+        for event in events {
+            if self.broken.is_some() {
+                return;
+            }
+            match restorer.restore_json(event) {
+                Ok((_, true)) => self.restored(&event.bytes),
+                Ok((restored, false)) => self.restored(&canonical::to_vec(&restored)),
+                Err(flaw) => self.broken = Some((event.position, flaw)),
+            }
         }
-        hash.update(b"\n");
     }
-    Ok(Digest(canonical::hex(&hash.finalize())))
+
+    /// Adds one event by its canonical bytes as restored, which its reader
+    /// restored already.
+    pub fn restored(&mut self, bytes: &[u8]) {
+        if self.broken.is_none() {
+            self.hash.update(bytes);
+            self.hash.update(b"\n");
+        }
+    }
+
+    /// The digest of the events added, or where the first that did not
+    /// restore stands and why.
+    pub fn digest(&self) -> std::result::Result<Digest, (Position, Flaw)> {
+        match &self.broken {
+            Some(broken) => Err(broken.clone()),
+            None => Ok(Digest(canonical::hex(&self.hash.clone().finalize()))),
+        }
+    }
+
+    /// Its state as bytes, tagged with the format and version they are
+    /// written in (`STATE_TAG`), which [`Digesting::of_state`] takes
+    /// back; none once an event did not restore.
+    pub fn state(&self) -> Option<Vec<u8>> {
+        use sha2::digest::common::hazmat::SerializableState as _;
+        self.broken.is_none().then(|| {
+            let mut state = vec![STATE_TAG];
+            state.extend_from_slice(self.hash.serialize().as_ref());
+            state
+        })
+    }
+
+    /// The digest whose [`Digesting::state`] `bytes` are, in this release's
+    /// format and version; none for any other, which the caller digests
+    /// from its restores instead.
+    pub fn of_state(bytes: &[u8]) -> Option<Digesting> {
+        use sha2::digest::common::hazmat::SerializableState;
+        let (tag, state) = bytes.split_first()?;
+        if *tag != STATE_TAG {
+            return None;
+        }
+        let state = state.try_into().ok()?;
+        let hash = Sha256::deserialize(state).ok()?;
+        Some(Digesting { hash, broken: None })
+    }
 }
 
 /// Where a reader of one segment's lines stands, read in order (§1.2,

@@ -166,8 +166,9 @@ open, and goes on from there, so a lease taken in the middle of a segment seals 
 the digest the one that began it would have. On PostgreSQL (lakelands#1681) the
 running hash's state is kept beside the segment, in `segments.running`, tagged
 with a format and a version byte of its own; a tag the code does not know, from an
-older or a newer build, is no state, and the writer computes the segment's digest
-once on open and goes on from it. The 64 MiB default stays. Measured in the same
+older or a newer build, is no state: the writer goes on without one and writes the
+row NULL, so no later writer trusts it, and the seal digests the segment from its
+rows. The 64 MiB default stays. Measured in the same
 way, ticks 249 at a time, the write that crossed the bound waited 95.7, 145.2 and,
 with the thinned index below, 73.9 ms (load 16 to 23), where the build before it
 waited 8.0 s on the same 410 601 ticks (load 16 to 23).
@@ -182,6 +183,19 @@ a row a block in `STORAGE EXTERNAL`, since a block is compressed already, and th
 ids it answers an applied id from move to `ids (id, at)`: reckoned at 135 B a tick.
 `frames` goes, since a header holds what it held. The memory engine keeps what it
 is handed, so it needs the seam's change alone.
+
+As built on PostgreSQL (lakelands#1673): a row is a unit, a block or a line alone,
+keyed by its first position beside its last, the `prev` its first event names and
+its last event's hash, so a read finds the row holding a position, and the tip, by
+the key alone. A row keeps nothing else where its bytes restore to the events the
+store handed; where they do not, as a conformance check's planted break, it keeps
+those events in a `kept` column, so the engine still hands back what it was handed.
+Measured on PostgreSQL 18 at 300 000 ticks (load 3 to 4 on 16 cores): `log` 72 B a
+tick, `ids` 126 B (its heap 60 B and its key 66 B), `segments` 0.1 B, 198 B
+together against 555.5 B before (the 540 B a tick read when this layout was drawn,
+measured again at 555.5); the reckoning of 135 B left out the heap of
+`ids`. The append's statements take 6.1 µs a tick, `ids` 4.3 of them. On the
+memory engine the seam's change was all.
 
 As built on SQLite (lakelands#1672), where the tree differs from the sketch: the
 index keeps a line an event, thinned. A block's event names its `id` empty, its
@@ -247,12 +261,27 @@ joins through `keys`, which disfavours it a little; not by that much.
   index with an incremental sort took 0.49 ms for 1 000 rows, against 1.0 ms for
   today's bitmap over both indexes. It needs one more bound, `s.sort_key <= k`,
   beside today's `OR`.
+  Corrected by F8, measured on PostgreSQL 18 at 300k ticks, load 9 to 11 on 16
+  cores, the median of 60 reads of the second page: the old plan read
+  `sort_index_desc` alone, no bitmap, in 0.58 to 0.60 ms; the backward walk
+  takes 0.84 to 1.04 ms. The index goes for its 107 B a tick all the same:
+  the whole page takes 12 ms, and its records' 1 000 lookups are 11.7 of them.
+  Measured again with F6 in, PostgreSQL 18 at 300k ticks, load 2.8 on 16 cores,
+  the median of 60: the backward walk takes 0.25 ms (0.24 to 0.35), at a load
+  that did not crowd it.
   As built on SQLite (lakelands#1672): the backward walk sorts each run of tied
   values by key ascending, a temporary b-tree for the last term of the order, so
   a window down costs what a window up does plus a sort of the longest run of
   ties it crosses; a field most records share costs that sort on every page.
 - **`text_index_key` goes.** Read: only deletes use it, and a delete knows the
   values its record held, so it goes by primary key.
+  Corrected by F8 on PostgreSQL, where the tree said otherwise. A page under a
+  text many records hold sought each holder's text row through it, comparing
+  the key in the column's collation; it now compares it bytewise and seeks
+  `text_index_value` by all four columns. The engine is handed a record's new
+  state only, so before a head moves its old values are read from the state
+  the head is at, and its text rows go by `text_index_value`, those the new
+  state holds again staying.
 - **`sort_index`'s primary key stays,** though it looks spare: read,
   `unsorted_after_sql`, `holders_in_order_sql` and `unsorted_holding_sql` seek it
   by key. A trial without it was withdrawn.

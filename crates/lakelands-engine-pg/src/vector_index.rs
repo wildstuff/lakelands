@@ -104,10 +104,12 @@ const CANCEL_AGAIN: Duration = Duration::from_millis(20);
 /// The wait before the builder looks again whether the searches that
 /// might read an old table have ended.
 const DROP_AGAIN: Duration = Duration::from_millis(200);
-/// Whether a record's state `r` is held, as `records.state` writes it.
-const HELD: &str = "coalesce((r.state::jsonb ->> 'restricted') = 'true', false)";
-/// Whether a record's state `r` is retired, likewise.
-const RETIRED: &str = "coalesce((r.state::jsonb ->> 'retired') = 'true', false)";
+/// Whether a record's head `h` is held, as its `flags` say
+/// ([`projection::HELD`]); not where there is no head.
+const HELD: &str = "coalesce(h.flags & 2 <> 0, false)";
+/// Whether a record's head `h` is retired ([`projection::RETIRED`]).
+const RETIRED: &str = "coalesce(h.flags & 1 <> 0, false)";
+const _: () = assert!(projection::HELD == 2 && projection::RETIRED == 1);
 
 /// pgvector, found in the server: the schema its type and operators live
 /// in, quoted.
@@ -308,16 +310,11 @@ fn fill(
     (table, n): (&str, u32),
     keys: Option<&[String]>,
 ) -> Result<()> {
-    let (vectors, heads, records) = (
-        names.t("vectors"),
-        names.t("records_head"),
-        names.t("records"),
-    );
+    let (vectors, heads) = (names.t("vectors"), names.t("records_head"));
     let select = |which: &str| {
         format!(
             "SELECT v.key, v.single, v.data, {HELD}, {RETIRED} FROM {vectors} v \
              LEFT JOIN {heads} h ON h.ty = v.ty AND h.key = v.key \
-             LEFT JOIN {records} r ON r.ty = h.ty AND r.key = h.key AND r.since = h.since \
              WHERE v.ty = $1 AND v.field = $2 AND v.until IS NULL AND {which}"
         )
     };
@@ -387,10 +384,8 @@ fn fill(
 fn held_any(db: &mut Db, names: &Names, ty: &str) -> Result<bool> {
     let row = db.query_one(
         &format!(
-            "SELECT EXISTS (SELECT 1 FROM {} h JOIN {} r ON r.ty = h.ty AND r.key = h.key \
-             AND r.since = h.since WHERE h.ty = $1 AND {HELD})",
+            "SELECT EXISTS (SELECT 1 FROM {} h WHERE h.ty = $1 AND {HELD})",
             names.t("records_head"),
-            names.t("records")
         ),
         &[&ty],
     )?;
@@ -594,10 +589,8 @@ fn held_of(db: &mut Db, names: &Names, ty: &str, keys: &[String]) -> Result<Vec<
     db.column(
         &format!(
             "SELECT h.key FROM unnest($2::text[]) AS b(key) JOIN {} h \
-             ON h.ty = $1 AND h.key = b.key JOIN {} r ON r.ty = h.ty AND r.key = h.key \
-             AND r.since = h.since WHERE {HELD}",
+             ON h.ty = $1 AND h.key = b.key WHERE {HELD}",
             names.t("records_head"),
-            names.t("records")
         ),
         &[&ty, &keys],
     )

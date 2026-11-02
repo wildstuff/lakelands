@@ -356,7 +356,9 @@ fn keys(page: &[StoredRecord]) -> Vec<RecordKey> {
 /// The plan of each statement of a page under a text many records hold,
 /// the tables analysed first, so that the plan does not hang on whether
 /// the server's own analysis has run (lakelands#674): the order index's
-/// rows in its order, or the text index's in key order, and no sort.
+/// rows in its order, or the text index's in key order, and no sort. A
+/// page down walks the ascending order index backward, and sorts only a
+/// tie by key, incrementally: there is no descending index.
 ///
 /// The cursor a long page under a text few records hold declares
 /// (lakelands#695), and each batch before it (lakelands#840), have one plan, at five holders (`rare`) and at the
@@ -405,16 +407,27 @@ fn planned_without_a_sort(url: &str, schema: &str) {
     .join()
     .unwrap();
     let (holding, cursors) = plans.split_at(3);
-    for (plan, index) in
-        holding
-            .iter()
-            .zip(["sort_index_asc", "sort_index_desc", "text_index_value"])
-    {
+    let read = [
+        "using sort_index_asc",
+        "Backward using sort_index_asc",
+        "text_index_value",
+    ];
+    for ((plan, index), down) in holding.iter().zip(read).zip([false, true, false]) {
         let has = |step: &str| plan.iter().any(|line| line.contains(step));
+        let node = |line: &String| {
+            line.trim_start()
+                .trim_start_matches("->")
+                .trim_start()
+                .to_owned()
+        };
+        let sorted = plan
+            .iter()
+            .map(node)
+            .any(|n| n.starts_with("Sort (") || n == "Sort");
         assert!(
-            has(index) && !has("Sort") && !has("Seq Scan"),
-            "a page under a text many records hold is not read from `{index}` in its order, \
-             with no sort:\n{plan:#?}"
+            has(index) && !sorted && (down || !has("Sort")) && !has("Seq Scan"),
+            "a page under a text many records hold is not read by `{index}` in its order, \
+             with no sort but a tie's:\n{plan:#?}"
         );
     }
     for plan in cursors {

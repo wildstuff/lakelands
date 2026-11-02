@@ -152,25 +152,24 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
 
 /// The tables of a lake 0.19.0 made, which opens no schema holding others.
 /// The log taken back to 0.20.0's: its formats in `v`, text columns,
-/// `applied`, no `log_id`.
+/// `applied`, no `ids`.
 fn as_text(s: &str) -> String {
     format!(
-        "DROP INDEX {s}.log_id; \
-         ALTER TABLE {s}.log ALTER COLUMN id TYPE text USING encode(id, 'hex'), \
-         ALTER COLUMN prev TYPE text USING encode(prev, 'hex'), \
+        "DROP TABLE {s}.ids; \
+         ALTER TABLE {s}.log ALTER COLUMN prev TYPE text USING encode(prev, 'hex'), \
          ALTER COLUMN hash TYPE text USING encode(hash, 'hex'); \
          CREATE TABLE {s}.applied (id TEXT PRIMARY KEY, at BIGINT NOT NULL); \
-         INSERT INTO {s}.applied SELECT id, min(position) FROM {s}.log GROUP BY id; \
          UPDATE {s}.log SET bytes = convert_to(replace(replace(convert_from(bytes, 'UTF8'), \
          '\"v\":{now}', '\"v\":20'), '\"format\":{now}', '\"format\":20'), 'UTF8')",
         now = lakelands_api::event::LOG_FORMAT_VERSION,
     )
 }
 
-/// A lake made holds the index on `id` that answers an applied id. A lake
-/// as 0.20.0 left it, on text columns and without that index, is refused
-/// in every mode by its format, where its ends are read: no statement
-/// fails on the columns' type, and nothing of the schema changes.
+/// A lake made holds the `ids` table whose key answers an applied id. A
+/// lake as 0.20.0 left it, on text columns and without that table, is
+/// refused in every mode by its format, where its ends are read: no
+/// statement fails on the columns' type, and nothing of the schema
+/// changes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_log_on_text_columns_is_refused_by_its_format() {
     let Some(url) = common::url_or_skip("log of 0.20.0") else {
@@ -183,12 +182,12 @@ async fn a_log_on_text_columns_is_refused_by_its_format() {
     store.close().await.unwrap();
     drop(store);
     let indexed = format!(
-        "SELECT count(*) FROM pg_indexes WHERE schemaname = '{schema}' AND indexname = 'log_id'"
+        "SELECT count(*) FROM pg_indexes WHERE schemaname = '{schema}' AND indexname = 'ids_pkey'"
     );
     let indexed = tokio::task::block_in_place(|| one(&url, &indexed));
     assert_eq!(
         indexed, 1,
-        "a lake made answers an applied id from its index on `id`"
+        "a lake made answers an applied id from the key of `ids`"
     );
     tokio::task::block_in_place(|| {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
