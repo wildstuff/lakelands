@@ -160,10 +160,14 @@ and hashing each event for the digest, about 14 µs an event, not to the inflate
 
 As built (lakelands#1672): the writer keeps the active segment's digest running.
 Each append adds its events, restored as the digest restores them, to a hash it
-holds, and the seal finishes that hash instead of reading the segment again. A
-writer that opens a segment already begun hashes what it holds once, at open, and
-goes on from there, so a lease taken in the middle of a segment seals to the digest
-the one that began it would have. The 64 MiB default stays. Measured in the same
+holds, and the seal finishes that hash instead of reading the segment again. On
+SQLite a writer that opens a segment already begun hashes what it holds once, at
+open, and goes on from there, so a lease taken in the middle of a segment seals to
+the digest the one that began it would have. On PostgreSQL (lakelands#1681) the
+running hash's state is kept beside the segment, in `segments.running`, tagged
+with a format and a version byte of its own; a tag the code does not know, from an
+older or a newer build, is no state, and the writer computes the segment's digest
+once on open and goes on from it. The 64 MiB default stays. Measured in the same
 way, ticks 249 at a time, the write that crossed the bound waited 95.7, 145.2 and,
 with the thinned index below, 73.9 ms (load 16 to 23), where the build before it
 waited 8.0 s on the same 410 601 ticks (load 16 to 23).
