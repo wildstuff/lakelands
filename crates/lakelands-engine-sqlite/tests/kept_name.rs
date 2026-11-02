@@ -10,21 +10,22 @@
 //! read costs is counted in the steps SQLite's virtual machine takes: for
 //! a name whose key was written five thousand times no more than for a
 //! name whose keys were written once. A recorded output is read the same
-//! way, by a seek. An
-//! order name (`lakelands_api::seam::ORDER_PREFIX`, lakelands#629) keeps
-//! one state for each key and is read by the statements of a stored type,
-//! its page after a key a seek into the primary key; nothing indexes it.
+//! way, by a seek. A
+//! view's order (`lakelands_api::seam::ORDER_PREFIX`, lakelands#1690) is
+//! kept in the `view_order` table, one entry for each key and no row of
+//! the record tables: an entry is read by its key, and a page after a key
+//! in key order.
 
 use std::path::PathBuf;
 
 use lakelands_api::Location;
 use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::event::Digest;
-use lakelands_api::id::{Position, TypeName, Version};
+use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{kept_name, order_name};
 use lakelands_core::conformance::fixture::stored_record;
-use lakelands_engine_sqlite::{SqliteOpener, read_statements};
+use lakelands_engine_sqlite::{SqliteOpener, order_statements, read_statements};
 use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, StatementStatus, params_from_iter};
 use serde_json::json;
@@ -122,6 +123,35 @@ fn every_statement_of_a_kept_name_is_planned_as_a_seek() {
             "a kept name's read at an earlier position does not step from key to key through \
              `keys` and seek each key's state, in the order of the keys:\n  {statement}\n  \
              {plan:#?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An order's entry and its page are seeks of the `view_order` table's
+/// primary key, the page in the key order that key keeps, so nothing
+/// sorts: the entries stand apart from the records and cost a seek each.
+#[test]
+fn an_orders_entry_and_page_are_planned_as_a_seek() {
+    let (dir, engine) = lake("order-plans");
+    drop(engine);
+    let db = Connection::open(dir.join("projection.db")).unwrap();
+    let [at, page] = order_statements();
+    for (statement, step) in [
+        (
+            &at,
+            "SEARCH view_order USING PRIMARY KEY (name=? AND key=?)",
+        ),
+        (
+            &page,
+            "SEARCH view_order USING PRIMARY KEY (name=? AND key>?)",
+        ),
+    ] {
+        let plan = plan(&db, statement);
+        assert!(
+            plan.len() == 1 && plan[0] == step,
+            "an order's read is not one seek of the `view_order` key, with nothing sorting \
+             its page:\n  {statement}\n  {plan:#?}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -243,26 +273,33 @@ fn a_read_of_a_kept_name_takes_the_steps_of_one_whose_keys_were_written_once() {
 }
 
 #[test]
-fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
+fn an_order_entry_is_kept_apart_from_the_records() {
     let (dir, engine) = lake("order");
     let name = order_name(&TypeName::from("v"));
+    let key = |at: u64| RecordKey::from(format!("k{at:02}").as_str());
     let p = engine.projection();
     p.begin().unwrap();
-    for at in 1..=100 {
-        let mut entry = state(&name, &format!("k{:02}", at % 50), at);
-        entry.fields =
-            serde_json::from_value(json!({"sys:entry": {"v": {"text": "1"}}, "t": "word"}))
-                .unwrap();
-        p.put_record(&entry).unwrap();
+    for at in 1..=40 {
+        let entry = format!(r#"{{"v":"{at}"}}"#);
+        p.put_order(&name, &key(at), Some(entry.as_bytes()))
+            .unwrap();
     }
-    // Ten keys ended one by one: an end leaves neither a state nor the
-    // key's number, whose key holds the value the entry orders by.
-    for at in 101..=110 {
-        let mut ended = state(&name, &format!("k{:02}", at % 50), at);
-        ended.version = Version(0);
-        p.put_record(&ended).unwrap();
-    }
-    p.commit(Position(110)).unwrap();
+    // A key put again replaces its entry.
+    p.put_order(&name, &key(7), Some(br#"{"v":"7b"}"#)).unwrap();
+    p.commit(Position(41)).unwrap();
+    let view = engine.view(None).unwrap();
+    assert_eq!(
+        view.order(&name, &key(7)).unwrap().as_deref(),
+        Some(&br#"{"v":"7b"}"#[..]),
+        "an entry is read by its key"
+    );
+    let page = view.order_page(&name, Some(&key(7)), 3).unwrap();
+    assert_eq!(
+        page.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["k08", "k09", "k10"],
+        "a page after a key is the next keys in order"
+    );
+    drop(view);
     drop(engine);
     let db = Connection::open(dir.join("projection.db")).unwrap();
     let count = |sql: &str| {
@@ -278,40 +315,141 @@ fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
         "SELECT COUNT(*) FROM edges WHERE src_ty = ?1 OR dst_ty = ?1",
     ]
     .map(count);
-    let full_text: i64 = db
-        .query_row("SELECT COUNT(*) FROM full_text", [], |r| r.get(0))
-        .unwrap();
     assert_eq!(
-        (rows, full_text),
-        ([40, 40, 0, 0, 0, 0], 0),
-        "one state and one number for each of the 40 keys not ended, no other row"
+        rows,
+        [0, 0, 0, 0, 0, 0],
+        "an order name holds no row of the record tables"
     );
-    let [_, later, _, _] = read_statements(&name, true);
-    let plan = plan(&db, &later);
-    assert!(
-        plan == [
-            "SEARCH k USING PRIMARY KEY (ty=? AND key>?)",
-            "SEARCH r USING INDEX sqlite_autoindex_records_1 (id=? AND since<?)",
-        ],
-        "an order name's page after a key is not a seek into the primary keys:\n  {later}\n  \
-         {plan:#?}"
+    assert_eq!(
+        count("SELECT COUNT(*) FROM view_order WHERE name = ?1"),
+        40,
+        "one entry for each key, in `view_order`"
     );
-    // Every key ended at once leaves no number either.
+    // An entry ended leaves no row, and so does an order ended whole.
     let engine = SqliteOpener
         .open(&Location::sqlite("kept", &dir), OpenMode::Write)
         .unwrap();
     let p = engine.projection();
     p.begin().unwrap();
-    p.end_head_only(&name, Position(111)).unwrap();
-    p.commit(Position(111)).unwrap();
-    drop(engine);
+    p.put_order(&name, &key(7), None).unwrap();
+    p.commit(Position(42)).unwrap();
+    let view = engine.view(None).unwrap();
+    assert!(view.order(&name, &key(7)).unwrap().is_none());
+    let page = view.order_page(&name, Some(&key(6)), 3).unwrap();
     assert_eq!(
-        [
-            count("SELECT COUNT(*) FROM records WHERE ty = ?1"),
-            count("SELECT COUNT(*) FROM keys WHERE ty = ?1")
-        ],
-        [0, 0],
-        "every key of the name ended at once leaves no state and no number"
+        page.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["k08", "k09", "k10"],
+        "an ended key is not read between the entries beside it"
     );
+    drop(view);
+    drop(engine);
+    let db = Connection::open(dir.join("projection.db")).unwrap();
+    let left = |sql: &str| {
+        db.query_row(sql, [name.as_str()], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    assert_eq!(
+        left("SELECT COUNT(*) FROM view_order WHERE name = ?1"),
+        39,
+        "a key ended leaves no entry"
+    );
+    let engine = SqliteOpener
+        .open(&Location::sqlite("kept", &dir), OpenMode::Write)
+        .unwrap();
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.end_order(&name).unwrap();
+    p.commit(Position(43)).unwrap();
+    assert!(
+        engine
+            .view(None)
+            .unwrap()
+            .order_page(&name, None, 100)
+            .unwrap()
+            .is_empty()
+    );
+    drop(engine);
+    let db = Connection::open(dir.join("projection.db")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM view_order WHERE name = ?1",
+            [name.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "an order ended whole leaves no entry"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The fold keeps a view's order entries in `view_order`, apart from the
+/// records (lakelands#1690): no `sys:order.` record is put, and the
+/// entries the extreme reads its next holder from are there.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_fold_keeps_an_extremes_order_apart_from_the_records() {
+    use lakelands_api::ontology::StorageKind;
+    use lakelands_api::seam::{Seams, VIEW_KEPT_SETTING};
+    use lakelands_core::conformance::fixture::{Lake, field, type_decl, view_of};
+    use std::sync::Arc;
+
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("kept-name-order-fold-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let seams = Seams {
+        engines: vec![Arc::new(SqliteOpener)],
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::sqlite("kept", &dir), seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl(
+        "line",
+        vec![
+            field("g", StorageKind::Text),
+            field("n", StorageKind::Number),
+        ],
+    ))
+    .await
+    .unwrap();
+    let fields = vec![
+        field("g", StorageKind::Text),
+        field("low", StorageKind::Number),
+        field("high", StorageKind::Number),
+    ];
+    l.declare(view_of(
+        "ends",
+        "line",
+        &["g"],
+        fields,
+        &[("low", "min(n)"), ("high", "max(n)")],
+    ))
+    .await
+    .unwrap();
+    l.set(&format!("{VIEW_KEPT_SETTING}ends"), json!(true))
+        .await
+        .unwrap();
+    for (key, fields) in [
+        ("a", json!({"g": "x", "n": 9})),
+        ("b", json!({"g": "x", "n": 5})),
+    ] {
+        l.upsert("line", key, fields).await.unwrap();
+    }
+    drop(store);
+    let db = Connection::open(dir.join("projection.db")).unwrap();
+    let count = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(
+        (count("SELECT COUNT(*) FROM records WHERE ty = 'sys:order.ends'")
+            + count("SELECT COUNT(*) FROM keys WHERE ty = 'sys:order.ends'")),
+        0,
+        "the fold writes no `sys:order.` record"
+    );
+    let entries = count("SELECT COUNT(*) FROM view_order WHERE name = 'sys:order.ends'");
+    assert!(
+        entries > 0,
+        "the extreme's order holds its entries in `view_order`, not {entries}"
+    );
+    drop(db);
     let _ = std::fs::remove_dir_all(&dir);
 }

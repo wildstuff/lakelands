@@ -565,7 +565,8 @@ pub trait LakeStore: Send + Sync {
     /// link types of its relations, and all of this is said of that
     /// selection alone; a type that cannot be purged from is refused.
     /// With the `report_id` of a preflight, it is refused as invalid
-    /// unless that report is of this purge at this head.
+    /// unless that report is of this purge at the position it was read
+    /// at, and names the selection the act finds there.
     async fn purge_source(
         &self,
         source: &SourceId,

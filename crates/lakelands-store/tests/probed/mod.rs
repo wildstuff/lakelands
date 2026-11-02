@@ -88,8 +88,8 @@ pub struct Probe {
     /// The last record put under each kept name and key.
     pub kept: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
     /// The entries of the kept views' orders put since the last clear, by
-    /// name and key, an ended one left out.
-    pub orders: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
+    /// name and key, a deleted one left out.
+    pub orders: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), Vec<u8>>>,
     /// Called before each commit reaches the engine, with the position it
     /// commits through: its transaction is still open.
     pub before_commit: Mutex<Option<Look>>,
@@ -222,6 +222,35 @@ impl ProjectionView for ProbedView<'_> {
             .entry(ty.clone())
             .or_default() += 1;
         self.inner.get(ty, key)
+    }
+
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        let entry = self.inner.order(name, key)?;
+        *self
+            .probe
+            .rows
+            .lock()
+            .unwrap()
+            .entry(name.clone())
+            .or_default() += usize::from(entry.is_some());
+        Ok(entry)
+    }
+
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        let page = self.inner.order_page(name, after, n)?;
+        *self
+            .probe
+            .rows
+            .lock()
+            .unwrap()
+            .entry(name.clone())
+            .or_default() += page.len();
+        Ok(page)
     }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.probe.read_at(ty, keys);
@@ -533,12 +562,6 @@ impl ProjectionStore for Probed {
                 .lock()
                 .unwrap()
                 .insert((ty, key), record.clone());
-        } else if lakelands_api::seam::is_head_only(&ty) {
-            let mut orders = self.probe.orders.lock().unwrap();
-            match record.is_ended() {
-                true => drop(orders.remove(&(ty, key))),
-                false => drop(orders.insert((ty, key), record.clone())),
-            }
         }
         self.inner.projection().put_record(record)
     }
@@ -546,9 +569,20 @@ impl ProjectionStore for Probed {
         self.inner.projection().drop_states(of)
     }
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        self.inner.projection().end_head_only(name, at)
+    }
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        let mut orders = self.probe.orders.lock().unwrap();
+        match entry {
+            None => drop(orders.remove(&(name.clone(), key.clone()))),
+            Some(entry) => drop(orders.insert((name.clone(), key.clone()), entry.to_vec())),
+        }
+        self.inner.projection().put_order(name, key, entry)
+    }
+    fn end_order(&self, name: &TypeName) -> Result<()> {
         let mut orders = self.probe.orders.lock().unwrap();
         orders.retain(|(ty, _), _| ty != name);
-        self.inner.projection().end_head_only(name, at)
+        self.inner.projection().end_order(name)
     }
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.inner.projection().put_proposal(proposal, at)

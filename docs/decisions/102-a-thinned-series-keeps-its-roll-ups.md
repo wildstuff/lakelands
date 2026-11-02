@@ -37,8 +37,8 @@ is a promise of speed.
   The memory engine keeps two maps.
 - **On every engine:** a kept view's state gains `stranded: [u64; 2]`, the
   groups stranded on the open face and on the whole one; a stranded record
-  bears the mark `sys:stranded`; the `sys:order.<view>` entries of a thinned
-  member stay.
+  bears the mark `sys:stranded`; the order entries (`view_order`, 098) of a
+  thinned member stay.
 - **Public types.** `EventBody::ValuesThinned { ty, by, before, keys }` and
   its kind; the selection `Thin { by, before }`; `ThinReport`;
   `LakeStore::thin_values` and `thin_values_preflight`; the marker
@@ -82,12 +82,12 @@ the field.
   `engine.rs:770`).
 - **What stays is the roll-up.** A kept view's record is under
   `sys:kept.<view>`, keyed by the group, and its extreme's entries are
-  under `sys:order.<view>`, keyed by the extreme, the group, the face, the
-  place and the member (049, 098). Neither is a state of the source
+  in the view's order (`view_order`, 098), keyed by the source's extreme (its
+  call), the group, the face, the place and the member. Neither is a state of the source
   record, so `drop_states` deletes neither: the group's folds stay, the
   kept record holding each extreme's value, and an extreme whose holder
-  was thinned keeps that holder, whose key and sort key its `sys:order`
-  entry holds (`098 § A kept view keeps its head, and its order apart`).
+  was thinned keeps that holder, whose key and sort key its order entry
+  holds (`098 § A kept view keeps its head, and its order apart`).
 - **A tombstone stays.** `thinned` holds the key and the horizon, one row
   a record, so a correction is refused by one seek and a `get` of the key
   is refused naming the horizon that took it. It is the act's price in the
@@ -167,7 +167,7 @@ since the members it lost are not there to compute it.
   what they fold.** A declaration or a migration that makes a kept view
   again (049) would note the live records alone, since the thinned ones
   are no longer rows. So the make reads each stranded group's record and
-  its `sys:order` entries off the view it ends, puts them in the view it
+  its order entries off the view it ends, puts them in the view it
   makes, and **notes none of that group's live records on top**: the
   carried folds already hold every member the fold has seen, those that
   arrived since the act included, so noting them again would count them
@@ -455,7 +455,7 @@ answers less as if whole or cannot be rebuilt.
   holder's entry — and the group stays stranded and exact; `forget_source`
   restates the same.
 - `THIN_STRANDED_MAKE_CARRIES`: a declaration that makes a view with
-  stranded groups again carries each group's record and `sys:order`
+  stranded groups again carries each group's record and order
   entries and notes none of its live records again, so the folds are
   not counted twice; a declaration, migration or setting that changes the
   group key, a measure, the `where` or a member the folds hold is refused

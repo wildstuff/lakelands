@@ -41,7 +41,7 @@ use lakelands_api::engine::{
 };
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
-use lakelands_api::expr::{Condition, Expr};
+use lakelands_api::expr::{CmpOp, Condition, Expr, Literal};
 use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::query::{Edge, MATCH_SPANS, Matched, Span};
@@ -867,8 +867,184 @@ pub fn by_order_index<'a>(fields: &[FieldName], scan: &'a Scan) -> Option<&'a Or
     (first.by == OrderBy::Value && fields.contains(&first.field)).then_some(first)
 }
 
+/// The kind `decl` declares `field` with.
+pub fn field_kind<'d>(decl: &'d TypeDecl, field: &FieldName) -> Option<&'d StorageKind> {
+    decl.fields
+        .iter()
+        .find(|f| f.name == *field)
+        .map(|f| &f.ty.kind)
+}
+
+/// A filter's bound on an ordered field: the inclusive interval of
+/// [`order_key`]s a page ordered by the field reads, and outside which it
+/// need not read at all
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// window).
+///
+/// `filter`'s `and` terms `field op literal`, with `>=`, `>`, `<=`, `<`
+/// or `=`, narrow it; the ends are the terms' cut keys, so they hold
+/// every value the comparison admits and may hold rows it rejects, which
+/// the rulebook still rejects. Three places take the field's kind:
+///
+/// - A text or reference field takes no window, and neither does a field
+///   of any other kind: a comparison between two ranks of text is
+///   byte-wise, and narrowing would drop values the rulebook admits.
+/// - A date or date-time field holds rank 1. Only a literal that reads as
+///   an instant and not as a number narrows it, the midnight a day reads
+///   among them.
+/// - A number or decimal field can hold more than rank 0. A range term
+///   narrows only under a number literal, which compares with no unread
+///   value; a text literal narrows only `=`, and only if it reads as a
+///   number. A value no `Decimal` reads is of another rank and is not
+///   admitted by such a comparison.
+///
+/// A side no term bounds ends at its rank's edge, so a value of a higher
+/// rank is outside the window. Two terms whose cut keys cross (`x >= 10
+/// and x <= 5`) admit no value, and narrow nothing: the rulebook answers
+/// no row. `None` when no term narrows the field.
+pub fn window(filter: &Expr, field: &FieldName, kind: &StorageKind) -> Option<Window> {
+    let rank = match kind {
+        StorageKind::Number | StorageKind::Decimal => 0,
+        StorageKind::DateTime | StorageKind::Date => 1,
+        _ => return None,
+    };
+    let mut lo: Option<Vec<u8>> = None;
+    let mut hi: Option<Vec<u8>> = None;
+    for (op, literal) in window_terms(filter, field) {
+        let Some(key) = narrowing_key(literal, op, kind) else {
+            continue;
+        };
+        match op {
+            CmpOp::Ge | CmpOp::Gt => {
+                lo = Some(lo.map_or_else(|| key.clone(), |l| l.max(key.clone())))
+            }
+            CmpOp::Le | CmpOp::Lt => {
+                hi = Some(hi.map_or_else(|| key.clone(), |h| h.min(key.clone())))
+            }
+            CmpOp::Eq => {
+                lo = Some(lo.map_or_else(|| key.clone(), |l| l.max(key.clone())));
+                hi = Some(hi.map_or_else(|| key.clone(), |h| h.min(key.clone())));
+            }
+            _ => {}
+        }
+    }
+    if lo.is_none() && hi.is_none() {
+        return None;
+    }
+    let window = Window {
+        lo: lo.unwrap_or_else(|| vec![rank]),
+        hi: hi.unwrap_or_else(|| rank_edge(rank)),
+    };
+    // Terms whose cut keys cross admit no value at all; the rulebook
+    // answers no row, and a range whose start is above its end is no
+    // window (and would panic a set's range).
+    if window.lo > window.hi {
+        return None;
+    }
+    Some(window)
+}
+
+/// An inclusive interval of [`order_key`]s: what [`window`] answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Window {
+    /// The least key a row inside the window holds.
+    pub lo: Vec<u8>,
+    /// The greatest key a row inside the window holds.
+    pub hi: Vec<u8>,
+}
+
+impl Window {
+    /// Whether `key`, an [`order_key`], lies inside the window.
+    pub fn holds(&self, key: &[u8]) -> bool {
+        key >= self.lo.as_slice() && key <= self.hi.as_slice()
+    }
+}
+
+/// The greatest key a value of `rank` can have: a key of a higher rank is
+/// greater and so outside a window ending here.
+fn rank_edge(rank: u8) -> Vec<u8> {
+    let mut key = vec![rank];
+    key.extend(std::iter::repeat_n(0xff, ORDER_KEY_BYTES - 1));
+    key
+}
+
+/// A filter's `and` terms `field op literal`, `and` nested, with the
+/// operator as the field's side sees it: a literal on the left is
+/// reversed.
+fn window_terms<'e>(filter: &'e Expr, field: &FieldName) -> Vec<(CmpOp, &'e Literal)> {
+    fn walk<'e>(e: &'e Expr, field: &FieldName, out: &mut Vec<(CmpOp, &'e Literal)>) {
+        match e {
+            Expr::And { args } => args.iter().for_each(|a| walk(a, field, out)),
+            Expr::Cmp { cmp, lhs, rhs } => {
+                let path_of = |e: &'e Expr| match e {
+                    Expr::Path { path } if path.len() == 1 && path[0] == *field => Some(()),
+                    _ => None,
+                };
+                match (lhs.as_ref(), rhs.as_ref()) {
+                    (lhs, Expr::Lit { value }) if path_of(lhs).is_some() => {
+                        out.push((*cmp, value));
+                    }
+                    (Expr::Lit { value }, rhs) if path_of(rhs).is_some() => {
+                        out.push((reversed(*cmp), value));
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(filter, field, &mut out);
+    out
+}
+
+/// `op` with its sides swapped.
+fn reversed(op: CmpOp) -> CmpOp {
+    match op {
+        CmpOp::Lt => CmpOp::Gt,
+        CmpOp::Le => CmpOp::Ge,
+        CmpOp::Gt => CmpOp::Lt,
+        CmpOp::Ge => CmpOp::Le,
+        CmpOp::Eq | CmpOp::Ne => op,
+    }
+}
+
+/// `literal`'s [`order_key`] when the evaluator compares it with a value
+/// of `kind` under `op`; `None` when it narrows nothing (see [`window`]).
+fn narrowing_key(literal: &Literal, op: CmpOp, kind: &StorageKind) -> Option<Vec<u8>> {
+    use crate::expr::eval::Val;
+    let value = match kind {
+        StorageKind::DateTime | StorageKind::Date => {
+            let Literal::Text(t) = literal else {
+                return None;
+            };
+            // A text that reads as a number compares with a value of this
+            // kind only by its bytes; it narrows nothing.
+            if t.parse::<rust_decimal::Decimal>().is_ok() {
+                return None;
+            }
+            Val::Time(Timestamp::denoted(t).ok()?)
+        }
+        StorageKind::Number | StorageKind::Decimal => match literal {
+            Literal::Number(n) => Val::Num(n.parse::<rust_decimal::Decimal>().ok()?),
+            Literal::Text(t) if op == CmpOp::Eq => {
+                Val::Num(t.parse::<rust_decimal::Decimal>().ok()?)
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let mut key = crate::expr::order::val_key(&value);
+    // The index keeps the key cut as [`order_key`] cuts it; a window bounds
+    // what the index holds, so its ends are cut the same.
+    key.truncate(ORDER_KEY_BYTES);
+    Some(key)
+}
+
 thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ROWS_WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static COUNT_WALKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static BATCHES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static HOLDER_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -918,6 +1094,40 @@ pub fn count_holder_read() {
 /// the type or every match; it costs one add per call or batch.
 pub fn rows_read() -> u64 {
     ROWS_READ.with(|n| n.get())
+}
+
+/// The index rows the reads on this thread walked: a range statement adds
+/// what it hands, [`Holders::Few`] the holders one of its statements
+/// passes, [`Holders::Many`] the count of the range it walked while a
+/// check asked for walks, and the memory engine what it hands
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §What
+/// `rows_read` counts, and what is added). [`rows_read`] reads what a read
+/// was handed; this reads what it passed, so a check can hold that a
+/// window's page does not grow with the rows outside its bound. It costs
+/// one add per statement.
+pub fn rows_walked() -> u64 {
+    ROWS_WALKED.with(|n| n.get())
+}
+
+/// Whether a check on this thread asked engines to count the rows a walk
+/// passes: off in a product read, where [`Holders::Many`] does not run
+/// the count that would tell it.
+pub fn counting_walks() -> bool {
+    COUNT_WALKS.with(|on| on.get())
+}
+
+/// Asks engines on this thread to count walks, or stops asking. A check
+/// that counts walks turns it on around the read and off after it.
+pub fn count_walks(on: bool) {
+    COUNT_WALKS.with(|c| c.set(on));
+}
+
+/// Counts `n` index rows walked for [`rows_walked`]. An engine calls it
+/// where it passes index rows: a range statement with what it handed,
+/// [`Holders::Few`] with its holders once a statement, [`Holders::Many`]
+/// with its count once a walk, and the memory engine with what it hands.
+pub fn count_walk(n: usize) {
+    ROWS_WALKED.with(|c| c.set(c.get() + n as u64));
 }
 
 /// The records the edge walks on this thread were handed to find a
@@ -1014,8 +1224,9 @@ pub enum Holders<'a> {
     All,
     /// More than [`FEW_HOLDERS`] hold the text in the field.
     Many(&'a FieldName, &'a str),
-    /// At most [`FEW_HOLDERS`] hold it.
-    Few(&'a FieldName, &'a str),
+    /// At most [`FEW_HOLDERS`] hold it, and this many do: the count
+    /// [`Holders::of`] read, which a walk of one statement passes.
+    Few(&'a FieldName, &'a str, u64),
 }
 
 /// The most records holding a page's exact text that the page reads from
@@ -1036,10 +1247,11 @@ impl<'a> Holders<'a> {
         let Some((field, text)) = lookup else {
             return Ok(Holders::All);
         };
-        Ok(if count(field, text, FEW_HOLDERS + 1)? > FEW_HOLDERS {
+        let held = count(field, text, FEW_HOLDERS + 1)?;
+        Ok(if held > FEW_HOLDERS {
             Holders::Many(field, text)
         } else {
-            Holders::Few(field, text)
+            Holders::Few(field, text, held)
         })
     }
 
@@ -1047,7 +1259,7 @@ impl<'a> Holders<'a> {
     pub fn text(&self) -> Option<(&'a str, &'a str)> {
         match *self {
             Holders::All => None,
-            Holders::Many(f, t) | Holders::Few(f, t) => Some((f.as_str(), t)),
+            Holders::Many(f, t) | Holders::Few(f, t, _) => Some((f.as_str(), t)),
         }
     }
 }
@@ -1848,7 +2060,7 @@ pub fn layout(lake: &LakeId, found: Option<u64>, wanted: u64) -> Result<()> {
 /// the order the format lists them. A code is never reused or moved: a
 /// kind a later format adds takes the next number, and 2, a kind no format
 /// from 23 on holds, stays unused.
-pub const KIND_CODES: [(&str, i64); 23] = [
+pub const KIND_CODES: [(&str, i64); 25] = [
     ("lake_created", 1),
     ("lease_taken", 3),
     ("declared", 4),
@@ -1872,6 +2084,8 @@ pub const KIND_CODES: [(&str, i64); 23] = [
     ("checkpoint", 22),
     ("record_quarantined", 23),
     ("quarantine_closed", 24),
+    ("source_purged", 25),
+    ("act_whole", 26),
 ];
 
 /// The code of the event kind `kind`, or none for one the format does not

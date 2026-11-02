@@ -22,7 +22,7 @@ use lakelands_api::read::GroupKey;
 use lakelands_api::record::FieldMeta;
 use lakelands_api::seam::{VIEW_KEPT_SETTING, kept_name};
 
-use crate::conformance::fixture::{derived, read_at, source_record};
+use crate::conformance::fixture::{derived, read_at, source_record, sourced};
 use crate::conformance::prelude::*;
 
 check!(
@@ -457,4 +457,119 @@ fn derives(r: &Record, field: &str, from: &str) -> bool {
 fn by_echo(r: &Record) -> bool {
     (r.meta.get("tag"))
         .is_some_and(|m| m.origin == Origin::Derived && m.procedure.as_deref() == Some("echo"))
+}
+
+check!(
+    ORDER_ENTRIES_APART = an_extremes_next_holder_is_read_after_a_delete_and_a_retire,
+    "098 (lakelands#1690): a kept view's `min` and `max` answer as their twin's after one source's values are taken back, the holder of its extreme among them, and after the holder that follows is retired in its turn, `describe_type` saying `kept` after each"
+);
+
+/// The kept view [`ORDER_ENTRIES_APART`] holds to, and its twin.
+const APART: [&str; 2] = ["ends", "ends_twin"];
+
+async fn an_extremes_next_holder_is_read_after_a_delete_and_a_retire(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl(
+        "line",
+        vec![
+            field("g", StorageKind::Text),
+            sourced("n", StorageKind::Number),
+        ],
+    ))
+    .await?;
+    for name in APART {
+        let fields = vec![
+            field("g", StorageKind::Text),
+            field("low", StorageKind::Number),
+            field("high", StorageKind::Number),
+        ];
+        let measures = [("low", "min(n)"), ("high", "max(n)")];
+        l.declare(view_of(name, "line", &["g"], fields, &measures))
+            .await?;
+    }
+    l.set(&format!("{VIEW_KEPT_SETTING}ends"), json!(true))
+        .await?;
+    // Two sources write the group's values; the owner writes the group
+    // itself, so taking one source's values back leaves the other's.
+    l.ingest("crm", vec![source_record("line", "a", json!({"n": 9}))])
+        .await
+        .must("feeding `crm`'s `a`")?;
+    l.ingest(
+        "erp",
+        vec![
+            source_record("line", "b", json!({"n": 5})),
+            source_record("line", "c", json!({"n": 1})),
+            source_record("line", "y", json!({"n": 7})),
+        ],
+    )
+    .await
+    .must("feeding `erp`'s three")?;
+    for (key, g) in [("a", "x"), ("b", "x"), ("c", "x"), ("y", "y")] {
+        l.upsert("line", key, json!({"g": g})).await?;
+    }
+    let mut red = Vec::new();
+    apart(&l, (1, 9), "as written", &mut red).await?;
+    // A delete: the source's values are taken back, and `a` with them.
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    store
+        .remove_values(&SourceId::from("crm"), &all, false, None)
+        .await
+        .must("removing what `crm` wrote")?;
+    apart(&l, (1, 5), "after the delete", &mut red).await?;
+    l.retire("line", "b").await?;
+    apart(&l, (1, 1), "after the retire", &mut red).await?;
+    ensure!(
+        red.is_empty(),
+        "an extreme's next holder is read apart from the records: {}",
+        red.join("; ")
+    );
+    Ok(())
+}
+
+/// `ends` answers `x` the `(low, high)` `want`, answers as its twin does,
+/// and is kept, `when` naming the event since the last call.
+async fn apart(l: &Lake, want: (u64, u64), when: &str, red: &mut Vec<String>) -> Held {
+    let at = find_at(None);
+    let kept = l.all_found("ends", at.clone()).await?;
+    let twin = l.all_found("ends_twin", at).await?;
+    let answers = |rs: &[Record]| -> Vec<(RecordKey, BTreeMap<FieldName, Value>)> {
+        rs.iter()
+            .map(|r| (r.key.clone(), r.fields.clone()))
+            .collect()
+    };
+    if answers(&kept) != answers(&twin) {
+        red.push(format!(
+            "{when} `ends` answers {:?}, its twin {:?}",
+            answers(&kept),
+            answers(&twin)
+        ));
+    }
+    let x = kept.iter().find(|r| r.key.as_str() == "x");
+    let got = x.map(|r| {
+        (
+            r.fields.get(&FieldName::from("low")).cloned(),
+            r.fields.get(&FieldName::from("high")).cloned(),
+        )
+    });
+    let want = (Some(json!(want.0)), Some(json!(want.1)));
+    if got != Some(want.clone()) {
+        red.push(format!(
+            "{when} `ends` `x` reads {got:?}, not {:?}",
+            want.clone()
+        ));
+    }
+    let described = l
+        .cat
+        .describe_type(&l.own, &TypeName::from("ends"), read_at(None))
+        .await
+        .must("describing `ends`")?
+        .data
+        .lifecycle
+        .kept;
+    if described.as_ref() != Some(&Kept::Kept) {
+        red.push(format!(
+            "{when} `describe_type` says {described:?} of `ends`, not kept"
+        ));
+    }
+    Ok(())
 }

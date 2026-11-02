@@ -488,7 +488,11 @@ fn owned(
     };
     let lake = Lake::open(&Location::memory(name), seams, OpenMode::Create);
     let lake = Arc::new(lake.expect("the lake opens"));
-    let cat = crate::doors::Store { lake: lake.clone() }.catalog(Default::default());
+    let cat = crate::doors::Store {
+        lake: lake.clone(),
+        owns: false,
+    }
+    .catalog(Default::default());
     let owner = lakelands_api::Principal {
         kind: lakelands_api::principal::PrincipalKind::Human,
         id: "owner".into(),

@@ -492,7 +492,10 @@ async fn person_lake(
     };
     let lake = crate::lake::Lake::open(&Location::memory(name), seams, OpenMode::Create);
     let lake = std::sync::Arc::new(lake.expect("the lake opens"));
-    let doors = crate::doors::Store { lake: lake.clone() };
+    let doors = crate::doors::Store {
+        lake: lake.clone(),
+        owns: false,
+    };
     let cat = doors.catalog(WriteContext::default());
     let owner = Principal {
         kind: PrincipalKind::Human,
@@ -755,7 +758,10 @@ async fn an_output_over_an_ingest_sealed_apart_does_not_read_a_leftover_row() {
         p1.fields.get("loud").cloned()
     };
     assert_eq!(loud(), Some(json!("Ada")));
-    let doors = crate::doors::Store { lake: lake.clone() };
+    let doors = crate::doors::Store {
+        lake: lake.clone(),
+        owns: false,
+    };
     let late = Selection::Delivery("late".into());
     let done = lakelands_api::LakeStore::remove_values(&doors, &crm, &late, true, None);
     let done = done.await.unwrap();

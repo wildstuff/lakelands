@@ -207,13 +207,18 @@ fn walk_under_each_text(engine: &dyn LakeEngine) {
     // A page of one under a filter that passes over all but a fortieth of
     // the holders: each batch the engine answers may read every holder.
     // And pages of one under `at` that pass over its first holders in
-    // `w`'s order, none to eight of them.
+    // `w`'s order, none to eight of them. `w + 0` keeps the bound out of
+    // `engines::window`: a bound on the page's order field narrows its
+    // index (097), and these pages are here to ask for the batch growth a
+    // walk past the rejected rows does.
     let w = |r: &StoredRecord| r.fields.get("w").and_then(Value::as_u64);
     let held = |r: &&StoredRecord| r.fields.get("v") == Some(&json!("at"));
     let mut first: Vec<u64> = states.iter().filter(held).filter_map(w).collect();
     first.sort_unstable();
-    let passing = first[..9].iter().map(|w| format!("v = 'at' and w >= {w}"));
-    let rejecting = ["at", "past"].map(|text| format!("v = '{text}' and w > 40000"));
+    let passing = first[..9]
+        .iter()
+        .map(|w| format!("v = 'at' and w + 0 >= {w}"));
+    let rejecting = ["at", "past"].map(|text| format!("v = '{text}' and w + 0 > 40000"));
     let view = engine.view(None).unwrap();
     let mut asked_by_few = std::collections::BTreeSet::new();
     for filter in passing.chain(rejecting) {

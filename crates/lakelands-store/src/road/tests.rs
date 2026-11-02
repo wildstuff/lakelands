@@ -102,11 +102,17 @@ fn kept(view: &dyn ProjectionView) -> Option<(u32, u32, u64)> {
 }
 
 /// The kinds the test's open finishes: the store's, and the counter's.
-const KINDS: &[Owes] = &[crate::build::owed, owes];
+const KINDS: &[Owes] = &[crate::purge::owed, crate::build::owed, owes];
 
 #[test]
-fn the_store_owes_no_kind_the_test_does_not() {
-    assert_eq!(OWED.len(), 1, "add the store's kinds to `KINDS`");
+fn every_kind_the_store_owes_the_test_also_runs() {
+    // The test's open runs the store's kinds beside its own counter; a
+    // kind the store adds is named in `KINDS` too.
+    assert_eq!(
+        OWED.len() + 1,
+        KINDS.len(),
+        "add the store's kinds to `KINDS`"
+    );
 }
 
 /// The counters the log and the lists at `view` leave owed.
@@ -330,7 +336,10 @@ impl Drop for Place {
 /// A lake with a type `note` and a type `other`, and its doors.
 async fn lake_of(place: &Place) -> (Arc<Lake>, Doors) {
     let lake = place.open(OpenMode::Create).await;
-    let doors = Doors::of(&Store { lake: lake.clone() });
+    let doors = Doors::of(&Store {
+        lake: lake.clone(),
+        owns: false,
+    });
     for ty in ["note", "other"] {
         let decl = fx::type_decl(ty, vec![fx::field("n", StorageKind::Text)]);
         doors.declare(decl).await.expect("the type is declared");
@@ -416,6 +425,159 @@ async fn a_write_waits_for_at_most_the_turn_in_front_of_it() {
         let (waited, held) = (spread(&mut waited), spread(&mut held));
         eprintln!(
             "road {on:?}: 20 writes beside {of} turns of {turn:?}, held {held}: waited {waited}"
+        );
+    }
+}
+
+/// The `record_retired`s of `lake`'s log after `from` through `through`.
+fn retirements(lake: &Lake, from: Position, through: Position) -> usize {
+    let mut n = 0;
+    for page in lake.pages(from.next()) {
+        let Ok(page) = page else { break };
+        for e in page {
+            if e.position > through {
+                return n;
+            }
+            if matches!(
+                e.body,
+                lakelands_api::event::EventBody::RecordRetired { .. }
+            ) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// The head of `lake`'s log.
+fn head(lake: &Lake) -> Position {
+    let view = lake.engine.view(None).expect("a view");
+    view.position().unwrap_or(Position::GENESIS)
+}
+
+/// The step's own numbers (099, R2): a part is the act's turn, and a write
+/// sent beside the act waits for at most the part in front of it. Each
+/// write's wait is read from the log — the retirements that landed while
+/// it waited — and the parts' duration from the act's turns after its
+/// first, which the log tells are over once `source_purged` is in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_waits_for_at_most_a_part_of_a_purge() {
+    for on in engines() {
+        // A part of one record: every part is one retirement, so a write
+        // that waited for two parts would find two of them in the log.
+        let (of, room) = (200usize, 1u32);
+        let mut place = Place::new(on, "purge-waits");
+        place.location.limits.part_events = room;
+        let (lake, doors) = lake_of(&place).await;
+        // A type only a source writes, so `crm` may bring its records.
+        doors
+            .declare(fx::type_decl(
+                "brought",
+                vec![fx::sourced("n", StorageKind::Text)],
+            ))
+            .await
+            .expect("the type is declared");
+        let records = (0..of)
+            .map(|i| fx::source_record("brought", &format!("n{i}"), json!({"n": "x"})))
+            .collect();
+        doors
+            .ingest("crm", records)
+            .await
+            .expect("the source brings its records");
+        let start = head(&lake);
+        let (tx, ended) = oneshot::channel();
+        crate::purge::start(&lake, "crm".into(), None, None, Some(tx));
+        // Wait for the act's first turn: `source_purged` is its event.
+        let first = start.next();
+        let mut began = None;
+        for _ in 0..5_000 {
+            if head(&lake) >= first {
+                began = Some(Instant::now());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let _began = began.expect("the act's first turn appends `source_purged`");
+        let mut waited = Vec::new();
+        let mut passed = Vec::new();
+        for i in 0..20 {
+            let key = format!("w{i}");
+            let before = head(&lake);
+            let at = Instant::now();
+            let wrote = doors.upsert("other", &key, json!({"n": "x"}));
+            let wrote = wrote.await.expect("the write lands");
+            let lakelands_api::Outcome::Applied { position, .. } = wrote else {
+                panic!("{on:?}: the write applied");
+            };
+            waited.push(at.elapsed());
+            let retired = retirements(&lake, before, position);
+            assert!(
+                retired <= room as usize,
+                "{on:?}: write {i} waited for {retired} retirements, more than a part of {room}"
+            );
+            passed.push(retired);
+        }
+        let whole = tokio::time::timeout(Duration::from_secs(120), ended)
+            .await
+            .expect("the act ends in time")
+            .expect("the act answers");
+        whole.expect("the act is whole");
+        let parts = (of as u32).div_ceil(room) + u32::from((of as u32).is_multiple_of(room));
+        assert!(
+            passed.iter().any(|n| *n > 0),
+            "{on:?}: every write landed before a part did"
+        );
+        let waited = spread(&mut waited);
+        eprintln!(
+            "purge {on:?}: 20 writes beside parts of {room}, the retirements each waited for \
+             {passed:?}: waited {waited}"
+        );
+
+        // A part of `part_events`: the act's turns after its first, timed
+        // from `source_purged` to its answer.
+        let (of, room) = (2_000usize, 500u32);
+        let mut place = Place::new(on, "purge-part-time");
+        place.location.limits.part_events = room;
+        let (lake, doors) = lake_of(&place).await;
+        doors
+            .declare(fx::type_decl(
+                "brought",
+                vec![fx::sourced("n", StorageKind::Text)],
+            ))
+            .await
+            .expect("the type is declared");
+        let records = (0..of)
+            .map(|i| fx::source_record("brought", &format!("n{i}"), json!({"n": "x"})))
+            .collect();
+        doors
+            .ingest("crm", records)
+            .await
+            .expect("the source brings its records");
+        let start = head(&lake);
+        let (tx, ended) = oneshot::channel();
+        crate::purge::start(&lake, "crm".into(), None, None, Some(tx));
+        let first = start.next();
+        let mut began = None;
+        for _ in 0..10_000 {
+            if head(&lake) >= first {
+                began = Some(Instant::now());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let began = began.expect("the act's first turn appends `source_purged`");
+        let whole = tokio::time::timeout(Duration::from_secs(180), ended)
+            .await
+            .expect("the act ends in time")
+            .expect("the act answers");
+        whole.expect("the act is whole");
+        let timed = began.elapsed();
+        let turns = (of as u32).div_ceil(room) + u32::from((of as u32).is_multiple_of(room));
+        let each = timed.as_secs_f64() * 1e3 / f64::from(turns);
+        assert!(parts > 1);
+        eprintln!(
+            "purge {on:?}: {of} retirements in {turns} turns after the first of a part of {room}: \
+             {timed:?} after `source_purged`, {each:.1} ms a turn"
         );
     }
 }

@@ -248,6 +248,18 @@ fn sort_setting(fields: Value, at: u64) -> StoredRecord {
     )
 }
 
+/// The `lookup_index.<ty>` setting naming `fields` in the exact-text
+/// index, as folded at `at`.
+fn lookup_setting(ty: &str, fields: Value, at: u64) -> StoredRecord {
+    let key = format!("lookup_index.{ty}");
+    record(
+        lakelands_api::seam::SETTING_TYPE,
+        &key,
+        json!({"key": key, "value": fields}),
+        at,
+    )
+}
+
 fn mixed_kinds_sort_the_same_on_every_engine(engine: &dyn LakeEngine) -> Held {
     let values = [
         ("a", json!("abc")),
@@ -3591,4 +3603,674 @@ fn a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept(
         "a dropped field must no longer be chosen"
     );
     sorts("once `v` is dropped", &states)
+}
+
+engine_check!(
+    ROWS_WALKED_COUNTED = rows_walked_counts_the_index_rows_each_road_walks,
+    "097: a pure range read adds what it hands, a text few records hold adds its holders once a statement, and one many hold adds the range it walked while a check asked for walks, as `rows_read` keeps counting what was handed"
+);
+
+fn rows_walked_counts_the_index_rows_each_road_walks(engine: &dyn LakeEngine) -> Held {
+    const N: u64 = 4200;
+    const HELD: u64 = 4195;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [
+            {"name": "v", "type": {"kind": "number"}},
+            {"name": "s", "type": {"kind": "text"}},
+            {"name": "rare", "type": {"kind": "text"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    // Every record holds "many", more than `FEW_HOLDERS`; the last five
+    // hold "rare" too, so a page under "rare" is the few road. `v` comes in
+    // runs of three, so the tenth row both ways ends in a run: a walk down
+    // that counted the rest of the run would add a row.
+    let states: Vec<StoredRecord> = (0..N)
+        .map(|i| {
+            let rare = if i < HELD { "common" } else { "rare" };
+            record(
+                "t",
+                &format!("k{i:04}"),
+                json!({"v": i / 3, "s": "many", "rare": rare}),
+                1,
+            )
+        })
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(engine, 2, sort_setting(json!(["v"]), 2))?;
+    // The exact-text index keeps both texts: a page under either is the few
+    // or many holders' road, not a filter over the order index.
+    fold_one(engine, 3, lookup_setting("t", json!(["s", "rare"]), 3))?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("t");
+    let page = |text: &str, limit: u32, counting: bool, dir: Direction| {
+        let filter = crate::expr::parse(text).expect("the check's filter parses");
+        let scan = scan_with(|s| {
+            s.order_by = vec![by("v", dir)];
+            s.filter = Some(filter);
+            s.limit = limit;
+        });
+        let (rows, walked, read) = walks_of(head.as_ref(), &ty, &scan, counting, text)?;
+        Ok((
+            keys(&rows),
+            walked,
+            read,
+            crate::engines::scan(Some(t), &states, &scan),
+        ))
+    };
+    // A pure range read walks what it hands.
+    let (rows, walked, read, whole) = page("true", 25, false, Direction::Asc)?;
+    ensure!(
+        rows == keys(&whole) && walked == 25 && read == 25,
+        "a range read of 25 answered {} rows, walking {walked} index rows and handing {read}; \
+         it reads its page and adds what it hands",
+        rows.len()
+    );
+    // A page in key order is a range of the keys: it too walks what it
+    // hands.
+    let key_page = scan_with(|s| s.limit = 10);
+    let (rows, walked, read) = walks_of(head.as_ref(), &ty, &key_page, false, "a key page")?;
+    ensure!(
+        rows.len() == 10 && walked == 10 && read == 10,
+        "a key page of ten answered {} rows, walking {walked} index rows and handing {read}; \
+         a range of the key index walks what it hands",
+        rows.len()
+    );
+    // Few: the page answers the five holders, and the read walks at least
+    // what it hands. An engine that joins the holders to their order rows
+    // walks the holders once a statement, `M`; one that reads its index and
+    // filters walks every row it hands.
+    let (rows, walked, read, whole) = page("rare = 'rare'", 10, false, Direction::Asc)?;
+    ensure!(
+        rows == keys(&whole) && rows.len() == 5 && walked >= read && read >= 5,
+        "a read under a text five hold answered {} rows, walking {walked} index rows and \
+         handing {read}; it answers the five holders and a read walks at least what it hands",
+        rows.len()
+    );
+    // Many: the walked range is the count of the rows handed, either
+    // direction, and the run the last row belongs to is cut at that row.
+    for dir in [Direction::Asc, Direction::Desc] {
+        let (rows, walked, read, whole) = page("s = 'many'", 10, true, dir)?;
+        ensure!(
+            rows == keys(&whole) && walked == 10 && read == 10,
+            "a page of ten {dir:?} under a text {HELD} hold answered {} rows, walking {walked} \
+             index rows and handing {read}; the count of the range walked is the page, the \
+             last row's run cut at that row",
+            rows.len()
+        );
+    }
+    // Without the ask, no engine counts more than it hands.
+    let (_, walked, read, _) = page("s = 'many'", 10, false, Direction::Asc)?;
+    ensure!(
+        walked <= read,
+        "a page under a text {HELD} hold walked {walked} index rows with no check asking, \
+         handing {read}; nothing is counted beyond what is handed"
+    );
+    Ok(())
+}
+
+engine_check!(
+    WINDOW_READS_ITS_ROWS = a_page_bounded_on_its_order_field_reads_its_rows,
+    "097 and lakelands#1633: a page in field order under a filter bounding that field reads its page, both directions, by `rows_read` and `rows_walked`, and its walk does not grow when records outside the bound are added; the rows for an aggregate, a count and a key page follow in later steps"
+);
+
+fn a_page_bounded_on_its_order_field_reads_its_rows(engine: &dyn LakeEngine) -> Held {
+    // More than `FEW_HOLDERS` hold `hit`: a page under it is the `Many`
+    // road, not the `Few` one.
+    const N: u64 = 5200;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [
+            {"name": "v", "type": {"kind": "number"}},
+            {"name": "s", "type": {"kind": "text"}},
+            {"name": "rare", "type": {"kind": "text"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let state = |i: u64| {
+        let rare = if [1002, 1005, 1202, 1500].contains(&(i as i64)) {
+            "rare"
+        } else {
+            "none"
+        };
+        record(
+            "t",
+            &format!("k{i:04}"),
+            json!({"v": i, "s": "hit", "rare": rare}),
+            1,
+        )
+    };
+    let states: Vec<StoredRecord> = (0..N).map(state).collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(engine, 2, sort_setting(json!(["v"]), 2))?;
+    // The exact-text index keeps `s`: a windowed page under `s` is a few or
+    // many holders' road inside the window.
+    fold_one(engine, 3, lookup_setting("t", json!(["s", "rare"]), 3))?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("t");
+    let page = |head: &dyn ProjectionView, filter: &str, dir: Direction, limit: u32, what: &str| {
+        let filter = crate::expr::parse(filter).expect("the check's filter parses");
+        let scan = scan_with(|s| {
+            s.order_by = vec![by("v", dir)];
+            s.filter = Some(filter);
+            s.limit = limit;
+        });
+        let (rows, walked, read) = walks_of(head, &ty, &scan, true, what)?;
+        Ok((
+            keys(&rows),
+            walked,
+            read,
+            crate::engines::scan(Some(t), &states, &scan),
+        ))
+    };
+    // No exact text: the order index inside the window, both directions.
+    let (rows, walked, read, whole) = page(
+        head.as_ref(),
+        "v >= 1000 and v <= 1030",
+        Direction::Asc,
+        10,
+        "a windowed page up",
+    )?;
+    ensure!(
+        rows == keys(&whole) && walked == 10 && read == 10,
+        "a page up bounded to `v` in 1000..=1030 answered {:?}, walking {walked} index rows \
+         and handing {read}; one scan over every state answers {:?}, and the page walks what \
+         it hands",
+        rows,
+        keys(&whole)
+    );
+    let (rows, walked, read, whole) = page(
+        head.as_ref(),
+        "v >= 1020 and v <= 1050",
+        Direction::Desc,
+        10,
+        "a windowed page down",
+    )?;
+    ensure!(
+        rows == keys(&whole) && walked == 10 && read == 10,
+        "a page down bounded to `v` in 1020..=1050 answered {:?}, walking {walked} index rows \
+         and handing {read}; one scan over every state answers {:?}, and the page walks what \
+         it hands",
+        rows,
+        keys(&whole)
+    );
+    // Records outside the bound, put after it: the page's walk stands.
+    let bound = "v >= 1000 and v <= 1030";
+    let (before_rows, before_walked, _, _) =
+        page(head.as_ref(), bound, Direction::Asc, 10, "a windowed page")?;
+    // Both sides of the bound: an unwindowed ascending page would walk the
+    // thousand below it, and the two thousand above are behind the page.
+    let mut outside: Vec<StoredRecord> = (0..1000)
+        .map(|i| {
+            record(
+                "t",
+                &format!("y{i:04}"),
+                json!({"v": -(i as i64) - 1, "s": "miss"}),
+                4,
+            )
+        })
+        .collect();
+    outside.extend((0..2000).map(|i| {
+        record(
+            "t",
+            &format!("z{i:04}"),
+            json!({"v": 10_000 + i, "s": "miss"}),
+            4,
+        )
+    }));
+    fold(engine, 4, |p| {
+        outside.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    let head = view(engine, None)?;
+    let (after_rows, after_walked, after_read, _) = page(
+        head.as_ref(),
+        bound,
+        Direction::Asc,
+        10,
+        "a windowed page after outside puts",
+    )?;
+    ensure!(
+        after_rows == before_rows && after_walked == before_walked && after_walked == after_read,
+        "a page bounded to `v` in 1000..=1030 walked {before_walked} index rows; after 3000 \
+         records outside the bound were put, 1000 below it and 2000 above, it walked \
+         {after_walked} and handed {after_read}; the walk must not grow with the records \
+         outside the bound, and must be the rows it hands"
+    );
+    // A cursor outside the window reads nothing, as a seek into the window
+    // does: above it going up, below it going down.
+    for (dir, value) in [(Direction::Asc, 5000_u64), (Direction::Desc, 900_u64)] {
+        let filter = crate::expr::parse(bound).expect("the check's filter parses");
+        let scan = scan_with(|s| {
+            s.order_by = vec![by("v", dir)];
+            s.filter = Some(filter);
+            s.limit = 10;
+            s.after = Some(After {
+                values: vec![json!(value)],
+                key: RecordKey::from(format!("k{value:04}")),
+            });
+        });
+        let rows = head
+            .scan(&ty, &scan)
+            .must("a page from a cursor outside its window")?;
+        ensure!(
+            rows.is_empty(),
+            "a page {dir:?} bounded to `v` in 1000..=1030 from a cursor at {value} answered \
+             {} rows; a seek past the window reads nothing",
+            rows.len()
+        );
+    }
+    // Under an exact text the roads are few and many. The few road walks at
+    // least what it hands; the many road walks the window's rows, 31 here,
+    // and never the rows beyond the window that hold the text.
+    let (rows, walked, read, whole) = page(
+        head.as_ref(),
+        "v >= 1000 and v <= 1030 and rare = 'rare'",
+        Direction::Asc,
+        10,
+        "a windowed page under a text few hold",
+    )?;
+    ensure!(
+        rows == keys(&whole) && walked >= read,
+        "a windowed page under a text few hold answered {:?}, walking {walked} index rows and \
+         handing {read}; one scan over every state answers {:?}, and a read walks at least what \
+         it hands",
+        rows,
+        keys(&whole)
+    );
+    const IN_WINDOW: u64 = 31;
+    let (rows, walked, read, whole) = page(
+        head.as_ref(),
+        "v >= 1000 and v <= 1030 and s = 'hit'",
+        Direction::Asc,
+        40,
+        "a windowed page under a text many hold",
+    )?;
+    ensure!(
+        rows == keys(&whole) && walked == IN_WINDOW && read == IN_WINDOW,
+        "a windowed page under a text more than {} hold answered {} rows, walking \
+         {walked} index rows and handing {read}; one scan over every state answers {:?}, and \
+         the walk is the window's {IN_WINDOW} rows, not the rows beyond it that hold the text",
+        core_engines::FEW_HOLDERS,
+        rows.len(),
+        keys(&whole)
+    );
+    Ok(())
+}
+
+engine_check!(
+    WINDOW_HOLDS_WHAT_IS_ADMITTED = a_window_holds_every_value_the_comparison_admits,
+    "097: a filter's bound on an ordered number, decimal or date field narrows the index to a window that holds every value the comparison admits, a long decimal and a cut key among them, and two terms whose ends cross answer no row, so its page answers what one scan over every state answers"
+);
+
+fn a_window_holds_every_value_the_comparison_admits(engine: &dyn LakeEngine) -> Held {
+    // Generated sets: a number, a decimal (its long and short values, cut
+    // keys and all), a date, and a text, each an ordered field of its own.
+    let kinds = [
+        (
+            "tnum",
+            "number",
+            vec!["0", "1", "2", "5", "7", "10", "-5", "2.5", "1000", "-1000"],
+        ),
+        (
+            "tdec",
+            "decimal",
+            vec![
+                "-1000.5",
+                "-7",
+                "0",
+                "0.00",
+                "5",
+                "7",
+                "7.00",
+                "10",
+                "010",
+                "1000",
+                "1234567890123456789012345678901234567890",
+                "-1234567890123456789012345678901234567890",
+                "9999999999999999999999999999.5",
+            ],
+        ),
+        (
+            "tday",
+            "date",
+            vec![
+                "1999-12-31",
+                "2026-01-01",
+                "2026-02-01",
+                "2026-02-01T00:00:00Z",
+                "2026-03-01T12:00:00Z",
+            ],
+        ),
+        ("ttxt", "text", vec!["a", "b", "m", "z", "10", "5"]),
+    ];
+    let mut records = Vec::new();
+    for (name, kind, values) in &kinds {
+        for (i, value) in values.iter().enumerate() {
+            let value = if *kind == "number" {
+                value
+                    .parse::<serde_json::Number>()
+                    .map(Value::Number)
+                    .unwrap_or_else(|_| json!(value))
+            } else {
+                json!(value)
+            };
+            records.push(record(name, &format!("k{i:02}"), json!({"x": value}), 1));
+        }
+    }
+    fold(engine, 1, |p| {
+        for (name, kind, _) in &kinds {
+            let decl = declare(json!({
+                "declare": "type", "name": name,
+                "fields": [{"name": "x", "type": {"kind": kind}}]
+            }));
+            p.put_declaration(&decl, 1, None, Position(0))?;
+        }
+        records.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold(engine, 2, |p| {
+        for (name, _, _) in &kinds {
+            let key = format!("sort_index.{name}");
+            p.put_record(&record(
+                lakelands_api::seam::SETTING_TYPE,
+                &key,
+                json!({"key": key, "value": ["x"]}),
+                2,
+            ))?
+        }
+        Ok(())
+    })?;
+    let head = view(engine, None)?;
+    let decls: BTreeMap<String, Declaration> = (kinds.iter())
+        .map(|(name, kind, _)| {
+            let decl = declare(json!({
+                "declare": "type", "name": name,
+                "fields": [{"name": "x", "type": {"kind": kind}}]
+            }));
+            ((*name).to_owned(), decl)
+        })
+        .collect();
+    let reads_in =
+        |name: &str, filter: &str, dir: Direction, what: &str| -> Result<Vec<String>, Failure> {
+            let Declaration::Type(t) = &decls[name] else {
+                unreachable!("the check declares a type")
+            };
+            let ty = TypeName::from(name);
+            let states: Vec<StoredRecord> = (records.iter())
+                .filter(|r| r.ty.as_str() == name)
+                .cloned()
+                .collect();
+            let filter = crate::expr::parse(filter).expect("the check's filter parses");
+            let scan = scan_with(|s| {
+                s.order_by = vec![by("x", dir)];
+                s.filter = Some(filter);
+            });
+            let rows = head.scan(&ty, &scan).must(what)?;
+            let whole = keys(&crate::engines::scan(Some(t), &states, &scan));
+            ensure!(
+                keys(&rows) == whole,
+                "{what} (`{what}` on `{name}`) answered {:?}; one scan over every state answers \
+             {whole:?}, and a window may narrow the index but not the answer",
+                keys(&rows)
+            );
+            Ok(keys(&rows))
+        };
+    let reads = |name: &str, filter: &str, what: &str| reads_in(name, filter, Direction::Asc, what);
+    for (filter, what) in [
+        ("x >= 0", "a decimal above zero"),
+        ("x <= 5", "a decimal at most five"),
+        ("x = 7", "a decimal equal to seven"),
+        ("x = '7'", "a decimal equal to seven written as text"),
+        ("x = '10'", "a decimal equal to ten written as text"),
+        (
+            "x = '010'",
+            "a decimal equal to ten written with a leading zero",
+        ),
+        ("x < 10 and x > -1", "a decimal between minus one and ten"),
+        ("x >= 0 and x <= 0.5", "a decimal between zero and a half"),
+        ("x > 0", "a decimal above zero, strictly"),
+        (
+            "x >= 10 and x <= 5",
+            "a decimal between ten and five, crossed",
+        ),
+        ("x = 5 and x = 7", "a decimal equal to five and to seven"),
+    ] {
+        reads("tdec", filter, what)?;
+    }
+    // The walk down mirrors the walk up: the same window, its stop at the
+    // cut keys of the long decimals.
+    reads_in(
+        "tdec",
+        "x > 0",
+        Direction::Desc,
+        "a decimal above zero, strictly, descending",
+    )?;
+    for (filter, what) in [
+        ("x >= 5", "a number at least five"),
+        ("x < 5", "a number below five"),
+        ("x = 10", "a number equal to ten"),
+        ("x >= '5'", "a number at least five, written as text"),
+        ("x > 1 and x < 100", "a number between one and a hundred"),
+        (
+            "x >= 10 and x <= 5",
+            "a number between ten and five, crossed",
+        ),
+    ] {
+        reads("tnum", filter, what)?;
+    }
+    for (filter, what) in [
+        (
+            "x >= '2026-01-01'",
+            "a day at or after the first of January",
+        ),
+        ("x < '2026-03-01'", "a day before the first of March"),
+        ("x = '2026-02-01'", "a day equal to the first of February"),
+        (
+            "x >= '2026-01-01' and x <= '2026-02-15'",
+            "a day in a bounded season",
+        ),
+        ("x >= 5", "a day at least five, written as a number"),
+        (
+            "x >= '2026-03-01' and x <= '2026-01-01'",
+            "a day from March to January, crossed",
+        ),
+    ] {
+        reads("tday", filter, what)?;
+    }
+    for (filter, what) in [
+        ("x >= 'b'", "a text at or after b"),
+        ("x < 'm'", "a text before m"),
+    ] {
+        reads("ttxt", filter, what)?;
+    }
+    Ok(())
+}
+
+engine_check!(
+    WINDOW_TAKES_ONE_RANK = a_bound_of_one_rank_alone_narrows_the_window,
+    "097: a text field, a number literal on a date field, a text literal in a range on a decimal field, and a term under a function narrow nothing, so the page answers as it does today"
+);
+
+fn a_bound_of_one_rank_alone_narrows_the_window(engine: &dyn LakeEngine) -> Held {
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [
+            {"name": "v", "type": {"kind": "number"}},
+            {"name": "d", "type": {"kind": "decimal"}},
+            {"name": "when", "type": {"kind": "date"}},
+            {"name": "txt", "type": {"kind": "text"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let mut states: Vec<StoredRecord> = (0..50)
+        .map(|i| {
+            record(
+                "t",
+                &format!("k{i:02}"),
+                json!({
+                    "v": i,
+                    // `d` falls as `v` rises, so a bound on `v` taken as a
+                    // window on `d` would drop admitted rows at once.
+                    "d": format!("{}.5", 49 - i),
+                    "when": format!("2026-01-{:02}", i % 28 + 1),
+                    "txt": format!("w{i:02}")
+                }),
+                1,
+            )
+        })
+        .collect();
+    // A decimal no `Decimal` reads is of rank 2, and `'888…' <= '9'` is
+    // true of it: a text bound on a decimal field admits it, and a window
+    // of rank 0 would drop it.
+    states.push(record(
+        "t",
+        "kbig",
+        json!({
+            "v": 100,
+            "d": "8888888888888888888888888888888888888888",
+            "when": "2026-02-01",
+            "txt": "zz"
+        }),
+        1,
+    ));
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(
+        engine,
+        2,
+        record(
+            lakelands_api::seam::SETTING_TYPE,
+            "sort_index.t",
+            json!({"key": "sort_index.t", "value": ["v", "d", "when", "txt"]}),
+            2,
+        ),
+    )?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("t");
+    // A filter of another rank, or on a text field, or under a function:
+    // the page answers what one scan over every state answers.
+    for (field, filter, what) in [
+        ("txt", "txt >= 'w10'", "a range on a text field"),
+        (
+            "d",
+            "d >= '5' and d <= '9'",
+            "a text range on a decimal field",
+        ),
+        (
+            "d",
+            "d >= '1234567890123456789012345678901234567890'",
+            "a long text on a decimal field",
+        ),
+        ("v", "v >= '5'", "a text bound on a number field"),
+        ("when", "when >= 5", "a number bound on a date field"),
+        ("v", "v + 0 >= 5", "a number under a function"),
+        ("txt", "txt = 'w10'", "a text equal to a text"),
+        (
+            "d",
+            "v >= 40 and v <= 45",
+            "a number range on the field beside the one the page orders by",
+        ),
+        (
+            "v",
+            "5 <= v",
+            "a bound written with the literal on the left",
+        ),
+    ] {
+        let filter = crate::expr::parse(filter).expect("the check's filter parses");
+        let scan = scan_with(|s| {
+            s.order_by = vec![by(field, Direction::Asc)];
+            s.filter = Some(filter);
+        });
+        let rows = head.scan(&ty, &scan).must(what)?;
+        let whole = keys(&crate::engines::scan(Some(t), &states, &scan));
+        ensure!(
+            keys(&rows) == whole,
+            "{what} answered {:?}; one scan over every state answers {whole:?}, and a bound \
+             of another rank or field must narrow nothing",
+            keys(&rows)
+        );
+    }
+    Ok(())
+}
+
+engine_check!(
+    WINDOW_SKIPS_NO_VALUE = a_short_window_walks_no_record_without_the_field,
+    "097: a page bounded on its order field adds no record without a value for it, so a short window walks the window and not the type"
+);
+
+fn a_short_window_walks_no_record_without_the_field(engine: &dyn LakeEngine) -> Held {
+    const MISSING: u64 = 500;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [
+            {"name": "v", "type": {"kind": "number"}},
+            {"name": "s", "type": {"kind": "text"}}
+        ]
+    }));
+    let mut states: Vec<StoredRecord> = [110, 120, 125]
+        .iter()
+        .map(|v| record("t", &format!("k{v}"), json!({"v": v, "s": "in"}), 1))
+        .collect();
+    states.extend((0..MISSING).map(|i| record("t", &format!("m{i:03}"), json!({"s": "none"}), 1)));
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(engine, 2, sort_setting(json!(["v"]), 2))?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("t");
+    let filter = crate::expr::parse("v >= 100 and v <= 130").expect("the check's filter parses");
+    let scan = scan_with(|s| {
+        s.order_by = vec![by("v", Direction::Asc)];
+        s.filter = Some(filter);
+        s.limit = 10;
+    });
+    let (rows, walked, read) = walks_of(head.as_ref(), &ty, &scan, false, "a short window")?;
+    let rows = keys(&rows);
+    ensure!(
+        rows == ["k110", "k120", "k125"],
+        "a page bounded to `v` in 100..=130 answered {rows:?}; the three records inside the \
+         bound hold, and a record without `v` is admitted by no comparison"
+    );
+    ensure!(
+        walked <= 10 && read <= 10,
+        "the short window walked {walked} index rows and handed {read} of the type's {}; a \
+         comparison with no value is false, so a bounded page adds no record without the field",
+        MISSING + 3
+    );
+    Ok(())
+}
+
+/// One read of `scan` through `head`, with the index rows it walked and the
+/// rows it handed the rulebook, counting walks only when `counting` asks.
+fn walks_of(
+    head: &dyn ProjectionView,
+    ty: &TypeName,
+    scan: &Scan,
+    counting: bool,
+    what: &str,
+) -> Result<(Vec<StoredRecord>, u64, u64), Failure> {
+    core_engines::count_walks(counting);
+    let before = (core_engines::rows_walked(), core_engines::rows_read());
+    let rows = head.scan(ty, scan);
+    let (walked, read) = (
+        core_engines::rows_walked() - before.0,
+        core_engines::rows_read() - before.1,
+    );
+    core_engines::count_walks(false);
+    Ok((rows.must(what)?, walked, read))
 }

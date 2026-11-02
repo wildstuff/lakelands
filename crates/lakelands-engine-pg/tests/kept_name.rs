@@ -12,10 +12,11 @@
 //! on that lake analysed, and on a large one the writer analysed; and
 //! what the reads cost is counted where the server counts it: the tuples
 //! of `records` and of `outputs` it fetched (`pg_stat_user_tables`),
-//! which a backend reports when it ends. An order name
-//! (`lakelands_api::seam::ORDER_PREFIX`, lakelands#629) keeps one state
-//! for each key and is read by the same statements, its page after a key
-//! a seek into the heads; nothing indexes it.
+//! which a backend reports when it ends. A view's order
+//! (`lakelands_api::seam::ORDER_PREFIX`, lakelands#1690) is kept in the
+//! `view_order` table, one entry for each key and no row of the record
+//! tables: an entry is read by its key, and a page after a key in key
+//! order.
 
 mod common;
 
@@ -354,8 +355,8 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
 }
 
 #[test]
-fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
-    let Some(url) = common::url_or_skip("the pg test of an order name") else {
+fn an_order_entry_is_kept_apart_from_the_records() {
+    let Some(url) = common::url_or_skip("the pg test of an order entry") else {
         return;
     };
     let schema = common::fresh_schema();
@@ -363,20 +364,30 @@ fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
         .open(&common::location(&url, "order", &schema), OpenMode::Create)
         .unwrap();
     let name = order_name(&TypeName::from("v"));
-    // Twenty thousand keys, and the first two thousand of them put again.
-    let (keys, last) = (20_000, 22_000);
-    for first in (1..=last).step_by(1_000) {
-        let p = engine.projection();
-        p.begin().unwrap();
-        for at in first..first + 1_000 {
-            let mut entry = state(&name, &format!("k{:05}", (at - 1) % keys), at);
-            entry.fields =
-                serde_json::from_value(json!({"sys:entry": {"v": {"text": "1"}}, "t": "word"}))
-                    .unwrap();
-            p.put_record(&entry).unwrap();
-        }
-        p.commit(Position(first + 999)).unwrap();
+    let key = |at: u64| RecordKey::from(format!("k{at:05}").as_str());
+    let p = engine.projection();
+    p.begin().unwrap();
+    for at in 1..=40 {
+        let entry = format!(r#"{{"v":{at}}}"#);
+        p.put_order(&name, &key(at), Some(entry.as_bytes()))
+            .unwrap();
     }
+    // A key put again replaces its entry.
+    p.put_order(&name, &key(7), Some(br#"{"v":"7b"}"#)).unwrap();
+    p.commit(Position(41)).unwrap();
+    let view = engine.view(None).unwrap();
+    assert_eq!(
+        view.order(&name, &key(7)).unwrap().as_deref(),
+        Some(&br#"{"v":"7b"}"#[..]),
+        "an entry is read by its key"
+    );
+    let page = view.order_page(&name, Some(&key(7)), 3).unwrap();
+    assert_eq!(
+        page.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["k00008", "k00009", "k00010"],
+        "a page after a key is the next keys in order"
+    );
+    drop(view);
     drop(engine);
     let rows = [
         "records",
@@ -392,30 +403,151 @@ fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
     });
     assert_eq!(
         rows,
-        [keys as i64, keys as i64, 0, 0, 0],
-        "one state and one head for each key, no other row"
+        [0, 0, 0, 0, 0],
+        "an order name holds no row of the record tables"
     );
-    let (u, sc, n) = (url.clone(), schema.clone(), name.clone());
-    let plan: Vec<String> = std::thread::spawn(move || {
-        let mut client = postgres::Client::connect(&u, postgres::NoTls).unwrap();
-        client
-            .batch_execute(&format!(
-                "ANALYZE {sc}.records, {sc}.records_head; SET plan_cache_mode = force_custom_plan"
-            ))
-            .unwrap();
-        let [_, later, ..] = read_statements(&sc, true);
-        let (ty, at, limit, after) = (n.as_str(), last as i64, 1_i64, "k10000");
-        let explain =
-            format!("EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF) {later}");
-        let rows = client.query(&explain, &[&ty, &at, &limit, &after]).unwrap();
-        rows.iter().map(|row| row.get(0)).collect()
-    })
-    .join()
-    .unwrap();
-    common::drop_schema(&url, &schema);
-    let has = |step: &str| plan.iter().any(|line| line.contains(step));
+    let entries = common::settled(
+        &url,
+        &schema,
+        &format!(
+            "SELECT count(*) FROM {schema}.view_order WHERE name = 'sys:order.v' AND $1 <> ''"
+        ),
+    );
+    assert_eq!(entries, 40, "one entry for each key, in `view_order`");
+    // An entry ended leaves no row, and so does an order ended whole.
+    let engine = PgOpener
+        .open(&common::location(&url, "order", &schema), OpenMode::Write)
+        .unwrap();
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.put_order(&name, &key(7), None).unwrap();
+    p.commit(Position(42)).unwrap();
     assert!(
-        has("records_head_pkey") && !has("Sort") && !has("Seq Scan"),
-        "an order name's page after a key is not a seek into the heads: {plan:#?}"
+        engine
+            .view(None)
+            .unwrap()
+            .order(&name, &key(7))
+            .unwrap()
+            .is_none()
     );
+    assert_eq!(
+        common::settled(
+            &url,
+            &schema,
+            &format!(
+                "SELECT count(*) FROM {schema}.view_order WHERE name = 'sys:order.v' AND $1 <> ''"
+            ),
+        ),
+        39,
+        "a key ended leaves no entry"
+    );
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.end_order(&name).unwrap();
+    p.commit(Position(43)).unwrap();
+    assert!(
+        engine
+            .view(None)
+            .unwrap()
+            .order_page(&name, None, 100)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        common::settled(
+            &url,
+            &schema,
+            &format!(
+                "SELECT count(*) FROM {schema}.view_order WHERE name = 'sys:order.v' AND $1 <> ''"
+            ),
+        ),
+        0,
+        "an order ended whole leaves no entry"
+    );
+    common::drop_schema(&url, &schema);
+}
+
+/// The fold keeps a view's order entries in `view_order`, apart from the
+/// records (lakelands#1690): no `sys:order.` record is put, and the
+/// entries the extreme reads its next holder from are there.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_fold_keeps_an_extremes_order_apart_from_the_records() {
+    use lakelands_api::ontology::StorageKind;
+    use lakelands_api::seam::{Seams, VIEW_KEPT_SETTING};
+    use lakelands_core::conformance::fixture::{Lake, field, type_decl, view_of};
+    use std::sync::Arc;
+
+    let Some(url) = common::url_or_skip("the pg test of the fold's order entries") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let seams = Seams {
+        engines: vec![Arc::new(PgOpener)],
+        ..Seams::default()
+    };
+    let location = common::location(&url, "order-fold", &schema);
+    let store = lakelands_store::open(location, seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl(
+        "line",
+        vec![
+            field("g", StorageKind::Text),
+            field("n", StorageKind::Number),
+        ],
+    ))
+    .await
+    .unwrap();
+    let fields = vec![
+        field("g", StorageKind::Text),
+        field("low", StorageKind::Number),
+        field("high", StorageKind::Number),
+    ];
+    l.declare(view_of(
+        "ends",
+        "line",
+        &["g"],
+        fields,
+        &[("low", "min(n)"), ("high", "max(n)")],
+    ))
+    .await
+    .unwrap();
+    l.set(&format!("{VIEW_KEPT_SETTING}ends"), json!(true))
+        .await
+        .unwrap();
+    for (key, fields) in [
+        ("a", json!({"g": "x", "n": 9})),
+        ("b", json!({"g": "x", "n": 5})),
+    ] {
+        l.upsert("line", key, fields).await.unwrap();
+    }
+    drop(l);
+    drop(store);
+    let records = common::settled(
+        &url,
+        &schema,
+        &format!("SELECT count(*) FROM {schema}.records WHERE ty = 'sys:order.ends' AND $1 <> ''"),
+    );
+    assert_eq!(records, 0, "the fold writes no `sys:order.` record");
+    let heads = common::settled(
+        &url,
+        &schema,
+        &format!(
+            "SELECT count(*) FROM {schema}.records_head WHERE ty = 'sys:order.ends' AND $1 <> ''"
+        ),
+    );
+    assert_eq!(heads, 0, "the fold writes no `sys:order.` head row");
+    let entries = common::settled(
+        &url,
+        &schema,
+        &format!(
+            "SELECT count(*) FROM {schema}.view_order WHERE name = 'sys:order.ends' AND $1 <> ''"
+        ),
+    );
+    assert!(
+        entries > 0,
+        "the extreme's order holds its entries in `view_order`, not {entries}"
+    );
+    common::drop_schema(&url, &schema);
 }

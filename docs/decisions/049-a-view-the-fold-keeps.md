@@ -165,14 +165,15 @@ one.
   batch more for each run of entries the transaction ended ahead of it;
   never a member, at any size. A whole face whose folds are the open
   one's has no restricted member and takes the open face's holder.
-- **An order is read at the head only.** An engine keeps one state for
-  each key of an order name and no row beside it: a put replaces the
-  key's state and an end deletes it (`docs/seams.md`). Only the fold
-  reads it, at the head, by the key-ordered page every engine has. A
-  log that names a type beginning `sys:` comes from no door and is not
-  folded past that event, so no event writes into an order.
+- **An order is read at the head only.** An engine keeps one entry for
+  each key of an order name in a place of its own, apart from the
+  records: a put replaces the key's entry and an end deletes it
+  (`put_order`, `docs/seams.md`; lakelands#1690). Only the fold reads
+  it, at the head, by the key-ordered page every engine has. A log that
+  names a type beginning `sys:` comes from no door and is not folded
+  past that event, so no event writes into an order.
 - **An order ends as a whole.** Where a view ends, its order ends in
-  one call to the engine (`end_head_only`), whatever its size, and the
+  one call to the engine (`end_order`), whatever its size, and the
   transaction marks the name ended: a seek after that in the same
   transaction reads only the entries put since, never the engine's. So a
   view ended and made again in one event holds nothing for each entry it

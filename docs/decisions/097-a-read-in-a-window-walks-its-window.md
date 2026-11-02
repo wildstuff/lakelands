@@ -73,6 +73,10 @@ is two terms. `or`, `not` and a term under a function give no bound.
   so a long decimal shares its cut key with its run, and a strict term walks
   the rows of its one key and the rulebook rejects them. An open side ends
   at the rank's edge.
+- **Crossed ends.** Terms whose cut keys put the start above the end
+  (`x >= 10 and x <= 5`, or `x = 5 and x = 7`) admit no value. They narrow
+  nothing: the rulebook answers no row, and a range with its start above
+  its end is no window.
 - **A day bound** is the midnight `Timestamp::denoted` reads, as `compare`
   reads it.
 - **The rulebook still admits each row.** The window only narrows.
@@ -82,8 +86,9 @@ is two terms. `or`, `not` and a term under a function give no bound.
   false, so a read bounded on its first order field has no records without
   the field to add. Today that tail would walk the type after a short
   window, on all three engines and every `Holders`.
-- **One field.** A filter may bound several. The read takes the first of the
-  type's `sorted`, then its `chosen`, that the filter bounds.
+- **One field.** A filter may bound several. The read takes the page's first
+  order field, when the filter bounds it; a bound on another field narrows
+  nothing.
 
 ### The read road
 
@@ -332,7 +337,7 @@ fields, at the head only, as `chosen` is. A taken-back pair leaves the list.
 ### Conformance rows
 
 - `ROWS_WALKED_COUNTED`: a `Many`, a `Few` and a range read each add what they walked.
-- `WINDOW_READS_ITS_ROWS`: aggregate, count, key page, field page, both directions, by `rows_read` and `rows_walked`.
+- `WINDOW_READS_ITS_ROWS`: aggregate, count, key page, field page, both directions, by `rows_read` and `rows_walked`. As built in steps 1 and 2: the field page, both directions, its walk unchanged when records outside the bound are added, and a windowed page under an exact text by the `Few` and `Many` roads; an aggregate, a count and a key page follow in step 3.
 - `WINDOW_WALKS_THE_SMALLER_SIDE`: a window narrow and wide against its holders and its type takes the road the rule names, reads no more than today, and walks at most about eight times the smaller side.
 - `WINDOW_ADMITS_LIKE_A_PAGE`: a retired and a restricted record, `valid_at`, `equal`, `equal_any` and a pushed filter inside a window, on the road by keys and the road by holders, by `rows_read`.
 - `WINDOW_PAST_ITS_BOUNDS`: a count past `limits.window_keys` reads the window; an aggregate past it and a key page past `FEW_HOLDERS` take the other side, one answer.
@@ -360,8 +365,7 @@ Lines as reckoned, then ×1.35. Every pull request stays about 600 or under.
 
 | step | issue | product | spec | ×1.35 |
 |---|---|---|---|---|
-| 1. `rows_walked`, the companion count | all | 60 | 100 | 81 / 135 |
-| 2. `window`, one rank, field-order roads, no `missing` | 1633 | 150 | 220 | 203 / 297 |
+| 1.+2. `rows_walked`, `window`, one rank, field-order roads, no `missing` (measured) | all, 1633 | 607 | 881 | measured |
 | 3. `window_keys`, `admitted`, aggregate, count, key page | 1633 | 170 | 200 | 230 / 270 |
 | 4. the smaller side: `window_sides`, `holders_inside` | 1633 | 110 | 140 | 149 / 189 |
 | 5. memory lookup, 057 amended in tree | 1635 | 120 | 150 | 162 / 203 |
@@ -370,7 +374,7 @@ Lines as reckoned, then ×1.35. Every pull request stays about 600 or under.
 | 8. the build, its driver, `describe` | 1638 | 170 | 220 | 230 / 297 |
 | 9. the series road, one value, the tail | 1638 | 130 | 250 | 176 / 338 |
 | 10. `in`, the merge, the matrix row | 1638 | 100 | 170 | 135 / 230 |
-| **sum** | | **1 320** | **1 820** | **1 785 / 2 459** |
+| **sum** | | **2 108** | **2 908** | steps 1+2 measured, the rest ×1.35 |
 
 Steps 1 to 4 stand alone, in order. Steps 5 and 6 need step 1, and steps 7 to 10
 need step 2. Step 8 changes what `describe` says, so its pull request walks.
@@ -381,6 +385,50 @@ The reserve for lines 2, 3, 4, 6 and 7 of lakelands#1578 is 3 500 product and
 round ran about twice their reckoning, though. At ×2 this line alone takes
 2 640 / 3 640, three quarters of the product reserve, so the first three steps'
 measured sizes should reset this table before the rest is cut.
+
+### As built: steps 1 and 2 (lakelands#1693)
+
+The two steps landed in one pull request.
+
+- **`rows_walked`.** `engines::rows_walked()` stands beside `rows_read`,
+  with `counting_walks()` and `count_walks(on)` the switch a check turns on
+  and `count_walk(n)` the one call that adds. `Holders::Few` carries the
+  count `Holders::of` already read, and each statement that walks the
+  holders adds `M`. `Holders::Many` adds nothing on its own: while the
+  switch is on, SQLite and PostgreSQL run a `count(*)` of the same range,
+  from the seek to the last row handed, or to the range's end on a short
+  batch. The memory engine adds the rows it hands, on the order index and
+  on the `missing` walk; a pure range statement adds what it hands on every
+  engine, a page in key order among them. `rows_read` is unchanged. A
+  memory walk's upper bound is the next byte string after `hi`, so a row
+  whose key only begins with `hi` can be walked and rejected by the
+  rulebook; the answer is unaffected and the SQL engines' walk can be
+  smaller.
+- **`window`.** `engines::window(filter, field, kind)` answers
+  `Window { lo, hi }`, cut by `order_key` and with the ends inclusive; an
+  open side ends at the rank's edge. A number or decimal field takes rank 0,
+  a date or date-time field rank 1, and no other kind takes a window; a
+  literal of another rank narrows nothing. `engines::field_kind` reads the
+  field's kind from the declaration. The field-order page at the head,
+  under its first order field when the filter bounds that field, reads the
+  order index inside the window (memory's sorted set, the SQL engines'
+  `sort_key`), under an exact text through the `Few` and `Many` roads, and
+  skips the `missing` walk for a windowed page. A crossed bound narrows
+  nothing, and a cursor above the window going up or below it going down
+  reads nothing, as a seek past the window does. An earlier position, a
+  filter the store keeps whole and every other road read as today.
+- **Measured.** Product in 711, out 104, net 607; specification in 949,
+  out 68, net 881. The core-size gate: product 100 409 of base 108 500,
+  specification 184 983 of base 191 500, neither base nor ceiling raised.
+  Steps 1 and 2 measured 607 / 881 against the 284 / 432 reckoned for them
+  at ×1.35, about twice, as the round's shipped pull requests have run; the
+  estimate table above carries the measured size and leaves the remaining
+  steps as reckoned. The batch-growth page in the engines' text-lookup
+  tests puts its bound under a function, since a bound on the page's order
+  field now narrows its window and would ask fewer batches. A review then
+  held the `Many` road to the window's rows, a bound on a field beside the
+  one the page orders by to nothing, a literal on the left, records below
+  the bound and a filter read downwards.
 
 ### What the operator decided
 

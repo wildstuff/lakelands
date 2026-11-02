@@ -199,13 +199,26 @@ fn seek_in(dir: Direction, k: usize, key: usize) -> (String, &'static str) {
 /// they hold, and then the sort key and key bound to seek past when `from`
 /// is set. Many holders are read in the index's order, each kept where the
 /// text index holds its key; few are read from the text index and sorted.
-fn sorted_after_sql(dir: Direction, from: bool, holders: &Holders<'_>) -> String {
+fn sorted_after_sql(
+    dir: Direction,
+    from: bool,
+    holders: &Holders<'_>,
+    window: Option<&engines::Window>,
+) -> String {
     let (k, key) = match holders {
         Holders::All => (4, 5),
         _ => (6, 7),
     };
     let (seek, by) = seek_in(dir, k, key);
     let seek = if from { seek.as_str() } else { "" };
+    // The window's ends follow the parameters the statement does bind.
+    let at = match holders {
+        Holders::All if from => 6,
+        Holders::All => 4,
+        _ if from => 8,
+        _ => 6,
+    };
+    let window = window_sql(window, at, at + 1);
     let rows = match holders {
         Holders::All => "sort_index s WHERE s.ty = ?1 AND s.field = ?2",
         Holders::Many(..) => {
@@ -219,23 +232,72 @@ fn sorted_after_sql(dir: Direction, from: bool, holders: &Holders<'_>) -> String
     };
     format!(
         "SELECT s.sort_key, r.ty, k.key, r.since, r.state FROM \
-         (SELECT s.sort_key, s.key FROM {rows} {seek} ORDER BY {by} LIMIT ?3) s \
+         (SELECT s.sort_key, s.key FROM {rows} {seek} {window} ORDER BY {by} LIMIT ?3) s \
          CROSS JOIN keys k ON k.ty = ?1 AND k.key = s.key \
          CROSS JOIN records r ON r.ty = ?1 AND r.until IS NULL AND r.id = k.id \
          ORDER BY {by}"
     )
 }
 
+/// The statement's bound on the rows it reads, when the read is narrowed
+/// by a filter's window: `s.sort_key` between the window's ends, bound as
+/// `?lo` and `?hi`. Empty for a read with no window.
+fn window_sql(window: Option<&engines::Window>, lo: usize, hi: usize) -> String {
+    match window {
+        Some(_) => format!("AND s.sort_key >= ?{lo} AND s.sort_key <= ?{hi}"),
+        None => String::new(),
+    }
+}
+
+/// The stop of a walk counted for [`engines::rows_walked`]: rows up to
+/// the last one handed, in the order `dir` walks for `seek_in`. A
+/// descending walk's stop is the mirror of its seek.
+fn stop_in(dir: Direction, k: usize, key: usize) -> String {
+    match dir {
+        Direction::Asc => format!("AND (s.sort_key, s.key) <= (?{k}, ?{key})"),
+        Direction::Desc => format!(
+            "AND s.sort_key >= ?{k} \
+             AND (s.sort_key > ?{k} OR (s.sort_key = ?{k} AND s.key <= ?{key}))"
+        ),
+    }
+}
+
 /// The statement of [`Read::few_after`]'s one read a page: the order
 /// rows of `?2` of every record holding the text `?4` in `?3`, read from
 /// the text index and sorted, after the sort key and key `?5` and `?6`.
 /// Index rows only, at most [`engines::FEW_HOLDERS`].
-fn holders_in_order_sql(dir: Direction) -> String {
+fn holders_in_order_sql(dir: Direction, window: Option<&engines::Window>) -> String {
     let (seek, by) = seek_in(dir, 5, 6);
+    let window = window_sql(window, 7, 8);
     format!(
         "SELECT s.sort_key, s.key FROM text_index t CROSS JOIN sort_index s \
          WHERE t.ty = ?1 AND t.field = ?3 AND t.value = ?4 \
-         AND s.ty = ?1 AND s.key = t.key AND s.field = ?2 {seek} ORDER BY {by}"
+         AND s.ty = ?1 AND s.key = t.key AND s.field = ?2 {seek} {window} ORDER BY {by}"
+    )
+}
+
+/// The statement counting the order rows a page under a text many records
+/// hold walked, for [`engines::rows_walked`]: rows of `?2` whose keys the
+/// text index holds for `?3` and `?4`, from the seek beginning at the
+/// parameter `from`, to the stop beginning at `last` when the batch was
+/// full, inside the window beginning at `window`. Each part's parameters
+/// are the pair beginning at its index.
+fn walked_sql(
+    dir: Direction,
+    from: Option<usize>,
+    last: Option<usize>,
+    window: Option<usize>,
+) -> String {
+    let seek = from.map_or_else(String::new, |k| seek_in(dir, k, k + 1).0);
+    let stop = last.map_or_else(String::new, |k| stop_in(dir, k, k + 1));
+    let window = window.map_or_else(String::new, |k| {
+        format!("AND s.sort_key >= ?{k} AND s.sort_key <= ?{}", k + 1)
+    });
+    format!(
+        "SELECT COUNT(*) FROM sort_index s WHERE s.ty = ?1 AND s.field = ?2 \
+         AND EXISTS (SELECT 1 FROM text_index t \
+         WHERE t.ty = ?1 AND t.field = ?3 AND t.value = ?4 AND t.key = s.key) \
+         {seek} {stop} {window}"
     )
 }
 
@@ -332,10 +394,10 @@ pub fn first_page_statements() -> Vec<String> {
         records_after_sql(&TypeName::from("t"), true, false, false),
         holding_after_sql(false),
         unsorted_after_sql(false),
-        sorted_after_sql(Direction::Asc, false, &Holders::All),
-        sorted_after_sql(Direction::Desc, false, &Holders::All),
-        sorted_after_sql(Direction::Asc, false, &many),
-        sorted_after_sql(Direction::Desc, false, &many),
+        sorted_after_sql(Direction::Asc, false, &Holders::All, None),
+        sorted_after_sql(Direction::Desc, false, &Holders::All, None),
+        sorted_after_sql(Direction::Asc, false, &many, None),
+        sorted_after_sql(Direction::Desc, false, &many, None),
         unsorted_holding_sql(false),
     ]
 }
@@ -349,8 +411,8 @@ pub fn first_page_statements() -> Vec<String> {
 /// most [`engines::FEW_HOLDERS`] rows.
 pub fn few_holders_statements() -> [String; 3] {
     [
-        holders_in_order_sql(Direction::Asc),
-        holders_in_order_sql(Direction::Desc),
+        holders_in_order_sql(Direction::Asc, None),
+        holders_in_order_sql(Direction::Desc, None),
         HEAD_RECORD.to_owned(),
     ]
 }
@@ -612,12 +674,18 @@ impl Read<'_> {
         ty: &TypeName,
         order: &Order,
         holders: &Holders<'_>,
+        window: Option<&engines::Window>,
         from: Option<(&[u8], &str)>,
         n: u32,
     ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
         let mut stmt = self
             .conn
-            .prepare_cached(&sorted_after_sql(order.dir, from.is_some(), holders))
+            .prepare_cached(&sorted_after_sql(
+                order.dir,
+                from.is_some(),
+                holders,
+                window,
+            ))
             .map_err(sql)?;
         let (ty, field) = (ty.as_str(), order.field.as_str());
         let mut args: Vec<&dyn ToSql> = vec![&ty, &field, &n];
@@ -629,15 +697,78 @@ impl Read<'_> {
         if from.is_some() {
             args.extend([&k as &dyn ToSql, &key]);
         }
+        if let Some(w) = window {
+            args.extend([&w.lo as &dyn ToSql, &w.hi]);
+        }
         let row =
             |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, projection::record_at(r, 1)?));
         let rows: Vec<(Vec<u8>, projection::Kept4)> = stmt
             .query_map(args.as_slice(), row)
             .and_then(Iterator::collect)
             .map_err(sql)?;
+        self.count_walked(ty, order, holders, window, from, n, &rows)?;
         rows.into_iter()
             .map(|(k, state)| Ok((k, decode_record(self.conn, &state)?)))
             .collect()
+    }
+
+    /// Counts the index rows the statement [`Read::sorted_after`] just ran
+    /// walked, for [`engines::rows_walked`]: a range of the order index
+    /// walks what it hands; a text's few holders walk their own rows once
+    /// a statement; a text's many holders run a `count(*)` of the same
+    /// range, from the seek to the last row handed or, on a short batch,
+    /// to the range's end, only while a check asked for walks.
+    #[allow(clippy::too_many_arguments)]
+    fn count_walked(
+        &self,
+        ty: &str,
+        order: &Order,
+        holders: &Holders<'_>,
+        window: Option<&engines::Window>,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+        rows: &[(Vec<u8>, projection::Kept4)],
+    ) -> Result<()> {
+        match holders {
+            Holders::All => engines::count_walk(rows.len()),
+            Holders::Few(_, _, held) => engines::count_walk(*held as usize),
+            Holders::Many(..) if engines::counting_walks() => {
+                let last = (rows.len() == n as usize)
+                    .then(|| rows.last())
+                    .flatten()
+                    .map(|(k, (_, key, _, _))| (k.clone(), key.clone()));
+                let field = order.field.as_str();
+                let (f, t) = holders.text().unwrap_or_default();
+                let mut args: Vec<&dyn ToSql> = vec![&ty, &field, &f, &t];
+                let mut next = 5;
+                let (k, key) = from.unzip();
+                if from.is_some() {
+                    args.extend([&k as &dyn ToSql, &key]);
+                    next += 2;
+                }
+                let from_at = from.is_some().then_some(5);
+                let (lk, lkey) = last.as_ref().map_or((None, None), |(k, key)| {
+                    (Some(k.as_slice()), Some(key.as_str()))
+                });
+                let last_at = last.is_some().then_some(next);
+                if last.is_some() {
+                    args.extend([&lk as &dyn ToSql, &lkey]);
+                    next += 2;
+                }
+                let window_at = window.is_some().then_some(next);
+                if let Some(w) = window {
+                    args.extend([&w.lo as &dyn ToSql, &w.hi]);
+                }
+                let walked: Option<i64> = one(
+                    self.conn,
+                    &walked_sql(order.dir, from_at, last_at, window_at),
+                    args.as_slice(),
+                )?;
+                engines::count_walk(walked.unwrap_or(0).unsigned_abs() as usize);
+            }
+            Holders::Many(..) => {}
+        }
+        Ok(())
     }
 
     /// At most `n` of the head records holding the text `holders` names, in
@@ -650,11 +781,13 @@ impl Read<'_> {
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended).
     /// The batches and the held rows are of one snapshot: the page's read
     /// transaction.
+    #[allow(clippy::too_many_arguments)]
     fn few_after(
         &self,
         ty: &TypeName,
         order: &Order,
         holders: &Holders<'_>,
+        window: Option<&engines::Window>,
         held: &mut Held,
         from: Option<(&[u8], &str)>,
         n: u32,
@@ -662,22 +795,27 @@ impl Read<'_> {
         // A batch with no row to continue after is a page's first.
         let (Some((k, key)), true) = (from, held.batches >= engines::BATCHES_BEFORE_HELD) else {
             held.batches += 1;
-            return self.sorted_after(ty, order, holders, from, n);
+            return self.sorted_after(ty, order, holders, window, from, n);
         };
         if held.rows.is_none() {
             let mut stmt = self
                 .conn
-                .prepare_cached(&holders_in_order_sql(order.dir))
+                .prepare_cached(&holders_in_order_sql(order.dir, window))
                 .map_err(sql)?;
             let (f, t) = holders.text().unwrap_or_default();
+            let (name, field) = (ty.as_str(), order.field.as_str());
             let row = |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?));
+            let mut args: Vec<&dyn ToSql> = vec![&name, &field, &f, &t, &k, &key];
+            if let Some(w) = window {
+                args.extend([&w.lo as &dyn ToSql, &w.hi]);
+            }
             let rows = stmt
-                .query_map(
-                    params![ty.as_str(), order.field.as_str(), f, t, k, key],
-                    row,
-                )
+                .query_map(args.as_slice(), row)
                 .and_then(Iterator::collect)
                 .map_err(sql)?;
+            if let Holders::Few(_, _, held_rows) = holders {
+                engines::count_walk(*held_rows as usize);
+            }
             engines::count_holder_read();
             (held.rows, held.taken) = (Some(rows), 0);
         }
@@ -713,18 +851,22 @@ impl Read<'_> {
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        if let Some((f, t)) = holders.text() {
-            return self.page(
+        let rows = if let Some((f, t)) = holders.text() {
+            self.page(
                 &unsorted_holding_sql(after.is_some()),
                 &[&ty.as_str(), &field.as_str(), &n, &f, &t],
                 after,
-            );
-        }
-        self.page(
-            &unsorted_after_sql(after.is_some()),
-            &[&ty.as_str(), &field.as_str(), &n],
-            after,
-        )
+            )?
+        } else {
+            self.page(
+                &unsorted_after_sql(after.is_some()),
+                &[&ty.as_str(), &field.as_str(), &n],
+                after,
+            )?
+        };
+        // A range of the key index walks what it hands.
+        engines::count_walk(rows.len());
+        Ok(rows)
     }
 
     /// The records a page's statement answers, `after` bound as its last
@@ -854,6 +996,21 @@ impl ProjectionView for SqliteView<'_> {
         self.read(None, |r| r.record(ty, key))
     }
 
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        self.read(None, |r| projection::order(r.conn, name, key))
+    }
+
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        self.read(Vec::new(), |r| {
+            projection::order_page(r.conn, name, after, n)
+        })
+    }
+
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             r.records_by_key(ty, keys.iter().map(|k| k.to_string()).collect())
@@ -909,7 +1066,10 @@ impl ProjectionView for SqliteView<'_> {
                 let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
                 let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
                 return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
-                    r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)
+                    let rows = r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)?;
+                    // A range of the key index walks what it hands.
+                    engines::count_walk(rows.len());
+                    Ok(rows)
                 });
             }
             let sorted = r.sorted_fields(ty, decl.as_ref())?;
@@ -922,18 +1082,37 @@ impl ProjectionView for SqliteView<'_> {
                     let holders = Holders::of(lookup.as_ref(), |f, t, n| {
                         r.holders(ty, f, t, n)
                     })?;
+                    // A filter that bounds the page's own order field
+                    // narrows the index to its window; the rulebook still
+                    // admits each row, and no record without a value can
+                    // be admitted, so the walk past the index has no tail.
+                    let window = decl
+                        .as_ref()
+                        .and_then(|d| engines::field_kind(d, &first.field))
+                        .zip(scan.filter.as_ref())
+                        .and_then(|(kind, filter)| engines::window(filter, &first.field, kind));
                     // Under a text few hold, a page that asks for many
                     // batches reads the holders left once.
                     let mut held = Held::default();
-                    return engines::scan_in_field_order(
-                        decl.as_ref(),
-                        scan,
-                        |from, n| match holders {
-                            Holders::Few(..) => r.few_after(ty, first, &holders, &mut held, from, n),
-                            _ => r.sorted_after(ty, first, &holders, from, n),
-                        },
-                        |after, n| r.unsorted_after(ty, &first.field, &holders, after, n),
-                    );
+                    let sorted = |from: Option<(&[u8], &str)>, n: u32| match holders {
+                        Holders::Few(..) => {
+                            r.few_after(ty, first, &holders, window.as_ref(), &mut held, from, n)
+                        }
+                        _ => r.sorted_after(ty, first, &holders, window.as_ref(), from, n),
+                    };
+                    let missing = |after: Option<&str>, n: u32| {
+                        r.unsorted_after(ty, &first.field, &holders, after, n)
+                    };
+                    // A page inside a window reads no record without the
+                    // field: the comparison is false with no value.
+                    return match window {
+                        Some(_) => {
+                            engines::scan_in_field_order(decl.as_ref(), scan, sorted, |_, _| {
+                                Ok(Vec::new())
+                            })
+                        }
+                        None => engines::scan_in_field_order(decl.as_ref(), scan, sorted, missing),
+                    };
                 }
                 // At an earlier position, the head's index with the keys
                 // changed since; past the ceiling, the sort.
@@ -943,7 +1122,9 @@ impl ProjectionView for SqliteView<'_> {
                             decl.as_ref(),
                             scan,
                             &changed,
-                            |from, n| r.sorted_after(ty, first, &Holders::All, from, n),
+                            |from, n| {
+                                r.sorted_after(ty, first, &Holders::All, None, from, n)
+                            },
                             |after, n| r.unsorted_after(ty, &first.field, &Holders::All, after, n),
                         );
                     }

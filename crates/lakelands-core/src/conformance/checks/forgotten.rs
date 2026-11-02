@@ -25,7 +25,7 @@ use crate::conformance::prelude::*;
 
 check!(
     FORGOTTEN = a_forgotten_sources_values_read_as_erased_at_every_position,
-    "058: `forget_preflight` names the records holding a source's erasable values, the values per field, the records it retires and those another hand co-owns, what is computed again, no plaintext, and the time it expects to hold the writer's lock; `forget_source` with that report appends `source_forgotten` naming the key's version and retires the records the source alone brought, destroys its keys and reclaims the storage; after it the source's values read as erased, with provenance saying `erased`, at the head and `as_of` before the act, and so do a derived field, a function's recorded output and a kept view's group computed from them, while a field that is not erasable keeps its history and another source's values stay; a rebuild answers the same; an ingest from the source is refused and appends nothing, as is a report of a head a write moved past, and forgetting it again answers it done and appends nothing",
+    "058: `forget_preflight` names the records holding a source's erasable values, the values per field, the records it retires and those another hand co-owns, what is computed again, no plaintext, and the time it expects to hold the writer's lock; `forget_source` with that report appends `source_forgotten` naming the key's version, retires the records the source alone brought, closes the act with `act_whole`, destroys its keys and reclaims the storage; after it the source's values read as erased, with provenance saying `erased`, at the head and `as_of` before the act, and so do a derived field, a function's recorded output and a kept view's group computed from them, while a field that is not erasable keeps its history and another source's values stay; a rebuild answers the same; an ingest from the source is refused and appends nothing, as is a report of a head a write moved past, and forgetting it again answers it done and appends nothing",
     reopens
 );
 
@@ -250,6 +250,20 @@ async fn forgettings(store: &dyn LakeStore, after: Position) -> Result<Vec<Event
     Ok(events.into_iter().filter(forgot).collect())
 }
 
+/// The act after `at` ends with its `act_whole`, last in the log: the
+/// list of forgotten sources can tell an act whole from one a writer
+/// stopped between (099).
+async fn ends_whole(store: &dyn LakeStore, at: Position) -> Held {
+    let events = events_after(store, at).await?;
+    let kinds: Vec<&str> = events.iter().map(|e| e.body.kind()).collect();
+    ensure!(
+        kinds.last() == Some(&"act_whole")
+            && kinds.iter().filter(|k| **k == "act_whole").count() == 1,
+        "a forgetting must end with one `act_whole`, last in the log; the act appended {kinds:?}"
+    );
+    Ok(())
+}
+
 /// An ingest from `crm` is refused, appending nothing.
 async fn refused(store: &dyn LakeStore, l: &Lake) -> Held {
     let before = store.head().await.must("reading the head")?;
@@ -328,6 +342,7 @@ async fn a_forgotten_sources_values_read_as_erased_at_every_position(
         matches!(named.as_slice(), [EventBody::SourceForgotten { source, keys }] if source == "crm" && keys == &vec![k.clone()]),
         "one `source_forgotten` names crm and its key `{k}`; the log holds {named:?}"
     );
+    ends_whole(store.as_ref(), at).await?;
     let left = keys.ids(store.lake(), &crm).ok().unwrap_or_default();
     ensure!(
         left.is_empty(),
@@ -924,6 +939,17 @@ impl ProjectionStore for Reclaims {
     fn end_head_only(&self, name: &TypeName, at: Position) -> lakelands_api::Result<()> {
         self.inner.projection().end_head_only(name, at)
     }
+    fn put_order(
+        &self,
+        name: &TypeName,
+        key: &lakelands_api::RecordKey,
+        entry: Option<&[u8]>,
+    ) -> lakelands_api::Result<()> {
+        self.inner.projection().put_order(name, key, entry)
+    }
+    fn end_order(&self, name: &TypeName) -> lakelands_api::Result<()> {
+        self.inner.projection().end_order(name)
+    }
     fn put_proposal(
         &self,
         proposal: &lakelands_api::write::Proposal,
@@ -1337,6 +1363,7 @@ async fn several_sources_are_forgotten_in_one_act(
         ] if a == "crm" && b == "erp"),
         "one `source_forgotten` for crm and one for erp; the log holds {named:?}"
     );
+    ends_whole(store.as_ref(), at).await?;
     let events = events_after(store.as_ref(), at).await?;
     let mut retired: Vec<&str> = (events.iter())
         .filter_map(|e| match &e.body {
@@ -1465,6 +1492,7 @@ async fn a_set_beside_a_forgotten_source_forgets_what_it_owes(
         "the act over the set appends a `source_forgotten` for pos alone and retires `p8`; the \
          log holds {forgot:?} and retires {retired:?}, the act answered {done:?}"
     );
+    ends_whole(store.as_ref(), at).await?;
     let p8 = (l.cat)
         .get(&l.own, &"person".into(), get_at("p8", None))
         .await;
