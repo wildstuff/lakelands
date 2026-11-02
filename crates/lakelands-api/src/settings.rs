@@ -197,7 +197,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         range: "`true` or `false`",
         says: "Whether the lake chooses an order index itself, for a field a type is ordered by whole at least `limits.order_after_pages` times within `limits.order_window_secs`, beside what `sort_index` names; the host's own `sort_index` for a type always wins. Off, only what the host sets is indexed.",
-        cost: "each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records",
+        cost: "each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records, in chunks of 10 000",
         ..location("limits.choose_order_index", "true")
     },
     Setting {
@@ -228,7 +228,23 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         range: "a count; 0 is taken as 1",
         says: "The records one chunk of a chosen index's build writes while it holds the writer; a write waits for a chunk, never for the build.",
-        ..location("limits.order_chunk", "10000")
+        ..location("limits.order_chunk", "1000")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "The most events one part of an act appends: an act that work beside the writer runs appends in parts, each a turn of the writer of its own, so a write sent meanwhile waits for at most the part in front of it.",
+        ..location("limits.part_events", "500")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "The most events past the view it walked on that a job's first turn reads under the writer. A longer tail is read off the writer first; one that is still longer at the turn lets the writer go and moves the view up, and after three such tries the job answers unavailable, having appended nothing.",
+        cost: "the tail is read by source and by type from the log's index, 11 ms for 1 000 events at 2.5 million records (measured, decision 099)",
+        ..location("limits.part_tail", "1000")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "The most events one page of a restate refolds in a turn of the writer; a job whose page would refold more restates beside the projection instead.",
+        ..location("limits.page_events", "2000")
     },
     Setting {
         range: "`true` or `false`",

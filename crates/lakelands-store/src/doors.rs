@@ -65,6 +65,9 @@ pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> 
         Ok(())
     })
     .await?;
+    // What the road owes runs beside the writer, never before the open
+    // answers (099).
+    crate::road::resume(&lake, crate::road::OWED);
     Ok(lake)
 }
 
@@ -108,6 +111,7 @@ pub async fn standby(
                 Ok(taken)
             });
             if taken.await? {
+                crate::road::resume(&lake, crate::road::OWED);
                 return Ok(());
             }
         }

@@ -80,6 +80,11 @@ for engine in ${engines[@]+"${engines[@]}"}; do
         # this engine (lakelands#1394).
         echo "conformance: $engine runs the door checks through a forwarding handle"
         cargo nextest run --locked -p lakelands-client --test forwarding
+        # The road's runner under the store's test job, on this engine
+        # (099, lakelands#1675): a store unit test reaches it, and the
+        # workspace job runs it with no server.
+        echo "conformance: $engine runs the road's runner under its test job"
+        cargo nextest run --locked -p lakelands-store --lib road::
         # Last, once every test above has ended: none left its schema
         # behind (lakelands#1011). This holds only where this run owns the
         # database, as CI's job and a worktree's own container running one

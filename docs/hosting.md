@@ -1818,7 +1818,7 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   `limits.order_min_records` (2 000) live records with fewer than
   `limits.order_max_fields` (2) chosen fields, the writer's process builds
   its order index beside the log, in chunks of `limits.order_chunk`
-  (10 000) records between writes, and pages ordered by it read their
+  (1 000) records between writes, and pages ordered by it read their
   page from then on. Nothing is logged: a feed, a mirror and an export
   carry nothing of it, and a projection rebuilt from the log learns it
   again from use. A field unused for `limits.order_unused_secs` (7 days)
