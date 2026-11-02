@@ -580,7 +580,8 @@ its mark and changed nowhere else.
 - **`docs/log-format.md` states the kind now**, though the build plan
   gives the page to S2: `api/tests/contract.rs` holds that every kind in
   `KINDS` is on the page, so S1 cannot be green without it. The page says
-  the fold's effect and the two tables land with the act.
+  the two tables landed at S2 and the fold's effect lands with the act,
+  at S3 to S5.
 - **Corrections where the tree holds a rule the sketch did not name:**
   `StrandedAtHeadOnly` takes `position`, not `at`, because the refusals
   catalog reserves `at` for a `Place`'s position and refuses it as a
@@ -628,17 +629,23 @@ its mark and changed nowhere else.
   store's `Scoped`, `ScopedView` and `HeldNow`, and the suite's doubles —
   had to answer the four methods by forwarding them, since a wrapper that
   stopped forwarding would answer a read short. Nothing performs the act
-  yet: the fold meets `values_thinned` and does nothing.
+  yet: the fold meets `values_thinned` and does nothing. One limit the
+  tables leave: two acts on one type, field and horizon are one
+  `(ty, by, before)` row, so the second's `gone` replaces the first's,
+  and `ThinnedAct` exposes no position to tell them apart. The decided
+  shape cannot distinguish them either; this is noted, not repaired.
 - **S3 did not land in this round.** The mark it owes is every group and
   face a taken record's versions held, and the seam holds no read of a
   key's versions: `get` answers one position. A rebuild meets those
   versions in order and could track them, but a fold that reaches the act
   in a later session has long passed them, and the two must agree; the
   alternatives are a read of a key's states or a replay of its events
-  from the log, and this record decides neither. The round stopped at S2,
-  where the issue's size rule sends it.
+  from the log, and this record decides neither. The first shape is a
+  fifth `ProjectionView` read of a key's states between its `made` and a
+  position, which is another public-surface break. The round stopped at
+  S2, where the issue's size rule sends it.
 - **Measured at S2's head**: product 101 668 of the 108 500 base and
-  specification 186 069 of the 191 500 base; seam 102 of 110; 6 of 20
+  specification 186 080 of the 191 500 base; seam 102 of 110; 6 of 20
   `cfg(feature)` sites; 1 012 checks through the doors and 89 through the
   engine seam; 1 018 refusal cases. S2's own lines: product +390 −10,
   specification +127 −1; the plan's 100 and 120 were the sketch, and the
