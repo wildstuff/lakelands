@@ -488,6 +488,25 @@ pub enum EventBody {
         /// Why it closed.
         why: crate::quarantine::ClosedWhy,
     },
+    /// A host began a purge of a source: every live record the source
+    /// brought in is retired, in parts, and the act ends with its
+    /// `ActWhole` (`docs/decisions/039-a-source-is-retracted-as-one.md`,
+    /// `docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    SourcePurged {
+        /// The source.
+        source: SourceId,
+        /// The one type the purge is of; absent for a purge of the source
+        /// whole.
+        #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+        ty: Option<TypeName>,
+    },
+    /// The last event of an act: every append the act makes is behind it
+    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    ActWhole {
+        /// The position of the act's first event: the `values_removed`,
+        /// `source_forgotten` or `source_purged` it began with.
+        act: Position,
+    },
 }
 
 /// The kinds of one format version: `EventBody::kind` and [`KINDS`] come
@@ -536,6 +555,8 @@ kinds! {
     Checkpoint => "checkpoint",
     RecordQuarantined => "record_quarantined",
     QuarantineClosed => "quarantine_closed",
+    SourcePurged => "source_purged",
+    ActWhole => "act_whole",
 }
 
 /// What kind of change fired a trigger (lakelands#1217): the write at the

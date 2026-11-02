@@ -711,6 +711,7 @@ pub fn run(
         followed: None,
         shown: None,
     };
+    let act = writes::position_after(&w, 0);
     let mut drafts = vec![Draft::system(now, removed)];
     let mut d = call.decide(&w, view.as_ref(), now, drafts.len());
     for before in retire {
@@ -718,6 +719,9 @@ pub fn run(
         drafts.extend(d.retiring(&before, Draft::system(now, body))?);
     }
     drafts.extend(closes.into_iter().map(|c| Draft::system(now, c)));
+    // Every act ends with its `act_whole` (099), so the acts' lists can
+    // say of an act that is not whole that it is owed.
+    drafts.push(Draft::system(now, EventBody::ActWhole { act }));
     drop(view);
     lake.append(&mut w, drafts)?;
     let at = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);

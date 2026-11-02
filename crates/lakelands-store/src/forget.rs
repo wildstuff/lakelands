@@ -628,6 +628,7 @@ fn run_of(
         return Err(Error::invalid(Case::ForgetPlaintext { source, count }));
     }
     let now = lake.clock(&mut w);
+    let act = writes::position_after(&w, 0);
     let mut drafts = Vec::new();
     for source in owed {
         let keys = lake.keys.ids(source)?;
@@ -645,6 +646,8 @@ fn run_of(
         let body = writes::retirement(&before.ty, &before.key, before.version);
         drafts.extend(d.retiring(&before, Draft::system(now, body))?);
     }
+    // Every act ends with its `act_whole` (099).
+    drafts.push(Draft::system(now, EventBody::ActWhole { act }));
     let way = way(lake, view.as_ref(), set)?;
     let mut report = of_set(reports, view.as_ref(), lake, way);
     drop(view);

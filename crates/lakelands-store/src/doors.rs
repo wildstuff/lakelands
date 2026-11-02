@@ -53,7 +53,7 @@ type Clocked = (ReadAt, Option<Timestamp>);
 /// (and any seams it binds) in `seams`; the store depends on no engine.
 pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<dyn LakeStore>> {
     let lake = opened(location, seams, mode).await?;
-    Ok(Arc::new(Store { lake }))
+    Ok(Arc::new(Store::new(lake)))
 }
 
 /// The lake [`open`] opens.
@@ -146,7 +146,7 @@ pub async fn standby(
     every: std::time::Duration,
 ) -> Result<(Arc<dyn LakeStore>, Standing)> {
     let (lake, standing) = standing_by(location, seams, every, crate::road::OWED).await?;
-    Ok((Arc::new(Store { lake }), standing))
+    Ok((Arc::new(Store::new(lake)), standing))
 }
 
 /// [`standby`]'s lake, which, once it takes the lease, finishes the jobs
@@ -258,13 +258,54 @@ fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
 /// The store facade of one lake.
 pub struct Store {
     pub(crate) lake: Arc<Lake>,
+    /// Whether this facade is the caller's handle, whose drop lets the lake
+    /// go. [`Store::new`] makes one; a test's literal over a lake it holds
+    /// itself is not, and drops without giving the lease up.
+    pub(crate) owns: bool,
 }
 
-/// The doors of one lake, bound to a host's write context.
-#[derive(Clone)]
+impl Store {
+    /// The caller's handle to `lake`.
+    pub(crate) fn new(lake: Arc<Lake>) -> Store {
+        lake.take_ownership();
+        Store { lake, owns: true }
+    }
+}
+
+/// The caller's facade is the lake's handle: dropping it lets the lake go
+/// and its lease with it, as dropping the last handle would, though a job
+/// beside the writer still holds the lake while it runs. The job stops at
+/// its next step, and what it left stays owed in the log.
+impl Drop for Store {
+    fn drop(&mut self) {
+        if self.owns {
+            self.lake.release();
+        }
+    }
+}
+
+/// The doors of one lake, bound to a host's write context. A handle the
+/// caller holds onto a lake a store facade owns: the lease lives while one
+/// of them is held.
 pub struct Doors {
     lake: Arc<Lake>,
     context: WriteContext,
+}
+
+impl Clone for Doors {
+    fn clone(&self) -> Doors {
+        self.lake.hold();
+        Doors {
+            lake: self.lake.clone(),
+            context: self.context.clone(),
+        }
+    }
+}
+
+impl Drop for Doors {
+    fn drop(&mut self) {
+        self.lake.release();
+    }
 }
 
 /// One read of `lake` by `who` at `at`, under the clock a cursor carries
@@ -316,8 +357,11 @@ fn reading<T>(
 impl Doors {
     /// The doors of `lake` under `context`.
     pub(crate) fn new(lake: &Arc<Lake>, context: WriteContext) -> Doors {
-        let lake = lake.clone();
-        Doors { lake, context }
+        lake.hold();
+        Doors {
+            lake: lake.clone(),
+            context,
+        }
     }
 
     /// One record write decided and appended alone ([`crate::batch`]).
@@ -1335,9 +1379,11 @@ impl LakeStore for Store {
     ) -> Result<PurgeReport> {
         writes::check_source(source)?;
         let (source, ty, id) = (source.clone(), ty.cloned(), id.map(str::to_owned));
-        let purge =
-            move |t: &Turn<'_>| owing(|| crate::purge::run(t, &source, ty.as_ref(), id.as_deref()));
-        let (mut report, own) = exec::write(&self.lake, purge).await?;
+        // The act runs along the road, beside the writer: the door waits
+        // for its last turn without holding the queue.
+        let (answer, waiting) = tokio::sync::oneshot::channel();
+        crate::purge::start(&self.lake, source, ty, id, Some(answer));
+        let (mut report, own) = waiting.await.unwrap_or_else(|_| Err(exec::halted(true)))?;
         // The retirements' backed fields settle like any write's.
         if let Some(last) = crate::backed::settle_after(&self.lake, &own).await {
             report.position = report.position.max(last);

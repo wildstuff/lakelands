@@ -91,9 +91,14 @@ impl Root {
 
     /// `source` brings one contact in, `key`.
     fn ingest(&self, source: &str, key: &str) {
+        self.ingest_with(source, key, &format!("{key}@example.org"));
+    }
+
+    /// One record of `ty` `contact` at `key`, its `email` `email`.
+    fn ingest_with(&self, source: &str, key: &str, email: &str) {
         let rows = self.dir.join(format!("{source}-{key}.ndjson"));
         let row = format!(
-            "{{\"type\": \"contact\", \"key\": \"{key}\", \"fields\": {{\"email\": \"{key}@example.org\"}}}}\n"
+            "{{\"type\": \"contact\", \"key\": \"{key}\", \"fields\": {{\"email\": \"{email}\"}}}}\n"
         );
         fs::write(&rows, row).unwrap();
         self.ok(
@@ -207,33 +212,30 @@ fn an_act_goes_through_under_a_preflight_another_process_printed() {
     }
 }
 
-/// A record written between the preflight and the act, by another
-/// process, refuses each of the three acts: the lake moved by more than a
-/// lease. A preflight after the write is acted on.
+/// A write between the preflight and the act refuses forget and `values
+/// remove`; a purge refuses it only where the write reached a record its
+/// report named. A write elsewhere, and the purge's own source's later
+/// write, are taken in; a preflight after a refusal is acted on.
 #[test]
-fn a_write_between_the_preflight_and_the_act_still_refuses_it() {
+fn a_write_between_the_preflight_and_the_act_refuses_what_it_reached() {
     for (engine, url) in engines() {
         let root = Root::new(&format!("moved_{engine}"), url.as_deref());
-        for source in ["bank", "crm", "tracker"] {
+        for source in ["bank", "crm", "tracker", "ledger"] {
             root.ingest(source, &format!("{source}-1"));
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
         let cut = lakelands_api::Timestamp(now.unwrap().as_micros() as i64).to_string();
-        let acts: [(&[&str], &str); 4] = [
-            (&["purge", "--source", "bank"], "not of this purge"),
+        let refused: [(&[&str], &str); 2] = [
             (&["forget", "--source", "crm"], "not of this forgetting"),
             (
                 &["values", "remove", "--source", "tracker", "--before", &cut],
                 "not of this removal",
             ),
-            // A write of the act's own source moves the lake as much.
-            (&["purge", "--source", "bank"], "not of this purge"),
         ];
-        for (n, (act, said)) in acts.iter().enumerate() {
+        for (n, (act, said)) in refused.iter().enumerate() {
             let id = root.preflight(act);
-            let writer = if n == 3 { "bank" } else { "other" };
-            root.ingest(writer, &format!("{writer}-{n}"));
+            root.ingest("other", &format!("other-{n}"));
             let stale = root.act(act, &id);
             assert!(
                 !stale.ok && stale.err.contains(said),
@@ -242,18 +244,63 @@ fn a_write_between_the_preflight_and_the_act_still_refuses_it() {
                 stale.out,
                 stale.err
             );
-        }
-        for (act, _) in &acts[..3] {
             let id = root.preflight(act);
             let done = root.act(act, &id);
             assert!(
                 done.ok && done.out.contains("through position "),
-                "{engine}: `{}`: {}{}",
+                "{engine}: `{}` after a fresh preflight: {}{}",
                 act.join(" "),
                 done.out,
                 done.err
             );
         }
+
+        let purge = ["purge", "--source", "bank"];
+        let id = root.preflight(&purge);
+        root.ingest("other", "elsewhere");
+        let done = root.act(&purge, &id);
+        assert!(
+            done.ok && done.out.contains("purged bank through position "),
+            "{engine}: a write elsewhere: {}{}",
+            done.out,
+            done.err
+        );
+
+        // The source's own write after the report is what the purge
+        // takes in, not what refuses it.
+        let id = root.preflight(&purge);
+        root.ingest("bank", "bank-late");
+        let done = root.act(&purge, &id);
+        assert!(
+            done.ok && done.out.contains("purged bank through position "),
+            "{engine}: the source's own later write: {}{}",
+            done.out,
+            done.err
+        );
+
+        // A write that reaches a record the report named refuses it.
+        let purge = ["purge", "--source", "ledger"];
+        let id = root.preflight(&purge);
+        // The same value would change nothing; `other`'s must differ.
+        root.ingest_with("other", "ledger-1", "other@example.org");
+        let stale = root.act(&purge, &id);
+        assert!(
+            !stale.ok && stale.err.contains("not of this purge"),
+            "{engine}: a write on a record the report named: {}{}",
+            stale.out,
+            stale.err
+        );
+        // The record is another source's now, so the report names one
+        // the act can no longer read as `ledger`'s; a fresh preflight and
+        // act have nothing to retire, and append nothing.
+        let id = root.preflight(&purge);
+        let done = root.act(&purge, &id);
+        assert!(
+            done.ok && done.out.contains("nothing to retire for ledger"),
+            "{engine}: a purge after a fresh preflight: {}{}",
+            done.out,
+            done.err
+        );
     }
 }
 

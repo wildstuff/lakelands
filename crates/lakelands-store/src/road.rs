@@ -50,13 +50,6 @@ type Held = Arc<Mutex<Box<dyn Job>>>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turned {
     /// It takes another turn.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the acts and builds of more than one turn come after R1"
-        )
-    )]
     More,
     /// It is whole.
     Whole,
@@ -110,9 +103,9 @@ impl Reach {
 /// leave owed of it, found off the writer.
 pub(crate) type Owes = fn(&Lake, &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>>;
 
-/// Every kind of job a writer's open finishes. None yet: the acts and the
-/// builds that take the road name themselves here.
-pub(crate) const OWED: &[Owes] = &[];
+/// Every kind of job a writer's open finishes: a purge a failure left
+/// not whole is taken up again from [`crate::purge::PURGED`].
+pub(crate) const OWED: &[Owes] = &[crate::purge::owed];
 
 /// How many times a first turn finds the tail past its view too long
 /// before the job answers unavailable, appending nothing.
@@ -130,27 +123,38 @@ pub(crate) fn send(lake: &Arc<Lake>, job: Box<dyn Job>) {
 }
 
 /// At a writer's open: find what `kinds` owe, off the writer, and send it,
-/// without holding the open up.
+/// without holding the open up. The lake is held weakly, as the runner
+/// holds it between turns: a look at what a lake owes does not keep the
+/// last handle from letting the lake go, and finds nothing then.
 pub(crate) fn resume(lake: &Arc<Lake>, kinds: &'static [Owes]) {
     if kinds.is_empty() || !lake.is_writer() {
         return;
     }
     let weak = Arc::downgrade(lake);
     tokio::spawn(async move {
-        let Some(lake) = weak.upgrade() else { return };
-        let l = lake.clone();
+        let finding = weak.clone();
         let owed = exec::run(move || {
-            let view = l.engine.view(None)?;
+            let Some(lake) = finding.upgrade() else {
+                return Ok(Vec::new());
+            };
+            let view = lake.engine.view(None)?;
             let mut owed = Vec::new();
             for kind in kinds {
-                owed.extend(kind(&l, view.as_ref())?);
+                owed.extend(kind(&lake, view.as_ref())?);
             }
             Ok(owed)
         });
         // What cannot be found now is found by the next open. The store
         // keeps no log of its own to tell it to; the job stays owed in the
         // log and the lists, where the next open looks again.
-        for job in owed.await.unwrap_or_default() {
+        let owed: Vec<Box<dyn Job>> = owed.await.unwrap_or_default();
+        let Some(lake) = weak.upgrade() else { return };
+        // A lake the caller has let go is not sent work again: what was
+        // found stays owed for the next open, which looks again.
+        if lake.is_let_go() {
+            return;
+        }
+        for job in owed {
             send(&lake, job);
         }
     });
@@ -276,10 +280,11 @@ async fn catch_up(
     Ok(past)
 }
 
-/// One turn of `job` at the writer, which this handle must hold.
+/// One turn of `job` at the writer, which this handle must hold: a turn
+/// is a write, so it catches a writer that was behind up before it
+/// decides anything.
 fn turn(t: &Turn<'_>, job: &mut dyn Job) -> Result<Turned> {
-    let mut w = t.writer();
-    t.regain(&mut w)?;
+    let mut w = t.for_write()?;
     if w.lease.is_none() {
         return Err(read_only());
     }

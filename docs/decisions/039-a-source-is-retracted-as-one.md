@@ -2,19 +2,19 @@
 
 ## What is decided
 
-### A purge retires every live record a source brought in, in one append
-
-099 appends a purge in parts, between `source_purged` and `act_whole`;
-the rule below of one append and the note that it is not paged change
-with it.
+### A purge retires every live record a source brought in, as one act
 
 `LakeStore::purge_source(source)` retires every live record one source
-brought in, across every type it reached, in one append, and answers what
-it retired per type. Each retirement is an ordinary `record_retired`,
-written by the store (`system:lakelands`, origin `system`), and reacts as
-a `retire` would: triggers fire and object sets are left in the same
-append. There is no new event kind. Restricted records go too, and so do
-the link records the source brought in for a `source` relation.
+brought in, across every type it reached, as one act, and answers what it
+retired per type. The act opens with `source_purged` and closes with
+`act_whole`; its retirements follow between them in appends of at most
+`part_events`, each its own turn under the writer (099). A writer that
+stops between parts leaves the act owed in the log, and the next open
+finishes it. Each retirement is an ordinary `record_retired`, written by
+the store (`system:lakelands`, origin `system`), and reacts as a `retire`
+would: triggers fire and object sets are left in the same append.
+Restricted records go too, and so do the link records the source brought
+in for a `source` relation.
 
 ### Provenance says what a purge takes, and one co-owned record refuses it whole
 
@@ -94,26 +94,25 @@ every retraction (lakelands#473).
   is refused `too_large`, naming the set, and appends nothing, as one
   co-owned record refuses it whole: a host learns at the preflight that
   it must narrow the set or open the lake with a higher ceiling.
-- **`purge_source` may repeat the id.** It is then refused as invalid if
-  the lake has moved since, by any append but a `lease_taken` or a
-  `checkpoint`. The id is of the source, the type and the head, the
-  log's last event that is neither: the report is a function of the
-  three, so the same head means the same report. Only the position the
-  report names may differ, as it is the log's last event when read,
-  lease or not. An id of the source and the head alone would let the
-  report of the source whole authorise a purge from one type at the same
-  head, and the reverse. An id that does not fit is refused as invalid
-  in one sentence for both causes: the store cannot tell a moved lake
-  from another purge's id. Without an id the purge is what it was, and
-  its own report names what it left behind.
-- **A lease does not move the head** (lakelands#1469). Each process
-  that opens the lake for writing appends a `lease_taken` before it
-  acts, and may seal the segment it ends with a `checkpoint`; neither
-  moves a record, key or declaration a report is made from. Were they
-  counted, an operator's preflight and act, run as two commands, would
-  never meet at one head. Every other append, a record of any source or
-  a declaration, moves it. A forgetting's id (058) and a removal's (065)
-  name the head the same way.
+- **`purge_source` may repeat the id.** The id is the position the
+  report was read at and a digest of the selection it read there, with
+  the source and the type named: an opaque string, as a plan's is
+  (099). The act reads the selection out of the log as of that position
+  — what the source had brought in when the report read it — and takes
+  in whatever it made since, so a write elsewhere neither moves the
+  selection nor stales the id. It is refused as
+  invalid when a record of the selection is no longer the source's alone,
+  when one of its positions has gone, or when the id is not one of this
+  source and type at all. Without an id the purge is what it was, and its
+  own report names what it left behind. A forgetting's id (058) and a
+  removal's (065) still name the head in this release; 099's second pull
+  gives them the same position and digest.
+- **A lease or a checkpoint does not enter the selection** (lakelands#1469).
+  Each process that opens the lake for writing appends a `lease_taken`
+  before it acts, and may seal the segment it ends with a `checkpoint`;
+  neither is a record, key or declaration a report is made from, so
+  neither stales an id. A write elsewhere does not either, as it selects
+  nothing.
 
 The reference pass reads each type that can refer into the purge once,
 in key order, a page at a time: a type that declares a `via` relation
@@ -133,7 +132,7 @@ type of the source held back the records of every other
 - **The purge and its preflight take one optional type.** Without it
   the purge is the one above, to the letter. With it, the purge is of
   what the source brought into that type. One type, not a list: two
-  types are two purges, each one append with its own report.
+  types are two purges, each its own act with its own report.
 - **The named type's own links go with it.** The selection reads the
   named type and the link types of the relations that type declares: a
   record's own links are nothing without the record, and a host does
@@ -155,8 +154,9 @@ type of the source held back the records of every other
 - **The report names its type, and what it left behind.** The
   references include the source's own records in its other types that
   still refer into what went.
-- **No event of its own.** A typed purge appends fewer of the same
-  `record_retired`; nothing is replayed differently.
+- **Its own event.** A typed purge opens with a `source_purged` naming
+  the type beside the source, as a purge of the source whole names none,
+  and appends no more of the same `record_retired` than the type holds.
 
 A host that must take back part of a source, values and not records,
 co-owned ones included, has its own act
@@ -203,9 +203,14 @@ ingest, because the ingest id carries the version it was written over
   `checkpoint` and `age`, with no tool. A purge that names a type is
   still not a door.
 - It is not erasure. Nothing leaves the log.
-- It is not paged. The whole purge is one append, held in memory before
-  it lands, under the writer's lock. A host that cannot afford that for a
-  very large source retires through the doors, type by type.
+- It is not paged over the source. The act settles its selection once,
+  off the writer's lock as its walk, and its first turn folds into that
+  selection the tail the walk did not see; it appends its retirements in
+  parts of at most `part_events`, and a part rereads only the live
+  version of a record it retires. Nothing of the selection is read twice
+  from the source's history. A host that cannot afford the selection held
+  in memory for a very large source retires through the doors, type by
+  type.
 
 ## How it came to be
 
@@ -231,3 +236,7 @@ ingest, because the ingest id carries the version it was written over
   of keys refers to the record of each key in it, and its record is
   counted once.
 - Amended by 099 (lakelands#1652), proposed for 0.23.0.
+- Built by 099's first pull (lakelands#1686): a purge is one act from its
+  `source_purged` to its `act_whole`, its retirements in parts, and its
+  id names the position its report was read at and the selection it read
+  there.
