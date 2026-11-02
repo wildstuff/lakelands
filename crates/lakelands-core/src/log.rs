@@ -29,8 +29,8 @@ pub use lakelands_api::key::record_key;
 
 mod block;
 pub use block::{
-    BLOCK_BYTES, BLOCK_EVENTS, Block, Fault, Restored, Restoring, Unit, block_of, derived_id,
-    inflate, is_block, read_unit,
+    BLOCK_BYTES, BLOCK_EVENTS, Block, Fault, Restored, Restoring, Unit, block_events, block_of,
+    derived_id, inflate, is_block, read_unit,
 };
 #[doc(hidden)]
 pub use lakelands_api::key::{key_component, key_components, keyable};

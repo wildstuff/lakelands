@@ -88,9 +88,11 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
         .unwrap();
     }
     db().execute_batch(
-        "UPDATE records SET state = json_set(state, '$.type', ty, '$.key', key, \
+        "UPDATE records SET state = json_set(state, '$.type', ty, \
+         '$.key', (SELECT key FROM keys WHERE id = records.id), \
          '$.position', since, '$.retired', json('false'), '$.restricted', json('false')); \
-         INSERT OR IGNORE INTO search_rows (ty, key) SELECT ty, key FROM records;",
+         INSERT OR IGNORE INTO search_rows (ty, key) \
+         SELECT r.ty, k.key FROM records r JOIN keys k ON k.id = r.id;",
     )
     .unwrap();
     assert_eq!(rowid_free(), 0, "the older tables keep a rowid");

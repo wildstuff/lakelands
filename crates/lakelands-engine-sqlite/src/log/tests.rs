@@ -341,3 +341,107 @@ fn a_torn_line_past_the_group_the_check_passes_is_a_crash() {
     assert_eq!(reader.read(Position(0), 9).unwrap(), events);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `n` chained events from position 0 in the format this build writes,
+/// hashed as the log hashes them, as an append hands them over.
+fn versioned(n: u64) -> Vec<lakelands_api::engine::CanonicalEvent> {
+    let mut prev = Digest::zero();
+    let event = |p: u64, prev: &Digest| {
+        let mut event = serde_json::json!({
+            "body": {"kind": "note", "n": p},
+            "fence": p.min(1),
+            "id": format!("{p:032x}"),
+            "known_at": "2026-01-01T00:00:00.000000Z",
+            "position": p,
+            "prev": prev.0,
+            "v": lakelands_api::event::LOG_FORMAT_VERSION,
+        });
+        let hash = Digest(lakelands_core::canonical::sha256_hex(&event));
+        event["hash"] = serde_json::json!(hash.0);
+        lakelands_api::engine::CanonicalEvent {
+            position: Position(p),
+            id: lakelands_api::event::EventId(format!("{p:032x}")),
+            prev: prev.clone(),
+            hash,
+            fence: p.min(1),
+            bytes: lakelands_core::canonical::to_vec(&event),
+            frame: None,
+        }
+    };
+    (0..n)
+        .map(|p| {
+            let e = event(p, &prev);
+            prev = e.hash.clone();
+            e
+        })
+        .collect()
+}
+
+/// A block keeps an index line for each of its events, in the shape the
+/// releases before it read: its `id` named empty, and its `hash` named at
+/// the block's last event alone. A read takes both from the block, and an
+/// index line that names another hash is damage, never another event.
+#[test]
+fn a_blocks_events_are_indexed_thin_and_read_from_the_block() {
+    let dir = std::env::temp_dir().join(format!("lakelands-log-thin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut events = versioned(6);
+    lakelands_core::log::frame_append(&mut events[1..5]);
+    assert!(events[1..5].iter().all(|e| e.frame.is_some()), "a block");
+    let mut writer = Log::open(&dir, true).unwrap();
+    for group in [&events[..1], &events[1..5], &events[5..]] {
+        writer.append(Some(1), group).unwrap();
+    }
+    let index = std::fs::read_to_string(index_path(&dir, 0)).unwrap();
+    let lines = index.lines().map(|l| serde_json::from_str(l).unwrap());
+    let lines: Vec<serde_json::Value> = lines.filter(|l: &serde_json::Value| l[0] == "e").collect();
+    let named: Vec<_> = lines.iter().map(|l| (l[5] != "", l[7] != "")).collect();
+    let thin = (false, false);
+    let hashed = (false, true);
+    assert_eq!(named, [hashed, thin, thin, thin, hashed, hashed]);
+    let mut reader = Log::open(&dir, false).unwrap();
+    assert_eq!(reader.read(Position(0), 9).unwrap(), events);
+    for at in 1..6 {
+        let one = Log::open(&dir, false).unwrap().read(Position(at), 1);
+        assert_eq!(one.unwrap(), events[at as usize..][..1], "at {at}");
+    }
+    let hash = format!(",\"\",\"\",\"{}\"]", "0".repeat(64));
+    std::fs::write(
+        index_path(&dir, 0),
+        index.replacen(",\"\",\"\",\"\"]", &hash, 1),
+    )
+    .unwrap();
+    let e = Log::open(&dir, false)
+        .unwrap()
+        .read(Position(0), 9)
+        .unwrap_err();
+    assert!(e.to_string().contains("damaged"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A block handed with an event it does not restore to, here one whose
+/// `id` is not its line's, is indexed whole and read back as handed, by
+/// the handle that wrote it and by another.
+#[test]
+fn a_block_handed_other_than_it_restores_is_indexed_whole_and_read_as_handed() {
+    let dir = std::env::temp_dir().join(format!("lakelands-log-whole-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut events = versioned(4);
+    lakelands_core::log::frame_append(&mut events[1..4]);
+    events[2].id = lakelands_api::event::EventId(format!("{:032x}", 99));
+    let mut writer = Log::open(&dir, true).unwrap();
+    writer.append(Some(1), &events[..1]).unwrap();
+    writer.append(Some(1), &events[1..]).unwrap();
+    let index = std::fs::read_to_string(index_path(&dir, 0)).unwrap();
+    let lines = index.lines().map(|l| serde_json::from_str(l).unwrap());
+    let lines: Vec<serde_json::Value> = lines.filter(|l: &serde_json::Value| l[0] == "e").collect();
+    let named: Vec<_> = lines.iter().map(|l| (l[5] != "", l[7] != "")).collect();
+    assert_eq!(
+        named,
+        [(false, true), (true, true), (true, true), (true, true)]
+    );
+    assert_eq!(writer.read(Position(0), 9).unwrap(), events);
+    let mut reader = Log::open(&dir, false).unwrap();
+    assert_eq!(reader.read(Position(2), 1).unwrap(), events[2..3]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
