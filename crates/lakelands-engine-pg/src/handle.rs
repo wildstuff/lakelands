@@ -649,7 +649,10 @@ fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
             Target::quote(schema)
         );
         let bytes: Option<Vec<u8>> = (db.query_opt(&newest, &[]).ok().flatten()).map(|r| r.get(0));
-        let line = bytes.and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+        // A row's first line holds its format: a line's own, or a block's.
+        let first = |b: &[u8]| b.split(|c| *c == b'\n').next().map(<[u8]>::to_vec);
+        let line = (bytes.as_deref().and_then(first))
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
         line.and_then(|l| l["v"].as_u64())
             .is_some_and(|v| v > u64::from(lakelands_api::event::LOG_FORMAT_VERSION))
     };

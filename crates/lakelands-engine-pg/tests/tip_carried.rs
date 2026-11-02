@@ -46,7 +46,10 @@ fn placed(url: &str, schema: &str) -> Vec<(i64, i64)> {
     let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
     let rows = client
         .query(
-            &format!("SELECT position, segment FROM \"{schema}\".log ORDER BY position"),
+            &format!(
+                "SELECT position, (SELECT max(first) FROM \"{schema}\".segments \
+                 WHERE first <= position) FROM \"{schema}\".log ORDER BY position"
+            ),
             &[],
         )
         .unwrap();
@@ -85,10 +88,13 @@ fn a_held_lease_appends_without_asking_for_the_tip_or_the_active_segment() {
     second.unwrap();
     assert_eq!(placed(&url, &schema), [(0, 0), (1, 0), (2, 0)]);
 
-    // A seal reads the segment it closes; the appends after it go on
-    // into the segment it began, without asking.
+    // With the segments' rows hidden, the running digest had no row to
+    // follow, so the seal digests the segment it closes from its rows; the
+    // appends after it go on into the segment it began, without asking.
     let next = chain(3, 3, &events[2].hash, &lease);
-    seal(engine.as_ref(), &lease, &next[..1]).unwrap();
+    let sealed = seal(engine.as_ref(), &lease, &next[..1]).unwrap();
+    let digest = lakelands_core::log::digest_of(&events).unwrap();
+    assert_eq!(sealed.map(|s| s.digest), Some(digest));
     hide(&url, &schema);
     let after = engine.append(&lease, &next[1..]);
     show(&url, &schema);

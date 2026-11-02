@@ -1403,8 +1403,8 @@ impl ProjectionView for PgView<'_> {
 
     fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
         // One statement for every id: a round trip an id is most of an
-        // ingest window's time on a server. The log's index on `id`
-        // answers it: the least position holding the id, at or before the
+        // ingest window's time on a server. The `ids` table's key answers
+        // it: the least position holding the id, at or before the
         // view's and no further than the projection had folded in the
         // same snapshot, so none after a `clear` until the refold reaches
         // it. An id not of its form is held by no log this build keeps.
@@ -1415,10 +1415,10 @@ impl ProjectionView for PgView<'_> {
             .collect();
         self.single(vec![None; ids.len()], |r| {
             let query = format!(
-                "SELECT i, (SELECT min(position) FROM {log} WHERE id = {id} AND position <= \
+                "SELECT i, (SELECT min(at) FROM {ids} WHERE id = {id} AND at <= \
                  least($2, coalesce((SELECT n FROM {meta} WHERE k = 'folded'), -1))) \
                  FROM unnest($1::text[]) AS i",
-                log = r.names.t("log"),
+                ids = r.names.t("ids"),
                 id = Names::kept("i"),
                 meta = r.names.t("meta"),
             );

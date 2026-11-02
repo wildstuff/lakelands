@@ -83,7 +83,7 @@ pub(crate) struct Names {
 
 /// The tables of the log and the lease, which a scratch reads in the
 /// lake's schema.
-const LOG_TABLES: [&str; 4] = ["lease", "segments", "log", "frames"];
+const LOG_TABLES: [&str; 4] = ["lease", "segments", "log", "ids"];
 
 impl Names {
     /// The tables of the lake `target` names.
@@ -103,13 +103,14 @@ impl Names {
         }
     }
 
-    /// `column` of `log`, `id`, `prev` or `hash` (perhaps qualified), as
+    /// `column` of `log` or `ids`, `id`, `prev` or `hash` (perhaps qualified), as
     /// SQL reads it: the hex digits its bytes spell.
     pub(crate) fn hex(column: &str) -> String {
         format!("encode({column}::bytea, 'hex')")
     }
 
-    /// `digits`, an expression of hex digits, as a column of `log` keeps it.
+    /// `digits`, an expression of hex digits, as a column of `log` or `ids`
+    /// keeps it.
     pub(crate) fn kept(digits: &str) -> String {
         format!("decode({digits}, 'hex')")
     }
@@ -272,9 +273,9 @@ CREATE INDEX IF NOT EXISTS vectors_head ON {s}.vectors (ty, field, key) WHERE un
 
     /// The statements that create the log's tables and the lease's, if
     /// absent, in the lake's schema; none for a scratch, which reads them
-    /// there. A table a later build adds to the log (`frames`) is made by
-    /// the first writer's open of this build, by `clear`, and by the swap
-    /// of a rebuild (`scratch.rs`).
+    /// there. A table a later build adds to the log is made by the first
+    /// writer's open of this build, by `clear`, and by the swap of a
+    /// rebuild (`scratch.rs`).
     pub(crate) fn log_sql(&self) -> String {
         if self.log.is_some() {
             return String::new();
@@ -287,16 +288,14 @@ CREATE INDEX IF NOT EXISTS vectors_head ON {s}.vectors (ty, field, key) WHERE un
     fence BIGINT NOT NULL, holder TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS {s}.segments (
-    first BIGINT PRIMARY KEY, digest TEXT
+    first BIGINT PRIMARY KEY, digest TEXT, running BYTEA
 );
 CREATE TABLE IF NOT EXISTS {s}.log (
-    position BIGINT PRIMARY KEY, segment BIGINT NOT NULL, fence BIGINT NOT NULL,
-    id BYTEA NOT NULL, prev BYTEA NOT NULL, hash BYTEA NOT NULL, bytes BYTEA NOT NULL
+    position BIGINT PRIMARY KEY, last BIGINT NOT NULL, prev BYTEA NOT NULL,
+    hash BYTEA NOT NULL, bytes BYTEA STORAGE EXTERNAL NOT NULL, kept BYTEA
 );
-CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
-CREATE INDEX IF NOT EXISTS log_id ON {s}.log (id);
-CREATE TABLE IF NOT EXISTS {s}.frames (
-    first BIGINT PRIMARY KEY, events INT NOT NULL, bytes BYTEA NOT NULL
+CREATE TABLE IF NOT EXISTS {s}.ids (
+    id BYTEA NOT NULL, at BIGINT NOT NULL, PRIMARY KEY (id, at)
 );"
         )
     }
@@ -343,7 +342,7 @@ pub(crate) const LAKE_TABLES: [&str; 26] = [
     "lease",
     "segments",
     "log",
-    "frames",
+    "ids",
     "declarations",
     "records",
     "proposals",
@@ -375,8 +374,8 @@ pub(crate) const PROJECTION_TABLES: &[&str] = LAKE_TABLES.split_at(5).1;
 /// a layout that drops or renames a table names the old one here, so a
 /// lake that layout made still opens to be rebuilt, and the rebuild's
 /// `clear` or swap drops it (`scratch.rs`).
-/// `applied` went with 0.21.0: an applied id is answered from the log's
-/// index on `id` (`view.rs`).
+/// `applied` went with 0.21.0: an applied id is answered from the key of
+/// `ids` (`view.rs`).
 pub(crate) const RETIRED_TABLES: &[&str] = &["applied"];
 
 /// A record state's flags as `records` and `records_head` hold them, so

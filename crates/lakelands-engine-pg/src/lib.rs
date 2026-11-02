@@ -17,9 +17,11 @@
 //! ```text
 //! meta         the lake's name, and the position the projection reflects
 //! lease        the fencing token and its holder (lease.rs)
-//! segments     the log's segments, and each sealed one's digest (log.rs)
-//! log          one row per event: its canonical bytes and members, its
-//!              id, prev and hash as bytes, indexed by id (log.rs)
+//! segments     the log's segments, each sealed one's digest and the
+//!              active one's running (log.rs)
+//! log          one row per block or line alone: its bytes, its first and
+//!              last position, its prev and hash as bytes (log.rs)
+//! ids          each event's id as bytes and its position, keyed by both
 //! declarations, records, proposals, members, outputs, routes
 //!              the projection, with its kept history (projection.rs)
 //! text_index, edges, full_text, vectors
