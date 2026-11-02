@@ -90,6 +90,7 @@ mod paths;
 mod pattern_tree;
 mod plan;
 mod positions;
+mod projection_form;
 mod proposal_names;
 mod proposals;
 mod provenance;
@@ -173,6 +174,7 @@ mod withdraw;
 mod write_judged;
 mod writer_filled;
 mod writes_only;
+mod zone_today;
 
 /// Every check, in the order the suite runs them.
 pub const ALL: &[Check] = &[
@@ -199,6 +201,9 @@ pub const ALL: &[Check] = &[
     paging::MISSING_SORT_VALUES_LAST,
     paging::UNNAMED_LIMIT,
     paging::EACH_HOLDER_ONCE,
+    projection_form::FLAGS_FOLLOW_THE_STATE,
+    projection_form::KEY_ORDER_THROUGH_KEYS,
+    projection_form::DESCENDING_WITHOUT_ITS_INDEX,
     landing::MEASURE_LANDS,
     paths::PATH_STEPS,
     paths::PATH_NOT_REACHED,
@@ -330,6 +335,12 @@ pub const ALL: &[Check] = &[
     write_judged::WALK_JUDGES_THE_REST,
     write_judged::PRECEDING_SERIES_CHOSEN,
     write_judged::PRECEDING_IN_A_GUARD,
+    zone_today::ZONE_CUTS_TODAY,
+    zone_today::ZONE_ACROSS_THE_CHANGE,
+    zone_today::ZONE_IN_FORCE_AT_THE_WRITE,
+    zone_today::ZONE_UNSET_IS_UTC,
+    zone_today::ZONE_AGING_IS_THE_DATE_HANDED,
+    zone_today::ZONE_AT_THE_READ,
     upsert_preflight::UPSERT_JUDGED_AS_WRITTEN,
     upsert_preflight::UPSERT_JUDGED_ON_WHAT_IT_MAKES,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,

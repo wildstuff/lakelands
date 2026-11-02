@@ -60,6 +60,13 @@ Seals a source's values of each period under a version of its key of their own, 
 - **Per source:** `key_period.<source>` overrides `key_period` for that source; retired, the source has the lake's value again.
 - **Cost:** one new version of the source's key per period, made by the key store, so `day` makes 365 a year for each source; the file keyring rewrites its whole file at each, measured at 4.5 ms with 1 000 keys and 8.9 ms with 10 000; and the list of a source's versions, an entry a period, read once a window, so ten years of `day` (3 650 entries) add about 20 µs a record to an ingest on the memory engine (lakelands#1153).
 
+### `zone`
+
+The zone the lake's calendar day is read in: `today()` in an expression, and the date `serve` ages the lake for. A write is judged in the zone in force where it is made. Unset or retired, the day is UTC's. A new lake starts in its location's `zone`, which the writer's first open records where the lake has recorded none.
+
+- **Takes:** a time zone as the IANA time-zone database names it, as `Europe/Berlin`.
+- **Default:** `"UTC"`.
+
 ## Kept in the lake's location
 
 A member of `lakes/<id>.json`, read when the lake is opened: a bound on what one host spends, which changes no answer. Edit the file and open the lake again.
@@ -367,13 +374,6 @@ Where `serve` answers `GET /metrics` in the Prometheus text format, apart from t
 - **Takes:** an address and port.
 - **Default:** `null`.
 - **Cost:** a write on the memory engine took 22.6 µs measured against 22.3 µs unmeasured with one caller, and 12.6 µs either way with sixteen; on SQLite the difference is inside a commit's noise; a scrape reads each lake's counters and takes nothing from its writer.
-
-### `aging.utc_offset`
-
-The UTC offset `serve` reads the date at, to age each lake it writes once a day.
-
-- **Takes:** `Z`, or `+HH:MM` or `-HH:MM` within fourteen hours.
-- **Default:** `"Z"`.
 
 ### `aging.check_secs`
 

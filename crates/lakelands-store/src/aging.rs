@@ -257,12 +257,12 @@ pub fn run(lake: &Turn<'_>, today: Timestamp) -> Result<AgeReport> {
             if record.fields.get(&rule.field).map(canonical::to_vec) != Some(from.clone()) {
                 continue;
             }
-            let scope = RecordScope {
+            let scope = Dated(RecordScope {
                 fields: &record.fields,
                 meta: Some(&record.meta),
                 settings: Some(&w.settings),
                 now: today,
-            };
+            });
             match expr::holds(&rule.when, &scope) {
                 Ok(true) => {}
                 Ok(false) => continue,
@@ -326,4 +326,31 @@ pub fn run(lake: &Turn<'_>, today: Timestamp) -> Result<AgeReport> {
     }
     report.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
     Ok(report)
+}
+
+/// A rule's condition, read for the date the run ages for: `today()` is
+/// that date as given, already the lake's calendar day, and is not cut in
+/// its zone again (101).
+struct Dated<'a>(RecordScope<'a>);
+
+impl expr::Scope for Dated<'_> {
+    fn value(&self, path: &[FieldName]) -> Option<Value> {
+        self.0.value(path)
+    }
+
+    fn meta(&self, field: &FieldName) -> Option<lakelands_api::FieldMeta> {
+        self.0.meta(field)
+    }
+
+    fn setting(&self, key: &str) -> Option<Value> {
+        self.0.setting(key)
+    }
+
+    fn now(&self) -> Timestamp {
+        self.0.now
+    }
+
+    fn today(&self) -> Timestamp {
+        self.0.now
+    }
 }

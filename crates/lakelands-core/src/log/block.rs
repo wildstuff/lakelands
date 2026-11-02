@@ -124,6 +124,27 @@ pub fn block_of(frame: &Frame) -> Option<Result<Block, Flaw>> {
     })
 }
 
+/// The block whose bytes `frame` holds at the engine seam, read as JSON
+/// alone, and the `id` and `hash` of each event it holds, in order, as
+/// restoring them gives them (§1.5): what an engine that keeps neither
+/// beside a block answers a read with. Its bytes inflate whole, every
+/// line restores, and the last event's hash is the block's; the first
+/// line that does not restore is its flaw.
+pub fn block_events(frame: &Frame) -> Result<(Block, Vec<(EventId, Digest)>), Flaw> {
+    let (head, z) = split(&frame.bytes)?;
+    let (block, v) = Block::of(&json_of(head)?)?;
+    let (events, flaw) = restore_block((&block, v, z), None, false)?;
+    if let Some(flaw) = flaw {
+        return Err(flaw);
+    }
+    let text = |event: &Value, name: &str| event[name].as_str().unwrap_or_default().to_owned();
+    let events = events
+        .iter()
+        .map(|(event, _)| (EventId(text(event, "id")), Digest(text(event, "hash"))))
+        .collect();
+    Ok((block, events))
+}
+
 /// The id an event's own members decide (`docs/log-format.md` §3), from
 /// its canonical value: an ingest's, over its source, type, key, version
 /// before, patch and box; a quarantined record's version's, over its id,

@@ -4,10 +4,13 @@
 //! The engine keeps no statistics, so a statement's plan is the same on
 //! every lake, and it is read here from a new one, of each such statement
 //! as the engine itself writes it. Where a statement joins `records` to
-//! an index's rows, it seeks each record by its key (lakelands#574). A
-//! page under an exact text few records hold is the one that sorts: it
-//! reads their order rows once, from the text's rows, and seeks each
-//! record it answers (lakelands#695).
+//! an index's rows, it seeks each record by its key's number
+//! (lakelands#574). A window down walks the ascending order index
+//! backwards: it sorts only each run of records tied on the field, by
+//! key, and stops at its limit once that run is out. A page under an
+//! exact text few records hold is the one that sorts: it reads their
+//! order rows once, from the text's rows, and seeks each record it
+//! answers (lakelands#695).
 
 use std::path::PathBuf;
 
@@ -48,19 +51,23 @@ fn a_first_page_is_planned_without_a_sort() {
     assert!(statements.len() >= 6, "the engine names {statements:?}");
     for statement in statements {
         let plan = plan(&db, &statement);
+        let down = statement.contains("sort_key DESC");
+        let sorts = |step: &String| {
+            step.contains("TEMP B-TREE")
+                && !(down && step == "USE TEMP B-TREE FOR LAST TERM OF ORDER BY")
+        };
         assert!(
-            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            !plan.iter().any(sorts),
             "a first page is planned with a sort, so it reads every row it could answer before \
              it answers its limit:\n  {statement}\n  {plan:#?}"
         );
         // An index's rows are cut at the limit before their records are
-        // joined: each record is then sought by its key. Joined before the
-        // cut, the planner seeks `records` by a range of the key for every
+        // joined: each record is then sought by its key's number. Joined
+        // before the cut, the planner seeks `records` by a range for every
         // index row, with no sort to show it.
         assert!(
             !statement.contains("JOIN records r")
-                || (plan.iter())
-                    .any(|step| step.starts_with("SEARCH r ") && step.contains("key=?")),
+                || (plan.iter()).any(|step| step.starts_with("SEARCH r ") && step.contains("id=?")),
             "a first page joins `records` to an index's rows without seeking each record by \
              its key:\n  {statement}\n  {plan:#?}"
         );
@@ -89,8 +96,10 @@ fn a_texts_few_holders_are_read_from_the_texts_rows() {
     }
     let plan = plan(&db, &record);
     assert!(
-        matches!(plan.as_slice(), [step] if step.starts_with("SEARCH records ") && step.contains("key=?")),
-        "a holder's head record is not sought by its key:\n  {record}\n  {plan:#?}"
+        matches!(plan.as_slice(), [key, state]
+            if key.starts_with("SEARCH k ") && key.contains("key=?")
+                && state.starts_with("SEARCH r ") && state.contains("id=?")),
+        "a holder's head record is not sought by its key's number:\n  {record}\n  {plan:#?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

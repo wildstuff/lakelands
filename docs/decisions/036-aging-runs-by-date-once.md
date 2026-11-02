@@ -45,7 +45,9 @@ is.
 
 A date is a midnight. `age` takes a `Timestamp` at UTC midnight, the
 form the aging id already writes the date in; any other time is refused
-as invalid, naming `today`. Aging gains no date type of its own: the
+as invalid, naming `today`. The date is the day of the lake's calendar,
+read in its zone (101): `serve` cuts the host's clock in the zone the
+lake names, and the run takes the date as given. Aging gains no date type of its own: the
 contract holds a storage kind `date` for a field's values (011), and
 `age` takes its date, as `today()` gives one, as a `Timestamp`.
 
@@ -149,3 +151,5 @@ shape, and every change is a version with its writer.
 - A move a constraint or the set ceiling refuses is counted as refused,
   and listed with its record's key and the refusal, not as a failed
   guard (lakelands#1182).
+- lakelands#1665: the date is the lake's calendar day, read in its zone
+  (101), and the root's fixed `aging.utc_offset` is gone.

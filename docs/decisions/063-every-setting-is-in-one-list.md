@@ -13,10 +13,14 @@ would two hosts opening the same lake be wrong to differ?
   store judges it as it is written (`seam::check_setting`) and reads it
   as it stood at the position read. The index settings
   (`sort_index.<type>`, `vector_index.<type>`, `lookup_index.<type>`),
-  `search_weights.<type>` and `view_kept.<type>` are kept here.
+  `search_weights.<type>`, `view_kept.<type>` and the zone the lake's
+  calendar day is read in, `zone` (101), are kept here.
 - **The location.** A bound on what one host spends, which changes no
   answer, is a member of the lake's `Location` (`lakes/<id>.json`), read
-  when the lake is opened: the limits and the engines' tuning.
+  when the lake is opened: the limits and the engines' tuning. The
+  location also names the zone a new lake starts in, which is no setting
+  of its own: the writer's first open records it as the lake's `zone`,
+  and no open reads it again (101).
 - **The root.** How the root's processes serve, age, deliver, embed,
   call a backing and mirror is a member of the root's `lakelands.json`,
   read when a process opens the root: `server`, `aging`, `deliver`,
@@ -329,3 +333,8 @@ where the lake holds an older form of them, and stamps the settings the
 lake holds with their group in the same append.
 `sys.setting` gained `periods` the same way, from log format 21, and a
 setting holding none reads as it did.
+
+## How it came to be
+
+- lakelands#1665 added the lake's `zone` to the lake's settings, and to
+  the location the zone a new lake starts in (101).

@@ -158,6 +158,20 @@ after 510 948 ticks, 8.8 MB on disk. The write that crossed it waited 9.3 to
 10.3 s (load 7 to 18), about 13 times the reckoning. The time goes to restoring
 and hashing each event for the digest, about 14 µs an event, not to the inflate.
 
+As built (lakelands#1672): the writer keeps the active segment's digest running.
+Each append adds its events, restored as the digest restores them, to a hash it
+holds, and the seal finishes that hash instead of reading the segment again. On
+SQLite a writer that opens a segment already begun hashes what it holds once, at
+open, and goes on from there, so a lease taken in the middle of a segment seals to
+the digest the one that began it would have. On PostgreSQL (lakelands#1681) the
+running hash's state is kept beside the segment, in `segments.running`, tagged
+with a format and a version byte of its own; a tag the code does not know, from an
+older or a newer build, is no state, and the writer computes the segment's digest
+once on open and goes on from it. The 64 MiB default stays. Measured in the same
+way, ticks 249 at a time, the write that crossed the bound waited 95.7, 145.2 and,
+with the thinned index below, 73.9 ms (load 16 to 23), where the build before it
+waited 8.0 s on the same 410 601 ticks (load 16 to 23).
+
 ### An index line a block, and a row a block
 
 Read: the SQLite index holds a line of about 100 B an event, with its hash. It
@@ -169,12 +183,36 @@ ids it answers an applied id from move to `ids (id, at)`: reckoned at 135 B a ti
 `frames` goes, since a header holds what it held. The memory engine keeps what it
 is handed, so it needs the seam's change alone.
 
+As built on SQLite (lakelands#1672), where the tree differs from the sketch: the
+index keeps a line an event, thinned. A block's event names its `id` empty, its
+`hash` empty but at the block's last event, and its `prev` empty but on a
+segment's first line; a read restores the block, the reader keeping the last one,
+and checks what a line does name against it. A block handed with events it does
+not restore to is indexed whole, its lines naming `id` and `hash`, since the
+engine gives back what it is handed and the seal is where its flaw is named.
+Measured over the 410 601 ticks above, an event line is 36.9 B, where the line
+naming `id` and `hash` was 132.6 B: not the 0.4 B reckoned.
+A line a block would break what 0.19 to 0.22 read before they judge a format: each
+of them takes every index line to name the position after the one before it, and
+counts a segment from the event line before its last commit line, so a lake of 23
+indexed a line a block would be damaged to them, not refused by its format. The
+thinned line keeps them reading as far as the format, and the lines they parse are
+the shape they parse.
+
 ### A record's key is stored once, on SQLite
 
 SQLite gains `keys (ty, key, id) WITHOUT ROWID`; `records` and `routes` hold the
 integer. A tick's key is `symbol:at:seq`, so today each record lands at a random
 place in `records`' primary key, `records_at` and `routes_key`. An id given in
 order lands at their right edge. That is the commit row of the layer table.
+
+As built (lakelands#1672), where the tree differs from the sketch: `keys` has a
+unique index on `id`, since `changed()` and a feed name a record by its key and
+reach it from `records` and `routes` by id. `records` keeps `ty` beside `id`:
+its primary key is `(id, since)`, `records_at` is `(ty, until, id)` and
+`records_since` stays `(ty, since)`, so a type's reads seek one index and join
+`keys` only for the page they answer. `routes.key` holds the id of the key under
+the route's type, or under the empty name where the route names none.
 
 `sort_index` and `text_index` keep the text key, since their readers need "the key
 ascends inside a tie" (041, read) and the order of a walk by key. So integer ids
@@ -209,6 +247,10 @@ joins through `keys`, which disfavours it a little; not by that much.
   index with an incremental sort took 0.49 ms for 1 000 rows, against 1.0 ms for
   today's bitmap over both indexes. It needs one more bound, `s.sort_key <= k`,
   beside today's `OR`.
+  As built on SQLite (lakelands#1672): the backward walk sorts each run of tied
+  values by key ascending, a temporary b-tree for the last term of the order, so
+  a window down costs what a window up does plus a sort of the longest run of
+  ties it crosses; a field most records share costs that sort on every page.
 - **`text_index_key` goes.** Read: only deletes use it, and a delete knows the
   values its record held, so it goes by primary key.
 - **`sort_index`'s primary key stays,** though it looks spare: read,
@@ -317,6 +359,14 @@ only on a new file or a full `VACUUM`. `secure_delete` is not one of them.
   holds it. A rewrite took 6 to 8 µs a row against 5.5 to 16, no measurable
   difference. A value goes from its page at the delete, and
   `ERASED_VALUE_LEAVES_THE_FILE` is the row.
+  As built (lakelands#1672), the setting alone is not enough: the test found the
+  erased value's search term still in the file after the checkpoint, since the
+  full-text table keeps a deleted row's terms, marked deleted, until a merge.
+  The table's own `secure-delete` option, which the table keeps, removes them
+  at the delete; the projection sets it as it is made, beside its layout.
+  `auto_vacuum` and `page_size` are set only on a file that holds no page yet:
+  set again on a file that holds them, `auto_vacuum` writes its header, so a
+  writer refused at its open would have changed the file.
 - **`page_size` stays 4 096.** Measured, unpaired, on the general record: 8 192
   held 604.5 B against 623.6 today, and 516.6 against 518.7 on the set.
 
@@ -488,7 +538,8 @@ and its own into the raise.
   that block.
 - `APPEND_OF_ONE_STAYS_A_LINE`: and the append that makes a lake is plain.
 - `BLOCK_DIGEST_OVER_RESTORED_EVENTS`: a segment's digest is what the same events
-  without blocks digest to.
+  without blocks digest to, sealed by a writer that took the lease in the middle of
+  the segment as by the one that began it.
 - `FEED_APPENDS_FROM_BLOCKS`: an append larger than a block still reads as one.
 - `APPEND_TORN_BETWEEN_BLOCKS`: a crash between two blocks of an append leaves none of
   it.

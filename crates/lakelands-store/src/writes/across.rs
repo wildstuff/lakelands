@@ -868,6 +868,10 @@ impl<S: Scope> Scope for VerbScope<'_, S> {
         self.record.now()
     }
 
+    fn today(&self) -> Timestamp {
+        self.record.today()
+    }
+
     fn exists(&self, relation: &FieldName) -> Option<bool> {
         Some(self.across.exists(self.fields, relation))
     }

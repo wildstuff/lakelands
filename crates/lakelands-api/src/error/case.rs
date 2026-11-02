@@ -1859,6 +1859,8 @@ catalog! {
         SettingKeptHolds => "it holds `true` for a view that is kept, or `false`",
         /// A key period that names none.
         SettingKeyPeriod => "it holds `day`, `week` or `month`, the period a source's key is used for, or null for no period",
+        /// A lake's zone the time-zone database does not name.
+        SettingZone { value: Value } => "it holds a time zone as the IANA time-zone database names it, as 'Europe/Berlin', and {value} is none",
         /// A key under the prefix of the store's own settings that names
         /// none of them.
         SettingUnlisted { prefix: String } => "keys under `{prefix}.` are the store's own settings, and this is none of them",
