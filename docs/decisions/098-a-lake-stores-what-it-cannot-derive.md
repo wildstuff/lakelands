@@ -593,7 +593,12 @@ candles.
 
 - **A kept name keeps one state a key, on every engine.** A put under
   `sys:kept.<view>` deletes the states the key held, with their rows, and an ended
-  record only deletes. The store reads a kept view at the head alone: as of an
+  record only deletes. SQLite deletes them in the fold's own transaction, the
+  state's index rows with them; PostgreSQL marks the key dropped in its buffer,
+  which deletes its rows before the flush writes the new state; the memory engine
+  takes the key's states out as it folds. A read at an earlier position answers a
+  key put after it none, and the store never makes one. The store reads a kept
+  view at the head alone: as of an
   earlier position it computes the view, as it computes one no setting keeps. Of
   `describe`'s three earlier-position reads, the kept records and the number of
   groups are now the computation's, and the lifecycle there says `computed`,

@@ -1811,6 +1811,27 @@ impl Buffer {
             return;
         }
         let ident = vec![r.ty.as_str().to_owned(), r.key.as_str().to_owned()];
+        // A kept name keeps one state for each of its keys: a put deletes
+        // the states the key held, with their rows, and an ended record
+        // only deletes (098). A state put before one the key already holds
+        // is dropped, since the later one is the head.
+        if lakelands_api::seam::is_kept_name(&r.ty) {
+            let held = (self
+                .records
+                .range((ident.clone(), i64::MIN)..=(ident.clone(), i64::MAX)))
+            .next_back()
+            .map(|(_, r)| r.position);
+            match held.is_some_and(|held| held > r.position) {
+                true => return,
+                false => (self.records).retain(|(held, _), _| held != &ident),
+            }
+            (self.indexed).retain(|(ty, key, _), _| ty != r.ty.as_str() || key != r.key.as_str());
+            (self.dropped).insert((r.ty.to_string(), r.key.to_string()));
+            if !r.is_ended() {
+                self.records.insert((ident, r.position.0 as i64), r.clone());
+            }
+            return;
+        }
         self.records.insert((ident, r.position.0 as i64), r.clone());
     }
 

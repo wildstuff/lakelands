@@ -1,7 +1,7 @@
 //! A view's kept records bear a name of the kept form
-//! (`lakelands_api::seam::KEPT_PREFIX`), and a kept record is put again at
-//! every write to its group, so a key of such a name may hold thousands
-//! of states. Every name is read so that none of a key's other states is
+//! (`lakelands_api::seam::KEPT_PREFIX`), and a put under such a name
+//! deletes the states its key held, so a key of such a name holds one
+//! state. Every name is read so that none of a key's other states is
 //! (lakelands#575, lakelands#537): at the head a walk of the heads,
 //! `records_head`, each joined to its state; at an earlier position the
 //! same walk with a seek of each key's state there. A read by keys seeks
@@ -120,10 +120,14 @@ fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
             "a kept name's read sorts or reads a table whole; {told}"
         );
         if i % 5 == 3 {
-            // By keys: each key's primary key read backward from the
-            // position, cut at its first row.
+            // By keys: each key's state sought by its type, key and
+            // position, either index, cut at its first row. A kept name
+            // keeps one state a key, so a seek of it reads one row.
             assert!(
-                has("Nested Loop") && has("Limit") && has("Index Scan Backward using records_pkey"),
+                has("Nested Loop")
+                    && has("Limit")
+                    && (has("Index Scan Backward using records_pkey")
+                        || has("Index Scan Backward using records_since")),
                 "a read by keys is not a seek of each key's latest state; {told}"
             );
         } else if i % 5 == 4 {
@@ -163,7 +167,7 @@ fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
             // backward from the position.
             let seek = match head {
                 true => "using records_",
-                false => "Backward using records_pkey",
+                false => "Backward using records_",
             };
             let sought = plan
                 .iter()
@@ -179,11 +183,29 @@ fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
     }
 }
 
-/// The reads of a kept view's doors, at the head and in the middle of
-/// `a`'s states: a first page, a page after the first key, three keys,
-/// the count, a page in a field's order, and the view's state.
+/// The reads of a kept view's doors, at the head and at `middle`, where
+/// `a` was put again after and so answers none: a first page, a page
+/// after the first key, three keys, the count, a page in a field's order,
+/// and the view's state.
 fn read(engine: &dyn LakeEngine, [many, few]: &[TypeName; 2], last: u64, middle: u64) {
-    for (as_of, n) in [(None, last), (Some(Position(middle)), middle)] {
+    for (as_of, at, wanted, count, highest, got) in [
+        (
+            None,
+            last,
+            ("a", last),
+            FEW + 1,
+            ("a", last),
+            vec!["a", "k00001"],
+        ),
+        (
+            Some(Position(middle)),
+            middle,
+            ("k00001", 1),
+            FEW,
+            ("k00030", 30),
+            vec!["k00001"],
+        ),
+    ] {
         let view = engine.view(as_of).unwrap();
         let page = |ty: &TypeName, scan: Scan| -> Vec<(String, u64)> {
             let rows = view.scan(ty, &scan).unwrap();
@@ -199,7 +221,7 @@ fn read(engine: &dyn LakeEngine, [many, few]: &[TypeName; 2], last: u64, middle:
         let mut sorted = keys.clone();
         sorted.sort_unstable();
         assert_eq!((keys.len(), &keys), (10, &sorted), "as of {as_of:?}");
-        assert_eq!(first[0], ("a".to_owned(), n), "as of {as_of:?}");
+        assert_eq!(first[0], (wanted.0.to_owned(), wanted.1), "as of {as_of:?}");
         let later = Scan {
             after: Some(lakelands_api::engine::After {
                 values: Vec::new(),
@@ -211,8 +233,8 @@ fn read(engine: &dyn LakeEngine, [many, few]: &[TypeName; 2], last: u64, middle:
         let keys = ["a", "k00001", "none"].map(RecordKey::from);
         let by_key = view.get_many(many, &keys).unwrap();
         let read: Vec<&str> = by_key.iter().map(|r| r.key.as_str()).collect();
-        assert_eq!(read, ["a", "k00001"], "as of {as_of:?}");
-        assert_eq!(view.count(few, &ten).unwrap(), FEW + 1, "as of {as_of:?}");
+        assert_eq!(read, got, "as of {as_of:?}");
+        assert_eq!(view.count(few, &ten).unwrap(), count, "as of {as_of:?}");
         let by_n = Scan {
             order_by: vec![Order {
                 field: "n".into(),
@@ -221,9 +243,13 @@ fn read(engine: &dyn LakeEngine, [many, few]: &[TypeName; 2], last: u64, middle:
             }],
             ..ten
         };
-        assert_eq!(page(few, by_n)[0], ("a".to_owned(), n), "as of {as_of:?}");
+        assert_eq!(
+            page(few, by_n)[0],
+            (highest.0.to_owned(), highest.1),
+            "as of {as_of:?}"
+        );
         let recorded = (view.output(SEAM, &Digest("many".into())).unwrap()).map(|(_, v)| v);
-        assert_eq!(recorded, Some(json!({"at": n})), "as of {as_of:?}");
+        assert_eq!(recorded, Some(json!({"at": at})), "as of {as_of:?}");
     }
 }
 

@@ -36,7 +36,7 @@ use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::{FeedFilter, SETTING_TYPE, SORT_INDEX_SETTING};
+use lakelands_api::seam::{FeedFilter, SETTING_TYPE, SORT_INDEX_SETTING, is_kept_name};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines::{self, sorted_mark};
 use rusqlite::types::{FromSql, Value};
@@ -1236,6 +1236,52 @@ pub(crate) fn put_record(
             "INSERT INTO records (ty, id, since, flags, state) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![r.ty.as_str(), id, r.position.0 as i64, flags, state],
         );
+    }
+    // A kept name keeps one state for each of its keys: a put deletes the
+    // states the key held, with their index rows, and an ended record
+    // only deletes (098). A state put before one the key already holds is
+    // dropped, since the later one is the head.
+    if is_kept_name(&r.ty) {
+        match key_id(conn, r.ty.as_str(), r.key.as_str())? {
+            // An end of a key the name never held writes nothing.
+            None if r.is_ended() => return Ok(()),
+            None => {}
+            Some(id) => {
+                let later: Option<i64> = one(
+                    conn,
+                    "SELECT 1 FROM records WHERE id = ?1 AND since > ?2 LIMIT 1",
+                    params![id, r.position.0 as i64],
+                )?;
+                if later.is_some() {
+                    return Ok(());
+                }
+                if !kept.contains_key(&r.ty) {
+                    kept.insert(r.ty.clone(), indexed(conn, &r.ty)?);
+                }
+                let prior = records(
+                    conn,
+                    "SELECT r.ty, ?3, r.since, r.state FROM records r \
+                     WHERE r.ty = ?1 AND r.id = ?2",
+                    params![r.ty.as_str(), id, r.key.as_str()],
+                )?
+                .pop();
+                if let Some(prior) = &prior {
+                    let (decl, sorted, looked, vectors) = &kept[&r.ty];
+                    let ended = StoredRecord::ended(r.ty.clone(), r.key.clone(), r.position);
+                    index_record(
+                        conn,
+                        (decl.as_ref(), sorted, looked.as_ref()),
+                        Some(prior),
+                        &ended,
+                    )?;
+                    put_vectors(conn, &ended, false, vectors)?;
+                }
+                run(conn, "DELETE FROM records WHERE id = ?1", [id])?;
+                if r.is_ended() {
+                    return run(conn, "DELETE FROM keys WHERE id = ?1", [id]);
+                }
+            }
+        }
     }
     let (id, made) = make_key_id(conn, r.ty.as_str(), r.key.as_str())?;
     let later: Option<i64> = match made {
