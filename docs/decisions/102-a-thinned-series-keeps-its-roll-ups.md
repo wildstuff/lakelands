@@ -11,7 +11,7 @@ kept view whose group contained one of them keeps that group, answers it
 as stranded, and never computes it. The series form is a no-go (098), so
 this is designed on records.
 
-Claims are marked **measured**, **read** (in the code at `3783131f`, and at
+Claims are marked **measured**, **read** (in the code at `aac038fc`, and at
 `b8fe5258` for the road of 099) or **reckoned**, as 098 does. No sentence
 mixes them. The act's timings and bytes are S7's to measure; nothing here
 is a promise of speed.
@@ -48,9 +48,9 @@ is a promise of speed.
   `ProjectionStore::put_thinned_act` (an act's row) and `put_thinned`
   (a record's tombstone), and the reads' `ProjectionView::thinned_acts`
   (the acts on a type) and `thinned_at` (a seek by key, answering the
-  horizon). The store facade and the engine traits hold 93 methods at
-  `3783131f` by the seam gate's rule (read); the two new facade methods
-  and these four make 99 of 110.
+  horizon). The store facade and the engine traits hold 94 methods at
+  `aac038fc` by the seam gate's rule (read); the two new facade methods
+  and these four make 100 of 110.
 - **Refusals.** `ThinBy { ty, field }`; `Thinned { ty, key, before }`;
   `StrandedAtHeadOnly { ty, at }`; `KeptOverThinned { view, ty }`;
   `KeptNotExact { view, ty, group }`; `StrandedMake { view, ty }`.
