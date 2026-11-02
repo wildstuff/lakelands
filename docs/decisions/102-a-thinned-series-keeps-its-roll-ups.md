@@ -594,7 +594,7 @@ its mark and changed nowhere else.
   tables, not the description's shape; `api/tests/thin.rs` and
   `conformance/checks/thin.rs` are the wire tests and the suite's row;
   `core/src/engines.rs` holds `KIND_CODES`, the format's stored code
-  table, where the kind joins last as 25; `core/src/describe.rs` builds
+  table, where the kind joins last, as 27; `core/src/describe.rs` builds
   the description, and now names the two members field by field rather
   than letting `Default` absorb a member a later step adds;
   `core/src/expr/aggregate.rs` and `core/src/rights.rs` fill `Group` and
@@ -608,12 +608,12 @@ its mark and changed nowhere else.
   rest patterns in the suite and in the store's and cli's tests follow
   from the new members; `docs/log-format.md` is required by the contract
   test, above.
-- **Measured**: product 99 982 of the 108 500 base and specification
-  184 453 of the 191 500 base; seam 94 of 110; 6 of 20 `cfg(feature)`
-  sites; 1 003 checks through the doors and 87 through the engine seam;
-  1 018 refusal cases. S1's own lines: product +184 −4, specification
-  +376 −25 (the review measured 184 426 before this round's two page
-  mirrors added 27 lines); the plan's 160 and 180 were the sketch, and
-  the row's extra is the wire tests and the suite row. The split is the
-  gate's six-crate one; `crates/lakelands-cli/tests/walk_1.rs`'s one line
-  each way is outside the specification budget.
+- **Measured**, at the branch head with 1686 merged: product 100 925 of
+  the 108 500 base and specification 185 175 of the 191 500 base; seam
+  94 of 110; 6 of 20 `cfg(feature)` sites; 1 011 checks through the
+  doors and 87 through the engine seam; 1 018 refusal cases. S1's own
+  lines: product +184 −4, specification +376 −25; the plan's 160 and
+  180 were the sketch, and the row's extra is the wire tests and the
+  suite row. The split is the gate's six-crate one;
+  `crates/lakelands-cli/tests/walk_1.rs`'s one line each way is outside
+  the specification budget.
