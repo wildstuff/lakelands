@@ -32,6 +32,13 @@ pub struct Location {
     /// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub writers: Vec<WriterDoor>,
+    /// The zone a new lake starts in, as the IANA time-zone database names
+    /// it: the writer's first open records it as the lake's `zone`
+    /// setting where the lake has recorded none, and no later open reads
+    /// it. The lake's own setting is changed by a write of it
+    /// (`docs/decisions/101-a-lake-keeps-its-calendar-in-one-named-zone.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
 }
 
 /// The REST door of a process that may hold a lake's writer lease. It
@@ -95,6 +102,7 @@ impl Location {
             key: None,
             limits: Limits::default(),
             writers: Vec::new(),
+            zone: None,
         }
     }
 }

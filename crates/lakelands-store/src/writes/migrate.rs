@@ -394,13 +394,19 @@ impl Call<'_> {
             }));
         }
         // A trigger's `preceding` reads its series by the kinds the
-        // migration leaves, as a constraint's does: `declare` must still
-        // take the trigger (004, extended). It is named only to an author
-        // `describe` shows it to.
-        let preceding = [lakelands_api::expr::Func::Preceding];
+        // migration leaves, as a constraint's does, and its `in_force`
+        // pairs by them on its own type and on the type it pairs with:
+        // `declare` must still take the trigger (004, extended; 100). It is
+        // named only to an author `describe` shows it to.
+        use lakelands_api::expr::Func::{InForce, Preceding};
         for t in w.ontology.triggers.values().map(|e| &e.decl) {
-            let e = t.when.as_ref().and_then(|c| c.typed().ok());
-            if t.on != m.to.name || !e.is_some_and(|e| e.calls(&preceding)) {
+            let Some(e) = t.when.as_ref().and_then(|c| c.typed().ok()) else {
+                continue;
+            };
+            let paired = e.pairings().unwrap_or_default();
+            let pairs = paired.iter().any(|p| p.ty.as_str() == m.to.name.as_str());
+            let on = t.on == m.to.name && e.calls(&[Preceding, InForce]);
+            if !on && !pairs {
                 continue;
             }
             let d = Declaration::Trigger(t.clone());
@@ -757,6 +763,7 @@ impl Call<'_> {
                 meta: Some(&is.meta),
                 settings: Some(&w.settings),
                 preceding: None,
+                paired: None,
                 now: judged_at,
             };
             for (_, e, records, samples, any) in breaking.iter_mut() {

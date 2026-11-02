@@ -699,6 +699,20 @@ pub const KEY_PERIOD_SETTING: &str = "key_period";
 /// holds when its value is `true`.
 pub const VIEW_KEPT_SETTING: &str = "view_kept.";
 
+/// The key of the setting that names the lake's zone: the IANA time zone,
+/// as `Europe/Berlin`, whose calendar day `today()` and aging read, and
+/// `UTC` where none is set
+/// (`docs/decisions/101-a-lake-keeps-its-calendar-in-one-named-zone.md`).
+pub const ZONE_SETTING: &str = "zone";
+
+/// The zone a `zone` setting of this value names: its text, else
+/// [`crate::expr::zone::UTC`].
+pub fn zone(value: Option<&Value>) -> &str {
+    value
+        .and_then(Value::as_str)
+        .unwrap_or(crate::expr::zone::UTC)
+}
+
 /// Whether a `view_kept.<type>` setting of this value holds.
 pub fn view_kept(value: Option<&Value>) -> bool {
     value == Some(&Value::Bool(true))
@@ -730,6 +744,8 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///   writer shown the view as declared, and to no other.
 /// - `key_period` and `key_period.<source>`, a source id, hold `day`,
 ///   `week` or `month`; `None` or `null` names no period.
+/// - `zone` holds a zone the built-in time-zone database names
+///   ([`crate::expr::zone::known`]); `None` or `null` is `UTC`.
 ///
 /// It lives in the contract, not in the core; the store is its one
 /// caller.
@@ -771,6 +787,13 @@ pub fn check_setting<'a>(
             None | Some(Value::Null) => Ok(()),
             Some(Value::String(p)) if named(p) => Ok(()),
             Some(_) => refused("value", Case::SettingKeyPeriod.into()),
+        };
+    }
+    if key == ZONE_SETTING {
+        return match value {
+            None | Some(Value::Null) => Ok(()),
+            Some(Value::String(z)) if crate::expr::zone::known(z) => Ok(()),
+            Some(v) => refused("value", Case::SettingZone { value: v.clone() }.into()),
         };
     }
     if let Some(ty) = key.strip_prefix(VIEW_KEPT_SETTING) {

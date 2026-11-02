@@ -66,9 +66,11 @@
 //! stored type `T` whose `by` is the greatest at or below this record's
 //! `by` among those that hold its values in every matched field, the first
 //! in key order among ties, of those its reader is answered; only a field
-//! computed at the read may call it, since a stored pairing would go stale
-//! when the paired record is written after the record it governs
-//! (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`). Its
+//! computed at the read and a trigger's `when` may call it, since a stored
+//! pairing would go stale when the paired record is written after the
+//! record it governs, while a firing claims only what held at its write
+//! (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`,
+//! `docs/decisions/100-a-guard-may-read-the-record-in-force.md`). Its
 //! `T.` paths are fields of `T`, no part of this record.
 //!
 //! **Durations.** The difference of two instants is a duration. A
@@ -98,7 +100,9 @@
 //! Derived fields and guards are evaluated by the fold and must
 //! reproduce on replay (`docs/decisions/002-determinism-is-the-boundary.md`).
 //! In them, `now()` and `today()` mean the `known_at` of the event being
-//! folded, never the clock of the process replaying it. A constraint is
+//! folded, never the clock of the process replaying it, and `today()`
+//! cuts it in the lake's zone as the settings stood there, never as they
+//! stand at the replay. A constraint is
 //! judged by the write alone, and its clock is the write's; so is a
 //! guard's `preceding`, whose firing the log keeps. In a read, they
 //! mean the read's clock: the instant `valid_at` names, else as of a
@@ -255,7 +259,11 @@ pub enum ArithOp {
 pub enum Func {
     /// `now()`: see the determinism rule in the module documentation.
     Now,
-    /// `today()`: midnight UTC of `now()`.
+    /// `today()`: the day of the lake's calendar holding `now()`, cut at
+    /// local midnight in the zone its `zone` setting names in force where
+    /// it is read, `UTC` where it names none, and held as that date is, at
+    /// its UTC midnight
+    /// (`docs/decisions/101-a-lake-keeps-its-calendar-in-one-named-zone.md`).
     Today,
     /// `known_at(field)`: when the lake learned the field's value.
     KnownAt,
@@ -272,8 +280,9 @@ pub enum Func {
     /// `by` or a matched field is null.
     Preceding,
     /// `in_force(T.f, T.by <= by, T.m = m, …)`: in a field computed at the
-    /// read, `f` of the record of another stored type `T` in force at this
-    /// record (the module doc); null where this `by` or a match is null.
+    /// read or a trigger's `when`, `f` of the record of another stored type
+    /// `T` in force at this record (the module doc); null where this `by` or
+    /// a match is null.
     InForce,
     /// `setting('key')`: the value of the lake's `sys.setting` record with
     /// that key, as it stood at the position being read or folded.

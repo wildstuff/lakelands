@@ -502,6 +502,7 @@ impl Decide<'_> {
                 meta: Some(&after.meta),
                 settings: Some(self.at.settings),
                 preceding: Some(&preceding),
+                paired: None,
                 now: self.at.now,
             };
             if !expr::holds(&c.holds, &scope).unwrap_or(false) {
@@ -521,70 +522,140 @@ impl Decide<'_> {
     /// The live record of `decl` before `after` in `series`, its `by` and
     /// then its matched fields, as its writer's `find` would answer it
     /// (lakelands#1552): of those that hold `after`'s matched values
-    /// exactly, the one whose `by` is the greatest below `after`'s, the
-    /// first by key among ties, read at the head with what this append
-    /// wrote laid over it. A record its writer is not answered, or whose
-    /// `by` or a matched field a hiding lowers, is passed over, so which
-    /// one is chosen tells no value its writer may not read; at an accept,
-    /// one either the proposer or the reviewer is not. None where
-    /// `after`'s `by` or a matched field is null.
+    /// exactly, the one whose `by` is the greatest below `after`'s
+    /// ([`Self::latest`]). None where `after`'s `by` or a matched field is
+    /// null.
     pub(super) fn preceding(
         &self,
         decl: &TypeDecl,
         after: &StoredRecord,
         series: &[FieldName],
     ) -> Result<Option<StoredRecord>> {
-        use lakelands_api::engine::Scan;
-        use lakelands_core::engines::{Place, cmp_places};
         let value = |f: &FieldName| after.fields.get(f).filter(|v| !v.is_null()).cloned();
-        let Some(((by, here), equal)) = (series.split_first())
-            .and_then(|(by, m)| {
-                Some((
-                    (by, value(by)?),
-                    m.iter().map(|f| Some((f.clone(), value(f)?))),
-                ))
-            })
-            .and_then(|(b, m)| Some((b, m.collect::<Option<Vec<_>>>()?)))
-        else {
+        let Some((by, m)) = series.split_first() else {
             return Ok(None);
         };
+        let equal = m.iter().map(|f| Some((f.clone(), value(f)?)));
+        let (Some(here), Some(equal)) = (value(by), equal.collect::<Option<Vec<_>>>()) else {
+            return Ok(None);
+        };
+        self.latest(decl, (by, &here, false), equal, Some(&after.key))
+    }
+
+    /// The fields `read` of the record of another type in force at
+    /// `after` in the series `p` pairs by, as a trigger's `when` reads them
+    /// (100): of the records of `T` that hold `after`'s matched values, the
+    /// one whose `by` is the greatest at or below `after`'s
+    /// ([`Self::latest`]), read once for every call of the series. A field
+    /// is left out where a sight the write is judged by may not read it,
+    /// and none is read, nor a row, where one may not read `T`'s `by` or a
+    /// matched field, or is admitted none of `T`; none where `after`'s `by`
+    /// or a matched field is null or none is in force; and one a hiding
+    /// lowers on the record in force is left out, for a guard compares
+    /// values and a mask is none.
+    pub(super) fn in_force(
+        &self,
+        p: &lakelands_api::expr::Pairing<'_>,
+        read: &BTreeSet<FieldName>,
+        after: &StoredRecord,
+    ) -> Result<BTreeMap<FieldName, Value>> {
+        use lakelands_core::sight::Admit;
+        let ty = TypeName::from(p.ty.as_str());
+        let Ok(decl) = self.ontology.ty(&ty) else {
+            return Ok(BTreeMap::new());
+        };
+        let granted = |s: &Sight<'_>| s.admit(&ty) != Admit::Nothing;
+        let paired =
+            |s: &Sight<'_>| (p.matched.iter().chain([&p.by])).all(|(t, _)| s.reads(&ty, t));
+        let read: Vec<&FieldName> = (read.iter())
+            .filter(|f| self.at.sights().all(|s| s.reads(&ty, f)))
+            .collect();
+        if read.is_empty() || !self.at.sights().all(|s| granted(s) && paired(s)) {
+            return Ok(BTreeMap::new());
+        }
+        let value = |f: &FieldName| after.fields.get(f).filter(|v| !v.is_null()).cloned();
+        let equal = p
+            .matched
+            .iter()
+            .map(|(t, m)| Some(((*t).clone(), value(m)?)));
+        let (Some(here), Some(equal)) = (value(p.by.1), equal.collect::<Option<Vec<_>>>()) else {
+            return Ok(BTreeMap::new());
+        };
+        let Some(r) = self.latest(decl, (p.by.0, &here, true), equal, None)? else {
+            return Ok(BTreeMap::new());
+        };
+        let lowered = |f: &FieldName| {
+            self.at
+                .sights()
+                .any(|s| s.lowered(&ty, &r.fields).contains_key(f))
+        };
+        let told = read.into_iter().filter(|f| !lowered(f));
+        Ok(told
+            .filter_map(|f| Some((f.clone(), r.fields.get(f).filter(|v| !v.is_null())?.clone())))
+            .collect())
+    }
+
+    /// The live record of `decl` whose `by` is the greatest below `here`,
+    /// or at or below it where `at`, among those that hold `equal` exactly
+    /// and are not `own`, the first by key among ties, read at the head
+    /// with what this append wrote laid over it. A record its writer is
+    /// not answered, or whose `by` or a field of `equal` a hiding lowers,
+    /// is passed over, so which one is chosen tells no value its writer
+    /// may not read; at an accept, one either the proposer or the reviewer
+    /// is not.
+    fn latest(
+        &self,
+        decl: &TypeDecl,
+        (by, here, at): (&FieldName, &Value, bool),
+        equal: Vec<(FieldName, Value)>,
+        own: Option<&RecordKey>,
+    ) -> Result<Option<StoredRecord>> {
+        use lakelands_api::engine::Scan;
+        use lakelands_core::engines::{Place, cmp_places};
         let order_by = vec![lakelands_api::read::Order {
             field: by.clone(),
             by: Default::default(),
             dir: lakelands_api::read::Direction::Desc,
         }];
         let below = |r: &StoredRecord| {
-            let at = r.fields.get(by).filter(|v| !v.is_null());
-            at.is_some_and(|v| lakelands_core::expr::order::cmp_values(v, &here).is_lt())
+            let at_r = r.fields.get(by).filter(|v| !v.is_null());
+            at_r.is_some_and(|v| match lakelands_core::expr::order::cmp_values(v, here) {
+                std::cmp::Ordering::Less => true,
+                std::cmp::Ordering::Equal => at,
+                std::cmp::Ordering::Greater => false,
+            })
         };
         let matches = |r: &StoredRecord| equal.iter().all(|(f, v)| r.fields.get(f) == Some(v));
+        let series: Vec<FieldName> = std::iter::once(by.clone())
+            .chain(equal.iter().map(|(f, _)| f.clone()))
+            .collect();
         let fits = |r: &StoredRecord| {
             let shown = |s: &Sight<'_>| {
                 let low = s.lowered(&decl.name, &r.fields);
                 s.answers(&decl.name, r) && series.iter().all(|f| !low.contains_key(f))
             };
-            r.key != after.key
+            own != Some(&r.key)
                 && !r.retired
                 && below(r)
                 && matches(r)
                 && self.at.sights().all(shown)
         };
         let values: Vec<Value> = equal.iter().map(|(_, v)| v.clone()).collect();
-        let pending = self.pending.in_series(&decl.name, series, &values);
+        let pending = self.pending.in_series(&decl.name, &series, &values);
         let held = pending.len();
         let mut best = (pending.into_iter().filter(|r| fits(r)).cloned()).min_by(|a, b| {
             let (a, b) = (Place::of(a, &order_by), Place::of(b, &order_by));
             cmp_places(&a, &b, &order_by)
         });
-        // The head's, from just below `after`, past what this append holds
-        // and what its writer is not answered.
+        // The head's, from `here` down, past what this append holds and
+        // what its writer is not answered.
         let scan = Scan {
             equal: equal.clone(),
             limit: u32::try_from(held).unwrap_or(u32::MAX).saturating_add(1),
             ..crate::lake::every(false)
         };
         let unheld = |r: &StoredRecord| !self.pending.holds(&decl.name, &r.key) && fits(r);
-        let found = crate::reads::at_or_below(self.at.view, &decl.name, (by, &here), scan, unheld)?;
+        let found = crate::reads::at_or_below(self.at.view, &decl.name, (by, here), scan, unheld)?;
         if let Some(r) = found {
             let head = Place::of(&r, &order_by);
             let kept = best.as_ref().map(|b| Place::of(b, &order_by));

@@ -58,6 +58,7 @@ mod graph_measures;
 mod graph_rank;
 mod graph_steps;
 mod grid;
+mod guard_in_force;
 mod hidden_readers;
 mod hidden_where;
 mod host_cause;
@@ -174,6 +175,7 @@ mod withdraw;
 mod write_judged;
 mod writer_filled;
 mod writes_only;
+mod zone_today;
 
 /// Every check, in the order the suite runs them.
 pub const ALL: &[Check] = &[
@@ -334,6 +336,12 @@ pub const ALL: &[Check] = &[
     write_judged::WALK_JUDGES_THE_REST,
     write_judged::PRECEDING_SERIES_CHOSEN,
     write_judged::PRECEDING_IN_A_GUARD,
+    zone_today::ZONE_CUTS_TODAY,
+    zone_today::ZONE_ACROSS_THE_CHANGE,
+    zone_today::ZONE_IN_FORCE_AT_THE_WRITE,
+    zone_today::ZONE_UNSET_IS_UTC,
+    zone_today::ZONE_AGING_IS_THE_DATE_HANDED,
+    zone_today::ZONE_AT_THE_READ,
     upsert_preflight::UPSERT_JUDGED_AS_WRITTEN,
     upsert_preflight::UPSERT_JUDGED_ON_WHAT_IT_MAKES,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,
@@ -370,6 +378,20 @@ pub const ALL: &[Check] = &[
     in_force::IN_FORCE_SIGHT,
     in_force::IN_FORCE_LONG,
     in_force::IN_FORCE_REFUSED,
+    guard_in_force::GUARD_IN_FORCE_FIRES_ON_ITS_OWN_BOUND,
+    guard_in_force::GUARD_IN_FORCE_CROSSING,
+    guard_in_force::GUARD_IN_FORCE_BOX,
+    guard_in_force::GUARD_IN_FORCE_LATER_BOUND_AND_BACKDATED,
+    guard_in_force::GUARD_IN_FORCE_LAID_OVER_IN_AN_APPEND,
+    guard_in_force::GUARD_IN_FORCE_NO_BOUND,
+    guard_in_force::GUARD_IN_FORCE_UNDER_A_HIDING,
+    guard_in_force::GUARD_IN_FORCE_WITHOUT_A_GRANT,
+    guard_in_force::GUARD_IN_FORCE_REFUSED,
+    guard_in_force::GUARD_IN_FORCE_KEEPS_ITS_FIELDS,
+    guard_in_force::GUARD_IN_FORCE_KEEPS_ITS_TYPE,
+    guard_in_force::GUARD_IN_FORCE_READ_APART_FROM_PRECEDING,
+    guard_in_force::GUARD_IN_FORCE_LATER_WRITE_MOVES_NO_FIRING,
+    guard_in_force::GUARD_IN_FORCE_BOUND_TAKEN_BACK_STANDS,
     read_clock::READ_CLOCK,
     read_clock::TODAY_RULES_OUT,
     before_declared::BEFORE_DECLARED,

@@ -19,11 +19,11 @@ leave: format 23, the road of parts, candles and selected series as records. It 
 - **Stored tables, `LAYOUT`, WIT, MCP tools, `Limits`, settings:** none.
 - **`Func::InForce`** is admitted in `Place::Guard`, so in a trigger's `when`. The words
   `in_force` take are the words 052 gives them.
-- **`Case::InForceForm`** loses its member `field`, and **`Case::InForcePair`** keeps
-  `left` and `right` and loses `field`. Both are said at a place, as every refusal of
-  `preceding` is: the type and field, or the trigger. Their text opens "it pairs", not
-  "the field `{field}` pairs". The kinds keep their names. `docs/refusals.md` and
-  `samples.json` follow.
+- **`Case::InForceForm`** and **`Case::InForcePair`** keep their member `field` and say a
+  field's refusal; a trigger's is said by **`Case::GuardInForceForm`**, with no member,
+  and **`Case::GuardInForcePair`**, with `left` and `right`, at the trigger. Their text
+  opens "its `when` pairs". `docs/refusals.md` and `samples.json` follow. (As built:
+  decided first as the old codes losing `field`; see the As built note.)
 - **`Case::InForceHere`'s text** says a trigger's `when`, too. The kind stays, with no
   member.
 - **`Scope` in `lakelands-core`** gains `paired`, beside `preceding`, and `WriteScope`
@@ -110,11 +110,11 @@ the form moves into one function that serves a field and a trigger.
 | Kind | Members | When |
 |---|---|---|
 | `in_force_here` | none | `on` is a view: its rows are made by no write. Also a constraint, a field computed at the write, a set's `where`, a `find`. |
-| `in_force_form` | none | Any other form; `T` the trigger's own type (`preceding` reads that) or a view. A link type stays admitted, as for a field, for one function judges both. |
-| `in_force_pair` | `left`, `right` | A matched pair not of one kind, or not text or a reference; an order pair not of one kind, or of a kind with no order. |
+| `guard_in_force_form` | none | Any other form; `T` the trigger's own type (`preceding` reads that) or a view. A link type stays admitted, as for a field, for one function judges both. |
+| `guard_in_force_pair` | `left`, `right` | A matched pair not of one kind, or not text or a reference; an order pair not of one kind, or of a kind with no order. |
 | `undeclared` | `ty` | `T` is no type. |
 | `unknown_field` | `ty`, `field` | `T` has no such field. |
-| `reads_at_read` | `field`, `ty` | A field of `T` the call names is computed at the read. A bare name so computed is refused `in_force_pair`, as in 052. |
+| `reads_at_read` | `field`, `ty` | A field of `T` the call names is computed at the read. A bare name so computed is refused `guard_in_force_pair`, as `in_force_pair` in 052. |
 
 `T` declared again or migrated so that a field a guard pairs by goes, changes its kind
 or is computed at the read is refused naming the field alone, as for a field computed
@@ -412,6 +412,32 @@ raise lands with this record. At ×2, which 097 says this round's pull requests 
 record is 890 and 2 100 and the whole is 12 391 and 12 682, over the reserve. Each step
 then measures its size and any raise goes by `docs/budgets.md`. If lines must go, G5's
 series row waits. Nothing else can: G1 to G3 are the ask, and G4 is what R2 owes.
+
+### As built: G1 to G3 (lakelands#1676)
+
+G1, G2 and G3 landed in one pull request, so no release holds one without the others.
+Where the tree differed from the text above:
+
+- **No step line 22 → 23.** Format 23 begins a new record (098), and `docs/log-format.md`
+  keeps no step lines before it. Appendix B alone says that a trigger's `when` holds the
+  call. Format 23's kept lake is not in the tree yet. It is written at the tag, and the
+  trigger calling `in_force`, with a firing, goes in it then.
+- **A field of `T` taken to the read** is refused `read_as_stored`, naming that field, as
+  a field of `T` that a field computed at the read pairs by already was. A field that goes
+  or changes kind is refused `field_read_elsewhere`, as written.
+- **The refusals of a field keep `field`.** 0.22.0 shipped `in_force_form` and
+  `in_force_pair` with the member `field`, and a shipped code keeps its parameters (015):
+  it leaves only by a recorded withdrawal. So a field computed at the read is refused
+  as it was, naming itself in `field`. A trigger has no field that pairs, so the one
+  judgement says its two refusals by two new codes, which say "its `when` pairs":
+  `guard_in_force_form`, with no member, and `guard_in_force_pair`, with `left` and
+  `right`. No code is withdrawn. The table above names these two codes.
+- **One read a series.** `Decide::in_force` resolves the record once for every field the
+  `when` reads in the series. A field that one sight may not read is left out and reads
+  null alone. No row is read where none is left, or where a sight may not read `T.by` or
+  a `T.m`, or is admitted none of `T`.
+- **`GUARD_IN_FORCE_BOX`'s "reads its partition once"** is a count, so it waits for
+  G5's `rows_read` with `GUARD_IN_FORCE_READS_ONE_PARTITION`.
 
 ### Decided by the operator
 

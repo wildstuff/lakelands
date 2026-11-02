@@ -565,6 +565,7 @@ fn prepare(plan: &Plan, root: &Path) -> Result<Option<String>, String> {
                 key: None,
                 limits: Limits::default(),
                 writers: Vec::new(),
+                zone: None,
             };
             let lakes = root.join("lakes");
             std::fs::create_dir_all(&lakes).map_err(|e| e.to_string())?;

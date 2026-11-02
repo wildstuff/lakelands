@@ -711,62 +711,85 @@ pub(crate) fn computed_at(f: &FieldDecl) -> Eval {
     }
 }
 
-/// Each field of `t` paired at the read pairs by the form `in_force`
-/// takes, with another stored type, over fields that pair: two of one
-/// kind, a match of text or a reference, which the exact-text index keeps,
-/// an order bound of a kind the lake sorts; of the other type stored
-/// fields, and where the call is the whole field, one whose kind lands in
-/// it (052, extended).
+/// Each field of `t` paired at the read pairs as [`pairs`] says, and
+/// where the call is the whole field, `T.f` holds a kind that lands in it
+/// (052, extended).
 fn in_force(o: &Ontology, t: &TypeDecl) -> Result<()> {
-    use StorageKind::{Reference, Text};
     for (f, e) in t.in_force() {
         let on = [of_type(&t.name), of_field(&f.name)];
         let wrong = |case| Error::invalid_at(&f.name, at(&on, case));
-        let field = &f.name;
-        let form = || {
-            wrong(Case::InForceForm {
-                field: field.clone(),
-            })
-        };
-        for p in e.pairings().map_err(|_| form())? {
-            let ty = TypeName::from(p.ty.as_str());
-            let other = match o.types.get(&ty) {
-                None if ty != t.name => return Err(wrong(Case::Undeclared { ty })),
-                Some(e) if ty != t.name && e.decl.view.is_none() => &e.decl,
-                _ => return Err(form()),
-            };
-            let theirs = |n: &FieldName| {
-                let (ty, field) = (ty.clone(), n.clone());
-                match other.field(n) {
-                    None => Err(wrong(Case::UnknownField { ty, field })),
-                    Some(d) if d.at_read() => Err(wrong(Case::ReadsAtRead { field, ty })),
-                    Some(d) => Ok(d.ty.kind),
-                }
-            };
-            // Where the call is the whole of what the field computes, what
-            // `T.f` holds is what lands in it.
-            let read = Kind::read(theirs(p.read)?);
-            if let Expr::Call { func, .. } = &e
-                && *func == Func::InForce
-            {
-                lands(f, read, &on)?;
-            }
-            let pairs = std::iter::once(p.by).chain(p.matched.iter().copied());
-            for (i, (left, right)) in pairs.enumerate() {
-                let kind = theirs(left)?;
-                let pairs = match i {
-                    0 => lakelands_api::seam::sortable(&kind),
-                    _ => matches!(kind, Text | Reference),
-                };
-                let ours = t.field(right).filter(|r| !r.at_read()).map(|r| r.ty.kind);
-                if !pairs || ours != Some(kind) {
-                    let (field, left, right) = (field.clone(), left.clone(), right.clone());
-                    return Err(wrong(Case::InForcePair { field, left, right }));
-                }
-            }
+        if let Some(read) = pairs(o, (t, Some(&f.name)), &e, &wrong)? {
+            lands(f, Kind::read(read), &on)?;
         }
     }
     Ok(())
+}
+
+/// Each `in_force` in `e`, over a record of `t`, pairs by the form it
+/// takes, with another stored type, over fields that pair: two of one
+/// kind, a match of text or a reference, which the exact-text index keeps,
+/// an order bound of a kind the lake sorts; of the other type stored
+/// fields. One judgement for `field`, computed at the read, and a
+/// trigger's `when` where none (100), `wrong` saying a refusal where `e`
+/// stands: a field's refusal names it, as 0.22.0 shipped it, and a
+/// trigger's is a case of its own, for a trigger has no field to name. The
+/// kind `T.f` holds where `e` is the call alone.
+fn pairs(
+    o: &Ontology,
+    (t, field): (&TypeDecl, Option<&FieldName>),
+    e: &Expr,
+    wrong: &dyn Fn(Case) -> Error,
+) -> Result<Option<StorageKind>> {
+    use StorageKind::{Reference, Text};
+    let form = || {
+        wrong(field.map_or(Case::GuardInForceForm, |f| Case::InForceForm {
+            field: f.clone(),
+        }))
+    };
+    let mut whole = None;
+    for p in e.pairings().map_err(|_| form())? {
+        let ty = TypeName::from(p.ty.as_str());
+        let other = match o.types.get(&ty) {
+            None if ty != t.name => return Err(wrong(Case::Undeclared { ty })),
+            Some(e) if ty != t.name && e.decl.view.is_none() => &e.decl,
+            _ => return Err(form()),
+        };
+        let theirs = |n: &FieldName| {
+            let (ty, field) = (ty.clone(), n.clone());
+            match other.field(n) {
+                None => Err(wrong(Case::UnknownField { ty, field })),
+                Some(d) if d.at_read() => Err(wrong(Case::ReadsAtRead { field, ty })),
+                Some(d) => Ok(d.ty.kind),
+            }
+        };
+        let read = theirs(p.read)?;
+        if let Expr::Call { func, .. } = e
+            && *func == Func::InForce
+        {
+            whole = Some(read);
+        }
+        let pairs = std::iter::once(p.by).chain(p.matched.iter().copied());
+        for (i, (left, right)) in pairs.enumerate() {
+            let kind = theirs(left)?;
+            let pairs = match i {
+                0 => lakelands_api::seam::sortable(&kind),
+                _ => matches!(kind, Text | Reference),
+            };
+            let ours = t.field(right).filter(|r| !r.at_read()).map(|r| r.ty.kind);
+            if !pairs || ours != Some(kind) {
+                let (left, right) = (left.clone(), right.clone());
+                return Err(wrong(match field {
+                    Some(f) => Case::InForcePair {
+                        field: f.clone(),
+                        left,
+                        right,
+                    },
+                    None => Case::GuardInForcePair { left, right },
+                }));
+            }
+        }
+    }
+    Ok(whole)
 }
 
 fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
@@ -1839,12 +1862,7 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
     // A field another type pairs by stays there, of the kind it was, and
     // stored: it is refused naming the field alone.
     let held = o.types.get(&t.name).map(|e| &e.decl);
-    let others = o
-        .types
-        .values()
-        .map(|e| &e.decl)
-        .filter(|d| d.name != t.name);
-    for n in held.map(|h| paired_by(others, h)).unwrap_or_default() {
+    for n in held.map(|h| paired_by(o, h)).unwrap_or_default() {
         let kind = |d: &TypeDecl| d.field(&n).map(|f| f.ty.kind);
         if kind(t) != held.and_then(kind) {
             let (field, ty) = (n.clone(), t.name.clone());
@@ -1872,7 +1890,7 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
         .flat_map(|e| &e.decl.relations)
         .filter(|r| r.target == t.name);
     read.extend(matching.flat_map(|r| r.derived.iter().flat_map(|d| d.reads()[1].clone())));
-    read.extend(paired_by(others.map(|e| &e.decl), t));
+    read.extend(paired_by(o, t));
     match t
         .fields
         .iter()
@@ -1886,10 +1904,15 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
     }
 }
 
-/// The fields of `t` another of `types` pairs by at the read, and reads.
-fn paired_by<'a>(types: impl Iterator<Item = &'a TypeDecl>, t: &TypeDecl) -> BTreeSet<FieldName> {
+/// The fields of `t` another type's field computed at the read or a
+/// trigger's `when` pairs by, and reads (052, 100).
+fn paired_by(o: &Ontology, t: &TypeDecl) -> BTreeSet<FieldName> {
+    let others = (o.types.values().map(|e| &e.decl)).filter(|d| d.name != t.name);
+    let fields = others.flat_map(TypeDecl::in_force).map(|(_, e)| e);
+    let triggers = o.triggers.values().map(|e| &e.decl);
+    let guards = triggers.filter_map(|g| g.when.as_ref()?.typed().ok());
     let mut out = BTreeSet::new();
-    for (_, e) in types.flat_map(TypeDecl::in_force) {
+    for e in fields.chain(guards) {
         for p in e.pairings().unwrap_or_default() {
             if p.ty.as_str() == t.name.as_str() {
                 out.extend(p.theirs().cloned());
@@ -2264,6 +2287,13 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 // The series a `preceding` reads, as a constraint's.
                 let series = ty.series_read(&e);
                 series.map_err(|c| Error::invalid(at(&on, c)))?;
+                // An `in_force` pairs the record a write leaves, so a
+                // view's rows, which no write makes, pair nothing (100).
+                let wrong = |case| Error::invalid(at(&on, case));
+                if ty.view.is_some() && e.calls(&[Func::InForce]) {
+                    return Err(wrong(Case::InForceHere));
+                }
+                pairs(o, (ty, None), &e, &wrong)?;
             }
         }
         Declaration::ObjectSet(s) => {
@@ -2480,11 +2510,26 @@ fn type_reader(o: &Ontology, ty: &TypeName) -> Option<String> {
         .collect();
     let on = |t: &TypeName| own.contains(t);
     let to = |f: &FieldDecl| f.ty.target.as_ref().is_some_and(on);
+    // A field computed at the read or a trigger's `when` that pairs with
+    // the type's records in force reads it (100).
+    let pairs = |e: &Expr| {
+        let paired = e.pairings().unwrap_or_default();
+        paired.iter().any(|p| on(&TypeName::from(p.ty.as_str())))
+    };
+    let guards = |t: &&lakelands_api::ontology::TriggerDecl| {
+        t.when
+            .as_ref()
+            .and_then(|w| w.typed().ok())
+            .is_some_and(|e| pairs(&e))
+    };
     let (user, system): (Vec<_>, Vec<_>) = (o.types.values().map(|e| &e.decl))
         .filter(|t| !own.contains(&t.name))
         .partition(|t| !is_system(&t.name));
     let named = user.into_iter().chain(system).find_map(|t| {
         if let Some(f) = t.fields.iter().find(|f| to(f)) {
+            return Some(format!("the field `{}` of `{}`", f.name, t.name));
+        }
+        if let Some((f, _)) = t.in_force().into_iter().find(|(_, e)| pairs(e)) {
             return Some(format!("the field `{}` of `{}`", f.name, t.name));
         }
         if let Some(r) = (t.relations.iter()).find(|r| on(&r.target) || r.fields.iter().any(to)) {
@@ -2507,7 +2552,7 @@ fn type_reader(o: &Ontology, ty: &TypeName) -> Option<String> {
         })
         .or_else(|| {
             (triggers.clone())
-                .find(|t| on(&t.on))
+                .find(|t| on(&t.on) || guards(t))
                 .map(|t| format!("the trigger `{}`", t.name))
         })
 }

@@ -318,7 +318,7 @@ pub fn key_lookup(decl: Option<&TypeDecl>, scan: &Scan) -> Option<BTreeSet<Strin
 /// matches at either end, those a set's condition or a view's `where` over
 /// it compares to a text at the top level, those a constraint's or a
 /// trigger's `preceding` matches its series on, those another type's
-/// `in_force` matches it on) and those the setting names
+/// `in_force` or a trigger's matches it on) and those the setting names
 /// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
 /// `None`, every field, for a name no type declares: a view's kept records.
 pub fn looked_up<'a>(
@@ -355,7 +355,14 @@ pub fn looked_up<'a>(
                 }
             }
             Declaration::ObjectSet(o) if o.of == *ty => terms(&Some(o.filter.clone())),
-            Declaration::Trigger(t) if t.on == *ty => series.extend(t.when.clone()),
+            Declaration::Trigger(t) => {
+                (t.on == *ty).then(|| series.extend(t.when.clone()));
+                let e = t.when.as_ref().and_then(|c| c.typed().ok());
+                let paired = e.as_ref().map(|e| e.pairings().unwrap_or_default());
+                let paired = paired.into_iter().flatten();
+                let paired = paired.filter(|p| p.ty.as_str() == ty.as_str());
+                matched.extend(paired.flat_map(|p| p.matched).map(|(m, _)| m.clone()));
+            }
             _ => {}
         }
     }
@@ -576,7 +583,8 @@ pub fn sort_index_type(r: &StoredRecord) -> Option<TypeName> {
 /// The types whose exact-text index a declaration can move: those
 /// [`looked_up`] reads it for. A type's own, the targets of its derived
 /// relations, the types it pairs with by `in_force`, its view's sources;
-/// a set's and a trigger's type.
+/// a set's and a trigger's type, and the types a trigger's `in_force`
+/// pairs with.
 pub fn looked_up_by(d: &Declaration) -> BTreeSet<TypeName> {
     let mut out = BTreeSet::new();
     match d {
@@ -594,7 +602,17 @@ pub fn looked_up_by(d: &Declaration) -> BTreeSet<TypeName> {
             }
         }
         Declaration::ObjectSet(o) => _ = out.insert(o.of.clone()),
-        Declaration::Trigger(t) => _ = out.insert(t.on.clone()),
+        Declaration::Trigger(t) => {
+            out.insert(t.on.clone());
+            let e = t.when.as_ref().and_then(|c| c.typed().ok());
+            let paired = e.as_ref().map(|e| e.pairings().unwrap_or_default());
+            out.extend(
+                paired
+                    .into_iter()
+                    .flatten()
+                    .map(|p| TypeName::from(p.ty.as_str())),
+            );
+        }
         _ => {}
     }
     out

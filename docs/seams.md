@@ -2191,12 +2191,15 @@ is held by the CLI's tests.
 the `aging` section of the root's `lakelands.json`:
 
 ```json
-"aging": { "utc_offset": "+01:00", "check_secs": 60 }
+"aging": { "check_secs": 60 }
 ```
 
-- **The date** is the host's clock at `utc_offset` (`Z`, or `+HH:MM` /
-  `-HH:MM` within fourteen hours; a fixed offset, not a zone), handed to
-  `age` at UTC midnight. The lake never reads a clock (002).
+- **The date** is the day of the lake's calendar holding the host's
+  clock: cut in the zone the lake names, its `zone` setting
+  (`LakeStore::zone`, `UTC` where it names none), read again at every
+  look, and handed to `age` at UTC midnight (101). The lake never reads
+  a clock (002). A root that still names the fixed `utc_offset` an
+  earlier release read is refused when it is opened, saying so.
 - **When:** once when `serve` starts, and again whenever that date rolls
   over, looked at every `check_secs` (60 by default). A second run on
   one date writes nothing new.
