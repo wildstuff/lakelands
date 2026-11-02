@@ -450,9 +450,9 @@ own event. The SQLite exact-text turn is the slow one: 256 records a turn, each 
 and an insert a field. A caller's write sent beside either build waits for one turn, as
 `BUILD_WRITES_GO_ON` pins.
 
-Product: 910 lines in, 76 out; specification: 531 in, 3 out. The cut is `Look::Start`, a
+Product: 930 lines in, 98 out; specification: 531 in, 3 out. The cut is `Look::Start`, a
 step with no caller: the fill writes the rows of a field being built, and a field that goes
-is deleted at its `Keep`. The core-size gate moved to product 100 636 of 108 500 and
+is deleted at its `Keep`. The core-size gate moved to product 100 634 of 108 500 and
 specification 184 630 of 191 500 (from 99 802 and 184 102); seam-width is 96 of 110, two
 methods added (`ProjectionStore::put_record_for`, `ProjectionStore::look_index`), and
 `cfg(feature)` is 6 of 20. This is more than R7's 350 product and 350 specification: the

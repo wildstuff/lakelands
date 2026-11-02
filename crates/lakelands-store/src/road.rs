@@ -123,31 +123,29 @@ pub(crate) fn send(lake: &Arc<Lake>, job: Box<dyn Job>) {
     }
 }
 
-/// At a writer's open: find what `kinds` owe, off the writer, and send it,
-/// without holding the open up.
-pub(crate) fn resume(lake: &Arc<Lake>, kinds: &'static [Owes]) {
+/// At a writer's open: find what `kinds` owe, off the writer, and send it.
+/// The open does not wait for the jobs, but it does wait for this scan, so
+/// nothing the open started outlives the handle it answers with: a lake
+/// let go at its open lets its lease go.
+pub(crate) async fn resume(lake: &Arc<Lake>, kinds: &'static [Owes]) {
     if kinds.is_empty() || !lake.is_writer() {
         return;
     }
-    let weak = Arc::downgrade(lake);
-    tokio::spawn(async move {
-        let Some(lake) = weak.upgrade() else { return };
-        let l = lake.clone();
-        let owed = exec::run(move || {
-            let view = l.engine.view(None)?;
-            let mut owed = Vec::new();
-            for kind in kinds {
-                owed.extend(kind(&l, view.as_ref())?);
-            }
-            Ok(owed)
-        });
-        // What cannot be found now is found by the next open. The store
-        // keeps no log of its own to tell it to; the job stays owed in the
-        // log and the lists, where the next open looks again.
-        for job in owed.await.unwrap_or_default() {
-            send(&lake, job);
+    let l = lake.clone();
+    let owed = exec::run(move || {
+        let view = l.engine.view(None)?;
+        let mut owed = Vec::new();
+        for kind in kinds {
+            owed.extend(kind(&l, view.as_ref())?);
         }
+        Ok(owed)
     });
+    // What cannot be found now is found by the next open. The store keeps
+    // no log of its own to tell it to; the job stays owed in the log and
+    // the lists, where the next open looks again.
+    for job in owed.await.unwrap_or_default() {
+        send(lake, job);
+    }
 }
 
 /// Drive the road until no job waits.

@@ -90,7 +90,7 @@ pub(crate) async fn opened_owing(
     }
     // What the road owes runs beside the writer, never before the open
     // answers (099).
-    crate::road::resume(&lake, owed);
+    crate::road::resume(&lake, owed).await;
     Ok(lake)
 }
 
@@ -176,7 +176,7 @@ pub(crate) async fn standing_by(
                 Ok(taken)
             });
             if taken.await? {
-                crate::road::resume(&lake, owed);
+                crate::road::resume(&lake, owed).await;
                 return Ok(());
             }
         }
