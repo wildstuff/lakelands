@@ -291,6 +291,7 @@ impl Lake {
             waiting: Mutex::new(BTreeMap::new()),
             sorted_whole: Mutex::new(BTreeMap::new()),
             choosing: Mutex::default(),
+            road: Mutex::default(),
             writer: Mutex::new(Writer {
                 lease,
                 tip: None,

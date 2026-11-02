@@ -28,6 +28,10 @@ tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
 [dev-dependencies]
 lakelands-engine-mem = { path = "../lakelands-engine-mem" }
+# The road's unit tests run on every engine (`src/road/tests.rs`).
+lakelands-engine-pg = { path = "../lakelands-engine-pg" }
+lakelands-engine-sqlite = { path = "../lakelands-engine-sqlite" }
+postgres = "0.19"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 

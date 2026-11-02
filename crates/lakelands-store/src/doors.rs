@@ -20,7 +20,8 @@ use lakelands_api::quarantine::{
 };
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search, SearchMode};
 use lakelands_api::seam::{
-    ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, Spread, VerbInvocation,
+    ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, SETTING_TYPE, Seams, Spread, VerbInvocation,
+    ZONE_SETTING,
 };
 use lakelands_api::write::{
     AgeReport, Change, CompactReport, Declaration, ForgetReport, ForgetSetReport, IngestOpts,
@@ -57,6 +58,24 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
 
 /// The lake [`open`] opens.
 pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<Lake>> {
+    opened_owing(location, seams, mode, crate::road::OWED).await
+}
+
+/// [`opened`], whose writer finishes the jobs of `owed` the log and the
+/// lists leave owed: the store's [`crate::road::OWED`], or a test's kinds.
+pub(crate) async fn opened_owing(
+    location: Location,
+    seams: Seams,
+    mode: OpenMode,
+    owed: &'static [crate::road::Owes],
+) -> Result<Arc<Lake>> {
+    // A zone the database does not name is refused before anything is
+    // opened, so a `Create` makes no lake it then refuses.
+    let zone = location.zone.clone();
+    if let Some(z) = &zone {
+        let z = serde_json::Value::from(z.as_str());
+        lakelands_api::seam::check_setting(ZONE_SETTING, Some(&z), &|_| None, &|_| None)?;
+    }
     let lake = exec::run(move || Lake::open(&location, seams, mode)).await?;
     let lake = Arc::new(lake);
     let owing = lake.clone();
@@ -65,7 +84,44 @@ pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> 
         Ok(())
     })
     .await?;
+    // A rebuild's open writes nothing of its own: it refolds the log.
+    if matches!(mode, OpenMode::Create | OpenMode::Write) {
+        start_zone(&lake, zone).await?;
+    }
+    // What the road owes runs beside the writer, never before the open
+    // answers (099).
+    crate::road::resume(&lake, owed);
     Ok(lake)
+}
+
+/// Record `zone`, the zone the location starts a lake in, as the lake's
+/// `zone` setting, at a writer's open of a lake that never recorded one:
+/// a zone set since, or one retired, stands, and only the log says the
+/// zone from then on (101). It is written as any setting is, by the
+/// store for itself, and judged as one. Only an open in `Create` or
+/// `Write` records it; a standby that takes the lease over finds the zone
+/// its lake's first writer recorded.
+async fn start_zone(lake: &Arc<Lake>, zone: Option<String>) -> Result<()> {
+    let Some(zone) = zone.filter(|_| lake.is_writer()) else {
+        return Ok(());
+    };
+    let (ty, key) = (TypeName::from(SETTING_TYPE), RecordKey::from(ZONE_SETTING));
+    let (held, at) = (lake.clone(), (ty.clone(), key.clone()));
+    let recorded = exec::run(move || Ok(held.engine.view(None)?.get(&at.0, &at.1)?.is_some()));
+    if recorded.await? {
+        return Ok(());
+    }
+    let patch = [
+        ("key".into(), ZONE_SETTING.into()),
+        ("value".into(), zone.into()),
+    ]
+    .into();
+    let doors = Doors::new(lake, WriteContext::default());
+    let host = lake.system("lakelands");
+    doors
+        .upsert(&host, &ty, &key, patch, Default::default())
+        .await?;
+    Ok(())
 }
 
 /// What a standby's tries come to ([`standby`]): `Ok` once it holds the
@@ -89,6 +145,18 @@ pub async fn standby(
     seams: Seams,
     every: std::time::Duration,
 ) -> Result<(Arc<dyn LakeStore>, Standing)> {
+    let (lake, standing) = standing_by(location, seams, every, crate::road::OWED).await?;
+    Ok((Arc::new(Store { lake }), standing))
+}
+
+/// [`standby`]'s lake, which, once it takes the lease, finishes the jobs
+/// of `owed` the log and the lists leave owed, as [`opened_owing`] does.
+pub(crate) async fn standing_by(
+    location: Location,
+    seams: Seams,
+    every: std::time::Duration,
+    owed: &'static [crate::road::Owes],
+) -> Result<(Arc<Lake>, Standing)> {
     let lake = Arc::new(exec::run(move || Lake::standby(&location, seams)).await?);
     let weak = Arc::downgrade(&lake);
     let tries = tokio::spawn(async move {
@@ -108,12 +176,13 @@ pub async fn standby(
                 Ok(taken)
             });
             if taken.await? {
+                crate::road::resume(&lake, owed);
                 return Ok(());
             }
         }
     });
-    let standing = Box::pin(async move { tries.await.map_err(|e| exec::stopped(&e))? });
-    Ok((Arc::new(Store { lake }), standing))
+    let standing: Standing = Box::pin(async move { tries.await.map_err(|e| exec::stopped(&e))? });
+    Ok((lake, standing))
 }
 
 /// Build the projection this release lays out beside the lake at
@@ -1234,6 +1303,17 @@ impl LakeStore for Store {
             report.position = report.position.max(last);
         }
         Ok(report)
+    }
+
+    async fn zone(&self) -> Result<String> {
+        let lake = self.lake.clone();
+        exec::run(move || {
+            let view = lake.engine.view(None)?;
+            let shape = lake.shape(view.as_ref())?;
+            let zone = shape.settings.get(ZONE_SETTING);
+            Ok(lakelands_api::seam::zone(zone).to_owned())
+        })
+        .await
     }
 
     async fn purge_preflight(

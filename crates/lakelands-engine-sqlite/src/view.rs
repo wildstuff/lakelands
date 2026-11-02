@@ -66,30 +66,23 @@ fn key_from(column: &str, after: Option<usize>) -> String {
 /// `select` of its states in force at the position `?2`, from the key
 /// that `after` numbers, with `tail` after them. A kept record is put at
 /// every write to its group, so a key may hold thousands of states, and a
-/// stored type's statements read every state of the keys they pass. At
-/// the head this reads the states with no end, in key order through
-/// `records_at`. At an earlier position it steps from key to key through
-/// the primary key and seeks each key's latest state at or before the
-/// position: the steps come in key order, which the statement answers in
-/// with no `ORDER BY`, and `step` is joined first, so a limit in `tail`
-/// counts the states answered and not the keys stepped over.
+/// stored type's statements read every state of the keys they pass. Both
+/// walk the name's keys in key order and seek one state of each: at the
+/// head the state with no end, through `records_at`; at an earlier
+/// position the latest at or before it, through the primary key. The keys
+/// are joined first, so a limit in `tail` counts the states answered.
 fn kept_sql(head: bool, select: &str, after: Option<usize>, tail: &str) -> String {
+    let from = key_from("k.key", after);
     if head {
-        let from = key_from("r.key", after);
         return format!(
-            "SELECT {select} FROM records r WHERE r.ty = ?1 AND r.until IS NULL {from} {tail}"
+            "SELECT {select} FROM keys k CROSS JOIN records r \
+             ON r.ty = k.ty AND r.until IS NULL AND r.id = k.id WHERE k.ty = ?1 {from} {tail}"
         );
     }
     format!(
-        "WITH RECURSIVE step(key) AS (\
-         SELECT (SELECT key FROM records WHERE ty = ?1 {} ORDER BY key LIMIT 1) \
-         UNION ALL \
-         SELECT (SELECT key FROM records WHERE ty = ?1 AND key > step.key ORDER BY key LIMIT 1) \
-         FROM step WHERE step.key IS NOT NULL) \
-         SELECT {select} FROM step CROSS JOIN records r \
-         WHERE r.rowid = (SELECT rowid FROM records WHERE ty = ?1 AND key = step.key \
-         AND since <= ?2 ORDER BY since DESC LIMIT 1) AND (r.until IS NULL OR r.until > ?2) {tail}",
-        key_from("key", after)
+        "SELECT {select} FROM keys k CROSS JOIN records r \
+         WHERE k.ty = ?1 {from} AND r.rowid = (SELECT rowid FROM records WHERE id = k.id \
+         AND since <= ?2 ORDER BY since DESC LIMIT 1) AND (r.until IS NULL OR r.until > ?2) {tail}"
     )
 }
 
@@ -100,43 +93,38 @@ fn kept_sql(head: bool, select: &str, after: Option<usize>, tail: &str) -> Strin
 /// a text the exact-text index keeps no rows for.
 fn records_after_sql(ty: &TypeName, head: bool, after: bool, narrow: bool) -> String {
     if is_kept_name(ty) {
-        let tail = if head { "ORDER BY r.key " } else { "" };
         return kept_sql(
             head,
-            "r.ty, r.key, r.since, r.state",
+            "r.ty, k.key, r.since, r.state",
             after.then_some(4),
-            &format!("{tail}LIMIT ?3"),
+            "ORDER BY k.key LIMIT ?3",
         );
     }
     let (text, from) = match narrow {
-        true => ("AND json_extract(state, ?4) = ?5", 6),
+        true => ("AND json_extract(r.state, ?4) = ?5", 6),
         false => ("", 4),
     };
     format!(
-        "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND {} {text} {} \
-         ORDER BY key LIMIT ?3",
+        "SELECT r.ty, k.key, r.since, r.state FROM keys k CROSS JOIN records r ON r.id = k.id \
+         WHERE k.ty = ?1 AND r.{} {text} {} ORDER BY k.key LIMIT ?3",
         holds_at(2),
-        key_from("key", after.then_some(from))
+        key_from("k.key", after.then_some(from))
     )
 }
 
 /// The statement of [`Read::count_in_force`]: the states in force of a
-/// stored type, or [`kept_sql`]'s of a kept name, under the two flags. A
-/// state holds a flag only where it is set.
+/// stored type, or [`kept_sql`]'s of a kept name, under the two flags,
+/// which the row holds beside its state ([`projection::flags_of`]).
 fn count_in_force_sql(ty: &TypeName, head: bool) -> String {
-    let flags = |state: &str| {
-        format!(
-            "AND (?3 OR json_extract({state}, '$.retired') IS NULL) \
-             AND (?4 OR json_extract({state}, '$.restricted') IS NULL)"
-        )
-    };
+    let flags =
+        |row: &str| format!("AND (?3 OR {row}flags & 1 = 0) AND (?4 OR {row}flags & 2 = 0)");
     if is_kept_name(ty) {
-        return kept_sql(head, "COUNT(*)", None, &flags("r.state"));
+        return kept_sql(head, "COUNT(*)", None, &flags("r."));
     }
     let holds = holds_at(2);
     format!(
         "SELECT COUNT(*) FROM records WHERE ty = ?1 AND {holds} {}",
-        flags("state")
+        flags("")
     )
 }
 
@@ -147,11 +135,11 @@ fn count_in_force_sql(ty: &TypeName, head: bool) -> String {
 /// `records` by a range of the key for every index row.
 fn holding_after_sql(after: bool) -> String {
     format!(
-        "SELECT r.ty, r.key, r.since, r.state FROM \
+        "SELECT r.ty, t.key, r.since, r.state FROM \
          (SELECT t.key FROM text_index t \
           WHERE t.ty = ?1 AND t.field = ?2 AND t.value = ?4 {} ORDER BY t.key LIMIT ?3) t \
-         JOIN records r ON r.ty = ?1 AND r.key = t.key AND r.until IS NULL \
-         ORDER BY t.key",
+         CROSS JOIN keys k ON k.ty = ?1 AND k.key = t.key \
+         CROSS JOIN records r ON r.ty = ?1 AND r.until IS NULL AND r.id = k.id ORDER BY t.key",
         key_from("t.key", after.then_some(5))
     )
 }
@@ -169,24 +157,27 @@ fn holding_any_sql(after: bool) -> String {
 }
 
 /// The head records of a list of keys, in the list's order.
-const HEADS_OF: &str = "SELECT r.ty, r.key, r.since, r.state FROM json_each(?2) k \
-     CROSS JOIN records r \
-     ON r.ty = ?1 AND r.key = k.value AND r.until IS NULL ORDER BY k.id";
+const HEADS_OF: &str = "SELECT r.ty, k.key, r.since, r.state FROM json_each(?2) j \
+     CROSS JOIN keys k ON k.ty = ?1 AND k.key = j.value \
+     CROSS JOIN records r ON r.ty = ?1 AND r.until IS NULL AND r.id = k.id ORDER BY j.id";
 
 /// The statement of [`Read::unsorted_after`].
 fn unsorted_after_sql(after: bool) -> String {
     format!(
-        "SELECT r.ty, r.key, r.since, r.state FROM records r WHERE r.ty = ?1 \
-         AND r.until IS NULL {} \
-         AND NOT EXISTS (SELECT 1 FROM sort_index s \
-         WHERE s.ty = r.ty AND s.field = ?2 AND s.key = r.key) \
-         ORDER BY r.key LIMIT ?3",
-        key_from("r.key", after.then_some(4))
+        concat!(
+            projection::heads!(),
+            " {} AND NOT EXISTS (SELECT 1 FROM sort_index s \
+             WHERE s.ty = ?1 AND s.field = ?2 AND s.key = k.key) ORDER BY k.key LIMIT ?3"
+        ),
+        key_from("k.key", after.then_some(4))
     )
 }
 
 /// The seek past the sort key `?k` and key `?key` in the order index's
-/// order for `dir`, and that order.
+/// order for `dir`, and that order. The index is kept ascending: a window
+/// down walks it backwards and sorts each run of one sort key by its key,
+/// so ties still ascend; the bound `s.sort_key <= ?k` is where the walk
+/// starts.
 fn seek_in(dir: Direction, k: usize, key: usize) -> (String, &'static str) {
     match dir {
         Direction::Asc => (
@@ -194,7 +185,10 @@ fn seek_in(dir: Direction, k: usize, key: usize) -> (String, &'static str) {
             "s.sort_key, s.key",
         ),
         Direction::Desc => (
-            format!("AND (s.sort_key < ?{k} OR (s.sort_key = ?{k} AND s.key > ?{key}))"),
+            format!(
+                "AND s.sort_key <= ?{k} \
+                 AND (s.sort_key < ?{k} OR (s.sort_key = ?{k} AND s.key > ?{key}))"
+            ),
             "s.sort_key DESC, s.key",
         ),
     }
@@ -224,9 +218,10 @@ fn sorted_after_sql(dir: Direction, from: bool, holders: &Holders<'_>) -> String
         }
     };
     format!(
-        "SELECT s.sort_key, r.ty, r.key, r.since, r.state FROM \
+        "SELECT s.sort_key, r.ty, k.key, r.since, r.state FROM \
          (SELECT s.sort_key, s.key FROM {rows} {seek} ORDER BY {by} LIMIT ?3) s \
-         JOIN records r ON r.ty = ?1 AND r.key = s.key AND r.until IS NULL \
+         CROSS JOIN keys k ON k.ty = ?1 AND k.key = s.key \
+         CROSS JOIN records r ON r.ty = ?1 AND r.until IS NULL AND r.id = k.id \
          ORDER BY {by}"
     )
 }
@@ -245,8 +240,7 @@ fn holders_in_order_sql(dir: Direction) -> String {
 }
 
 /// The statement of [`Read::few_after`]'s seek of one head record.
-const HEAD_RECORD: &str =
-    "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND key = ?2 AND until IS NULL";
+const HEAD_RECORD: &str = concat!(projection::heads!(), " AND k.key = ?2");
 
 /// A page under a text few records hold: the batches it has read by
 /// statements of their own, and the order rows of the holders after them,
@@ -264,14 +258,14 @@ struct Held {
 /// are joined, as in [`holding_after_sql`].
 fn unsorted_holding_sql(after: bool) -> String {
     format!(
-        "SELECT r.ty, r.key, r.since, r.state FROM \
+        "SELECT r.ty, t.key, r.since, r.state FROM \
          (SELECT t.key FROM text_index t \
           WHERE t.ty = ?1 AND t.field = ?4 AND t.value = ?5 {} \
           AND NOT EXISTS (SELECT 1 FROM sort_index s \
           WHERE s.ty = ?1 AND s.field = ?2 AND s.key = t.key) \
           ORDER BY t.key LIMIT ?3) t \
-         JOIN records r ON r.ty = ?1 AND r.key = t.key AND r.until IS NULL \
-         ORDER BY t.key",
+         CROSS JOIN keys k ON k.ty = ?1 AND k.key = t.key \
+         CROSS JOIN records r ON r.ty = ?1 AND r.until IS NULL AND r.id = k.id ORDER BY t.key",
         key_from("t.key", after.then_some(6))
     )
 }
@@ -284,9 +278,10 @@ const HOLDERS: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM text_index \
 /// The statement of [`Read::record`]: the latest state of the key at or
 /// before the position, and whether it still holds there. No other state
 /// of the key is read (lakelands#596).
-pub(crate) const RECORD_AT: &str = "SELECT ty, key, since, state FROM (SELECT ty, key, since, state, until \
-     FROM records WHERE ty = ?1 \
-     AND key = ?2 AND since <= ?3 ORDER BY since DESC LIMIT 1) WHERE until IS NULL OR until > ?3";
+pub(crate) const RECORD_AT: &str = "SELECT ty, key, since, state FROM (SELECT r.ty, k.key, r.since, \
+     r.state, r.until FROM keys k CROSS JOIN records r ON r.id = k.id WHERE k.ty = ?1 \
+     AND k.key = ?2 AND r.since <= ?3 ORDER BY r.since DESC LIMIT 1) \
+     WHERE until IS NULL OR until > ?3";
 
 /// The statement of a recorded output's read: the latest state of the
 /// seam and input at or before the position, and whether it still holds
@@ -297,8 +292,9 @@ const OUTPUT_AT: &str = "SELECT since, state FROM (SELECT since, state, until FR
 
 /// The statements that seek one record's state, as the engine runs them:
 /// the read of a record at a position and the end a put gives the state
-/// before it, each with the parameters type, key and position, for the
-/// engine's own test of what they cost. Neither reads the key's other
+/// before it, the one with the parameters type, key and position, the
+/// other with the key's id and the position, for the engine's own test of
+/// what they cost. Neither reads the key's other
 /// states (lakelands#596).
 pub fn seek_statements() -> [String; 2] {
     [RECORD_AT.to_owned(), projection::RECORDS.ends_latest()]
@@ -461,7 +457,8 @@ impl Read<'_> {
         projection::records(
             self.conn,
             &format!(
-                "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND {} ORDER BY key",
+                "SELECT r.ty, k.key, r.since, r.state FROM keys k CROSS JOIN records r \
+                 ON r.id = k.id WHERE k.ty = ?1 AND r.{} ORDER BY k.key",
                 holds_at(2)
             ),
             params![ty.as_str(), self.at()],
@@ -470,7 +467,8 @@ impl Read<'_> {
 
     /// At most `n` records of a type at the view's position after the key
     /// `after` (from the first when `None`), in key order: a seek into the
-    /// primary key `(ty, key, since)`, which sorts bytewise as keys do. The
+    /// primary key `(ty, key)` of `keys`, which sorts bytewise as keys do,
+    /// and of each key's state by its id. The
     /// first page and a later one are two statements, so that neither
     /// hides the seek behind an `OR`.
     fn records_after(
@@ -582,13 +580,15 @@ impl Read<'_> {
         let args = params![ty.as_str(), self.at(), ceiling as i64 + 1];
         let put: Vec<String> = column(
             self.conn,
-            "SELECT key FROM records WHERE ty = ?1 AND since > ?2 ORDER BY since LIMIT ?3",
+            "SELECT k.key FROM records r CROSS JOIN keys k ON k.id = r.id \
+             WHERE r.ty = ?1 AND r.since > ?2 ORDER BY r.since LIMIT ?3",
             args,
             Ok,
         )?;
         let ended: Vec<String> = column(
             self.conn,
-            "SELECT key FROM records WHERE ty = ?1 AND until > ?2 AND since <= ?2 ORDER BY until LIMIT ?3",
+            "SELECT k.key FROM records r CROSS JOIN keys k ON k.id = r.id \
+             WHERE r.ty = ?1 AND r.until > ?2 AND r.since <= ?2 ORDER BY r.until LIMIT ?3",
             args,
             Ok,
         )?;
@@ -604,9 +604,9 @@ impl Read<'_> {
 
     /// At most `n` head records of a type with a row in the order index for
     /// `order`'s field, with their sort keys, in the index's order for its
-    /// direction, strictly after `from`: a seek into `sort_index_asc` or
-    /// `sort_index_desc`, or, of few holders of a text, the text index's
-    /// rows sorted.
+    /// direction, strictly after `from`: a seek into `sort_index_asc`, walked
+    /// up or down, or, of few holders of a text, the text index's rows
+    /// sorted.
     fn sorted_after(
         &self,
         ty: &TypeName,
@@ -1146,9 +1146,14 @@ impl ProjectionView for SqliteView<'_> {
     fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
         // One read for every id, each its seek of the cached statement.
         self.read(vec![None; ids.len()], |r| {
-            let at = |id: &EventId| {
-                let query = "SELECT at FROM applied WHERE id = ?1 AND at <= ?2";
-                one(r.conn, query, params![id.0, r.at()])
+            // An id is held as its 16 bytes; one not of its form is held
+            // by no log this build keeps.
+            let at = |id: &EventId| match id.of_form() {
+                true => {
+                    let query = "SELECT at FROM applied WHERE id = unhex(?1) AND at <= ?2";
+                    one(r.conn, query, params![id.0, r.at()])
+                }
+                false => Ok(None),
             };
             let at = |id| at(id).map(|p: Option<i64>| p.map(|p| Position(p as u64)));
             ids.iter().map(at).collect()

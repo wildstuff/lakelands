@@ -301,6 +301,10 @@ impl LakeStore for RemoteLake {
         Err(host_only("age"))
     }
 
+    async fn zone(&self) -> Result<String> {
+        Err(host_only("zone()"))
+    }
+
     async fn purge_source(
         &self,
         _source: &SourceId,

@@ -60,6 +60,13 @@ Seals a source's values of each period under a version of its key of their own, 
 - **Per source:** `key_period.<source>` overrides `key_period` for that source; retired, the source has the lake's value again.
 - **Cost:** one new version of the source's key per period, made by the key store, so `day` makes 365 a year for each source; the file keyring rewrites its whole file at each, measured at 4.5 ms with 1 000 keys and 8.9 ms with 10 000; and the list of a source's versions, an entry a period, read once a window, so ten years of `day` (3 650 entries) add about 20 µs a record to an ingest on the memory engine (lakelands#1153).
 
+### `zone`
+
+The zone the lake's calendar day is read in: `today()` in an expression, and the date `serve` ages the lake for. A write is judged in the zone in force where it is made. Unset or retired, the day is UTC's. A new lake starts in its location's `zone`, which the writer's first open records where the lake has recorded none.
+
+- **Takes:** a time zone as the IANA time-zone database names it, as `Europe/Berlin`.
+- **Default:** `"UTC"`.
+
 ## Kept in the lake's location
 
 A member of `lakes/<id>.json`, read when the lake is opened: a bound on what one host spends, which changes no answer. Edit the file and open the lake again.
@@ -156,7 +163,7 @@ Whether the lake chooses an order index itself, for a field a type is ordered by
 
 - **Takes:** `true` or `false`.
 - **Default:** `true`.
-- **Cost:** each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records.
+- **Cost:** each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records, in chunks of 10 000.
 
 ### `limits.order_after_pages`
 
@@ -198,7 +205,29 @@ How long a chosen index may go unused, in seconds of the writer's life, before t
 The records one chunk of a chosen index's build writes while it holds the writer; a write waits for a chunk, never for the build.
 
 - **Takes:** a count; 0 is taken as 1.
-- **Default:** `10000`.
+- **Default:** `1000`.
+
+### `limits.part_events`
+
+Not read yet: the acts that append in parts, each part a turn of the writer of its own, come with step R2 of decision 099. Then it is the most events one part of an act appends, so a write sent meanwhile waits for at most the part in front of it.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `500`.
+
+### `limits.part_tail`
+
+The most events past the view it walked on that a job's first turn reads under the writer. A longer tail is read off the writer first; one that is still longer at the turn lets the writer go and moves the view up, and after three such tries the job answers unavailable, having appended nothing.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `1000`.
+- **Cost:** the tail is read by source and by type from the log's index, 11 ms for 1 000 events at 2.5 million records (measured, decision 099).
+
+### `limits.page_events`
+
+Not read yet: restating in pages comes with step R4 of decision 099. Then it is the most events one page of a restate refolds in a turn of the writer, and a job whose page would refold more restates beside the projection instead.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `2000`.
 
 ### `limits.forget_rebuild`
 
@@ -345,13 +374,6 @@ Where `serve` answers `GET /metrics` in the Prometheus text format, apart from t
 - **Takes:** an address and port.
 - **Default:** `null`.
 - **Cost:** a write on the memory engine took 22.6 µs measured against 22.3 µs unmeasured with one caller, and 12.6 µs either way with sixteen; on SQLite the difference is inside a commit's noise; a scrape reads each lake's counters and takes nothing from its writer.
-
-### `aging.utc_offset`
-
-The UTC offset `serve` reads the date at, to age each lake it writes once a day.
-
-- **Takes:** `Z`, or `+HH:MM` or `-HH:MM` within fourteen hours.
-- **Default:** `"Z"`.
 
 ### `aging.check_secs`
 

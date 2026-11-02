@@ -29,9 +29,11 @@ fn at<'r>(r: &'r StoredRecord, by: &FieldName) -> &'r Value {
 
 /// The first record of `ty` that `fits`, from `here` down by `by`, ties in
 /// key order: `scan` (its `equal`, valid time and flags the caller's) read
-/// a page of `scan.limit` at a time, past what does not fit. A record at
-/// `here` is read: `fits` bounds it strictly or not. The write's
-/// `preceding` and the read's `in_force` both read their series by it.
+/// a page at a time, the first of `scan.limit` and each eight times the
+/// last, past what does not fit, so a walk that passes over `K` reads
+/// about log₈ `K` pages, not `K`. A record at `here` is read: `fits`
+/// bounds it strictly or not. The write's `preceding` and `in_force` and
+/// the read's `in_force` read their series by it.
 pub(crate) fn at_or_below(
     view: &dyn ProjectionView,
     ty: &TypeName,
@@ -58,6 +60,7 @@ pub(crate) fn at_or_below(
                 let values = vec![last.fields.get(by).cloned().unwrap_or(Value::Null)];
                 let key = last.key.clone();
                 scan.after = Some(After { values, key });
+                scan.limit = scan.limit.saturating_mul(8);
             }
             _ => return Ok(None),
         }

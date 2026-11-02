@@ -228,6 +228,7 @@ fn alone(after: &BTreeMap<FieldName, Value>) -> WriteScope<'_> {
         meta: None,
         settings: None,
         preceding: None,
+        paired: None,
         now: Timestamp(0),
     }
 }
@@ -401,6 +402,7 @@ pub fn apply(
             meta: ty.field_meta.then_some(&*meta),
             settings: write.settings,
             preceding: None,
+            paired: None,
             now: write.now,
         };
         let value = match decl.at_read() {
@@ -446,7 +448,8 @@ pub fn at_read(
             retiring: false,
             meta: Some(&record.meta),
             settings: Some(settings),
-            preceding: pairs,
+            preceding: None,
+            paired: pairs,
             now,
         };
         match computed(decl, &expr, value_types, &scope) {

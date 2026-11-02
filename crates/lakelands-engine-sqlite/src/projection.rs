@@ -53,6 +53,19 @@ use crate::sql;
 /// scans; `since` -1 marks a vector put by the index alone ([`put_vector`]).
 /// `bases` keeps a base [`engines::SHARED`] records of one write share
 /// once, which their states name by id.
+///
+/// A record's type and key are held once, in `keys`, which gives each an
+/// integer id in the order the fold first meets it ([`key_id`]); `records`
+/// and `routes` hold that id. A key that comes in no order (a tick's
+/// `symbol:at:seq`) then lands at the right edge of every b-tree that holds
+/// it, where its text would land anywhere. `sort_index` and `text_index`
+/// keep the text, since their readers break a tie by the key ascending.
+/// `records.flags` holds the two flags of the state beside it
+/// ([`flags_of`]), so a count tests a column and parses no JSON. An
+/// applied id is its 16 bytes. The order index is kept ascending only: a
+/// window down walks it backwards and sorts each run of one sort key by
+/// the key. A text row goes by its primary key, from the state that wrote
+/// it, so no index of `text_index` by key is kept.
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
@@ -63,12 +76,17 @@ CREATE TABLE IF NOT EXISTS declarations (
     state TEXT NOT NULL,
     PRIMARY KEY (ident, since)
 );
+CREATE TABLE IF NOT EXISTS keys (
+    ty TEXT NOT NULL, key TEXT NOT NULL, id INTEGER NOT NULL,
+    PRIMARY KEY (ty, key)
+) WITHOUT ROWID;
+CREATE UNIQUE INDEX IF NOT EXISTS keys_id ON keys (id);
 CREATE TABLE IF NOT EXISTS records (
-    ty TEXT NOT NULL, key TEXT NOT NULL, since INTEGER NOT NULL, until INTEGER,
-    state TEXT NOT NULL,
-    PRIMARY KEY (ty, key, since)
+    ty TEXT NOT NULL, id INTEGER NOT NULL, since INTEGER NOT NULL, until INTEGER,
+    flags INTEGER NOT NULL, state TEXT NOT NULL,
+    PRIMARY KEY (id, since)
 );
-CREATE INDEX IF NOT EXISTS records_at ON records (ty, until, key);
+CREATE INDEX IF NOT EXISTS records_at ON records (ty, until, id);
 CREATE INDEX IF NOT EXISTS declarations_until ON declarations (until);
 CREATE INDEX IF NOT EXISTS records_since ON records (ty, since);
 CREATE TABLE IF NOT EXISTS proposals (
@@ -97,11 +115,11 @@ CREATE TABLE IF NOT EXISTS outputs (
     PRIMARY KEY (seam, input, since)
 );
 CREATE TABLE IF NOT EXISTS applied (
-    id TEXT PRIMARY KEY,
+    id BLOB PRIMARY KEY,
     at INTEGER NOT NULL
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS routes (
-    at INTEGER NOT NULL, kind INTEGER NOT NULL, ty INTEGER, key TEXT, source INTEGER
+    at INTEGER NOT NULL, kind INTEGER NOT NULL, ty INTEGER, key INTEGER, source INTEGER
 );
 CREATE TABLE IF NOT EXISTS names (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE
@@ -117,7 +135,6 @@ CREATE TABLE IF NOT EXISTS text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL,
     PRIMARY KEY (ty, field, value, key)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS text_index_key ON text_index (ty, key);
 CREATE TABLE IF NOT EXISTS lookup_fields (
     ty TEXT NOT NULL, field TEXT NOT NULL, PRIMARY KEY (ty, field)
 ) WITHOUT ROWID;
@@ -132,7 +149,6 @@ CREATE TABLE IF NOT EXISTS sort_index (
     PRIMARY KEY (ty, key, field)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS sort_index_asc ON sort_index (ty, field, sort_key, key);
-CREATE INDEX IF NOT EXISTS sort_index_desc ON sort_index (ty, field, sort_key DESC, key);
 CREATE TABLE IF NOT EXISTS search_rows (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ty TEXT NOT NULL, key TEXT NOT NULL,
@@ -160,9 +176,10 @@ CREATE TABLE IF NOT EXISTS text_lengths (
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
-pub(crate) const TABLES: [&str; 20] = [
+pub(crate) const TABLES: [&str; 21] = [
     "meta",
     "declarations",
+    "keys",
     "records",
     "proposals",
     "quarantined",
@@ -190,7 +207,7 @@ pub(crate) struct History {
 }
 
 pub(crate) const DECLARATIONS: History = History::new("declarations", &["ident"]);
-pub(crate) const RECORDS: History = History::new("records", &["ty", "key"]);
+pub(crate) const RECORDS: History = History::new("records", &["id"]);
 pub(crate) const PROPOSALS: History = History::new("proposals", &["id"]);
 pub(crate) const QUARANTINED: History = History::new("quarantined", &["source", "delivery", "ix"]);
 pub(crate) const MEMBERS: History = History::new("members", &["object_set", "ty", "key"]);
@@ -235,21 +252,36 @@ impl History {
         since: Position,
         state: &dyn ToSql,
     ) -> Result<bool> {
+        self.put_row(conn, ident, since, &[("state", state)])
+    }
+
+    /// [`History::put`] of a row whose state is the `columns` given, each
+    /// written again where the state at `since` is replaced.
+    pub(crate) fn put_row(
+        &self,
+        conn: &Connection,
+        ident: &[&dyn ToSql],
+        since: Position,
+        columns: &[(&str, &dyn ToSql)],
+    ) -> Result<bool> {
         let n = self.ident.len();
         let at = since.0 as i64;
         let mut args: Vec<&dyn ToSql> = ident.to_vec();
         args.push(&at);
+        let values = columns.iter().map(|(_, v)| *v);
+        let set: Vec<String> = (columns.iter().enumerate())
+            .map(|(i, (c, _))| format!("{c} = ?{}", n + 2 + i))
+            .collect();
         let replaced = conn
             .prepare_cached(&format!(
-                "UPDATE {} SET state = ?{} WHERE {} AND since = ?{}",
+                "UPDATE {} SET {} WHERE {} AND since = ?{}",
                 self.table,
-                n + 2,
+                set.join(", "),
                 self.ident_where(1),
                 n + 1
             ))
             .and_then(|mut s| {
-                let mut a = args.clone();
-                a.push(state);
+                let a: Vec<&dyn ToSql> = args.iter().copied().chain(values.clone()).collect();
                 s.execute(a.as_slice())
             })
             .map_err(sql)?;
@@ -269,17 +301,22 @@ impl History {
             .prepare_cached(&self.ends_latest())
             .and_then(|mut s| s.execute(args.as_slice()))
             .map_err(sql)?;
-        let columns = self.ident.join(", ");
-        let marks: Vec<String> = (1..=n + 3).map(|i| format!("?{i}")).collect();
+        let named: Vec<&str> = columns.iter().map(|(c, _)| *c).collect();
+        let marks: Vec<String> = (1..=n + 2 + columns.len())
+            .map(|i| format!("?{i}"))
+            .collect();
         conn.prepare_cached(&format!(
-            "INSERT INTO {} ({columns}, since, until, state) VALUES ({})",
+            "INSERT INTO {} ({}, since, until, {}) VALUES ({})",
             self.table,
+            self.ident.join(", "),
+            named.join(", "),
             marks.join(", ")
         ))
         .and_then(|mut s| {
-            let mut a = args.clone();
-            a.push(&next);
-            a.push(state);
+            let a: Vec<&dyn ToSql> = (args.iter().copied())
+                .chain([&next as &dyn ToSql])
+                .chain(values)
+                .collect();
             s.execute(a.as_slice())
         })
         .map_err(sql)?;
@@ -324,17 +361,73 @@ pub(crate) fn column<T: FromSql, R, C: FromIterator<R>>(
     rows.map(|r| f(r.map_err(sql)?)).collect()
 }
 
-/// What a route's `column` holds for the name `value`: the kind's code,
-/// the id `names` gives a type or a source, the key itself. None where
-/// no route can hold it: a kind the format does not list, or a name no
-/// event has brought.
-fn stored(conn: &Connection, column: &str, value: &str) -> Result<Option<Value>> {
-    Ok(match column {
-        "kind" => engines::kind_code(value).map(Value::Integer),
-        "key" => Some(Value::Text(value.to_owned())),
-        _ => one::<i64>(conn, "SELECT id FROM names WHERE name = ?1", [value])?.map(Value::Integer),
+/// What a route's `column` may hold for the name `value`: the kind's
+/// code, the id `names` gives a type or a source, each id `keys` gives the
+/// key. Nothing where no route can hold it: a kind the format does not
+/// list, or a name no event has brought.
+fn stored(conn: &Connection, name: &str, value: &str) -> Result<Vec<Value>> {
+    Ok(match name {
+        "kind" => engines::kind_code(value)
+            .map(Value::Integer)
+            .into_iter()
+            .collect(),
+        "key" => column(conn, KEY_IDS, [value], |id: i64| Ok(Value::Integer(id)))?,
+        _ => one::<i64>(conn, "SELECT id FROM names WHERE name = ?1", [value])?
+            .map(Value::Integer)
+            .into_iter()
+            .collect(),
     })
 }
+
+/// The ids `keys` gives the key `?1` under every type, and under none: a
+/// step from type to type through its primary key, so that a key is
+/// sought once a type and the keys are never walked.
+const KEY_IDS: &str = "WITH RECURSIVE t(ty) AS (SELECT min(ty) FROM keys \
+     UNION ALL SELECT (SELECT min(ty) FROM keys WHERE ty > t.ty) FROM t WHERE t.ty IS NOT NULL) \
+     SELECT k.id FROM t CROSS JOIN keys k ON k.ty = t.ty AND k.key = ?1";
+
+/// The id `keys` gives `ty`'s `key`, if it has one. A route about a key of
+/// no type holds the id of the key under the empty name, which no type has.
+pub(crate) fn key_id(conn: &Connection, ty: &str, key: &str) -> Result<Option<i64>> {
+    one(
+        conn,
+        "SELECT id FROM keys WHERE ty = ?1 AND key = ?2",
+        [ty, key],
+    )
+}
+
+/// The id `keys` gives `ty`'s `key`, and whether it was made now, for a
+/// key the projection had not met: the next after the greatest.
+pub(crate) fn make_key_id(conn: &Connection, ty: &str, key: &str) -> Result<(i64, bool)> {
+    if let Some(id) = key_id(conn, ty, key)? {
+        return Ok((id, false));
+    }
+    let made = "INSERT INTO keys (ty, key, id) \
+                VALUES (?1, ?2, (SELECT coalesce(max(id), 0) + 1 FROM keys)) RETURNING id";
+    let id = (conn.prepare_cached(made))
+        .and_then(|mut s| s.query_row([ty, key], |r| r.get(0)))
+        .map_err(sql)?;
+    Ok((id, true))
+}
+
+/// The flags a record's row holds beside its state: 1 retired, 2
+/// restricted. The fold writes them from the state it writes, and a count
+/// reads them in place of the state.
+pub(crate) fn flags_of(r: &StoredRecord) -> i64 {
+    i64::from(r.retired) | i64::from(r.restricted) << 1
+}
+
+/// The head records of the type `?1`, each as [`record_at`] reads it:
+/// `keys` walked in its primary key, so in key order, and each key's head
+/// state sought through `records_at`. A statement continues it with tests
+/// of `k.key` and of `r`.
+macro_rules! heads {
+    () => {
+        "SELECT r.ty, k.key, r.since, r.state FROM keys k CROSS JOIN records r \
+         ON r.ty = k.ty AND r.until IS NULL AND r.id = k.id WHERE k.ty = ?1"
+    };
+}
+pub(crate) use heads;
 
 /// The id `names` gives `name`, made if it has none.
 pub(crate) fn name_id(conn: &Connection, name: &str) -> Result<i64> {
@@ -436,6 +529,7 @@ fn routes_query(
         for v in values {
             held.extend(stored(conn, column, v)?);
         }
+        held.dedup();
         if held.is_empty() {
             return Ok(None);
         }
@@ -451,7 +545,7 @@ fn routes_query(
 /// raised whenever a table changes so that a projection made before
 /// would answer wrongly, not fail: one made with another layout is never
 /// read, and is rebuilt from the log.
-pub(crate) const LAYOUT: u64 = 8;
+pub(crate) const LAYOUT: u64 = 9;
 
 /// The layout `conn`'s projection was made with: none where it holds no
 /// `meta`, or was made before projections were marked.
@@ -475,11 +569,18 @@ pub(crate) fn made(conn: &Connection) -> Result<bool> {
 }
 
 /// The statement that marks a projection with this build's layout, as
-/// it is made or cleared.
+/// it is made or cleared. The full-text table removes a deleted row's
+/// terms from its index as it deletes them, where it would otherwise keep
+/// them, marked deleted, until a merge: `secure_delete` overwrites the
+/// pages a delete frees, and a term the index still holds is in no freed
+/// page (`ERASED_VALUE_LEAVES_THE_FILE`). The table keeps the setting, so
+/// it is written once: an open that changes nothing writes nothing.
 pub(crate) fn mark() -> String {
     format!(
         "INSERT INTO meta (k, v) VALUES ('layout', {LAYOUT}) ON CONFLICT (k) DO NOTHING; \
-         INSERT INTO meta (k, v) VALUES ('{TEXT_STATS}', -1) ON CONFLICT (k) DO NOTHING;"
+         INSERT INTO meta (k, v) VALUES ('{TEXT_STATS}', -1) ON CONFLICT (k) DO NOTHING; \
+         INSERT INTO full_text (full_text, rank) SELECT 'secure-delete', 1 \
+         WHERE NOT EXISTS (SELECT 1 FROM full_text_config WHERE k = 'secure-delete');"
     )
 }
 
@@ -670,8 +771,7 @@ fn fill_chosen(
     let after = after.map_or("", RecordKey::as_str);
     let page = records(
         conn,
-        "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND until IS NULL AND key > ?2 \
-         ORDER BY key LIMIT ?3",
+        concat!(heads!(), " AND k.key > ?2 ORDER BY k.key LIMIT ?3"),
         params![ty.as_str(), after, limit],
     )?;
     let mut last = None;
@@ -722,8 +822,7 @@ pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position
     loop {
         let page = records(
             conn,
-            "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND until IS NULL \
-             AND key > ?2 ORDER BY key LIMIT 1024",
+            concat!(heads!(), " AND k.key > ?2 ORDER BY k.key LIMIT 1024"),
             params![ty.as_str(), after],
         )?;
         for r in &page {
@@ -774,8 +873,9 @@ pub(crate) fn catch_up_sorted(conn: &Connection) -> Result<()> {
         .map_err(sql)?;
     let asked: Vec<String> = column(
         conn,
-        "SELECT substr(key, ?1) FROM records \
-         WHERE ty = ?2 AND substr(key, 1, ?1 - 1) = ?3 AND until IS NULL",
+        "SELECT substr(k.key, ?1) FROM keys k CROSS JOIN records r \
+         ON r.ty = k.ty AND r.until IS NULL AND r.id = k.id \
+         WHERE k.ty = ?2 AND substr(k.key, 1, ?1 - 1) = ?3",
         params![
             SORT_INDEX_SETTING.len() as i64 + 1,
             SETTING_TYPE,
@@ -903,8 +1003,7 @@ pub(crate) fn head_record(
     ty: &TypeName,
     key: &RecordKey,
 ) -> Result<Option<StoredRecord>> {
-    let head = "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND key = ?2 \
-                AND until IS NULL";
+    let head = concat!(heads!(), " AND k.key = ?2");
     let mut found = records(conn, head, params![ty.as_str(), key.as_str()])?;
     Ok(found.pop())
 }
@@ -965,7 +1064,8 @@ pub(crate) fn records(
 
 /// Rewrite the head indexes of one record from its latest state, under
 /// the declaration of its type at the head, exact-text rows for `looked`
-/// (`None`: every field); a record `fresh` to the projection drops none.
+/// (`None`: every field), dropping first the rows its `prior` head state
+/// wrote; a record new to the projection has none and drops none.
 pub(crate) fn index_record(
     conn: &Connection,
     (decl, sorted, looked): (
@@ -973,7 +1073,7 @@ pub(crate) fn index_record(
         &[FieldName],
         Option<&BTreeSet<FieldName>>,
     ),
-    fresh: bool,
+    prior: Option<&StoredRecord>,
     r: &StoredRecord,
 ) -> Result<()> {
     let (ty, key) = (r.ty.as_str(), r.key.as_str());
@@ -982,9 +1082,10 @@ pub(crate) fn index_record(
             .and_then(|mut s| s.execute(params![ty, key]))
             .map_err(sql)
     };
-    if !fresh {
+    let fresh = prior.is_none();
+    if let Some(prior) = prior {
         unlength(conn, &r.ty, &r.key)?;
-        drop("DELETE FROM text_index WHERE ty = ?1 AND key = ?2")?;
+        unlook(conn, prior)?;
         drop("DELETE FROM edges WHERE src_ty = ?1 AND src_key = ?2")?;
         // Only a type the lake keeps an order index for has rows in it:
         // the setting's rebuild and a redeclaration drop a type's rows whole.
@@ -1064,6 +1165,23 @@ pub(crate) fn index_record(
     Ok(())
 }
 
+/// Delete the exact-text rows a head state wrote, each by the primary key
+/// its field and text give: a row is written for a text field and none
+/// other, so these are all the record has.
+fn unlook(conn: &Connection, prior: &StoredRecord) -> Result<()> {
+    let (ty, key) = (prior.ty.as_str(), prior.key.as_str());
+    for (field, value) in &prior.fields {
+        if let Some(text) = value.as_str() {
+            run(
+                conn,
+                "DELETE FROM text_index WHERE ty = ?1 AND field = ?2 AND value = ?3 AND key = ?4",
+                params![ty, field.as_str(), text, key],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// A pipeline token as the full-text table holds it: its UTF-8 bytes in
 /// hex. The table's tokenizer then sees every pipeline token as exactly one
 /// term of its own alphabet, so whatever characters the one pipeline keeps
@@ -1098,37 +1216,63 @@ pub(crate) fn put_record(
     (kept, sharing): (&mut Kept, &mut engines::Sharing),
     r: &StoredRecord,
 ) -> Result<()> {
-    // A head-only name keeps one state for each key and no row beside it.
+    let flags = flags_of(r);
+    // A head-only name keeps one state for each key and no row beside it:
+    // an end takes its key's number with it, since an entry's key holds
+    // the value it orders by.
     if lakelands_api::seam::is_head_only(&r.ty) {
-        let state = state(conn, sharing, r, &BTreeMap::new())?;
-        let key = [r.ty.as_str(), r.key.as_str()];
-        (conn.prepare_cached("DELETE FROM records WHERE ty = ?1 AND key = ?2"))
-            .and_then(|mut s| s.execute(key))
-            .map_err(sql)?;
         if r.is_ended() {
-            return Ok(());
+            let Some(id) = key_id(conn, r.ty.as_str(), r.key.as_str())? else {
+                return Ok(());
+            };
+            run(conn, "DELETE FROM records WHERE id = ?1", [id])?;
+            return run(conn, "DELETE FROM keys WHERE id = ?1", [id]);
         }
-        return (conn.prepare_cached(
-            "INSERT INTO records (ty, key, since, state) VALUES (?1, ?2, ?3, ?4)",
-        ))
-        .and_then(|mut s| s.execute(params![key[0], key[1], r.position.0 as i64, state]))
-        .map(drop)
-        .map_err(sql);
+        let (id, _) = make_key_id(conn, r.ty.as_str(), r.key.as_str())?;
+        let state = state(conn, sharing, r, &BTreeMap::new())?;
+        run(conn, "DELETE FROM records WHERE id = ?1", [id])?;
+        return run(
+            conn,
+            "INSERT INTO records (ty, id, since, flags, state) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![r.ty.as_str(), id, r.position.0 as i64, flags, state],
+        );
     }
-    let later: Option<i64> = one(
-        conn,
-        "SELECT 1 FROM records WHERE ty = ?1 AND key = ?2 AND since > ?3 LIMIT 1",
-        params![r.ty.as_str(), r.key.as_str(), r.position.0 as i64],
-    )?;
+    let (id, made) = make_key_id(conn, r.ty.as_str(), r.key.as_str())?;
+    let later: Option<i64> = match made {
+        true => None,
+        false => one(
+            conn,
+            "SELECT 1 FROM records WHERE id = ?1 AND since > ?2 LIMIT 1",
+            params![id, r.position.0 as i64],
+        )?,
+    };
+    // The head state this one supersedes, whose index rows it replaces.
+    let prior = match made || later.is_some() {
+        true => None,
+        false => records(
+            conn,
+            "SELECT r.ty, ?3, r.since, r.state FROM records r \
+             WHERE r.ty = ?1 AND r.until IS NULL AND r.id = ?2",
+            params![r.ty.as_str(), id, r.key.as_str()],
+        )?
+        .pop(),
+    };
     if !kept.contains_key(&r.ty) {
         kept.insert(r.ty.clone(), indexed(conn, &r.ty)?);
     }
     let apart = put_vectors(conn, r, later.is_some(), &kept[&r.ty].3)?;
     let state = state(conn, sharing, r, &apart)?;
-    let held = RECORDS.put(conn, &[&r.ty.as_str(), &r.key.as_str()], r.position, &state)?;
+    let columns: [(&str, &dyn ToSql); 3] =
+        [("ty", &r.ty.as_str()), ("flags", &flags), ("state", &state)];
+    RECORDS.put_row(conn, &[&id], r.position, &columns)?;
     if later.is_none() {
         let (decl, sorted, looked, _) = &kept[&r.ty];
-        index_record(conn, (decl.as_ref(), sorted, looked.as_ref()), !held, r)?;
+        index_record(
+            conn,
+            (decl.as_ref(), sorted, looked.as_ref()),
+            prior.as_ref(),
+            r,
+        )?;
         // The setting's write rebuilds the index it asks for, so the index
         // describes the head from the next read on.
         if let Some(ty) = engines::sort_index_type(r) {
@@ -1165,7 +1309,8 @@ fn state(
             let ident = params![ty.as_str(), key.as_str(), at];
             let held: Option<String> = one(
                 conn,
-                "SELECT state FROM records WHERE ty = ?1 AND key = ?2 AND since = ?3",
+                "SELECT state FROM records WHERE id = \
+                 (SELECT id FROM keys WHERE ty = ?1 AND key = ?2) AND since = ?3",
                 ident,
             )?;
             let Some(named) = held.map(|s| engines::name_base(&s, base, id)) else {
@@ -1174,7 +1319,8 @@ fn state(
             let Some(named) = named? else { return Ok(()) };
             run(
                 conn,
-                "UPDATE records SET state = ?4 WHERE ty = ?1 AND key = ?2 AND since = ?3",
+                "UPDATE records SET state = ?4 WHERE id = \
+                 (SELECT id FROM keys WHERE ty = ?1 AND key = ?2) AND since = ?3",
                 params![ty.as_str(), key.as_str(), at, named],
             )
         };
@@ -1288,12 +1434,18 @@ pub(crate) fn remove_vector(conn: &Connection, (ty, key, field): (&str, &str, &s
 /// Delete every state of a record, its memberships in every set the
 /// projection ever declared, and its rows in the engine's indexes.
 pub(crate) fn drop_record(conn: &Connection, ty: &TypeName, key: &RecordKey) -> Result<()> {
+    if let Some(head) = head_record(conn, ty, key)? {
+        unlook(conn, &head)?;
+    }
+    run(
+        conn,
+        "DELETE FROM records WHERE id = (SELECT id FROM keys WHERE ty = ?1 AND key = ?2)",
+        params![ty.as_str(), key.as_str()],
+    )?;
     for statement in [
-        "DELETE FROM records WHERE ty = ?1 AND key = ?2",
         "DELETE FROM vectors WHERE ty = ?1 AND key = ?2",
         "DELETE FROM members WHERE object_set IN (SELECT DISTINCT substr(ident, 12) \
          FROM declarations WHERE ident LIKE 'object\\_set %' ESCAPE '\\') AND ty = ?1 AND key = ?2",
-        "DELETE FROM text_index WHERE ty = ?1 AND key = ?2",
         "DELETE FROM edges WHERE src_ty = ?1 AND src_key = ?2",
         "DELETE FROM sort_index WHERE ty = ?1 AND key = ?2",
         "DELETE FROM full_text WHERE rowid IN (SELECT id FROM search_rows WHERE ty = ?1 AND key = ?2)",
@@ -1387,8 +1539,7 @@ fn head_pages(
     loop {
         let page = records(
             conn,
-            "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND until IS NULL \
-             AND key > ?2 ORDER BY key LIMIT 1024",
+            concat!(heads!(), " AND k.key > ?2 ORDER BY k.key LIMIT 1024"),
             params![ty, after],
         )?;
         let next = (page.len() == 1024).then(|| page.last().map(|r| r.key.to_string()));
@@ -1557,8 +1708,9 @@ pub(crate) fn relook(
         let statements = match comes {
             true => [
                 "INSERT OR IGNORE INTO text_index (ty, field, value, key) \
-                 SELECT ty, ?2, json_extract(state, '$.fields.' || ?2), key FROM records \
-                 WHERE ty = ?1 AND until IS NULL AND json_type(state, '$.fields.' || ?2) = 'text'",
+                 SELECT r.ty, ?2, json_extract(r.state, '$.fields.' || ?2), k.key \
+                 FROM records r CROSS JOIN keys k ON k.id = r.id WHERE r.ty = ?1 \
+                 AND r.until IS NULL AND json_type(r.state, '$.fields.' || ?2) = 'text'",
                 "INSERT INTO lookup_fields (ty, field) VALUES (?1, ?2)",
             ],
             false => [
@@ -1610,12 +1762,14 @@ pub(crate) fn index_older(conn: &Connection, ty: &TypeName, at: Position) -> Res
     loop {
         let older = records(
             conn,
-            "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND until IS NULL \
-             AND since < ?2 AND key > ?3 ORDER BY key LIMIT 1024",
+            concat!(
+                heads!(),
+                " AND r.since < ?2 AND k.key > ?3 ORDER BY k.key LIMIT 1024"
+            ),
             params![ty.as_str(), at.0 as i64, after],
         )?;
         for r in older.iter().filter(|r| !r.is_ended()) {
-            index_record(conn, (head.as_ref(), &sorted, looked.as_ref()), false, r)?;
+            index_record(conn, (head.as_ref(), &sorted, looked.as_ref()), Some(r), r)?;
         }
         match older.last() {
             Some(last) if older.len() == 1024 => after = last.key.to_string(),

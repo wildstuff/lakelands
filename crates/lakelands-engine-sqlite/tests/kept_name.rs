@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use lakelands_api::Location;
 use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::event::Digest;
-use lakelands_api::id::{Position, TypeName};
+use lakelands_api::id::{Position, TypeName, Version};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{kept_name, order_name};
 use lakelands_core::conformance::fixture::stored_record;
@@ -73,17 +73,19 @@ fn every_statement_of_a_kept_name_is_planned_as_a_seek() {
     let db = Connection::open(dir.join("projection.db")).unwrap();
     let kept = kept_name(&TypeName::from("v"));
     let has = |plan: &[String], step: &str| plan.iter().any(|s| s.contains(step));
-    // At the head: the states with no end, through `records_at`, which
-    // holds them in key order, and nothing else.
+    // At the head: the keys in their order, through `keys`, and each
+    // one's state with no end by its number, through `records_at`, and
+    // nothing else.
     let [first, later, count, output] = read_statements(&kept, true);
     for statement in [&first, &later, &count] {
         let plan = plan(&db, statement);
         assert!(
-            plan.len() == 1
-                && plan[0]
-                    .starts_with("SEARCH r USING INDEX records_at (ty=? AND until=? AND key>"),
-            "a kept name's read at the head does not seek the states with no end in key order \
-             through `records_at`:\n  {statement}\n  {plan:#?}"
+            plan.len() == 2
+                && plan[0].starts_with("SEARCH k USING PRIMARY KEY (ty=? AND key>")
+                && plan[1] == "SEARCH r USING INDEX records_at (ty=? AND until=? AND id=?)",
+            "a kept name's read at the head does not seek the keys in their order through \
+             `keys` and each one's state with no end through `records_at`:\n  {statement}\n  \
+             {plan:#?}"
         );
     }
     // The output: the latest state at or before the position, the first
@@ -99,31 +101,25 @@ fn every_statement_of_a_kept_name_is_planned_as_a_seek() {
             && output.contains("ORDER BY since DESC LIMIT 1"),
         "the read of a recorded output is not a seek of its latest state:\n  {output}\n  {seek:#?}"
     );
-    // At an earlier position: the next key by a seek into the primary
-    // key's index, which covers it, for the first step and for each later
-    // one; the key's state by a seek from the position down; its row by
-    // its id. The steps are the outer loop of the join and nothing sorts,
-    // so the rows come in the order of the steps, which is the keys': the
-    // statement has no `ORDER BY` of its own to say so, only the three of
-    // its seeks.
+    // At an earlier position: the keys in their order, through `keys`;
+    // each key's state by a seek into the primary key from the position
+    // down, which covers it; its row by its id. The keys are the outer
+    // loop of the join and nothing sorts, so the rows come in the keys'
+    // order.
     let [first, later, count, _] = read_statements(&kept, false);
     for statement in [&first, &later, &count] {
         let plan = plan(&db, statement);
-        let step =
-            "SEARCH records USING COVERING INDEX sqlite_autoindex_records_1 (ty=? AND key>?)";
-        let joined = ["SCAN step", "SEARCH r USING INTEGER PRIMARY KEY (rowid=?)"];
+        let want = [
+            "SEARCH k USING PRIMARY KEY (ty=? AND key>?)",
+            "SEARCH r USING INTEGER PRIMARY KEY (rowid=?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH records USING COVERING INDEX sqlite_autoindex_records_1 (id=? AND since<?)",
+        ];
         assert!(
-            plan.iter().filter(|s| s.as_str() == step).count() == 2
-                && has(
-                    &plan,
-                    "sqlite_autoindex_records_1 (ty=? AND key=? AND since<?)"
-                )
-                && plan.windows(2).any(|pair| pair == joined)
-                && !has(&plan, "TEMP B-TREE")
-                && statement.matches("ORDER BY").count() == 3,
+            plan == want,
             "a kept name's read at an earlier position does not step from key to key through \
-             the primary key and seek each key's state, in the order of the steps:\n  \
-             {statement}\n  {plan:#?}"
+             `keys` and seek each key's state, in the order of the keys:\n  {statement}\n  \
+             {plan:#?}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -253,7 +249,14 @@ fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
                 .unwrap();
         p.put_record(&entry).unwrap();
     }
-    p.commit(Position(100)).unwrap();
+    // Ten keys ended one by one: an end leaves neither a state nor the
+    // key's number, whose key holds the value the entry orders by.
+    for at in 101..=110 {
+        let mut ended = state(&name, &format!("k{:02}", at % 50), at);
+        ended.version = Version(0);
+        p.put_record(&ended).unwrap();
+    }
+    p.commit(Position(110)).unwrap();
     drop(engine);
     let db = Connection::open(dir.join("projection.db")).unwrap();
     let count = |sql: &str| {
@@ -262,6 +265,7 @@ fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
     };
     let rows = [
         "SELECT COUNT(*) FROM records WHERE ty = ?1",
+        "SELECT COUNT(*) FROM keys WHERE ty = ?1",
         "SELECT COUNT(*) FROM text_index WHERE ty = ?1",
         "SELECT COUNT(*) FROM sort_index WHERE ty = ?1",
         "SELECT COUNT(*) FROM search_rows WHERE ty = ?1",
@@ -273,17 +277,35 @@ fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
         .unwrap();
     assert_eq!(
         (rows, full_text),
-        ([50, 0, 0, 0, 0], 0),
-        "one state for each of 50 keys, no other row"
+        ([40, 40, 0, 0, 0, 0], 0),
+        "one state and one number for each of the 40 keys not ended, no other row"
     );
     let [_, later, _, _] = read_statements(&name, true);
     let plan = plan(&db, &later);
     assert!(
-        plan.len() == 1
-            && plan[0].starts_with(
-                "SEARCH records USING INDEX sqlite_autoindex_records_1 (ty=? AND key>?)"
-            ),
-        "an order name's page after a key is not a seek into the primary key:\n  {later}\n  {plan:#?}"
+        plan == [
+            "SEARCH k USING PRIMARY KEY (ty=? AND key>?)",
+            "SEARCH r USING INDEX sqlite_autoindex_records_1 (id=? AND since<?)",
+        ],
+        "an order name's page after a key is not a seek into the primary keys:\n  {later}\n  \
+         {plan:#?}"
+    );
+    // Every key ended at once leaves no number either.
+    let engine = SqliteOpener
+        .open(&Location::sqlite("kept", &dir), OpenMode::Write)
+        .unwrap();
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.end_head_only(&name, Position(111)).unwrap();
+    p.commit(Position(111)).unwrap();
+    drop(engine);
+    assert_eq!(
+        [
+            count("SELECT COUNT(*) FROM records WHERE ty = ?1"),
+            count("SELECT COUNT(*) FROM keys WHERE ty = ?1")
+        ],
+        [0, 0],
+        "every key of the name ended at once leaves no state and no number"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

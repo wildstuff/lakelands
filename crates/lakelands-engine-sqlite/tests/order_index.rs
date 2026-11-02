@@ -195,7 +195,7 @@ fn a_field_ordered_page_reads_its_page_not_the_type() {
     rusqlite::Connection::open(dir.join("projection.db"))
         .unwrap()
         .execute(
-            "UPDATE records SET state = 'unreadable' WHERE ty = 't' AND key = ?1",
+            "UPDATE records SET state = 'unreadable' WHERE id = (SELECT id FROM keys WHERE ty = 't' AND key = ?1)",
             [&last],
         )
         .unwrap();

@@ -93,6 +93,14 @@ pub trait Scope {
         None
     }
 
+    /// In a field computed at the read or a guard: `field` of the record
+    /// of another type in force in the pairing `series` names
+    /// ([`Pairing::series`](lakelands_api::expr::Pairing::series)). `None`
+    /// where none is or the field is absent.
+    fn paired(&self, _series: &[FieldName], _field: &FieldName) -> Option<Value> {
+        None
+    }
+
     /// Whether this is a guard over a write (`changed`, `previous`).
     fn in_write(&self) -> bool {
         false
@@ -132,6 +140,14 @@ pub trait Scope {
 
     /// The clock `now()` and `today()` read.
     fn now(&self) -> Timestamp;
+
+    /// What `today()` reads: the day of the lake's calendar holding the
+    /// clock, cut in the zone its `zone` setting names (101).
+    fn today(&self) -> Timestamp {
+        let zone = self.setting(lakelands_api::seam::ZONE_SETTING);
+        let zone = lakelands_api::seam::zone(zone.as_ref());
+        Timestamp(zone::day(self.now().0, zone))
+    }
 
     /// In a verb: whether the path that begins at `relation` reaches a
     /// record. `None` outside a verb.
@@ -198,18 +214,20 @@ pub struct WriteScope<'a> {
     pub meta: Option<&'a BTreeMap<FieldName, FieldMeta>>,
     /// The lake's settings, by key.
     pub settings: Option<&'a BTreeMap<String, Value>>,
-    /// In a constraint, the record before this one in each series it
-    /// reads, as the write resolved it; in a field computed at the read,
-    /// the record in force in each series it pairs by, as the read
-    /// resolved it; none where it found none.
+    /// In a constraint or a guard, the record before this one in each
+    /// series it reads, as the write resolved it; none where it found none.
     pub preceding: Option<&'a Preceding>,
+    /// In a field computed at the read or a guard, the record in force in
+    /// each series it pairs by, as the read or the write resolved it; kept
+    /// apart from `preceding`, whose series can be spelled alike.
+    pub paired: Option<&'a Preceding>,
     /// The `known_at` of the event being folded.
     pub now: Timestamp,
 }
 
 /// The records before a written one, by series: its `by` and then its
-/// matched fields, as `preceding` names them; or those in force at a read
-/// one, by [`Pairing::series`](lakelands_api::expr::Pairing::series).
+/// matched fields, as `preceding` names them; or those in force at one,
+/// by [`Pairing::series`](lakelands_api::expr::Pairing::series).
 pub type Preceding = BTreeMap<Vec<FieldName>, BTreeMap<FieldName, Value>>;
 
 impl Scope for WriteScope<'_> {
@@ -223,6 +241,11 @@ impl Scope for WriteScope<'_> {
 
     fn preceding(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
         let record = self.preceding?.get(series)?;
+        record.get(field).filter(|v| !v.is_null()).cloned()
+    }
+
+    fn paired(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
+        let record = self.paired?.get(series)?;
         record.get(field).filter(|v| !v.is_null()).cloned()
     }
 
@@ -437,6 +460,9 @@ impl Scope for Strict<'_> {
     fn preceding(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
         self.noted(self.inner.preceding(series, field))
     }
+    fn paired(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
+        self.noted(self.inner.paired(series, field))
+    }
     fn in_write(&self) -> bool {
         self.inner.in_write()
     }
@@ -460,6 +486,9 @@ impl Scope for Strict<'_> {
     }
     fn now(&self) -> Timestamp {
         self.inner.now()
+    }
+    fn today(&self) -> Timestamp {
+        self.inner.today()
     }
     fn exists(&self, relation: &FieldName) -> Option<bool> {
         self.inner.exists(relation)
@@ -769,7 +798,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             let Some(p) = lakelands_api::expr::Pairing::of(args) else {
                 return err(Case::InForceHere);
             };
-            let found = scope.preceding(&p.series(), p.read);
+            let found = scope.paired(&p.series(), p.read);
             return Ok(found.map_or(Val::Null, |v| from_json(&v)));
         }
         Func::Retired => {
@@ -814,10 +843,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
     let s = |i: usize| text(&vals[i]).unwrap_or_default();
     Ok(match func {
         Func::Now => Val::Time(scope.now()),
-        Func::Today => {
-            let day = 86_400_000_000;
-            Val::Time(Timestamp(scope.now().0.div_euclid(day) * day))
-        }
+        Func::Today => Val::Time(scope.today()),
         // The value in force on the day of `at`, else of the clock (090).
         Func::Setting => match &vals[0] {
             Val::Text(key) => {

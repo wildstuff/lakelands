@@ -549,6 +549,12 @@ pub trait LakeStore: Send + Sync {
     /// the rules appended before it stand.
     async fn age(&self, today: crate::time::Timestamp) -> Result<crate::write::AgeReport>;
 
+    /// The zone the lake reads its calendar day in at the head: the IANA
+    /// name its `zone` setting holds, or `UTC` where it holds none
+    /// (`docs/decisions/101-a-lake-keeps-its-calendar-in-one-named-zone.md`).
+    /// A host reads it to find the date it ages the lake for.
+    async fn zone(&self) -> Result<String>;
+
     /// Retire, in one append, every live record the source brought in,
     /// across every type it reached, restricted ones included. A record
     /// another hand made or also wrote refuses the whole purge as invalid,

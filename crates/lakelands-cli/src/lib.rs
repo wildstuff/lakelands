@@ -41,7 +41,7 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::error::{Error, Result};
 use lakelands_api::id::{LakeId, Position};
 use lakelands_api::location::{EngineConfig, Location};
-use lakelands_api::seam::Seams;
+use lakelands_api::seam::{Seams, ZONE_SETTING};
 use lakelands_api::{LakeStore, WriteContext};
 
 mod commands;
@@ -297,7 +297,8 @@ fn command() -> Command {
                         .arg(Arg::new("url").long("url").value_name("URL").help("For `postgres`: the database's URL. The location file holds it as plain text, a password in it too: keep the root's `lakes/` to its operator"))
                         .arg(Arg::new("schema").long("schema").value_name("NAME").help("For `postgres`: the schema; `lakelands_<id>` when left out"))
                         .arg(Arg::new("no-tls").long("no-tls").action(clap::ArgAction::SetTrue).help("For `postgres`: connect without TLS"))
-                        .arg(Arg::new("ca-file").long("ca-file").value_name("PEM").help("For `postgres`: the certificate authorities to verify the server against")),
+                        .arg(Arg::new("ca-file").long("ca-file").value_name("PEM").help("For `postgres`: the certificate authorities to verify the server against"))
+                        .arg(Arg::new(ZONE_SETTING).long(ZONE_SETTING).value_name("ZONE").help("The time zone the lake's calendar day is read in, as the IANA database names it (`Europe/Berlin`); `UTC` when left out. The writer's first open records it as the lake's `zone` setting, which `settings set` changes later")),
                 ),
         )
         .subcommand(
@@ -707,7 +708,7 @@ async fn dispatch(
                 tls_disabled: new.get_flag("no-tls"),
                 ca_file: text(new, "ca-file").map(PathBuf::from),
             };
-            root.new_lake(&id, &engine, &pg)?;
+            root.new_lake(&id, &engine, &pg, text(new, ZONE_SETTING))?;
             return say(
                 out,
                 format!(

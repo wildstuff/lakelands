@@ -265,9 +265,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and
   `lakelands serve` makes it daily when the root's `lakelands.json` has an
-  `aging` section: the date at its `utc_offset`, once at start and at each
-  rollover (`docs/seams.md` §aging). A rule moves the records whose field
-  holds its `from` to its `to`, and both are values, written as they are:
+  `aging` section: the day of the lake's calendar, read in the zone its
+  `zone` setting names (101), once at start and at each rollover
+  (`docs/seams.md` §aging). A rule moves the records whose field holds
+  its `from` to its `to`, and both are values, written as they are:
   a `to` of `concat('over', 'due')` is that text, never evaluated. A
   record whose field is null holds no `from`, so no rule moves it and the
   report does not count it. A host that wants such records aged gives the
@@ -1818,7 +1819,7 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   `limits.order_min_records` (2 000) live records with fewer than
   `limits.order_max_fields` (2) chosen fields, the writer's process builds
   its order index beside the log, in chunks of `limits.order_chunk`
-  (10 000) records between writes, and pages ordered by it read their
+  (1 000) records between writes, and pages ordered by it read their
   page from then on. Nothing is logged: a feed, a mirror and an export
   carry nothing of it, and a projection rebuilt from the log learns it
   again from use. A field unused for `limits.order_unused_secs` (7 days)

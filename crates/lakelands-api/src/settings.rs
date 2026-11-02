@@ -133,6 +133,11 @@ pub const SETTINGS: &[Setting] = &[
         ..lake("key_period", PerType::Source, "null")
     },
     Setting {
+        range: "a time zone as the IANA time-zone database names it, as `Europe/Berlin`",
+        says: "The zone the lake's calendar day is read in: `today()` in an expression, and the date `serve` ages the lake for. A write is judged in the zone in force where it is made. Unset or retired, the day is UTC's. A new lake starts in its location's `zone`, which the writer's first open records where the lake has recorded none.",
+        ..lake("zone", PerType::No, "\"UTC\"")
+    },
+    Setting {
         range: "a count, at most `max_limit`",
         says: "How many rows a list-shaped read returns when the caller names no limit.",
         ..location("limits.default_limit", "50")
@@ -197,7 +202,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         range: "`true` or `false`",
         says: "Whether the lake chooses an order index itself, for a field a type is ordered by whole at least `limits.order_after_pages` times within `limits.order_window_secs`, beside what `sort_index` names; the host's own `sort_index` for a type always wins. Off, only what the host sets is indexed.",
-        cost: "each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records",
+        cost: "each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records, in chunks of 10 000",
         ..location("limits.choose_order_index", "true")
     },
     Setting {
@@ -228,7 +233,23 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         range: "a count; 0 is taken as 1",
         says: "The records one chunk of a chosen index's build writes while it holds the writer; a write waits for a chunk, never for the build.",
-        ..location("limits.order_chunk", "10000")
+        ..location("limits.order_chunk", "1000")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "Not read yet: the acts that append in parts, each part a turn of the writer of its own, come with step R2 of decision 099. Then it is the most events one part of an act appends, so a write sent meanwhile waits for at most the part in front of it.",
+        ..location("limits.part_events", "500")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "The most events past the view it walked on that a job's first turn reads under the writer. A longer tail is read off the writer first; one that is still longer at the turn lets the writer go and moves the view up, and after three such tries the job answers unavailable, having appended nothing.",
+        cost: "the tail is read by source and by type from the log's index, 11 ms for 1 000 events at 2.5 million records (measured, decision 099)",
+        ..location("limits.part_tail", "1000")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "Not read yet: restating in pages comes with step R4 of decision 099. Then it is the most events one page of a restate refolds in a turn of the writer, and a job whose page would refold more restates beside the projection instead.",
+        ..location("limits.page_events", "2000")
     },
     Setting {
         range: "`true` or `false`",
@@ -331,11 +352,6 @@ pub const SETTINGS: &[Setting] = &[
         says: "Where `serve` answers `GET /metrics` in the Prometheus text format, apart from the door; absent, it measures nothing and listens for none.",
         cost: "a write on the memory engine took 22.6 µs measured against 22.3 µs unmeasured with one caller, and 12.6 µs either way with sixteen; on SQLite the difference is inside a commit's noise; a scrape reads each lake's counters and takes nothing from its writer",
         ..root("server.metrics.bind", "null")
-    },
-    Setting {
-        range: "`Z`, or `+HH:MM` or `-HH:MM` within fourteen hours",
-        says: "The UTC offset `serve` reads the date at, to age each lake it writes once a day.",
-        ..root("aging.utc_offset", "\"Z\"")
     },
     Setting {
         range: "seconds",
