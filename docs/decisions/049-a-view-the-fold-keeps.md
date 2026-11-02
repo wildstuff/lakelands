@@ -11,10 +11,12 @@ build is whole; 101 strands a group whose members were thinned.
 A view asked for by the setting `view_kept.<type>` has its records kept
 in the projection by the fold, one for each group, and a read of the
 view answers them. **A kept record is exactly what the read would
-compute, or the view says at that position that it is not, and the read
-computes.** Nothing kept imitates an order the computation takes; the
-computation at the read stays whole and answers wherever the kept form
-would have to reproduce one.
+compute, or the view says at that position that it is not and the read
+computes, or the members it was computed from are gone and the view says
+the group is stranded and the read answers the record.** Nothing kept
+imitates an order the computation takes; the computation at the read
+stays whole and answers wherever the kept form would have to reproduce
+one.
 
 - **Asked for by a setting.** The `sys.setting` record
   `view_kept.<type>` with the value `true` asks for the view to be kept.
@@ -114,10 +116,13 @@ would have to reproduce one.
   `stranded` does. Its order entries stay, so an extreme whose holder was
   thinned keeps its holder. A group with no thinned member computes as
   before at every position; a stranded group answers at the head only, and a
-  read at an earlier position says it cannot answer it. A make of a view
-  after the thinning carries each stranded group's record, and a `view_kept.`
-  setting for a view whose source records are thinned is refused
-  `KeptOverThinned`.
+  read at an earlier position says it cannot answer it. A group of a view
+  over a view is stranded where it holds a stranded inner group, and its
+  earlier-position read is refused naming the inner. A make of a view
+  after the thinning carries each stranded group's record where the event
+  leaves what it folds, and is refused `StrandedMake` otherwise; a
+  `view_kept.` setting for a view whose source records are thinned is
+  refused `KeptOverThinned`.
 - **Made by noting from nothing.** A view becomes kept in the fold of
   the event that makes it so: its setting, or a declaration under which
   it can be kept. Every record of its sources is noted as arriving, a
@@ -341,9 +346,10 @@ that already walks the type.
   bucket of time beside them (lakelands#1614): the seek by the group's
   digest needs nothing of the group fields' kinds.
 - Amended by 098 and 099 (lakelands#1652), proposed for 0.23.0.
-- Amended by 101 (lakelands#1639), proposed for 0.23.0: a group whose
-  members were thinned is stranded, exact, and answered at the head only.
 - A view's group may hold one `date_bucket` term over a source field,
   answered as its twin grouped by a derived field, a trigger on it too;
   until then the source needed the derived field (lakelands#1636,
   lakelands#1666).
+- Amended by 101 (lakelands#1639), proposed for 0.23.0: a group whose
+  members were thinned is stranded, exact, answered at the head only, and
+  carried by a make of the view.
