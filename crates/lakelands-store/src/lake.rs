@@ -272,6 +272,9 @@ pub struct Lake {
     /// What the lake weighs of those pages to choose an order index
     /// itself, and what it chose (`crate::choose`).
     pub(crate) choosing: Mutex<crate::choose::Choosing>,
+    /// The jobs that run beside the writer, one turn at a time
+    /// (`crate::road`).
+    pub(crate) road: Mutex<crate::road::Road>,
     /// The queue writes wait in for their turn at the writer, in the order
     /// they came ([`crate::exec::write`]).
     pub(crate) queue: Arc<Mutex<crate::exec::Queue>>,

@@ -344,6 +344,16 @@ pub struct Limits {
     /// The records one chunk of a chosen index's build writes while it
     /// holds the writer.
     pub order_chunk: u32,
+    /// The most events one part of an act appends, each part a turn of
+    /// the writer of its own
+    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    pub part_events: u32,
+    /// The most events past its view a job's first turn reads under the
+    /// writer; a longer tail lets the writer go and moves the view up (099).
+    pub part_tail: u32,
+    /// The most events one page of a restate refolds in a turn; a job
+    /// whose page holds more restates beside the projection instead (099).
+    pub page_events: u32,
     /// Whether a forgetting always rebuilds the projection, never
     /// refolding the records its sources wrote alone
     /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
@@ -398,7 +408,10 @@ impl Default for Limits {
             order_min_records: 2_000,
             order_max_fields: 2,
             order_unused_secs: 604_800,
-            order_chunk: 10_000,
+            order_chunk: 1_000,
+            part_events: 500,
+            part_tail: 1_000,
+            page_events: 2_000,
             forget_rebuild: false,
             seal_after_bytes: 64 << 20,
             quarantined_max: 10_000,

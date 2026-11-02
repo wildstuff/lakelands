@@ -156,7 +156,7 @@ Whether the lake chooses an order index itself, for a field a type is ordered by
 
 - **Takes:** `true` or `false`.
 - **Default:** `true`.
-- **Cost:** each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records.
+- **Cost:** each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records, in chunks of 10 000.
 
 ### `limits.order_after_pages`
 
@@ -198,7 +198,29 @@ How long a chosen index may go unused, in seconds of the writer's life, before t
 The records one chunk of a chosen index's build writes while it holds the writer; a write waits for a chunk, never for the build.
 
 - **Takes:** a count; 0 is taken as 1.
-- **Default:** `10000`.
+- **Default:** `1000`.
+
+### `limits.part_events`
+
+Not read yet: the acts that append in parts, each part a turn of the writer of its own, come with step R2 of decision 099. Then it is the most events one part of an act appends, so a write sent meanwhile waits for at most the part in front of it.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `500`.
+
+### `limits.part_tail`
+
+The most events past the view it walked on that a job's first turn reads under the writer. A longer tail is read off the writer first; one that is still longer at the turn lets the writer go and moves the view up, and after three such tries the job answers unavailable, having appended nothing.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `1000`.
+- **Cost:** the tail is read by source and by type from the log's index, 11 ms for 1 000 events at 2.5 million records (measured, decision 099).
+
+### `limits.page_events`
+
+Not read yet: restating in pages comes with step R4 of decision 099. Then it is the most events one page of a restate refolds in a turn of the writer, and a job whose page would refold more restates beside the projection instead.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `2000`.
 
 ### `limits.forget_rebuild`
 

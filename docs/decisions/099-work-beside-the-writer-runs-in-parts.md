@@ -706,7 +706,53 @@ Decided on 2026-11-01 (lakelands#1578): every recommendation below was taken.
 - **Not the design of lakelands#1639.**
 - **Not a change to what a forget takes,** what the log holds or what `verify` promises.
 
+## As built
+
+**R1 (lakelands#1675).** The road is `crates/lakelands-store/src/road.rs`; no act and no build
+is on it yet.
+
+- **The seam is a job of five steps:** `reach` (the sources whose writes reach it, and the types
+  and keys whose records do), `walk` on a view, `fold` of the tail's events that reach it, `turn`
+  under the writer, and `end`, where a caller who waits is answered. A turn says whether another
+  follows. What an act or a build keeps is its own: the runner holds nothing of a job but the
+  job.
+- **The runner** is spawned when a job is sent and none runs, as `choose_orders` is, and drives
+  each job whole before the next, oldest first. Between turns it holds its lake weakly, so a lake
+  whose last handle goes stops it before its next turn. That a later act's first turn goes ahead
+  of an earlier act's parts ("Acts that overlap") is the acts' rule, and lands with R2.
+- **The tail read** finds at most `part_tail` events past the view in the log index, by source
+  (`of_source`) and by type and key (`matching`), each event once however many rows name it, and
+  reads them with `read_these`, through the block seam of format 23. Where the index decides
+  nothing, as while a rebuild refolds, it reads the log itself and every event counts against the
+  bound. The catch-up reads the tail off the writer while it is longer than that, and folds it in
+  pieces of `part_tail` events; it holds the tail's positions, never its events, and stops after
+  three rounds that each find the lake moved on, when the first turn finds the tail too long. The
+  first turn reads it under the writer and folds it before it turns. Three tries that each find it
+  longer end the job unavailable, `TailOverran`, with nothing appended.
+- **`limits`** hold `part_events`, `part_tail` and `page_events` with the defaults above, and
+  `order_chunk` is 1 000. Nothing reads `part_events` or `page_events` yet, and their settings
+  rows say so: R2 and R4 read them.
+- **The writer's open** asks every kind of job in `OWED` what the log and the lists owe, off the
+  writer and after the open has answered, and sends it; a writer taken over from standby asks
+  the same. `OWED` is empty; the open and the standby take the kinds they ask as an argument
+  inside the store (`opened_owing`, `standing_by`), so the road's tests open through both with the
+  test's kind beside the store's. A failure to find what is owed is not reported: the store keeps
+  no log of its own, and the job stays owed for the next open. The open still finishes an owed forget or removal before it answers
+  (`finish_forgetting`): moving that beside the writer opens the window that reading through
+  closes, so it moves with R2.
+- **Measured** on the shared machine of this step, not a quiet one: beside a job of 50 ms turns,
+  20 writes each waited for at most the one turn in front of them on memory and on SQLite, and
+  PostgreSQL's run is CI's. The machine stretched each 50 ms sleep to as much as 200 ms, so the test
+  counts the turns a write waited for, not its milliseconds. The turn table is measured by the
+  step whose turns they are, R2 to R7.
+- **Conformance rows:** none is taken. Each names an act or a build, and neither is on the road
+  before R2 and R7. The runner's half of `ACT_TAIL_OVERRUN_MOVES_THE_VIEW`,
+  `ACT_RESUMES_AT_OPEN` and `BUILD_WRITES_GO_ON` is in the store's unit tests under a test job,
+  on every engine, the `pg` leg included; the rows go into the suite with the steps that put an
+  act and a build on the road.
+
 ## How it came to be
 
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
   `in_force` read through an owed act, which the poll rule does not hold.
+- R1 built by lakelands#1675; what the tree took is under "As built".
