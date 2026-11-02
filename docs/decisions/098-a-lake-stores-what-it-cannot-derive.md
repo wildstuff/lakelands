@@ -651,8 +651,8 @@ candles.
   again at each change of copy. `ZONED_REFOLDED` is the row.
 - **A derived field a zone cut at the write is not folded again.** It is cut again
   only by a rebuild, under the binary's copy, so a rebuild under a copy with new
-  rules may answer it otherwise than the write that first cut it. `zone.rs` says so
-  in its INTERIM.
+  rules may answer it otherwise than the write that first cut it (017 states it
+  with the unit's own rule).
 
 ## Why
 

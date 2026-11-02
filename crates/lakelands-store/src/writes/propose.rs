@@ -362,12 +362,17 @@ impl Call<'_> {
         let Some(write) = &p.write else {
             return Ok((None, false));
         };
-        let (view, asked_at) = (self.lake.engine.view(at)?, at);
+        let view = self.lake.engine.view(at)?;
         let shape = self.lake.shape(view.as_ref())?;
-        let (sight, at) = (Sight::held(self.who, shape.as_ref()), Default::default());
-        let mut read =
-            crate::reads::Reader::open(self.lake, &sight, (at, None), view, shape.clone())?;
-        read.kept_head = asked_at.is_none();
+        let (sight, read_at) = (Sight::held(self.who, shape.as_ref()), Default::default());
+        let read = crate::reads::Reader::open(
+            self.lake,
+            &sight,
+            (read_at, None),
+            at,
+            view,
+            shape.clone(),
+        )?;
         let missing = Missing::Proposal { id: p.id.clone() };
         let once = (&Default::default(), &Default::default());
         let at = (p.position, p.proposed_at, p.proposer.as_str());

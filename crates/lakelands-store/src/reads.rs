@@ -93,9 +93,11 @@ pub struct Reader<'a> {
     /// Whether the read is at the head: it asked for no earlier position.
     pub at_head: bool,
     /// Whether the view is the projection's head, where a kept view's
-    /// records are the fold's own: not for a read as of a position, nor for
-    /// one made again at the position a search's rankings were read at,
-    /// since the fold keeps a group's latest record alone (098).
+    /// records are the fold's own: [`Reader::open`] reads it off the
+    /// position the read asks for and the one its view was asked for, so
+    /// it is not set for a read as of a position, nor for one whose view
+    /// stands where a search's rankings were pulled, since the fold keeps
+    /// a group's latest record alone (098).
     pub kept_head: bool,
     /// The position read at.
     pub position: Position,
@@ -674,13 +676,15 @@ impl<'a> Reader<'a> {
     /// the one a cursor carries from its first page; else the instant
     /// `valid_at` names; else the host's (`ReadAt::clock`); else, as of a
     /// position, the `known_at` of the event there, the clock the fold
-    /// read it under (017); else the wall clock. A listing's judgments
+    /// read it under (017); else the wall clock. `asked` is the position
+    /// `view` was asked for, the head where `None`. A listing's judgments
     /// read all but `valid_at`. It is decided here once, and no other
     /// read path in the store reads the wall clock (lakelands#571).
     pub fn open(
         lake: &'a Lake,
         sight: &'a Sight<'a>,
         (at, clock): (ReadAt, Option<Timestamp>),
+        asked: Option<Position>,
         view: Box<dyn ProjectionView + 'a>,
         shape: Arc<Shape>,
     ) -> Result<Reader<'a>> {
@@ -711,7 +715,11 @@ impl<'a> Reader<'a> {
             view,
             shape,
             at_head: at.as_of.is_none(),
-            kept_head: at.as_of.is_none(),
+            // The fold's records are the view's own at the projection's
+            // head alone: the read asks for no earlier position and the
+            // view was asked for the head, not for the position a
+            // search's rankings were pulled at (098).
+            kept_head: at.as_of.is_none() && asked.is_none(),
             position,
             valid_at: at.valid_at,
             now,

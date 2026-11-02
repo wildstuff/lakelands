@@ -123,8 +123,11 @@ fn seeks(plans: &[(&str, bool, Vec<String>)], analysed: bool) {
         );
         if *what == "by_key" {
             // By keys: each key's state sought by its type, key and
-            // position, either index, cut at its first row. A kept name
-            // keeps one state a key, so a seek of it reads one row.
+            // position, cut at its first row. Either index holds the three
+            // columns — `records_pkey` as (ty, key, since),
+            // `records_since` as (ty, since, key) — so a seek through
+            // either reaches the state the other does. A kept name keeps
+            // one state a key, so a seek of it reads one row.
             assert!(
                 has("Nested Loop")
                     && has("Limit")
@@ -171,7 +174,9 @@ fn seeks(plans: &[(&str, bool, Vec<String>)], analysed: bool) {
             });
             // At the head the state is the one at the head's position, by
             // either index that holds it; earlier, the key's primary key read
-            // backward from the position.
+            // backward from the position. Both indexes hold the type, key and
+            // position the join binds as equals, so either reads the one row
+            // the other does.
             let seek = match head {
                 true => "using records_",
                 false => "Backward using records_",

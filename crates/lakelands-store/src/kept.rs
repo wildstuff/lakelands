@@ -101,9 +101,13 @@ pub(crate) struct State {
 
 impl State {
     /// Whether the fold's records were cut under a copy of the time-zone
-    /// database other than the binary's, so that none of them is read.
+    /// database other than the binary's, so that none of them is read. A
+    /// build that names no copy cannot be shown to hold the one recorded,
+    /// so it reads them as cut elsewhere too.
     pub(crate) fn cut_elsewhere(&self) -> bool {
-        self.tzdb.as_deref().is_some_and(|c| c != zone::copy())
+        self.tzdb
+            .as_deref()
+            .is_some_and(|c| !zone::named() || c != zone::copy())
     }
 }
 
@@ -1116,6 +1120,21 @@ pub(crate) fn note(
     noted
 }
 
+/// What an event or a write's step may move, as [`settle`] and [`step`]
+/// hand to [`Views::settle`]: the setting it writes or the types it
+/// declares or steps, a writer's lease, or a record's write, which moves
+/// the views its notes have read in.
+struct Moves<'a> {
+    /// Whether any view may move, not only those reading a written type.
+    any: bool,
+    /// The types the event declares or steps.
+    declared: &'a BTreeSet<TypeName>,
+    /// The setting the event writes, if it writes one.
+    setting: Option<&'a str>,
+    /// Whether the event is the writer's lease.
+    leased: bool,
+}
+
 /// The end of one event's fold: the views it makes or ends are made or
 /// ended, and every group it touched is put, at its position.
 pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> {
@@ -1161,7 +1180,12 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
             Declared { .. } | Migrated { .. } | ValueTypeMigrated { .. }
         );
     let mut views = std::mem::take(&mut staged.kept);
-    let moves = (any, &declared, setting.as_deref(), leased);
+    let moves = Moves {
+        any,
+        declared: &declared,
+        setting: setting.as_deref(),
+        leased,
+    };
     let settled = views.settle(at, staged, moves, e.position);
     staged.kept = views;
     settled
@@ -1175,10 +1199,15 @@ impl Views {
         &mut self,
         at: &At<'_>,
         staged: &mut Staged,
-        moves: (bool, &BTreeSet<TypeName>, Option<&str>, bool),
+        moves: Moves<'_>,
         position: Position,
     ) -> Result<()> {
-        let (any, declared, setting, leased) = moves;
+        let Moves {
+            any,
+            declared,
+            setting,
+            leased,
+        } = moves;
         // A setting's write and a declaration may move any view: all are
         // read in. A record's write moves the views that read its type,
         // which its notes have read in.
@@ -1250,7 +1279,12 @@ pub(crate) fn step(
     let mut views = std::mem::take(&mut staged.kept);
     views.moved = Some(Moved::new());
     let any = write.is_none() || setting.is_some();
-    let moves = (any, declared, setting.as_deref(), false);
+    let moves = Moves {
+        any,
+        declared,
+        setting: setting.as_deref(),
+        leased: false,
+    };
     let settled = views.settle(at, staged, moves, position);
     let moved = views.moved.take().unwrap_or_default();
     staged.kept = views;
