@@ -115,7 +115,7 @@ engine_check!(
 
 engine_check!(
     ORDER_ENTRY = an_order_entry_keeps_one_state_for_each_key,
-    "seams §ProjectionStore and §ProjectionView (lakelands#1690): an order entry put at a key is read by `order` as the bytes it was put with, a put replaces the key's entry and none deletes it, and `order_page` answers the entries after a key in key order; a rolled-back transaction leaves the entries as they were; `end_order` deletes every entry of its name alone, keeping a sibling order and what is put after it in the same transaction, and the order holds none of the records"
+    "seams §ProjectionStore and §ProjectionView (lakelands#1690): an order entry put at a key is read by `order` as the bytes it was put with, a put replaces the key's entry and a put with no entry deletes it, and `order_page` answers the entries after a key in key order, a page from the start skipping the empty key; a rolled-back transaction leaves the entries as they were; `end_order` deletes every entry of its name alone, keeping a sibling order and what is put after it in the same transaction, and the order holds none of the records"
 );
 
 engine_check!(
@@ -1252,6 +1252,7 @@ fn an_order_entry_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Held 
         p.put_order(&sibling, &key("a"), Some(b"s1"))
     })?;
     fold(engine, 2, |p| {
+        p.put_order(&ty, &key(""), Some(b"z0"))?;
         p.put_order(&ty, &key("b"), Some(b"b2"))?;
         p.put_order(&ty, &key("c"), None)
     })?;
@@ -1272,7 +1273,7 @@ fn an_order_entry_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Held 
             == (Some(&b"a1"[..]), Some(&b"b2"[..]), None, Some(&b"s1"[..])),
         "entries a, b and c were put at 1, then b again and c as none at 2: a, b and c read \
          {a:?}, {b:?} and {c:?}, and the sibling's a reads {s:?}, where a put replaces the \
-         key's entry and none deletes it"
+         key's entry and a put with no entry deletes it"
     );
     let page = |after: Option<&str>, n: u32| {
         let after = after.map(RecordKey::from);
@@ -1295,6 +1296,20 @@ fn an_order_entry_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Held 
             ),
         "a page of one from the start answered {first:?}, and a page after a answered \
          {next:?}, where a page is the entries after a key in key order"
+    );
+    // The order holds an entry at the empty key; a page from the start
+    // skips it, as a page after the empty key does.
+    let empty = read(&ty, "")?;
+    let from_start = page(None, 5)?;
+    let after_empty = page(Some(""), 5)?;
+    ensure!(
+        empty.as_deref() == Some(&b"z0"[..])
+            && from_start == after_empty
+            && from_start.len() == 2
+            && from_start.iter().all(|(k, _)| !k.is_empty()),
+        "the order holds an entry at the empty key: `order` reads {empty:?}, a page from the \
+         start answers {from_start:?} and a page after the empty key {after_empty:?}, where a \
+         page from the start skips the empty key and agrees with a page after it"
     );
     let records = v
         .count(&ty, &lakelands_api::engine::Scan::default())

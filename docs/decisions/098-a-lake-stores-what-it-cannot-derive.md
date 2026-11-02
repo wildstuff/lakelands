@@ -353,13 +353,11 @@ Measured, SQLite, 100 000 ticks with three roll-ups, A/B, load 3 to 4:
 
 - **`sys:kept` keeps the head.** Read: an earlier read of a kept view computes
   already, and `describe`'s three earlier-position reads are what change with it.
-- **`view_order` holds an entry as bytes:** the member's value as the fold read
-  it, the member's id and, for `first` and `last`, the value they carry; the key it
-  is put at names the source's extreme (its call), the group, the face, the
-  member's place and its key, and no state of the member's record is written. Read: a seek hands the entry's own bytes on, so a
-  holder never reads its record again for the extreme. It is the largest gain
-  measured here, 5.6× in time and 4.5× in bytes over a `sys:kept` of heads, and with
-  those heads 7.4× and 5.8× over today. It is what candles run on.
+- **`view_order` holds an entry as bytes:** extreme, group, sort key and the
+  member's id, and no copy of a value. Read: a state of an order entry holds nothing
+  a member's record does not. It is the largest gain measured here, 5.6× in time and
+  4.5× in bytes over a `sys:kept` of heads, and with those heads 7.4× and 5.8× over
+  today. It is what candles run on.
 - **An extreme over a sorted field** could read its next holder from the source's
   order index and keep no entry. Reckoned; it waits for record 097's `series_index`.
 
@@ -673,8 +671,9 @@ candles.
   another layout is refused and rebuilt from the log, so no older lake is read.
 - **The memory engine (F11).** An entry is a put of its own kind in the
   projection journal, at no position; a name ends as the journal folds.
-- **The fold.** It puts each changed entry through `put_order` (none deletes)
-  and ends a view's order through `end_order`; a seek reads one entry by its key
+- **The fold.** It puts each changed entry through `put_order` (a put with no
+  entry deletes the key) and ends a view's order through `end_order`; a seek reads
+  one entry by its key
   and a page after a key through `order_page`. The fold puts no
   `sys:order.<view>` record any more, and no table of the records holds one.
 - **Tested.** `ORDER_ENTRIES_APART` runs on every engine: the extreme's next
@@ -705,10 +704,15 @@ candles.
 - **What differs from the sketch.** The sketch said an entry holds no copy of a
   value; as built it holds the member's value as the fold read it (and, for
   `first` and `last`, the value they carry), which is what lets a holder hand on its own
-  bytes, while the extreme, the group, the face and the place are in the key. The
-  entry is the bytes the fold already had, opaque to the engine, so the engines
-  gain a byte table and no serializer, and the entry stays JSON text. F10 and F11
-  shipped as one pull request, F11 against the seam F10 proved on SQLite.
+  bytes, while the extreme, the group, the face and the place are in the key. It is a
+  departure taken knowingly: a seek hands on the fold's own bytes, and `first` and
+  `last` carry a value an expression produced, so a reference to a record would not
+  answer. Its cost is in the table above: 5 994 B a tick as built against the
+  sketch's 2 061, and still below develop's 11 823. The operator accepted the copy
+  on 2026-11-02. The entry is the bytes the fold
+  already had, opaque to the engine, so the engines gain a byte table and no
+  serializer, and the entry stays JSON text. F10 and F11 shipped as one pull
+  request, F11 against the seam F10 proved on SQLite.
 
 ## Why
 

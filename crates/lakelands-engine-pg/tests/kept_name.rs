@@ -530,6 +530,14 @@ async fn the_fold_keeps_an_extremes_order_apart_from_the_records() {
         &format!("SELECT count(*) FROM {schema}.records WHERE ty = 'sys:order.ends' AND $1 <> ''"),
     );
     assert_eq!(records, 0, "the fold writes no `sys:order.` record");
+    let heads = common::settled(
+        &url,
+        &schema,
+        &format!(
+            "SELECT count(*) FROM {schema}.records_head WHERE ty = 'sys:order.ends' AND $1 <> ''"
+        ),
+    );
+    assert_eq!(heads, 0, "the fold writes no `sys:order.` head row");
     let entries = common::settled(
         &url,
         &schema,

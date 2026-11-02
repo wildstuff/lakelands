@@ -91,11 +91,14 @@ impl ProjectionView for MemView {
     ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
         Ok(self.read(|p, _| {
             let from = after.cloned().unwrap_or_default();
-            let of = (name.clone(), from);
+            let of = (name.clone(), from.clone());
+            // A page holds the keys after `from`: the empty key is after
+            // none, so a page from the start skips it as the SQL engines'
+            // `key > ''` does.
             p.orders
                 .range(of..)
                 .take_while(|((t, _), _)| t == name)
-                .filter(|((_, key), _)| after.is_none_or(|a| key > a))
+                .filter(|((_, key), _)| key > &from)
                 .take(n as usize)
                 .map(|((_, key), entry)| (key.clone(), entry.clone()))
                 .collect()

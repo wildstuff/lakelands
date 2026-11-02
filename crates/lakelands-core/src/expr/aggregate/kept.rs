@@ -289,7 +289,7 @@ fn place(func: Func, v: &Val) -> Vec<u8> {
 
 /// One member's entry in the order of one extreme: its value as the fold
 /// read it, so that a holder read from the order hands on its own bytes,
-/// and its key. Written into a record's field it is a JSON object.
+/// and its key. Put at the order's key, the entry is a JSON object.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     v: Held,
