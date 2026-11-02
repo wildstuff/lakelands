@@ -292,6 +292,18 @@ impl Decide<'_> {
             }
             preceding.insert(series, fields);
         }
+        // Each series a call pairs by is read once, for every field read.
+        let mut series = BTreeMap::new();
+        for p in e.pairings().unwrap_or_default() {
+            let (_, read) = series
+                .entry(p.series())
+                .or_insert((p.clone(), BTreeSet::new()));
+            read.insert(p.read.clone());
+        }
+        let mut paired = expr::Preceding::new();
+        for (s, (p, read)) in series {
+            paired.insert(s, self.in_force(&p, &read, after)?);
+        }
         let scope = WriteScope {
             after: &after.fields,
             before: live.map(|b| &b.fields),
@@ -299,6 +311,7 @@ impl Decide<'_> {
             meta: Some(&after.meta),
             settings: Some(self.at.settings),
             preceding: Some(&preceding),
+            paired: Some(&paired),
             now,
         };
         let settings = (self.at.settings, strict);
@@ -825,6 +838,10 @@ impl<S: Scope> Scope for VerbScope<'_, S> {
 
     fn preceding(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
         self.record.preceding(series, field)
+    }
+
+    fn paired(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
+        self.record.paired(series, field)
     }
 
     fn in_write(&self) -> bool {

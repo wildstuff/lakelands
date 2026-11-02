@@ -148,9 +148,10 @@ fn stands(asof: &mut AsOf<'_>, e: &Event, cause: Position) -> Result<bool> {
             let Some(after) = asof.get(cause, ty, key)? else {
                 return Ok(true);
             };
-            // What `preceding` decided, its write decided alone, unless the
-            // record then holds an erased value it read on it, as [`member`].
-            let write = [Func::Preceding];
+            // What `preceding` and `in_force` decided, their write decided
+            // alone, unless the record then holds an erased value they read
+            // on it, as [`member`]: a bound taken back later moves no firing.
+            let write = [Func::Preceding, Func::InForce];
             if when.calls(&write) {
                 let (theirs, rest): (Vec<_>, Vec<_>) =
                     (when.conjuncts().into_iter()).partition(|c| c.calls(&write));
@@ -176,6 +177,7 @@ fn stands(asof: &mut AsOf<'_>, e: &Event, cause: Position) -> Result<bool> {
                 meta: Some(&after.meta),
                 settings: Some(&shape.settings),
                 preceding: None,
+                paired: None,
                 now: e.known_at,
             };
             let settings = (&shape.settings, t.when_strict);

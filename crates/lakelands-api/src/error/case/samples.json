@@ -120,12 +120,10 @@
    "field": "f"
   },
   {
-   "code": "in_force_form",
-   "field": "f"
+   "code": "in_force_form"
   },
   {
    "code": "in_force_pair",
-   "field": "f",
    "left": "f",
    "right": "f"
   },

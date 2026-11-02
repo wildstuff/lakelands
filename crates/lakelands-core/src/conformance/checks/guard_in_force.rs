@@ -57,7 +57,7 @@ check!(
 
 check!(
     GUARD_IN_FORCE_KEEPS_ITS_FIELDS = the_fields_a_guard_pairs_by_are_kept,
-    "100: declaring `box` again or migrating it so that `from` goes, `symbol` becomes a number or `hi` is computed at the read is refused `field_read_elsewhere` naming that field; and a trigger's author masked from `box.hi` is not granted the guard"
+    "100: declaring `box` again or migrating it so that `from` goes, `symbol` becomes a number is refused `field_read_elsewhere` naming that field, and one that computes `hi` at the read `read_as_stored` naming `hi`, as for a field that pairs; and a trigger's author masked from `box.hi` is not granted the guard"
 );
 
 check!(
@@ -204,7 +204,8 @@ async fn fires(
     Ok(wrote(s, l, who, key, fields).await?.0)
 }
 
-/// Each firing the feed tells as overruled, `(trigger, key)`, sorted.
+/// Each `(trigger, key)` the feed tells a firing of as overruled, sorted,
+/// once each: a record's retirement sets its triggers off as well.
 async fn overruled(s: &dyn LakeStore) -> Result<Vec<(String, String)>, Failure> {
     let filter = FeedFilter {
         kinds: vec!["trigger_fired".to_owned()],
@@ -222,6 +223,7 @@ async fn overruled(s: &dyn LakeStore) -> Result<Vec<(String, String)>, Failure> 
         })
         .collect();
     out.sort();
+    out.dedup();
     Ok(out)
 }
 
@@ -387,7 +389,7 @@ async fn a_delivery_lays_its_bounds_over_in_its_order(store: Store) -> Held {
     // A bound refused and quarantined lays nothing over.
     let head = s.head().await.must("reading the head")?;
     let three = vec![b("B8", "A", "09:45", 5000.0), t("X5", 15.0)];
-    fed(&l, own, "feed", kept("d3"), three)
+    fed(&l, own, "feed", kept("third"), three)
         .await
         .must("the third delivery")?;
     let third = fired(s, head).await?;
@@ -542,7 +544,9 @@ async fn a_guard_s_pairing_is_refused_naming_the_trigger(store: Store) -> Held {
     let half = json!({"name": "half", "type": {"kind": "number"}, "authority": "derived",
         "derived": "hi / 2", "computed_at": "read"});
     let mut b = bound_type(BOX);
-    b["fields"].as_array_mut().map(|f| f.push(half));
+    if let Some(f) = b["fields"].as_array_mut() {
+        f.push(half);
+    }
     l.declare_json(b).await?;
     let f = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
     let spot = json!({"declare": "type", "name": "spot", "key": ["symbol"],
@@ -587,7 +591,9 @@ async fn the_fields_a_guard_pairs_by_are_kept(store: Store) -> Held {
     let lo = json!({"name": "hi", "type": {"kind": "number"}, "authority": "derived",
         "derived": "lo", "computed_at": "read"});
     let mut at_read = bound_type("no symbol from:date_time lo:number hand");
-    at_read["fields"].as_array_mut().map(|f| f.push(lo));
+    if let Some(f) = at_read["fields"].as_array_mut() {
+        f.push(lo);
+    }
     let mut red = Vec::new();
     for (field, d) in [
         ("from", bound_type("no symbol hi:number lo:number hand")),
@@ -600,14 +606,18 @@ async fn the_fields_a_guard_pairs_by_are_kept(store: Store) -> Held {
         let declared = declare_by(&l, &l.own, d.clone()).await?.map(drop);
         let migrated = migrated(&l, d).await?;
         for a in [declared, migrated] {
-            if !matches!(invalid_case(&a),
-                Some(Case::FieldReadElsewhere { field: f, .. }) if f == field)
-            {
+            // One computed at the read is refused as 052's pairing is.
+            let named = match invalid_case(&a) {
+                Some(Case::FieldReadElsewhere { field: f, .. }) => f == field,
+                Some(Case::ReadAsStored) => refused_on(&a).is_some_and(|(f, _)| f == field),
+                _ => false,
+            };
+            if !named {
                 red.push(format!("without `{field}` as it is: {a:?}"));
             }
         }
     }
-    let author = json!({"schema": true, "default": "write",
+    let author = json!({"schema": true, "restricted": true, "default": "write",
         "types": {"box": {"fields": {"hi": "masked"}}}});
     let author = holder(s, "author", author);
     let a = declare_by(&l, &author, trigger("mine", "tick", &above())).await?;

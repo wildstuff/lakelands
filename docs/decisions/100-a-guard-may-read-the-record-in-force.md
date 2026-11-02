@@ -413,6 +413,25 @@ record is 890 and 2 100 and the whole is 12 391 and 12 682, over the reserve. Ea
 then measures its size and any raise goes by `docs/budgets.md`. If lines must go, G5's
 series row waits. Nothing else can: G1 to G3 are the ask, and G4 is what R2 owes.
 
+### As built: G1 to G3 (lakelands#1676)
+
+G1, G2 and G3 landed in one pull request, so no release holds one without the others.
+Where the tree differed from the text above:
+
+- **No step line 22 → 23.** Format 23 begins a new record (098), and `docs/log-format.md`
+  keeps no step lines before it. Appendix B alone says that a trigger's `when` holds the
+  call. Format 23's kept lake is not in the tree yet. It is written at the tag, and the
+  trigger calling `in_force`, with a firing, goes in it then.
+- **A field of `T` taken to the read** is refused `read_as_stored`, naming that field, as
+  a field of `T` that a field computed at the read pairs by already was. A field that goes
+  or changes kind is refused `field_read_elsewhere`, as written.
+- **One read a series.** `Decide::in_force` resolves the record once for every field the
+  `when` reads in the series. A field that one sight may not read is left out and reads
+  null alone. No row is read where none is left, or where a sight may not read `T.by` or
+  a `T.m`, or is admitted none of `T`.
+- **`GUARD_IN_FORCE_BOX`'s "reads its partition once"** is a count, so it waits for
+  G5's `rows_read` with `GUARD_IN_FORCE_READS_ONE_PARTITION`.
+
 ### Decided by the operator
 
 Decided on 2026-11-01 (lakelands#1578): every recommendation below was taken.
