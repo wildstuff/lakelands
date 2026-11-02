@@ -515,7 +515,7 @@ fn init_with_an_example_refuses_what_is_there_before_it_writes() {
 }
 
 /// A run that fails after it made the root removes what it made, and the
-/// same command then runs. The fault is a file-size limit (512 KiB, with
+/// same command then runs. The fault is a file-size limit (576 KiB, with
 /// the signal it raises ignored, so a write fails as a full disk does): the
 /// partners ingest commits and the August ingest fails. A directory and a
 /// `lakes/` that were there before stay: no directory, an empty one, and
@@ -545,7 +545,7 @@ fn fault(n: usize, there: &[&str]) {
             .output()
             .unwrap()
     };
-    let failed = run("512");
+    let failed = run("576");
     let (out, err) = (
         String::from_utf8_lossy(&failed.stdout),
         String::from_utf8_lossy(&failed.stderr),
