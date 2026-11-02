@@ -48,7 +48,7 @@ fn a_thinning_part_is_a_kind_of_format_23_and_reads_back() {
 #[test]
 fn a_read_says_the_acts_and_the_stranded_count_and_omits_them_when_there_are_none() {
     let told = json!([{
-        "ty": "tick", "by": "at", "before": "2026-06-01T00:00:00.000000Z",
+        "type": "tick", "by": "at", "before": "2026-06-01T00:00:00.000000Z",
         "through": 41, "gone": 1200,
     }]);
     let records: Found = serde_json::from_value(json!({
@@ -131,7 +131,7 @@ fn a_description_names_the_acts_and_the_stranded_groups() {
     assert_eq!(
         wire["thinned"],
         json!([{
-            "ty": "tick", "by": "at", "before": "2026-06-01T00:00:00.000000Z",
+            "type": "tick", "by": "at", "before": "2026-06-01T00:00:00.000000Z",
             "through": 41, "gone": 1200,
         }])
     );

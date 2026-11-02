@@ -1172,6 +1172,33 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ("field_meta", members(&field_meta())),
         ("record", members(&record())),
         ("thinned_act", members(&thinned_act())),
+        (
+            "records_page",
+            adjusted(
+                members(&Found::Records {
+                    rows: vec![],
+                    next_cursor: Some(Cursor("c".into())),
+                    total: Some(3),
+                    retired: Some(1),
+                    thinned: vec![thinned_act()],
+                    stranded: Some(2),
+                }),
+                &["shape"],
+                &[],
+            ),
+        ),
+        (
+            "groups_page",
+            adjusted(
+                members(&Found::Groups {
+                    rows: vec![],
+                    thinned: vec![thinned_act()],
+                    stranded: Some(2),
+                }),
+                &["shape"],
+                &[],
+            ),
+        ),
         ("thin", members(&thin())),
         ("thin_report", members(&thin_report())),
         (

@@ -338,6 +338,7 @@ pub struct After {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThinnedAct {
     /// The type the act took records of.
+    #[serde(rename = "type")]
     pub ty: TypeName,
     /// The field of instants or dates the act judged.
     pub by: FieldName,

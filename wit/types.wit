@@ -815,7 +815,7 @@ interface types {
     /// One act that thinned a type past a horizon, as a read names what
     /// it can no longer answer.
     record thinned-act {
-        ty: type-name,
+        %type: type-name,
         by: field-name,
         before: timestamp,
         /// The last position the act had got through.

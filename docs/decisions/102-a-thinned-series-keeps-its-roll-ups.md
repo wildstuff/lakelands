@@ -238,7 +238,7 @@ since the members it lost are not there to compute it.
 
 - **The raw type.** `find` omits the thinned rows; the page's `thinned`
   lists each act on the type, oldest first, each
-  `{ ty, by, before, through, gone }` — the type, the field, the instant,
+  `{ type, by, before, through, gone }` — the type, the field, the instant,
   the last position the act had got through, and how many records it had
   taken. `ty` is carried because a view's page lists the acts on all its
   sources, and an act is attributed to its type.
@@ -570,7 +570,8 @@ its mark and changed nowhere else.
   `thinned` and `stranded` on both `Found` variants, and on
   `TypeDescription`. Each new member is omitted from the wire where it
   is empty or false, so a page or a description with nothing to say
-  reads as it did before.
+  reads as it did before. `ThinnedAct` puts its type on the wire as
+  `type`, as every other public type does; its Rust member stays `ty`.
 - **The six refusals** are in the catalog with their ids and sentences,
   and `THIN_REFUSALS` is the suite's row for them: every engine runs it,
   and it fails when an id, a sentence or a name the sentence says
@@ -579,18 +580,36 @@ its mark and changed nowhere else.
   gives the page to S2: `api/tests/contract.rs` holds that every kind in
   `KINDS` is on the page, so S1 cannot be green without it. The page says
   the fold's effect and the two tables land with the act.
-- **Two corrections where the tree holds a rule the sketch did not name:**
+- **Corrections where the tree holds a rule the sketch did not name:**
   `StrandedAtHeadOnly` takes `position`, not `at`, because the refusals
   catalog reserves `at` for a `Place`'s position and refuses it as a
-  case's parameter; and the suite's row for the six refusals is S1's, as
-  the issue asks for a row per refusal before any of them is raised.
-- **Compile-necessary arms outside S1's files**, which the issue's
-  ownership list did not name: `ends_a_range` and `reads_a_record` in
-  `lake.rs` (the kind changes no shape, and a fold of it reads the
-  records it takes), and one no-op arm in `lake/fold.rs` (the act's fold
-  is S3's). The pattern updates in the suite and in the store's tests are
-  the new members' rest patterns or their defaults.
-- **Measured**: product 99 980 of the 108 500 base and specification
-  184 149 of the 191 500 base; seam 94 of 110. S1's own lines:
-  product +181 −3, specification +349 −26; the plan's 160 and 180 were
-  the sketch, and the row's extra is the wire tests and the suite row.
+  case's parameter; `ThinnedAct`'s wire name is `type`; and the suite's
+  row for the six refusals is S1's, as the issue asks for a row per
+  refusal before any of them is raised.
+- **Every file outside S1's plan list the tree forced, and why:**
+  `api/src/describe.rs` carries `TypeDescription`'s two members, which
+  this record's public-types bullet names — S2 is the engines' stored
+  tables, not the description's shape; `api/tests/thin.rs` and
+  `conformance/checks/thin.rs` are the wire tests and the suite's row;
+  `core/src/engines.rs` holds `KIND_CODES`, the format's stored code
+  table, where the kind joins last as 25; `core/src/describe.rs` builds
+  the description, and now names the two members field by field rather
+  than letting `Default` absorb a member a later step adds;
+  `core/src/expr/aggregate.rs` and `core/src/rights.rs` fill `Group` and
+  `Record` with their new member; `store/src/reads/find.rs` builds the
+  pages, which carry no acts and no stranded count yet; `store/src/lake.rs`
+  (`ends_a_range`, `reads_a_record`) and `store/src/lake/fold.rs` (one
+  no-op arm) are exhaustive matches over `EventBody`, where the kind
+  changes no shape, a fold of it reads the records it takes, and the
+  act's fold is S3's; `wit/types.wit` and `api/tests/wit.rs` are the
+  mirror, with new checks for `records-page` and `groups-page`; the
+  rest patterns in the suite and in the store's and cli's tests follow
+  from the new members; `docs/log-format.md` is required by the contract
+  test, above.
+- **Measured**: product 99 982 of the 108 500 base and specification
+  184 453 of the 191 500 base; seam 94 of 110; 6 of 20 `cfg(feature)`
+  sites; 1 003 checks through the doors and 87 through the engine seam;
+  1 018 refusal cases. S1's own lines: product +182 −3, specification
+  +377 −26 (the review measured 184 426 before this round's two page
+  mirrors added 27 lines); the plan's 160 and 180 were the sketch, and
+  the row's extra is the wire tests and the suite row.

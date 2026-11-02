@@ -1249,7 +1249,8 @@ impl Sight<'_> {
                     .collect(),
             },
             fields,
-            ..Default::default()
+            thinned: Vec::new(),
+            stranded: 0,
         })
     }
 
