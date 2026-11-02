@@ -232,7 +232,7 @@ pub const SETTINGS: &[Setting] = &[
     },
     Setting {
         range: "a count; 0 is taken as 1",
-        says: "The most events one part of an act appends: an act that work beside the writer runs appends in parts, each a turn of the writer of its own, so a write sent meanwhile waits for at most the part in front of it.",
+        says: "Not read yet: the acts that append in parts, each part a turn of the writer of its own, come with step R2 of decision 099. Then it is the most events one part of an act appends, so a write sent meanwhile waits for at most the part in front of it.",
         ..location("limits.part_events", "500")
     },
     Setting {
@@ -243,7 +243,7 @@ pub const SETTINGS: &[Setting] = &[
     },
     Setting {
         range: "a count; 0 is taken as 1",
-        says: "The most events one page of a restate refolds in a turn of the writer; a job whose page would refold more restates beside the projection instead.",
+        says: "Not read yet: restating in pages comes with step R4 of decision 099. Then it is the most events one page of a restate refolds in a turn of the writer, and a job whose page would refold more restates beside the projection instead.",
         ..location("limits.page_events", "2000")
     },
     Setting {

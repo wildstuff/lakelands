@@ -21,7 +21,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 
 use super::*;
-use crate::doors::{Store, opened};
+use crate::doors::{Store, opened_owing, standing_by};
 
 /// Where the counter keeps how far it has counted.
 const KEPT: &str = "test:road";
@@ -82,7 +82,16 @@ struct Counter {
     of: u32,
     done: u32,
     slept: Duration,
+    reach: Reach,
     seen: Arc<Seen>,
+}
+
+/// The counter's reach where a test names none: every write about a note.
+fn notes() -> Reach {
+    Reach {
+        types: vec!["note".into()],
+        ..Reach::default()
+    }
 }
 
 /// How far the counter of `view`'s lake has counted, if it has started.
@@ -92,8 +101,13 @@ fn kept(view: &dyn ProjectionView) -> Option<(u32, u32, u64)> {
     Some((n("done") as u32, n("of") as u32, n("slept_ms")))
 }
 
-/// The kinds the test's open finishes: the counter's.
+/// The kinds the test's open finishes: the store's, and the counter's.
 const KINDS: &[Owes] = &[owes];
+
+#[test]
+fn the_store_owes_no_kind_the_test_does_not() {
+    assert!(OWED.is_empty(), "add the store's kinds to `KINDS`");
+}
 
 /// The counters the log and the lists at `view` leave owed.
 fn owes(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
@@ -106,6 +120,7 @@ fn owes(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
         of,
         done,
         slept,
+        reach: notes(),
         seen,
     })])
 }
@@ -120,10 +135,7 @@ impl Job for Counter {
             self.seen.asked.fetch_add(1, Ordering::SeqCst);
             self.seen.stop("reach");
         }
-        Reach {
-            types: vec!["note".into()],
-            ..Reach::default()
-        }
+        self.reach.clone()
     }
 
     fn walk(&mut self, _: &Lake, view: &dyn ProjectionView) -> Result<()> {
@@ -265,8 +277,11 @@ impl Place {
         place
     }
 
+    /// The lake, opened as the store opens it but for the kinds its
+    /// writer finishes: the counter's, beside the store's.
     async fn open(&self, mode: OpenMode) -> Arc<Lake> {
-        let lake = opened(self.location.clone(), self.seams.clone(), mode).await;
+        let (at, seams) = (self.location.clone(), self.seams.clone());
+        let lake = opened_owing(at, seams, mode, KINDS).await;
         lake.expect("the lake opens")
     }
 }
@@ -301,6 +316,16 @@ async fn lake_of(place: &Place) -> (Arc<Lake>, Doors) {
 /// Send a counter to `of` on `lake`'s road: how its lake's test sees it,
 /// and its ending.
 fn count(lake: &Arc<Lake>, of: u32, slept: Duration) -> (Arc<Seen>, oneshot::Receiver<Result<()>>) {
+    count_reaching(lake, of, slept, notes())
+}
+
+/// [`count`], reaching what `reach` names.
+fn count_reaching(
+    lake: &Arc<Lake>,
+    of: u32,
+    slept: Duration,
+    reach: Reach,
+) -> (Arc<Seen>, oneshot::Receiver<Result<()>>) {
     let seen = seen(lake.id.as_str());
     let (tx, ended) = oneshot::channel();
     *lock(&seen.ended) = Some(tx);
@@ -308,6 +333,7 @@ fn count(lake: &Arc<Lake>, of: u32, slept: Duration) -> (Arc<Seen>, oneshot::Rec
         of,
         done: 0,
         slept,
+        reach,
         seen: seen.clone(),
     };
     send(lake, Box::new(job));
@@ -403,10 +429,7 @@ async fn a_runner_stopped_between_turns_is_finished_by_the_next_open() {
         let (tx, ended) = oneshot::channel();
         *lock(&seen.ended) = Some(tx);
         let at = Instant::now();
-        // The open asks `OWED`, which names no kind yet; the counter's is
-        // asked as the open asks it.
         let lake = place.open(OpenMode::Write).await;
-        resume(&lake, KINDS);
         let opened_in = at.elapsed();
         let left = {
             let view = lake.engine.view(None).expect("a view");
@@ -468,8 +491,15 @@ async fn the_tail_past_the_view_reaches_the_first_turn() {
                 .expect("the counter is whole");
             let folds = lock(&seen.folds).clone();
             let keys: Vec<String> = (0..notes).map(|i| format!("n{i}")).collect();
+            // Off the writer in pieces of one turn's read, then the first
+            // turn's own read, which is empty.
             let want = if notes as u32 > bound {
-                vec![keys, Vec::new()]
+                let mut pieces: Vec<Vec<String>> = keys
+                    .chunks(bound as usize)
+                    .map(<[String]>::to_vec)
+                    .collect();
+                pieces.push(Vec::new());
+                pieces
             } else {
                 vec![keys]
             };
@@ -530,5 +560,165 @@ async fn a_tail_that_outruns_the_view_ends_the_job_unavailable() {
             "{on:?}: no turn was taken"
         );
         assert_eq!(written, 3 * TRIES, "{on:?}: a burst before each try");
+    }
+}
+
+/// A standby that takes the lease from a writer whose last handle went
+/// finishes what that writer's runner left, as a writer's open does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_standby_that_takes_the_lease_finishes_what_the_writer_left() {
+    let (of, turn) = (12, Duration::from_millis(40));
+    for on in engines() {
+        let place = Place::new(on, "standby");
+        let (lake, doors) = lake_of(&place).await;
+        let (seen, ended) = count(&lake, of, turn);
+        while seen.turns.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let (at, seams, every) = (place.location.clone(), place.seams.clone(), turn / 2);
+        let (standing, tries) = standing_by(at, seams, every, KINDS)
+            .await
+            .expect("the standby opens");
+        drop((lake, doors));
+        let stopped = ending(ended, Duration::from_secs(10)).await;
+        assert!(stopped.is_err(), "{on:?}: a runner whose lake went stops");
+        let done = seen.turns.load(Ordering::SeqCst);
+        assert!(done < of, "{on:?}: stopped at {done} of {of}");
+
+        let (tx, ended) = oneshot::channel();
+        *lock(&seen.ended) = Some(tx);
+        tokio::time::timeout(Duration::from_secs(10), tries)
+            .await
+            .expect("the standby takes the lease in time")
+            .expect("the standby takes the lease");
+        ending(ended, Duration::from_secs(30))
+            .await
+            .expect("the standby finishes it");
+        let view = standing.engine.view(None).expect("a view");
+        let (counted, ..) = kept(view.as_ref()).expect("the count is kept");
+        assert_eq!(counted, of, "{on:?}: counted to its end");
+        assert_eq!(
+            seen.turns.load(Ordering::SeqCst),
+            of,
+            "{on:?}: no step taken twice"
+        );
+    }
+}
+
+/// A lake with a type `fed`, whose field only a source writes.
+async fn fed(doors: &Doors) {
+    let decl = fx::type_decl("fed", vec![fx::sourced("n", StorageKind::Text)]);
+    doors.declare(decl).await.expect("the type is declared");
+}
+
+/// `doors`' source `source` feeds a record of `fed` at `key`.
+async fn feed(doors: &Doors, source: &str, key: &str) {
+    let record = fx::source_record("fed", key, json!({"n": "x"}));
+    doors
+        .ingest(source, vec![record])
+        .await
+        .expect("the source feeds");
+}
+
+/// A job that reaches by source is reached by every write of that source
+/// past its view, by the log index's rows of the source, and by no write
+/// of another source or of the owner, whatever type it is about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_tail_reaches_a_job_by_its_source() {
+    for on in engines() {
+        for (bound, fed_in) in [(1_000, 1), (1, 3)] {
+            let mut place = Place::new(on, "source");
+            place.location.limits.part_tail = bound;
+            let (lake, doors) = lake_of(&place).await;
+            fed(&doors).await;
+            let seen = seen(lake.id.as_str());
+            let (says, mut said) = mpsc::unbounded_channel();
+            let (go, went) = std::sync::mpsc::channel();
+            *lock(&seen.pause) = Some(Pause {
+                at: "walk",
+                says,
+                go: went,
+            });
+            let reach = Reach {
+                sources: vec!["s1".into()],
+                ..Reach::default()
+            };
+            let (_, ended) = count_reaching(&lake, 1, Duration::ZERO, reach);
+            said.recv().await.expect("the counter walks");
+            for i in 0..fed_in {
+                feed(&doors, "s1", &format!("a{i}")).await;
+                feed(&doors, "s2", &format!("b{i}")).await;
+            }
+            doors
+                .upsert("note", "n", json!({"n": "x"}))
+                .await
+                .expect("the owner writes");
+            go.send(()).expect("the counter waits");
+            ending(ended, Duration::from_secs(10))
+                .await
+                .expect("the counter is whole");
+            let folded: Vec<String> = lock(&seen.folds).concat();
+            let want: Vec<String> = (0..fed_in).map(|i| format!("a{i}")).collect();
+            assert_eq!(
+                folded, want,
+                "{on:?}: {fed_in} records of s1 past the view, {bound} a turn"
+            );
+        }
+    }
+}
+
+/// Where the index decides nothing the log is read, and it answers what
+/// the index answers; a type's keys narrow the index's rows, so the bound
+/// counts only the events that may reach the job, each once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_log_answers_where_the_index_decides_nothing() {
+    for on in engines() {
+        let place = Place::new(on, "logged");
+        let (lake, doors) = lake_of(&place).await;
+        fed(&doors).await;
+        let view = lake.engine.view(None).expect("a view");
+        let past = view.position();
+        drop(view);
+        for i in 0..5 {
+            let key = format!("n{i}");
+            doors
+                .upsert("note", &key, json!({"n": "x"}))
+                .await
+                .expect("a note");
+        }
+        doors
+            .upsert("other", "o", json!({"n": "x"}))
+            .await
+            .expect("another");
+        feed(&doors, "s1", "n1").await;
+        feed(&doors, "s2", "b").await;
+        let reach = Reach {
+            sources: vec!["s1".into()],
+            types: vec!["note".into()],
+            keys: ["n1".into(), "n3".into()].into(),
+        };
+        let view = lake.engine.view(None).expect("a view");
+        let keys = |read: Option<Vec<Event>>| {
+            read.map(|r| {
+                let about = r.iter().flat_map(|e| lakelands_core::feed::about(&e.body));
+                about
+                    .filter_map(|a| a.key.map(|k| k.to_string()))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let indexed = read_tail(&lake, view.as_ref(), &reach, past, 1_000).expect("a read");
+        let want = Some(vec!["n1".to_owned(), "n3".to_owned(), "n1".to_owned()]);
+        assert_eq!(keys(indexed), want, "{on:?}: by the index");
+        let from = past.map_or(Position::GENESIS, Position::next);
+        let head = view.position().expect("a head");
+        let read = logged(&lake, &reach, from, head, 1_000).expect("a read");
+        assert_eq!(keys(read), want, "{on:?}: by the log");
+
+        let three = read_tail(&lake, view.as_ref(), &reach, past, 3).expect("a read");
+        assert!(three.is_some(), "{on:?}: three events may reach the job");
+        let two = read_tail(&lake, view.as_ref(), &reach, past, 2).expect("a read");
+        assert!(two.is_none(), "{on:?}: more than two");
+        let all = logged(&lake, &reach, from, head, 3).expect("a read");
+        assert!(all.is_none(), "{on:?}: the log counts every event");
     }
 }

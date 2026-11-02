@@ -202,7 +202,7 @@ The records one chunk of a chosen index's build writes while it holds the writer
 
 ### `limits.part_events`
 
-The most events one part of an act appends: an act that work beside the writer runs appends in parts, each a turn of the writer of its own, so a write sent meanwhile waits for at most the part in front of it.
+Not read yet: the acts that append in parts, each part a turn of the writer of its own, come with step R2 of decision 099. Then it is the most events one part of an act appends, so a write sent meanwhile waits for at most the part in front of it.
 
 - **Takes:** a count; 0 is taken as 1.
 - **Default:** `500`.
@@ -217,7 +217,7 @@ The most events past the view it walked on that a job's first turn reads under t
 
 ### `limits.page_events`
 
-The most events one page of a restate refolds in a turn of the writer; a job whose page would refold more restates beside the projection instead.
+Not read yet: restating in pages comes with step R4 of decision 099. Then it is the most events one page of a restate refolds in a turn of the writer, and a job whose page would refold more restates beside the projection instead.
 
 - **Takes:** a count; 0 is taken as 1.
 - **Default:** `2000`.

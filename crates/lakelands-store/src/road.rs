@@ -147,7 +147,9 @@ pub(crate) fn resume(lake: &Arc<Lake>, kinds: &'static [Owes]) {
             }
             Ok(owed)
         });
-        // What cannot be found now is found by the next open.
+        // What cannot be found now is found by the next open. The store
+        // keeps no log of its own to tell it to; the job stays owed in the
+        // log and the lists, where the next open looks again.
         for job in owed.await.unwrap_or_default() {
             send(&lake, job);
         }
@@ -229,30 +231,49 @@ async fn walk(weak: &Weak<Lake>, job: &Held) -> Result<Option<Position>> {
 }
 
 /// Off the writer, fold the tail past `past` into the job while it is
-/// longer than `bound`: the position the job stands at then.
+/// longer than `bound`, in pieces of `bound` events: the position the job
+/// stands at then. A lake written faster than the job catches up stops it
+/// after [`TRIES`] rounds, and its first turn finds the tail too long.
 async fn catch_up(
     weak: &Weak<Lake>,
     job: &Held,
     mut past: Option<Position>,
     bound: u32,
 ) -> Result<Option<Position>> {
-    loop {
+    for _ in 0..TRIES {
         let (lake, j) = (held(weak)?, job.clone());
         let moved = exec::run(move || {
             let view = lake.engine.view(None)?;
             let reach = lock(&j).reach();
-            if read_tail(&lake, view.as_ref(), &reach, past, bound)?.is_some() {
+            let from = past.map_or(Position::GENESIS, Position::next);
+            let Some(head) = view.position().filter(|h| *h >= from) else {
                 return Ok(None);
+            };
+            let fold = |read: &[Event]| lock(&j).fold(read);
+            let piece = usize::try_from(bound).unwrap_or(usize::MAX);
+            match found(view.as_ref(), &reach, from, head, u32::MAX)? {
+                Found::At(at) if at.len() <= piece => return Ok(None),
+                Found::At(at) => {
+                    for at in at.chunks(piece) {
+                        fold(&reached(&lake, &reach, at)?)?;
+                    }
+                }
+                Found::Over => return Ok(None),
+                Found::Unindexed => {
+                    if logged(&lake, &reach, from, head, bound)?.is_some() {
+                        return Ok(None);
+                    }
+                    folded_logged(&lake, &reach, from, head, piece, fold)?;
+                }
             }
-            let read = read_tail(&lake, view.as_ref(), &reach, past, u32::MAX)?;
-            lock(&j).fold(&read.unwrap_or_default())?;
             Ok(Some(view.position()))
         });
         match moved.await? {
             Some(at) => past = at,
-            None => return Ok(past),
+            None => break,
         }
     }
+    Ok(past)
 }
 
 /// One turn of `job` at the writer, which this handle must hold.
@@ -266,11 +287,12 @@ fn turn(t: &Turn<'_>, job: &mut dyn Job) -> Result<Turned> {
 }
 
 /// The events past `past` through `view`'s position that reach a job, in
-/// log order; none where finding them reads more than `bound` rows. The
-/// rows are the log index's, by source for the sources and by type for the
-/// types, so a lake written elsewhere costs nothing; the events are read
-/// from the log at their positions. Where the index decides nothing, as
-/// while a rebuild refolds, the log itself is read and every event counts.
+/// log order; none where finding them reads more than `bound` of them.
+/// They are found in the log index, by source for the sources and by type
+/// (and key) for the types, so a lake written elsewhere costs nothing, and
+/// read from the log at their positions. Where the index decides nothing,
+/// as while a rebuild refolds, the log itself is read and every event
+/// counts.
 pub(crate) fn read_tail(
     lake: &Lake,
     view: &dyn ProjectionView,
@@ -282,12 +304,40 @@ pub(crate) fn read_tail(
     let Some(head) = view.position().filter(|h| *h >= from) else {
         return Ok(Some(Vec::new()));
     };
+    match found(view, reach, from, head, bound)? {
+        Found::At(at) => reached(lake, reach, &at).map(Some),
+        Found::Over => Ok(None),
+        Found::Unindexed => logged(lake, reach, from, head, bound),
+    }
+}
+
+/// What the log index finds of a tail.
+enum Found {
+    /// The positions of the events that may reach the job, in log order,
+    /// each once, however many of its rows name it.
+    At(Vec<Position>),
+    /// More than the bound.
+    Over,
+    /// The index decides nothing, and the log is read.
+    Unindexed,
+}
+
+/// The positions from `from` through `head` the log index finds for
+/// `reach`: by source, and by type and key.
+fn found(
+    view: &dyn ProjectionView,
+    reach: &Reach,
+    from: Position,
+    head: Position,
+    bound: u32,
+) -> Result<Found> {
     let room = bound.saturating_add(1);
     let filter = FeedFilter {
         types: reach.types.clone(),
+        keys: reach.keys.iter().cloned().collect(),
         ..FeedFilter::default()
     };
-    let (mut rows, mut at) = (0u64, BTreeSet::new());
+    let mut at = BTreeSet::new();
     let sources = reach.sources.iter().map(Some);
     let types = (!reach.types.is_empty()).then_some(None);
     for source in sources.chain(types) {
@@ -298,21 +348,22 @@ pub(crate) fn read_tail(
                 None => view.matching(&filter, next, head, room)?,
             };
             let Some(through) = m.through else {
-                return logged(lake, reach, from, head, bound);
+                return Ok(Found::Unindexed);
             };
-            rows += m.positions.len() as u64;
-            if rows > u64::from(bound) {
-                return Ok(None);
-            }
             at.extend(m.positions);
+            if at.len() as u64 > u64::from(bound) {
+                return Ok(Found::Over);
+            }
             next = through.next();
         }
     }
-    let at: Vec<Position> = at.into_iter().collect();
-    let read = lake.read_these(&at)?;
-    Ok(Some(
-        read.into_iter().filter(|e| reach.reaches(e)).collect(),
-    ))
+    Ok(Found::At(at.into_iter().collect()))
+}
+
+/// The events at `at` that reach a job.
+fn reached(lake: &Lake, reach: &Reach, at: &[Position]) -> Result<Vec<Event>> {
+    let read = lake.read_these(at)?;
+    Ok(read.into_iter().filter(|e| reach.reaches(e)).collect())
 }
 
 /// [`read_tail`] from the log, where the index decides nothing.
@@ -339,6 +390,33 @@ fn logged(
         }
     }
     Ok(Some(out))
+}
+
+/// The catch-up's read of the log, where the index decides nothing: what
+/// reaches the job, folded in pieces of at most `piece` events.
+fn folded_logged(
+    lake: &Lake,
+    reach: &Reach,
+    from: Position,
+    head: Position,
+    piece: usize,
+    mut fold: impl FnMut(&[Event]) -> Result<()>,
+) -> Result<()> {
+    let mut out = Vec::new();
+    'pages: for page in lake.pages(from) {
+        for e in page? {
+            if e.position > head {
+                break 'pages;
+            }
+            if reach.reaches(&e) {
+                out.push(e);
+            }
+            if out.len() == piece {
+                fold(&std::mem::take(&mut out))?;
+            }
+        }
+    }
+    if out.is_empty() { Ok(()) } else { fold(&out) }
 }
 
 #[cfg(test)]

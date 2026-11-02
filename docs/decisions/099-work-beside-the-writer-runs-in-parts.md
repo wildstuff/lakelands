@@ -720,19 +720,24 @@ is on it yet.
   each job whole before the next, oldest first. Between turns it holds its lake weakly, so a lake
   whose last handle goes stops it before its next turn. That a later act's first turn goes ahead
   of an earlier act's parts ("Acts that overlap") is the acts' rule, and lands with R2.
-- **The tail read** takes at most `part_tail` + 1 rows of the log index past the view, by source
-  (`of_source`) and by type (`matching`), and reads their events with `read_these`, through the
-  block seam of format 23. Where the index decides nothing, as while a rebuild refolds, it reads
-  the log itself and every event counts against the bound. The catch-up reads the tail off the
-  writer while it is longer than that; the first turn reads it under the writer and folds it
-  before it turns. Three tries that each find it longer end the job unavailable,
-  `TailOverran`, with nothing appended.
+- **The tail read** finds at most `part_tail` events past the view in the log index, by source
+  (`of_source`) and by type and key (`matching`), each event once however many rows name it, and
+  reads them with `read_these`, through the block seam of format 23. Where the index decides
+  nothing, as while a rebuild refolds, it reads the log itself and every event counts against the
+  bound. The catch-up reads the tail off the writer while it is longer than that, and folds it in
+  pieces of `part_tail` events; it holds the tail's positions, never its events, and stops after
+  three rounds that each find the lake moved on, when the first turn finds the tail too long. The
+  first turn reads it under the writer and folds it before it turns. Three tries that each find it
+  longer end the job unavailable, `TailOverran`, with nothing appended.
 - **`limits`** hold `part_events`, `part_tail` and `page_events` with the defaults above, and
-  `order_chunk` is 1 000. Nothing reads `part_events` or `page_events` yet: R2 and R4 do.
+  `order_chunk` is 1 000. Nothing reads `part_events` or `page_events` yet, and their settings
+  rows say so: R2 and R4 read them.
 - **The writer's open** asks every kind of job in `OWED` what the log and the lists owe, off the
   writer and after the open has answered, and sends it; a writer taken over from standby asks
-  the same. `OWED` is empty, so the test of a stopped runner asks its own kind as the open
-  would. The open still finishes an owed forget or removal before it answers
+  the same. `OWED` is empty; the open and the standby take the kinds they ask as an argument
+  inside the store (`opened_owing`, `standing_by`), so the road's tests open through both with the
+  test's kind beside the store's. A failure to find what is owed is not reported: the store keeps
+  no log of its own, and the job stays owed for the next open. The open still finishes an owed forget or removal before it answers
   (`finish_forgetting`): moving that beside the writer opens the window that reading through
   closes, so it moves with R2.
 - **Measured** on the shared machine of this step, not a quiet one: beside a job of 50 ms turns,
