@@ -610,7 +610,9 @@ its mark and changed nowhere else.
 - **Measured**: product 99 982 of the 108 500 base and specification
   184 453 of the 191 500 base; seam 94 of 110; 6 of 20 `cfg(feature)`
   sites; 1 003 checks through the doors and 87 through the engine seam;
-  1 018 refusal cases. S1's own lines: product +182 −3, specification
-  +377 −26 (the review measured 184 426 before this round's two page
+  1 018 refusal cases. S1's own lines: product +184 −4, specification
+  +376 −25 (the review measured 184 426 before this round's two page
   mirrors added 27 lines); the plan's 160 and 180 were the sketch, and
-  the row's extra is the wire tests and the suite row.
+  the row's extra is the wire tests and the suite row. The split is the
+  gate's six-crate one; `crates/lakelands-cli/tests/walk_1.rs`'s one line
+  each way is outside the specification budget.
