@@ -13,10 +13,11 @@ amends 039, 041, 049, 057, 058, 065, 066, 076 and 081. No code lands with it.
 **A breaking change, inside 098's: no data migration, and no lake to carry.**
 **Every change of format, stored table and public type this record makes:**
 
-- **Log format 23 gains two kinds:** `act_whole`, which ends an act, and
-  `source_purged`, which begins a purge, so a purge can be owed.
-- **An act is several appends.** `values_removed`, `source_forgotten` or
-  `source_purged` first, retirements and closes in appends of at most
+- **Log format 23 gains three kinds:** `act_whole`, which ends an act,
+  `source_purged`, which begins a purge, so a purge can be owed, and
+  `values_thinned`, which begins a thinning (102).
+- **An act is several appends.** `values_removed`, `source_forgotten`,
+  `source_purged` or `values_thinned` first, retirements and closes in appends of at most
   `limits.part_events`, `act_whole` last. A feed reader sees an act arrive in parts;
   until now one append held it. `act_whole` names the act's first position.
 - **Stored tables.** None is added. The acts' lists hold one more stage, and the
@@ -37,6 +38,8 @@ amends 039, 041, 049, 057, 058, 065, 066, 076 and 081. No code lands with it.
 - **`choose_order` no longer refuses a type with `sort_index`.**
 - **A write reads through an owed act,** and a read does not. A write sees what the
   restate will leave; a read answers the old value until then, as 065 says.
+  A thinning act is not one of these: a write at a key it selected is refused,
+  since it takes the value a refold would read (102).
 - **lakelands#1649's headline changes** unless the operator chooses otherwise: open
   choice 5. An act's turn holds the writer longer than an ordinary write.
 
@@ -386,6 +389,13 @@ page, so it answers old values, as 065 says. A trigger's firing over an old valu
 the poll rule above, but for a conjunct of `preceding` or `in_force`: `stands` keeps that as its
 write decided it, so those two read through, and `preceding`'s half lands in R2 whatever
 becomes of 100. The row is `WRITE_READS_THROUGH_AN_OWED_ACT`.
+
+A thinning act is not on this seam. It takes the record's states out of the
+projection without erasing a value from the log, so its refold would answer the
+very value the act took out; a write at a key its selection holds is refused
+`Thinned`, naming the horizon (102), rather than reading through, since the fold
+a stranded group holds must not be contradicted. A write at any key it did not
+select is ordinary, and reads as it reads when nothing is owed.
 
 ### Builds of `sort_index`, `lookup_index` and `view_kept`
 
@@ -756,3 +766,6 @@ is on it yet.
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
   `in_force` read through an owed act, which the poll rule does not hold.
 - R1 built by lakelands#1675; what the tree took is under "As built".
+- Amended by 102 (lakelands#1639), proposed for 0.23.0: a thinning act begins
+  with `values_thinned`, and a write at a key it selected is refused rather
+  than reading through the act.

@@ -6,7 +6,7 @@
 
 098 keeps a kept view's head alone and its order entries in
 `view_order`; 099 builds a view in parts, and a read computes until the
-build is whole; 101 strands a group whose members were thinned.
+build is whole; 102 strands a group whose members were thinned.
 
 A view asked for by the setting `view_kept.<type>` has its records kept
 in the projection by the fold, one for each group, and a read of the
@@ -104,7 +104,7 @@ one.
   and making a view return no error but the engine's, so no view can
   stop the lake.
 - **A group whose members have gone is stranded.** Where an act thins a
-  type's records past a horizon (`docs/decisions/101-a-thinned-series-keeps-its-roll-ups.md`),
+  type's records past a horizon (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`),
   the fold notes no member leaving: the group keeps the folds its thinned
   members gave, and the record bears the mark `sys:stranded`, one mark for
   both faces. A read answers it as stranded, never as the computation. It is
@@ -113,16 +113,18 @@ one.
   arrival, or a present member's leaving or change — is the fold's; a
   correction to a thinned member is refused (`Thinned`), so no fold it
   holds is contradicted, and `not_exact` never counts it; the state's
-  `stranded` does. Its order entries stay, so an extreme whose holder was
-  thinned keeps its holder. A group with no thinned member computes as
-  before at every position; a stranded group answers at the head only, and a
+  `stranded` (102) does. Its order entries stay, so an extreme whose holder
+  was thinned keeps its holder. A group that held no thinned member at any
+  position computes as before at every position; a stranded group answers at
+  the head only, and a
   read at an earlier position says it cannot answer it. A group of a view
   over a view is stranded where it holds a stranded inner group, and its
   earlier-position read is refused naming the inner. A make of a view
   after the thinning carries each stranded group's record where the event
-  leaves what it folds, and is refused `StrandedMake` otherwise; a
-  `view_kept.` setting for a view whose source records are thinned is
-  refused `KeptOverThinned`.
+  leaves what it folds, and is refused `StrandedMake` otherwise; every
+  event that would make a view whose source records are thinned kept — a
+  `view_kept.` setting, a declaration, a migration's step — is refused
+  `KeptOverThinned`.
 - **Made by noting from nothing.** A view becomes kept in the fold of
   the event that makes it so: its setting, or a declaration under which
   it can be kept. Every record of its sources is noted as arriving, a
@@ -350,6 +352,6 @@ that already walks the type.
   answered as its twin grouped by a derived field, a trigger on it too;
   until then the source needed the derived field (lakelands#1636,
   lakelands#1666).
-- Amended by 101 (lakelands#1639), proposed for 0.23.0: a group whose
+- Amended by 102 (lakelands#1639), proposed for 0.23.0: a group whose
   members were thinned is stranded, exact, answered at the head only, and
   carried by a make of the view.

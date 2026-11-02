@@ -1,8 +1,8 @@
-# 101 — A thinned series keeps its roll-ups
+# 102 — A thinned series keeps its roll-ups
 
 **Proposed** on lakelands#1639, for 0.23.0, line 5 of epic lakelands#1578. It
-amends 049 and extends the log format's page; it stands on 074, 083, 098 and
-099. No code lands with it. The operator reads it and its budget raise
+amends 049 and 099 and extends the log format's page; it stands on 074, 083
+and 098. No code lands with it. The operator reads it and its budget raise
 before anything is built.
 
 **A type is thinned past a horizon when the host runs one act.** The act's
@@ -38,14 +38,19 @@ is a promise of speed.
 - **Public types.** `EventBody::ValuesThinned { ty, by, before, keys }` and
   its kind; the selection `Thin { by, before }`; `ThinReport`;
   `LakeStore::thin_values` and `thin_values_preflight`; the marker
-  `ThinnedAct { by, before, through, gone }`; `Found::Records` and
-  `Found::Groups` gain `thinned: Vec<ThinnedAct>` and
+  `ThinnedAct { ty, by, before, through, gone }`, which names its type
+  so an act a view lists across its sources is attributed; `Found::Records`
+  and `Found::Groups` gain `thinned: Vec<ThinnedAct>` and
   `stranded: Option<u64>`, the count of groups it could not answer;
-  `Record` gains `stranded: bool`;
+  `Record` and `Group` gain `stranded: bool`;
   `TypeDescription` gains `thinned: Vec<ThinnedAct>` and `stranded: u64`.
-  The store facade and the engine traits hold 93 methods at
-  `3783131f` by the seam gate's rule (read); the two new methods make 95
-  of 110.
+  Four engine-trait methods reach the two tables: the fold's
+  `ProjectionStore::put_thinned_act` (an act's row) and `put_thinned`
+  (a record's tombstone), and the reads' `ProjectionView::thinned_acts`
+  (the acts on a type) and `thinned_at` (a seek by key, answering the
+  horizon). The store facade and the engine traits hold 93 methods at
+  `3783131f` by the seam gate's rule (read); the two new facade methods
+  and these four make 99 of 110.
 - **Refusals.** `ThinBy { ty, field }`; `Thinned { ty, key, before }`;
   `StrandedAtHeadOnly { ty, at }`; `KeptOverThinned { view, ty }`;
   `KeptNotExact { view, ty, group }`; `StrandedMake { view, ty }`.
@@ -89,28 +94,51 @@ the field.
 049's rule is "a kept record is exactly what the read would compute, or
 the view says at that position that it is not and the read computes, or
 the members it was computed from are gone and the group is stranded,
-answered at the head alone". **A group that held a thinned member is
-stranded: the view says so, and the read answers the kept record, never
-the computation.** The record is what the read would have computed
-at the act's position, with every member that arrived since folded in.
-Stranded names the record's provenance, not the group's membership: a late
-member may join it, and the group is stranded still, since the members it
-lost are not there to compute it.
+answered at the head alone". **A group that held a thinned member at any
+position is stranded: the view says so, and the read answers the kept
+record, never the computation.** The record is what the read would have
+computed at the act's position, with every member that arrived since
+folded in. Stranded names the record's provenance, not the group's
+membership: a late member may join it, and the group is stranded still,
+since the members it lost are not there to compute it.
 
+- **Every group at every position, not the head's alone.** The act
+  deletes a record's states at every position, so an earlier read loses
+  the member where it stood then, even where its group field or its
+  restriction moved it to another group, or it stood on one face alone,
+  before the act. A part reads each selected record's versions as they
+  stand before `drop_states` — the record's `made` through the act's
+  first position — and marks stranded every group key, on every face, a
+  version of it held. The mark is the view's, one per group and face, and
+  it is read at the head for every read (below). So a group that was
+  whole at an earlier position may be omitted there: the record's history
+  is one mark, and the read refuses a group rather than answering it
+  short.
+- **A retired record is a record.** One retired before the act is taken
+  by the value it held when it retired, so its key is in the selection:
+  its states — its earlier positions, which the retirement left — are
+  dropped, its row with them, its tombstone put, and every group and face
+  its versions held is stranded as above. It is a member of no group at
+  the act's position, so a group it left is stranded for those earlier
+  reads alone, while the mark is one and the head answers its kept record
+  too. `get` of its key answers `Thinned`, and a write that would make it
+  again is refused, as below.
 - **The fold notes no leave.** Where 049 has "the fold changes a group by
   the member that arrives, leaves or changes", a thinning is not a leave:
-  the fold of `values_thinned` deletes the record's states and marks its
-  group stranded, and never calls `kept::note` with the member gone (read,
-  `lake/fold.rs:951` for the one path a write takes).
+  the fold of `values_thinned` deletes the record's states and marks every
+  group and face the record held at any position stranded, and never calls
+  `kept::note` with the member gone (read, `lake/fold.rs:951` for the one
+  path a write takes). A rebuild folds the same mark, since the fold meets
+  the record's versions in order before it meets the act.
 - **A stranded group is exact.** It was exact when it was stranded — the
-  act refuses `KeptNotExact` when a kept view has a group that is not
-  exact and would lose a member — and every change it can take since is
+  act refuses `KeptNotExact` when a kept view has a group it would strand
+  that is not exact — and every change it can take since is
   the fold's: a new member arrives, a member still present leaves or
   changes. A correction to a thinned member is refused (`Thinned`), so no
   fold it holds is ever contradicted by a write; an erasure act is not a
   correction, and it is folded from the log again (below).
-  `State::not_exact` never counts a stranded group; `State::stranded` does
-  (read, `kept.rs:84`).
+  `State::not_exact` never counts a stranded group (read, `kept.rs:91`);
+  this record adds `State::stranded`, which does.
 - **An erasure reaches a stranded group's folds.** `remove_values` may
   select a value only a stranded group's folds now hold: the selection is
   the source's events, which the log keeps, and the act is a rebuild of
@@ -126,10 +154,11 @@ lost are not there to compute it.
   fold needs the record's before-value, which the act took; an erasure is
   folded from the log again, and needs none.
 - **Two faces.** The mark is one for both faces, as `sys:differs` is, and
-  `stranded: [u64; 2]` counts the groups stranded on each. A thinned
-  member is gone for both faces, so where it was a member of both, the
-  group is stranded on both; 049 lets a group be on the open face alone,
-  and it is counted there alone.
+  `stranded: [u64; 2]` counts the groups stranded on each. The mark is
+  set on each face where a version of the record was a member of the
+  group on that face, so a group the record was on both faces of is
+  stranded on both, and one it was on the open face alone at some
+  position — 049 lets a group be there — is counted there alone.
 - **A view made again keeps its stranded groups, where the event leaves
   what they fold.** A declaration or a migration that makes a kept view
   again (049) would note the live records alone, since the thinned ones
@@ -152,10 +181,11 @@ lost are not there to compute it.
   thinned members are gone to compute it. A host that means to change the
   rule ends the kept view first; the view then computes from the rows that
   remain and carries its `thinned`, as any computed view does.
-- **A view kept after the act is refused.** A `view_kept.` setting for a
-  view whose source records are thinned is refused `KeptOverThinned`: its
-  make would note the live rows alone and be exact in name and short in
-  fact. A view over a view with stranded groups may be kept, since its
+- **A view kept after the act is refused.** Every event that would make a
+  view whose source records are thinned a kept view — a `view_kept.`
+  setting, a declaration that declares it kept, a migration whose step
+  does — is refused `KeptOverThinned`: its make would note the live rows
+  alone and be exact in name and short in fact. A view over a view with stranded groups may be kept, since its
   members are the inner view's records, which are present at the head.
   **A group of it that holds a stranded inner group is stranded too:** it
   bears the mark, its folds at the head hold the inner's stranded records,
@@ -182,7 +212,8 @@ lost are not there to compute it.
   it in only if that value is still before the horizon. **The selection
   is the record's state at the act's first position:** a key is one the
   act takes when the record of the type stood at that position with its
-  field certainly before the horizon. The first turn's own position is the
+  field certainly before the horizon, or had retired by it and the value
+  it held when it retired was so. The first turn's own position is the
   act's first position, held in the marker, and a write at the type reads
   the record there and is refused `Thinned` when it is in the selection,
   whether or not a part has reached it yet. A key the record had not at
@@ -203,8 +234,10 @@ lost are not there to compute it.
 
 - **The raw type.** `find` omits the thinned rows; the page's `thinned`
   lists each act on the type, oldest first, each
-  `{ by, before, through, gone }` — the field, the instant, the last
-  position the act had got through, and how many records it had taken.
+  `{ ty, by, before, through, gone }` — the type, the field, the instant,
+  the last position the act had got through, and how many records it had
+  taken. `ty` is carried because a view's page lists the acts on all its
+  sources, and an act is attributed to its type.
   `total` counts what the lake holds and never adds `gone` as if the
   answer were whole. An aggregate answers `Found::Groups`, which carries
   the same `thinned` beside its rows — the type's acts, or a view's
@@ -224,9 +257,14 @@ lost are not there to compute it.
   answers their count in the page's `stranded` — it knows them from the
   head's marks, above; `get` of one is refused `StrandedAtHeadOnly`,
   naming the view and the position; an aggregate omits them and answers
-  their count the same way. A group with no thinned member computes as
-  today. A stranded group's head record is never answered as if it were
-  an earlier position's.
+  their count the same way. A group with no thinned member at any position
+  computes as today. A group a record held only at an earlier position —
+  where its field or restriction moved it, or it stood on that face alone
+  — is stranded there too: the earlier read omits it and counts it in
+  `stranded`, though its computation at that position would have been
+  whole, because the mark is one for the record's history and a short
+  computation is never answered as whole. A stranded group's head record
+  is never answered as if it were an earlier position's.
 - **`describe`.** `TypeDescription` gains `thinned`, the acts on the type
   or, for a view, those on its sources, and `stranded`, the groups
   stranded. A view's `kept` stays as it is: a view with stranded groups
@@ -323,7 +361,7 @@ and groups; it catches up; it takes turns; it sweeps and reclaims
 - **Format 23.** `LOG_FORMAT_VERSION` and `OLDEST_LOG_FORMAT` stay 23 (read,
   `event.rs:26`); the kind joins 23's set, and the SQLite and PostgreSQL
   engines state the two tables in their `projection.rs` and raise its
-  `LAYOUT` once more (8 and 10 today, read); the memory engine keeps two
+  `LAYOUT` once more (9 and 10 today, read); the memory engine keeps two
   maps and has no layout to raise. `docs/log-format.md` states the kind
   when S2 lands, the step that adds the tables. A lake or an export of an
   older format is refused by `LogFormat`, as today, and nothing is
@@ -362,7 +400,7 @@ are. They land after 098's F12 and 099's R2 to R6, on the road R1 built
 | S3 | The stranded mark, the counter, the fold's arm | `kept.rs`, `lake/fold.rs` | 120 | 180 |
 | S4 | The make of a view with stranded groups, the order entries, the checks | `kept.rs`, `lake/fold.rs`, `conformance/checks/stranded.rs` | 100 | 160 |
 | S5 | The act: the walk, the first turn, the parts, the tail's judgement, `OWED` | `thin.rs` (new), `lake.rs`, `lake/open.rs`, `lake/standby.rs`, `conformance/checks/thinned.rs` | 180 | 240 |
-| S6 | The refusals at the write doors, the store facade, the catalog and the command | `writes.rs`, `ingest.rs`, `doors.rs`, `catalog.rs`, `api/tests/wit.rs`, `cli/commands.rs` | 120 | 150 |
+| S6 | The refusals at the write doors, the store facade, the catalog and the command | `writes.rs`, `ingest.rs`, `doors.rs`, `api/catalog.rs`, `api/tests/wit.rs`, `cli/commands.rs` | 120 | 150 |
 | S7 | The reads' markers at the head and at an earlier position, the reclaim, the measured bytes | `reads.rs`, `lake/described.rs`, `doors.rs`, the engines' `view.rs`, `docs/hosting.md`, the suite's rows | 120 | 170 |
 | | **Sum** | | **900** | **1 200** |
 | | **×1.35** | | **1 215** | **1 620** |
@@ -402,26 +440,42 @@ answers less as if whole or cannot be rebuilt.
   each group as it did at the act's position, on every engine, live and
   after a rebuild.
 - `THIN_GROUP_STRANDED`: a group with a thinned member answers as stranded, with
-  the folds of the act's position, and `describe` counts it.
+  the folds of the act's position, and `describe` counts it; a record whose
+  group field moved before the act strands the group it held earlier too,
+  and a retired record strands the groups its versions held.
 - `THIN_LATE_TICK_FOLDS`: a new record before the horizon in a stranded group
   folds in, and the group stays exact and stranded.
+- `THIN_ERASURE_RESTATES_STRANDED_FOLDS`: an erasure selecting a value only
+  a stranded group's folds hold restates them — a count loses an erased
+  member, a sum drops the erased value, an extreme loses the erased
+  holder's entry — and the group stays stranded and exact; `forget_source`
+  restates the same.
+- `THIN_STRANDED_MAKE_CARRIES`: a declaration that makes a view with
+  stranded groups again carries each group's record and `sys:order`
+  entries and notes none of its live records again, so the folds are
+  not counted twice; a declaration, migration or setting that changes the
+  group key, a measure, the `where` or a member the folds hold is refused
+  `StrandedMake`. S4, `conformance/checks/stranded.rs`.
 - `THIN_CORRECTION_REFUSED`: a write, an ingest and a retirement at a
   thinned key are each refused, nothing is appended, and the projection is
   unchanged.
 - `THIN_AS_OF_SAYS_UNANSWERABLE`: a read at an earlier position omits a
   stranded group and counts it; `get` of it is refused; a group with no
-  thinned member computes; and a view over the view does the same,
-  its refusal naming the inner view.
+  thinned member at any position computes; a record that moved group and
+  one that moved face before the act strand the earlier group and face as
+  well, and the earlier read omits them rather than computing short; and a
+  view over the view does the same, its refusal naming the inner view.
 - `THIN_EXACT_GROUPS_ONLY`: the act refuses a view with a not-exact group
-  that would lose a member.
+  it would strand, at the act's position or an earlier one.
 - `THIN_PARTS_AND_WRITES`: a write sent during the act answers within one
   turn; a write at a key a later part has not yet taken is refused
   `Thinned`; a killed writer's open finishes the act; `verify` passes
   between any two parts.
 - `THIN_VERIFY_EXPORT_IMPORT_REBUILD`: the log verifies, an export between
   parts imports, and a rebuild equals the projection.
-- `THIN_VIEW_KEPT_AFTER_REFUSED`: a setting over a thinned type is refused,
-  and one over a view with stranded groups is not.
+- `THIN_VIEW_KEPT_AFTER_REFUSED`: every event that would make a view over
+  a thinned type kept — a setting, a declaration, a migration's step — is
+  refused, and one over a view with stranded groups is not.
 
 One test beside the suite, SQLite, `THIN_BYTES_RETURNED`: the act's reclaim
 gives back the thinned rows' bytes, measured on the file, with the
@@ -442,7 +496,7 @@ tombstones' bytes named in the same row.
    alone, with the fold walking the type's events at the act's position,
    which saves about 20 B a record and adds a walk to every rebuild of the
    lake.
-4. **A group that is not exact at the act.** The act refuses it, as above
+4. **A group it would strand that is not exact.** The act refuses it, as above
    (recommended), so every stranded group is exact. Or holds it flagged and
    answers less than it answered before, which the issue's done-when rules
    out.
