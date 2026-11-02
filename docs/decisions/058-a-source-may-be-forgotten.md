@@ -20,7 +20,7 @@ The unit is the source, as for a purge (039), because a source is what a host ca
 ### A host forgets a source in one act, and the act is in the log
 
 `forget_source(source)` works in this order, under the writer's lock:
-1. It appends one `source_forgotten` event: the source, the versions of its key, the writer and the time, with a `record_retired` for each record the source made and alone brought (039). The act is recorded as a purge is, and nothing leaves the log.
+1. It appends one `source_forgotten` event: the source, the versions of its key, the writer and the time, with a `record_retired` for each record the source made and alone brought (039), and the act's `act_whole` last (099). The act is recorded as a purge is, and nothing leaves the log.
 2. The source's keys are dropped from memory, and the host's key store is asked to destroy them, every version.
 3. The projection is restated from the log (below): the records the source wrote are folded again alone where nothing else reads them, and the whole projection is rebuilt otherwise.
 4. The engine reclaims the storage the erased values held (below).

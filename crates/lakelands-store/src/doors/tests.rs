@@ -67,7 +67,10 @@ async fn a_write_that_waited_behind_a_rename_is_judged_by_it() {
     let location = Location::memory("waits");
     let lake = Lake::open(&location, seams, OpenMode::Create).expect("the lake opens");
     let lake = Arc::new(lake);
-    let store = Store { lake: lake.clone() };
+    let store = Store {
+        lake: lake.clone(),
+        owns: false,
+    };
     let cat = store.catalog(WriteContext::default());
     let owner = principal("owner", Grants::owner());
     let (ty, key) = (
@@ -171,7 +174,10 @@ async fn a_link_that_waited_behind_a_relations_rename_is_judged_by_it() {
     };
     let lake = Lake::open(&Location::memory("waits"), seams, OpenMode::Create);
     let lake = Arc::new(lake.expect("the lake opens"));
-    let store = Store { lake: lake.clone() };
+    let store = Store {
+        lake: lake.clone(),
+        owns: false,
+    };
     let cat = store.catalog(WriteContext::default());
     let owner = principal("owner", Grants::owner());
     let doc = |relation: &str| -> lakelands_api::ontology::TypeDecl {
@@ -304,7 +310,11 @@ async fn the_executor_reads_the_record_as_its_call_was_judged() {
     };
     let location = Location::memory("waits");
     let lake = Arc::new(Lake::open(&location, seams, OpenMode::Create).expect("the lake opens"));
-    let cat = Store { lake: lake.clone() }.catalog(WriteContext::default());
+    let cat = Store {
+        lake: lake.clone(),
+        owns: false,
+    }
+    .catalog(WriteContext::default());
     let owner = principal("owner", Grants::owner());
     let (ty, key) = (
         TypeName::from("account"),
@@ -377,7 +387,10 @@ async fn a_write_that_waited_while_the_types_moved_is_judged_by_them() {
     let lake =
         Lake::open(&Location::memory("waits"), seams, OpenMode::Create).expect("the lake opens");
     let lake = Arc::new(lake);
-    let store = Store { lake: lake.clone() };
+    let store = Store {
+        lake: lake.clone(),
+        owns: false,
+    };
     let cat = store.catalog(WriteContext::default());
     let owner = principal("owner", Grants::owner());
     fn typed(d: serde_json::Value) -> lakelands_api::ontology::TypeDecl {
@@ -519,7 +532,11 @@ async fn a_read_made_again_at_its_rankings_position_computes_a_kept_view() {
     };
     let lake = Lake::open(&Location::memory("waits"), seams, OpenMode::Create);
     let lake = Arc::new(lake.expect("the lake opens"));
-    let cat = Store { lake: lake.clone() }.catalog(WriteContext::default());
+    let cat = Store {
+        lake: lake.clone(),
+        owns: false,
+    }
+    .catalog(WriteContext::default());
     let owner = principal("owner", Grants::owner());
     let line = json!({"declare": "type", "name": "line", "fields": [
         {"name": "g", "type": {"kind": "text"}}, {"name": "n", "type": {"kind": "number"}}]});

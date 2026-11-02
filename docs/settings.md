@@ -209,7 +209,7 @@ The records one chunk of a chosen index's build writes while it holds the writer
 
 ### `limits.part_events`
 
-Not read yet: the acts that append in parts, each part a turn of the writer of its own, come with step R2 of decision 099. Then it is the most events one part of an act appends, so a write sent meanwhile waits for at most the part in front of it.
+The most events one part of an act appends, each part a turn of the writer of its own, so a write sent meanwhile waits for at most the part in front of it. Purge appends in parts (decision 099, R2). A record's retirements are never split across parts, so one part may hold a few more than this for one record.
 
 - **Takes:** a count; 0 is taken as 1.
 - **Default:** `500`.

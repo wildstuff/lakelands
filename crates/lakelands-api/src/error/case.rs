@@ -1762,8 +1762,8 @@ catalog! {
         PlanStale => "the lake moved since that plan, or it is not the one this caller was shown; plan the change again",
         /// A proposal accepted against a plan that changes no declaration.
         ProposalPlansNothing { proposal: ProposalId } => "the proposal `{proposal}` changes no declaration, so it has no plan; accept it without one",
-        /// A purge's report of another purge or head.
-        PurgeReportStale => "that report is not of this purge at this head; run the preflight again",
+        /// A purge's report of another purge, or of a selection the log has moved past.
+        PurgeReportStale => "that report is not of this purge at its position; run the preflight again",
         /// A purge of records another hand made or wrote too.
         PurgeShared { source: SourceId, #[serde(rename = "type")] ty: Option<TypeName>, count: usize, #[serde(with = "closed::list")] first: Vec<RecordName> } => "the purge of `{source}`[ from `{ty}`] is refused whole: {count} record(s) it brought in were made or also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them, clear the fields another hand wrote on those the source made, or take the source's values off them with `remove_values`; then purge again. First: {first}",
         /// A removal asked to shred that would redact values of erasable fields only.

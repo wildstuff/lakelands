@@ -83,13 +83,22 @@ pub async fn open(
     mode: OpenMode,
 ) -> Result<(Arc<dyn LakeStore>, Batches)> {
     let lake = crate::doors::opened(location, seams, mode).await?;
-    let batches = Batches { lake: lake.clone() };
-    Ok((Arc::new(crate::doors::Store { lake }), batches))
+    let store = crate::doors::Store::new(lake.clone());
+    lake.hold();
+    let batches = Batches { lake };
+    Ok((Arc::new(store), batches))
 }
 
-/// What queues record writes of one lake.
+/// What queues record writes of one lake: a handle the caller holds onto
+/// it, as a store facade is.
 pub struct Batches {
     lake: Arc<Lake>,
+}
+
+impl Drop for Batches {
+    fn drop(&mut self) {
+        self.lake.release();
+    }
 }
 
 impl Batches {

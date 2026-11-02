@@ -788,6 +788,42 @@ impl Lake {
                     .or_default()
                     .push((e.position, list));
             }
+            // A purge is one act in parts (099): this event begins it and
+            // its `act_whole` ends it. Until then the list says the act is
+            // not whole, and the writer's open takes it up again.
+            EventBody::SourcePurged { source, ty } => {
+                let mut list = crate::purge::purged_list(view, staged)?;
+                let act = crate::purge::PurgedAct {
+                    source: source.clone(),
+                    ty: ty.clone(),
+                    whole: false,
+                };
+                list.insert(e.position, act);
+                let (seam, at) = (crate::purge::PURGED, crate::purge::purged_at());
+                let list = crate::purge::purged_value(&list);
+                projection.put_output(seam, &at, &list, e.position)?;
+                staged
+                    .outputs
+                    .entry((seam.to_owned(), at))
+                    .or_default()
+                    .push((e.position, list));
+            }
+            // The act is whole: a purge's entry says so, and what the
+            // writer's open finds not whole it leaves alone.
+            EventBody::ActWhole { act } => {
+                let mut list = crate::purge::purged_list(view, staged)?;
+                if let Some(entry) = list.get_mut(act) {
+                    entry.whole = true;
+                    let (seam, at) = (crate::purge::PURGED, crate::purge::purged_at());
+                    let list = crate::purge::purged_value(&list);
+                    projection.put_output(seam, &at, &list, e.position)?;
+                    staged
+                        .outputs
+                        .entry((seam.to_owned(), at))
+                        .or_default()
+                        .push((e.position, list));
+                }
+            }
             EventBody::Declared {
                 declaration,
                 schema_hash,

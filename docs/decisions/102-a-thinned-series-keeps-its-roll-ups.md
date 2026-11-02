@@ -561,8 +561,9 @@ Nothing performs the act: a `values_thinned` part is declared, folded to
 its mark and changed nowhere else.
 
 - **The kind joins format 23's list last**, after `quarantine_closed`, so
-  that no kind's stored code moves: `KIND_CODES` gains
-  `values_thinned` as 25. Its variant sits beside `ValuesRemoved` in
+  that no kind's stored code moves. 1686's `source_purged` and
+  `act_whole` merged first and took 25 and 26; `values_thinned` takes 27
+  and sits last of `kinds!`. Its variant sits beside `ValuesRemoved` in
   `EventBody`, where it is read. `LOG_FORMAT_VERSION` and
   `OLDEST_LOG_FORMAT` stay 23.
 - **The public types**, as this record names them: the selection `Thin`,

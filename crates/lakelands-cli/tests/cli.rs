@@ -1211,7 +1211,7 @@ fn purge_retires_what_a_source_brought_in_and_prints_its_position() {
         );
         ok(
             &sh.run(&["purge", "--source", "bank", "--report", id]),
-            "invoice: retired 2\npurged bank through position 11\n",
+            "invoice: retired 2\npurged bank through position 13\n",
         );
         // Nothing left to retire: nothing is appended, and it says so.
         ok(
@@ -1273,12 +1273,12 @@ fn purge_of_one_type_names_the_type_in_its_lines() {
         );
         ok(
             &sh.run(&[&of[..], &["--report", &typed]].concat()),
-            "payer: retired 1\npurged bank from payer through position 8\n",
+            "payer: retired 1\npurged bank from payer through position 10\n",
         );
         ok(&sh.run(&of), "nothing to retire for bank in payer\n");
         ok(
             &sh.run(&["purge", "--source", "bank"]),
-            "payee: retired 1\npurged bank through position 9\n",
+            "payee: retired 1\npurged bank through position 13\n",
         );
     }
 }

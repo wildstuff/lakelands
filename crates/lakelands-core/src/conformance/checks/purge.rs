@@ -230,14 +230,18 @@ async fn a_purge_retires_every_record_the_source_brought_in_and_no_other(store: 
         retirements.len(),
         report.position
     );
-    // One append: everything after the purge began is a retirement or
-    // caused by one.
+    // One act: everything after the purge began is the act's opening, a
+    // retirement, the act's close, or caused by one.
     let stray: Vec<&str> = appended
         .iter()
         .filter(|e| e.position <= report.position)
         .filter(|e| {
-            !matches!(e.body, EventBody::RecordRetired { .. })
-                && !e.cause.is_some_and(|c| retirements.contains(&c))
+            !matches!(
+                e.body,
+                EventBody::RecordRetired { .. }
+                    | EventBody::SourcePurged { .. }
+                    | EventBody::ActWhole { .. }
+            ) && !e.cause.is_some_and(|c| retirements.contains(&c))
         })
         .map(|e| e.body.kind())
         .collect();
@@ -735,12 +739,12 @@ async fn a_field_declared_shared_since_is_ingested_and_purged_with_its_source(
 check!(
     PREFLIGHT =
         a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved,
-    "039, extended: `purge_preflight` appends nothing and answers the report the purge then answers, under an id; it is refused as the purge is for a co-owned record; a purge that repeats the id is refused as invalid, appending nothing, once the lake has moved by an append other than a lease or a checkpoint, or when the id is another source's, and otherwise purges"
+    "039, extended, and 099: `purge_preflight` appends nothing and answers the report the purge then answers, under an id that names the position the report was read at and the selection it read there; a purge under a string that is no report's, another source's, or whose position is past the head is refused as invalid, appending nothing; a write elsewhere since the report leaves its id good, and the purge under it takes the source's records and answers what the preflight said; a purge that repeats an id whose act is done is refused as invalid, appending nothing; a co-owned record refuses the preflight as it refuses the purge"
 );
 
 check!(
     REPORT_HEAD = a_preflights_id_holds_across_an_open_and_not_across_a_write,
-    "039, 058 and 065, extended (lakelands#1469): the head a preflight's id names is the log's last event that is neither a `lease_taken` nor a `checkpoint`; the lake opened again between `forget_preflight`, `remove_values_preflight` or `purge_preflight` and its act appends a lease, and opened at a bound of 1 MiB on an engine that weighs its segment a checkpoint after it, and the act goes through under the id; a record written after such an open moves the head, and the act under the id is refused as invalid, appending nothing",
+    "039, 058, 065 and 099, extended (lakelands#1469): the lake opened again between `forget_preflight`, `remove_values_preflight` or `purge_preflight` and its act appends a lease, and at most a checkpoint, and the act goes through under the id; for forgetting and taking back, the head a preflight's id names is the log's last event that is neither a lease nor a checkpoint, so a record written after such an open moves the head and the act under the id is refused as invalid, appending nothing; for a purge the id names the position and selection it read, so a write elsewhere since does not refuse it, while one that reaches a record it named is refused as invalid, appending nothing",
     given
 );
 
@@ -766,33 +770,61 @@ async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_on
         "the preflight of `crm` must say the three records it would retire, at the head it \
          read, under an id of its own; it answered {seen:?}, and `erp`'s {other:?}"
     );
-    // Another source's id, then the lake moving, make the id stale.
-    l.upsert("partner", "p9", json!({"note": "new"})).await?;
-    let moved = store.head().await.must("reading the head")?;
+    // A string that is no report's, and another source's id, are stale.
     for (id, why) in [
-        (&other.report_id, "another source's"),
-        (&seen.report_id, "stale"),
+        ("not-a-report", "a string that is no report's"),
+        (other.report_id.as_str(), "another source's"),
     ] {
-        let e = store.purge_source(&crm, None, Some(id.as_str())).await;
-        let e = e.must_fail(&format!("a purge under a {why} id"))?;
+        let e = store.purge_source(&crm, None, Some(id)).await;
+        let e = e.must_fail(&format!("a purge under {why} id"))?;
         ensure!(
             matches!(invalid_case(&e), Some(Case::PurgeReportStale)),
-            "a purge under a {why} preflight id must be refused as invalid, saying the report \
-             is not of this purge at this head; it was refused as {e:?}"
+            "a purge under {why} id must be refused as invalid, saying the report is not of \
+             this purge; it was refused as {e:?}"
         );
-        head_unmoved(store.as_ref(), moved, "a purge under a stale id").await?;
+        head_unmoved(store.as_ref(), before, "a purge under a stale id").await?;
     }
-    let again = store.purge_preflight(&crm, None).await;
-    let again = again.must("the preflight")?;
-    let done = store.purge_source(&crm, None, Some(again.report_id.as_str()));
-    let done = done.await;
-    let done = done.must("a purge under its preflight's id")?;
+    // An id whose position the log has not reached is no report this
+    // lake can read: stale, not the engine's out-of-range.
+    let digest = seen
+        .report_id
+        .split_once('-')
+        .expect("a position and a digest")
+        .1;
+    let past = format!("{}-{digest}", before.0 + 1);
+    let e = store.purge_source(&crm, None, Some(&past)).await;
+    let e = e.must_fail("a purge under an id past the head")?;
     ensure!(
-        (done.retired, &done.types, &done.references) == (3, &again.types, &again.references)
+        matches!(invalid_case(&e), Some(Case::PurgeReportStale)),
+        "a purge under an id whose position is past the head must be refused as invalid, \
+         saying the report is not of this purge; it was refused as {e:?}"
+    );
+    head_unmoved(store.as_ref(), before, "a purge under an id past the head").await?;
+    // A write elsewhere does not move the selection the report read: the
+    // purge under its id goes through and answers what the preflight said.
+    l.upsert("partner", "p9", json!({"note": "new"})).await?;
+    let done = store.purge_source(&crm, None, Some(seen.report_id.as_str()));
+    let done = done
+        .await
+        .must("a purge under its preflight's id after a write elsewhere")?;
+    ensure!(
+        (done.retired, &done.types, &done.references) == (3, &seen.types, &seen.references)
             && done.report_id.is_empty(),
         "the purge must answer what its preflight said, without an id; the preflight said \
-         {again:?}, the purge {done:?}"
+         {seen:?}, the purge {done:?}"
     );
+    // Its selection is gone, so the id it names is stale now.
+    let moved = store.head().await.must("reading the head")?;
+    let e = store
+        .purge_source(&crm, None, Some(seen.report_id.as_str()))
+        .await;
+    let e = e.must_fail("a purge repeating the id of an act that is done")?;
+    ensure!(
+        matches!(invalid_case(&e), Some(Case::PurgeReportStale)),
+        "a purge repeating the id of an act that is done must be refused as invalid, say the \
+         report is not of this purge; it was refused as {e:?}"
+    );
+    head_unmoved(store.as_ref(), moved, "a purge under a used id").await?;
     // A co-owned record refuses the preflight as it refuses the purge.
     l.upsert("invoice", "i1", json!({"status": "paid"})).await?;
     let e = store.purge_preflight(&erp, None).await;
@@ -862,7 +894,7 @@ async fn a_preflights_id_holds_across_an_open_and_not_across_a_write(
         l.ingest(source, vec![ada]).await.must("an ingest")?;
     }
     let mut store = store;
-    for act in ACTS {
+    for act in ["forget", "remove"] {
         let id = preflight_of(store.as_ref(), act).await?;
         store = again(&given.reopen, store, with(&keys), "after a preflight").await?;
         let l = Lake::of(store.as_ref());
@@ -875,6 +907,42 @@ async fn a_preflights_id_holds_across_an_open_and_not_across_a_write(
         )?;
         head_unmoved(store.as_ref(), moved, "an act under a stale id").await?;
     }
+    // A purge's id names the selection its report read, so a write
+    // elsewhere since, after an open, leaves it good.
+    let id = preflight_of(store.as_ref(), "purge").await?;
+    store = again(&given.reopen, store, with(&keys), "after a preflight").await?;
+    Lake::of(store.as_ref())
+        .upsert("note", "elsewhere", json!({ "text": "purge" }))
+        .await?;
+    act_under(store.as_ref(), "purge", &id)
+        .await
+        .must("a purge under its preflight's id after an open and a write elsewhere")?;
+    // One that reaches a record the report named is stale.
+    let grain = "grain";
+    let s1 = source_record(
+        "person",
+        "s1",
+        json!({"id": "s1", "name": "Ada", "city": "Oslo"}),
+    );
+    Lake::of(store.as_ref())
+        .ingest(grain, vec![s1])
+        .await
+        .must("an ingest")?;
+    let id = store
+        .purge_preflight(&grain.into(), None)
+        .await
+        .must("the preflight of `grain`")?
+        .report_id;
+    store = again(&given.reopen, store, with(&keys), "after a preflight").await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("person", "s1", json!({ "note": "Grace" })).await?;
+    let moved = store.head().await.must("reading the head")?;
+    refused_like(
+        "a purge under the id of a preflight whose record another write reached",
+        act_under(store.as_ref(), "purge", &id).await,
+        &json!({ "code": "purge_report_stale" }),
+    )?;
+    head_unmoved(store.as_ref(), moved, "a purge under a stale id").await?;
     for act in ACTS {
         let id = preflight_of(store.as_ref(), act).await?;
         let read = store.head().await.must("reading the head")?;
@@ -1290,5 +1358,432 @@ async fn a_purge_names_a_record_whose_array_names_what_it_takes_once(store: Stor
             report.retired
         );
     }
+    Ok(())
+}
+
+check!(
+    ACT_WHOLE_ENDS_THE_ACT = a_purge_ends_with_its_whole_and_leaves_nothing_after_it,
+    "039 and 099: a purge is one act in the log: its first event is its `source_purged`, its last its `act_whole`, and nothing of it follows the whole; the retirements lie between, whole and typed alike, and the report's position is the whole's"
+);
+
+check!(
+    PURGE_TAKES_A_WRITE_SINCE_ITS_REPORT = a_purge_takes_what_the_source_wrote_since_its_report,
+    "039 and 099: a report names the selection its position held; a record the source brought in since, or a record it made again since, is taken in all the same, and the purge under the report's id retires it beside the records the report named, answering the selection the act found rather than the one the report read"
+);
+
+check!(
+    PURGE_STALE_ON_A_SHARED_KEY = a_shared_write_since_its_report_stales_a_purge,
+    "039 and 099: a record the report named that another hand comes to share since, by a walk the report did not read, makes the report stale: the purge under its id is refused as invalid, appending nothing and leaving every record live; the preflight that follows says the record shared and refuses the purge whole"
+);
+
+check!(
+    ACT_RESUMES_AT_OPEN = an_act_a_stopped_writer_left_is_resumed_at_the_next_open,
+    "099: a log holding a purge's `source_purged` and none of its `act_whole`, as a writer stopped between its parts leaves it, is resumed by the next writer's open: the act takes the records the source brought in as they stand, retires them, ends with its `act_whole`, and leaves one `source_purged` and one whole in the log",
+    given
+);
+
+check!(
+    ACT_APPENDS_IN_PARTS = a_purge_appends_in_parts_of_at_most_part_events,
+    "099: a purge appends its act in parts, every append holding at most `limits.part_events` events, `act_whole` among them, but for one record's retirements, which are never split: the first append holds `source_purged`, more than one append retires records, and the last ends with `act_whole`",
+    given
+);
+
+check!(
+    PURGE_MADE_SINCE_SHARED = a_shared_write_on_a_record_made_since_the_report_answers_shared,
+    "039 and 099: a record the source made after the report's position that another hand has come to hold is not the report's selection, so it does not stale the report; the act refuses the purge shared, naming it and appending nothing, as a purge without an id does"
+);
+
+check!(
+    ACT_REPEAT_FINISHES_AND_APPENDS_NOTHING =
+        a_repeat_of_a_finished_act_answers_and_appends_nothing,
+    "099: a purge that is done is answered again by the same verb, which appends nothing; a purge after it answers a selection of nothing and appends nothing"
+);
+
+check!(
+    ACT_REBUILD_SAME_LAKE = a_rebuild_after_a_purge_answers_the_same_lake,
+    "039 and 099: a rebuild after the act answers the lake the act left, at the head and as of before the act, the purged records retired and the kept ones as they stood"
+);
+
+async fn a_purge_ends_with_its_whole_and_leaves_nothing_after_it(store: Store) -> Held {
+    lake(store.as_ref()).await?;
+    let before = store.head().await.must("reading the head")?;
+    let done = purge(store.as_ref(), "crm").await?;
+    let act = events_after(store.as_ref(), before).await?;
+    let kinds: Vec<&str> = act.iter().map(|e| e.body.kind()).collect();
+    let last = act.last().map(|e| e.position);
+    ensure!(
+        kinds.first() == Some(&"source_purged")
+            && kinds.last() == Some(&"act_whole")
+            && kinds.iter().filter(|k| **k == "source_purged").count() == 1
+            && kinds.iter().filter(|k| **k == "act_whole").count() == 1
+            && kinds.iter().filter(|k| **k == "record_retired").count() == 3
+            && done.position == last.unwrap_or(Position::GENESIS),
+        "a purge is one act: `source_purged` first, three retirements, `act_whole` last and the \
+         report's position there; it appended {kinds:?}, the report naming {}",
+        done.position
+    );
+    // A typed purge is the same frame.
+    let before = store.head().await.must("reading the head")?;
+    let done = purge_from(store.as_ref(), "erp", "invoice").await;
+    let done = done.must("a typed purge")?;
+    let act = events_after(store.as_ref(), before).await?;
+    let kinds: Vec<&str> = act.iter().map(|e| e.body.kind()).collect();
+    ensure!(
+        kinds == ["source_purged", "record_retired", "act_whole"]
+            && done.position == act.last().map(|e| e.position).unwrap_or(Position::GENESIS),
+        "a typed purge ends with its whole too; it appended {kinds:?}, the report naming {}",
+        done.position
+    );
+    Ok(())
+}
+
+async fn a_purge_takes_what_the_source_wrote_since_its_report(store: Store) -> Held {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    let crm = SourceId::from("crm");
+    let seen = store.purge_preflight(&crm, None);
+    let seen = seen.await.must("the preflight of `crm`")?;
+    // A record the source brought in since the report, and one it made
+    // again since.
+    feed_one(&l, "crm", "invoice", "i9", json!({"amount": 9})).await?;
+    feed_one(&l, "crm", "partner", "p1", json!({"name": "Harbor City"})).await?;
+    let p1 = l.read("partner", "p1").await?;
+    let done = store.purge_source(&crm, None, Some(seen.report_id.as_str()));
+    let done = done
+        .await
+        .must("a purge under the id of a report a write grew past")?;
+    let per: Vec<(String, u32)> = done
+        .types
+        .iter()
+        .map(|t| (t.ty.to_string(), t.retired))
+        .collect();
+    ensure!(
+        seen.retired == 3
+            && done.retired == 4
+            && per == [("invoice".to_owned(), 2), ("partner".to_owned(), 2)],
+        "the report named three records, and the purge must take the four the source's selection \
+         had grown to: one more of `crm`'s records and the one made again; the report said \
+         {seen:?}, the act {done:?}"
+    );
+    let retired = events_after(store.as_ref(), seen.position).await?;
+    let p1_retired = retired.into_iter().find_map(|e| match e.body {
+        EventBody::RecordRetired { key, version, .. } if key.as_str() == "p1" => Some(version),
+        _ => None,
+    });
+    ensure!(
+        p1_retired == Some(Version(p1.version.0 + 1))
+            && !live(&l, "partner", "p1").await?
+            && !live(&l, "invoice", "i9").await?
+            && live(&l, "invoice", "i1").await?,
+        "the record made again is retired as its latest version, the record brought in since \
+         joins it, and `erp`'s stays: retired {p1_retired:?}, `p1` at version {}",
+        p1.version.0
+    );
+    Ok(())
+}
+
+async fn a_shared_write_since_its_report_stales_a_purge(store: Store) -> Held {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    let crm = SourceId::from("crm");
+    let seen = store.purge_preflight(&crm, None);
+    let seen = seen.await.must("the preflight of `crm`")?;
+    // Another source writes the shared `status` on a record the report
+    // named.
+    feed_one(&l, "erp", "invoice", "c1", json!({"status": "paid"})).await?;
+    let before = store.head().await.must("reading the head")?;
+    let e = store
+        .purge_source(&crm, None, Some(seen.report_id.as_str()))
+        .await;
+    let e = e.must_fail("a purge under a report whose record another hand came to share")?;
+    ensure!(
+        matches!(invalid_case(&e), Some(Case::PurgeReportStale)),
+        "a purge whose report named a record another hand has come to share must be refused as \
+         invalid, saying the report is not of this purge; it was refused as {e:?}"
+    );
+    head_unmoved(store.as_ref(), before, "a purge under a shared report").await?;
+    ensure!(
+        live(&l, "invoice", "c1").await? && live(&l, "partner", "p2").await?,
+        "the refused purge retires nothing"
+    );
+    // The next preflight says the record shared and refuses the purge
+    // whole.
+    let seen = store.purge_preflight(&crm, None).await;
+    let seen = seen.must_fail("the preflight of `crm` after the shared write")?;
+    let e = store
+        .purge_source(&crm, None, None)
+        .await
+        .must_fail("purging `crm` whole after the shared write")?;
+    ensure!(
+        shared(&seen).is_some_and(|(_, first)| first == ["c1"])
+            && shared(&e).is_some_and(|(_, first)| first == ["c1"]),
+        "the preflight and the purge say `c1` shared; they answered {seen:?} and {e:?}"
+    );
+    head_unmoved(store.as_ref(), before, "a refused preflight and purge").await
+}
+
+/// The line that leaves `crm`'s purge owed: a `source_purged` and
+/// nothing after it, as a writer stopped between the act and its parts
+/// leaves the lake.
+fn stopped(
+    store: &dyn LakeStore,
+    known_at: Timestamp,
+) -> (crate::conformance::Lines, lakelands_api::LakeId) {
+    use lakelands_api::event::LOG_FORMAT_VERSION;
+    use lakelands_api::principal::WriteContext;
+    let lake = store.lake().clone();
+    let id = lake.clone();
+    let line: crate::conformance::Lines = Box::new(move |(tip, prev), fence| {
+        let position = tip.next();
+        let event = Event {
+            v: LOG_FORMAT_VERSION,
+            lake: id.clone(),
+            position,
+            id: crate::log::positional_id(&id, position),
+            prev,
+            known_at,
+            writer: "system:lakelands".into(),
+            on_behalf_of: None,
+            origin: Origin::System,
+            source: None,
+            seen_at: None,
+            upstream: None,
+            procedure: None,
+            context: WriteContext::default(),
+            cause: None,
+            fence,
+            idempotency_key: None,
+            delivery: None,
+            sealed: None,
+            body: EventBody::SourcePurged {
+                source: SourceId::from("crm"),
+                ty: None,
+            },
+            hash: lakelands_api::event::Digest::zero(),
+        };
+        (vec![crate::conformance::fixture::canonical_line(event)], 0)
+    });
+    (line, lake)
+}
+
+async fn an_act_a_stopped_writer_left_is_resumed_at_the_next_open(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use lakelands_api::engine::OpenMode;
+    lake(store.as_ref()).await?;
+    let known_at = log_events(store.as_ref())
+        .await?
+        .last()
+        .map_or(Timestamp(0), |e| e.known_at);
+    let (line, lake) = stopped(store.as_ref(), known_at);
+    let c = (given.continued)(Some(store), lake, line, OpenMode::Write, Seams::default());
+    let c = c
+        .await
+        .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
+    let at = c
+        .before
+        .tip
+        .as_ref()
+        .map(|(p, _)| *p)
+        .ok_or_else(|| Failure::new("the owed act's `source_purged` is at the log's tip"))?;
+    let store = c
+        .opened
+        .map_err(|e| Failure::new(format!("opening the lake again: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    // The open resumes the act beside the writer: poll the log, bounded,
+    // for its `act_whole` before any verb is called, so that the resume is
+    // what finished it.
+    let start = Position(at.0 - 1);
+    let mut whole = false;
+    for _ in 0..6_000 {
+        let holds = (events_after(store.as_ref(), start).await?)
+            .iter()
+            .any(|e| matches!(e.body, EventBody::ActWhole { .. }));
+        if holds {
+            whole = true;
+            break;
+        }
+        pause(Duration::from_millis(10)).await;
+    }
+    ensure!(
+        whole,
+        "the writer's open must resume the owed act and end it with `act_whole` without any \
+         caller's verb; the log holds {:?}",
+        (events_after(store.as_ref(), start).await?)
+            .iter()
+            .map(|e| e.body.kind())
+            .collect::<Vec<_>>()
+    );
+    // The act is whole before this purge is sent: it appends nothing.
+    let head = store.head().await.must("reading the head")?;
+    let repeat = purge(store.as_ref(), "crm").await?;
+    head_unmoved(
+        store.as_ref(),
+        head,
+        "a purge after the open's act is whole",
+    )
+    .await?;
+    ensure!(
+        repeat.retired == 0,
+        "once the open's act is whole, the purge after it answers a selection of nothing; it \
+         answered {repeat:?}"
+    );
+    let act = events_after(store.as_ref(), start).await?;
+    let kinds: Vec<&str> = act.iter().map(|e| e.body.kind()).collect();
+    ensure!(
+        kinds.first() == Some(&"source_purged")
+            && kinds.last() == Some(&"act_whole")
+            && kinds.iter().filter(|k| **k == "source_purged").count() == 1
+            && kinds.iter().filter(|k| **k == "act_whole").count() == 1
+            && kinds.iter().filter(|k| **k == "record_retired").count() == 3,
+        "the act must be resumed and finished once: one `source_purged`, three retirements \
+         and one `act_whole`; the log holds {kinds:?}"
+    );
+    for (ty, key, live_now) in [
+        ("partner", "p1", false),
+        ("partner", "p2", false),
+        ("invoice", "c1", false),
+        ("invoice", "i1", true),
+    ] {
+        ensure!(
+            live(&l, ty, key).await? == live_now,
+            "the resumed act must leave `{ty}` `{key}` as a purge does"
+        );
+    }
+    Ok(())
+}
+
+async fn a_purge_appends_in_parts_of_at_most_part_events(store: Store, given: Given) -> Held {
+    lake(store.as_ref()).await?;
+    let mut few = limits();
+    few.part_events = 2;
+    let store = (given.relimit)(store, Seams::default(), few)
+        .await
+        .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
+    let before = store.head().await.must("reading the head")?;
+    purge(store.as_ref(), "crm").await?;
+    let ends = super::export::append_ends(store.as_ref()).await?;
+    let act = events_after(store.as_ref(), before).await?;
+    // The append each event belongs to, by its last position, in log
+    // order: a single-event append's end is the event's own position.
+    let mut appends: Vec<(Position, Vec<&str>)> = Vec::new();
+    for e in &act {
+        let end = ends.get(&e.position).copied().unwrap_or(e.position);
+        match appends.last_mut() {
+            Some((at, kinds)) if *at == end => kinds.push(e.body.kind()),
+            _ => appends.push((end, vec![e.body.kind()])),
+        }
+    }
+    let retiring = appends
+        .iter()
+        .filter(|(_, kinds)| kinds.contains(&"record_retired"))
+        .count();
+    ensure!(
+        appends.len() > 2
+            && retiring > 1
+            && appends.iter().all(|(_, kinds)| kinds.len() <= 2)
+            && appends
+                .first()
+                .is_some_and(|(_, kinds)| kinds.as_slice() == ["source_purged"])
+            && appends
+                .last()
+                .is_some_and(|(_, kinds)| kinds.last() == Some(&"act_whole"))
+            && (act.iter())
+                .filter(|e| e.body.kind() == "record_retired")
+                .count()
+                == 3,
+        "with `part_events` 2, a purge must append `source_purged`, then more than one part of \
+         retirements, then its `act_whole`, no append holding more than two events and the \
+         `act_whole` in the append that ends it; it appended {appends:?}"
+    );
+    Ok(())
+}
+
+async fn a_shared_write_on_a_record_made_since_the_report_answers_shared(store: Store) -> Held {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    let crm = SourceId::from("crm");
+    let seen = store.purge_preflight(&crm, None);
+    let seen = seen.await.must("the preflight of `crm`")?;
+    // The source makes a record after the report named its selection, and
+    // another source writes its shared field since.
+    feed_one(&l, "crm", "invoice", "i9", json!({"amount": 9})).await?;
+    feed_one(&l, "erp", "invoice", "i9", json!({"status": "open"})).await?;
+    let before = store.head().await.must("reading the head")?;
+    let e = store
+        .purge_source(&crm, None, Some(seen.report_id.as_str()))
+        .await
+        .must_fail("a purge whose act's selection another hand holds too")?;
+    ensure!(
+        shared(&e).is_some_and(|(count, first)| count == 1 && first == ["i9"]),
+        "the record the source made since the report is not of the report, so the id is not \
+         stale: the act refuses the purge shared, naming `i9`; it answered {e:?}"
+    );
+    head_unmoved(store.as_ref(), before, "a purge whose selection is shared").await?;
+    ensure!(
+        live(&l, "invoice", "i9").await? && live(&l, "partner", "p1").await?,
+        "the refused purge retires nothing"
+    );
+    // Without an id the same selection answers the same refusal.
+    let e = store
+        .purge_source(&crm, None, None)
+        .await
+        .must_fail("a purge without an id over a shared selection")?;
+    ensure!(
+        shared(&e).is_some_and(|(_, first)| first == ["i9"]),
+        "a purge without an id answers the record shared too; it answered {e:?}"
+    );
+    head_unmoved(store.as_ref(), before, "a refused purge").await
+}
+
+async fn a_repeat_of_a_finished_act_answers_and_appends_nothing(store: Store) -> Held {
+    lake(store.as_ref()).await?;
+    let done = purge(store.as_ref(), "crm").await?;
+    let before = store.head().await.must("reading the head")?;
+    // The act's repeat answers, appending nothing: its selection is gone.
+    let repeat = purge(store.as_ref(), "crm").await?;
+    let head = store.head().await.must("reading the head")?;
+    head_unmoved(store.as_ref(), before, "a purge's repeat").await?;
+    ensure!(
+        repeat.retired == 0 && repeat.position == head && done.position == before,
+        "a repeat of a finished purge answers a selection of nothing at the head it read and \
+         appends nothing; the act answered {done:?}, the repeat {repeat:?}"
+    );
+    Ok(())
+}
+
+async fn a_rebuild_after_a_purge_answers_the_same_lake(store: Store) -> Held {
+    lake(store.as_ref()).await?;
+    let before = store.head().await.must("reading the head")?;
+    purge(store.as_ref(), "crm").await?;
+    let mut seen = Vec::new();
+    for at in [None, Some(before)] {
+        let l = Lake::of(store.as_ref());
+        let mut out = Vec::new();
+        for ty in ["partner", "invoice"] {
+            let found = all_found(l.cat.as_ref(), &l.own, ty, find_at(at)).await?;
+            let keys: Vec<String> = found.iter().map(|r| r.key.to_string()).collect();
+            out.push((ty, keys));
+        }
+        seen.push(out);
+    }
+    store.rebuild().await.must("rebuilding")?;
+    let mut again = Vec::new();
+    for at in [None, Some(before)] {
+        let l = Lake::of(store.as_ref());
+        let mut out = Vec::new();
+        for ty in ["partner", "invoice"] {
+            let found = all_found(l.cat.as_ref(), &l.own, ty, find_at(at)).await?;
+            let keys: Vec<String> = found.iter().map(|r| r.key.to_string()).collect();
+            out.push((ty, keys));
+        }
+        again.push(out);
+    }
+    ensure!(
+        seen == again,
+        "a rebuild answers the lake the act left, at the head and as of before the act: {seen:?} \
+         then {again:?}"
+    );
     Ok(())
 }
