@@ -151,8 +151,23 @@ fn a_reopen_mid_segment_seals_to_the_same_digest() {
         engine.append(&lease, &second).unwrap();
         held.extend(second);
         at += 3;
+        // The seal goes on from the state the reopened writer read on the
+        // segment's row: with the log hidden behind a view that shows no
+        // row, a seal that restored the segment would digest nothing.
+        let s = format!("\"{}\"", kept.1);
+        admin(
+            &url,
+            &format!(
+                "ALTER TABLE {s}.log RENAME TO log_hidden; \
+                 CREATE VIEW {s}.log AS SELECT * FROM {s}.log_hidden WHERE false"
+            ),
+        );
         let next = chain(at, 1, &held.last().unwrap().hash, &lease);
         let got = seal(engine.as_ref(), &lease, &next);
+        admin(
+            &url,
+            &format!("DROP VIEW {s}.log; ALTER TABLE {s}.log_hidden RENAME TO log"),
+        );
         let digest = lakelands_core::log::digest_of(&held).unwrap();
         let got = got.unwrap().expect("the segment sealed");
         assert_eq!(
