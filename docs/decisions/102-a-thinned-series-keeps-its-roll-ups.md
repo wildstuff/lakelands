@@ -1,9 +1,13 @@
 # 102 — A thinned series keeps its roll-ups
 
-**Proposed** on lakelands#1639, for 0.23.0, line 5 of epic lakelands#1578. It
+Decided on lakelands#1578, 2026-11-02
+(https://github.com/wildstuff/lakelands/issues/1578#issuecomment-6572113836):
+the operator took every recommendation, with the raise.
+
+**Accepted** on lakelands#1639, for 0.23.0, line 5 of epic lakelands#1578. It
 amends 049 and 099 and extends the log format's page; it stands on 074, 083
-and 098. No code lands with it. The operator reads it and its budget raise
-before anything is built.
+and 098. No code lands with it. The operator read it and its budget raise;
+both are accepted, and the raise's two rows are in `docs/budgets.md`.
 
 **A type is thinned past a horizon when the host runs one act.** The act's
 records leave the projection; the log keeps every event and every byte; a
@@ -413,8 +417,8 @@ product and +2 000 specification**, taking the ceilings from **107 000 to
 108 500** and from **189 500 to 191 500**. The epic's 102 500 and 187 000
 were reckoned before 098's and 099's reserve raised the ceilings on
 2026-11-01; the tree's 107 000 and 189 500 are what this raise lands on.
-No row is written by this record: it lands with the operator's word,
-before S1, as 098's did.
+The operator's word landed on 2026-11-02: `docs/budgets.md` holds the two
+rows, and the ceilings and bases rose with them, before S1.
 
 **Cut first, with what each costs:**
 
@@ -481,27 +485,26 @@ One test beside the suite, SQLite, `THIN_BYTES_RETURNED`: the act's reclaim
 gives back the thinned rows' bytes, measured on the file, with the
 tombstones' bytes named in the same row.
 
-### Open choices for the operator
+### Decided by the operator
 
-1. **A correction into a thinned group.** Refused, as above (recommended):
-   the record's before-values are out of the projection, so it cannot be
-   compared and set, and a fold it holds could be contradicted. Or folded
-   in as a new version at the same key, with the thinned version's value
-   unknown and the group then counting both.
-2. **A stranded group at an earlier position.** Refused and counted, as above
-   (recommended). Or answered with the head's record and a marker, which
-   answers later folds as if they were earlier.
-3. **The log's part.** The keys, as above (recommended): the fold deletes
-   exactly what the act took, and a rebuild stays a fold. Or the rule
-   alone, with the fold walking the type's events at the act's position,
-   which saves about 20 B a record and adds a walk to every rebuild of the
-   lake.
-4. **A group it would strand that is not exact.** The act refuses it, as above
-   (recommended), so every stranded group is exact. Or holds it flagged and
-   answers less than it answered before, which the issue's done-when rules
-   out.
-5. **The raise:** +1 500 product and +2 000 specification, to 108 500 and
-   191 500, with its row landing on the operator's word.
+Decided on 2026-11-02 (lakelands#1578): every recommendation below was taken.
+
+1. **A correction into a thinned group is refused**, as above: the record's
+   before-values are out of the projection, so it cannot be compared and
+   set, and a fold it holds could be contradicted. It is not folded in as a
+   new version at the same key.
+2. **A stranded group at an earlier position is refused and counted**, as
+   above. It is not answered with the head's record and a marker, which
+   would answer later folds as if they were earlier.
+3. **The log's part is the keys**, as above: the fold deletes exactly what
+   the act took, and a rebuild stays a fold. The rule alone — with the fold
+   walking the type's events at the act's position, which saves about 20 B a
+   record and adds a walk to every rebuild of the lake — was not taken.
+4. **A group the act would strand that is not exact is refused**, as above,
+   so every stranded group is exact. It is not held flagged and answered
+   less than it answered before, which the issue's done-when rules out.
+5. **The raise is +1 500 product and +2 000 specification**, to 108 500 and
+   191 500, in `docs/budgets.md` by the rule, dated 2026-11-02.
 
 ## Why
 
