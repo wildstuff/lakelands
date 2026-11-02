@@ -231,6 +231,19 @@ impl ProjectionView for HeldNow<'_> {
         Ok(self.now(ty, row)?.pop())
     }
 
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        self.then.order(name, key)
+    }
+
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        self.then.order_page(name, after, n)
+    }
+
     /// The engine selects what the hold then would not, and a page without
     /// the records held now is read on until it is full: a short page is
     /// the last.

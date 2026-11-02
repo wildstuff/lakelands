@@ -654,6 +654,66 @@ candles.
   rules may answer it otherwise than the write that first cut it (017 states it
   with the unit's own rule).
 
+### As built: F10 and F11 (lakelands#1690)
+
+- **The seam.** `ProjectionStore` gains `put_order(name, key, entry)` and
+  `end_order(name)`; `ProjectionView` gains `order(name, key)` and
+  `order_page(name, after, n)`. Four methods more, the seam stands at 98 of the
+  110 it may hold. `end_head_only` stays, for the engine seam's own head-only
+  path, which the fold no longer uses.
+- **SQLite (F10).** `view_order` is a `WITHOUT ROWID` table keyed `(name, key)`,
+  an entry a row as the bytes the fold put; a page reads in the key's byte order,
+  and nothing indexes the table beside its primary key. `LAYOUT` 9 to 10.
+- **PostgreSQL (F11).** `view_order` is keyed `(name, key)` with the key
+  `COLLATE "C"`, so a page reads in the order SQLite's does; the write buffer
+  holds one put a key and an end of a name, deletes an ended name first, then the
+  keys deleted, then writes the keys put. `LAYOUT` 11 to 12. A projection of
+  another layout is refused and rebuilt from the log, so no older lake is read.
+- **The memory engine (F11).** An entry is a put of its own kind in the
+  projection journal, at no position; a name ends as the journal folds.
+- **The fold.** It puts each changed entry through `put_order` (a put with no
+  entry deletes the key) and ends a view's order through `end_order`; a seek reads
+  one entry by its key
+  and a page after a key through `order_page`. The fold puts no
+  `sys:order.<view>` record any more, and no table of the records holds one.
+- **Tested.** `ORDER_ENTRIES_APART` runs on every engine: the extreme's next
+  holder after one source's values are taken back, and after the holder that
+  follows is retired, the view kept at each, as its twin computes. The engine
+  seam's own row, `ORDER_ENTRY`, puts, replaces, deletes and pages entries and
+  ends a name on each engine, keeps a sibling order, and reads none of it as a
+  record. A scoped refold writes no order entry: `Scoped` keeps `put_order` and
+  `end_order` from the engine as it keeps every write to a record its page does
+  not restate, since the view's own folds are kept from it too, and a store test
+  puts an entry and ends a name under a scope beside the entry it leaves.
+  Beside the suite, each engine's own test folds a view and opens the
+  projection: SQLite and PostgreSQL count no `sys:order.` record and the
+  `view_order` rows; the memory engine's `sys:order.ends` scan is empty and its
+  order answers a page; SQLite's plans the entry's and the page's statements as
+  seeks of `view_order`'s key.
+- **Measured** (SQLite, 100 000 ticks, three roll-ups, one machine, A/B):
+
+| kept storage | µs a tick | written, B a tick | after `VACUUM`, B a tick |
+|---|---:|---:|---:|
+| develop: an order entry a `sys:order` record | 1 934 / 2 678 | 11 823 | 7 143 |
+| this PR: `view_order` | 1 611 / 2 529 | 5 994 | 3 556 |
+
+  The two times are two runs at one-minute loads of 7 and 18; the machine ran
+  the rest of the fleet throughout, so the time column is contention-bound,
+  while the bytes repeated exactly at every load. The order entries are half the
+  projection as written, and just over half after `VACUUM`.
+- **What differs from the sketch.** The sketch said an entry holds no copy of a
+  value; as built it holds the member's value as the fold read it (and, for
+  `first` and `last`, the value they carry), which is what lets a holder hand on its own
+  bytes, while the extreme, the group, the face and the place are in the key. It is a
+  departure taken knowingly: a seek hands on the fold's own bytes, and `first` and
+  `last` carry a value an expression produced, so a reference to a record would not
+  answer. Its cost is in the table above: 5 994 B a tick as built against the
+  sketch's 2 061, and still below develop's 11 823. The operator accepted the copy
+  on 2026-11-02. The entry is the bytes the fold
+  already had, opaque to the engine, so the engines gain a byte table and no
+  serializer, and the entry stays JSON text. F10 and F11 shipped as one pull
+  request, F11 against the seam F10 proved on SQLite.
+
 ## Why
 
 - **Time is in sync and b-trees, not in forms.** A binary event gains no time, and

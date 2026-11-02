@@ -295,6 +295,18 @@ impl ProjectionStore for MemoryLake {
         self.stage(Put::HeadsEnded { ty, at })
     }
 
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        self.stage(Put::Order {
+            name: name.clone(),
+            key: key.clone(),
+            entry: entry.map(<[u8]>::to_vec),
+        })
+    }
+
+    fn end_order(&self, name: &TypeName) -> Result<()> {
+        self.stage(Put::OrdersEnded { name: name.clone() })
+    }
+
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
         self.stage(match of {
             StatesOf::Record(ty, key) => Put::DroppedRecord(ty.clone(), key.clone()),

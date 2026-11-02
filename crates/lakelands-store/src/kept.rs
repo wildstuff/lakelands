@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Included, Unbounded};
 
 use lakelands_api::canonical::hex;
-use lakelands_api::engine::{After, ProjectionStore, ProjectionView, Scan};
+use lakelands_api::engine::{ProjectionStore, ProjectionView};
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::{Condition, Expr, zone};
 use lakelands_api::ontology::{Measure, TypeDecl, ViewDecl};
@@ -46,10 +46,6 @@ pub(crate) const WHOLE: &str = "whole";
 
 /// The member of [`FOLDS`] that says the group is on the open face alone.
 pub(crate) const ALONE: &str = "alone";
-
-/// The field of an entry of an extreme's order that holds it ([`Entry`]):
-/// an object, so the engines keep no text row for it.
-const ENTRY: &str = "sys:entry";
 
 /// The entries of one view's orders as a transaction leaves them, by key:
 /// an entry's JSON text, none for one ended. Each extreme of each source
@@ -540,6 +536,19 @@ impl At<'_> {
         self.projection.map_or(Ok(()), |p| p.put_record(r))
     }
 
+    /// Put (or, with none, delete) an entry of the order `name` into the
+    /// projection, where there is one.
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        self.projection
+            .map_or(Ok(()), |p| p.put_order(name, key, entry))
+    }
+
+    /// End every entry of the order `name` in the projection, where there
+    /// is one.
+    fn end_order(&self, name: &TypeName) -> Result<()> {
+        self.projection.map_or(Ok(()), |p| p.end_order(name))
+    }
+
     /// Record `state` for `ty` at `at`.
     fn put_state(
         &self,
@@ -920,16 +929,12 @@ impl Views {
             }
             let orders = staged.orders.entry(name.clone()).or_default();
             for (key, entry) in std::mem::take(&mut work.entries) {
-                let mut r = StoredRecord::ended(name.clone(), RecordKey::from(&*key), position);
-                if let Some(e) = &entry {
-                    (r.version, r.retired) = (lakelands_api::Version(1), false);
-                    r.fields
-                        .insert(ENTRY.into(), serde_json::from_str(e).expect("an entry"));
-                }
-                at.put(&r)?;
-                let was = orders.entries.insert(key.clone(), entry);
+                let key = RecordKey::from(&*key);
+                at.put_order(&name, &key, entry.as_deref().map(str::as_bytes))?;
+                let was = orders.entries.insert(key.as_str().into(), entry);
                 if let Some(undo) = &mut staged.undo {
-                    undo.0.push(Undone::Entry(name.clone(), key, was));
+                    undo.0
+                        .push(Undone::Entry(name.clone(), key.as_str().into(), was));
                 }
             }
             for key in std::mem::take(&mut work.touched) {
@@ -1007,9 +1012,7 @@ impl Views {
         // The entries end as a whole, whatever their number: a seek in the
         // transaction reads only those put after.
         let name = order_name(view);
-        if let Some(p) = at.projection {
-            p.end_head_only(&name, position)?;
-        }
+        at.end_order(&name)?;
         let ended = Orders {
             ended: true,
             ..Orders::default()
@@ -1485,26 +1488,15 @@ impl Work {
     }
 }
 
-/// At most `n` records of the order `name` after the key `after`, in key
+/// At most `n` entries of the order `name` after the key `after`, in key
 /// order: the page every engine reads by a seek.
 fn page(
     view: &dyn ProjectionView,
     name: &TypeName,
     after: &str,
     n: u32,
-) -> Result<Vec<StoredRecord>> {
-    let after = Some(After {
-        values: Vec::new(),
-        key: after.into(),
-    });
-    view.scan(
-        name,
-        &Scan {
-            after,
-            limit: n,
-            ..Scan::default()
-        },
-    )
+) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+    view.order_page(name, Some(&RecordKey::from(after)), n)
 }
 
 /// The first live entry of the order `name` from `start` on whose key
@@ -1519,7 +1511,7 @@ fn seek(
     within: &str,
     start: String,
 ) -> Result<Option<(String, Entry)>> {
-    let read = |r: &StoredRecord| serde_json::from_value(r.fields.get(ENTRY)?.clone()).ok();
+    let read = |e: &[u8]| serde_json::from_slice(e).ok();
     let parse = |e: &str| serde_json::from_str(e).ok();
     let mine = |key: &str| orders.and_then(|o| o.entries.get(key));
     let ended = orders.is_some_and(|o| o.ended);
@@ -1528,10 +1520,8 @@ fn seek(
         Some(None) => {}
         None if ended => {}
         None => {
-            let held = view
-                .get(name, &start.as_str().into())?
-                .filter(|r| !r.is_ended());
-            if let Some(e) = held.as_ref().and_then(read) {
+            let held = view.order(name, &start.as_str().into())?;
+            if let Some(e) = held.as_ref().and_then(|e| read(e)) {
                 return Ok(Some((start, e)));
             }
         }
@@ -1545,10 +1535,10 @@ fn seek(
         let end = batch
             .last()
             .filter(|_| batch.len() == n as usize)
-            .map(|r| r.key.to_string());
-        let theirs = batch.iter().filter(|r| mine(r.key.as_str()).is_none());
+            .map(|(key, _)| key.to_string());
+        let theirs = batch.iter().filter(|(key, _)| mine(key.as_str()).is_none());
         let mut merged: BTreeMap<String, Option<Entry>> =
-            theirs.map(|r| (r.key.to_string(), read(r))).collect();
+            theirs.map(|(key, e)| (key.to_string(), read(e))).collect();
         let to = end.as_deref().map_or(Unbounded, Included);
         let range = orders
             .into_iter()

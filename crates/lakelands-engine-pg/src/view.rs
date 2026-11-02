@@ -983,6 +983,45 @@ impl ProjectionView for PgView<'_> {
         self.single(None, |r| r.record(ty, key))
     }
 
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        self.single(None, |r| {
+            let row = r.db.query_opt(
+                &format!(
+                    "SELECT entry FROM {} WHERE name = $1 AND key = $2",
+                    r.names.t("view_order")
+                ),
+                &[&name.as_str(), &key.as_str()],
+            )?;
+            Ok(row.map(|row| row.get::<_, Vec<u8>>(0)))
+        })
+    }
+
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        self.single(Vec::new(), |r| {
+            let after = after.map(RecordKey::as_str).unwrap_or("");
+            let rows = r.db.query(
+                &format!(
+                    "SELECT key, entry FROM {} WHERE name = $1 AND key > $2 \
+                     ORDER BY key LIMIT $3",
+                    r.names.t("view_order")
+                ),
+                &[&name.as_str(), &after, &(n as i64)],
+            )?;
+            Ok(rows
+                .iter()
+                .map(|row| {
+                    let key = row.get::<_, String>(0);
+                    (RecordKey::from(key), row.get::<_, Vec<u8>>(1))
+                })
+                .collect())
+        })
+    }
+
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.single(Vec::new(), |r| {
             r.records_by_key(ty, keys.iter().map(|k| k.to_string()).collect())

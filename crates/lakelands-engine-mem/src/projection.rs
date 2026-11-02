@@ -161,6 +161,15 @@ pub(crate) enum Put {
     Head(StoredRecord),
     /// Every key of a head-only name ended at once, at `at`.
     HeadsEnded { ty: TypeName, at: Position },
+    /// An entry of a view's order at `key`, none for one deleted: the
+    /// order holds one entry a key (record 098, F11).
+    Order {
+        name: TypeName,
+        key: RecordKey,
+        entry: Option<Vec<u8>>,
+    },
+    /// Every entry of a view's order ended at once.
+    OrdersEnded { name: TypeName },
     /// The bases no record's state names.
     DroppedBases,
     /// A proposal's state from `at`.
@@ -207,6 +216,7 @@ impl Put {
             Put::Declaration(d) => d.since,
             Put::Record(r) | Put::Head(r) => r.position,
             Put::Applied(a) => a.at,
+            Put::Order { .. } | Put::OrdersEnded { .. } => Position::GENESIS,
             Put::DroppedRecord(..) | Put::DroppedOutput(..) | Put::DroppedBases => {
                 Position::GENESIS
             }
@@ -227,6 +237,10 @@ impl Put {
 pub(crate) struct Projection {
     pub(crate) declarations: BTreeMap<String, History<Declared>>,
     pub(crate) records: BTreeMap<(TypeName, RecordKey), History<Held>>,
+    /// The entries of each view's order, by name and key: one an entry,
+    /// and no state, since a read of an order is at the head alone
+    /// (record 098, F11).
+    pub(crate) orders: BTreeMap<(TypeName, RecordKey), Vec<u8>>,
     pub(crate) bases: Bases,
     pub(crate) proposals: BTreeMap<ProposalId, History<Proposal>>,
     /// Each proposal's id by its position, newest last (lakelands#1063).
@@ -797,6 +811,16 @@ impl Projection {
                 at,
             } => {
                 self.thinned.entry((ty, key)).or_insert((before, at));
+            }
+            Put::Order { name, key, entry } => match entry {
+                None => drop(self.orders.remove(&(name, key))),
+                Some(entry) => drop(self.orders.insert((name, key), entry)),
+            },
+            Put::OrdersEnded { name } => {
+                let from = (name.clone(), RecordKey::from(""));
+                let of = self.orders.range(from..).map(|(id, _)| id);
+                let ids: Vec<_> = of.take_while(|(t, _)| *t == name).cloned().collect();
+                ids.iter().for_each(|id| drop(self.orders.remove(id)));
             }
         }
     }

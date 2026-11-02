@@ -939,6 +939,17 @@ impl ProjectionStore for Reclaims {
     fn end_head_only(&self, name: &TypeName, at: Position) -> lakelands_api::Result<()> {
         self.inner.projection().end_head_only(name, at)
     }
+    fn put_order(
+        &self,
+        name: &TypeName,
+        key: &lakelands_api::RecordKey,
+        entry: Option<&[u8]>,
+    ) -> lakelands_api::Result<()> {
+        self.inner.projection().put_order(name, key, entry)
+    }
+    fn end_order(&self, name: &TypeName) -> lakelands_api::Result<()> {
+        self.inner.projection().end_order(name)
+    }
     fn put_proposal(
         &self,
         proposal: &lakelands_api::write::Proposal,

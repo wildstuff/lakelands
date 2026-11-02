@@ -191,6 +191,12 @@ impl ProjectionStore for Failing {
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         self.inner.projection().end_head_only(name, at)
     }
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        self.inner.projection().put_order(name, key, entry)
+    }
+    fn end_order(&self, name: &TypeName) -> Result<()> {
+        self.inner.projection().end_order(name)
+    }
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.inner.projection().put_proposal(proposal, at)
     }
