@@ -555,9 +555,10 @@ pub const SETTING_TYPE: &str = "sys.setting";
 /// The prefix of the name a view's kept records bear in an engine's
 /// projection, `sys:kept.<view>`. It holds `:`, which no type name may,
 /// so no declared type bears such a name. A kept record is put again at
-/// every write to its group, so its key may hold thousands of states, and
-/// an engine reads such a name by statements of its own: it tells one by
-/// this prefix and by nothing looser (`docs/seams.md` §`ProjectionStore`).
+/// every write to its group, and an engine keeps its key's latest state
+/// alone: a put deletes the states the key held. The store reads such a
+/// name at the head only. An engine tells one by this prefix and by
+/// nothing looser (`docs/seams.md` §`ProjectionStore`).
 pub const KEPT_PREFIX: &str = "sys:kept.";
 
 /// The name the kept records of the view `view` are put and read under.

@@ -234,7 +234,7 @@ fn reading<T>(
         false => view,
     };
     let mut r = Reader::open(lake, &sight, (at, clock), view, shape.clone())?;
-    (r.head, r.held_now) = (at_head, held_now);
+    r.head = at_head;
     let data = f(&r)?;
     lake.since(Spread::Read, began);
     Ok(Reply {

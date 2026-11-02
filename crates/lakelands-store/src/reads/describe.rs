@@ -173,9 +173,9 @@ impl<'a> Reader<'a> {
                 });
             // Told to one the view's read would answer, of that reader's
             // face: a number of groups says something of their records. A
-            // read held as now computes every view, as `kept_as` does.
+            // read as of a position computes every view, as `kept_as` does.
             } else if t.lifecycle.kept.as_ref() == Some(&open)
-                && !self.held_now
+                && self.at_head
                 && self.probe_view(view, false).is_ok()
             {
                 let face = usize::from(self.sight.sees_restricted());
@@ -386,10 +386,9 @@ impl<'a> Reader<'a> {
         let mut out = Vec::new();
         loop {
             let rows = self.view.scan(&decl.name, &scan)?;
-            // An engine answers a kept name as of an earlier position in
-            // key order by its statement's plan alone, and this read goes
-            // on from a page's last key: a page in another order would
-            // skip or repeat a group without a word.
+            // This read goes on from a page's last key, so an engine that
+            // answers a kept name out of key order would have it skip or
+            // repeat a group without a word.
             if order.is_empty() && lakelands_api::seam::is_kept_name(&decl.name) {
                 let mut last = scan.after.as_ref().map(|a| &a.key);
                 for r in &rows {
@@ -532,18 +531,20 @@ impl<'a> Reader<'a> {
     /// computation's probes made, and whether the reader takes each
     /// record's whole face: the reader with the `restricted` grant, while
     /// a group's whole face reads otherwise than its open one. `None` where
-    /// the read computes: the fold kept none at this position, they are not
-    /// whole there, a group of the reader's face is not exact, or the read
-    /// names a valid time where one is declared in the view's tree
-    /// ([`Self::timed_tree`]), which a kept fold has no axis for. What
-    /// depends on the reader is decided here, as the computation decides it.
+    /// the read computes: it is as of a position, where the fold keeps no
+    /// kept record, since it keeps a group's latest alone (098); the fold
+    /// keeps none, they are not whole, a group of the reader's face is not
+    /// exact, or the read names a valid time where one is declared in the
+    /// view's tree ([`Self::timed_tree`]), which a kept fold has no axis
+    /// for. What depends on the reader is decided here, as the computation
+    /// decides it.
     fn kept_as(
         &self,
         decl: &TypeDecl,
         v: &lakelands_api::ontology::ViewDecl,
     ) -> Result<Option<(TypeDecl, bool)>> {
         let face = usize::from(self.sight.sees_restricted());
-        if self.held_now || (self.valid_at.is_some() && self.timed_tree(decl)) {
+        if !self.at_head || (self.valid_at.is_some() && self.timed_tree(decl)) {
             return Ok(None);
         }
         let state = match self.kept_read(&decl.name, v, face)? {
@@ -593,9 +594,8 @@ impl<'a> Reader<'a> {
     /// their own fields, found by their mark, each with that face (none
     /// for a group on the open face alone, and none the reader's pairs do
     /// not admit: a pair on a measure is judged on both faces). There are
-    /// as many as the state's `differ`; the text index finds them at the
-    /// head, and a read at an earlier position scans the kept type. None
-    /// unless the reader reads the `whole` face.
+    /// as many as the state's `differ`, and the text index finds them.
+    /// None unless the reader reads the `whole` face.
     pub(super) fn differing(
         &self,
         stored: &TypeDecl,
@@ -873,7 +873,8 @@ impl<'a> Reader<'a> {
     /// groups that are not exact for `face`: the outer folds an inner
     /// group as its record stands, so the outer is the computation's only
     /// while the inner is exact. `None` where the fold keeps no whole
-    /// records of one of them: before it was made, or ended; and, with no
+    /// records of one of them: before it was made, or ended, or while they
+    /// were cut under another copy of the time-zone database; and, with no
     /// state read, where no `view_kept.` setting asks for it.
     fn kept_read(
         &self,
@@ -902,7 +903,10 @@ impl<'a> Reader<'a> {
         if !lakelands_api::seam::view_kept(self.shape.settings.get(&asked)) {
             return Ok(None);
         }
-        let Some(state) = kept::state(self.view.as_ref(), ty)?.filter(|s| s.whole) else {
+        // A state cut under another copy of the time-zone database is
+        // read as none, until its writer folds the view again.
+        let state = kept::state(self.view.as_ref(), ty)?;
+        let Some(state) = state.filter(|s| s.whole && !s.cut_elsewhere()) else {
             return Ok(None);
         };
         let mut not_exact = state.not_exact[face];

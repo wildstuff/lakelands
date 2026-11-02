@@ -124,10 +124,6 @@ pub struct Reader<'a> {
     /// For a search as of a position, the head, whose indexes its rankings
     /// read (025, 051).
     pub head: Option<Head<'a>>,
-    /// For a read as of a position by a reader without `restricted`, which
-    /// reads each record held as it is at the head ([`HeldNow`]): a kept
-    /// view's face folded then is not read.
-    pub held_now: bool,
     /// Whether the records read are the retired ones too: set while
     /// [`Self::retired_count`] counts.
     retired: Cell<bool>,
@@ -721,7 +717,6 @@ impl<'a> Reader<'a> {
             probed: RefCell::default(),
             computes_known: RefCell::default(),
             head: None,
-            held_now: false,
             retired: Cell::new(false),
             keys: RefCell::default(),
             members: RefCell::default(),

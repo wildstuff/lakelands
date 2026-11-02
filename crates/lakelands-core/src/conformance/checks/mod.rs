@@ -66,6 +66,7 @@ mod in_force;
 mod ingest;
 mod initial;
 mod judged;
+mod kept_heads;
 mod kept_sets;
 mod kept_triggers;
 mod key_versions;
@@ -516,6 +517,9 @@ pub const ALL: &[Check] = &[
     views::VIEW_KEY_IS_ITS_GROUP,
     view_rights::VIEW_OVER_A_HIDDEN_FIELD,
     view_rights::SHOWN_AS_READ,
+    kept_heads::KEPT_HEAD_ONLY_EARLIER_READ,
+    kept_heads::PROVENANCE_ONCE,
+    kept_heads::ZONED_REFOLDED,
     view_kept::KEPT_SHAPES,
     view_kept::KEPT_VALUES,
     view_kept::KEPT_POSITIONS,

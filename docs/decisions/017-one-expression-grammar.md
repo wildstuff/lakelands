@@ -108,10 +108,10 @@ before it falls in the window that starts before it, and none is lost.
   UTC midnight names, so `2030-07-15` is a day of July 15th in New York
   as in Berlin. Only the copy of that database built into Lakelands is
   read, never the host's, so every engine and every host cuts the same
-  instant. That copy is pinned with the release; a lake does not yet
-  record which copy cut its kept zoned buckets, so a release whose copy
-  changes a zone's rules would leave kept rows cut by the old ones, and
-  how a lake meets that is still open. A zone the
+  instant. That copy is pinned with the release. A kept view a zone
+  cuts records the copy that cut it, and a writer's open under another
+  folds it again (098); a derived field a zone cut at the write is cut
+  again only by a rebuild. A zone the
   database does not name is refused `bucket_zone` where the expression
   is declared or read, naming it; a quoted origin after a unit is
   refused so. A width takes no zone: its windows are counted from an
@@ -165,6 +165,9 @@ that pushes filters down into its own query language, complete.
 - A calendar unit may take a time zone, read from the database built
   in; until then every calendar bucket was cut in UTC. A `date` is the
   same date in the zone (lakelands#1667).
+- A kept view a zone cuts records the copy of the time-zone database
+  that cut it, and a writer under another copy folds it again at its
+  open (098, lakelands#1677).
 - Corrected at the rewrite (lakelands#817): "`now()` and `today()` are
   the fold's clock in a derived field" was said of every derived field;
   052 computes one at the read, with the read's clock.

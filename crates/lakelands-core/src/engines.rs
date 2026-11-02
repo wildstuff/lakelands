@@ -46,7 +46,7 @@ use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, Ty
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::query::{Edge, MATCH_SPANS, Matched, Span};
 use lakelands_api::read::{Direction, Order, OrderBy};
-use lakelands_api::record::{FieldMeta, Record, StoredRecord, Value};
+use lakelands_api::record::{FieldMeta, Origin, Record, StoredRecord, Value};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, DeclarationKind, Proposal, ProposalFilter, ProposedWrite};
 
@@ -2118,7 +2118,8 @@ fn unreadable(what: &str, e: &serde_json::Error) -> Error {
 /// A record as an engine keeps it: its provenance once, where its fields
 /// share it, and per field only where a field's differs (lakelands#1018).
 /// Every field a source or an author wrote in one event carries the same
-/// block, so a record keeps it once, not once a field; and every record
+/// block, and every field the fold derives in it the same block derived,
+/// so a record keeps it once, not once a field (098); and every record
 /// of one append carries the same block but its position, so where
 /// [`SHARED`] records of one write name a block the projection keeps it
 /// once among its bases, and the state names it by the id it is kept
@@ -2142,7 +2143,12 @@ struct State {
     /// A kept base's position, where it is not the row's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_at: Option<Position>,
-    /// Each field's whose differs from `base`, or that holds no value.
+    /// The fields whose provenance is `base`'s but derived: the fold
+    /// derived them in the event that wrote the base's fields (098).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    derived: Vec<FieldName>,
+    /// Each field's whose differs from `base` and from `derived`, or that
+    /// holds no value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     meta: BTreeMap<FieldName, FieldMeta>,
     /// The fields holding a value with no provenance, beside a `base`.
@@ -2174,17 +2180,35 @@ enum Block {
 /// (lakelands#1432; PostgreSQL was not measured).
 pub const SHARED: usize = 3;
 
-/// The provenance most of `r`'s fields with a value share; ties to the
-/// first field's.
+/// The provenance most of `r`'s fields with a value share, a field the
+/// fold derives in the same event counted with the fields written in it
+/// ([`derived`]); ties to the first field's. Of a share, the block is a
+/// written field's where one is among it.
 fn shared(r: &StoredRecord) -> Option<&FieldMeta> {
-    let mut shared: Vec<(&FieldMeta, usize)> = Vec::new();
+    let mut shared: Vec<(&FieldMeta, FieldMeta, usize)> = Vec::new();
     for m in r.fields.keys().filter_map(|f| r.meta.get(f)) {
-        match shared.iter_mut().find(|(b, _)| *b == m) {
-            Some((_, n)) => *n += 1,
-            None => shared.push((m, 1)),
+        let kin = derived(m);
+        match shared.iter_mut().find(|(_, k, _)| *k == kin) {
+            Some((b, _, n)) => {
+                *n += 1;
+                if b.origin == Origin::Derived {
+                    *b = m;
+                }
+            }
+            None => shared.push((m, kin, 1)),
         }
     }
-    (shared.iter().rev().max_by_key(|(_, n)| *n)).map(|(b, _)| *b)
+    (shared.iter().rev().max_by_key(|(_, _, n)| *n)).map(|(b, _, _)| *b)
+}
+
+/// `m` as the fold gives a field it derives in `m`'s event: a derived
+/// field's provenance is its event's, the origin aside, so a state keeps
+/// it by naming the field ([`State::derived`]).
+fn derived(m: &FieldMeta) -> FieldMeta {
+    FieldMeta {
+        origin: Origin::Derived,
+        ..m.clone()
+    }
 }
 
 /// A provenance block as JSON, its position left out where it is `at`.
@@ -2279,9 +2303,14 @@ pub fn record_state(
     base: &mut dyn FnMut(&str) -> Result<Option<i64>>,
 ) -> Result<String> {
     let shared = shared(r);
+    let kin = shared.filter(|m| m.origin != Origin::Derived).map(derived);
+    let takes = |f: &FieldName, m: &FieldMeta| r.fields.contains_key(f) && shared == Some(m);
+    let derives =
+        |f: &FieldName, m: &FieldMeta| r.fields.contains_key(f) && kin.as_ref() == Some(m);
     let meta = (r.meta.iter())
-        .filter(|(f, m)| !r.fields.contains_key(*f) || shared != Some(*m))
+        .filter(|(f, m)| !takes(f, m) && !derives(f, m))
         .map(|(f, m)| (f.clone(), m.clone()));
+    let derived = (r.meta.iter()).filter(|(f, m)| derives(f, m));
     let bare = r
         .fields
         .keys()
@@ -2298,6 +2327,7 @@ pub fn record_state(
         vectors: apart.clone(),
         version: r.version,
         fields: fields.map(|(f, v)| (f.clone(), v.clone())).collect(),
+        derived: derived.map(|(f, _)| f.clone()).collect(),
         meta: meta.collect(),
         bare: bare.cloned().collect(),
         base: kept,
@@ -2345,13 +2375,15 @@ pub struct Based {
     pub id: i64,
     at: Position,
     fields: Vec<FieldName>,
+    derived: Vec<FieldName>,
 }
 
 /// A record from the state [`record_state`] kept in the row of `ty`'s
 /// `key` put at `since`, and what it keeps apart, which the caller reads
 /// from their rows: each field with a value and no provenance of its own
-/// takes the base, but a bare one, and the base takes `since` where the
-/// state holds no position for it.
+/// takes the base, but a bare one, a field the state names derived takes
+/// it derived, and the base takes `since` where the state holds no
+/// position for it.
 pub fn decode_record(
     ty: &str,
     key: &str,
@@ -2361,7 +2393,7 @@ pub fn decode_record(
     let s: State = decode(state, "a record")?;
     let valued = s.fields.keys().chain(s.vectors.keys());
     let takes: Vec<FieldName> = (valued
-        .filter(|f| !s.bare.contains(f) && !s.meta.contains_key(*f)))
+        .filter(|f| !s.bare.contains(f) && !s.meta.contains_key(*f) && !s.derived.contains(f)))
     .cloned()
     .collect();
     let mut meta = s.meta;
@@ -2370,12 +2402,15 @@ pub fn decode_record(
             id,
             at: s.base_at.unwrap_or(since),
             fields: takes,
+            derived: s.derived,
         }),
         Some(Block::Inline(mut base)) => {
             let at = || Value::from(since.0);
             base.entry("position").or_insert_with(at);
             let base: FieldMeta = serde_json::from_value(Value::Object(base))
                 .map_err(|e| unreadable("a record", &e))?;
+            let derives = s.derived.into_iter().map(|f| (f, derived(&base)));
+            meta.extend(derives);
             meta.extend(takes.into_iter().map(|f| (f, base.clone())));
             None
         }
@@ -2405,6 +2440,9 @@ pub fn rebase(r: &mut StoredRecord, based: Based, block: Option<&str>) -> Result
     block.insert("position".to_owned(), Value::from(based.at.0));
     let meta: FieldMeta = serde_json::from_value(Value::Object(block))
         .map_err(|e| unreadable("a record's base", &e))?;
+    for f in based.derived {
+        r.meta.insert(f, derived(&meta));
+    }
     for f in based.fields {
         r.meta.insert(f, meta.clone());
     }

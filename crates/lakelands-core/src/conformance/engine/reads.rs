@@ -37,7 +37,7 @@ engine_check!(
 
 engine_check!(
     KEPT_NAME = a_kept_name_answers_as_a_stored_type_holding_the_same_states,
-    "seams §ProjectionStore and lakelands#575: the same states put under a view's kept name, `sys:kept.<view>`, and under an ordinary one answer alike through `get`, `get_many`, a walk by key from `after` across batches, a page under a filter, in a field's order and under `equal`, and a count under each flag and under a filter, at the head and at an earlier position, over a key put thousands of times, keys first put after that position between older ones, and an ended, a retired and a restricted key; an output recorded as often is read at both"
+    "seams §ProjectionStore, lakelands#575 and 098: the same states put under a view's kept name, `sys:kept.<view>`, and under an ordinary one answer alike at the head through `get`, `get_many`, a walk by key from `after` across batches, a page under a filter, in a field's order and under `equal`, and a count under each flag and under a filter, over a key put thousands of times, keys first put after an earlier position between older ones, and a retired and a restricted key; a key ended under the kept name, before that position or after it, answers as one the ordinary name never held, since a kept name keeps no state of an ended key; an output recorded as often is read at the head and at that position"
 );
 
 engine_check!(
@@ -3169,9 +3169,10 @@ fn a_scan_with_equal_any_answers_what_one_equal_a_tuple_answers(engine: &dyn Lak
 fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn LakeEngine) -> Held {
     // Under each name `a` is put at every position, the even keys of
     // 2 600 at position 1 and the odd ones, which lie between them, after
-    // `then`; one key ends before `then` and one after it; some keys are
-    // retired and some restricted. The output is recorded at every
-    // position.
+    // `then`; under the kept name one key ends before `then` and one after
+    // it, keys the ordinary name never holds, since a kept name keeps no
+    // state of an ended key; some keys are retired and some restricted.
+    // The output is recorded at every position.
     const STATES: u64 = 3_000;
     const KEYS: u64 = 2_600;
     let (then, seam, input) = (STATES / 2, "sys:kept", Digest::zero());
@@ -3182,7 +3183,11 @@ fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn Lak
     let key = |i: u64| format!("k{i:04}");
     let puts = |ty: &TypeName, at: u64| {
         let mut all = vec![record(ty.as_str(), "a", json!({"n": at, "g": "x"}), at)];
-        let born = |i: &u64| at == if i.is_multiple_of(2) { 1 } else { then + 1 };
+        let kept = ty == &names[0];
+        let born = |i: &u64| {
+            (kept || ![100, 200].contains(i))
+                && at == if i.is_multiple_of(2) { 1 } else { then + 1 }
+        };
         all.extend((0..KEYS).filter(born).map(|i| {
             let g = if i.is_multiple_of(3) { "x" } else { "y" };
             let mut r = record(ty.as_str(), &key(i), json!({"n": i, "g": g}), at);
@@ -3190,8 +3195,8 @@ fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn Lak
             r
         }));
         let ended = |i| StoredRecord::ended(ty.clone(), RecordKey::from(key(i)), Position(at));
-        all.extend((at == 2).then(|| ended(200)));
-        all.extend((at == then + 2).then(|| ended(100)));
+        all.extend((kept && at == 2).then(|| ended(200)));
+        all.extend((kept && at == then + 2).then(|| ended(100)));
         all
     };
     for first in (1..=STATES).step_by(200) {
@@ -3209,7 +3214,7 @@ fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn Lak
         .map(RecordKey::from)
         .to_vec();
     let filter = crate::expr::parse("n >= 1000").expect("the check's filter parses");
-    for (as_of, at, held) in [(None, STATES, KEYS + 1), (Some(then), then, KEYS / 2 + 1)] {
+    for (as_of, at) in [(Some(then), then), (None, STATES)] {
         let v = view(engine, as_of.map(Position))?;
         let recorded = v.output(seam, &input).must("reading the output")?;
         ensure!(
@@ -3217,6 +3222,10 @@ fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn Lak
             "an output recorded at every position through {STATES} read {recorded:?} as of \
              {as_of:?}"
         );
+    }
+    // The store reads a kept name at the head alone.
+    {
+        let (v, held) = (view(engine, None)?, KEYS - 1);
         // Every answer under a name, each record as the other name's.
         let read = |ty: &TypeName| -> Result<(Vec<Vec<StoredRecord>>, Vec<u64>), Failure> {
             let mut one = Vec::new();
@@ -3263,7 +3272,7 @@ fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn Lak
         };
         ensure!(
             kept == stored && kept.1[0] == held,
-            "as of {as_of:?}, a `get` of six keys, a `get_many` of them, a walk by key of \
+            "at the head, a `get` of six keys, a `get_many` of them, a walk by key of \
              every state, {held} of them, 1 024 a page, and a scan under no flag, each flag, \
              a filter, an exact text and a field's order answered, under the kept name, \
              {}, the walk's states first; under an ordinary name, {}",
