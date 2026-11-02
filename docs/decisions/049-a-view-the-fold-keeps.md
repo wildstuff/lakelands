@@ -6,7 +6,7 @@
 
 098 keeps a kept view's head alone and its order entries in
 `view_order`; 099 builds a view in parts, and a read computes until the
-build is whole.
+build is whole; 101 strands a group whose members were thinned.
 
 A view asked for by the setting `view_kept.<type>` has its records kept
 in the projection by the fold, one for each group, and a read of the
@@ -101,6 +101,23 @@ would have to reproduce one.
   member, putting a group
   and making a view return no error but the engine's, so no view can
   stop the lake.
+- **A group whose members have gone is stranded.** Where an act thins a
+  type's records past a horizon (`docs/decisions/101-a-thinned-series-keeps-its-roll-ups.md`),
+  the fold notes no member leaving: the group keeps the folds its thinned
+  members gave, and the record bears the mark `sys:stranded`, one mark for
+  both faces. A read answers it as stranded, never as the computation. It is
+  exact: it was exact when it became stranded (the act refuses one that is not,
+  `KeptNotExact`), and every change it can take since — a member's
+  arrival, or a present member's leaving or change — is the fold's; a
+  correction to a thinned member is refused (`Thinned`), so no fold it
+  holds is contradicted, and `not_exact` never counts it; the state's
+  `stranded` does. Its order entries stay, so an extreme whose holder was
+  thinned keeps its holder. A group with no thinned member computes as
+  before at every position; a stranded group answers at the head only, and a
+  read at an earlier position says it cannot answer it. A make of a view
+  after the thinning carries each stranded group's record, and a `view_kept.`
+  setting for a view whose source records are thinned is refused
+  `KeptOverThinned`.
 - **Made by noting from nothing.** A view becomes kept in the fold of
   the event that makes it so: its setting, or a declaration under which
   it can be kept. Every record of its sources is noted as arriving, a
@@ -324,6 +341,8 @@ that already walks the type.
   bucket of time beside them (lakelands#1614): the seek by the group's
   digest needs nothing of the group fields' kinds.
 - Amended by 098 and 099 (lakelands#1652), proposed for 0.23.0.
+- Amended by 101 (lakelands#1639), proposed for 0.23.0: a group whose
+  members were thinned is stranded, exact, and answered at the head only.
 - A view's group may hold one `date_bucket` term over a source field,
   answered as its twin grouped by a derived field, a trigger on it too;
   until then the source needed the derived field (lakelands#1636,
