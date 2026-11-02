@@ -158,6 +158,13 @@ after 510 948 ticks, 8.8 MB on disk. The write that crossed it waited 9.3 to
 10.3 s (load 7 to 18), about 13 times the reckoning. The time goes to restoring
 and hashing each event for the digest, about 14 µs an event, not to the inflate.
 
+Decided in lakelands#1578: each engine keeps the active segment's digest running as
+its writer appends, so a seal restores nothing and 64 MiB stays. On PostgreSQL the
+running hash's state is kept on the segment's row of `segments`, written in the
+append's transaction, so a writer that takes the lease over goes on from it; where
+it is not known, the seal digests the segment from its rows, as before. The memory
+engine keeps it beside its events. Built for both with lakelands#1673.
+
 ### An index line a block, and a row a block
 
 Read: the SQLite index holds a line of about 100 B an event, with its hash. It
@@ -168,6 +175,18 @@ a row a block in `STORAGE EXTERNAL`, since a block is compressed already, and th
 ids it answers an applied id from move to `ids (id, at)`: reckoned at 135 B a tick.
 `frames` goes, since a header holds what it held. The memory engine keeps what it
 is handed, so it needs the seam's change alone.
+
+As built on PostgreSQL (lakelands#1673): a row is a unit, a block or a line alone,
+keyed by its first position beside its last, the `prev` its first event names and
+its last event's hash, so a read finds the row holding a position, and the tip, by
+the key alone. A row keeps nothing else where its bytes restore to the events the
+store handed; where they do not, as a conformance check's planted break, it keeps
+those events in a `kept` column, so the engine still hands back what it was handed.
+Measured on PostgreSQL 18 at 300 000 ticks (load 3 to 4 on 16 cores): `log` 72 B a
+tick, `ids` 126 B (its heap 60 B and its key 66 B), `segments` 0.1 B, 198 B
+together against 555.5 B before; the reckoning of 135 B left out the heap of
+`ids`. The append's statements take 6.1 µs a tick, `ids` 4.3 of them. On the
+memory engine the seam's change was all.
 
 ### A record's key is stored once, on SQLite
 
@@ -214,6 +233,9 @@ joins through `keys`, which disfavours it a little; not by that much.
   `sort_index_desc` alone, no bitmap, in 0.58 to 0.60 ms; the backward walk
   takes 0.84 to 1.04 ms. The index goes for its 107 B a tick all the same:
   the whole page takes 12 ms, and its records' 1 000 lookups are 11.7 of them.
+  Measured again with F6 in, PostgreSQL 18 at 300k ticks, load 2.8 on 16 cores,
+  the median of 60: the backward walk takes 0.25 ms (0.24 to 0.35), at a load
+  that did not crowd it.
 - **`text_index_key` goes.** Read: only deletes use it, and a delete knows the
   values its record held, so it goes by primary key.
   Corrected by F8 on PostgreSQL, where the tree said otherwise. A page under a
