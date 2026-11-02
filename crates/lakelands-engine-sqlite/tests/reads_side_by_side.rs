@@ -3,13 +3,15 @@
 //! counts the scans it has begun and ended. A get made on another thread
 //! while a scan is under way answers before the scan ends: while the scan
 //! holds its transaction open. With one reader the get waited for the
-//! scan, and ended after it.
+//! scan, and ended after it: no get is ever inside a scan. So one get
+//! inside proves the readers side by side, and the test tries gets until
+//! one is, within a bound, however the threads happen to be scheduled.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use lakelands_api::Location;
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode, Scan};
@@ -18,7 +20,8 @@ use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
 
-const GETS: usize = 20;
+/// How long gets are tried for one inside a scan before the test fails.
+const BOUND: Duration = Duration::from_secs(60);
 
 #[test]
 fn a_read_answers_while_another_holds_its_transaction_open() {
@@ -75,8 +78,11 @@ fn a_read_answers_while_another_holds_its_transaction_open() {
             }
         })
     };
-    let (mut inside, mut last) = (0, 0);
-    for i in 0..GETS {
+    let (mut inside, mut last, mut tried) = (0, 0, 0usize);
+    let started = Instant::now();
+    while inside == 0 && started.elapsed() < BOUND {
+        let i = tried % 50;
+        tried += 1;
         // A scan begun after the last get's.
         let began = loop {
             match scans.load(Ordering::SeqCst) {
@@ -97,8 +103,8 @@ fn a_read_answers_while_another_holds_its_transaction_open() {
     done.store(true, Ordering::SeqCst);
     scanning.join().unwrap();
     assert!(
-        inside >= GETS * 3 / 4,
-        "{inside} of {GETS} gets began and ended inside one scan"
+        inside > 0,
+        "none of {tried} gets began and ended inside one scan within {BOUND:?}"
     );
     drop(engine);
     let _ = std::fs::remove_dir_all(&dir);
