@@ -64,10 +64,12 @@ pub(crate) async fn finish(lake: &Arc<Lake>, ty: &TypeName, kind: Kind) -> Resul
 
 /// What the log and the surfaces leave owed of a setting's build: a mark
 /// the projection holds as building. A writer's open sends them and does
-/// not wait.
-pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
-    let shape = lake.shape(view)?;
-    let types = lakelands_core::sight::InForce::types(shape.as_ref());
+/// not wait. The types are read from the declarations in force, not from a
+/// shape: a look at what is owed leaves no shape behind for a later read
+/// as of an earlier position to reuse.
+pub(crate) fn owed(_lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
+    let declared = view.declarations()?;
+    let types = lakelands_core::sight::InForce::types(&declared);
     let stored = (types.into_iter())
         .filter(|t| t.view.is_none())
         .map(|t| t.name.clone());
