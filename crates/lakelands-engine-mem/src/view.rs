@@ -131,7 +131,9 @@ impl ProjectionView for MemView {
                 // Ordered by the key alone: read from `after`, stop when full.
                 let page: std::result::Result<_, std::convert::Infallible> =
                     engines::scan_in_key_order(decl, scan, |after, n| {
-                        Ok(p.records_after(ty, at, after, n))
+                        let rows = p.records_after(ty, at, after, n);
+                        engines::count_walk(rows.len());
+                        Ok(rows)
                     });
                 return page.unwrap_or_else(|never| match never {});
             }
@@ -160,8 +162,20 @@ impl ProjectionView for MemView {
                 // a key put since included: the changed keys' states at
                 // `at` take their place.
                 let head = |key: &RecordKey| p.record_of(ty, key, p.folded);
+                // At the head a filter bounding the field narrows the index
+                // rows read to its window; the records without a value for
+                // the field lie outside a window on one rank, so the missing
+                // walk is skipped.
+                let window = match (&changed, decl, scan.filter.as_ref()) {
+                    (None, Some(decl), Some(filter)) => engines::field_kind(decl, &first.field)
+                        .and_then(|kind| engines::window(filter, &first.field, kind)),
+                    _ => None,
+                };
                 let sorted = |from: Option<(&[u8], &str)>, n| {
-                    Ok(p.sorted_after(ty, &first.field, first.dir, from, n)
+                    let rows =
+                        p.sorted_after(ty, &first.field, first.dir, window.as_ref(), from, n);
+                    engines::count_walk(rows.len());
+                    Ok(rows
                         .into_iter()
                         .filter_map(|(k, key)| Some((k, head(&key)?)))
                         .collect())
@@ -173,6 +187,7 @@ impl ProjectionView for MemView {
                     // for the field.
                     loop {
                         let batch = p.records_after(ty, p.folded, from.as_deref(), n);
+                        engines::count_walk(batch.len());
                         let done = batch.len() < n as usize;
                         for r in batch {
                             from = Some(r.key.to_string());
@@ -188,10 +203,18 @@ impl ProjectionView for MemView {
                         }
                     }
                 };
-                let page: std::result::Result<_, std::convert::Infallible> = match &changed {
-                    None => engines::scan_in_field_order(decl, scan, sorted, missing),
-                    Some(c) => engines::scan_in_field_order_at(decl, scan, c, sorted, missing),
-                };
+                // A window answers only the index's rows; the rows without
+                // a value for the field are of another rank and outside it.
+                let page: std::result::Result<_, std::convert::Infallible> =
+                    match (&changed, &window) {
+                        (None, Some(_)) => {
+                            engines::scan_in_field_order(decl, scan, sorted, |_, _| Ok(Vec::new()))
+                        }
+                        (None, None) => engines::scan_in_field_order(decl, scan, sorted, missing),
+                        (Some(c), _) => {
+                            engines::scan_in_field_order_at(decl, scan, c, sorted, missing)
+                        }
+                    };
                 return page.unwrap_or_else(|never| match never {});
             }
             engines::scan(decl, &p.records_at(ty, at).collect::<Vec<_>>(), scan)
