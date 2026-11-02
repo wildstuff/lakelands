@@ -6,11 +6,11 @@
 //! setting keeps is computed, and `describe_type` says so. A kept view
 //! whose expressions cut a zone's local calendar records the copy of the
 //! time-zone database that cut it, and a writer that opens the lake under
-//! another folds it again. A state keeps the provenance its fields share once, a field the fold
-//! derived in the event that wrote the others naming it rather than
-//! carrying a copy; it reads back each field's as it was written, where
-//! a derived field's agrees with the version and where an older one's
-//! does not.
+//! another folds it again. A state keeps the provenance its fields share
+//! once, a field the fold derived in the event that wrote the others
+//! naming it rather than carrying a copy; it reads back each field's as
+//! it was written, where a derived field's agrees with the version and
+//! where an older one's does not.
 
 use std::sync::atomic::AtomicBool;
 

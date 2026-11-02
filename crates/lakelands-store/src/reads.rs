@@ -92,6 +92,11 @@ pub struct Reader<'a> {
     pub shape: Arc<Shape>,
     /// Whether the read is at the head: it asked for no earlier position.
     pub at_head: bool,
+    /// Whether the view is the projection's head, where a kept view's
+    /// records are the fold's own: not for a read as of a position, nor for
+    /// one made again at the position a search's rankings were read at,
+    /// since the fold keeps a group's latest record alone (098).
+    pub kept_head: bool,
     /// The position read at.
     pub position: Position,
     /// Business time, if the read asked for it.
@@ -706,6 +711,7 @@ impl<'a> Reader<'a> {
             view,
             shape,
             at_head: at.as_of.is_none(),
+            kept_head: at.as_of.is_none(),
             position,
             valid_at: at.valid_at,
             now,

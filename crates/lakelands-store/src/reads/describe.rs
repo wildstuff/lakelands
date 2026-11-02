@@ -173,9 +173,9 @@ impl<'a> Reader<'a> {
                 });
             // Told to one the view's read would answer, of that reader's
             // face: a number of groups says something of their records. A
-            // read as of a position computes every view, as `kept_as` does.
+            // read off the head computes every view, as `kept_as` does.
             } else if t.lifecycle.kept.as_ref() == Some(&open)
-                && self.at_head
+                && self.kept_head
                 && self.probe_view(view, false).is_ok()
             {
                 let face = usize::from(self.sight.sees_restricted());
@@ -531,8 +531,9 @@ impl<'a> Reader<'a> {
     /// computation's probes made, and whether the reader takes each
     /// record's whole face: the reader with the `restricted` grant, while
     /// a group's whole face reads otherwise than its open one. `None` where
-    /// the read computes: it is as of a position, where the fold keeps no
-    /// kept record, since it keeps a group's latest alone (098); the fold
+    /// the read computes: its view is not the projection's head
+    /// ([`Reader::kept_head`]), where the kept records are not the view's
+    /// there, since the fold keeps a group's latest alone (098); the fold
     /// keeps none, they are not whole, a group of the reader's face is not
     /// exact, or the read names a valid time where one is declared in the
     /// view's tree ([`Self::timed_tree`]), which a kept fold has no axis
@@ -544,7 +545,7 @@ impl<'a> Reader<'a> {
         v: &lakelands_api::ontology::ViewDecl,
     ) -> Result<Option<(TypeDecl, bool)>> {
         let face = usize::from(self.sight.sees_restricted());
-        if !self.at_head || (self.valid_at.is_some() && self.timed_tree(decl)) {
+        if !self.kept_head || (self.valid_at.is_some() && self.timed_tree(decl)) {
             return Ok(None);
         }
         let state = match self.kept_read(&decl.name, v, face)? {

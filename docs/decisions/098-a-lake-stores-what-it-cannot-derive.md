@@ -562,7 +562,8 @@ candles.
   made again from its source under the binary's copy, and a view kept over it with
   it. A view no zone cuts is not folded again. Until a writer has opened, a read of
   such a view computes it, so a reader under the new copy never answers the old
-  cut. `ZONED_REFOLDED` is the row.
+  cut. Two binaries of different copies that open a lake in turn fold such a view
+  again at each change of copy. `ZONED_REFOLDED` is the row.
 - **A derived field a zone cut at the write is not folded again.** It is cut again
   only by a rebuild, under the binary's copy, so a rebuild under a copy with new
   rules may answer it otherwise than the write that first cut it. `zone.rs` says so

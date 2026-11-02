@@ -115,8 +115,8 @@ would have to reproduce one.
   references move, the link types records move between); a write of a
   setting that an expression of the view names; at a writer's open, a
   copy of the time-zone database other than the one that cut a view a
-  zone cuts (098). The view is ended and made in that event's fold. Nothing is noted from inside a migration's
-  step.
+  zone cuts (098). The view is ended and made in that event's fold.
+  Nothing is noted from inside a migration's step.
 - **An extreme is held by the first member of its order.** A `min` or
   a `max` orders its members by their value's sort key (a number before
   an instant), the greatest first for a `max`, and equal values by the
