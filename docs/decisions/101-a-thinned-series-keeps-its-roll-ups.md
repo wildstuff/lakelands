@@ -88,8 +88,8 @@ the field.
 
 049's rule is "a kept record is exactly what the read would compute, or
 the view says at that position that it is not and the read computes, or
-the members it was computed from are gone and the group is stranded and
-the read answers the record". **A group that held a thinned member is
+the members it was computed from are gone and the group is stranded,
+answered at the head alone". **A group that held a thinned member is
 stranded: the view says so, and the read answers the kept record, never
 the computation.** The record is what the read would have computed
 at the act's position, with every member that arrived since folded in.

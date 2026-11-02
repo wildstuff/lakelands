@@ -13,7 +13,7 @@ in the projection by the fold, one for each group, and a read of the
 view answers them. **A kept record is exactly what the read would
 compute, or the view says at that position that it is not and the read
 computes, or the members it was computed from are gone and the view says
-the group is stranded and the read answers the record.** Nothing kept
+the group is stranded, answered at the head alone.** Nothing kept
 imitates an order the computation takes; the computation at the read
 stays whole and answers wherever the kept form would have to reproduce
 one.
