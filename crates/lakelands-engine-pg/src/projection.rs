@@ -1816,16 +1816,25 @@ impl Buffer {
         // only deletes (098). A state put before one the key already holds
         // is dropped, since the later one is the head.
         if lakelands_api::seam::is_kept_name(&r.ty) {
-            let held = (self
+            let of = (ident.clone(), i64::MIN)..=(ident.clone(), i64::MAX);
+            let held: Vec<((Vec<String>, i64), Position)> = self
                 .records
-                .range((ident.clone(), i64::MIN)..=(ident.clone(), i64::MAX)))
-            .next_back()
-            .map(|(_, r)| r.position);
-            match held.is_some_and(|held| held > r.position) {
-                true => return,
-                false => (self.records).retain(|(held, _), _| held != &ident),
+                .range(of)
+                .map(|(at, held)| (at.clone(), held.position))
+                .collect();
+            if held.iter().any(|(_, held)| *held > r.position) {
+                return;
             }
-            (self.indexed).retain(|(ty, key, _), _| ty != r.ty.as_str() || key != r.key.as_str());
+            for (at, _) in held {
+                self.records.remove(&at);
+            }
+            let of = (r.ty.to_string(), r.key.to_string(), String::new())
+                ..=(r.ty.to_string(), r.key.to_string(), String::from(char::MAX));
+            let fields: Vec<(String, String, String)> =
+                self.indexed.range(of).map(|(at, _)| at.clone()).collect();
+            for at in fields {
+                self.indexed.remove(&at);
+            }
             (self.dropped).insert((r.ty.to_string(), r.key.to_string()));
             if !r.is_ended() {
                 self.records.insert((ident, r.position.0 as i64), r.clone());
