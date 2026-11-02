@@ -127,11 +127,11 @@ caller's (lakelands#1029, lakelands#1131).
   steps the engine takes outside a transaction under the writer's lock
   (`ProjectionStore::choose_order`): `Start` makes the fold keep the
   field's rows for every record put from then on; `Fill` writes the rows
-  of the head records in chunks of `limits.order_chunk` (10 000) in key
-  order, each chunk a short write between appends; `Keep` marks the field
-  as one a read may take. Because the fold keeps a building field's rows
-  from `Start`, a record put during the build has its row and nothing is
-  caught up at the end. A reader takes a field only once it is kept and
+  of the head records in chunks of `limits.order_chunk` (1 000; 10 000
+  before 099) in key order, each chunk a short write between appends;
+  `Keep` marks the field as one a read may take. Because the fold keeps
+  a building field's rows from `Start`, a record put during the build
+  has its row and nothing is caught up at the end. A reader takes a field only once it is kept and
   the type's mark equals the head and `chosen_through` holds, so an
   answer never depends on the build, and a page ordered by a field being built
   sorts the type, as before.
