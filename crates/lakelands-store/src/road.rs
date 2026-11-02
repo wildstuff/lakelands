@@ -50,13 +50,6 @@ type Held = Arc<Mutex<Box<dyn Job>>>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turned {
     /// It takes another turn.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the acts and builds of more than one turn come after R1"
-        )
-    )]
     More,
     /// It is whole.
     Whole,
@@ -110,9 +103,10 @@ impl Reach {
 /// leave owed of it, found off the writer.
 pub(crate) type Owes = fn(&Lake, &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>>;
 
-/// Every kind of job a writer's open finishes. None yet: the acts and the
-/// builds that take the road name themselves here.
-pub(crate) const OWED: &[Owes] = &[];
+/// Every kind of job a writer's open finishes: the builds of the settings a
+/// projection marked as building. The acts and the further builds that
+/// take the road name themselves here.
+pub(crate) const OWED: &[Owes] = &[crate::build::owed];
 
 /// How many times a first turn finds the tail past its view too long
 /// before the job answers unavailable, appending nothing.

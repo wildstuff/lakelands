@@ -421,6 +421,43 @@ Measured today under the writer, contended: general 300k, `lookup_index` 2.59 s,
   road now, field by field: a field the host has set is the host's setting, and a chosen
   one goes when the setting comes.
 
+**As built (2026-11-02).** The `sort_index` and `lookup_index` builds take the road. `Drop`,
+`choose_order`'s refusal, and `describe` naming a `building` field are not built yet: they
+are the rest of R7 and take a second pull request. A setting's event written at a door is
+folded with `whole` false, and the projection records the fields it asks for in its mark —
+`setting_building`, and `looked_building` and `looked_going` for the exact-text index. The
+door that appended it sends one build for each name the type's fields are kept under, and
+answers when they are whole; a build a runner left owed is found by the next writer's open
+from the same mark and sent again, and the open does not wait for it. Reads keep the old
+road: a field in `setting_building` is withheld from `order_fields` until its `Keep`, a field
+in `looked_building` is no lookup's until its `Keep` writes `lookup_fields`, and a field
+that goes keeps its rows and answers until that `Keep`. A write beside the build keeps the
+rows of the fields being built, so a key at or before the cursor is reached twice at most,
+and once the build is whole. A host's setting that names a field takes the lake's chosen
+field away, as it does when the log is folded whole.
+
+Measured on macOS, a debug build (not optimised), 20 000 records, `order_chunk` 256:
+
+| The build's `Fill` turn | Engine | Turns | Held, p50 | Held, max | The door answered in |
+|---|---|---:|---:|---:|---:|
+| `sort_index` | memory | 80 | 6.2 ms | 6.8 ms | 0.49 s |
+| `sort_index` | SQLite | 80 | 4.5 ms | 6.4 ms | 0.36 s |
+| `lookup_index` | SQLite | 80 | 254 ms | 501 ms | 20.0 s |
+| `lookup_index` | memory | 2 | — | — | under 1 ms |
+
+The memory engine keeps no exact-text index, so its `lookup_index` setting is whole at its
+own event. The SQLite exact-text turn is the slow one: 256 records a turn, each a delete
+and an insert a field. A caller's write sent beside either build waits for one turn, as
+`BUILD_WRITES_GO_ON` pins.
+
+Product: 910 lines in, 76 out; specification: 531 in, 3 out. The cut is `Look::Start`, a
+step with no caller: the fill writes the rows of a field being built, and a field that goes
+is deleted at its `Keep`. The core-size gate moved to product 100 636 of 108 500 and
+specification 184 630 of 191 500 (from 99 802 and 184 102); seam-width is 96 of 110, two
+methods added (`ProjectionStore::put_record_for`, `ProjectionStore::look_index`), and
+`cfg(feature)` is 6 of 20. This is more than R7's 350 product and 350 specification: the
+row's estimate did not hold, and the split it names already falls here.
+
 **`view_kept` is the hard case.** A group's state folds from its members, and a write can
 move a member from a built group to an unbuilt one.
 

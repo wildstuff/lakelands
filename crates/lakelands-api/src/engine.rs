@@ -321,6 +321,18 @@ pub trait ProjectionStore: Send + Sync {
     /// full-text entries and edges from it and the declarations in force.
     fn put_record(&self, record: &StoredRecord) -> Result<()>;
 
+    /// Put one record as [`ProjectionStore::put_record`] does, for a
+    /// caller that says whether a setting it puts must be made whole at
+    /// its event (`whole`: a fold from the log, a rebuild or an import) or
+    /// may be built beside the writer (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    /// A setting put beside marks what it asks for as building, and no
+    /// read uses it until the build's `Keep`; an engine that keeps no
+    /// index for it puts it whole either way.
+    fn put_record_for(&self, record: &StoredRecord, whole: bool) -> Result<()> {
+        let _ = whole;
+        self.put_record(record)
+    }
+
     /// End every key of the head-only name `name` ([`crate::seam::is_head_only`])
     /// at once, at `at`: whatever its keys held, put earlier in the
     /// transaction or before it, is deleted, and a key put after it in the
@@ -395,6 +407,20 @@ pub trait ProjectionStore: Send + Sync {
             op: "choose_order".to_owned(),
         }))
     }
+
+    /// One step of building the exact-text index a type's
+    /// `lookup_index.<type>` setting asks for
+    /// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`), beside
+    /// the writer. Called outside a transaction, under the writer's lock,
+    /// and it changes no answer: a reader takes a field only once its step
+    /// is [`Look::Keep`]. Answers the last key a [`Look::Fill`] wrote, none
+    /// once the type is filled. An engine that keeps no exact-text index
+    /// has nothing to build, and answers none at every step, as this
+    /// default does.
+    fn look_index(&self, ty: &TypeName, step: &Look) -> Result<Option<RecordKey>> {
+        let _ = (ty, step);
+        Ok(None)
+    }
 }
 
 /// What one [`ProjectionStore::drop_states`] deletes.
@@ -432,14 +458,51 @@ pub enum Choose {
     Drop(FieldName),
 }
 
-/// The fields of a type's order index the lake chose, kept in the
-/// projection and never in the log.
+/// A step of building the exact-text index a type's `lookup_index.<type>`
+/// setting asks for (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
+/// A build is a job on the road, as an order index's is: reads take the
+/// old road until [`Look::Keep`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Look {
+    /// Write the rows of `fields` for the head records after `after`, at
+    /// most `limit` of them, in key order.
+    Fill {
+        /// The fields being built.
+        fields: Vec<FieldName>,
+        /// The key the last chunk ended at; none for the first.
+        after: Option<RecordKey>,
+        /// The most records the chunk writes.
+        limit: u32,
+    },
+    /// The fields' rows are whole: reads may use the index for them, and
+    /// the rows of a field the setting no longer asks for go.
+    Keep {
+        /// The fields the build filled.
+        fields: Vec<FieldName>,
+    },
+}
+
+/// The fields of a type's order index the lake chose, and the builds of
+/// the type's settings that are not whole, kept in the projection and
+/// never in the log.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Chosen {
     /// The fields reads use the index for.
     pub kept: Vec<FieldName>,
     /// The fields being built: the fold keeps their rows, no read uses them.
     pub building: Vec<FieldName>,
+    /// The fields a host's `sort_index.<type>` setting is having built:
+    /// the fold keeps their rows, no read uses them.
+    #[serde(default)]
+    pub setting_building: Vec<FieldName>,
+    /// The fields a host's `lookup_index.<type>` setting is having built:
+    /// the fold keeps their rows, no read uses them until their `Keep`.
+    #[serde(default)]
+    pub looked_building: Vec<FieldName>,
+    /// The fields the build will stop keeping, whose rows go at its
+    /// `Keep`: reads keep using them until then.
+    #[serde(default)]
+    pub looked_going: Vec<FieldName>,
 }
 
 /// What a compact of the projection measured: its storage in bytes before

@@ -195,6 +195,13 @@ impl ProjectionStore for Scoped {
         }
     }
 
+    fn put_record_for(&self, record: &StoredRecord, whole: bool) -> Result<()> {
+        match self.scope() {
+            Some(s) if !s.hides(&record.ty, &record.key) => Ok(()),
+            _ => self.inner().put_record_for(record, whole),
+        }
+    }
+
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         match self.scoped() {
             true => Ok(()),

@@ -21,6 +21,7 @@ mod authors_view;
 mod backings;
 mod batched;
 mod before_declared;
+mod builds;
 mod bundles;
 mod change;
 mod chosen;
@@ -997,6 +998,12 @@ pub const ALL: &[Check] = &[
     chosen::CHOSEN_SWITCH,
     chosen::CHOSEN_UNUSED,
     chosen::CHOSEN_TOLD_TO_SCHEMA,
+    builds::BUILD_READ_ANSWERS_AS_BEFORE,
+    builds::BUILD_NEVER_READ_PART_BUILT,
+    builds::BUILD_WRITES_GO_ON,
+    builds::BUILD_WRITE_REACHES_BOTH_SIDES,
+    builds::BUILD_BESIDE_A_REMOVAL,
+    builds::BUILD_REBUILD_SAME_LAKE,
     rerank::RERANK_REORDERS_THE_WINDOW,
     rerank::RERANK_ONE_WINDOW,
     rerank::RERANK_ONE_WINDOW_ONLY,

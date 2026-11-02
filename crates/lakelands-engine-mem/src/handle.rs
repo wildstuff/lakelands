@@ -289,6 +289,19 @@ impl ProjectionStore for MemoryLake {
         }
     }
 
+    fn put_record_for(&self, record: &StoredRecord, whole: bool) -> Result<()> {
+        // A setting put beside the writer marks what it asks for as
+        // building; the build fills it in turns (099). Every other put is
+        // whole, as before.
+        let beside = !whole
+            && lakelands_core::engines::sort_index_type(record).is_some()
+            && !lakelands_api::seam::is_head_only(&record.ty);
+        match beside {
+            true => self.stage(Put::Live(record.clone())),
+            false => self.put_record(record),
+        }
+    }
+
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         lakelands_core::engines::head_only(name)?;
         let ty = name.clone();

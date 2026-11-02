@@ -155,6 +155,10 @@ pub(crate) enum Put {
     Declaration(Declared),
     /// A record's whole state from its `position`.
     Record(StoredRecord),
+    /// A record's state put beside the writer: a `sort_index.<type>`
+    /// setting marks what it asks for as building instead of walking the
+    /// type in this transaction (099).
+    Live(StoredRecord),
     /// The one state of a key of a head-only name, or its end: it takes
     /// the place of whatever the key held, and nothing indexes it.
     Head(StoredRecord),
@@ -194,7 +198,7 @@ impl Put {
     fn own_position(&self) -> Position {
         match self {
             Put::Declaration(d) => d.since,
-            Put::Record(r) | Put::Head(r) => r.position,
+            Put::Record(r) | Put::Live(r) | Put::Head(r) => r.position,
             Put::Applied(a) => a.at,
             Put::DroppedRecord(..) | Put::DroppedOutput(..) | Put::DroppedBases => {
                 Position::GENESIS
@@ -314,6 +318,7 @@ impl Projection {
         self.bases.2 = engines::shared_bases(states);
         let mut records = BTreeSet::new();
         let mut types = BTreeSet::new();
+        let mut live = Vec::new();
         for put in puts {
             match &put {
                 Put::DroppedRecord(ty, key) => drop(records.insert((ty.clone(), key.clone()))),
@@ -323,6 +328,12 @@ impl Projection {
                     if let Some(ty) = lakelands_core::engines::sort_index_type(r) {
                         types.extend(lakelands_core::engines::ordered_names(&ty));
                     }
+                }
+                Put::Live(r) => {
+                    records.insert((r.ty.clone(), r.key.clone()));
+                    // Beside the writer the setting only marks what it
+                    // asks for as building; a build fills it in turns.
+                    live.extend(lakelands_core::engines::sort_index_type(r));
                 }
                 Put::Declaration(d) => {
                     if let Declaration::Type(t) = &d.declaration {
@@ -354,6 +365,26 @@ impl Projection {
             let mut after = None;
             while let Some((last, _)) = self.index_page(ty, after.as_ref(), 1024) {
                 after = Some(last);
+            }
+        }
+        // A setting put beside the writer marks the fields it asks for as
+        // building: a read keeps the old road until each field's `Keep`.
+        for ty in live {
+            for name in lakelands_core::engines::ordered_names(&ty) {
+                let named = self.named_fields(&name);
+                let mut chosen = self.chosen.get(&name).cloned().unwrap_or_default();
+                // A host's setting that names a field wins: the lake's
+                // choice goes, and the build fills the setting's fields
+                // instead.
+                if !named.is_empty() {
+                    chosen.kept.clear();
+                    chosen.building.clear();
+                }
+                chosen.setting_building = named;
+                match chosen == Chosen::default() {
+                    true => self.chosen.remove(&name),
+                    false => self.chosen.insert(name, chosen),
+                };
             }
         }
         self.bases.2.clear();
@@ -397,14 +428,7 @@ impl Projection {
         let Some(decl) = self.type_at(&declared, Some(Position(u64::MAX))) else {
             return Vec::new();
         };
-        let setting = self
-            .records
-            .get(&(
-                TypeName::from(lakelands_api::seam::SETTING_TYPE),
-                RecordKey::from(lakelands_core::engines::sort_index_key(ty)),
-            ))
-            .and_then(History::latest)
-            .map(|h| h.record(&self.bases));
+        let setting = self.setting_at(ty);
         lakelands_core::engines::sorted_fields(
             ty,
             decl,
@@ -412,6 +436,18 @@ impl Projection {
                 .as_ref()
                 .and_then(lakelands_core::engines::setting_value),
         )
+    }
+
+    /// `ty`'s `sort_index.<type>` setting at the head, a kept name's its
+    /// view's.
+    fn setting_at(&self, ty: &TypeName) -> Option<StoredRecord> {
+        self.records
+            .get(&(
+                TypeName::from(lakelands_api::seam::SETTING_TYPE),
+                RecordKey::from(lakelands_core::engines::sort_index_key(ty)),
+            ))
+            .and_then(History::latest)
+            .map(|h| h.record(&self.bases))
     }
 
     /// The fields the fold keeps rows of: those the setting names, else
@@ -426,14 +462,21 @@ impl Projection {
     }
 
     fn order_fields(&self, ty: &TypeName, building: bool) -> Vec<FieldName> {
-        let named = self.named_fields(ty);
-        let Some(chosen) = self.chosen.get(ty).filter(|_| named.is_empty()) else {
-            return named;
+        let declared = lakelands_core::engines::kept_view(ty).unwrap_or_else(|| ty.clone());
+        let Some(decl) = self.type_at(&declared, Some(Position(u64::MAX))) else {
+            return Vec::new();
         };
-        let Some(decl) = self.type_at(ty, Some(Position(u64::MAX))) else {
-            return named;
-        };
-        lakelands_core::engines::order_fields(ty, decl, None, chosen, building)
+        let setting = self.setting_at(ty);
+        let chosen = self.chosen.get(ty).cloned().unwrap_or_default();
+        lakelands_core::engines::order_fields(
+            ty,
+            decl,
+            setting
+                .as_ref()
+                .and_then(lakelands_core::engines::setting_value),
+            &chosen,
+            building,
+        )
     }
 
     /// The fields of `ty`'s order index the lake chose.
@@ -443,21 +486,33 @@ impl Projection {
 
     /// One step of choosing an order index (`ProjectionStore::choose_order`).
     pub(crate) fn choose(&mut self, ty: &TypeName, step: &Choose) -> Option<RecordKey> {
-        // A type the host's setting names fields of, a view, an undeclared
-        // type and a field it does not hold with a kind the index keeps are
-        // no step's, as on every engine.
-        let decl = self.type_at(ty, Some(Position(u64::MAX)))?;
-        let sortable = |f: &FieldName| {
-            (decl.fields.iter()).any(|d| d.name == *f && lakelands_api::seam::sortable(&d.ty.kind))
-        };
-        if !self.named_fields(ty).is_empty()
-            || decl.view.is_some()
-            || matches!(step, Choose::Start(f) if !sortable(f))
-        {
+        // A kept name is built as the view it keeps; a field a host's
+        // setting names is filled by the setting's own build, field by
+        // field.
+        let kept = lakelands_core::engines::kept_view(ty);
+        let declared = self.type_at(
+            &kept.clone().unwrap_or_else(|| ty.clone()),
+            Some(Position(u64::MAX)),
+        )?;
+        if kept.is_none() && declared.view.is_some() {
             return None;
         }
+        let sortable = |f: &FieldName| {
+            (declared.fields.iter())
+                .any(|d| d.name == *f && lakelands_api::seam::sortable(&d.ty.kind))
+        };
         let mut chosen = self.chosen.get(ty).cloned().unwrap_or_default();
-        if !lakelands_core::engines::chosen_after(&mut chosen, step) {
+        let setting_build = matches!(
+            step,
+            Choose::Fill { field, .. } | Choose::Keep(field)
+                if chosen.setting_building.contains(field)
+        );
+        if !self.named_fields(ty).is_empty() && !setting_build {
+            return None;
+        }
+        if matches!(step, Choose::Start(f) if !sortable(f))
+            || !lakelands_core::engines::chosen_after(&mut chosen, step)
+        {
             return None;
         }
         if let Choose::Fill { after, limit, .. } = step {
@@ -662,7 +717,7 @@ impl Projection {
                     .or_default()
                     .put(since, d);
             }
-            Put::Record(r) => {
+            Put::Record(r) | Put::Live(r) => {
                 let (from, held) = (r.position, Held::of(&r, &mut self.bases));
                 let changes = self.changes.entry(r.ty.clone()).or_default();
                 let id = (r.ty.clone(), r.key.clone());

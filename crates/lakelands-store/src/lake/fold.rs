@@ -125,7 +125,14 @@ impl Lake {
                     view = self.scoped.view(self.engine.view(None)?);
                 }
                 let owes = owed.is_some_and(|p| e.position >= p);
-                self.fold(w, (view.as_ref(), &mut ciphers), &mut staged, e, owes)?;
+                self.fold(
+                    w,
+                    (view.as_ref(), &mut ciphers),
+                    &mut staged,
+                    e,
+                    owes,
+                    of_log || w.rebuilding,
+                )?;
             }
             self.scoped.reads_at(last.position);
             self.flush(w, view.as_ref(), &mut staged, events, owed)?;
@@ -570,6 +577,7 @@ impl Lake {
         staged: &mut Staged,
         e: &Event,
         owes: bool,
+        whole: bool,
     ) -> Result<()> {
         // A quarantined record's cells are opened, erased and selected as a
         // landed value is (085).
@@ -945,7 +953,7 @@ impl Lake {
                         let fields = (!after.retired).then_some(&after.fields);
                         lakelands_api::settings::hold(&mut w.settings, key.as_str(), fields);
                     }
-                    projection.put_record(&after)?;
+                    projection.put_record_for(&after, whole)?;
                     self.index_vectors(&w.ontology, &after)?;
                     let before = before.as_ref();
                     kept::note(&kept_at!(w, view, projection), staged, before, &after)?;
