@@ -52,7 +52,7 @@ check!(
 
 check!(
     GUARD_IN_FORCE_REFUSED = a_guard_s_pairing_is_refused_naming_the_trigger,
-    "100: said at the trigger, `in_force` in a trigger on a view is refused `in_force_here`; a bound by `>=` or `<`, a pairing with the trigger's own type or with a view `in_force_form`; a matched pair on a number or of two kinds, an order pair of two kinds `in_force_pair`; a type that is none `undeclared`, a field it lacks `unknown_field`, and a field of it computed at the read `reads_at_read`"
+    "100: said at the trigger, `in_force` in a trigger on a view is refused `in_force_here`; a bound by `>=` or `<`, a pairing with the trigger's own type or with a view `guard_in_force_form`; a matched pair on a number or of two kinds, an order pair of two kinds `guard_in_force_pair`; a type that is none `undeclared`, a field it lacks `unknown_field`, and a field of it computed at the read `reads_at_read`"
 );
 
 check!(
@@ -558,13 +558,13 @@ async fn a_guard_s_pairing_is_refused_naming_the_trigger(store: Store) -> Held {
     let on_view = "spot in_force(box.hi, box.from <= n, box.symbol = symbol) is null";
     let mut tried = vec![(on_view.to_owned(), "in_force_here")];
     for row in [
-        "box.hi, box.from >= at, box.symbol = symbol in_force_form",
-        "box.hi, box.from < at, box.symbol = symbol in_force_form",
-        "tick.price, tick.at <= at, tick.symbol = symbol in_force_form",
-        "spot.n, spot.n <= price, spot.symbol = symbol in_force_form",
-        "box.hi, box.from <= at, box.hi = price in_force_pair",
-        "box.hi, box.from <= at, box.symbol = price in_force_pair",
-        "box.hi, box.from <= price, box.symbol = symbol in_force_pair",
+        "box.hi, box.from >= at, box.symbol = symbol guard_in_force_form",
+        "box.hi, box.from < at, box.symbol = symbol guard_in_force_form",
+        "tick.price, tick.at <= at, tick.symbol = symbol guard_in_force_form",
+        "spot.n, spot.n <= price, spot.symbol = symbol guard_in_force_form",
+        "box.hi, box.from <= at, box.hi = price guard_in_force_pair",
+        "box.hi, box.from <= at, box.symbol = price guard_in_force_pair",
+        "box.hi, box.from <= price, box.symbol = symbol guard_in_force_pair",
         "none.hi, none.from <= at, none.symbol = symbol undeclared",
         "box.cost, box.from <= at, box.symbol = symbol unknown_field",
         "box.half, box.from <= at, box.symbol = symbol reads_at_read",

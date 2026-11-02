@@ -718,7 +718,7 @@ fn in_force(o: &Ontology, t: &TypeDecl) -> Result<()> {
     for (f, e) in t.in_force() {
         let on = [of_type(&t.name), of_field(&f.name)];
         let wrong = |case| Error::invalid_at(&f.name, at(&on, case));
-        if let Some(read) = pairs(o, t, &e, &wrong)? {
+        if let Some(read) = pairs(o, (t, Some(&f.name)), &e, &wrong)? {
             lands(f, Kind::read(read), &on)?;
         }
     }
@@ -729,23 +729,30 @@ fn in_force(o: &Ontology, t: &TypeDecl) -> Result<()> {
 /// takes, with another stored type, over fields that pair: two of one
 /// kind, a match of text or a reference, which the exact-text index keeps,
 /// an order bound of a kind the lake sorts; of the other type stored
-/// fields. One judgement for a field computed at the read and a trigger's
-/// `when` (100), `wrong` saying a refusal where `e` stands. The kind `T.f`
-/// holds where `e` is the call alone.
+/// fields. One judgement for `field`, computed at the read, and a
+/// trigger's `when` where none (100), `wrong` saying a refusal where `e`
+/// stands: a field's refusal names it, as 0.22.0 shipped it, and a
+/// trigger's is a case of its own, for a trigger has no field to name. The
+/// kind `T.f` holds where `e` is the call alone.
 fn pairs(
     o: &Ontology,
-    t: &TypeDecl,
+    (t, field): (&TypeDecl, Option<&FieldName>),
     e: &Expr,
     wrong: &dyn Fn(Case) -> Error,
 ) -> Result<Option<StorageKind>> {
     use StorageKind::{Reference, Text};
+    let form = || {
+        wrong(field.map_or(Case::GuardInForceForm, |f| Case::InForceForm {
+            field: f.clone(),
+        }))
+    };
     let mut whole = None;
-    for p in e.pairings().map_err(|_| wrong(Case::InForceForm))? {
+    for p in e.pairings().map_err(|_| form())? {
         let ty = TypeName::from(p.ty.as_str());
         let other = match o.types.get(&ty) {
             None if ty != t.name => return Err(wrong(Case::Undeclared { ty })),
             Some(e) if ty != t.name && e.decl.view.is_none() => &e.decl,
-            _ => return Err(wrong(Case::InForceForm)),
+            _ => return Err(form()),
         };
         let theirs = |n: &FieldName| {
             let (ty, field) = (ty.clone(), n.clone());
@@ -771,7 +778,14 @@ fn pairs(
             let ours = t.field(right).filter(|r| !r.at_read()).map(|r| r.ty.kind);
             if !pairs || ours != Some(kind) {
                 let (left, right) = (left.clone(), right.clone());
-                return Err(wrong(Case::InForcePair { left, right }));
+                return Err(wrong(match field {
+                    Some(f) => Case::InForcePair {
+                        field: f.clone(),
+                        left,
+                        right,
+                    },
+                    None => Case::GuardInForcePair { left, right },
+                }));
             }
         }
     }
@@ -2279,7 +2293,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 if ty.view.is_some() && e.calls(&[Func::InForce]) {
                     return Err(wrong(Case::InForceHere));
                 }
-                pairs(o, ty, &e, &wrong)?;
+                pairs(o, (ty, None), &e, &wrong)?;
             }
         }
         Declaration::ObjectSet(s) => {

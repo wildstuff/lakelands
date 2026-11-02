@@ -120,10 +120,20 @@
    "field": "f"
   },
   {
-   "code": "in_force_form"
+   "code": "in_force_form",
+   "field": "f"
   },
   {
    "code": "in_force_pair",
+   "field": "f",
+   "left": "f",
+   "right": "f"
+  },
+  {
+   "code": "guard_in_force_form"
+  },
+  {
+   "code": "guard_in_force_pair",
    "left": "f",
    "right": "f"
   },

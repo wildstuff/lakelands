@@ -425,6 +425,13 @@ Where the tree differed from the text above:
 - **A field of `T` taken to the read** is refused `read_as_stored`, naming that field, as
   a field of `T` that a field computed at the read pairs by already was. A field that goes
   or changes kind is refused `field_read_elsewhere`, as written.
+- **The refusals of a field keep `field`.** 0.22.0 shipped `in_force_form` and
+  `in_force_pair` with the member `field`, and a shipped code keeps its parameters (015):
+  it leaves only by a recorded withdrawal. So a field computed at the read is refused
+  as it was, naming itself in `field`. A trigger has no field that pairs, so the one
+  judgement says its two refusals by two new codes, which say "its `when` pairs":
+  `guard_in_force_form`, with no member, and `guard_in_force_pair`, with `left` and
+  `right`. No code is withdrawn. The table above reads these two codes for a trigger.
 - **One read a series.** `Decide::in_force` resolves the record once for every field the
   `when` reads in the series. A field that one sight may not read is left out and reads
   null alone. No row is read where none is left, or where a sight may not read `T.by` or

@@ -930,10 +930,14 @@ catalog! {
         PrecedingUnlooked { field: FieldName } => "a `preceding` matches its series on `{field}`, which is not text or a reference",
         /// A `preceding` ordered by a field whose kind has no order.
         PrecedingUnordered { field: FieldName } => "a `preceding` orders its series by `{field}`, whose kind has no order",
-        /// An `in_force` not of the form it pairs by.
-        InForceForm => "it pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of this record",
-        /// An `in_force` pair whose two fields cannot pair.
-        InForcePair { left: FieldName, right: FieldName } => "it pairs `{left}` with `{right}`: two fields of one kind, a match of text or a reference, an order bound of a kind with an order",
+        /// A field's `in_force` not of the form it pairs by.
+        InForceForm { field: FieldName } => "the field `{field}` pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of this record",
+        /// A field's `in_force` pair whose two fields cannot pair.
+        InForcePair { field: FieldName, left: FieldName, right: FieldName } => "the field `{field}` pairs `{left}` with `{right}`: two fields of one kind, a match of text or a reference, an order bound of a kind with an order",
+        /// A trigger's `in_force` not of the form it pairs by.
+        GuardInForceForm => "its `when` pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of the trigger's type",
+        /// A trigger's `in_force` pair whose two fields cannot pair.
+        GuardInForcePair { left: FieldName, right: FieldName } => "its `when` pairs `{left}` with `{right}`: two fields of one kind, a match of text or a reference, an order bound of a kind with an order",
         /// A constraint that reads what can change without a write of the
         /// record.
         ConstraintReadsBeyond { constraint: ConstraintName, reads: Box<Beyond> } => "constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields",
