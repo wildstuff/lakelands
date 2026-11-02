@@ -79,6 +79,29 @@ impl ProjectionView for MemView {
         Ok(self.read(|p, at| p.record_of(ty, key, at)))
     }
 
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        Ok(self.read(|p, _| p.orders.get(&(name.clone(), key.clone())).cloned()))
+    }
+
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        Ok(self.read(|p, _| {
+            let from = after.cloned().unwrap_or_default();
+            let of = (name.clone(), from);
+            p.orders
+                .range(of..)
+                .take_while(|((t, _), _)| t == name)
+                .filter(|((_, key), _)| after.is_none_or(|a| key > a))
+                .take(n as usize)
+                .map(|((_, key), entry)| (key.clone(), entry.clone()))
+                .collect()
+        }))
+    }
+
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         Ok(self.read(|p, at| {
             let keys: std::collections::BTreeSet<&RecordKey> = keys.iter().collect();

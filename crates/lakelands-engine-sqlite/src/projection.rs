@@ -86,6 +86,10 @@ CREATE TABLE IF NOT EXISTS records (
     flags INTEGER NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (id, since)
 );
+CREATE TABLE IF NOT EXISTS view_order (
+    name TEXT NOT NULL, key TEXT NOT NULL, entry BLOB NOT NULL,
+    PRIMARY KEY (name, key)
+) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS records_at ON records (ty, until, id);
 CREATE INDEX IF NOT EXISTS declarations_until ON declarations (until);
 CREATE INDEX IF NOT EXISTS records_since ON records (ty, since);
@@ -176,11 +180,12 @@ CREATE TABLE IF NOT EXISTS text_lengths (
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
-pub(crate) const TABLES: [&str; 21] = [
+pub(crate) const TABLES: [&str; 22] = [
     "meta",
     "declarations",
     "keys",
     "records",
+    "view_order",
     "proposals",
     "quarantined",
     "members",
@@ -545,7 +550,7 @@ fn routes_query(
 /// raised whenever a table changes so that a projection made before
 /// would answer wrongly, not fail: one made with another layout is never
 /// read, and is rebuilt from the log.
-pub(crate) const LAYOUT: u64 = 9;
+pub(crate) const LAYOUT: u64 = 10;
 
 /// The layout `conn`'s projection was made with: none where it holds no
 /// `meta`, or was made before projections were marked.
@@ -995,6 +1000,76 @@ pub(crate) fn type_at(
             _ => None,
         },
     ))
+}
+
+/// Put the entry of the order `name` at `key`, or delete the one there
+/// where `entry` is none (record 098, F10).
+pub(crate) fn put_order(
+    conn: &Connection,
+    name: &TypeName,
+    key: &RecordKey,
+    entry: Option<&[u8]>,
+) -> Result<()> {
+    match entry {
+        None => run(
+            conn,
+            "DELETE FROM view_order WHERE name = ?1 AND key = ?2",
+            params![name.as_str(), key.as_str()],
+        ),
+        Some(entry) => run(
+            conn,
+            "INSERT INTO view_order (name, key, entry) VALUES (?1, ?2, ?3) \
+             ON CONFLICT (name, key) DO UPDATE SET entry = EXCLUDED.entry",
+            params![name.as_str(), key.as_str(), entry],
+        ),
+    }
+}
+
+/// Delete every entry of the order `name`.
+pub(crate) fn end_order(conn: &Connection, name: &TypeName) -> Result<()> {
+    run(
+        conn,
+        "DELETE FROM view_order WHERE name = ?1",
+        [name.as_str()],
+    )
+}
+
+/// The entry of the order `name` at `key`, if it holds one.
+pub(crate) fn order(
+    conn: &Connection,
+    name: &TypeName,
+    key: &RecordKey,
+) -> Result<Option<Vec<u8>>> {
+    one(
+        conn,
+        "SELECT entry FROM view_order WHERE name = ?1 AND key = ?2",
+        params![name.as_str(), key.as_str()],
+    )
+}
+
+/// At most `n` entries of the order `name` after `after`, in key order.
+pub(crate) fn order_page(
+    conn: &Connection,
+    name: &TypeName,
+    after: Option<&RecordKey>,
+    n: u32,
+) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+    let after = after.map(RecordKey::as_str).unwrap_or("");
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT key, entry FROM view_order WHERE name = ?1 AND key > ?2 ORDER BY key LIMIT ?3",
+        )
+        .map_err(sql)?;
+    let rows = stmt
+        .query_map(params![name.as_str(), after, n], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })
+        .map_err(sql)?;
+    rows.map(|row| {
+        let (key, entry) = row.map_err(sql)?;
+        Ok((RecordKey::from(key), entry))
+    })
+    .collect()
 }
 
 /// The latest state of one record.

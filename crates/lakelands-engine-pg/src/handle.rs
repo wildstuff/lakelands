@@ -1162,6 +1162,14 @@ impl ProjectionStore for PgLake {
         self.stage(at, |b| b.end_heads(name.as_str()))
     }
 
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        self.stage(Position::GENESIS, |b| b.order(name.as_str(), key.as_str(), entry))
+    }
+
+    fn end_order(&self, name: &TypeName) -> Result<()> {
+        self.stage(Position::GENESIS, |b| b.end_orders(name.as_str()))
+    }
+
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
         self.stage(Position::GENESIS, |b| match of {
             StatesOf::Record(ty, key) => b.drop_record(ty.as_str(), key.as_str()),

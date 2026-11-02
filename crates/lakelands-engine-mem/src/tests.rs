@@ -771,3 +771,72 @@ fn the_vector_index_is_shared_by_every_handle_to_the_lake() {
     a.vectors().unwrap().remove(&ty, &key, "emb").unwrap();
     assert_eq!(b.vectors().unwrap().count(&ty, "emb").unwrap(), 0);
 }
+
+// ---- a kept view's order ------------------------------------------------
+
+/// The fold keeps a view's order entries in the engine's own order table,
+/// apart from the records (lakelands#1690): no `sys:order.` record is put,
+/// and the entries the extreme reads its next holder from are there.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_fold_keeps_an_extremes_order_apart_from_the_records() {
+    use lakelands_api::Location;
+    use lakelands_api::seam::{Seams, VIEW_KEPT_SETTING, order_name};
+    use lakelands_core::conformance::fixture::{Lake, field, type_decl, view_of};
+    use lakelands_api::ontology::StorageKind;
+    use std::sync::Arc;
+
+    let opener = MemoryOpener::new();
+    let location = Location::memory(unique("order").as_str());
+    let seams = Seams {
+        engines: vec![Arc::new(opener.clone())],
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(location.clone(), seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl(
+        "line",
+        vec![
+            field("g", StorageKind::Text),
+            field("n", StorageKind::Number),
+        ],
+    ))
+    .await
+    .unwrap();
+    let fields = vec![
+        field("g", StorageKind::Text),
+        field("low", StorageKind::Number),
+        field("high", StorageKind::Number),
+    ];
+    l.declare(view_of(
+        "ends",
+        "line",
+        &["g"],
+        fields,
+        &[("low", "min(n)"), ("high", "max(n)")],
+    ))
+    .await
+    .unwrap();
+    l.set(&format!("{VIEW_KEPT_SETTING}ends"), json!(true))
+        .await
+        .unwrap();
+    for (key, fields) in [
+        ("a", json!({"g": "x", "n": 9})),
+        ("b", json!({"g": "x", "n": 5})),
+    ] {
+        l.upsert("line", key, fields).await.unwrap();
+    }
+    drop(store);
+    let engine = opener.open(&location, OpenMode::Read).unwrap();
+    let view = engine.view(None).unwrap();
+    let name = order_name(&TypeName::from("ends"));
+    assert!(
+        view.scan(&name, &scan(100)).unwrap().is_empty(),
+        "the fold writes no `sys:order.` record"
+    );
+    assert!(
+        !view.order_page(&name, None, 100).unwrap().is_empty(),
+        "the extreme's order holds its entries"
+    );
+}

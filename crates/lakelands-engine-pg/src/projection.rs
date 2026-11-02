@@ -184,6 +184,10 @@ CREATE TABLE IF NOT EXISTS {s}.records (
     PRIMARY KEY (ty, key, since)
 ){pt};
 CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since, key);
+CREATE TABLE IF NOT EXISTS {s}.view_order (
+    name TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, entry BYTEA NOT NULL,
+    PRIMARY KEY (name, key)
+){pt};
 CREATE TABLE IF NOT EXISTS {s}.proposals (
     id TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (id, since)
@@ -333,11 +337,11 @@ fn heads_sql(s: &str, pt: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 11;
+pub(crate) const LAYOUT: u64 = 12;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 26] = [
+pub(crate) const LAKE_TABLES: [&str; 27] = [
     "meta",
     "lease",
     "segments",
@@ -345,6 +349,7 @@ pub(crate) const LAKE_TABLES: [&str; 26] = [
     "ids",
     "declarations",
     "records",
+    "view_order",
     "proposals",
     "quarantined",
     "members",
@@ -1760,6 +1765,12 @@ pub(crate) struct Buffer {
     /// The head-only names whose every key was ended: deleted before the
     /// heads are written.
     ended: BTreeSet<String>,
+    /// The last entry put of each key of a view's order, none for one
+    /// deleted: `view_order` holds one row a key (record 098, F11).
+    orders: BTreeMap<(String, String), Option<Vec<u8>>>,
+    /// The orders whose every entry was ended: deleted before the entries
+    /// are written.
+    orders_ended: BTreeSet<String>,
     proposals: BTreeMap<(Vec<String>, i64), String>,
     quarantined: BTreeMap<(Vec<String>, i64), String>,
     outputs: BTreeMap<(Vec<String>, i64), String>,
@@ -1787,7 +1798,11 @@ impl Buffer {
     /// The puts it holds, of every kind.
     pub(crate) fn len(&self) -> usize {
         let (records, states) = (
-            self.records.len() + self.heads.len() + self.ended.len(),
+            self.records.len()
+                + self.heads.len()
+                + self.ended.len()
+                + self.orders.len()
+                + self.orders_ended.len(),
             self.proposals.len() + self.quarantined.len() + self.outputs.len(),
         );
         let dropped =
@@ -1887,6 +1902,20 @@ impl Buffer {
     pub(crate) fn end_heads(&mut self, ty: &str) {
         self.heads.retain(|(t, _), _| t != ty);
         self.ended.insert(ty.to_owned());
+    }
+
+    /// Put an entry of the order `name` at `key`, or delete the one there
+    /// where `entry` is none.
+    pub(crate) fn order(&mut self, name: &str, key: &str, entry: Option<&[u8]>) {
+        let at = (name.to_owned(), key.to_owned());
+        self.orders.insert(at, entry.map(<[u8]>::to_vec));
+    }
+
+    /// End every entry of the order `name`: what the buffer holds of it
+    /// goes, and so do its rows, before any entry put after.
+    pub(crate) fn end_orders(&mut self, name: &str) {
+        self.orders.retain(|(n, _), _| n != name);
+        self.orders_ended.insert(name.to_owned());
     }
 
     pub(crate) fn proposal(&mut self, id: &str, at: Position, state: String) {
@@ -2127,6 +2156,56 @@ impl Buffer {
                 ),
                 &[&tys, &keys, &since, &states, &flagged],
             )?;
+        }
+        // An order's row is one a key, its entry written over in place: a
+        // name ended as a whole goes first, then the keys deleted, then the
+        // entries put after them.
+        let orders = names.t("view_order");
+        if !self.orders_ended.is_empty() {
+            let gone: Vec<&str> = self.orders_ended.iter().map(String::as_str).collect();
+            db.execute(
+                &format!("DELETE FROM {orders} WHERE name = ANY($1::text[])"),
+                &[&gone],
+            )?;
+        }
+        if !self.orders.is_empty() {
+            let mut deleted: Vec<(&str, &str)> = Vec::new();
+            let mut rows: Vec<(&str, &str, Option<&[u8]>)> = Vec::new();
+            for ((name, key), entry) in &self.orders {
+                match entry {
+                    None => deleted.push((name.as_str(), key.as_str())),
+                    Some(entry) => rows.push((name.as_str(), key.as_str(), Some(entry))),
+                }
+            }
+            if !deleted.is_empty() {
+                let (views, keys): (Vec<&str>, Vec<&str>) = deleted.into_iter().unzip();
+                db.execute(
+                    &format!(
+                        "DELETE FROM {orders} t USING unnest($1::text[], $2::text[]) \
+                         AS b(name, key) WHERE t.name = b.name AND t.key = b.key"
+                    ),
+                    &[&views, &keys],
+                )?;
+            }
+            if !rows.is_empty() {
+                let mut views = Vec::with_capacity(rows.len());
+                let mut keys = Vec::with_capacity(rows.len());
+                let mut entries = Vec::with_capacity(rows.len());
+                for (name, key, entry) in rows {
+                    views.push(name);
+                    keys.push(key);
+                    entries.push(entry);
+                }
+                db.execute(
+                    &format!(
+                        "INSERT INTO {orders} (name, key, entry) \
+                         SELECT name, key, entry FROM unnest($1::text[], $2::text[], $3::bytea[]) \
+                         AS b(name, key, entry) \
+                         ON CONFLICT (name, key) DO UPDATE SET entry = EXCLUDED.entry"
+                    ),
+                    &[&views, &keys, &entries],
+                )?;
+            }
         }
         PROPOSALS.put_many(db, names, &self.proposals, &[])?;
         QUARANTINED.put_many(db, names, &self.quarantined, &[])?;

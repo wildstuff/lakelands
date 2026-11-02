@@ -202,6 +202,14 @@ impl ProjectionStore for Scoped {
         }
     }
 
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        self.inner().put_order(name, key, entry)
+    }
+
+    fn end_order(&self, name: &TypeName) -> Result<()> {
+        self.inner().end_order(name)
+    }
+
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
         self.inner().drop_states(of)
     }
@@ -310,6 +318,19 @@ impl ProjectionView for ScopedView<'_> {
             Some(r) if r.position > self.scope.at() => self.then(|v| v.get(ty, key)),
             r => Ok(r),
         }
+    }
+
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        self.head.order(name, key)
+    }
+
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        self.head.order_page(name, after, n)
     }
 
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {

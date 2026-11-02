@@ -544,6 +544,7 @@ pub const ALL: &[Check] = &[
     view_rights::VIEW_OVER_A_HIDDEN_FIELD,
     view_rights::SHOWN_AS_READ,
     kept_heads::KEPT_HEAD_ONLY_EARLIER_READ,
+    kept_heads::ORDER_ENTRIES_APART,
     kept_heads::PROVENANCE_ONCE,
     kept_heads::ZONED_REFOLDED,
     view_kept::KEPT_SHAPES,

@@ -89,6 +89,17 @@ impl ProjectionView for CountingView<'_> {
         self.handed.ones.fetch_add(1, Ordering::SeqCst);
         self.inner.get(ty, key)
     }
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        self.inner.order(name, key)
+    }
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        self.inner.order_page(name, after, n)
+    }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.handed.gets.fetch_add(1, Ordering::SeqCst);
         if keys.len() == 1 {

@@ -327,6 +327,20 @@ pub trait ProjectionStore: Send + Sync {
     /// same transaction is kept. Any other name is refused as invalid.
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()>;
 
+    /// Store the entry of the order `name` at `key`, or delete the one
+    /// there where `entry` is none: what the fold keeps of an extreme's
+    /// members ([`crate::seam::order_name`]). The bytes are the entry as
+    /// the store wrote it, which an engine hands back unchanged: they hold
+    /// the member's id and the value the extreme keeps, and nothing that a
+    /// read of the lake answers. An engine keeps no state of an order entry
+    /// and nothing indexes it; a key put again holds the new entry alone.
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()>;
+
+    /// Delete every entry of the order `name` at once: what was put before
+    /// it in the transaction, or before the transaction, is gone, and what
+    /// is put after it in the same transaction is kept.
+    fn end_order(&self, name: &TypeName) -> Result<()>;
+
     /// Delete every state `of` names holds, kept history included, inside
     /// the transaction: what was put before it in the transaction or
     /// before the transaction is gone, and what is put after it is kept.
@@ -652,6 +666,20 @@ pub trait ProjectionView {
 
     /// One record, retired and restricted ones included.
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>>;
+
+    /// The entry of the order `name` at `key`, as
+    /// [`ProjectionStore::put_order`] wrote it, if it holds one.
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>>;
+
+    /// The entries of the order `name` after `after` in key order, at most
+    /// `n` of them, each with its key: the page a seek over an extreme's
+    /// order reads.
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>>;
 
     /// Records of one type.
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>>;

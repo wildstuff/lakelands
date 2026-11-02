@@ -858,6 +858,16 @@ impl ProjectionStore for SqliteLake {
         })
     }
 
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        self.stage(Position::GENESIS, |conn, _| {
+            projection::put_order(conn, name, key, entry)
+        })
+    }
+
+    fn end_order(&self, name: &TypeName) -> Result<()> {
+        self.stage(Position::GENESIS, |conn, _| projection::end_order(conn, name))
+    }
+
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
         self.stage(Position::GENESIS, |conn, t| match of {
             StatesOf::Record(ty, key) => projection::drop_record(conn, ty, key),

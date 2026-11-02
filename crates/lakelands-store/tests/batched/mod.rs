@@ -812,6 +812,17 @@ impl ProjectionView for FaultyView<'_> {
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         self.0.get(ty, key)
     }
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        self.0.order(name, key)
+    }
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        self.0.order_page(name, after, n)
+    }
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.0.scan(ty, scan)
     }

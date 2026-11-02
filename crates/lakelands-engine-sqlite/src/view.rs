@@ -854,6 +854,21 @@ impl ProjectionView for SqliteView<'_> {
         self.read(None, |r| r.record(ty, key))
     }
 
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        self.read(None, |r| projection::order(r.conn, name, key))
+    }
+
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        self.read(Vec::new(), |r| {
+            projection::order_page(r.conn, name, after, n)
+        })
+    }
+
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             r.records_by_key(ty, keys.iter().map(|k| k.to_string()).collect())

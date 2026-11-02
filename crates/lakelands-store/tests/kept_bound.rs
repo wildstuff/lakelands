@@ -186,8 +186,13 @@ impl Peaks {
         let name = lakelands_api::seam::order_name(&view.into());
         let orders = self.probe.orders.lock().unwrap();
         let of = orders.iter().filter(|((ty, _), _)| *ty == name);
-        of.map(|((_, key), r)| format!("{key} {}", json!(r.fields)))
-            .collect()
+        of.map(|((_, key), e)| {
+            format!(
+                "{key} {}",
+                serde_json::from_slice::<serde_json::Value>(e).expect("an entry")
+            )
+        })
+        .collect()
     }
 
     /// Writes of a setting no view names until the next event lands `at`
