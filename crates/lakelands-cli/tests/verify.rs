@@ -211,10 +211,12 @@ impl Root {
                 // runtime of its own, which a test's runtime thread cannot.
                 std::thread::spawn(move || {
                     let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+                    // Bytewise: a row holding a block holds compressed bytes,
+                    // no text.
                     let sql = format!(
-                        "UPDATE \"{schema}\".log SET bytes = convert_to(replace(convert_from(bytes, 'UTF8'), \
-                         'A note', 'B note'), 'UTF8') WHERE convert_from(bytes, 'UTF8') LIKE '%A note%' \
-                         RETURNING position"
+                        "UPDATE \"{schema}\".log SET bytes = overlay(bytes PLACING 'B'::bytea \
+                         FROM position('A note'::bytea IN bytes)) \
+                         WHERE position('A note'::bytea IN bytes) > 0 RETURNING position"
                     );
                     let rows = client.query(&sql, &[]).unwrap();
                     assert_eq!(rows.len(), 1, "one event holds the note");
