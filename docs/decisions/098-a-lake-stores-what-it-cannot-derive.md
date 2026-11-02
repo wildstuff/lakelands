@@ -158,6 +158,16 @@ after 510 948 ticks, 8.8 MB on disk. The write that crossed it waited 9.3 to
 10.3 s (load 7 to 18), about 13 times the reckoning. The time goes to restoring
 and hashing each event for the digest, about 14 µs an event, not to the inflate.
 
+As built (lakelands#1672): the writer keeps the active segment's digest running.
+Each append adds its events, restored as the digest restores them, to a hash it
+holds, and the seal finishes that hash instead of reading the segment again. A
+writer that opens a segment already begun hashes what it holds once, at open, and
+goes on from there, so a lease taken in the middle of a segment seals to the digest
+the one that began it would have. The 64 MiB default stays. Measured in the same
+way, ticks 249 at a time, the write that crossed the bound waited 95.7, 145.2 and,
+with the thinned index below, 73.9 ms (load 16 to 23), where the build before it
+waited 8.0 s on the same 410 601 ticks (load 16 to 23).
+
 ### An index line a block, and a row a block
 
 Read: the SQLite index holds a line of about 100 B an event, with its hash. It
@@ -168,6 +178,22 @@ a row a block in `STORAGE EXTERNAL`, since a block is compressed already, and th
 ids it answers an applied id from move to `ids (id, at)`: reckoned at 135 B a tick.
 `frames` goes, since a header holds what it held. The memory engine keeps what it
 is handed, so it needs the seam's change alone.
+
+As built on SQLite (lakelands#1672), where the tree differs from the sketch: the
+index keeps a line an event, thinned. A block's event names its `id` empty, its
+`hash` empty but at the block's last event, and its `prev` empty but on a
+segment's first line; a read restores the block, the reader keeping the last one,
+and checks what a line does name against it. A block handed with events it does
+not restore to is indexed whole, its lines naming `id` and `hash`, since the
+engine gives back what it is handed and the seal is where its flaw is named.
+Measured over the 410 601 ticks above, an event line is 36.9 B, where the line
+naming `id` and `hash` was 132.6 B: not the 0.4 B reckoned.
+A line a block would break what 0.19 to 0.22 read before they judge a format: each
+of them takes every index line to name the position after the one before it, and
+counts a segment from the event line before its last commit line, so a lake of 23
+indexed a line a block would be damaged to them, not refused by its format. The
+thinned line keeps them reading as far as the format, and the lines they parse are
+the shape they parse.
 
 ### A record's key is stored once, on SQLite
 
@@ -508,7 +534,8 @@ and its own into the raise.
   that block.
 - `APPEND_OF_ONE_STAYS_A_LINE`: and the append that makes a lake is plain.
 - `BLOCK_DIGEST_OVER_RESTORED_EVENTS`: a segment's digest is what the same events
-  without blocks digest to.
+  without blocks digest to, sealed by a writer that took the lease in the middle of
+  the segment as by the one that began it.
 - `FEED_APPENDS_FROM_BLOCKS`: an append larger than a block still reads as one.
 - `APPEND_TORN_BETWEEN_BLOCKS`: a crash between two blocks of an append leaves none of
   it.

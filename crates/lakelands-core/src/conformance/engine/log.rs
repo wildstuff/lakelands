@@ -75,9 +75,9 @@ engine_check!(
 );
 
 engine_check!(
-    BLOCK_DIGEST_OVER_RESTORED_EVENTS =
+    BLOCK_DIGEST_OVER_RESTORED_EVENTS = reopening
         a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored,
-    "log format §1.5 and §4.2: a segment holding whole lines and blocks reads back as appended, and its digest is SHA-256 over its events as they restore, each event's canonical bytes followed by a line feed, never over a block's stored bytes"
+    "log format §1.5 and §4.2: a segment holding whole lines and blocks reads back as appended, and its digest is SHA-256 over its events as they restore, each event's canonical bytes followed by a line feed, never over a block's stored bytes, sealed by a writer that took the lease in the middle of the segment as by the one that began it"
 );
 
 engine_check!(
@@ -1039,6 +1039,7 @@ fn an_append_that_holds_a_frame_in_part_is_refused_whole(engine: &dyn LakeEngine
 
 fn a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored(
     engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
 ) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let whole = chain(0, 2, &Digest::zero(), &lease);
@@ -1058,10 +1059,24 @@ fn a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored
         .append(&lease, &newer)
         .must("appending three events framed")?;
     events.extend(more);
-    let next = chain(5, 1, &newer[2].hash, &lease);
-    let sealed = seal(engine, &lease, &next)
+    // The writer stops in the middle of the segment; another handle takes
+    // the lease, appends the rest and seals it.
+    engine.release_lease(&lease).must("releasing the lease")?;
+    let writer = harness
+        .reopen(engine.lake(), OpenMode::Write)
+        .map_err(|e| Failure::new(format!("opening a second handle for writing: {e}")))?;
+    let lease = writer
+        .take_lease("the next writer")
+        .must("taking the lease on the second handle")?;
+    let (later, more) = framed(FORMAT, 5, 3, &newer[2].hash, &lease);
+    writer
+        .append(&lease, &later)
+        .must("appending three more events framed")?;
+    events.extend(more);
+    let next = chain(8, 1, &later[2].hash, &lease);
+    let sealed = seal(writer.as_ref(), &lease, &next)
         .must("sealing the segment")?
-        .ok_or_else(|| Failure::new("sealing a segment of five events answered none"))?;
+        .ok_or_else(|| Failure::new("sealing a segment of eight events answered none"))?;
     let mut file = Vec::new();
     for e in &events {
         file.extend(crate::canonical::to_vec(e));
@@ -1069,12 +1084,12 @@ fn a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored
     }
     let digest = crate::canonical::hex(&Sha256::digest(&file));
     ensure!(
-        (sealed.first, sealed.last, &sealed.digest.0) == (Position(0), Position(4), &digest),
-        "the sealed segment is {sealed:?}; it must run from 0 to 4 with the digest of its events \
+        (sealed.first, sealed.last, &sealed.digest.0) == (Position(0), Position(7), &digest),
+        "the sealed segment is {sealed:?}; it must run from 0 to 7 with the digest of its events \
          as restored, {digest}"
     );
-    let log = engine.read(Position(0), 10).must("reading the log")?;
-    let want = [whole, newer, next].concat();
+    let log = writer.read(Position(0), 10).must("reading the log")?;
+    let want = [whole, newer, later, next].concat();
     ensure!(
         log == want,
         "the log reads back {:?}; it must be what was appended, {:?}",
