@@ -41,6 +41,17 @@ impl ProjectionView for View {
     fn get(&self, _: &TypeName, _: &RecordKey) -> Result<Option<StoredRecord>> {
         unreachable!()
     }
+    fn order(&self, _: &TypeName, _: &RecordKey) -> Result<Option<Vec<u8>>> {
+        unreachable!()
+    }
+    fn order_page(
+        &self,
+        _: &TypeName,
+        _: Option<&RecordKey>,
+        _: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        unreachable!()
+    }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         Ok(self
             .records
