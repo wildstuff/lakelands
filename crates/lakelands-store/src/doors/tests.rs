@@ -506,3 +506,66 @@ async fn a_write_that_waited_while_the_types_moved_is_judged_by_them() {
         "one seen before types moved that hide nothing more from it is applied: {wide_late:?}"
     );
 }
+
+/// A read made again at the position a search's rankings were read at,
+/// which a write has since moved past, computes a kept view there: the
+/// fold keeps a group's latest record alone, so its kept records are not
+/// the view's at that position (098).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_made_again_at_its_rankings_position_computes_a_kept_view() {
+    let seams = Seams {
+        engines: vec![Arc::new(MemoryOpener::new())],
+        ..Seams::default()
+    };
+    let lake = Lake::open(&Location::memory("waits"), seams, OpenMode::Create);
+    let lake = Arc::new(lake.expect("the lake opens"));
+    let cat = Store { lake: lake.clone() }.catalog(WriteContext::default());
+    let owner = principal("owner", Grants::owner());
+    let line = json!({"declare": "type", "name": "line", "fields": [
+        {"name": "g", "type": {"kind": "text"}}, {"name": "n", "type": {"kind": "number"}}]});
+    let view = |name: &str| {
+        json!({"declare": "type", "name": name, "key": ["g"], "fields": [
+            {"name": "g", "type": {"kind": "text"}}, {"name": "t", "type": {"kind": "number"}}],
+            "view": {"source": "line", "group_by": ["g"],
+                     "measures": [{"name": "t", "expr": "sum(n)"}]}})
+    };
+    let kept = json!({"key": "view_kept.sums", "value": true});
+    let upsert = |ty: &str, key: &str, fields: serde_json::Value| {
+        let patch = serde_json::from_value(fields).expect("a patch");
+        let (ty, key) = (TypeName::from(ty), lakelands_api::RecordKey::from(key));
+        let cat = cat.clone();
+        let owner = owner.clone();
+        async move {
+            cat.upsert(&owner, &ty, &key, patch, Default::default())
+                .await
+        }
+    };
+    for d in [line, view("sums"), view("twin")] {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        cat.declare(&owner, d).await.expect("declaring");
+    }
+    upsert("sys.setting", "view_kept.sums", kept)
+        .await
+        .expect("keeping `sums`");
+    upsert("line", "a", json!({"g": "x", "n": 1}))
+        .await
+        .expect("writing `a`");
+    let then = lake.head();
+    upsert("line", "b", json!({"g": "x", "n": 2}))
+        .await
+        .expect("writing `b`");
+    let found = |ty: &'static str| {
+        let at = (Default::default(), None);
+        let find = |r: &Reader<'_>| r.find(&TypeName::from(ty), &Default::default());
+        let found = reading(&lake, owner.clone(), at, Some(Some(then)), find);
+        match found.expect("a find").data {
+            Found::Records { rows, .. } => rows.into_iter().map(|r| r.fields).collect::<Vec<_>>(),
+            other => panic!("records, not {other:?}"),
+        }
+    };
+    let (sums, twin) = (found("sums"), found("twin"));
+    assert_eq!(
+        sums, twin,
+        "`sums` at {then:?} answers as its twin computed there"
+    );
+}

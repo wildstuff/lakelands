@@ -15,14 +15,19 @@ use std::sync::OnceLock;
 use jiff::civil::Date;
 use jiff::tz::{TimeZone, TimeZoneDatabase};
 
-// INTERIM: lakelands#1667 — the database is the copy jiff-tzdb 0.1.9
-// builds in, pinned exactly; a lake does not record which copy cut its
-// kept zoned buckets, nor the days `today()` cut in its zone (101), so a
-// new copy with new rules would leave kept rows cut by the old ones, and
-// a rebuild under it would cut again, by the new rules, a field computed
-// at the write from `today()` at an instant whose offset they redrew.
-// Recording the copy in the lake, or re-folding what a zone cut when it
-// changes, is still to be decided.
+/// The name the IANA gives the release of the database built in, such as
+/// `2026e`: what a lake records of the copy that cut a kept view's local
+/// buckets, so that a writer under another folds the view again (098).
+pub fn copy() -> &'static str {
+    jiff_tzdb::VERSION.unwrap_or("unnamed")
+}
+
+/// Whether the build names the release of its database, the name [`copy`]
+/// answers: a build that names none cannot be shown to hold the copy a
+/// lake records, so a writer under it folds every kept zoned view again.
+pub fn named() -> bool {
+    jiff_tzdb::VERSION.is_some()
+}
 
 /// The built-in database; it keeps every zone it has read.
 fn database() -> &'static TimeZoneDatabase {

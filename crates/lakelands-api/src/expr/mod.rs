@@ -486,6 +486,22 @@ impl Expr {
             || children(self).any(|c| c.calls(funcs))
     }
 
+    /// Whether it cuts a `date_bucket` in a zone's local calendar, anywhere
+    /// in it: what the copy of the time-zone database decides ([`zone`]).
+    pub fn zoned(&self) -> bool {
+        let cut = |args: &[Expr]| {
+            let unit = matches!(
+                args.get(1),
+                Some(Expr::Lit {
+                    value: Literal::Text(_)
+                })
+            );
+            unit && args.len() == 3
+        };
+        matches!(self, Expr::Call { func: Func::DateBucket, args } if cut(args))
+            || children(self).any(Expr::zoned)
+    }
+
     /// The keys it reads as `setting('<key>')`, without a date, anywhere in
     /// it; with `dated`, those it reads as `setting('<key>', <at>)`
     /// (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).

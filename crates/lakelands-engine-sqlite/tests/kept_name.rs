@@ -1,14 +1,16 @@
 //! A view's kept records bear a name of the kept form
 //! (`lakelands_api::seam::KEPT_PREFIX`), and a kept record is put again at
-//! every write to its group, so a key of such a name may hold thousands
-//! of states. The engine reads such a name by statements of its own
-//! (lakelands#575): at the head the states with no end; at an earlier
-//! position a step from key to key and a seek of each key's state there.
-//! The engine check holds the answers. Here each statement's plan is
-//! read, as the engine itself writes it, and what a read costs is
-//! counted in the steps SQLite's virtual machine takes: for a name with a
-//! key of five thousand states no more than for a name whose keys were
-//! written once. A recorded output is read the same way, by a seek. An
+//! every write to its group: a put under such a name deletes the states
+//! its key held, so a key of such a name keeps one state. The engine
+//! reads such a name by statements of its own (lakelands#575): at the
+//! head the states with no end; at an earlier position a step from key to
+//! key and a seek of each key's state there, a key put after the position
+//! answering none. The engine check holds the answers. Here each
+//! statement's plan is read, as the engine itself writes it, and what a
+//! read costs is counted in the steps SQLite's virtual machine takes: for
+//! a name whose key was written five thousand times no more than for a
+//! name whose keys were written once. A recorded output is read the same
+//! way, by a seek. An
 //! order name (`lakelands_api::seam::ORDER_PREFIX`, lakelands#629) keeps
 //! one state for each key and is read by the statements of a stored type,
 //! its page after a key a seek into the primary key; nothing indexes it.
@@ -176,9 +178,13 @@ fn a_read_of_a_kept_name_takes_the_steps_of_one_whose_keys_were_written_once() {
         p.commit(Position((first + 199).min(last))).unwrap();
     }
     // What the engine answers, before its statements are counted: every
-    // key at the head and in the middle of `a`'s states, in key order.
-    let middle = OTHERS + KEYS + STATES / 2;
-    for (as_of, n) in [(None, last), (Some(Position(middle)), middle)] {
+    // key at the head, and the keys written once before `middle` alone
+    // there, in key order, since `a` was put again after it.
+    let middle = OTHERS + KEYS;
+    for (as_of, at, n, held) in [
+        (None, last, last, KEYS + 1),
+        (Some(Position(middle)), middle, OTHERS + 1, KEYS),
+    ] {
         let view = engine.view(as_of).unwrap();
         let scan = lakelands_api::engine::Scan {
             limit: 100,
@@ -195,11 +201,11 @@ fn a_read_of_a_kept_name_takes_the_steps_of_one_whose_keys_were_written_once() {
                 page[0].fields.get("n"),
                 view.count(&names[0], &scan).unwrap()
             ),
-            (KEYS + 1, Some(&json!(n)), KEYS + 1),
+            (held, Some(&json!(n)), held),
             "as of {as_of:?}"
         );
         let output = (view.output(seam, &Digest("much".into())).unwrap()).map(|(_, v)| v);
-        assert_eq!(output, Some(json!({"at": n})), "as of {as_of:?}");
+        assert_eq!(output, Some(json!({"at": at})), "as of {as_of:?}");
     }
     drop(engine);
     let db = Connection::open(dir.join("projection.db")).unwrap();

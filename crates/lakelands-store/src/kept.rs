@@ -12,7 +12,7 @@ use std::ops::Bound::{Excluded, Included, Unbounded};
 use lakelands_api::canonical::hex;
 use lakelands_api::engine::{After, ProjectionStore, ProjectionView, Scan};
 use lakelands_api::event::{Event, EventBody};
-use lakelands_api::expr::{Condition, Expr};
+use lakelands_api::expr::{Condition, Expr, zone};
 use lakelands_api::ontology::{Measure, TypeDecl, ViewDecl};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{VIEW_KEPT_SETTING as SETTING, kept_name, order_name};
@@ -91,6 +91,24 @@ pub(crate) struct State {
     pub not_exact: [u64; 2],
     /// The groups whose whole face reads otherwise than their open one.
     pub differ: u64,
+    /// The copy of the time-zone database that cut the view's records,
+    /// for a view whose expressions cut a zone's local calendar
+    /// ([`zone::copy`]): a writer that opens the lake under another copy
+    /// folds the view again, and until then no read takes its records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tzdb: Option<String>,
+}
+
+impl State {
+    /// Whether the fold's records were cut under a copy of the time-zone
+    /// database other than the binary's, so that none of them is read. A
+    /// build that names no copy cannot be shown to hold the one recorded,
+    /// so it reads them as cut elsewhere too.
+    pub(crate) fn cut_elsewhere(&self) -> bool {
+        self.tzdb
+            .as_deref()
+            .is_some_and(|c| !zone::named() || c != zone::copy())
+    }
 }
 
 /// The state of `view` at the position `at` reads, if the fold kept one.
@@ -144,6 +162,8 @@ struct Kept {
     /// The settings its expressions name, each by a text: a declared
     /// expression names one no other way.
     settings: BTreeSet<String>,
+    /// Whether an expression of it cuts a zone's local calendar.
+    zoned: bool,
 }
 
 impl Kept {
@@ -184,10 +204,16 @@ impl Kept {
             key,
             ..decl.clone()
         };
+        let zoned = sources.iter().any(|s| {
+            let terms = s.group_by.iter().filter_map(|(_, t)| t.as_ref());
+            let exprs = s.filter.iter().chain(s.measures.iter().map(|(_, e)| e));
+            exprs.chain(terms).any(Expr::zoned)
+        });
         Some(Kept {
             decl,
             sources,
             settings,
+            zoned,
         })
     }
 
@@ -1007,6 +1033,7 @@ impl Views {
         let view = kept.decl.name.clone();
         let whole = State {
             whole: true,
+            tzdb: kept.zoned.then(|| zone::copy().to_owned()),
             ..State::default()
         };
         self.insert(kept, whole);
@@ -1093,6 +1120,21 @@ pub(crate) fn note(
     noted
 }
 
+/// What an event or a write's step may move, as [`settle`] and [`step`]
+/// hand to [`Views::settle`]: the setting it writes or the types it
+/// declares or steps, a writer's lease, or a record's write, which moves
+/// the views its notes have read in.
+struct Moves<'a> {
+    /// Whether any view may move, not only those reading a written type.
+    any: bool,
+    /// The types the event declares or steps.
+    declared: &'a BTreeSet<TypeName>,
+    /// The setting the event writes, if it writes one.
+    setting: Option<&'a str>,
+    /// Whether the event is the writer's lease.
+    leased: bool,
+}
+
 /// The end of one event's fold: the views it makes or ends are made or
 /// ended, and every group it touched is put, at its position.
 pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> {
@@ -1127,13 +1169,23 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
     if none && staged.kept.idle() && asked.is_none() {
         return Ok(());
     }
+    // A writer's lease is the first event a binary folds as the lake's
+    // writer: a view cut under another copy of the time-zone database
+    // is folded again there, under its own.
+    let leased = matches!(e.body, EventBody::LeaseTaken { .. });
     let any = setting.is_some()
+        || leased
         || matches!(
             e.body,
             Declared { .. } | Migrated { .. } | ValueTypeMigrated { .. }
         );
     let mut views = std::mem::take(&mut staged.kept);
-    let moves = (any, &declared, setting.as_deref());
+    let moves = Moves {
+        any,
+        declared: &declared,
+        setting: setting.as_deref(),
+        leased,
+    };
     let settled = views.settle(at, staged, moves, e.position);
     staged.kept = views;
     settled
@@ -1141,14 +1193,21 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
 
 impl Views {
     /// [`settle`] of an event that writes `setting`, declares or steps
-    /// the types `declared`, or, where not `any`, writes a record.
+    /// the types `declared`, takes the writer's lease where `leased`, or,
+    /// where not `any`, writes a record.
     fn settle(
         &mut self,
         at: &At<'_>,
         staged: &mut Staged,
-        (any, declared, setting): (bool, &BTreeSet<TypeName>, Option<&str>),
+        moves: Moves<'_>,
         position: Position,
     ) -> Result<()> {
+        let Moves {
+            any,
+            declared,
+            setting,
+            leased,
+        } = moves;
         // A setting's write and a declaration may move any view: all are
         // read in. A record's write moves the views that read its type,
         // which its notes have read in.
@@ -1161,12 +1220,14 @@ impl Views {
         }
         // A view the event changes under its records is ended: its own
         // declaration or a source's, a source whose records wait to be
-        // computed again, or a setting its expressions read.
+        // computed again, a setting its expressions read, or, at a lease,
+        // a copy of the time-zone database other than the one that cut it.
         let moved = |w: &Work| {
             let under = |s: &Src| declared.contains(&s.ty) || staged.recomputes(&s.ty);
             declared.contains(&w.kept.decl.name)
                 || w.kept.sources.iter().any(under)
                 || setting.is_some_and(|k| w.kept.settings.contains(k))
+                || (leased && w.state.cut_elsewhere())
         };
         let ended: Vec<TypeName> = (self.views.values().filter(|w| moved(w)))
             .map(|w| w.kept.decl.name.clone())
@@ -1174,7 +1235,7 @@ impl Views {
         for view in &ended {
             self.unmake(at, staged, view, position)?;
         }
-        if setting.is_some() || !declared.is_empty() {
+        if setting.is_some() || !declared.is_empty() || leased {
             self.want(at, staged, position)?;
         }
         self.flush(at, staged, position)
@@ -1218,7 +1279,13 @@ pub(crate) fn step(
     let mut views = std::mem::take(&mut staged.kept);
     views.moved = Some(Moved::new());
     let any = write.is_none() || setting.is_some();
-    let settled = views.settle(at, staged, (any, declared, setting.as_deref()), position);
+    let moves = Moves {
+        any,
+        declared,
+        setting: setting.as_deref(),
+        leased: false,
+    };
+    let settled = views.settle(at, staged, moves, position);
     let moved = views.moved.take().unwrap_or_default();
     staged.kept = views;
     settled.map(|()| moved)

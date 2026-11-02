@@ -587,6 +587,8 @@ and its own into the raise.
 - `ORDER_ENTRIES_APART`: an extreme's next holder after a delete and a retire.
 - `PROVENANCE_ONCE`: a field's provenance reads as it did, where it agrees with the
   version and where it does not.
+- `ZONED_REFOLDED`: a kept view a zone cuts, cut under another copy of the time-zone
+  database, is folded again at a writer's open; a view in UTC is not (as built).
 
 One test beside the suite, SQLite, `ERASED_VALUE_LEAVES_THE_FILE`: an erased value's
 bytes are in no page of the file after the reclaim, by the scoped pass and by the swap,
@@ -615,6 +617,42 @@ reads. A no-go leaves lakelands#1640, lakelands#1634, lakelands#1636 and lakelan
 on records. lakelands#1637's tick numbers are the check: if its write rate at these
 rows falls short of the delivery, the answer changes for ticks and stands for
 candles.
+
+### As built: F9, F12 and the time-zone copy (lakelands#1677)
+
+- **A kept name keeps one state a key, on every engine.** A put under
+  `sys:kept.<view>` deletes the states the key held, with their rows, and an ended
+  record only deletes. SQLite deletes them in the fold's own transaction, the
+  state's index rows with them; PostgreSQL marks the key dropped in its buffer,
+  which deletes its rows before the flush writes the new state; the memory engine
+  takes the key's states out as it folds. A read at an earlier position answers a
+  key put after it none, and the store never makes one. The store reads a kept
+  view at the head alone: as of an
+  earlier position it computes the view, as it computes one no setting keeps. Of
+  `describe`'s three earlier-position reads, the kept records and the number of
+  groups are now the computation's, and the lifecycle there says `computed`,
+  `not_kept_here`, where it said `kept`. A read as of a position by a reader without
+  `restricted` computed already; the flag that told it apart went.
+- **Provenance once names the fields it is shared with.** A state keeps the entry
+  most of its fields agree on once, an expression's derived field agreeing where its
+  entry is that one with the origin `derived`. The state lists those fields apart
+  from the ones written, and a read gives each back its entry. A field a function
+  derives is written by the store's own event, after the one that wrote its inputs:
+  its entry names the function and is its own, so it is kept as it was.
+- **A lake records the copy of the time-zone database that cut a kept view.**
+  Decided by the operator on 2026-11-01 (lakelands#1578): a kept view whose
+  expressions cut a zone's calendar names in its state the copy built into the
+  binary that folded it, such as `2026e`. A writer's open takes the lease, an event
+  the fold folds; there each kept view whose state names another copy is ended and
+  made again from its source under the binary's copy, and a view kept over it with
+  it. A view no zone cuts is not folded again. Until a writer has opened, a read of
+  such a view computes it, so a reader under the new copy never answers the old
+  cut. Two binaries of different copies that open a lake in turn fold such a view
+  again at each change of copy. `ZONED_REFOLDED` is the row.
+- **A derived field a zone cut at the write is not folded again.** It is cut again
+  only by a rebuild, under the binary's copy, so a rebuild under a copy with new
+  rules may answer it otherwise than the write that first cut it (017 states it
+  with the unit's own rule).
 
 ## Why
 

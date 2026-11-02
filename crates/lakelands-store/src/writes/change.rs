@@ -142,6 +142,7 @@ impl Call<'_> {
             self.lake,
             sight,
             (ReadAt::default(), Some(now)),
+            None,
             view,
             shape,
         )?;

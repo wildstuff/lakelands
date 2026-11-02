@@ -137,9 +137,10 @@ one.
   again.** The view or a source declared again; a migration whose step
   reaches a source's records (the migrated type, the types whose keys or
   references move, the link types records move between); a write of a
-  setting that an expression of the view names. The view is ended and
-  made in that event's fold. Nothing is noted from inside a migration's
-  step.
+  setting that an expression of the view names; at a writer's open, a
+  copy of the time-zone database other than the one that cut a view a
+  zone cuts (098). The view is ended and made in that event's fold.
+  Nothing is noted from inside a migration's step.
 - **An extreme is held by the first member of its order.** A `min` or
   a `max` orders its members by their value's sort key (a number before
   an instant), the greatest first for a `max`, and equal values by the
@@ -189,10 +190,9 @@ one.
   stands where those records are put, before the first later event
   that reads a record or at the transaction's end, so a rebuild whose
   page holds the declaration and later events makes the view at a later
-  position than the live appends did, with the same records. As of a
-  position between, `describe_type` may then say `not_kept_here` where
-  the live lake said `kept`; every read of the view's records answers
-  alike (lakelands#631).
+  position than the live appends did, with the same records; as of an
+  earlier position a kept view is computed in either (lakelands#631, and
+  098, where the fold keeps a group's latest record alone).
 - **An append pays for the views that read what it wrote.** The state
   of a kept view is read in when a record it reads is written, and all
   of them at a setting's write or a declaration; a lake with no
@@ -352,6 +352,10 @@ that already walks the type.
   answered as its twin grouped by a derived field, a trigger on it too;
   until then the source needed the derived field (lakelands#1636,
   lakelands#1666).
+- A kept view is read at the head alone and computed as of an earlier
+  position, its key keeping its latest state; a kept view a zone cuts
+  is made again at a writer's open under another copy of the time-zone
+  database (098, lakelands#1677).
 - Amended by 102 (lakelands#1639), proposed for 0.23.0: a group whose
   members were thinned is stranded, exact, answered at the head only, and
   carried by a make of the view.

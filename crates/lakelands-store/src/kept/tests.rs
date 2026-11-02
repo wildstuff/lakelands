@@ -997,3 +997,68 @@ async fn a_value_rename_that_names_other_types_is_not_folded() {
         }
     }
 }
+
+/// A kept view a zone cuts, whose state names another copy of the
+/// time-zone database than the binary's, is read as none until its writer
+/// folds it again: it answers as its twin computes, though its kept
+/// records say otherwise, and `describe_type` says it is not kept here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zoned_view_cut_under_another_copy_computes_until_it_is_folded_again() {
+    let day = |name: &str| {
+        let day = json!({"name": "day", "expr": "date_bucket(at, 'day', 'Europe/Berlin')"});
+        json!({"declare": "type", "name": name, "key": ["day"], "fields": [
+            {"name": "day", "type": {"kind": "date_time"}},
+            {"name": "s", "type": {"kind": "number"}}],
+            "view": {"source": "reading", "group_by": [day],
+                     "measures": [{"name": "s", "expr": "sum(v)"}]}})
+    };
+    let reading = json!({"declare": "type", "name": "reading", "fields": [
+        {"name": "at", "type": {"kind": "date_time"}},
+        {"name": "v", "type": {"kind": "number"}}]});
+    let t = Kept::new(vec![reading, day("local"), day("local_twin")]).await;
+    t.set("view_kept.local", json!(true)).await;
+    for (key, at, v) in [
+        ("r1", "2030-03-30T22:30:00Z", 1),
+        ("r2", "2030-03-31T12:00:00Z", 2),
+    ] {
+        t.put("reading", key, json!({"at": at, "v": v})).await;
+    }
+    t.same("local", "as made").await;
+    assert_eq!(t.kept("local").await, r#"{"state":"kept"}"#);
+    let engine = &t.lake.engine;
+    let (view, head) = (engine.view(None).expect("the head"), t.lake.head());
+    let name = TypeName::from("local");
+    let mut state = state(view.as_ref(), &name)
+        .expect("its state")
+        .expect("kept");
+    assert_eq!(
+        state.tzdb.as_deref(),
+        Some(zone::copy()),
+        "the copy that cut it"
+    );
+    state.tzdb = Some("2000a".into());
+    let scan = lakelands_api::engine::Scan {
+        limit: u32::MAX,
+        restricted: true,
+        ..Default::default()
+    };
+    let records = view.scan(&lakelands_api::seam::kept_name(&name), &scan);
+    let p = engine.projection();
+    p.begin().expect("a batch");
+    for mut r in records.expect("its kept records") {
+        let s = r
+            .fields
+            .get("s")
+            .and_then(Value::as_f64)
+            .unwrap_or_default();
+        r.fields.insert("s".into(), json!(s + 1000.0));
+        p.put_record(&r).expect("a record given another sum");
+    }
+    let input = crate::backed::digest(&Value::from("local"));
+    p.put_output(KEPT, &input, &json!(state), head)
+        .expect("the state marked");
+    p.commit(head).expect("committed");
+    t.same("local", "cut under another copy").await;
+    let said = t.kept("local").await;
+    assert!(said.contains("not_kept_here"), "{said}");
+}

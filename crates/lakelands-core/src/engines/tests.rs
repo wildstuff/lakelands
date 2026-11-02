@@ -431,7 +431,9 @@ fn top_k_answers_what_rank_answers() {
 /// A record's state keeps one block for the fields that share it, and
 /// reads back every field's: all one block, a tie, a block with no value,
 /// a value with no block beside a base, an authored field among source
-/// ones, no meta at all; a state of the form before it reads the same.
+/// ones, fields derived in the event that wrote the others, more of them
+/// than written, one a function derived and one derived alone, no meta
+/// at all; a state of the form before it reads the same.
 #[test]
 fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
     let record = |fields: serde_json::Value, meta: serde_json::Value| -> StoredRecord {
@@ -442,6 +444,10 @@ fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
     let (a, b) = (block(1, "source"), block(2, "authored"));
     let failed = json!({"error": "down", "origin": "derived", "known_at": "2026-01-01T00:00:03Z", "position": 3, "writer": "w"});
     let (xy, xyz) = (json!({"x": 1, "y": 1}), json!({"x": 1, "y": 1, "z": 1}));
+    let mut d = a.clone();
+    d["origin"] = json!("derived");
+    let mut by = d.clone();
+    by["procedure"] = json!("f");
     let cases = [
         record(xyz.clone(), json!({"x": a, "y": a, "z": a})),
         record(xy.clone(), json!({"x": a, "y": b})),
@@ -450,6 +456,10 @@ fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
         record(json!({"x": 1, "y": 1, "bare": 1}), json!({"x": a, "y": a})),
         record(xyz.clone(), json!({"x": a, "y": b, "z": a})),
         record(json!({"x": 1}), json!({})),
+        record(xyz.clone(), json!({"x": a, "y": d, "z": by})),
+        record(xyz.clone(), json!({"x": a, "y": d, "z": d})),
+        record(xy.clone(), json!({"x": d, "y": d})),
+        record(xyz.clone(), json!({"x": b, "y": d, "z": d})),
     ];
     let mut bases = Vec::new();
     for r in &cases {
@@ -482,7 +492,13 @@ fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
         1,
         "one block inline: {alone}"
     );
-    assert_eq!(bases.len(), 1, "one base for six records: {bases:?}");
+    let derives = inline(&cases[8]);
+    assert_eq!(
+        derives.matches("\"origin\"").count(),
+        1,
+        "derived fields name the block: {derives}"
+    );
+    assert_eq!(bases.len(), 2, "a base a block, derived or not: {bases:?}");
     let missing = decode_record("t", "k", Position(9), &shared).unwrap();
     let (mut r, based) = (missing.0, missing.1.base.unwrap());
     assert!(rebase(&mut r, based, None).is_err(), "a base not held");

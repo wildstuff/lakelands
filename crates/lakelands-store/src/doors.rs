@@ -282,7 +282,8 @@ fn reading<T>(
     // read at the position its rankings were read at.
     let head = ranks.flatten();
     let began = lake.timer();
-    let view = lake.engine.view(at.as_of.or(head))?;
+    let asked = at.as_of.or(head);
+    let view = lake.engine.view(asked)?;
     let shape = lake.shape(view.as_ref())?;
     let then = view.position().unwrap_or(Position::GENESIS);
     // A search as of a position judges its rankings at the head, and a
@@ -302,8 +303,8 @@ fn reading<T>(
         true => Box::new(crate::reads::HeldNow::new(lake, view, at_head.as_ref())?),
         false => view,
     };
-    let mut r = Reader::open(lake, &sight, (at, clock), view, shape.clone())?;
-    (r.head, r.held_now) = (at_head, held_now);
+    let mut r = Reader::open(lake, &sight, (at, clock), asked, view, shape.clone())?;
+    r.head = at_head;
     let data = f(&r)?;
     lake.since(Spread::Read, began);
     Ok(Reply {

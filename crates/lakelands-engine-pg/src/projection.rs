@@ -1847,6 +1847,38 @@ impl Buffer {
             return;
         }
         let ident = vec![r.ty.as_str().to_owned(), r.key.as_str().to_owned()];
+        // A kept name keeps one state for each of its keys: a put deletes
+        // the states the key held, with their rows, and an ended record
+        // only deletes (098). A state put before one this buffer already
+        // holds is dropped, since the later one is the head; a state a
+        // previous transaction committed is not read here, the fold putting
+        // a key's states in the order it folds them.
+        if lakelands_api::seam::is_kept_name(&r.ty) {
+            let of = (ident.clone(), i64::MIN)..=(ident.clone(), i64::MAX);
+            let held: Vec<((Vec<String>, i64), Position)> = self
+                .records
+                .range(of)
+                .map(|(at, held)| (at.clone(), held.position))
+                .collect();
+            if held.iter().any(|(_, held)| *held > r.position) {
+                return;
+            }
+            for (at, _) in held {
+                self.records.remove(&at);
+            }
+            let of = (r.ty.to_string(), r.key.to_string(), String::new())
+                ..=(r.ty.to_string(), r.key.to_string(), String::from(char::MAX));
+            let fields: Vec<(String, String, String)> =
+                self.indexed.range(of).map(|(at, _)| at.clone()).collect();
+            for at in fields {
+                self.indexed.remove(&at);
+            }
+            (self.dropped).insert((r.ty.to_string(), r.key.to_string()));
+            if !r.is_ended() {
+                self.records.insert((ident, r.position.0 as i64), r.clone());
+            }
+            return;
+        }
         self.records.insert((ident, r.position.0 as i64), r.clone());
     }
 

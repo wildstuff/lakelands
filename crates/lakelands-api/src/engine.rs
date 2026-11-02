@@ -313,8 +313,12 @@ pub trait ProjectionStore: Send + Sync {
 
     /// Store a record's whole state as of `record.position`. The state
     /// it supersedes is kept, valid up to that position, so an earlier
-    /// view still sees it. The engine derives its own indexes, full-text
-    /// entries and edges from it and the declarations in force.
+    /// view still sees it, except under a kept name
+    /// ([`crate::seam::KEPT_PREFIX`]) or a head-only one, where the put
+    /// deletes it. The engine is never asked to put a state at a position
+    /// earlier than one its key already holds: the fold puts a key's states
+    /// in the order it folds them. The engine derives its own indexes,
+    /// full-text entries and edges from it and the declarations in force.
     fn put_record(&self, record: &StoredRecord) -> Result<()>;
 
     /// End every key of the head-only name `name` ([`crate::seam::is_head_only`])

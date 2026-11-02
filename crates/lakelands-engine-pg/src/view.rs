@@ -80,9 +80,10 @@ fn name_ids<'a>(r: &mut Read<'_>, wanted: impl IntoIterator<Item = &'a str>) -> 
 /// are a walk of the heads' primary key, each head's state sought by a
 /// seek (`History::at_head` says why not by a join). At the head it is
 /// the state the head is at; at an earlier position the key's latest state
-/// at or before it, and a key first put after it has none. A kept record
-/// is put at every write to its group, so a key may hold thousands of
-/// states, and none of the others is read.
+/// at or before it, and a key first put after it has none. A put under a
+/// kept name deletes the states its key held, so a kept key holds one
+/// state and the seek meets only it; a stored type's keys often hold many,
+/// and none of the others is read.
 fn in_force_sql(records: &str, head: bool) -> String {
     let at = match head {
         true => "x.since = h.since AND x.since <= $2",

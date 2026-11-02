@@ -664,14 +664,20 @@ impl Projection {
             }
             Put::Record(r) => {
                 let (from, held) = (r.position, Held::of(&r, &mut self.bases));
-                self.changes
-                    .entry(r.ty.clone())
-                    .or_default()
-                    .insert((from, r.key.clone()));
-                self.records
-                    .entry((r.ty.clone(), r.key.clone()))
-                    .or_default()
-                    .put(from, held);
+                let changes = self.changes.entry(r.ty.clone()).or_default();
+                let id = (r.ty.clone(), r.key.clone());
+                // A kept name keeps its key's latest state alone (098).
+                if lakelands_api::seam::is_kept_name(&r.ty) {
+                    let was = self.records.remove(&id).unwrap_or_default();
+                    for (at, _) in was.0 {
+                        changes.remove(&(at, r.key.clone()));
+                    }
+                    if r.is_ended() {
+                        return;
+                    }
+                }
+                changes.insert((from, r.key.clone()));
+                self.records.entry(id).or_default().put(from, held);
             }
             Put::Proposal { proposal, at } => {
                 (self.by_position).insert(proposal.position, proposal.id.clone());

@@ -266,7 +266,6 @@ async fn folded(name: &str, step: Value, between: Option<Value>) -> (Vec<At>, Ve
     (live, k.history(p0).await, p1)
 }
 
-const KEPT: &str = r#"{"state":"kept"}"#;
 const NOT_HERE: &str = r#"{"state":"computed","why":{"because":"not_kept_here"}}"#;
 
 /// The rows with an event between the declaration and the write.
@@ -294,9 +293,11 @@ async fn between(name: &str, step: Value) {
     }
     assert_eq!(
         (&live[1].described, &rebuilt[1].described),
-        (&vec![KEPT.to_owned(); 2], &vec![NOT_HERE.to_owned(); 2]),
-        "{name}: as of the declaration the live lake has made the views again, and a \
-         rebuild, whose flush comes after the next event, has not"
+        (&vec![NOT_HERE.to_owned(); 2], &vec![NOT_HERE.to_owned(); 2]),
+        "{name}: as of the declaration an earlier position computes the views on both \
+         paths, the kept fold being read at the head alone (098), though the live lake \
+         has made them again and a rebuild, whose flush comes after the next event, \
+         has not"
     );
     let state = |at: &At, v: &str| {
         (at.kept.iter())
