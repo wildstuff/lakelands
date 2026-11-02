@@ -753,6 +753,12 @@ catalog! {
         FrameInFrame => "a frame line stands among the lines a frame covers",
         /// An event's line holds a member its frame holds.
         FramedTwice { member: String } => "its line holds `{member}`, which its frame holds",
+        /// A line holds `block` and is no block's first line.
+        NotABlock => "a line holds `block` and is no block's first line: it holds `block` and `v` alone, `block` an object of `end`, `events`, `first`, `hash`, `prev`, `raw` and `stored`, `events` a count from 1 and `end` no position before the block's last",
+        /// A block's bytes do not inflate to the lines its first line names.
+        BlockBytes => "a block's bytes do not inflate by zlib to the `raw` bytes of lines, each ended by a line feed, that its first line names",
+        /// An append's blocks end before its last position.
+        AppendShort { end: Position } => "an append's blocks end before its last position {end}",
         /// A segment's first event line does not hold its `position` and its `prev`.
         StartUnheld => "it is a segment's first event line, and does not hold both its `position` and its `prev`",
         /// Its `known_at` is before that of the event before it.
@@ -963,6 +969,8 @@ catalog! {
         Moved => "the lake's names moved while this write waited; send it again",
         /// The types a write reads, or what its principal is shown of them, moved while the write waited; send it again.
         TypesMoved => "the lake's types moved while this write waited; send it again",
+        /// The lake was written faster than a job's view moved: at each try its tail was longer than one turn may read; nothing was appended.
+        TailOverran { tries: u32, bound: u32 } => "the lake was written faster than this work's view could move up: after {tries} tries the writes past it were still more than one turn reads (`limits.part_tail`, {bound}); nothing was appended, so send it again",
         /// A call of a verb that reaches outside the lake failed before its executor was handed it.
         Executor { retry: Retry, cause: Box<Error> } => "the verb's executor was not handed this call ({cause}); {retry}",
         /// A call's executor answered, recording its answer failed, and the answer is held and recorded before the next write; what sending it again answers, unless it has no key.

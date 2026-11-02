@@ -629,10 +629,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   the seal answers its own. Then the host opens the lake again and sends
   nothing again: the handle opened then reads the checkpoint where it is
   in the log (lakelands#623).
-  On SQLite the writer also seals the active segment by itself once it
-  passes `limits.seal_after_bytes`, 256 MiB by default, as `checkpoint`
-  does, after the write that crossed it and before that write is
-  answered, and at a writer's open that finds one past it; never on a
+  On SQLite the writer also seals the active segment by itself once its
+  lines and its blocks, counted inflated (each block's `raw`, never what
+  it stores), pass `limits.seal_after_bytes`, 64 MiB by default, as `checkpoint` does, after the write that crossed it
+  and before that write is answered, and at a writer's open that finds one past it; never on a
   read-only handle or in an import
   (`docs/decisions/074-a-segment-is-sealed-by-size.md`). So a lake never
   checkpointed still has sealed files that never change: a file copy
@@ -1819,7 +1819,7 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   `limits.order_min_records` (2 000) live records with fewer than
   `limits.order_max_fields` (2) chosen fields, the writer's process builds
   its order index beside the log, in chunks of `limits.order_chunk`
-  (10 000) records between writes, and pages ordered by it read their
+  (1 000) records between writes, and pages ordered by it read their
   page from then on. Nothing is logged: a feed, a mirror and an export
   carry nothing of it, and a projection rebuilt from the log learns it
   again from use. A field unused for `limits.order_unused_secs` (7 days)

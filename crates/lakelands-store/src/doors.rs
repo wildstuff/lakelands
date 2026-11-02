@@ -58,6 +58,17 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
 
 /// The lake [`open`] opens.
 pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<Lake>> {
+    opened_owing(location, seams, mode, crate::road::OWED).await
+}
+
+/// [`opened`], whose writer finishes the jobs of `owed` the log and the
+/// lists leave owed: the store's [`crate::road::OWED`], or a test's kinds.
+pub(crate) async fn opened_owing(
+    location: Location,
+    seams: Seams,
+    mode: OpenMode,
+    owed: &'static [crate::road::Owes],
+) -> Result<Arc<Lake>> {
     // A zone the database does not name is refused before anything is
     // opened, so a `Create` makes no lake it then refuses.
     let zone = location.zone.clone();
@@ -77,6 +88,9 @@ pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> 
     if matches!(mode, OpenMode::Create | OpenMode::Write) {
         start_zone(&lake, zone).await?;
     }
+    // What the road owes runs beside the writer, never before the open
+    // answers (099).
+    crate::road::resume(&lake, owed);
     Ok(lake)
 }
 
@@ -131,6 +145,18 @@ pub async fn standby(
     seams: Seams,
     every: std::time::Duration,
 ) -> Result<(Arc<dyn LakeStore>, Standing)> {
+    let (lake, standing) = standing_by(location, seams, every, crate::road::OWED).await?;
+    Ok((Arc::new(Store { lake }), standing))
+}
+
+/// [`standby`]'s lake, which, once it takes the lease, finishes the jobs
+/// of `owed` the log and the lists leave owed, as [`opened_owing`] does.
+pub(crate) async fn standing_by(
+    location: Location,
+    seams: Seams,
+    every: std::time::Duration,
+    owed: &'static [crate::road::Owes],
+) -> Result<(Arc<Lake>, Standing)> {
     let lake = Arc::new(exec::run(move || Lake::standby(&location, seams)).await?);
     let weak = Arc::downgrade(&lake);
     let tries = tokio::spawn(async move {
@@ -150,12 +176,13 @@ pub async fn standby(
                 Ok(taken)
             });
             if taken.await? {
+                crate::road::resume(&lake, owed);
                 return Ok(());
             }
         }
     });
-    let standing = Box::pin(async move { tries.await.map_err(|e| exec::stopped(&e))? });
-    Ok((Arc::new(Store { lake }), standing))
+    let standing: Standing = Box::pin(async move { tries.await.map_err(|e| exec::stopped(&e))? });
+    Ok((lake, standing))
 }
 
 /// Build the projection this release lays out beside the lake at

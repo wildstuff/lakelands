@@ -2,8 +2,8 @@
 """An independent check of the log-format test vectors.
 
 It shares no code with Lakelands: its own RFC 8785 serialiser (members
-sorted by UTF-16 code units, the ECMAScript number form), SHA-256 from
-the standard library, and the rules of docs/log-format.md read as text.
+sorted by UTF-16 code units, the ECMAScript number form), SHA-256 and
+zlib from the standard library, and the rules of docs/log-format.md read as text.
 Run it from this directory: `python3 verify.py`. It prints one line per
 check and exits non-zero on the first mismatch.
 
@@ -17,7 +17,9 @@ Given a directory, `python3 verify.py <dir>` checks a lake's log as an
 export or a SQLite lake directory holds it instead, reading only
 `<dir>/log/` (log-format §4.2): canonical lines each ending in a line
 feed, each event restored from its line, its frame and the event before
-it (log-format §1.2), and every break of that form refused, positions
+it (log-format §1.2) or from its block inflated by zlib (§1.5), an
+append's blocks running to its end, and every break of that form
+refused, positions
 consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
 the hash and the digests of the files before it, over their restored
@@ -40,6 +42,7 @@ import json
 import math
 import re
 import sys
+import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -161,6 +164,25 @@ UNFRAMED = ("hash", "id", "position", "prev", "v")
 NESTED = ("body", "sealed")
 
 
+def with_frame(read, members, need):
+    """The event a line `read` holds under a frame holding `members`: each
+    member added, those under `body` and `sealed` one level deep, and none
+    the line holds already."""
+    event = dict(read)
+    for name, value in members.items():
+        if name in NESTED:
+            held = event.setdefault(name, {})
+            need(isinstance(held, dict), f"the line holds `{name}`, which its frame holds")
+            event[name] = held = dict(held)
+            for inner, x in value.items():
+                need(inner not in held, f"the line holds `{name}.{inner}`, which its frame holds")
+                held[inner] = x
+        else:
+            need(name not in event, f"the line holds `{name}`, which its frame holds")
+            event[name] = value
+    return event
+
+
 def restored(lines, need, before=None):
     """Each event the lines of one segment hold, restored (log-format §1.2),
     in order: a frame's members added to the lines it covers, those under
@@ -190,20 +212,9 @@ def restored(lines, need, before=None):
                  "a frame line holds `events` from 1, `frame` and `v` alone, and its frame no member a frame never holds")
             frame, left = read, n
             continue
-        event = dict(read)
         if before is None:
             need("position" in read and "prev" in read, "a segment's first event line holds its `position` and its `prev`")
-        for name, value in (frame["frame"].items() if left else ()):
-            if name in NESTED:
-                held = event.setdefault(name, {})
-                need(isinstance(held, dict), f"the line holds `{name}`, which its frame holds")
-                event[name] = held = dict(held)
-                for inner, x in value.items():
-                    need(inner not in held, f"the line holds `{name}.{inner}`, which its frame holds")
-                    held[inner] = x
-            else:
-                need(name not in event, f"the line holds `{name}`, which its frame holds")
-                event[name] = value
+        event = with_frame(read, frame["frame"] if left else {}, need)
         if before is not None:
             event.setdefault("position", before[0] + 1)
             event.setdefault("prev", before[1])
@@ -265,10 +276,10 @@ def same(a, b):
 
 
 def writer_form(events):
-    """The lines a writer of this format stores `events`, one append's, as
-    (log-format §1.2): where they are two or more, a frame line holding
-    exactly the members every one of them holds with one value, top-level
-    and one level into `body` and `sealed`, none a frame never holds; and
+    """The lines of a frame of `events`, one append's (log-format §1.2),
+    which a writer puts inside a block less what the block decides (§1.5):
+    where they are two or more, a frame line holding exactly the members
+    every one of them holds with one value, top-level and one level into `body` and `sealed`, none a frame never holds; and
     each event's line, its event less what the frame holds and less its
     `position` and `prev`, which only a segment's first event line holds,
     the `lake_created` at position 0 or a `checkpoint`."""
@@ -655,6 +666,146 @@ MISPLACED = {
 }
 
 
+# A block's first line (log-format §1.5): what `block` holds, and what a
+# line inside it leaves out, which the block decides.
+BLOCK = ("end", "events", "first", "hash", "prev", "raw", "stored")
+LEFT_OUT = ("hash", "position", "prev", "v")
+
+
+def decided_id(e):
+    """The id an event's members decide (log-format §3): an ingest's or a
+    quarantined record's; any other event's is none."""
+    kind = e["body"].get("kind")
+    if kind == "record_ingested":
+        return ingest_id(e)
+    if kind == "record_quarantined":
+        return quarantined_id(e)
+    return None
+
+
+def block_form(events):
+    """The lines a writer of this format puts inside a block of `events`,
+    one append's (log-format §1.5): the writer's form of them (§1.2), and
+    each event's line leaving out `hash`, `v` and an `id` its members
+    decide as well."""
+    lines = writer_form(events)
+    framed = len(lines) > len(events)
+    out = lines[:1] if framed else []
+    for event, line in zip(events, lines[1:] if framed else lines, strict=True):
+        line = {k: x for k, x in json.loads(line).items() if k not in LEFT_OUT}
+        if decided_id(event) == event["id"]:
+            del line["id"]
+        out.append(canonical(line))
+    return out
+
+
+def units(raw, need):
+    """Each unit of a segment file's bytes, in order: a line, with None, or
+    a block's first line read and its stored bytes. A block's stored bytes
+    follow its first line's line feed and end with one of their own."""
+    at = 0
+    while at < len(raw):
+        end = raw.find(b"\n", at)
+        need(end >= 0, "the file ends inside a line")
+        line, at = raw[at:end], end + 1
+        if not line.startswith(b'{"block":'):
+            yield line, None
+            continue
+        try:
+            head = json.loads(line.decode("utf-8"))
+        except ValueError as e:
+            need(False, f"the line is JSON ({e})")
+        need(canon(head, lambda why: need(False, why)) == line, "the line is canonical")
+        need(head.get("v") == FORMAT, f"a line of format {head.get('v')} is not the one format, {FORMAT}")
+        b = head.get("block")
+        need(set(head) == {"block", "v"} and isinstance(b, dict) and set(b) == set(BLOCK)
+             and all(type(b[k]) is int and b[k] >= 0 for k in ("end", "events", "first", "raw", "stored"))
+             and b["events"] >= 1 and b["end"] >= b["first"] + b["events"] - 1
+             and all(isinstance(b[k], str) for k in ("hash", "prev")),
+             "a block's first line holds `block` and `v` alone, `block` its `end`, `events` from 1, "
+             "`first`, `hash`, `prev`, `raw` and `stored`")
+        z = raw[at:at + b["stored"]]
+        need(len(z) == b["stored"] and raw[at + b["stored"]:at + b["stored"] + 1] == b"\n",
+             "the block's `stored` bytes and a line feed follow its first line")
+        at += b["stored"] + 1
+        yield head, z
+
+
+def block_events(head, z, need, before):
+    """The events a block restores (log-format §1.5), after the event
+    `before`: its stored bytes inflated by zlib to its `raw` bytes of
+    lines, a frame line first where it holds one, and each event from its
+    line, the frame's members, `position` and `prev` from the event before
+    it, `v` from the block, the `id` its members decide where the line
+    leaves it out, and its hash over all of that; the last hash is the
+    block's `hash`. Answers the events and the inflated lines."""
+    b = head["block"]
+    need(before is not None, "a segment's first event is a line, never a block")
+    need(b["first"] == before[0] + 1, f"the block's first position {b['first']} is not the position after {before[0]}")
+    need(b["prev"] == before[1], "the block's `prev` does not name the hash of the event before it")
+    try:
+        raw = zlib.decompress(z)
+    except zlib.error as e:
+        need(False, f"the block's bytes do not inflate by zlib ({e})")
+    need(len(raw) == b["raw"] and raw.endswith(b"\n"), "the block inflates to the `raw` bytes of lines its first line names")
+    lines, members, events = raw[:-1].split(b"\n"), {}, []
+    prev = b["prev"]
+    for i, line in enumerate(lines):
+        try:
+            read = json.loads(line.decode("utf-8"))
+        except ValueError as e:
+            need(False, f"a block's line is JSON ({e})")
+        need(canon(read, lambda why: need(False, why)) == line, "a block's line is canonical")
+        if i == 0 and ("events" in read or "frame" in read):
+            need(set(read) == {"events", "frame", "v"} and read["v"] == FORMAT and read["events"] == b["events"]
+                 and isinstance(read["frame"], dict) and not any(k in UNFRAMED for k in read["frame"]),
+                 "a block's frame line holds `events`, the block's, `frame` and `v` alone")
+            members = read["frame"]
+            continue
+        need("events" not in read and "frame" not in read, "a frame line stands among a block's event lines")
+        need(not any(k in read for k in LEFT_OUT), "a block's line holds `hash`, `position`, `prev` or `v`, which the block decides")
+        event = with_frame(read, members, need)
+        event.update(position=b["first"] + len(events), prev=prev, v=head["v"])
+        if "id" not in event:
+            event["id"] = decided_id(event)
+            need(event["id"] is not None, "a block's line leaves out an `id` its members do not decide")
+        event["hash"] = prev = sha(canonical({k: x for k, x in event.items() if k != "hash"}))
+        events.append(event)
+    need(len(events) == b["events"], f"the block holds {len(events)} events and names {b['events']}")
+    need(prev == b["hash"], "the block's last event does not hash to the block's `hash`")
+    return events, lines
+
+
+def segment_events(raw, need):
+    """Each event a segment file's bytes restore, in order: its lines as
+    `restored` reads them, and its blocks as `block_events` does; an
+    append's blocks run unbroken to its `end`, and a file that ends
+    before it holds an append cut short (log-format §1.5)."""
+    units_of, held, before, open_end = units(raw, need), [], None, None
+
+    def lines():
+        for unit, z in units_of:
+            if z is not None:
+                held.append((unit, z))
+                return
+            need(open_end is None, f"a line stands inside an append that ends at {open_end}")
+            yield unit
+
+    while True:
+        for event in restored(lines(), need, before):
+            before = (event["position"], event["hash"])
+            yield event
+        if not held:
+            break
+        unit, z = held.pop()
+        need(open_end in (None, unit["block"]["end"]), f"an append's blocks end before its last position {open_end}")
+        events, _ = block_events(unit, z, need, before)
+        yield from events
+        before = (events[-1]["position"], events[-1]["hash"])
+        open_end = unit["block"]["end"] if unit["block"]["end"] > before[0] else None
+    need(open_end is None, f"an append's blocks end before its last position {open_end}")
+
+
 def verify_dir(root):
     """Check the segment files under `root/log/` alone; see the module doc."""
     log = root / "log"
@@ -679,7 +830,7 @@ def verify_dir(root):
         need(raw.endswith(b"\n"), f"{path.name} ends in a line feed")
         # The segment's digest is over its events as restored (§4.2).
         digested = hashlib.sha256()
-        for event in restored(raw[:-1].split(b"\n"), need):
+        for event in segment_events(raw, need):
             digested.update(canonical(event) + b"\n")
             need(event.get("position") == position, f"the line is position {event.get('position')}")
             v = event.get("v")
@@ -772,6 +923,37 @@ def stamp_log(root, n):
     return events, sealed
 
 
+def stamp_blocks(root, n):
+    """Rewrite the blocks lake's one segment file under `root/log/` in
+    format `n`: each event restamped after the one before it, a line
+    written again with the members it held, and a block's lines formed
+    again and compressed by zlib at level 6, its first line's `hash`,
+    `prev`, `raw` and `stored` made right. Answers the bytes written."""
+    path = root / "log" / f"{0:020}.jsonl"
+    raw = path.read_bytes()
+    need = lambda ok, why: ok or sys.exit(f"FAIL {path}: {why}")  # noqa: E731
+    events, out, prev = list(segment_events(raw, need)), [], ZEROS
+    for unit, z in units(raw, need):
+        if z is None:
+            held = json.loads(unit)
+            event = restamp(events.pop(0), n, prev)
+            out.append(canonical({k: x for k, x in event.items() if k in held}))
+            prev = event["hash"]
+            continue
+        b, inner = unit["block"], []
+        for event in events[:b["events"]]:
+            inner.append(restamp(event, n, prev))
+            prev = inner[-1]["hash"]
+        del events[:b["events"]]
+        lines = b"".join(line + b"\n" for line in block_form(inner))
+        z = zlib.compress(lines, 6)
+        head = {"block": {**b, "hash": prev, "prev": inner[0]["prev"], "raw": len(lines), "stored": len(z)}, "v": n}
+        out.append(canonical(head) + b"\n" + z)
+    written = b"".join(u + b"\n" for u in out)
+    path.write_bytes(written)
+    return written
+
+
 def stamp(n):
     """Rewrite the vectors in place as the same lake's log in format `n`.
 
@@ -786,7 +968,9 @@ def stamp(n):
     `negative/known-at-goes-back`. The framed append of `framed.json` is
     restamped after them and its stored lines written again; its breaks
     move to format `n`, and the ingest of `boxed.json` and the append of
-    `apart.json` after it. `negative/another-format` is written
+    `apart.json` after it. The blocks lake is restamped on its own
+    chain, its blocks formed and compressed again, and
+    `negative/torn-between-blocks` cut from it again. `negative/another-format` is written
     from the first segment, its last event in format `n - 1`. No id
     moves: an id is random or made from members that leave `v` out, and
     `main` recomputes them after this. Last, `FORMAT` in this file's
@@ -879,6 +1063,9 @@ def stamp(n):
     (HERE / "expected.json").write_text(json.dumps(expected, indent=2, ensure_ascii=False) + "\n", "utf-8")
 
     stamp_log(HERE / "negative" / "known-at-goes-back", n)
+    raw = stamp_blocks(HERE / "blocks", n)
+    second = raw.index(b'{"block":', raw.index(b'{"block":') + 1)
+    (HERE / "negative" / "torn-between-blocks" / "log" / f"{0:020}.jsonl").write_bytes(raw[:second])
     first = events[:sealed[0]["last"] + 1]
     last = restamp(json.loads(canonical(first[-1])), n - 1, first[-1]["prev"])
     path = HERE / "negative" / "another-format" / expected["segments"][0]["file"]
@@ -997,8 +1184,8 @@ def main():
     check(sorted(entry["shows"] for entry in further["misplaced"]) == sorted(MISPLACED),
           "further.json: every misplaced member this verifier checks is shown once")
 
-    # One append in the stored form (§1.2), after the last event of
-    # `further.json`: the writer's lines for its events, which restore to
+    # One append in a frame's form (§1.2), after the last event of
+    # `further.json`: a frame's lines for its events, which restore to
     # them byte for byte, and the breaks a reader refuses.
     framed = json.loads((HERE / "framed.json").read_text("utf-8"))
     after = framed["after"]
@@ -1020,7 +1207,7 @@ def main():
         before = event
     stored = [line.encode("utf-8") for line in framed["stored"]]
     check(writer_form(appended) == stored,
-          "framed.json: the stored lines are the writer's: a frame holding what every event shares, and lines without `position` or `prev`")
+          "framed.json: the stored lines are a frame's: one holding what every event shares, and lines without `position` or `prev`")
     check(refusal(stored, after) is None, "framed.json: the stored lines read after the event before them")
     got = list(restored(stored, lambda ok, why: ok or check(False, f"framed.json: {why}"), (after["position"], after["hash"])))
     check([canonical(e) for e in got] == [e["line"].encode("utf-8") for e in framed["events"]],
@@ -1076,7 +1263,7 @@ def main():
           "apart.json: one source, a delivery each, one version of its key and a key apart each")
     stored = [line.encode("utf-8") for line in pair["stored"]]
     check(stored == writer_form(pair_events),
-          "apart.json: the stored lines are the writer's: a frame holding what both share, each line its own `delivery` and `sealed.apart`")
+          "apart.json: the stored lines are a frame's: one holding what both share, each line its own `delivery` and `sealed.apart`")
     check(all("delivery" in json.loads(line) and "apart" in json.loads(line)["sealed"] for line in stored[1:])
           and "delivery" not in json.loads(stored[0])["frame"] and "apart" not in json.loads(stored[0])["frame"].get("sealed", {}),
           "apart.json: neither the delivery nor the key apart is in the frame")
@@ -1084,6 +1271,59 @@ def main():
     got = list(restored(stored, lambda ok, why: ok or check(False, f"apart.json: {why}"), (after["position"], after["hash"])))
     check([canonical(e) for e in got] == [e["line"].encode("utf-8") for e in pair["events"]],
           "apart.json: the stored lines restore to the events, byte for byte")
+
+    # A lake whose append of more than a block holds is written in blocks
+    # (§1.5): the lines of the append that makes the lake, a line for each
+    # append of one, and the delivery's blocks,
+    # each inflating to the writer's lines of its events, which restore to
+    # their hashes and ids; and the same file cut between the two blocks,
+    # an append short at the second block's first position.
+    raw = (HERE / "blocks" / "log" / f"{0:020}.jsonl").read_bytes()
+    need = lambda ok, why: ok or check(False, f"blocks: {why}")  # noqa: E731
+    events = list(segment_events(raw, need))
+    check([e["position"] for e in events] == list(range(len(events))) and events[0]["prev"] == ZEROS,
+          f"blocks: positions 0..{len(events) - 1} restored, chained from 64 zeros")
+    check(all(sha(canonical({k: x for k, x in e.items() if k != "hash"})) == e["hash"] for e in events),
+          "blocks: every restored event hashes to its `hash`")
+    heads, lines = [], []
+    for unit, z in units(raw, need):
+        if z is None:
+            lines.append(json.loads(unit))
+            continue
+        b = unit["block"]
+        heads.append(b)
+        inner = events[b["first"]:b["first"] + b["events"]]
+        _, inflated = block_events(unit, z, need, (b["first"] - 1, b["prev"]))
+        check(inflated == block_form(inner),
+              f"blocks at {b['first']}: its lines are the writer's, leaving out `hash`, `v` and each `id` its members decide")
+        check(all(decided_id(e) == e["id"] for e in inner) and not any(b'"id":' in line for line in inflated[1:]),
+              f"blocks at {b['first']}: every ingest's id is left out and restored from its members")
+    check(len(heads) == 2 and heads[0]["events"] == 1000 and heads[0]["end"] == heads[1]["end"]
+          == heads[1]["first"] + heads[1]["events"] - 1,
+          "blocks: one append in two blocks, the first holding 1000 events, both naming the append's end")
+    made = next((i for i, line in enumerate(lines) if "position" not in line), len(lines))
+    check(len(lines) == len(events) - sum(b["events"] for b in heads)
+          and all("hash" in line and line["v"] == FORMAT for line in lines)
+          and [line.get("position") for line in lines if "position" in line or "prev" in line] == list(range(made))
+          and all("prev" in line for line in lines[:made]) and made > 1,
+          "blocks: every line holds its `hash`; the append that makes the lake is whole lines, the only ones holding `position` and `prev`")
+    torn = (HERE / "negative" / "torn-between-blocks" / "log" / f"{0:020}.jsonl").read_bytes()
+    check(torn == raw[:raw.index(b'{"block":', raw.index(b'{"block":') + 1)],
+          "torn-between-blocks: the blocks lake cut at its second block's first byte")
+    said = []
+
+    def refuse(ok, why):
+        if not ok:
+            raise Refused(why)
+
+    try:
+        for e in segment_events(torn, refuse):
+            said.append(e["position"])
+    except Refused as e:
+        said.append(str(e))
+    check(said[-2] == heads[1]["first"] - 1
+          and said[-1] == f"an append's blocks end before its last position {heads[1]['end']}",
+          f"torn-between-blocks: refused after position {heads[1]['first'] - 1}, its append short of {heads[1]['end']}")
 
     for n, want in [(1e21, "1e+21"), (1e-7, "1e-7"), (0.000001, "0.000001"), (333333333.3333333, "333333333.3333333"),
                     (-0.0, "0"), (9007199254740992.0, "9007199254740992"), (5e-324, "5e-324")]:

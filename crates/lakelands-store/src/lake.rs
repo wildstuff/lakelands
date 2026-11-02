@@ -46,6 +46,7 @@ use lakelands_api::{
     Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
     SourceId, Timestamp, TypeName, Value, ValueTypeName, Version, WriteContext,
 };
+use lakelands_core::log::Restorer;
 use lakelands_core::sight::{InForce, Sight};
 use lakelands_core::{damaged, shape};
 
@@ -271,6 +272,9 @@ pub struct Lake {
     /// What the lake weighs of those pages to choose an order index
     /// itself, and what it chose (`crate::choose`).
     pub(crate) choosing: Mutex<crate::choose::Choosing>,
+    /// The jobs that run beside the writer, one turn at a time
+    /// (`crate::road`).
+    pub(crate) road: Mutex<crate::road::Road>,
     /// The queue writes wait in for their turn at the writer, in the order
     /// they came ([`crate::exec::write`]).
     pub(crate) queue: Arc<Mutex<crate::exec::Queue>>,
@@ -1004,7 +1008,7 @@ impl Lake {
     /// [`Lake::read_events`], each event with the last position of its
     /// append (`lakelands_core::log::append_end`).
     pub fn read_ended(&self, from: Position, limit: u32) -> Result<Vec<(Event, Position)>> {
-        let mut out = Vec::new();
+        let (mut out, mut restorer) = (Vec::new(), Restorer::default());
         let mut at = from;
         loop {
             let want = (limit as usize - out.len()).min(PAGE as usize) as u32;
@@ -1016,7 +1020,7 @@ impl Lake {
                 break;
             }
             for stored in &batch {
-                let e = log::open(stored)?;
+                let e = log::open_with(&mut restorer, stored)?;
                 out.push((e, lakelands_core::log::append_end(stored)));
             }
             at = Position(batch.last().expect("not empty").position.0 + 1);
@@ -1040,7 +1044,7 @@ impl Lake {
     /// append (`lakelands_core::log::append_end`).
     pub fn read_these_ended(&self, positions: &[Position]) -> Result<Vec<(Event, Position)>> {
         let mut out = Vec::with_capacity(positions.len());
-        let mut rest = positions;
+        let (mut rest, mut restorer) = (positions, Restorer::default());
         while let Some(&first) = rest.first() {
             let run = 1 + rest
                 .windows(2)
@@ -1058,7 +1062,7 @@ impl Lake {
                 for stored in &batch {
                     if wanted.next_if(|p| **p == stored.position).is_some() {
                         let end = lakelands_core::log::append_end(stored);
-                        out.push((log::open(stored)?, end));
+                        out.push((log::open_with(&mut restorer, stored)?, end));
                     }
                 }
             }
@@ -1077,7 +1081,7 @@ impl Lake {
     /// a lease for every command run on it.
     pub(crate) fn report_head(&self, head: Option<Position>) -> Result<Option<Position>> {
         const BACK: u64 = 16;
-        let mut end = head;
+        let (mut end, mut restorer) = (head, Restorer::default());
         while let Some(last) = end {
             let first = last.0.saturating_sub(BACK - 1);
             let page = self
@@ -1087,7 +1091,7 @@ impl Lake {
                 return Ok(Some(last));
             }
             for stored in page.iter().rev() {
-                let body = log::open(stored)?.body;
+                let body = log::open_with(&mut restorer, stored)?.body;
                 if !matches!(
                     body,
                     EventBody::LeaseTaken { .. } | EventBody::Checkpoint { .. }

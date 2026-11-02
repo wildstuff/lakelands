@@ -493,9 +493,17 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
     let exported = crate::export::write(s, &dir).await;
     exported.must("exporting")?;
     let unread = |e: std::io::Error| Failure::new(format!("reading the export: {e}"));
+    // Each file's events restored, as a block stores them compressed.
     let mut export = String::new();
     for file in std::fs::read_dir(dir.join("log")).map_err(unread)? {
-        export += &std::fs::read_to_string(file.map_err(unread)?.path()).map_err(unread)?;
+        let file = std::fs::File::open(file.map_err(unread)?.path()).map_err(unread)?;
+        let mut events = crate::log::Restoring::new(std::io::BufReader::new(file), true);
+        while let Some(read) = events
+            .next_event()
+            .map_err(|e| Failure::new(format!("restoring the export: {e:?}")))?
+        {
+            export += &String::from_utf8_lossy(&read.bytes);
+        }
     }
     // Per row: what answers, what it must show and what it must not.
     let mark = "{\"field\":\"secret\",\"member\":\"sensitive\",\"to\":false,\"was\":true}";

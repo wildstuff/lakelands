@@ -163,7 +163,7 @@ Whether the lake chooses an order index itself, for a field a type is ordered by
 
 - **Takes:** `true` or `false`.
 - **Default:** `true`.
-- **Cost:** each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records.
+- **Cost:** each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records, in chunks of 10 000.
 
 ### `limits.order_after_pages`
 
@@ -205,7 +205,29 @@ How long a chosen index may go unused, in seconds of the writer's life, before t
 The records one chunk of a chosen index's build writes while it holds the writer; a write waits for a chunk, never for the build.
 
 - **Takes:** a count; 0 is taken as 1.
-- **Default:** `10000`.
+- **Default:** `1000`.
+
+### `limits.part_events`
+
+Not read yet: the acts that append in parts, each part a turn of the writer of its own, come with step R2 of decision 099. Then it is the most events one part of an act appends, so a write sent meanwhile waits for at most the part in front of it.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `500`.
+
+### `limits.part_tail`
+
+The most events past the view it walked on that a job's first turn reads under the writer. A longer tail is read off the writer first; one that is still longer at the turn lets the writer go and moves the view up, and after three such tries the job answers unavailable, having appended nothing.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `1000`.
+- **Cost:** the tail is read by source and by type from the log's index, 11 ms for 1 000 events at 2.5 million records (measured, decision 099).
+
+### `limits.page_events`
+
+Not read yet: restating in pages comes with step R4 of decision 099. Then it is the most events one page of a restate refolds in a turn of the writer, and a job whose page would refold more restates beside the projection instead.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `2000`.
 
 ### `limits.forget_rebuild`
 
@@ -216,11 +238,11 @@ Whether a forgetting always rebuilds the projection; off, it refolds only the re
 
 ### `limits.seal_after_bytes`
 
-The active segment's size past which the writer seals it after an append, as `checkpoint` does, on an engine that reports the size (SQLite); a writer's open seals one already past it. PostgreSQL and memory never seal by size.
+The active segment's size, its lines and its blocks counted as they inflate (each block's `raw`, never what it stores), past which the writer seals it after an append, as `checkpoint` does, on an engine that reports the size (SQLite); a writer's open seals one already past it. PostgreSQL and memory never seal by size.
 
 - **Takes:** bytes: 0 never seals by size, and a bound below 1048576 (1 MiB) is read as 1 MiB.
-- **Default:** `268435456`.
-- **Cost:** each seal holds the writer as a `checkpoint` does, about 2 ms a MiB of the segment: the write that crosses 256 MiB waited 0.51 s on SQLite, against 16 ms for a write of 1 MiB; every checkpoint lists each sealed segment, so a small bound makes many seals and long checkpoints.
+- **Default:** `67108864`.
+- **Cost:** each seal holds the writer as a `checkpoint` does while it restores and hashes every event of the segment: the write that crossed 64 MiB of ticks, 511 000 events in 8.8 MB of blocks, waited 9.3 s on SQLite under load 7 to 12, against 24 ms for a write of 249 ticks; every checkpoint lists each sealed segment, so a small bound makes many seals and long checkpoints.
 
 ### `limits.quarantined_max`
 

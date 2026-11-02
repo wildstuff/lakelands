@@ -56,6 +56,8 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 serde_path_to_error = "0.1"
 serde-saphyr = "1.1"
 sha2 = "0.11"
+# zlib for the log's blocks, on its Rust backend: no C in the writer.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 # A source's values sealed under its key (058); the keys each value
 # derives, and the key schedule, wiped when dropped.
 aes-gcm-siv = { version = "0.12", features = ["zeroize"] }
