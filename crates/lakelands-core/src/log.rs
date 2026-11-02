@@ -568,6 +568,11 @@ pub fn digest_of<'a>(
     digesting.digest()
 }
 
+/// The byte [`Digesting::state`] puts before the running hash's bytes: the
+/// format and version of the state, so that a state a release would read
+/// differently is refused rather than read wrongly.
+const STATE_TAG: u8 = 1;
+
 /// A segment's digest (§4.2) kept running as its events are appended, so
 /// that a seal restores nothing: [`digest_of`] over every event added, or
 /// the first that did not restore, after which it takes no more.
@@ -612,19 +617,28 @@ impl Digesting {
         }
     }
 
-    /// Its state as bytes, which [`Digesting::of_state`] takes back; none
-    /// once an event did not restore.
+    /// Its state as bytes, tagged with the format and version they are
+    /// written in ([`STATE_TAG`]), which [`Digesting::of_state`] takes
+    /// back; none once an event did not restore.
     pub fn state(&self) -> Option<Vec<u8>> {
         use sha2::digest::common::hazmat::SerializableState as _;
-        self.broken
-            .is_none()
-            .then(|| self.hash.serialize().to_vec())
+        self.broken.is_none().then(|| {
+            let mut state = vec![STATE_TAG];
+            state.extend_from_slice(self.hash.serialize().as_ref());
+            state
+        })
     }
 
-    /// The digest whose [`Digesting::state`] `bytes` are, if they are one.
+    /// The digest whose [`Digesting::state`] `bytes` are, in this release's
+    /// format and version; none for any other, which the caller digests
+    /// from its restores instead.
     pub fn of_state(bytes: &[u8]) -> Option<Digesting> {
         use sha2::digest::common::hazmat::SerializableState;
-        let state = bytes.try_into().ok()?;
+        let (tag, state) = bytes.split_first()?;
+        if *tag != STATE_TAG {
+            return None;
+        }
+        let state = state.try_into().ok()?;
         let hash = Sha256::deserialize(state).ok()?;
         Some(Digesting { hash, broken: None })
     }

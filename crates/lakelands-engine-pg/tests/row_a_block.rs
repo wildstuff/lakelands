@@ -117,3 +117,53 @@ fn a_block_is_one_row_and_a_seal_reads_none() {
     assert_eq!(engine.read(Position(0), 10).unwrap(), [all, next].concat());
     assert_eq!(one(&url, &running), 1, "only the active segment's runs");
 }
+
+#[test]
+fn a_reopen_mid_segment_seals_to_the_same_digest() {
+    let Some(url) = common::url_or_skip("a reopen mid segment") else {
+        return;
+    };
+    let kept = Schema(&url, common::fresh_schema());
+    let location = common::location(&url, "blocks", &kept.1);
+    let open = |mode| PgOpener.open(&location, mode).unwrap();
+    let (mut held, mut at, mut sealed): (Vec<CanonicalEvent>, u64, Vec<_>) =
+        (Vec::new(), 0, Vec::new());
+    for segment in 0..2 {
+        // Half the segment by a writer that goes, half by the one that
+        // reopens the lake and takes the lease over: the digest goes on
+        // from the state the first left on the segment's row.
+        let mode = if segment == 0 {
+            OpenMode::Create
+        } else {
+            OpenMode::Write
+        };
+        let before = open(mode);
+        let lease = before.take_lease("first writer").unwrap();
+        let prev = held.last().map_or_else(Digest::zero, |e| e.hash.clone());
+        let first = framed(at, 3, &prev, lease.fence);
+        before.append(&lease, &first).unwrap();
+        drop(before);
+        held.extend(first);
+        at += 3;
+        let engine = open(OpenMode::Write);
+        let lease = engine.take_lease("second writer").unwrap();
+        let second = framed(at, 3, &held.last().unwrap().hash, lease.fence);
+        engine.append(&lease, &second).unwrap();
+        held.extend(second);
+        at += 3;
+        let next = chain(at, 1, &held.last().unwrap().hash, &lease);
+        let got = seal(engine.as_ref(), &lease, &next);
+        let digest = lakelands_core::log::digest_of(&held).unwrap();
+        let got = got.unwrap().expect("the segment sealed");
+        assert_eq!(
+            (got.first, got.last, &got.digest),
+            (held[0].position, held.last().unwrap().position, &digest),
+            "segment {segment}"
+        );
+        sealed.push(got);
+        held = next;
+        at += 1;
+    }
+    let reader = open(OpenMode::Write);
+    assert_eq!(reader.segments().unwrap(), sealed);
+}

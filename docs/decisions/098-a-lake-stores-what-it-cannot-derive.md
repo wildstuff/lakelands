@@ -158,13 +158,6 @@ after 510 948 ticks, 8.8 MB on disk. The write that crossed it waited 9.3 to
 10.3 s (load 7 to 18), about 13 times the reckoning. The time goes to restoring
 and hashing each event for the digest, about 14 µs an event, not to the inflate.
 
-Decided in lakelands#1578: each engine keeps the active segment's digest running as
-its writer appends, so a seal restores nothing and 64 MiB stays. On PostgreSQL the
-running hash's state is kept on the segment's row of `segments`, written in the
-append's transaction, so a writer that takes the lease over goes on from it; where
-it is not known, the seal digests the segment from its rows, as before. The memory
-engine keeps it beside its events. Built for both with lakelands#1673.
-
 ### An index line a block, and a row a block
 
 Read: the SQLite index holds a line of about 100 B an event, with its hash. It
