@@ -502,11 +502,11 @@ methods added (`ProjectionStore::put_record_for`, `ProjectionStore::look_index`)
 `cfg(feature)` is 6 of 20. This is more than R7's 350 product and 350 specification: the
 row's estimate did not hold, and the split it names already falls here.
 
-**The rest of R7 (2026-11-03).** Product: 543 lines in, 133 out; specification: 688 in,
+**The rest of R7 (2026-11-03).** Product: 543 lines in, 133 out; specification: 690 in,
 15 out. The cut is the whole-type delete a `Drop` did in one step, and the refusal that
 kept a setting and a lake's choice from sharing a type; what replaces them is the chunked
 `DropChunk` and the field-by-field share. The core-size gate moved to product 103 529 of
-108 500 and specification 188 492 of 191 500 (from 103 119 and 187 819); seam-width is
+108 500 and specification 188 494 of 191 500 (from 103 119 and 187 819); seam-width is
 104 of 110, no method added or removed, and `cfg(feature)` stays 6 of 20.
 
 **`view_kept` is the hard case.** A group's state folds from its members, and a write can

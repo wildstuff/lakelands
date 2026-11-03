@@ -53,7 +53,7 @@ async fn a_whole_page_beside_a_lookup_build_is_weighed(store: Store, given: Give
         }
     };
     let beside = std::sync::Arc::new(std::sync::Mutex::new(
-        None::<(bool, lakelands_api::describe::TypeDescription, Vec<String>)>,
+        None::<(lakelands_api::describe::TypeDescription, Vec<String>)>,
     ));
     let reader = {
         let beside = beside.clone();
@@ -62,10 +62,12 @@ async fn a_whole_page_beside_a_lookup_build_is_weighed(store: Store, given: Give
             // An engine whose exact-text index is built at the setting's
             // own turn has no parts to read beside: the mark is seen, or
             // the build is whole before a read can be taken beside it.
-            let building = super::builds::until_building_within(l, "row", "s", 400).await?;
+            // The mark and the count are one answer, so a build that ends
+            // between the wait and the read is seen whole, not failed.
+            let _ = super::builds::until_building_within(l, "row", "s", 400).await?;
             let d = l.describe_type("row").await?;
             let during = whole_page(l, "s", limit).await?;
-            *beside.lock().expect("the read beside the build") = Some((building, d, during));
+            *beside.lock().expect("the read beside the build") = Some((d, during));
             Ok::<_, Failure>(())
         }
     };
@@ -76,7 +78,7 @@ async fn a_whole_page_beside_a_lookup_build_is_weighed(store: Store, given: Give
     out[1]
         .as_ref()
         .map_err(|e| Failure::new(format!("a read beside the build: {e}")))?;
-    let (building, d, during) = beside
+    let (d, during) = beside
         .lock()
         .expect("the read beside the build")
         .take()
@@ -91,7 +93,7 @@ async fn a_whole_page_beside_a_lookup_build_is_weighed(store: Store, given: Give
     let names = |fs: &[lakelands_api::FieldName]| -> Vec<String> {
         fs.iter().map(|f| f.to_string()).collect()
     };
-    if building {
+    if !d.lifecycle.building.is_empty() {
         // The build has parts here: its mark names the field, and does not
         // hide the count of the page taken before the setting.
         ensure!(
