@@ -14,9 +14,10 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::event::Digest;
 use lakelands_api::location::{EngineConfig, PgTls, PgTlsMode, PgTuning};
 use lakelands_api::ontology::StorageKind;
+use lakelands_api::quarantine::{QuarantineFilter, QuarantineState};
 use lakelands_api::seam::{SETTING_TYPE, Seams};
 use lakelands_api::write::Selection;
-use lakelands_api::{Location, Position, Timestamp};
+use lakelands_api::{LakeStore, Location, Position, Timestamp};
 use lakelands_core::conformance::fixture::{self as fx, Lake as Doors};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
@@ -107,6 +108,7 @@ fn kept(view: &dyn ProjectionView) -> Option<(u32, u32, u64)> {
 const KINDS: &[Owes] = &[
     crate::purge::owed,
     crate::remove::owed,
+    crate::forget::owed,
     crate::remove::settle_owed,
     crate::build::owed,
     owes,
@@ -797,6 +799,684 @@ async fn a_write_waits_for_at_most_a_part_of_a_remove() {
         eprintln!(
             "remove {on:?}: {of} retirements in {turns} turns after the first of a part of {room}: \
              {timed:?} after `values_removed`, {each:.1} ms a turn"
+        );
+    }
+}
+
+/// A forgetting holds the writer for at most the part in front of a
+/// write, as a removal and a purge do: the gate below the parts puts the
+/// write behind the act's next part alone, and the act's turns after its
+/// first are timed from `source_forgotten`. Its first turn appends the
+/// `source_forgotten` and the first part together.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_waits_for_at_most_a_part_of_a_forget() {
+    for on in engines() {
+        // A part of one record: every part is one retirement, so a write
+        // that waited for two parts would find two of them in the log.
+        let (of, room) = (200usize, 1u32);
+        let mut place = Place::new(on, "forget-waits");
+        place.location.limits.part_events = room;
+        let (lake, doors) = lake_of(&place).await;
+        // A type only a source writes, so `crm` may bring its records.
+        // None of its fields is erasable, so forgetting `crm` needs no key.
+        doors
+            .declare(fx::type_decl(
+                "brought",
+                vec![fx::sourced("n", StorageKind::Text)],
+            ))
+            .await
+            .expect("the type is declared");
+        let records = (0..of)
+            .map(|i| fx::source_record("brought", &format!("n{i}"), json!({"n": "x"})))
+            .collect();
+        doors
+            .ingest("crm", records)
+            .await
+            .expect("the source brings its records");
+        let start = head(&lake);
+        let (tx, ended) = oneshot::channel();
+        crate::forget::start(&lake, vec!["crm".into()], None, false, Some(tx));
+        // Wait for the act's first turn: `source_forgotten` is its event.
+        let first = start.next();
+        until(
+            Duration::from_secs(30),
+            || head(&lake) >= first,
+            "the act's first turn appends `source_forgotten`",
+        )
+        .await;
+        let mut waited = Vec::new();
+        let mut passed = Vec::new();
+        for i in 0..20 {
+            // The gate takes the writer after the part in flight; the
+            // act's next part and then the write stand behind it, in that
+            // order.
+            let gate = Gate::hold(&lake).await;
+            let tip = gate.tip;
+            behind(&lake, 1).await;
+            let key = format!("w{i}");
+            let other = fx::Lake {
+                cat: doors.cat.clone(),
+                own: doors.own.clone(),
+            };
+            let writing =
+                tokio::spawn(async move { other.upsert("other", &key, json!({"n": "x"})).await });
+            behind(&lake, 2).await;
+            let at = Instant::now();
+            let released = gate.release();
+            let wrote = writing
+                .await
+                .expect("the write's task ends")
+                .expect("the write lands");
+            released.await.expect("the gate's entry ends");
+            let lakelands_api::Outcome::Applied { position, .. } = wrote else {
+                panic!("{on:?}: the write applied");
+            };
+            waited.push(at.elapsed());
+            let retired = retirements(&lake, tip, position);
+            assert!(
+                retired <= room as usize,
+                "{on:?}: write {i} waited for {retired} retirements, more than a part of {room}"
+            );
+            passed.push(retired);
+        }
+        let whole = tokio::time::timeout(Duration::from_secs(180), ended)
+            .await
+            .expect("the act ends in time")
+            .expect("the act answers");
+        whole.expect("the act is whole");
+        assert!(
+            passed.iter().any(|n| *n > 0),
+            "{on:?}: every write landed before a part did"
+        );
+        let waited = spread(&mut waited);
+        eprintln!(
+            "forget {on:?}: 20 writes beside parts of {room}, the retirements each waited for \
+             {passed:?}: waited {waited}"
+        );
+
+        // A part of `part_events`: the act's turns after its first, timed
+        // from `source_forgotten` to its answer.
+        let (of, room) = (2_000usize, 500u32);
+        let mut place = Place::new(on, "forget-part-time");
+        place.location.limits.part_events = room;
+        let (lake, doors) = lake_of(&place).await;
+        doors
+            .declare(fx::type_decl(
+                "brought",
+                vec![fx::sourced("n", StorageKind::Text)],
+            ))
+            .await
+            .expect("the type is declared");
+        let records = (0..of)
+            .map(|i| fx::source_record("brought", &format!("n{i}"), json!({"n": "x"})))
+            .collect();
+        doors
+            .ingest("crm", records)
+            .await
+            .expect("the source brings its records");
+        let start = head(&lake);
+        let (tx, ended) = oneshot::channel();
+        crate::forget::start(&lake, vec!["crm".into()], None, false, Some(tx));
+        let whole = tokio::time::timeout(Duration::from_secs(180), ended)
+            .await
+            .expect("the act ends in time")
+            .expect("the act answers");
+        whole.expect("the act is whole");
+        // The act's turns after its first, as the log's wall time tells
+        // them: from its `source_forgotten` to its `act_whole`.
+        let mut times = Vec::new();
+        for page in lake.pages(start.next()) {
+            for e in page.expect("a page of the act's log") {
+                match e.body {
+                    lakelands_api::event::EventBody::SourceForgotten { .. } => {
+                        times.push(e.known_at)
+                    }
+                    lakelands_api::event::EventBody::ActWhole { .. } => times.push(e.known_at),
+                    _ => {}
+                }
+            }
+        }
+        let [sf, whole] = times.as_slice() else {
+            panic!(
+                "{on:?}: the act's `source_forgotten` and `act_whole` are in the log: {times:?}"
+            );
+        };
+        let timed = Duration::from_micros(
+            u64::try_from(whole.0 - sf.0).expect("the log's time moves forward"),
+        );
+        // The first turn appends the `source_forgotten` and the first part,
+        // so the interval holds every part, the first among them.
+        let parts = (of as u32).div_ceil(room);
+        let each = timed.as_secs_f64() * 1e3 / f64::from(parts.max(1));
+        assert!(parts > 1);
+        eprintln!(
+            "forget {on:?}: {of} retirements in {parts} parts of {room}: {timed:?} from \
+             `source_forgotten` to `act_whole`, {each:.1} ms a part"
+        );
+    }
+}
+
+/// The forget act's job, to drive its walk and its first turn by hand with
+/// another write between them.
+fn a_forget_job(set: Vec<SourceId>, report_id: Option<String>, known: bool) -> Box<dyn Job> {
+    Box::new(crate::forget::act_job(set, report_id, known, None))
+}
+
+/// A declaration between the walk and the first turn moves what is
+/// erasable: the first turn judges the log under the ontology it finds, so
+/// a value written in plaintext before its field was erasable refuses the
+/// act, as it does when the walk saw the field already (058, 099).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_field_made_erasable_between_the_walk_and_the_first_turn_refuses_the_forget() {
+    for on in engines() {
+        let place = Place::new(on, "forget-shape");
+        let (lake, doors) = lake_of(&place).await;
+        let ty = fx::type_decl("brought", vec![fx::sourced("n", StorageKind::Text)]);
+        doors.declare(ty).await.expect("the type is declared");
+        doors
+            .ingest(
+                "crm",
+                vec![fx::source_record("brought", "n1", json!({"n": "Ada"}))],
+            )
+            .await
+            .expect("the source brings a record");
+        let start = head(&lake);
+        let mut job = a_forget_job(vec!["crm".into()], None, false);
+        // The walk, off the writer, at the field not erasable yet.
+        let view = lake.engine.view(None).expect("a view");
+        job.walk(&lake, view.as_ref()).expect("the act walks");
+        drop(view);
+        // Another hand makes the field erasable before the first turn.
+        let mut to = fx::type_decl("brought", vec![fx::sourced("n", StorageKind::Text)]);
+        to.fields[0].erasable = true;
+        doors.migrate(to).await.expect("the type migrates");
+        let before = head(&lake);
+        let out = exec::write(&lake, move |t| super::turn(t, job.as_mut())).await;
+        let e = out.expect_err("the act refuses a value in plaintext");
+        assert!(
+            e.to_string().contains("holds 1 value(s) of `crm`")
+                && e.to_string().contains("not forgotten"),
+            "{on:?}: the act refuses the plaintext `n1` under the field erasable now: {e}"
+        );
+        assert_eq!(
+            head(&lake),
+            before,
+            "{on:?}: the refused act appends nothing"
+        );
+        // Nothing of the act's was appended.
+        let mut wrote = false;
+        for page in lake.pages(start.next()) {
+            for e in page.expect("a page of the log") {
+                wrote |= matches!(
+                    e.body,
+                    lakelands_api::event::EventBody::SourceForgotten { .. }
+                        | lakelands_api::event::EventBody::RecordRetired { .. }
+                );
+            }
+        }
+        assert!(!wrote, "{on:?}: the refused act appended nothing");
+    }
+}
+
+/// A declaration that takes a field's `initial` away between the walk and
+/// the first turn makes the record another hand wrote co-owned again: the
+/// first turn gathers under the ontology it finds there and leaves the
+/// record standing, where the walk's gathering would retire it (058, 099).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_initial_taken_away_between_the_walk_and_the_first_turn_keeps_the_record() {
+    for on in engines() {
+        let place = Place::new(on, "forget-shape-initial");
+        let (lake, doors) = lake_of(&place).await;
+        let mut m = fx::field("m", StorageKind::Text);
+        m.initial = Some(json!("x"));
+        let ty = fx::type_decl("brought", vec![fx::sourced("n", StorageKind::Text), m]);
+        doors.declare(ty).await.expect("the type is declared");
+        doors
+            .ingest(
+                "crm",
+                vec![fx::source_record("brought", "m1", json!({"n": "Ada"}))],
+            )
+            .await
+            .expect("the source brings a record");
+        doors
+            .upsert("brought", "m1", json!({"m": "theirs"}))
+            .await
+            .expect("another hand writes the field");
+        let start = head(&lake);
+        let mut job = a_forget_job(vec!["crm".into()], None, false);
+        // The walk, off the writer, at the field's `initial` standing.
+        let view = lake.engine.view(None).expect("a view");
+        job.walk(&lake, view.as_ref()).expect("the act walks");
+        drop(view);
+        // The initial goes: the field the other hand wrote co-owns again.
+        let ty = fx::type_decl(
+            "brought",
+            vec![
+                fx::sourced("n", StorageKind::Text),
+                fx::field("m", StorageKind::Text),
+            ],
+        );
+        doors
+            .declare(ty)
+            .await
+            .expect("the type is declared again without the initial");
+        let out = exec::write(&lake, move |t| super::turn(t, job.as_mut())).await;
+        out.expect("the act runs");
+        assert_eq!(
+            retirements(&lake, start, head(&lake)),
+            0,
+            "{on:?}: the record another hand wrote is left standing"
+        );
+    }
+}
+
+/// A removal act of the set between the walk and the first turn takes what
+/// the report's id named: the first turn judges the id again, and the act
+/// under it is refused stale (099).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_removal_between_the_walk_and_the_first_turn_stales_the_forgets_report() {
+    for on in engines() {
+        let place = Place::new(on, "forget-stale");
+        let (lake, doors) = lake_of(&place).await;
+        let ty = fx::type_decl("brought", vec![fx::sourced("n", StorageKind::Text)]);
+        doors.declare(ty).await.expect("the type is declared");
+        doors
+            .ingest(
+                "crm",
+                vec![fx::source_record("brought", "n1", json!({"n": "Ada"}))],
+            )
+            .await
+            .expect("the source brings a record");
+        let crm = "crm".into();
+        let id = crate::forget::preflight(&lake, &crm)
+            .expect("the preflight")
+            .report_id;
+        let mut job = a_forget_job(vec![crm.clone()], Some(id), false);
+        // The walk, off the writer, at the report's position.
+        let view = lake.engine.view(None).expect("a view");
+        job.walk(&lake, view.as_ref()).expect("the act walks");
+        drop(view);
+        // Another act of the source takes what the report named.
+        let every = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+        let store = Store {
+            lake: lake.clone(),
+            owns: false,
+        };
+        let removed = store.remove_values(&crm, &every, false, None).await;
+        removed.expect("the removal act");
+        let before = head(&lake);
+        let out = exec::write(&lake, move |t| super::turn(t, job.as_mut())).await;
+        let e = out.expect_err("the act refuses the report the removal emptied");
+        assert!(
+            e.to_string()
+                .contains("not of this forgetting at its position"),
+            "{on:?}: the act under the report's id is refused stale: {e}"
+        );
+        assert_eq!(
+            head(&lake),
+            before,
+            "{on:?}: the refused act appends nothing"
+        );
+    }
+}
+
+/// A quarantined record the act closes in its first part is still in the
+/// report after a later turn reads a tail and reads the report again: the
+/// view holds no open row for it once the part has closed it, and the
+/// report counts what the act closed, not what the view still holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_quarantined_record_a_part_closed_stays_counted_in_the_acts_report() {
+    for on in engines() {
+        let mut place = Place::new(on, "forget-quarantined-count");
+        place.location.limits.part_events = 1;
+        let (lake, doors) = lake_of(&place).await;
+        doors
+            .declare(fx::type_decl(
+                "brought",
+                vec![fx::sourced("n", StorageKind::Text)],
+            ))
+            .await
+            .expect("the type is declared");
+        doors
+            .ingest(
+                "other",
+                vec![fx::source_record("brought", "r1", json!({"n": "one"}))],
+            )
+            .await
+            .expect("the source brings a record");
+        // `zz` is not a field of `brought`, so the record is refused and
+        // quarantined under its delivery.
+        let opts = lakelands_api::IngestOpts {
+            delivery: Some("mon".into()),
+            quarantine_refused: true,
+            ..lakelands_api::IngestOpts::default()
+        };
+        let mut refused = fx::source_record("brought", "q1", json!({"n": "two", "zz": 1}));
+        refused.line = Some(0);
+        let fed = lakelands_api::ingest_all_with(
+            doors.cat.as_ref(),
+            &doors.own,
+            &"other".into(),
+            opts,
+            vec![refused],
+        )
+        .await;
+        assert!(
+            fed.as_ref().is_ok_and(|w| w[0].quarantined == [0]),
+            "{on:?}: the record with `zz` is refused and quarantined: {fed:?}"
+        );
+        let (tx, ended) = oneshot::channel();
+        let job: Arc<Mutex<Box<dyn Job>>> = Arc::new(Mutex::new(Box::new(crate::forget::act_job(
+            vec!["other".into()],
+            None,
+            false,
+            Some(tx),
+        )) as Box<dyn Job>));
+        let view = lake.engine.view(None).expect("a view");
+        lock(&job)
+            .walk(&lake, view.as_ref())
+            .expect("the act walks");
+        drop(view);
+        // The first turn appends the `source_forgotten` and the first part,
+        // which closes the quarantined record.
+        let j = job.clone();
+        let first = exec::write(&lake, move |t| super::turn(t, lock(&j).as_mut()))
+            .await
+            .expect("the act's first turn");
+        assert_eq!(first, Turned::More, "{on:?}: the act has parts left");
+        // Another hand writes the record crm brought between the turns: the
+        // act leaves it standing, and reads its report again.
+        doors
+            .ingest(
+                "hand",
+                vec![fx::source_record("brought", "r1", json!({"n": "theirs"}))],
+            )
+            .await
+            .expect("another hand writes the record");
+        let j = job.clone();
+        let last = exec::write(&lake, move |t| super::turn(t, lock(&j).as_mut()))
+            .await
+            .expect("the act's second turn");
+        assert_eq!(last, Turned::Whole, "{on:?}: the act is whole");
+        lock(&job).end(Ok(()));
+        let done = ended
+            .await
+            .expect("the act answers")
+            .expect("the act is whole");
+        assert_eq!(
+            done.sources[0].quarantined,
+            [lakelands_api::quarantine::TypeQuarantined {
+                ty: "brought".into(),
+                quarantined: 1,
+            }],
+            "{on:?}: the record the first part closed is counted once, at the act's end"
+        );
+        assert!(
+            done.sources[0].retired.is_empty(),
+            "{on:?}: the record another hand wrote is left standing: {:?}",
+            done.sources[0].retired
+        );
+    }
+}
+
+/// A record a source the act has not forgotten yet leaves quarantined
+/// between two turns is closed `forgotten` by the act and counted: 085
+/// makes the close the act's, and a later turn takes a quarantined write
+/// in as it takes a landed one, so the act leaves no row open behind it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_record_quarantined_between_turns_is_closed_and_counted() {
+    for on in engines() {
+        let mut place = Place::new(on, "forget-quarantined-between");
+        place.location.limits.part_events = 1;
+        let (lake, doors) = lake_of(&place).await;
+        doors
+            .declare(fx::type_decl(
+                "brought",
+                vec![fx::sourced("n", StorageKind::Text)],
+            ))
+            .await
+            .expect("the type is declared");
+        doors
+            .ingest(
+                "crm",
+                vec![fx::source_record("brought", "r1", json!({"n": "one"}))],
+            )
+            .await
+            .expect("the source brings a record");
+        doors
+            .ingest(
+                "crm2",
+                vec![fx::source_record("brought", "s1", json!({"n": "two"}))],
+            )
+            .await
+            .expect("the second source brings a record");
+        let (tx, ended) = oneshot::channel();
+        let job: Arc<Mutex<Box<dyn Job>>> = Arc::new(Mutex::new(Box::new(crate::forget::act_job(
+            vec!["crm".into(), "crm2".into()],
+            None,
+            false,
+            Some(tx),
+        )) as Box<dyn Job>));
+        let view = lake.engine.view(None).expect("a view");
+        lock(&job)
+            .walk(&lake, view.as_ref())
+            .expect("the act walks");
+        drop(view);
+        // The first turn has room for one `source_forgotten`: `crm`'s is in
+        // the log, `crm2`'s still owed.
+        let j = job.clone();
+        let first = exec::write(&lake, move |t| super::turn(t, lock(&j).as_mut()))
+            .await
+            .expect("the act's first turn");
+        assert_eq!(first, Turned::More, "{on:?}: the act has parts left");
+        // `crm2` is not forgotten yet, and writes a record refused for a
+        // field it does not have: the act's later turn finds it quarantined.
+        let opts = lakelands_api::IngestOpts {
+            delivery: Some("mon".into()),
+            quarantine_refused: true,
+            ..lakelands_api::IngestOpts::default()
+        };
+        let mut refused = fx::source_record("brought", "q1", json!({"n": "three", "zz": 1}));
+        refused.line = Some(0);
+        let fed = lakelands_api::ingest_all_with(
+            doors.cat.as_ref(),
+            &doors.own,
+            &"crm2".into(),
+            opts,
+            vec![refused],
+        )
+        .await;
+        assert!(
+            fed.as_ref().is_ok_and(|w| w[0].quarantined == [0]),
+            "{on:?}: the record with `zz` is refused and quarantined: {fed:?}"
+        );
+        let mut turns = 0;
+        let mut whole = Turned::More;
+        while whole == Turned::More {
+            let j = job.clone();
+            whole = exec::write(&lake, move |t| super::turn(t, lock(&j).as_mut()))
+                .await
+                .expect("the act's later turn");
+            turns += 1;
+            assert!(turns < 10, "{on:?}: the act ends");
+        }
+        lock(&job).end(Ok(()));
+        let done = ended
+            .await
+            .expect("the act answers")
+            .expect("the act is whole");
+        assert_eq!(
+            done.sources[1].quarantined,
+            [lakelands_api::quarantine::TypeQuarantined {
+                ty: "brought".into(),
+                quarantined: 1,
+            }],
+            "{on:?}: the act counts the record it found quarantined between turns"
+        );
+        assert!(
+            done.sources[0].quarantined.is_empty(),
+            "{on:?}: the first source left none open: {:?}",
+            done.sources[0].quarantined
+        );
+        let view = lake.engine.view(None).expect("a view");
+        let open = view
+            .quarantined(&QuarantineFilter {
+                source: Some("crm2".into()),
+                state: Some(QuarantineState::Open),
+                ..QuarantineFilter::default()
+            })
+            .expect("the projection lists quarantined records");
+        assert!(
+            open.is_empty(),
+            "{on:?}: the act closed the row it found open: {open:?}"
+        );
+    }
+}
+
+/// A record a part retired stays counted when another hand makes the key
+/// again between two turns: the act's retirement is in the log, and the
+/// record made since is not the act's to retire — a tail that took the
+/// old count out would answer a retirement the act made as one it did not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_record_a_part_retired_stays_counted_when_another_hand_remakes_its_key() {
+    for on in engines() {
+        let mut place = Place::new(on, "forget-retired-remade");
+        place.location.limits.part_events = 1;
+        let (lake, doors) = lake_of(&place).await;
+        doors
+            .declare(fx::type_decl(
+                "brought",
+                vec![fx::sourced("n", StorageKind::Text)],
+            ))
+            .await
+            .expect("the type is declared");
+        doors
+            .ingest(
+                "crm",
+                vec![
+                    fx::source_record("brought", "r1", json!({"n": "one"})),
+                    fx::source_record("brought", "r2", json!({"n": "two"})),
+                ],
+            )
+            .await
+            .expect("the source brings two records");
+        let (tx, ended) = oneshot::channel();
+        let job: Arc<Mutex<Box<dyn Job>>> = Arc::new(Mutex::new(Box::new(crate::forget::act_job(
+            vec!["crm".into()],
+            None,
+            false,
+            Some(tx),
+        )) as Box<dyn Job>));
+        let view = lake.engine.view(None).expect("a view");
+        lock(&job)
+            .walk(&lake, view.as_ref())
+            .expect("the act walks");
+        drop(view);
+        // The first turn appends the `source_forgotten` and the first part,
+        // which retires `r1`.
+        let j = job.clone();
+        let first = exec::write(&lake, move |t| super::turn(t, lock(&j).as_mut()))
+            .await
+            .expect("the act's first turn");
+        assert_eq!(first, Turned::More, "{on:?}: the act has parts left");
+        // Another hand makes the key again between the turns.
+        doors
+            .ingest(
+                "hand",
+                vec![fx::source_record("brought", "r1", json!({"n": "theirs"}))],
+            )
+            .await
+            .expect("another hand makes the key again");
+        let mut turns = 0;
+        let mut whole = Turned::More;
+        while whole == Turned::More {
+            let j = job.clone();
+            whole = exec::write(&lake, move |t| super::turn(t, lock(&j).as_mut()))
+                .await
+                .expect("the act's later turn");
+            turns += 1;
+            assert!(turns < 10, "{on:?}: the act ends");
+        }
+        lock(&job).end(Ok(()));
+        let done = ended
+            .await
+            .expect("the act answers")
+            .expect("the act is whole");
+        let retired: u32 = (done.sources[0].retired.iter()).map(|t| t.retired).sum();
+        assert_eq!(
+            retired, 2,
+            "{on:?}: both records the act retired are counted, the remake beside them: {:?}",
+            done.sources[0].retired
+        );
+    }
+}
+
+/// A tail past `limits.part_tail` between two turns of a forgetting ends
+/// that turn unavailable, with nothing appended: the later turn reads its
+/// own tail, as the road's first turn does, and sends the act again rather
+/// than fold more than one turn may judge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tail_past_the_bound_between_two_turns_of_a_forget_ends_it_unavailable() {
+    for on in engines() {
+        let mut place = Place::new(on, "forget-tail-over");
+        place.location.limits.part_events = 1;
+        place.location.limits.part_tail = 1;
+        let (lake, doors) = lake_of(&place).await;
+        doors
+            .declare(fx::type_decl(
+                "brought",
+                vec![fx::sourced("n", StorageKind::Text)],
+            ))
+            .await
+            .expect("the type is declared");
+        doors
+            .ingest(
+                "crm",
+                vec![
+                    fx::source_record("brought", "r1", json!({"n": "one"})),
+                    fx::source_record("brought", "r2", json!({"n": "two"})),
+                    fx::source_record("brought", "r3", json!({"n": "three"})),
+                ],
+            )
+            .await
+            .expect("the source brings three records");
+        let job: Arc<Mutex<Box<dyn Job>>> =
+            Arc::new(Mutex::new(a_forget_job(vec!["crm".into()], None, false)));
+        let view = lake.engine.view(None).expect("a view");
+        lock(&job)
+            .walk(&lake, view.as_ref())
+            .expect("the act walks");
+        drop(view);
+        let j = job.clone();
+        let first = exec::write(&lake, move |t| super::turn(t, lock(&j).as_mut()))
+            .await
+            .expect("the act's first turn");
+        assert_eq!(first, Turned::More, "{on:?}: the act has parts left");
+        // Two of the act's keys are written between its turns, in one
+        // delivery: a tail of two where one turn reads one.
+        doors
+            .ingest(
+                "hand",
+                vec![
+                    fx::source_record("brought", "r2", json!({"n": "theirs"})),
+                    fx::source_record("brought", "r3", json!({"n": "theirs"})),
+                ],
+            )
+            .await
+            .expect("another hand writes two keys");
+        let before = head(&lake);
+        let j = job.clone();
+        let out = exec::write(&lake, move |t| super::turn(t, lock(&j).as_mut())).await;
+        let e = out.expect_err("the act refuses a tail it cannot read");
+        assert!(
+            e.situation()
+                == Some(&lakelands_api::error::Situation::TailOverran { tries: 1, bound: 1 }),
+            "{on:?}: a tail past `part_tail` answers `TailOverran`: {e}"
+        );
+        assert_eq!(
+            head(&lake),
+            before,
+            "{on:?}: the turn that could not read its tail appends nothing"
         );
     }
 }

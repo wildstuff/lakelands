@@ -51,6 +51,12 @@ check!(
     given
 );
 
+check!(
+    ACT_WHOLE_FOLLOWS_ITS_PARTS_FIRED = a_reaction_its_first_part_fires_is_followed_to_the_acts_end,
+    "099: with `part_events` 1, `tracker`'s records are retired a part at a time, and the retirement of one in an earlier part fires `in_rome` over the `place` it takes, before the act's `act_whole` lands in a later append; a poll of the feed from 0 names that firing overruled, as it names one the act's first append set off, and names it overruled again when the lake is opened once more and the act's end is read from the log, so an act ends for its reactions where its `act_whole` is",
+    given
+);
+
 /// The head of `store`.
 async fn head(store: &dyn LakeStore) -> Result<Position, Failure> {
     store.head().await.must("reading the head")
@@ -636,6 +642,7 @@ async fn overruled(store: Store, given: crate::conformance::Given, act: Act) -> 
         reactions(store.as_ref()).await?,
         reactions(twin.as_ref()).await?,
     );
+
     let mut overruled = overruled;
     overruled.sort();
     let want = [
@@ -705,4 +712,128 @@ async fn a_reaction_decided_over_a_forgotten_value_is_overruled(
     given: crate::conformance::Given,
 ) -> Held {
     overruled(store, given, Act::Forget).await
+}
+
+/// A firing a retirement in an act's earlier part set off, judged when
+/// the act's `act_whole` lands: the act's end, and not its first append
+/// alone, is where the feed ends it for its reactions — in the act's own
+/// handle, and again in one opened after it, which reads the end from the
+/// log.
+async fn a_reaction_its_first_part_fires_is_followed_to_the_acts_end(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let store = again(&given.reopen, store, with(&keys), "with a key store").await?;
+    let mut few = limits();
+    few.part_events = 1;
+    let store = (given.relimit)(store, with(&keys), few)
+        .await
+        .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let text = json!({"kind": "text"});
+    l.declare_json(json!({"declare": "type", "name": "stop", "fields": [
+        {"name": "code", "type": text, "authority": "source"},
+        {"name": "place", "type": text, "authority": "source", "erasable": true}]}))
+        .await?;
+    l.declare_as(
+        trigger_on("in_rome", "stop", Some("place = 'Rome'")),
+        "in_rome",
+    )
+    .await?;
+    l.ingest(
+        "tracker",
+        vec![
+            source_record("stop", "s1", json!({"code": "s1", "place": "Rome"})),
+            source_record("stop", "s2", json!({"code": "s2", "place": "Rome"})),
+        ],
+    )
+    .await
+    .must("tracker writing")?;
+    drop(
+        store
+            .forget_source(&"tracker".into(), None)
+            .await
+            .must("forgetting")?,
+    );
+    let log = events_from(store.as_ref(), Position::GENESIS).await?;
+    let whole = (log.iter())
+        .find(|e| matches!(e.body, EventBody::ActWhole { .. }))
+        .map(|e| e.position);
+    let Some(whole) = whole else {
+        return Err(Failure::new("the act appends no `act_whole`"));
+    };
+    let retired: Vec<Position> = (log.iter())
+        .filter(|e| matches!(e.body, EventBody::RecordRetired { .. }))
+        .map(|e| e.position)
+        .collect();
+    ensure!(
+        retired.len() == 2,
+        "the act retires both records: {retired:?}"
+    );
+    let fired: Vec<Position> = (log.iter())
+        .filter(|e| {
+            matches!(
+                e.body,
+                EventBody::TriggerFired { .. } | EventBody::TriggerDropped { .. }
+            ) && e.cause.is_some_and(|c| retired.contains(&c))
+        })
+        .map(|e| e.position)
+        .collect();
+    let before: Vec<Position> = (fired.iter().copied()).filter(|p| *p < whole).collect();
+    ensure!(
+        !before.is_empty(),
+        "a retirement before `act_whole` sets off a reaction: firings {fired:?}, the act whole at \
+         {whole:?}"
+    );
+    let filter = FeedFilter {
+        kinds: vec!["trigger_fired".into(), "trigger_dropped".into()],
+        ..FeedFilter::default()
+    };
+    let (mut from, mut overruled) = (Position::GENESIS, Vec::new());
+    loop {
+        let b = store
+            .feed()
+            .poll(from, &filter, 1024)
+            .await
+            .must("polling the feed")?;
+        overruled.extend(b.overruled.iter().copied());
+        if b.next > b.head {
+            break;
+        }
+        from = b.next;
+    }
+    let unnamed: Vec<Position> = (before.iter().copied())
+        .filter(|p| !overruled.contains(p))
+        .collect();
+    ensure!(
+        unnamed.is_empty(),
+        "the feed names overruled every reaction a part set off before the act's end: not \
+         {unnamed:?}, the act whole at {whole:?}, overruled {overruled:?}"
+    );
+    // Opened again after the act, as a later process does: the feed reads
+    // the act's end from the log (`last_act`), not from the fold it made.
+    let store = again(&given.reopen, store, with(&keys), "after the act").await?;
+    let (mut from, mut overruled) = (Position::GENESIS, Vec::new());
+    loop {
+        let b = store
+            .feed()
+            .poll(from, &filter, 1024)
+            .await
+            .must("polling the reopened feed")?;
+        overruled.extend(b.overruled.iter().copied());
+        if b.next > b.head {
+            break;
+        }
+        from = b.next;
+    }
+    let unnamed: Vec<Position> = (before.iter().copied())
+        .filter(|p| !overruled.contains(p))
+        .collect();
+    ensure!(
+        unnamed.is_empty(),
+        "opened again after the act, the feed still names overruled every reaction a part set \
+         off: not {unnamed:?}, the act whole at {whole:?}, overruled {overruled:?}"
+    );
+    Ok(())
 }

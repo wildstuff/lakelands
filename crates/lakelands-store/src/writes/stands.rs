@@ -95,8 +95,9 @@ pub(crate) fn overruled<'e>(
         ends: BTreeMap::new(),
     };
     let (mut out, mut folded, mut owed) = (Vec::new(), None, None);
-    // The act's own append decided its retirements' reactions over the
-    // values it erases: they share its time.
+    // The act's end decided its retirements' reactions over the values it
+    // erases: a reaction inside the act is followed, and so is one that
+    // shares the end's time.
     let followed = |e: &&Event| e.position < acted || e.known_at == known;
     for e in events.into_iter().filter(followed) {
         let reaction = matches!(

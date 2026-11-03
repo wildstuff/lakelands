@@ -157,7 +157,7 @@ The first version carries no per-copy erasure across lakes.
 
 ### An erasure is read before it is made
 
-`forget_preflight(source)` answers what the act would take and appends nothing. Its report carries an id that `forget_source` may repeat, as a purge's may (039); the act refuses a report of another head. Its report:
+`forget_preflight(source)` answers what the act would take and appends nothing. Its report carries an id that `forget_source` may repeat, as a purge's may (039); the act refuses a report of another position, or one whose id a removal act of its source has since moved. Its report:
 - per type, the records holding a value of the source in an erasable field: a count, and the first ten keys;
 - the records it would retire, which the source made and alone brought, with the co-owned records named apart;
 - per field, the values it would erase, and the recorded outputs;
@@ -193,7 +193,7 @@ was its own source. `forget_sources(sources)` and
   co-owned.
 - **Refused whole, appending nothing:** an empty set, a source named
   twice, a source the log holds no event of, a source whose values the
-  log holds in plaintext, and a report of another set or head
+  log holds in plaintext, and a report of another set or position
   (`forget_report_stale`). A source the log never named is forgotten
   alone, to keep its id from the lake; in a set it is a mistake.
 - **A repeat:** a source of the set forgotten already appends nothing

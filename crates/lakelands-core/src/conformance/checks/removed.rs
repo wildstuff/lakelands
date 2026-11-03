@@ -5,7 +5,7 @@
 //! hand is retired, and a record another hand also wrote keeps that
 //! hand's values.
 
-use lakelands_api::write::RemoveReport;
+use lakelands_api::write::{ForgetReport, RemoveReport};
 use lakelands_api::{DeliveryId, IngestOpts};
 
 use crate::conformance::fixture::{get_at, source_record};
@@ -77,7 +77,7 @@ check!(
 
 check!(
     ACT_ERASES_IN_ITS_FIRST_TURN = an_acts_versions_seal_nothing_and_the_source_has_a_new_one,
-    "099: a removal's erasure, and the destruction of the versions it takes whole, happen in its first turn: with `part_events` 1, so that its retirements run in later parts, the log holds its `values_removed` and the key store no longer holds the version, and a write of the source after that turn seals under a version the act left, which is the source's new one, and reads its own values",
+    "099: a removal's erasure, and the destruction of the versions it takes whole, happen in its first turn: with `part_events` 1, so that its retirements run in later parts, the log holds its `values_removed` and the key store no longer holds the version, and a write of the source after that turn seals under a version the act left, which is the source's new one, and reads its own values; a forgetting's erasure is its first turn alone too: its keys are gone once its `source_forgotten` is in the log and before its `act_whole`, and its ingest between the parts is refused, so nothing is sealed under a destroyed key",
     given
 );
 
@@ -121,7 +121,7 @@ check!(
 
 check!(
     ACTS_OF_ONE_SOURCE_OVERLAP = a_report_before_the_first_act_is_stale_only_on_the_overlap,
-    "099: two acts of one source over deliveries under one version, the second overlapping the first: a report read before the first act is stale for the overlapping delivery, refused `remove_report_stale` and appending nothing, and taken for a disjoint one, whose act appends and retires what it alone emptied; the overlapping act run again folds the earlier selections, counts its own two events once alone, retires the record the two emptied, and destroys the version the acts together take whole, leaving every record with no value",
+    "099: two acts of one source over deliveries under one version, the second overlapping the first: a report read before the first act is stale for the overlapping delivery, refused `remove_report_stale` and appending nothing, and taken for a disjoint one, whose act appends and retires what it alone emptied; the overlapping act run again folds the earlier selections, counts its own two events once alone, retires the record the two emptied, and destroys the version the acts together take whole, leaving every record with no value; a forgetting's report, read before those acts, selects every event of the source there, and the acts take what it selected, so the act under its id is refused `forget_report_stale`",
     given
 );
 
@@ -1795,6 +1795,66 @@ async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
          reads: the act {done:?}, the old key {old:?}, the keys {held:?}, sealing {sealed:?}, \
          v9 {v9:?}"
     );
+    // A forgetting's keys go in its first turn too, before its parts: a
+    // reader between them finds none, and the source's ingest is refused,
+    // so nothing is sealed under a destroyed key (099).
+    let giver: SourceId = "giver".into();
+    l.ingest(
+        "giver",
+        vec![p("q1", "Dee"), p("q2", "Eve"), p("q3", "Fay")],
+    )
+    .await
+    .must("ingesting giver's records")?;
+    let start = store.head().await.must("reading the head")?;
+    let slot: Arc<std::sync::Mutex<Option<ForgetReport>>> = Arc::default();
+    let (s, answer, s2, keys2) = (store.clone(), slot.clone(), store.clone(), keys.clone());
+    let source = giver.clone();
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            let done = s
+                .forget_source(&source, None)
+                .await
+                .must("the forgetting")?;
+            *crate::lock(&answer) = Some(done);
+            Ok(())
+        }),
+        Box::pin(async move {
+            settles(6_000, Duration::from_millis(1), || async {
+                let events = events_after(s2.as_ref(), start).await?;
+                let forgot =
+                    (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
+                let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+                ensure!(
+                    forgot && !whole,
+                    "the forgetting's `source_forgotten`, before its `act_whole`"
+                );
+                Ok(())
+            })
+            .await?;
+            let left = keys2
+                .ids(s2.lake(), &"giver".into())
+                .ok()
+                .unwrap_or_default();
+            ensure!(
+                left.is_empty(),
+                "the forgetting destroys giver's keys in its first turn: {left:?}"
+            );
+            let l = Lake::of(s2.as_ref());
+            let refused = l.ingest("giver", vec![p("late", "Eve")]).await;
+            ensure!(
+                refused.is_err(),
+                "giver's ingest between the parts is refused, so nothing is sealed under a \
+                 destroyed key; it answered {refused:?}"
+            );
+            Ok(())
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let done = crate::lock(&slot).take().expect("the forgetting answered");
+    ensure!(
+        done.retired.iter().map(|t| t.retired).sum::<u32>() == 3,
+        "the forgetting retires the three records giver alone brought: {done:?}"
+    );
     Ok(())
 }
 
@@ -2218,6 +2278,10 @@ async fn a_report_before_the_first_act_is_stale_only_on_the_overlap(
         .remove_values_preflight(&tracker, &wed)
         .await
         .must("the preflight for wed")?;
+    let pre_forget = store
+        .forget_preflight(&tracker)
+        .await
+        .must("the forgetting's preflight")?;
     let retired = |r: &RemoveReport| -> Vec<u32> {
         (r.retired.iter())
             .filter(|t| t.ty.as_str() == "person")
@@ -2304,5 +2368,14 @@ async fn a_report_before_the_first_act_is_stale_only_on_the_overlap(
          three together take the version whole and tue destroys it: mon {mon_done:?}, wed \
          {wed_done:?}, tue {tue_done:?}, the keys {held:?}, left {live:?}"
     );
+    // A forgetting's report selects every event of its source: the acts
+    // above took what it selected, so the id over what is left moves (099).
+    refused_like(
+        "a forgetting under a report read before the acts of its source",
+        store
+            .forget_source(&tracker, Some(pre_forget.report_id.as_str()))
+            .await,
+        &json!({"code": "forget_report_stale"}),
+    )?;
     Ok(())
 }

@@ -744,7 +744,7 @@ check!(
 
 check!(
     REPORT_HEAD = a_preflights_id_holds_across_an_open_and_not_across_a_write,
-    "039, 058, 065 and 099, extended (lakelands#1469): the lake opened again between `forget_preflight`, `remove_values_preflight` or `purge_preflight` and its act appends a lease, and at most a checkpoint, and the act goes through under the id; a forgetting's id names the head of its preflight, the log's last event that is neither a lease nor a checkpoint, so a write after such an open moves the head and the act under the id is refused as invalid, appending nothing; a removal's and a purge's id name the position each read and the records it selected there, so a write elsewhere since leaves the id good and the act goes through, while one that reaches a record it named is refused as invalid, appending nothing",
+    "039, 058, 065 and 099, extended (lakelands#1469): the lake opened again between `forget_preflight`, `remove_values_preflight` or `purge_preflight` and its act appends a lease, and at most a checkpoint, and the act goes through under the id; a forgetting's and a removal's id name the position each read and what it selected there, so a write elsewhere since, after such an open, leaves the id good and the act goes through; a purge's id names the selection its report read, so a write elsewhere since leaves it good too, and a write that reaches a record its selection took is refused as invalid, appending nothing",
     given
 );
 
@@ -900,27 +900,17 @@ async fn a_preflights_id_holds_across_an_open_and_not_across_a_write(
         let l = Lake::of(store.as_ref());
         l.upsert("note", "moved", json!({ "text": act })).await?;
         let moved = store.head().await.must("reading the head")?;
-        if act == "remove" {
-            // A removal's id names the position its report read and the
-            // records it selected: a write elsewhere since leaves it good
-            // (099). A forgetting's is still of the head, until 099's id
-            // reaches it (lakelands#1700).
-            act_under(store.as_ref(), act, &id)
-                .await
-                .must("a removal under its preflight's id after an open and a write elsewhere")?;
-            let after = store.head().await.must("reading the head")?;
-            ensure!(
-                after >= moved,
-                "the removal under its preflight's id appends: the head {moved} to {after}"
-            );
-            continue;
-        }
-        refused_like(
-            &format!("a {act} under the id of a preflight before an open and a write"),
-            act_under(store.as_ref(), act, &id).await,
-            &json!({ "code": format!("{act}_report_stale") }),
-        )?;
-        head_unmoved(store.as_ref(), moved, "an act under a stale id").await?;
+        // A removal's and a forgetting's ids name the position its report
+        // read and the records it selected: a write elsewhere since, after
+        // an open, leaves each good (099).
+        act_under(store.as_ref(), act, &id).await.must(&format!(
+            "a {act} under its preflight's id after an open and a write elsewhere"
+        ))?;
+        let after = store.head().await.must("reading the head")?;
+        ensure!(
+            after >= moved,
+            "the {act} under its preflight's id appends: the head {moved} to {after}"
+        );
     }
     // A purge's id names the selection its report read, so a write
     // elsewhere since, after an open, leaves it good.

@@ -2,40 +2,62 @@
 //! its keys destroyed, and every value it sealed read as erased, at every
 //! position.
 //!
-//! The act runs under the writer's lock, in this order, each step
-//! idempotent:
-//! 1. one append: `source_forgotten`, and a `record_retired` for each live
-//!    record the source made and alone brought in, as a purge retires it;
-//! 2. the source's keys are dropped from memory and destroyed;
-//! 3. the projection is restated from the log, where the fold meets
-//!    sealed values with no key and the act that forgot them, and erases
-//!    them: the records the source wrote are refolded alone where nothing
-//!    else reads them, and the whole log is folded again otherwise
-//!    (`lake::scrub`), each report naming the way and why;
-//! 4. the engine reclaims the storage.
+//! The act runs on the road, beside the writer
+//! (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`), each
+//! step idempotent:
+//! 1. the walk, off the writer, gathers every record a source of the set
+//!    brought, with what each of them holds of each source, and counts
+//!    from the log what the report says: outputs sealed under the sources'
+//!    keys and values an event holds in plaintext; a report is read at its
+//!    position, and its id is that position with a digest of the events
+//!    the set's sources wrote there that no act of removal selected;
+//! 2. the first turn, under the writer, folds the tail the walk did not
+//!    see into that gathering, refuses a source whose values the log holds
+//!    in plaintext, appends a `source_forgotten` for each source not yet
+//!    in the log, and destroys each such source's keys as its event lands —
+//!    before any part runs, so nothing is sealed under a destroyed key
+//!    between parts;
+//! 3. the first part follows, and later turns append the closes and the
+//!    retirements still owed, each read again as the part takes it, and
+//!    `act_whole` ends them; each later turn reads the tail past the act's
+//!    last append first, as the first turn read the walk's, so a write by a
+//!    source whose `source_forgotten` is still owed is taken in and judged
+//!    under the writer, and a record it leaves quarantined is closed with
+//!    the act's closes;
+//! 4. the act's last turn restates the projection from the log, where the
+//!    fold meets sealed values with no key and the act that forgot them,
+//!    and erases them, and the engine reclaims the storage.
 //!
-//! What a crash leaves after the append is finished by the next writer's
-//! open, and what a failure leaves by the act's repeat, which appends
-//! nothing again ([`Lake::finish_forgetting`]). Either way the fold is
-//! the one every write runs, so the scoped refold comes out as the
-//! rebuild does, and the conformance suite compares the two.
+//! What a crash leaves is taken up again by the road's owed kinds at the
+//! next writer's open, which answers before they run, and the act's repeat
+//! appends nothing again ([`Lake::finish_forgetting`]). Either way the
+//! fold is the one every write runs, so the scoped refold comes out as the
+//! rebuild does, and the conformance suite compares the two. Until the
+//! act is whole its source's values read erased, and a write that reads
+//! one seals nothing under its key: its key is gone.
 //!
-//! The act is refused while the log holds a value of the source in an
-//! erasable field in plaintext, written before the field was erasable or
-//! before the log sealed values: destroying a key cannot reach it.
+//! The act is refused while the log holds a value of a source it has not
+//! forgotten yet in an erasable field in plaintext, written before the
+//! field was erasable or before the log sealed values: destroying a key
+//! cannot reach it. The judgement is made at the act's first turn, under
+//! the ontology and the names the log bears there: a declaration or a
+//! migration since the walk gathers the set again under the writer, and a
+//! removal act of the set since the walk is judged again, its report's id
+//! moving where it took what the id counted, and the act under a moved id
+//! refused stale.
 //!
-//! Several sources are forgotten in one act ([`run_set`]): one scan of
-//! the projection, the feed index read for each source and one walk of
-//! the log from where it decides no more, one append of a
+//! Several sources are forgotten in one act ([`start`] with a set): one
+//! scan of the projection, the feed index read for each source and one
+//! walk of the log from where it decides no more, one append of a
 //! `source_forgotten` for each, one restatement and one reclaim. The unit
 //! stays the source; only the act is batched, and one source is the set
 //! of it alone.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use lakelands_api::engine::ProjectionView;
-use lakelands_api::error::Case;
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::error::{Case, Situation};
+use lakelands_api::event::{ChangeKind, Event, EventBody};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::{Origin, StoredRecord};
@@ -43,16 +65,16 @@ use lakelands_api::write::{
     Declaration, ForgetField, ForgetRecords, ForgetReport, ForgetSetReport, ForgetWay, RecordField,
     TypeRetired,
 };
-use lakelands_api::{
-    Error, FieldName, Position, RecordKey, Result, SourceId, TypeName, WriteContext,
-};
+use lakelands_api::{Error, FieldName, Position, RecordKey, Result, SourceId, Timestamp, TypeName};
 
 use crate::exec::Turn;
-use crate::lake::{Lake, Staged, every, forgotten_list};
+use crate::lake::{Lake, Staged, Writer, every, forgotten_list, indexed};
 use crate::log::Draft;
 use crate::ontology::Ontology;
 use crate::purge::{brought_by, co_owned, made_by};
-use crate::writes::{self, Call};
+use crate::remove::Removal;
+use crate::road::{self, Job, Reach, Turned};
+use crate::writes;
 
 /// How many keys a report names per type.
 const NAMED: usize = 10;
@@ -71,59 +93,121 @@ pub(crate) fn count(of: &mut ForgetRecords, r: &StoredRecord) {
     }
 }
 
-type Known = Vec<(ForgetReport, bool)>;
-
-/// One source's report as it is gathered; `known`: the log holds an event of it.
+/// One source's report as it is gathered, and as the tail adds to it: the
+/// records holding a value of it, the field values it counts, and what the
+/// log says of the source outside the projection.
+#[derive(Default)]
 struct Taken {
-    types: Vec<ForgetRecords>,
-    co_owned: Vec<ForgetRecords>,
+    /// The records holding a value of the source in an erasable field.
+    types: BTreeMap<TypeName, BTreeSet<RecordKey>>,
+    /// The records another hand made or wrote too.
+    co_owned: BTreeMap<TypeName, BTreeSet<RecordKey>>,
+    /// Per type and field, the values it erases.
     fields: BTreeMap<(TypeName, FieldName), u64>,
-    retired: Vec<TypeRetired>,
+    /// The records it retires: the source made them and alone brought them.
+    retired: BTreeMap<TypeName, BTreeSet<RecordKey>>,
     outputs: u64,
     plaintext: u64,
+    /// Whether the log holds an event of the source.
     known: bool,
 }
 
+impl Taken {
+    fn add(&mut self, i: usize, ty: &TypeName, key: &RecordKey, g: &GatheredRecord) {
+        if let Some((_, fields)) = g.held.iter().find(|(j, _)| *j == i) {
+            self.types
+                .entry(ty.clone())
+                .or_default()
+                .insert(key.clone());
+            for f in fields {
+                *self.fields.entry((ty.clone(), f.clone())).or_default() += 1;
+            }
+        }
+        // A record the set leaves behind is named by each source that
+        // brought it, as the act's report says what stays.
+        if g.shared && g.by.contains(&i) {
+            self.co_owned
+                .entry(ty.clone())
+                .or_default()
+                .insert(key.clone());
+        }
+        if g.shared {
+            if let Some(keys) = self.retired.get_mut(ty) {
+                keys.remove(key);
+            }
+        } else if g.first == Some(i) {
+            self.retired
+                .entry(ty.clone())
+                .or_default()
+                .insert(key.clone());
+        }
+    }
+
+    fn sub(&mut self, i: usize, ty: &TypeName, key: &RecordKey, g: &GatheredRecord) {
+        if let Some((_, fields)) = g.held.iter().find(|(j, _)| *j == i) {
+            if let Some(keys) = self.types.get_mut(ty) {
+                keys.remove(key);
+            }
+            for f in fields {
+                if let Some(n) = self.fields.get_mut(&(ty.clone(), f.clone())) {
+                    *n = n.saturating_sub(1);
+                }
+            }
+        }
+        if g.shared
+            && g.by.contains(&i)
+            && let Some(keys) = self.co_owned.get_mut(ty)
+        {
+            keys.remove(key);
+        }
+        if !g.shared
+            && g.first == Some(i)
+            && let Some(keys) = self.retired.get_mut(ty)
+        {
+            keys.remove(key);
+        }
+    }
+}
+
+/// A record the set brought, with what each source of the set holds of it.
+struct GatheredRecord {
+    record: StoredRecord,
+    /// Per index in the set, the erasable fields holding a value of it.
+    held: Vec<(usize, Vec<FieldName>)>,
+    /// The indices of the set that brought it, in set order.
+    by: Vec<usize>,
+    /// The first source in set order that brought it.
+    first: Option<usize>,
+    /// Another hand made it, or wrote a value it holds.
+    shared: bool,
+}
+
 /// What forgetting the sources of `set` takes at `view`, in one scan of
-/// the projection and one walk of their events: each one's report, with
-/// whether the log holds an event of it, and the live records the set
-/// retires. A record the set's sources made and alone brought is retired
-/// under the first of them that brought it; one another hand made, or
-/// wrote too, is co-owned, for each of them that brought it.
-fn found(
+/// the projection and one walk of their events. A record the set's
+/// sources made and alone brought is retired under the first of them that
+/// brought it; one another hand made, or wrote too, is co-owned, for each
+/// of them that brought it.
+struct Gathered {
+    records: BTreeMap<(TypeName, RecordKey), GatheredRecord>,
+    taken: Vec<Taken>,
+    /// The events of the sources at the view that no act of removal
+    /// selects, where a report's digest was asked for.
+    seen: BTreeSet<Position>,
+}
+
+fn gather(
     lake: &Lake,
     view: &dyn ProjectionView,
     ontology: &Ontology,
     set: &[SourceId],
-) -> Result<(Known, Vec<StoredRecord>)> {
-    let mut taken: Vec<Taken> = (set.iter())
-        .map(|_| Taken {
-            types: Vec::new(),
-            co_owned: Vec::new(),
-            fields: BTreeMap::new(),
-            retired: Vec::new(),
-            outputs: 0,
-            plaintext: 0,
-            known: false,
-        })
-        .collect();
-    let mut retire = Vec::new();
-    let mine = |r: &StoredRecord, f: &FieldName, source: &SourceId| {
-        let m = r.meta.get(f);
-        m.is_some_and(|m| m.origin == Origin::Source && m.source.as_ref() == Some(source))
-    };
+    digest: Option<&[Removal]>,
+) -> Result<Gathered> {
+    let mut records: BTreeMap<(TypeName, RecordKey), GatheredRecord> = BTreeMap::new();
     for (name, entry) in &ontology.types {
         let decl = &entry.decl;
         if decl.view.is_some() || !decl.field_meta {
             continue;
         }
-        let erasable: Vec<&FieldName> = decl
-            .fields
-            .iter()
-            .filter(|f| f.erasable)
-            .map(|f| &f.name)
-            .collect();
-        let mut holding: Vec<_> = set.iter().map(|_| (counted(name), counted(name))).collect();
         let brought: Vec<StoredRecord> = (view.scan(name, &every(false))?.into_iter())
             .filter(|r| set.iter().any(|s| brought_by(r, s)))
             .collect();
@@ -131,44 +215,29 @@ fn found(
             brought.iter().filter(|r| !co_owned(decl, r, set)).collect();
         let made = made_by(lake, &alone, set)?;
         for r in brought {
+            let held = held_by(decl, &r, set);
             let by: Vec<usize> = (0..set.len())
                 .filter(|&i| brought_by(&r, &set[i]))
                 .collect();
-            let Some(&first) = by.first() else {
-                continue;
-            };
+            let first = by.first().copied();
             let shared = co_owned(decl, &r, set) || !made.contains(&r.made);
-            for &i in &by {
-                let held: Vec<&&FieldName> = (erasable.iter())
-                    .filter(|f| r.fields.contains_key(**f) && mine(&r, f, &set[i]))
-                    .collect();
-                if !held.is_empty() {
-                    count(&mut holding[i].0, &r);
-                }
-                for f in held {
-                    *taken[i]
-                        .fields
-                        .entry((name.clone(), (*f).clone()))
-                        .or_default() += 1;
-                }
-                if shared {
-                    count(&mut holding[i].1, &r);
-                }
-            }
-            if !shared {
-                match taken[first].retired.last_mut() {
-                    Some(t) if t.ty == r.ty => t.retired += 1,
-                    _ => taken[first].retired.push(TypeRetired {
-                        ty: r.ty.clone(),
-                        retired: 1,
-                    }),
-                }
-                retire.push(r);
-            }
+            let key = (r.ty.clone(), r.key.clone());
+            records.insert(
+                key,
+                GatheredRecord {
+                    record: r,
+                    held,
+                    by,
+                    first,
+                    shared,
+                },
+            );
         }
-        for (t, (holding, shared)) in taken.iter_mut().zip(holding) {
-            t.types.extend(Some(holding).filter(|h| h.records > 0));
-            t.co_owned.extend(Some(shared).filter(|s| s.records > 0));
+    }
+    let mut taken: Vec<Taken> = (0..set.len()).map(|_| Taken::default()).collect();
+    for ((ty, key), g) in &records {
+        for (i, t) in taken.iter_mut().enumerate() {
+            t.add(i, ty, key, g);
         }
     }
     // From the log: the outputs sealed under each source's key, and its
@@ -176,62 +245,148 @@ fn found(
     // each by the names it bears now. A type that no longer resolves says
     // nothing of what was personal, so its plaintext counts whole.
     let renames = lake.renames(Some(view))?;
+    let mut seen = BTreeSet::new();
     each_of(lake, view, set, |i, e| {
-        let (source, taken) = (&set[i], &mut taken[i]);
-        let sealed = e.sealed.as_ref();
-        taken.known |= e.source.as_ref() == Some(source);
+        let source = &set[i];
+        if let Some(earlier) = digest
+            && selected(earlier, source, e)
+        {
+            seen.insert(e.position);
+        }
+        taken[i].known |= e.source.as_ref() == Some(source);
         match &e.body {
             EventBody::RecordIngested { ty, patch, .. } if e.source.as_ref() == Some(source) => {
-                let sealed: &[FieldName] = sealed.map_or(&[], |s| &s.fields);
-                let plain = patch
-                    .iter()
-                    .filter(|(f, v)| !v.is_null() && !sealed.contains(f));
-                for (f, _) in plain {
+                let sealed: &[FieldName] = e.sealed.as_ref().map_or(&[], |s| &s.fields);
+                for (f, v) in patch {
+                    if v.is_null() || sealed.contains(f) {
+                        continue;
+                    }
                     let (ty, f) = named_now(&renames, e.position, ty, f);
                     let erasable = match ontology.ty(&ty) {
                         Ok(decl) => decl.fields.iter().any(|d| d.name == f && d.erasable),
                         Err(_) => true,
                     };
-                    taken.plaintext += u64::from(erasable);
+                    taken[i].plaintext += u64::from(erasable);
                 }
             }
             EventBody::OutputRecorded {
                 output: Some(_), ..
-            } if sealed.and_then(|s| s.source.as_ref()) == Some(source) => taken.outputs += 1,
+            } if e.sealed.as_ref().and_then(|s| s.source.as_ref()) == Some(source) => {
+                taken[i].outputs += 1;
+            }
             _ => {}
         }
     })?;
+    Ok(Gathered {
+        records,
+        taken,
+        seen,
+    })
+}
+
+/// The erasable fields of `r` each source of `set` holds a value of.
+fn held_by(decl: &TypeDecl, r: &StoredRecord, set: &[SourceId]) -> Vec<(usize, Vec<FieldName>)> {
+    let erasable: Vec<&FieldName> = decl
+        .fields
+        .iter()
+        .filter(|f| f.erasable)
+        .map(|f| &f.name)
+        .collect();
+    let mut held = Vec::new();
+    for (i, source) in set.iter().enumerate() {
+        let fields: Vec<FieldName> = (erasable.iter())
+            .filter(|f| {
+                r.fields.contains_key(**f)
+                    && r.meta.get(**f).is_some_and(|m| {
+                        m.origin == Origin::Source && m.source.as_ref() == Some(source)
+                    })
+            })
+            .map(|f| (*f).clone())
+            .collect();
+        if !fields.is_empty() {
+            held.push((i, fields));
+        }
+    }
+    held
+}
+
+/// The erasable fields of every type in `ontology`, by type.
+fn erasable_fields(ontology: &Ontology) -> BTreeMap<TypeName, BTreeSet<FieldName>> {
+    (ontology.types.iter())
+        .map(|(name, entry)| {
+            let fields = (entry.decl.fields.iter())
+                .filter(|f| f.erasable)
+                .map(|f| f.name.clone())
+                .collect();
+            (name.clone(), fields)
+        })
+        .collect()
+}
+
+/// One source's report from what was gathered of it.
+fn report_of(
+    lake: &Lake,
+    view: &dyn ProjectionView,
+    ontology: &Ontology,
+    source: &SourceId,
+    t: &Taken,
+) -> Result<ForgetReport> {
+    let types: Vec<ForgetRecords> = (t.types.iter())
+        .filter(|(_, keys)| !keys.is_empty())
+        .map(|(ty, keys)| ForgetRecords {
+            ty: ty.clone(),
+            records: keys.len() as u64,
+            first: keys.iter().take(NAMED).cloned().collect(),
+        })
+        .collect();
+    let fields: Vec<ForgetField> = (t.fields.iter())
+        .filter(|(_, n)| **n > 0)
+        .map(|((ty, field), values)| ForgetField {
+            ty: ty.clone(),
+            field: field.clone(),
+            values: *values,
+        })
+        .collect();
+    let co_owned: Vec<ForgetRecords> = (t.co_owned.iter())
+        .filter(|(_, keys)| !keys.is_empty())
+        .map(|(ty, keys)| ForgetRecords {
+            ty: ty.clone(),
+            records: keys.len() as u64,
+            first: keys.iter().take(NAMED).cloned().collect(),
+        })
+        .collect();
+    let retired: Vec<TypeRetired> = (t.retired.iter())
+        .filter(|(_, keys)| !keys.is_empty())
+        .map(|(ty, keys)| TypeRetired {
+            ty: ty.clone(),
+            retired: keys.len() as u32,
+        })
+        .collect();
+    let (recomputed, views) = recomputed(ontology, &types);
+    // Its open quarantined records, every one of which the act closes
+    // (085).
+    let (_, quarantined) = quarantined(view, source)?;
     let events = view.position().map_or(0, |p| p.0);
-    let reports = set.iter().zip(taken).map(|(source, t)| {
-        let (recomputed, views) = recomputed(ontology, &t.types);
-        // Its open quarantined records, every one of which the act closes
-        // (085).
-        let (_, quarantined) = quarantined(view, source)?;
-        let report = ForgetReport {
-            source: source.clone(),
-            types: t.types,
-            fields: (t.fields.into_iter())
-                .map(|((ty, field), values)| ForgetField { ty, field, values })
-                .collect(),
-            outputs: t.outputs,
-            retired: t.retired,
-            co_owned: t.co_owned,
-            recomputed,
-            views,
-            plaintext: t.plaintext,
-            events,
-            expected_ms: lake.expected_ms(events),
-            reclaim_untimed: lake.untimed(),
-            position: view.position().unwrap_or(Position::GENESIS),
-            reclaimed: None,
-            reclaim_owed: lake.reclaim_owed(),
-            way: ForgetWay::default(),
-            report_id: String::new(),
-            quarantined,
-        };
-        Ok((report, t.known))
-    });
-    Ok((reports.collect::<Result<_>>()?, retire))
+    Ok(ForgetReport {
+        source: source.clone(),
+        types,
+        fields,
+        outputs: t.outputs,
+        retired,
+        co_owned,
+        recomputed,
+        views,
+        plaintext: t.plaintext,
+        events,
+        expected_ms: lake.expected_ms(events),
+        reclaim_untimed: lake.untimed(),
+        position: view.position().unwrap_or(Position::GENESIS),
+        reclaimed: None,
+        reclaim_owed: lake.reclaim_owed(),
+        way: ForgetWay::default(),
+        report_id: String::new(),
+        quarantined,
+    })
 }
 
 /// The closes of `source`'s open quarantined records, every one, and
@@ -442,20 +597,143 @@ fn renamed(r: &Renamed, ty: TypeName) -> TypeName {
     }
 }
 
-/// The id of the preflight of forgetting the sources of `set`, read at
-/// `head`; of a set of one, the id of forgetting that source.
-fn id(set: &[SourceId], head: Option<Position>) -> String {
-    let head = head.map_or(0, |p| p.0);
-    let of = match set {
-        [source] => serde_json::json!({"forget": source, "head": head}),
-        set => serde_json::json!({"forget": set, "head": head}),
+/// An act of forgetting the log holds, as the `source_forgotten` events
+/// until its `act_whole` name it: from its first, every source it forgot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Act {
+    /// Its first `source_forgotten`, which its `act_whole` names.
+    pub at: Position,
+    pub sources: Vec<SourceId>,
+    /// Whether its `act_whole` is in the log.
+    pub whole: bool,
+}
+
+/// The acts of forgetting the log holds, in order, each with the sources
+/// it forgot, grouped by adjacency: its `source_forgotten` events lie
+/// between the previous act's `act_whole` and its own. That holds while a
+/// job runs its turns with no other act between them, and not once the
+/// act is left owed between its turns — by a crash, or by a turn that
+/// failed — and another act begins and ends before it is taken up again:
+/// it then appends past that act, and the two read as one, the colliding
+/// act's source in it and its own `act_whole` naming no act.
+pub(crate) fn acts(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Act>> {
+    let Some(head) = view.position() else {
+        return Ok(Vec::new());
     };
+    let filter = lakelands_api::seam::FeedFilter {
+        kinds: vec!["source_forgotten".into(), "act_whole".into()],
+        ..Default::default()
+    };
+    let mut at = BTreeSet::new();
+    let mut from = Position::GENESIS;
+    loop {
+        let m = view.matching(&filter, from, head, MATCHED)?;
+        at.extend(m.positions);
+        match m.through {
+            Some(t) if t < head => from = t.next(),
+            Some(_) => break,
+            // The index decides nothing, as while a rebuild refolds: read
+            // the log.
+            None => {
+                let mut found = Vec::new();
+                for page in lake.pages(Position::GENESIS) {
+                    for e in page? {
+                        if e.position > head {
+                            return Ok(grouped(found));
+                        }
+                        if matches!(
+                            e.body,
+                            EventBody::SourceForgotten { .. } | EventBody::ActWhole { .. }
+                        ) {
+                            found.push(e);
+                        }
+                    }
+                }
+                return Ok(grouped(found));
+            }
+        }
+    }
+    Ok(grouped(lake.read_these(&Vec::from_iter(at))?))
+}
+
+// INTERIM: lakelands#1725 carries an act that names itself, so that a
+// resumed act's events are not read together with a colliding act's.
+fn grouped(events: Vec<Event>) -> Vec<Act> {
+    let mut acts: Vec<Act> = Vec::new();
+    for e in events {
+        match &e.body {
+            EventBody::SourceForgotten { source, .. } => match acts.last_mut() {
+                Some(act) if !act.whole => act.sources.push(source.clone()),
+                _ => acts.push(Act {
+                    at: e.position,
+                    sources: vec![source.clone()],
+                    whole: false,
+                }),
+            },
+            EventBody::ActWhole { act } => {
+                if let Some(open) = acts.last_mut().filter(|a| !a.whole && a.at == *act) {
+                    open.whole = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    acts
+}
+
+/// Whether `e` is an event of `source` that no act of `earlier` selects:
+/// one a report's digest is over.
+fn selected(earlier: &[Removal], source: &SourceId, e: &Event) -> bool {
+    indexed(e).as_ref() == Some(source) && !earlier.iter().any(|r| r.selects(e))
+}
+
+/// The events of the sources of `set` at `view`'s position that no act of
+/// `earlier` selects: what a report's digest is over.
+fn selection_events(
+    lake: &Lake,
+    view: &dyn ProjectionView,
+    set: &[SourceId],
+    earlier: &[Removal],
+) -> Result<BTreeSet<Position>> {
+    let mut seen = BTreeSet::new();
+    each_of(lake, view, set, |i, e| {
+        if selected(earlier, &set[i], e) {
+            seen.insert(e.position);
+        }
+    })?;
+    Ok(seen)
+}
+
+/// The digest of a report over the sources of `set`, the position it was
+/// read at, and the events of theirs it selected there that no earlier
+/// act selects.
+fn digest_of(set: &[SourceId], through: Position, seen: &BTreeSet<Position>) -> String {
+    let events: Vec<u64> = seen.iter().map(|p| p.0).collect();
+    let of = serde_json::json!({"forget": set, "through": through.0, "events": events});
     lakelands_core::canonical::sha256_hex(&of)
+}
+
+/// The id of a report: the position it was read at, then the digest of
+/// what it selected there (099).
+fn token(set: &[SourceId], through: Position, seen: &BTreeSet<Position>) -> String {
+    format!("{}-{}", through.0, digest_of(set, through, seen))
+}
+
+/// The window a `report_id` names; a string that is not one is a report of
+/// no forgetting this lake reads.
+fn window_of(id: &str) -> Result<Window> {
+    let stale = || Error::invalid(Case::ForgetReportStale);
+    let (through, digest) = id.split_once('-').ok_or_else(stale)?;
+    let through: u64 = through.parse().map_err(|_| stale())?;
+    Ok(Window::Report {
+        through: Position(through),
+        digest: digest.to_owned(),
+    })
 }
 
 /// The sources `sources` names, in id order: refused when it names none,
 /// or one twice.
-fn set(sources: &[SourceId]) -> Result<Vec<SourceId>> {
+pub(crate) fn set(sources: &[SourceId]) -> Result<Vec<SourceId>> {
     let mut set = sources.to_vec();
     set.sort();
     if let Some(twice) = set.windows(2).find(|w| w[0] == w[1]) {
@@ -505,7 +783,8 @@ fn settle(set: &mut ForgetSetReport) {
     }
 }
 
-fn alone(set: ForgetSetReport) -> ForgetReport {
+pub(crate) fn alone(mut set: ForgetSetReport) -> ForgetReport {
+    settle(&mut set);
     let mut report = (set.sources.into_iter().next()).expect("a set of one has one report");
     report.reclaimed = set.reclaimed;
     report.report_id = set.report_id;
@@ -519,14 +798,14 @@ fn way(lake: &Lake, view: &dyn ProjectionView, set: &[SourceId]) -> Result<Forge
     Ok(plan.way(lake, view.position().map_or(0, |p| p.0)))
 }
 
-/// What [`run`] would do, appending nothing, under the id the act may repeat.
+/// What the act would do, appending nothing, under the id it may repeat.
 pub fn preflight(lake: &Lake, source: &SourceId) -> Result<ForgetReport> {
     preflight_of(lake, std::slice::from_ref(source), false).map(alone)
 }
 
-/// What [`run_set`] would do, appending nothing, under the id the act may
-/// repeat: refused as the act is, for an empty set, a source named twice
-/// or one the log holds no event of.
+/// What the act over a set would do, appending nothing, under the id it
+/// may repeat: refused as the act is, for an empty set, a source named
+/// twice or one the log holds no event of.
 pub fn preflight_set(lake: &Lake, sources: &[SourceId]) -> Result<ForgetSetReport> {
     preflight_of(lake, &set(sources)?, true)
 }
@@ -535,128 +814,816 @@ fn preflight_of(lake: &Lake, set: &[SourceId], known: bool) -> Result<ForgetSetR
     let began = std::time::Instant::now();
     let view = lake.engine.view(None)?;
     let ontology = Ontology::at(view.as_ref())?;
-    let (found, _) = found(lake, view.as_ref(), &ontology, set)?;
-    let reports = refuse_unknown(found, view.as_ref(), known)?;
+    let earlier = crate::remove::acts(lake, view.as_ref())?;
+    let g = gather(lake, view.as_ref(), &ontology, set, Some(&earlier))?;
+    let reports = refuse_unknown(g.taken, set, view.as_ref(), &ontology, lake, known)?;
     let way = way(lake, view.as_ref(), set)?;
     let mut report = of_set(reports, view.as_ref(), lake, way);
-    report.report_id = id(set, lake.report_head(view.position())?);
+    let through = lake
+        .report_head(view.position())?
+        .unwrap_or(Position::GENESIS);
+    report.report_id = token(set, through, &g.seen);
     report.expected_ms = (report.expected_ms).saturating_add(crate::lake::elapsed_ms(began));
     settle(&mut report);
     Ok(report)
 }
 
-/// Each source's report, refused naming the first the log holds no event
-/// of, and did not forget, where `known` asks for one.
+/// Each source's report, refused naming the first not in the log's
+/// forgotten list that it holds no event of, where `known` asks for one.
 fn refuse_unknown(
-    found: Known,
+    taken: Vec<Taken>,
+    set: &[SourceId],
     view: &dyn ProjectionView,
+    ontology: &Ontology,
+    lake: &Lake,
     known: bool,
 ) -> Result<Vec<ForgetReport>> {
-    if known && found.iter().any(|(_, seen)| !seen) {
-        let done = forgotten_list(view, &Staged::default())?;
-        let unknown = |(r, seen): &&(ForgetReport, bool)| !seen && !done.contains_key(&r.source);
-        if let Some((r, _)) = found.iter().find(unknown) {
-            let source = r.source.clone();
-            return Err(Error::invalid(Case::ForgetSourceUnknown { source }));
+    let done = forgotten_list(view, &Staged::default())?;
+    let unknown = (set.iter().enumerate())
+        .find(|(i, source)| known && !taken[*i].known && !done.contains_key(*source));
+    if let Some((_, source)) = unknown {
+        let source = source.clone();
+        return Err(Error::invalid(Case::ForgetSourceUnknown { source }));
+    }
+    (set.iter().zip(&taken))
+        .map(|(source, t)| report_of(lake, view, ontology, source, t))
+        .collect()
+}
+
+/// What a forget answers its caller: the report of the act over its set.
+pub(crate) type Reported = Result<ForgetSetReport>;
+
+/// What a turn leaves for the restate: nothing to append, another part,
+/// or an `act_whole` whose restate and reclaim run with the view let go.
+enum Next {
+    Nothing,
+    More,
+    Whole,
+}
+
+/// How a report names the selection it read.
+enum Window {
+    /// No report: everything the set selects.
+    Whole,
+    /// A report read at `through`, whose digest is of what it selected
+    /// there.
+    Report { through: Position, digest: String },
+    /// An act the log began, taken up again.
+    Act,
+}
+
+/// One forgetting on the road: the act over `set`, in parts of at most
+/// `part_events` (099).
+pub(crate) struct Forget {
+    set: Vec<SourceId>,
+    /// Whether a source the log holds no event of is refused.
+    known: bool,
+    report_id: Option<String>,
+    window: Window,
+    /// The sources whose `source_forgotten` the act still owes.
+    pending: Vec<SourceId>,
+    /// The ontology at the walk, whole: the first turn gathers again
+    /// whenever the writer's differs, so that what is erasable, what a
+    /// field's first `initial` makes co-owned, and what a record recomputes
+    /// are the act's judgement and not the walk's (058).
+    shape: Option<Ontology>,
+    /// The erasable fields of the ontology at the walk, by type, for the
+    /// tail's plaintext count.
+    erasable: BTreeMap<TypeName, BTreeSet<FieldName>>,
+    /// The renames at the walk, for the tail's plaintext count.
+    renames: Vec<Renamed>,
+    /// The records the set brought at the walk, with what each contributes.
+    records: BTreeMap<(TypeName, RecordKey), GatheredRecord>,
+    /// The report's counts per source of the set.
+    taken: Vec<Taken>,
+    /// The records still to retire, in type then key order.
+    retire: BTreeMap<(TypeName, RecordKey), StoredRecord>,
+    /// The closes the act owes, in the order the walk found them.
+    closes: VecDeque<EventBody>,
+    /// The keys the tail moved past the walk, read again under the writer.
+    moved: BTreeSet<(TypeName, RecordKey)>,
+    /// The acts of removal the walk knew.
+    walked: BTreeSet<Position>,
+    /// The position of the act's first event; `None` until it is in the log.
+    act: Option<Position>,
+    /// Whether the act's first turn ran.
+    first: bool,
+    /// How the act would restate the projection.
+    way: ForgetWay,
+    report: Option<ForgetSetReport>,
+    /// The last position the act wrote.
+    position: Position,
+    answer: Option<tokio::sync::oneshot::Sender<Reported>>,
+}
+
+/// The forgettings the log leaves owed: every act whose `act_whole` is not
+/// in the log, taken up again by the next writer's open.
+pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
+    let mut owing: Vec<Box<dyn Job>> = Vec::new();
+    for act in acts(lake, view)? {
+        if act.whole {
+            continue;
+        }
+        owing.push(Box::new(Forget {
+            set: act.sources,
+            known: false,
+            report_id: None,
+            window: Window::Act,
+            pending: Vec::new(),
+            shape: None,
+            erasable: BTreeMap::new(),
+            renames: Vec::new(),
+            records: BTreeMap::new(),
+            taken: Vec::new(),
+            retire: BTreeMap::new(),
+            closes: VecDeque::new(),
+            moved: BTreeSet::new(),
+            walked: BTreeSet::new(),
+            act: Some(act.at),
+            first: false,
+            way: ForgetWay::default(),
+            report: None,
+            position: act.at,
+            answer: None,
+        }));
+    }
+    Ok(owing)
+}
+
+impl Job for Forget {
+    /// What of the tail reaches the act: its sources' writes, and every
+    /// write about a record one of them brought, which another hand's
+    /// write on one of them is.
+    fn reach(&self) -> Reach {
+        let types: Vec<TypeName> = (self.records.keys()).map(|(t, _)| t.clone()).collect();
+        let keys = (self.records.keys()).map(|(_, k)| k.clone()).collect();
+        Reach {
+            sources: self.set.clone(),
+            types: types.into_iter().collect(),
+            keys,
         }
     }
-    Ok(found.into_iter().map(|(r, _)| r).collect())
+
+    /// The walk, off the writer: gather every record the set brought and
+    /// what the log says of its sources, take up an act the log already
+    /// began for one of them, and read a report's id at its position.
+    fn walk(&mut self, lake: &Lake, view: &dyn ProjectionView) -> Result<()> {
+        let head = view.position();
+        // An act the log already began for a source of the set is taken up
+        // again, whatever report the caller names, and its sources join
+        // the set: a repeat appends no second event for them.
+        if self.act.is_none()
+            && let Some(open) = (acts(lake, view)?)
+                .into_iter()
+                .find(|a| !a.whole && a.sources.iter().any(|s| self.set.contains(s)))
+        {
+            self.window = Window::Act;
+            self.act = Some(open.at);
+            let mut set = open.sources;
+            set.extend(self.set.iter().cloned());
+            set.sort();
+            set.dedup();
+            self.set = set;
+        }
+        if self.act.is_none()
+            && let Some(id) = &self.report_id
+        {
+            let window = window_of(id)?;
+            if let Window::Report { through, digest } = &window {
+                if *through > head.unwrap_or(Position::GENESIS) {
+                    return Err(Error::invalid(Case::ForgetReportStale));
+                }
+                let past = lake.engine.view(Some(*through))?;
+                // A removal act written after the report selects what it
+                // counted, wherever it came: what is left moves (099).
+                let earlier = crate::remove::acts(lake, view)?;
+                let seen = selection_events(lake, past.as_ref(), &self.set, &earlier)?;
+                if digest_of(&self.set, *through, &seen) != *digest {
+                    return Err(Error::invalid(Case::ForgetReportStale));
+                }
+                self.window = window;
+            }
+        }
+        self.rewalk(lake, view)?;
+        // A source of the set the log holds no event of, not forgotten
+        // already, is refused rather than forgotten.
+        if self.known
+            && let Some((_, source)) = (self.set.iter().enumerate())
+                .find(|(i, s)| self.pending.contains(*s) && !self.taken[*i].known)
+        {
+            let source = source.clone();
+            return Err(Error::invalid(Case::ForgetSourceUnknown { source }));
+        }
+        Ok(())
+    }
+
+    /// The tail past the walk's view: what it says of the sources without
+    /// reading a record, and the keys it moved, which the first turn reads
+    /// again under the writer.
+    fn fold(&mut self, tail: &[Event]) -> Result<()> {
+        for e in tail {
+            for about in lakelands_core::feed::about(&e.body) {
+                if let (Some(ty), Some(key)) = (about.ty, about.key) {
+                    self.moved.insert((ty, key));
+                }
+            }
+            let Some(source) = indexed(e).filter(|s| self.set.contains(s)) else {
+                continue;
+            };
+            let i = self
+                .set
+                .iter()
+                .position(|s| s == &source)
+                .expect("the source is of the set");
+            let sealed = e.sealed.as_ref();
+            self.taken[i].known |= e.source.as_ref() == Some(&source);
+            match &e.body {
+                EventBody::RecordIngested { ty, patch, .. }
+                    if e.source.as_ref() == Some(&source) =>
+                {
+                    let sealed: &[FieldName] = sealed.map_or(&[], |s| &s.fields);
+                    for (f, v) in patch {
+                        if v.is_null() || sealed.contains(f) {
+                            continue;
+                        }
+                        let (ty, f) = named_now(&self.renames, e.position, ty, f);
+                        let erasable = self
+                            .erasable
+                            .get(&ty)
+                            .is_none_or(|fields| fields.contains(&f));
+                        self.taken[i].plaintext += u64::from(erasable);
+                    }
+                }
+                EventBody::OutputRecorded {
+                    output: Some(_), ..
+                } if sealed.and_then(|s| s.source.as_ref()) == Some(&source) => {
+                    self.taken[i].outputs += 1;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
+        self.one_turn(t, w)
+    }
+
+    fn end(&mut self, ended: Result<()>) {
+        let Some(answer) = self.answer.take() else {
+            return;
+        };
+        let answered = ended.map(|()| self.report.take().expect("a whole forget has its report"));
+        let _ = answer.send(answered);
+    }
 }
 
-/// Forget `source`, as the module says; with a preflight's `report_id`,
-/// only if that report is of this source and the lake has not moved since.
-pub fn run(lake: &Turn<'_>, source: &SourceId, report_id: Option<&str>) -> Result<ForgetReport> {
-    run_of(lake, std::slice::from_ref(source), report_id, false).map(alone)
-}
+impl Forget {
+    /// Gather the set at `view`, and hold the report it makes.
+    fn rewalk(&mut self, lake: &Lake, view: &dyn ProjectionView) -> Result<()> {
+        let ontology = Ontology::at(view)?;
+        let list = forgotten_list(view, &Staged::default())?;
+        self.pending = (self.set.iter())
+            .filter(|s| !list.contains_key(*s))
+            .cloned()
+            .collect();
+        let g = gather(lake, view, &ontology, &self.set, None)?;
+        self.records = g.records;
+        self.taken = g.taken;
+        self.retire = (self.records.iter())
+            .filter(|(_, r)| !r.shared)
+            .map(|(k, r)| (k.clone(), r.record.clone()))
+            .collect();
+        self.erasable = erasable_fields(&ontology);
+        self.renames = lake.renames(Some(view))?;
+        self.walked = (crate::remove::removed_list(view, &Staged::default())?)
+            .into_keys()
+            .collect();
+        self.way = way(lake, view, &self.set)?;
+        self.report = Some(self.report_again(lake, view, &ontology)?);
+        self.shape = Some(ontology);
+        Ok(())
+    }
 
-/// Forget the sources `sources` names in one act, as the module says of
-/// one: one append of a `source_forgotten` for each with the retirements
-/// of the set, one restatement and one reclaim, under one hold of the writer.
-/// Refused whole, with nothing appended, for an empty set, a source named
-/// twice, one the log holds no event of, one whose values the log holds
-/// in plaintext, or a report of another set or head.
-pub fn run_set(
-    lake: &Turn<'_>,
-    sources: &[SourceId],
-    report_id: Option<&str>,
-) -> Result<ForgetSetReport> {
-    run_of(lake, &set(sources)?, report_id, true)
-}
+    /// The report as the gathering and the tail leave it.
+    fn report_again(
+        &self,
+        lake: &Lake,
+        view: &dyn ProjectionView,
+        ontology: &Ontology,
+    ) -> Result<ForgetSetReport> {
+        let reports: Vec<ForgetReport> = (self.set.iter().zip(&self.taken))
+            .map(|(source, t)| report_of(lake, view, ontology, source, t))
+            .collect::<Result<_>>()?;
+        Ok(of_set(reports, view, lake, self.way.clone()))
+    }
 
-fn run_of(
-    lake: &Turn<'_>,
-    set: &[SourceId],
-    report_id: Option<&str>,
-    known: bool,
-) -> Result<ForgetSetReport> {
-    let system = lake.system("lakelands");
-    let call = Call {
-        lake,
-        who: &system,
-        context: WriteContext::default(),
-        followed: None,
-        shown: None,
-    };
-    let mut w = lake.for_write()?;
-    let view = lake.engine.view(None)?;
-    // A source the log forgot already: the act is in the log, and its
-    // repeat finishes what a failure left owed, whatever report it names,
-    // or answers that it is done. Nothing is appended again for it.
-    let done = forgotten_list(view.as_ref(), &Staged::default())?;
-    let owed: Vec<&SourceId> = set.iter().filter(|s| !done.contains_key(*s)).collect();
-    if owed.is_empty() {
-        drop(view);
-        let reclaimed = lake.finish_forgetting(&mut w)?;
+    /// Take up an act of the set the writer's catch-up left that the walk
+    /// did not see: its sources join the set, and it is gathered again.
+    fn adopt(&mut self, lake: &Lake, view: &dyn ProjectionView, at: Position) -> Result<()> {
+        let Some(open) = (acts(lake, view)?).into_iter().find(|a| a.at == at) else {
+            return Ok(());
+        };
+        let mut set = open.sources;
+        set.extend(self.set.iter().cloned());
+        set.sort();
+        set.dedup();
+        self.set = set;
+        self.window = Window::Act;
+        self.act = Some(at);
+        self.first = false;
+        self.rewalk(lake, view)
+    }
+
+    fn one_turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
+        let lake: &Lake = t;
         let view = lake.engine.view(None)?;
-        let (found, _) = found(lake, view.as_ref(), &w.ontology, set)?;
-        let reports = found.into_iter().map(|(r, _)| r).collect();
-        let way = lake.forget_way().unwrap_or_default();
-        let mut report = of_set(reports, view.as_ref(), lake, way);
+        let logged = acts(lake, view.as_ref())?;
+        // The writer's catch-up may have left the projection holding an act
+        // the walk off it did not see: take that act up before beginning
+        // another.
+        if self.act.is_none()
+            && let Some(at) = (logged.iter())
+                .find(|a| !a.whole && a.sources.iter().any(|s| self.set.contains(s)))
+                .map(|a| a.at)
+        {
+            self.adopt(lake, view.as_ref(), at)?;
+        }
+        if let Some(at) = self.act
+            && logged.iter().any(|a| a.at == at && a.whole)
+        {
+            // The appends ended in a turn this handle did not run: the
+            // restate and the reclaim are left, answered as owed through
+            // the head the act's appends reached (099).
+            let through = view.position().unwrap_or(Position::GENESIS);
+            drop(view);
+            let reclaimed = lake.finish_act(w, through)?;
+            if self.answer.is_some() {
+                let view = lake.engine.view(None)?;
+                let ontology = Ontology::at(view.as_ref())?;
+                if self.report.is_none() {
+                    self.report = Some(self.report_again(lake, view.as_ref(), &ontology)?);
+                }
+                drop(view);
+                self.finish_report(lake, reclaimed);
+            }
+            return Ok(Turned::Whole);
+        }
+        let next = match self.act {
+            None => self.begin(lake, w, view.as_ref())?,
+            Some(_) if !self.first => self.begin(lake, w, view.as_ref())?,
+            Some(_) => self.part_turn(lake, w, view.as_ref())?,
+        };
+        // The restate and the reclaim rebuild the projection: the view this
+        // turn held is let go first.
+        drop(view);
+        match next {
+            Next::More => Ok(Turned::More),
+            // Nothing was appended and no act of this call is in the log:
+            // the set's sources were forgotten already. `finish_act` would
+            // wrap what is still owed in an `ActUnfinished` at a position
+            // this call never wrote; `finish_forgetting` does the work and
+            // answers its failure as itself.
+            Next::Nothing => {
+                let reclaimed = lake.finish_forgetting(w)?;
+                self.finish_report(lake, reclaimed);
+                Ok(Turned::Whole)
+            }
+            Next::Whole => {
+                let reclaimed = lake.finish_act(w, self.position)?;
+                self.finish_report(lake, reclaimed);
+                Ok(Turned::Whole)
+            }
+        }
+    }
+
+    /// The act's first turn: the tail folded into the gathering, judged
+    /// again under the ontology and the names the log bears now, the
+    /// closes set, the keys the log already forgot destroyed, and the
+    /// sources not yet in the log forgotten — each event's keys destroyed
+    /// as it lands, before any part runs.
+    fn begin(&mut self, lake: &Lake, w: &mut Writer, view: &dyn ProjectionView) -> Result<Next> {
+        let ontology = Ontology::at(view)?;
+        let renames = lake.renames(Some(view))?;
+        // A removal act of the set written since the walk takes what the
+        // report's id named when it was read: the id is judged again, and
+        // the act under one it no longer names is refused (099).
+        self.window_again(lake, view)?;
+        // A declaration or a migration since the walk changes the
+        // ontology the set is gathered under — what is erasable, what is
+        // co-owned, what a record recomputes — and the names the log
+        // bears. Then the walk's gathering is not the act's judgement: the
+        // set is gathered again here, under the writer, at the ontology
+        // now (058).
+        if self.shape.as_ref() != Some(&ontology) || renames != self.renames {
+            self.rewalk(lake, view)?;
+            self.moved.clear();
+        }
+        let at = self.act.unwrap_or_else(|| writes::position_after(w, 0));
+        let list = forgotten_list(view, &Staged::default())?;
+        self.pending = (self.set.iter())
+            .filter(|s| !list.contains_key(*s))
+            .cloned()
+            .collect();
+        // A source whose `source_forgotten` is in the log, from this act or
+        // a crash inside it, seals nothing from now: its keys go first.
+        for source in self.set.iter().filter(|s| list.contains_key(*s)) {
+            lake.keys.destroy(source)?;
+        }
+        self.see_the_tail(lake, view, &ontology)?;
+        self.refuse_plaintext()?;
+        self.closes = self.all_closes(view, &list)?;
+        self.report = Some(self.report_again(lake, view, &ontology)?);
+        self.first = true;
+        if self.act.is_none() && self.pending.is_empty() {
+            return Ok(Next::Nothing);
+        }
+        if self.pending.is_empty() {
+            return self.come_parts(lake, w, view);
+        }
+        self.act = Some(at);
+        self.forget_more(lake, w, view)
+    }
+
+    /// The report's id judged again under the writer: a removal act of the
+    /// set written since the walk takes what the id named when it was read,
+    /// so the id over what is left moves, and the act under it is refused
+    /// (099).
+    fn window_again(&self, lake: &Lake, view: &dyn ProjectionView) -> Result<()> {
+        let Window::Report { through, digest } = &self.window else {
+            return Ok(());
+        };
+        let all = crate::remove::acts(lake, view)?;
+        if all.iter().all(|r| self.walked.contains(&r.at)) {
+            return Ok(());
+        }
+        let past = lake.engine.view(Some(*through))?;
+        let seen = selection_events(lake, past.as_ref(), &self.set, &all)?;
+        if digest_of(&self.set, *through, &seen) != *digest {
+            return Err(Error::invalid(Case::ForgetReportStale));
+        }
+        Ok(())
+    }
+
+    /// A turn of the first phase: a `source_forgotten` for as many of the
+    /// sources not yet in the log as fit, each with its keys destroyed
+    /// after the append. With all of them in, the first part follows in
+    /// the same turn.
+    fn forget_more(
+        &mut self,
+        lake: &Lake,
+        w: &mut Writer,
+        view: &dyn ProjectionView,
+    ) -> Result<Next> {
+        let now = lake.clock(w);
+        let room = room(lake);
+        let take = room.min(self.pending.len());
+        let mut drafts = Vec::new();
+        let mut taking = Vec::with_capacity(take);
+        for source in &self.pending[..take] {
+            let keys = lake.keys.ids(source)?;
+            drafts.push(Draft::system(
+                now,
+                EventBody::SourceForgotten {
+                    source: source.clone(),
+                    keys,
+                },
+            ));
+            taking.push(source.clone());
+        }
+        lake.append(&mut *w, drafts)?;
+        self.pending.drain(..take);
+        // The keys go before any part runs, so nothing a write seals after
+        // this turn is sealed under one (099).
+        for source in &taking {
+            lake.keys.destroy(source)?;
+        }
+        self.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+        if !self.pending.is_empty() {
+            return Ok(Next::More);
+        }
+        self.come_parts(lake, w, view)
+    }
+
+    /// The closes and the retirements still owed, one part, and
+    /// `act_whole` where nothing is left.
+    fn come_parts(
+        &mut self,
+        lake: &Lake,
+        w: &mut Writer,
+        view: &dyn ProjectionView,
+    ) -> Result<Next> {
+        let now = lake.clock(w);
+        let room = room(lake);
+        let (part, whole) = self.fill(lake, (w, view), now, room, Vec::new())?;
+        lake.append(&mut *w, part)?;
+        self.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+        if let Some(report) = self.report.as_mut() {
+            report.position = report.position.max(self.position);
+        }
+        Ok(if whole { Next::Whole } else { Next::More })
+    }
+
+    /// A later turn: the tail the act's last append did not see is read and
+    /// judged under the writer as the first turn judges the walk's — a
+    /// write by a source whose `source_forgotten` is still owed is taken
+    /// in, retired with the rest and counted in the report, and a record it
+    /// left quarantined is closed `forgotten` with the act's closes, its
+    /// count beside theirs — then the `source_forgotten`s still owed, a
+    /// turn's room of them, and the part that follows in the same turn once
+    /// none is left. The report's other counts follow the tail; its
+    /// quarantined ones are the closes the act has read and made, held as
+    /// the parts append them, which the view holds none of once a part has
+    /// closed them.
+    fn part_turn(
+        &mut self,
+        lake: &Lake,
+        w: &mut Writer,
+        view: &dyn ProjectionView,
+    ) -> Result<Next> {
+        let ontology = Ontology::at(view)?;
+        let bound = lake.limits.part_tail.max(1);
+        let Some(tail) = road::read_tail(lake, view, &self.reach(), Some(self.position), bound)?
+        else {
+            return Err(Error::unavailable(Situation::TailOverran {
+                tries: 1,
+                bound,
+            }));
+        };
+        if !tail.is_empty() {
+            self.fold(&tail)?;
+            self.see_the_tail(lake, view, &ontology)?;
+            self.refuse_plaintext()?;
+            // A write between turns may have left a record of a source the
+            // act has not forgotten yet quarantined: its close is this
+            // act's, taken into the closes owed as a landed write is taken
+            // into the gathering (085).
+            let added = self.take_quarantined(view)?;
+            // The other counts follow the tail; the quarantined ones are
+            // the closes read before this turn and those just taken in,
+            // held as the parts append them.
+            let held = self.report.as_ref().map(|r| {
+                (r.sources.iter())
+                    .map(|source| source.quarantined.clone())
+                    .collect::<Vec<_>>()
+            });
+            self.report = Some(self.report_again(lake, view, &ontology)?);
+            self.hold_quarantined(held.unwrap_or_default(), added);
+        }
+        if !self.pending.is_empty() {
+            return self.forget_more(lake, w, view);
+        }
+        self.come_parts(lake, w, view)
+    }
+
+    /// The closes of the records a write between turns left quarantined
+    /// for a source the act has not forgotten yet, appended to the closes
+    /// owed once each, and their count per source and type. A close the
+    /// act already owes for the same record is not owed twice.
+    fn take_quarantined(
+        &mut self,
+        view: &dyn ProjectionView,
+    ) -> Result<BTreeMap<(SourceId, TypeName), u64>> {
+        let mut queued: BTreeSet<lakelands_api::quarantine::QuarantineId> = (self.closes.iter())
+            .filter_map(|body| match body {
+                EventBody::QuarantineClosed { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut added = BTreeMap::new();
+        for source in &self.set {
+            if !self.pending.contains(source) {
+                continue;
+            }
+            let (shut, _) = quarantined(view, source)?;
+            for close in shut {
+                let EventBody::QuarantineClosed { id, ty, .. } = &close else {
+                    unreachable!("a close is a `quarantine_closed`")
+                };
+                if !queued.insert(id.clone()) {
+                    continue;
+                }
+                *added.entry((source.clone(), ty.clone())).or_default() += 1;
+                self.closes.push_back(close);
+            }
+        }
+        Ok(added)
+    }
+
+    /// The report's quarantined counts as the act's closes leave them: the
+    /// ones read before, and those just taken in added to them, so a part
+    /// that closed a record before this turn is still counted in it.
+    fn hold_quarantined(
+        &mut self,
+        held: Vec<Vec<lakelands_api::quarantine::TypeQuarantined>>,
+        added: BTreeMap<(SourceId, TypeName), u64>,
+    ) {
+        let Some(report) = self.report.as_mut() else {
+            return;
+        };
+        for (i, source) in report.sources.iter_mut().enumerate() {
+            let mut counts: BTreeMap<TypeName, u64> = held
+                .get(i)
+                .map(|q| (q.iter()).map(|q| (q.ty.clone(), q.quarantined)).collect())
+                .unwrap_or_default();
+            for ((of, ty), n) in &added {
+                if *of == source.source {
+                    *counts.entry(ty.clone()).or_default() += n;
+                }
+            }
+            source.quarantined = (counts.into_iter())
+                .map(
+                    |(ty, quarantined)| lakelands_api::quarantine::TypeQuarantined {
+                        ty,
+                        quarantined,
+                    },
+                )
+                .collect();
+        }
+    }
+
+    /// One part of the act, by the rule a purge's and a removal's parts
+    /// share with it ([`crate::parts::part`]).
+    fn fill(
+        &mut self,
+        lake: &Lake,
+        (w, view): (&Writer, &dyn ProjectionView),
+        now: Timestamp,
+        room: usize,
+        drafts: Vec<Draft>,
+    ) -> Result<(Vec<Draft>, bool)> {
+        let act = self.act.expect("a part follows the act's beginning");
+        crate::parts::part(
+            lake,
+            (w, view),
+            now,
+            room,
+            drafts,
+            crate::parts::Part {
+                closes: &mut self.closes,
+                taken: &mut self.retire,
+                kind: ChangeKind::Forgotten,
+                act,
+            },
+        )
+    }
+
+    /// Read the keys the tail moved again, as they stand under the writer,
+    /// and take their contribution out of the gathering and back in as
+    /// they are now: one the source wrote since is taken in, one another
+    /// hand wrote drops out, and one made since is retired with the rest.
+    /// One a part retired already is left as the act judged it.
+    fn see_the_tail(
+        &mut self,
+        lake: &Lake,
+        view: &dyn ProjectionView,
+        ontology: &Ontology,
+    ) -> Result<()> {
+        let moved = std::mem::take(&mut self.moved);
+        for (ty, key) in moved {
+            let id = (ty.clone(), key.clone());
+            // A part retired this record already: its retirement is in the
+            // log and the report's count of it stands, whatever the tail
+            // holds at the key since — a record another hand made there is
+            // not the act's to retire. Only a record still owed, or a
+            // co-owned one no part takes, is judged again here.
+            if self.records.get(&id).is_some_and(|r| !r.shared) && !self.retire.contains_key(&id) {
+                continue;
+            }
+            if let Some(old) = self.records.remove(&id) {
+                for i in 0..self.set.len() {
+                    self.taken[i].sub(i, &ty, &key, &old);
+                }
+                self.retire.remove(&id);
+            }
+            let Some(r) = view.get(&ty, &key)?.filter(|r| !r.retired) else {
+                continue;
+            };
+            let Ok(decl) = ontology.ty(&ty) else { continue };
+            let Some(first) = (0..self.set.len()).find(|&i| brought_by(&r, &self.set[i])) else {
+                continue;
+            };
+            let held = held_by(decl, &r, &self.set);
+            let by: Vec<usize> = (0..self.set.len())
+                .filter(|&i| brought_by(&r, &self.set[i]))
+                .collect();
+            let shared = if co_owned(decl, &r, &self.set) {
+                true
+            } else {
+                let made = made_by(lake, std::slice::from_ref(&&r), &self.set)?;
+                !made.contains(&r.made)
+            };
+            let g = GatheredRecord {
+                record: r,
+                held,
+                by,
+                first: Some(first),
+                shared,
+            };
+            for i in 0..self.set.len() {
+                self.taken[i].add(i, &ty, &key, &g);
+            }
+            if !g.shared {
+                self.retire.insert(id.clone(), g.record.clone());
+            }
+            self.records.insert(id, g);
+        }
+        Ok(())
+    }
+
+    /// Refuse a source the act has not forgotten yet whose values the log
+    /// holds in plaintext.
+    fn refuse_plaintext(&self) -> Result<()> {
+        for (i, source) in self.set.iter().enumerate() {
+            let count = self.taken[i].plaintext;
+            if self.pending.contains(source) && count > 0 {
+                let source = source.clone();
+                return Err(Error::invalid(Case::ForgetPlaintext { source, count }));
+            }
+        }
+        Ok(())
+    }
+
+    /// The closes of every source the act forgets: those the list does not
+    /// call done, which its `source_forgotten` closes (085).
+    fn all_closes(
+        &self,
+        view: &dyn ProjectionView,
+        list: &BTreeMap<SourceId, String>,
+    ) -> Result<VecDeque<EventBody>> {
+        let mut closes = VecDeque::new();
+        for source in &self.set {
+            if list.get(source).is_some_and(|s| s == "done") {
+                continue;
+            }
+            let (shut, _) = quarantined(view, source)?;
+            closes.extend(shut);
+        }
+        Ok(closes)
+    }
+
+    fn finish_report(
+        &mut self,
+        lake: &Lake,
+        reclaimed: Option<lakelands_api::write::CompactReport>,
+    ) {
+        let Some(report) = self.report.as_mut() else {
+            return;
+        };
         report.reclaimed = reclaimed;
-        return Ok(report);
+        report.reclaim_owed = lake.reclaim_owed();
+        report.position = report.position.max(self.position);
+        report.way = lake.forget_way().unwrap_or(report.way.clone());
+        settle(report);
     }
-    if let Some(given) = report_id
-        && given != id(set, lake.report_head(view.position())?)
-    {
-        return Err(Error::invalid(Case::ForgetReportStale));
+}
+
+fn room(lake: &Lake) -> usize {
+    usize::try_from(lake.limits.part_events.max(1)).unwrap_or(usize::MAX)
+}
+
+/// Send a forgetting of `set` along the lake's road, answering `answer`
+/// where the caller waits: the store's door, which holds no writer lock
+/// while the act runs.
+pub(crate) fn start(
+    lake: &std::sync::Arc<Lake>,
+    set: Vec<SourceId>,
+    report_id: Option<String>,
+    known: bool,
+    answer: Option<tokio::sync::oneshot::Sender<Reported>>,
+) {
+    crate::road::send(lake, Box::new(act_job(set, report_id, known, answer)));
+}
+
+/// The act's job, as [`start`] builds it before it is sent; the road's
+/// tests build one to drive its walk and its first turn by hand, with
+/// another write between them.
+pub(crate) fn act_job(
+    set: Vec<SourceId>,
+    report_id: Option<String>,
+    known: bool,
+    answer: Option<tokio::sync::oneshot::Sender<Reported>>,
+) -> Forget {
+    Forget {
+        set,
+        known,
+        report_id,
+        window: Window::Whole,
+        pending: Vec::new(),
+        shape: None,
+        erasable: BTreeMap::new(),
+        renames: Vec::new(),
+        records: BTreeMap::new(),
+        taken: Vec::new(),
+        retire: BTreeMap::new(),
+        closes: VecDeque::new(),
+        moved: BTreeSet::new(),
+        walked: BTreeSet::new(),
+        act: None,
+        first: false,
+        way: ForgetWay::default(),
+        report: None,
+        position: Position::GENESIS,
+        answer,
     }
-    let (found, retire) = found(lake, view.as_ref(), &w.ontology, set)?;
-    let reports = refuse_unknown(found, view.as_ref(), known)?;
-    let owes = |r: &&ForgetReport| owed.contains(&&r.source);
-    if let Some(r) = reports.iter().filter(owes).find(|r| r.plaintext > 0) {
-        let (source, count) = (r.source.clone(), r.plaintext);
-        return Err(Error::invalid(Case::ForgetPlaintext { source, count }));
-    }
-    let now = lake.clock(&mut w);
-    let act = writes::position_after(&w, 0);
-    let mut drafts = Vec::new();
-    for source in owed {
-        let keys = lake.keys.ids(source)?;
-        let source = source.clone();
-        let (closes, _) = quarantined(view.as_ref(), &source)?;
-        let forgotten = EventBody::SourceForgotten { source, keys };
-        drafts.push(Draft::system(now, forgotten));
-        drafts.extend(closes.into_iter().map(|c| Draft::system(now, c)));
-    }
-    // The retirements land after the `source_forgotten`s, and so does what
-    // they cause.
-    let mut d = call.decide(&w, view.as_ref(), now, drafts.len());
-    d.retiring_as = lakelands_api::event::ChangeKind::Forgotten;
-    for before in retire {
-        let body = writes::retirement(&before.ty, &before.key, before.version);
-        drafts.extend(d.retiring(&before, Draft::system(now, body))?);
-    }
-    // Every act ends with its `act_whole` (099).
-    drafts.push(Draft::system(now, EventBody::ActWhole { act }));
-    let way = way(lake, view.as_ref(), set)?;
-    let mut report = of_set(reports, view.as_ref(), lake, way);
-    drop(view);
-    lake.append(&mut w, drafts)?;
-    let at = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
-    report.reclaimed = lake.finish_act(&mut w, at)?;
-    report.way = lake.forget_way().unwrap_or(report.way);
-    report.reclaim_owed = lake.reclaim_owed();
-    report.position = at;
-    settle(&mut report);
-    Ok(report)
 }

@@ -1016,6 +1016,86 @@ on the first pull's frame. Forget keeps its one-append path until lakelands#1700
   the write's own position, so neither the scheduler nor a projection mark behind the
   log can widen the count; fifty runs with every core busy did not.
 
+**R2, third pull, forget on the road (lakelands#1700).** `forget_source` and
+`forget_sources` run as acts on the frame, and no act is left on its one-append path.
+
+- **The act.** The walk gathers off the writer what the set's sources brought: the records,
+  which of them each source holds a value in, which it alone brought, and the events at the
+  report's `through`. The first turn opens a view under the writer, destroys the keys of any
+  source whose `source_forgotten` the log already holds (from a crash inside the act, or an
+  open between its parts), reads again the keys the tail moved, refuses `ForgetPlaintext` for
+  a source not yet in the log, and appends a `source_forgotten` for as many sources as fit,
+  destroying each source's key in the same turn, and then the first part where the room
+  allows it after them. Its report is read
+  again from the records it re-judged, so the door answers what the act did, not what the walk
+  saw. A forgotten source's writes are refused from its `source_forgotten` on, so nothing is
+  sealed under a destroyed key between the parts. The act judges under the ontology it finds
+  there: a declaration or a migration since the walk changes the ontology the set is gathered
+  under — what is erasable, what a field's first `initial` makes co-owned, what recomputes —
+  or the names the log bears, so the set is gathered again under the writer, and the walk's
+  gathering would be the walk's judgement and not the act's (058).
+- **Parts.** A later turn reads the tail past the act's last append first, as the first turn
+  read the walk's, so a write by a source whose `source_forgotten` is still owed is taken in,
+  retired with the rest and counted in the act's report, its own `source_forgotten` landing
+  after it. A retirement a part has already made stays counted when another hand makes its
+  key again between two turns: the log holds the retirement, and the record made since is
+  not the act's to retire. A record a write between turns leaves quarantined for a source
+  still owed is closed `forgotten` by the act, with the closes it read, and counted with
+  them: 085 makes the close the act's. It then appends the `source_forgotten`s still owed,
+  destroying their keys as they land, and, once none is left, one part of the closes and
+  retirements, at most `part_events`, each re-judged as the part takes it: a record another
+  hand wrote since is co-owned and not retired. The append that ends the act carries `act_whole`. The report's
+  quarantined counts are the closes the act has read and taken in, held as the parts append
+  them, since the view holds none of a record once a part has closed it.
+  The first turn appends two of those: the `source_forgotten`s as many as fit, and then the
+  first part where the room allows it after them, so it may hold the writer for two appends
+  of `part_events`.
+- **The restate and the reclaim follow the whole.** `finish_forgetting` destroys the keys of
+  an owed source and restates only an act whose `act_whole` is in the log; `reclaim` marks a
+  forgotten source `done` only where its act is whole. `forget::owed` joins `OWED`, so the
+  writer's open sends an unwhole forgetting again, and the settle job restates and reclaims
+  once it is whole.
+- **Its reactions are judged to the act's end.** The feed's `acted` is the act's last frame
+  event: the fold records an `act_whole` where it records a `values_removed` or a
+  `source_forgotten`, and `last_act` reads it. A reaction a retirement in an earlier part set
+  off — its cause inside the act, before its `act_whole` — is judged overruled once the whole
+  is in, not by the act's first append alone. Remove and purge move with it in the fold: their
+  `act_whole` sets `acted` too, so a reaction their parts set off follows. `last_act`, at an
+  open, reads the ends of the forgetting and removal acts the open knows.
+- **A write reads through an owed forgetting** as it does a removal: `restate::Viewed` refolds
+  the records a source with an owed act wrote through the erasure the act will leave, so a
+  verb's `requires`, its assignments and a function field's inputs judge on the record the
+  restate will leave.
+- **The report id** is a removal's: `<through>-<digest>`, the digest over the positions the
+  forgetting selects at `through` that no earlier removal act selects. A write elsewhere,
+  and a write of the source after `through`, reach neither and leave it good — the act takes
+  the source's write in. An earlier act of the source takes what the report selected there,
+  so the id over what is left moves, and the act under it is refused `ForgetReportStale`; a
+  removal act of the source written between the walk and the first turn is judged there,
+  under the writer, and the act refused where the id moved.
+- **Rows taken on every engine.** `FORGET_LEAVES_NO_WRITE_BEHIND` is new, and over a set
+  larger than one turn's room takes a write by a source the act has not forgotten yet,
+  between two of its turns, into the retirements and the report's count;
+  `ACT_ERASES_IN_ITS_FIRST_TURN`, `REPORT_NOT_STALE_BY_A_WRITE_ELSEWHERE`,
+  `ACTS_OF_ONE_SOURCE_OVERLAP` and `WRITE_READS_THROUGH_AN_OWED_ACT` gain the forgetting's
+  half, so each runs for both kinds of act. `ACT_WHOLE_FOLLOWS_ITS_PARTS_FIRED` is new: at
+  `part_events` 1 a retirement in the first part fires `in_rome`, and a poll of the feed from
+  0 names that firing overruled after the `act_whole` lands — in the act's own handle, and in
+  one opened again after it, which reads the end from the log. Beside them, four store tests in
+  `road/tests.rs`: a record a part retired stays counted when another hand makes its key
+  again between two turns; a quarantined record a part closed stays counted in the act's
+  report after a later turn judges a tail; a record a still-owed source leaves quarantined
+  between two turns is closed by the act and counted; and a tail past `part_tail` between
+  two turns ends the turn unavailable, appending nothing.
+- **Measured** on the shared machine of this step, in a debug run, not a quiet one:
+  twenty writes beside parts of one retirement each waited p50 7.8 ms and at most 12.7 ms on
+  the memory engine, p50 16.7 ms and at most 24.9 ms on SQLite — never more than the one part
+  in front of them; an act of 2 000 retirements in parts of 500 took 613 ms from its
+  `source_forgotten` to its `act_whole` on memory (153 ms a part) and 4.0 s on SQLite
+  (1 000 ms a part). The figures are the store's `a_write_waits_for_at_most_a_part_of_a_forget`,
+  which times the act from the log's own wall time, and runs on every engine; the `pg` leg
+  is CI's.
+
 **R3 (lakelands#1718).** A plan, a declaration's plan, and a migration's or a value
 type's report name the position they were read at, and a write after them stales them
 only when it reaches what they name.
@@ -1058,6 +1138,8 @@ only when it reaches what they name.
   read there.
 - R2's second pull built by lakelands#1691 with remove on the road and a write reading
   through an owed act; forget follows in lakelands#1700.
+- R2's third pull built by lakelands#1700 with forget on the road: its keys destroyed in the
+  first turn, its parts after, and its restate and reclaim once it is whole.
 - R3 built by lakelands#1718: a plan, a declaration's plan and a migration's or a value
   type's report name the position they were read at, and only a write that reaches what
   they name stales them.
