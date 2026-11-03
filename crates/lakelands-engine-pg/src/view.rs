@@ -28,9 +28,10 @@ use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, 
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::quarantine::{QuarantineFilter, QuarantineState, Quarantined};
 use lakelands_api::query::{Edge, Walk};
-use lakelands_api::read::{Direction, Order};
+use lakelands_api::read::{Direction, Order, ThinnedAct};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{FeedFilter, is_kept_name};
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines::{self, decode};
 use lakelands_core::feed::{self, Seek};
@@ -1659,6 +1660,41 @@ impl ProjectionView for PgView<'_> {
                 Ok((since, decode(&row.get::<_, String>(1), "an output")?))
             })
             .transpose()
+        })
+    }
+
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<ThinnedAct>> {
+        // Read at the head in every read, oldest first by the position
+        // each act began at.
+        self.read(Vec::new(), |r| {
+            let query = format!(
+                "SELECT ty, \"by\", \"before\", through, gone FROM {} \
+                 WHERE ty = $1 ORDER BY at, \"by\", \"before\"",
+                r.names.t("thinned_types")
+            );
+            let rows = r.db.query(&query, &[&ty.as_str()])?;
+            Ok(rows
+                .iter()
+                .map(|row| ThinnedAct {
+                    ty: TypeName::from(row.get::<_, String>(0).as_str()),
+                    by: FieldName::from(row.get::<_, String>(1).as_str()),
+                    before: Timestamp(row.get::<_, i64>(2)),
+                    through: Position(row.get::<_, i64>(3) as u64),
+                    gone: row.get::<_, i64>(4) as u64,
+                })
+                .collect())
+        })
+    }
+
+    fn thinned_at(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<Timestamp>> {
+        self.read(None, |r| {
+            let query = format!(
+                "SELECT \"before\" FROM {} WHERE ty = $1 AND key = $2",
+                r.names.t("thinned")
+            );
+            Ok(r.db
+                .query_opt(&query, &[&ty.as_str(), &key.as_str()])?
+                .map(|row| Timestamp(row.get::<_, i64>(0))))
         })
     }
 }

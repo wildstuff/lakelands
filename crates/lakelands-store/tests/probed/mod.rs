@@ -356,6 +356,16 @@ impl ProjectionView for ProbedView<'_> {
             None => self.inner.of_source(source, from, through, limit),
         }
     }
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        self.inner.thinned_acts(ty)
+    }
+    fn thinned_at(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
+        self.inner.thinned_at(ty, key)
+    }
 }
 
 impl LakeEngine for Probed {
@@ -617,6 +627,18 @@ impl ProjectionStore for Probed {
     }
     fn compact(&self) -> Result<Reclaimed> {
         self.inner.projection().compact()
+    }
+    fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
+        self.inner.projection().put_thinned_act(act, at)
+    }
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: lakelands_api::time::Timestamp,
+        at: Position,
+    ) -> Result<()> {
+        self.inner.projection().put_thinned(ty, key, before, at)
     }
 }
 

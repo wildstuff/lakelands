@@ -35,7 +35,7 @@ use crate::expr::Expr;
 use crate::id::{FieldName, LakeId, Position, RecordKey, RelationName, SourceId, TypeName};
 use crate::location::Location;
 use crate::query::{Edge, Walk};
-use crate::read::Order;
+use crate::read::{Order, ThinnedAct};
 use crate::record::{StoredRecord, Value};
 use crate::time::Timestamp;
 use crate::write::{Declaration, Proposal, ProposalFilter};
@@ -353,6 +353,26 @@ pub trait ProjectionStore: Send + Sync {
     /// refold drops a record's states before it puts them again
     /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()>;
+
+    /// Store a thinning act's row: its type, the field and horizon it
+    /// judged, the last position its parts had got through and how many
+    /// records it has taken. `at` is the position the act began at; a row
+    /// already begun keeps the first position it was put with, so each
+    /// part moves `through` and `gone` alone
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    fn put_thinned_act(&self, act: &ThinnedAct, at: Position) -> Result<()>;
+
+    /// Store a thinned record's tombstone: its key, the horizon that took
+    /// it and the position the act began at, so a correction is refused by
+    /// one seek and a read names the horizon
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: Timestamp,
+        at: Position,
+    ) -> Result<()>;
 
     /// Store a proposal's state as of its latest event, at `at`; earlier
     /// states are kept, so a view before `at` still sees the earlier one.
@@ -683,6 +703,15 @@ pub trait ProjectionView {
         after: Option<&RecordKey>,
         n: u32,
     ) -> Result<Vec<(RecordKey, Vec<u8>)>>;
+
+    /// The acts that thinned `ty` past a horizon, oldest first by the
+    /// position each began at, at the head: every read says them, whatever
+    /// its position, since a thinned record's states are gone at every
+    /// position (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<ThinnedAct>>;
+
+    /// The horizon an act took `ty`'s `key` past, if one did, at the head.
+    fn thinned_at(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<Timestamp>>;
 
     /// Records of one type.
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>>;

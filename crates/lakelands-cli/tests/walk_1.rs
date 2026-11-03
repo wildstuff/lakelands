@@ -515,10 +515,12 @@ fn init_with_an_example_refuses_what_is_there_before_it_writes() {
 }
 
 /// A run that fails after it made the root removes what it made, and the
-/// same command then runs. The fault is a file-size limit (512 KiB, with
-/// the signal it raises ignored, so a write fails as a full disk does): the
-/// partners ingest commits and the August ingest fails. A directory and a
-/// `lakes/` that were there before stay: no directory, an empty one, and
+/// same command then runs. The fault is a file-size limit (with the signal
+/// it raises ignored, so a write fails as a full disk does): the partners
+/// ingest commits and the August ingest fails. The limit is raised in
+/// 32 KiB steps from 512 KiB until the fault lands there, since the
+/// example's size moves with the schema the engines keep. A directory and
+/// a `lakes/` that were there before stay: no directory, an empty one, and
 /// one with an empty `lakes/`.
 #[test]
 fn init_with_an_example_removes_what_it_made_when_a_later_step_fails() {
@@ -529,9 +531,6 @@ fn init_with_an_example_removes_what_it_made_when_a_later_step_fails() {
 
 fn fault(n: usize, there: &[&str]) {
     let dir = fresh(&format!("walk-1-example-fault-{n}"));
-    for path in there {
-        fs::create_dir_all(dir.join(path)).unwrap();
-    }
     let d = dir.display().to_string();
     let run = |limit: &str| {
         std::process::Command::new("bash")
@@ -545,16 +544,39 @@ fn fault(n: usize, there: &[&str]) {
             .output()
             .unwrap()
     };
-    let failed = run("512");
-    let (out, err) = (
-        String::from_utf8_lossy(&failed.stdout),
-        String::from_utf8_lossy(&failed.stderr),
-    );
-    assert_eq!(failed.status.code(), Some(1), "{out}\n{err}");
-    assert!(
-        out.contains("through position 16") && !out.contains("through position 33"),
-        "the fault is to land in the August ingest:\n{out}\n{err}"
-    );
+    let mut last = String::new();
+    let mut failed = None;
+    for blocks in (512..=4096).step_by(32) {
+        let _ = fs::remove_dir_all(&dir);
+        if !there.is_empty() {
+            fs::create_dir_all(&dir).unwrap();
+        }
+        for path in there {
+            fs::create_dir_all(dir.join(path)).unwrap();
+        }
+        let limit = blocks.to_string();
+        let out = run(&limit);
+        let (stdout, stderr) = (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        );
+        last = format!("{limit} KiB:\n{stdout}\n{stderr}");
+        if out.status.code() == Some(1)
+            && stdout.contains("through position 16")
+            && !stdout.contains("through position 33")
+        {
+            failed = Some((stdout, stderr));
+            break;
+        }
+        assert_ne!(
+            out.status.code(),
+            Some(0),
+            "the example ran whole inside {limit} KiB, so no later step failed:\n{last}"
+        );
+    }
+    let (_, err) = failed.unwrap_or_else(|| {
+        panic!("no file-size limit landed the fault in the August ingest:\n{last}")
+    });
     assert!(err.contains("nothing this run made is left in"), "{err}");
     let left: Vec<String> = fs::read_dir(&dir)
         .map(|d| {

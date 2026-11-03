@@ -17,9 +17,10 @@ use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, 
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::quarantine::{QuarantineFilter, QuarantineState, Quarantined};
 use lakelands_api::query::{Edge, Walk};
-use lakelands_api::read::{Direction, Order};
+use lakelands_api::read::{Direction, Order, ThinnedAct};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{FeedFilter, is_kept_name};
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines::{self, Holders, decode};
 use lakelands_core::feed::{self, Seek};
@@ -1401,6 +1402,43 @@ impl ProjectionView for SqliteView<'_> {
             let all = &FeedFilter::default();
             let positions = projection::routes(r.conn, all, by, [from, last], limit)?;
             Ok(feed::merged([positions], limit, last))
+        })
+    }
+
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<ThinnedAct>> {
+        // Read at the head in every read, oldest first by the position
+        // each act began at.
+        self.read(Vec::new(), |r| {
+            let mut stmt = r
+                .conn
+                .prepare_cached(
+                    "SELECT ty, \"by\", \"before\", at, through, gone FROM thinned_types \
+                     WHERE ty = ?1 ORDER BY at, \"by\", \"before\"",
+                )
+                .map_err(sql)?;
+            let rows = stmt
+                .query_map(params![ty.as_str()], |row| {
+                    Ok(ThinnedAct {
+                        ty: row.get::<_, String>(0)?.into(),
+                        by: row.get::<_, String>(1)?.into(),
+                        before: Timestamp(row.get(2)?),
+                        through: Position(row.get::<_, i64>(4)? as u64),
+                        gone: row.get::<_, i64>(5)? as u64,
+                    })
+                })
+                .map_err(sql)?;
+            rows.map(|r| r.map_err(sql)).collect()
+        })
+    }
+
+    fn thinned_at(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<Timestamp>> {
+        self.read(None, |r| {
+            one(
+                r.conn,
+                "SELECT \"before\" FROM thinned WHERE ty = ?1 AND key = ?2",
+                params![ty.as_str(), key.as_str()],
+            )
+            .map(|row: Option<i64>| row.map(Timestamp))
         })
     }
 }

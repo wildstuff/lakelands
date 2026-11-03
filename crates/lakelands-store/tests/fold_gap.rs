@@ -240,6 +240,18 @@ impl ProjectionStore for Failing {
         done.fetch_add(1, Ordering::SeqCst);
         self.inner.projection().compact()
     }
+    fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
+        self.inner.projection().put_thinned_act(act, at)
+    }
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: lakelands_api::time::Timestamp,
+        at: Position,
+    ) -> Result<()> {
+        self.inner.projection().put_thinned(ty, key, before, at)
+    }
 }
 
 struct FailingOpener {

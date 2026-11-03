@@ -893,6 +893,16 @@ impl ProjectionView for FaultyView<'_> {
     ) -> Result<Matched> {
         self.0.of_source(source, from, through, limit)
     }
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        self.0.thinned_acts(ty)
+    }
+    fn thinned_at(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
+        self.0.thinned_at(ty, key)
+    }
 }
 
 /// `x` made, then a batch of its retirement, whose read of the record's

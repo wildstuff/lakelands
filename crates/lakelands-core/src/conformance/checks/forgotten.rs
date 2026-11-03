@@ -1002,6 +1002,22 @@ impl ProjectionStore for Reclaims {
             false => self.inner.projection().compact(),
         }
     }
+    fn put_thinned_act(
+        &self,
+        act: &lakelands_api::read::ThinnedAct,
+        at: Position,
+    ) -> lakelands_api::Result<()> {
+        self.inner.projection().put_thinned_act(act, at)
+    }
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &lakelands_api::RecordKey,
+        before: lakelands_api::time::Timestamp,
+        at: Position,
+    ) -> lakelands_api::Result<()> {
+        self.inner.projection().put_thinned(ty, key, before, at)
+    }
 }
 
 /// Whether an act answered that it is in the log through `head` and
