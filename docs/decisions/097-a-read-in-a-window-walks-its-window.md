@@ -368,12 +368,12 @@ Lines as reckoned, then ×1.35. Every pull request stays about 600 or under.
 | 1.+2. `rows_walked`, `window`, one rank, field-order roads, no `missing` (measured) | all, 1633 | 607 | 881 | measured |
 | 3. `window_keys`, `admitted`, aggregate, count, key page | 1633 | 170 | 200 | 230 / 270 |
 | 4. the smaller side: `window_sides`, `holders_inside` | 1633 | 110 | 140 | 149 / 189 |
-| 5.+6. memory lookup, number token, `lookup_index` widened, 057 amended in tree (measured) | 1635 | 642 | 233 | measured |
+| 5.+6. memory lookup, number token, `lookup_index` widened, 057 amended in tree (measured) | 1635 | 642 | 231 | measured |
 | 7. `series_index`, rows in the fold, `series.<type>`, the rebuild's exemptions | 1638 | 170 | 200 | 230 / 270 |
 | 8. the build, its driver, `describe` | 1638 | 170 | 220 | 230 / 297 |
 | 9. the series road, one value, the tail | 1638 | 130 | 250 | 176 / 338 |
 | 10. `in`, the merge, the matrix row | 1638 | 100 | 170 | 135 / 230 |
-| **sum** | | **2 399** | **2 708** | steps 1+2 and 5+6 measured, the rest ×1.35 |
+| **sum** | | **2 399** | **2 706** | steps 1+2 and 5+6 measured, the rest ×1.35 |
 
 Steps 1 to 4 stand alone, in order. Steps 5 and 6 need step 1, and steps 7 to 10
 need step 2. Step 8 changes what `describe` says, so its pull request walks.
@@ -466,10 +466,10 @@ The two steps landed in one pull request.
   600, about 600 rows read by `=`, `equal`, `equal_any` and `in`. The
   setting's refusal now names a boolean asked of it, since a number is
   admitted.
-- **Measured.** Product in 838, out 196, net 642; specification in 240,
-  out 7, net 233. The core-size gate: product 102 537 of base 108 500,
-  specification 187 055 of base 191 500, neither base nor ceiling raised.
-  Steps 5 and 6 measured 642 / 233 against the 351 / 433 reckoned for them
+- **Measured.** Product in 760, out 118, net 642; specification in 237,
+  out 6, net 231. The core-size gate: product 102 917 of base 108 500,
+  specification 187 193 of base 191 500, neither base nor ceiling raised.
+  Steps 5 and 6 measured 642 / 231 against the 351 / 433 reckoned for them
   at ×1.35; the estimate table above carries the measured size and leaves
   the remaining steps as reckoned.
 
