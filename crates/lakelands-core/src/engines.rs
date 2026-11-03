@@ -898,11 +898,12 @@ pub fn chosen_mark(ty: &TypeName) -> String {
 pub const CHOSEN_THROUGH: &str = "chosen_through";
 
 /// The fields a type's order index keeps for the fold: those its setting
-/// names, else those the lake chose, `building` ones too for the fold and
-/// not for a read. A host's setting wins: where it names any field the
-/// lake's choice is not read, and an engine drops it at the setting's
-/// rebuild. A chosen field the declaration no longer holds with a kind the
-/// index keeps is left out, and a view keeps none of its own.
+/// names and those the lake chose, `building` ones too for the fold and
+/// not for a read. The setting and the lake share the rows field by
+/// field: a field the host has set is the host's setting, and a chosen
+/// one goes when the setting comes. A chosen field the declaration no
+/// longer holds with a kind the index keeps is left out, and a view keeps
+/// none of its own.
 pub fn order_fields(
     ty: &TypeName,
     decl: &TypeDecl,
@@ -910,38 +911,55 @@ pub fn order_fields(
     chosen: &Chosen,
     building: bool,
 ) -> Vec<FieldName> {
+    let held = |f: &&FieldName| {
+        (decl.fields.iter()).any(|d| d.name == **f && lakelands_api::seam::sortable(&d.ty.kind))
+    };
+    let chosen_building = chosen.building.iter().filter(|_| building);
+    let chosen_rows: Vec<FieldName> = chosen
+        .kept
+        .iter()
+        .chain(chosen_building)
+        .filter(held)
+        .cloned()
+        .collect();
     let named = sorted_fields(ty, decl, setting);
     if !named.is_empty() || decl.view.is_some() || kept_view(ty).is_some() {
         // A field a setting is having built is no read's until its `Keep`;
-        // the fold keeps its rows from the setting's event on.
-        return match building {
+        // the fold keeps its rows from the setting's event on. A chosen
+        // field the setting does not name keeps its rows beside them.
+        let mut fields: Vec<FieldName> = match building {
             true => named,
             false => named
                 .into_iter()
                 .filter(|f| !chosen.setting_building.contains(f))
                 .collect(),
         };
+        for f in chosen_rows {
+            if !fields.contains(&f) && !chosen.setting_building.contains(&f) {
+                fields.push(f);
+            }
+        }
+        return fields;
     }
-    let held = |f: &&FieldName| {
-        (decl.fields.iter()).any(|d| d.name == **f && lakelands_api::seam::sortable(&d.ty.kind))
-    };
-    let building = chosen.building.iter().filter(|_| building);
-    chosen
-        .kept
-        .iter()
-        .chain(building)
-        .filter(held)
-        .cloned()
-        .collect()
+    chosen_rows
 }
 
 /// A step of choosing as the chosen fields of a type take it: the fields
 /// after it, and whether it asks the engine to fill, or to delete the rows
-/// of, a field. A step that does nothing leaves them as they are.
+/// of, a field. A step that does nothing leaves them as they are. A
+/// `DropChunk` moves the field to `dropping` at its first chunk and leaves
+/// it there until the last, whose `None` answer removes it; a `Drop`
+/// clears the whole field in its one step, so the engine takes the mark
+/// away with it.
+#[allow(deprecated)]
 pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
     let (kept, building) = (&mut chosen.kept, &mut chosen.building);
     let setting = &mut chosen.setting_building;
+    let dropping = &mut chosen.dropping;
     match step {
+        // A field a drop holds is the drop's until its last chunk: no
+        // `Start` of it builds rows the drop is clearing.
+        Choose::Start(f) if dropping.contains(f) => false,
         Choose::Start(f) if !kept.contains(f) && !building.contains(f) => {
             building.push(f.clone());
             true
@@ -957,12 +975,18 @@ pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
             kept.push(f.clone());
             true
         }
-        Choose::Drop(f) if kept.contains(f) || building.contains(f) || setting.contains(f) => {
+        Choose::Drop(f) | Choose::DropChunk { field: f, .. }
+            if kept.contains(f) || building.contains(f) || setting.contains(f) =>
+        {
             kept.retain(|k| k != f);
             building.retain(|b| b != f);
             setting.retain(|b| b != f);
+            dropping.push(f.clone());
             true
         }
+        // A field the drop already holds takes the next chunk; the last
+        // chunk's engine removes the mark.
+        Choose::Drop(f) | Choose::DropChunk { field: f, .. } => dropping.contains(f),
         Choose::Fill { field, .. } => building.contains(field) || setting.contains(field),
         _ => false,
     }

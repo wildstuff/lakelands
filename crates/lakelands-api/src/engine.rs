@@ -433,11 +433,14 @@ pub trait ProjectionStore: Send + Sync {
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`). Called
     /// outside a transaction, under the writer's lock, and it changes no
     /// answer: a reader takes a field only once its step is [`Choose::Keep`].
-    /// A step that names a field the type does not hold as the step needs,
-    /// or a type that has a `sort_index.<type>` setting at the head, does
-    /// nothing. Answers the last key a [`Choose::Fill`] wrote, none once the
-    /// type is filled. An engine that keeps no order index refuses as
-    /// unbound, as this default does.
+    /// A step that names a field the type does not hold as the step needs
+    /// does nothing, and so does a step naming a field the type's
+    /// `sort_index.<type>` setting names, unless it is the setting's own
+    /// build: the setting and the lake share the rows field by field.
+    /// Answers the last key a [`Choose::Fill`] or [`Choose::DropChunk`]
+    /// wrote, none once the type is filled or its field's rows are gone. An
+    /// engine that keeps no order index refuses as unbound, as this default
+    /// does.
     fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
         let _ = (ty, step);
         Err(crate::Error::unbound(crate::error::Seam::Operation {
@@ -491,8 +494,29 @@ pub enum Choose {
     },
     /// The field's rows are whole: reads may use the index for it.
     Keep(FieldName),
-    /// Stop keeping the field, and delete its rows.
+    /// Stop keeping the field: its rows leave every record's in one step,
+    /// no read looks at it meanwhile, and the step answers none.
+    /// Deprecated in favour of [`Choose::DropChunk`], which clears them in
+    /// parts beside the writer
+    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    #[deprecated(
+        since = "0.23.0",
+        note = "`Choose::DropChunk` clears the field's rows in parts, a chunk a call"
+    )]
     Drop(FieldName),
+    /// Stop keeping the field, and delete its rows after `after`, at most
+    /// `limit` of them, in key order: the mark `dropping` holds it, which
+    /// no read looks at, and the last step removes the mark. A setting's
+    /// write that takes its field back leaves the same mark, and the
+    /// build's next [`Choose::Fill`] finds the mark gone and ends.
+    DropChunk {
+        /// The field.
+        field: FieldName,
+        /// The key the last chunk ended at; none for the first.
+        after: Option<RecordKey>,
+        /// The most records the chunk clears.
+        limit: u32,
+    },
 }
 
 /// A step of building the exact-text index a type's `lookup_index.<type>`
@@ -540,6 +564,11 @@ pub struct Chosen {
     /// `Keep`: reads keep using them until then.
     #[serde(default)]
     pub looked_going: Vec<FieldName>,
+    /// The fields a `Drop` is clearing in parts: a setting that took a
+    /// field back, or the lake letting one go. No read looks at them, and
+    /// the last chunk removes them.
+    #[serde(default)]
+    pub dropping: Vec<FieldName>,
 }
 
 /// What a compact of the projection measured: its storage in bytes before

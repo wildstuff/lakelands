@@ -695,9 +695,12 @@ fn set_chosen(conn: &Connection, ty: &TypeName, chosen: &Chosen) -> Result<()> {
         );
     }
     let text = serde_json::to_string(chosen).expect("the chosen fields serialise");
+    // A mark written before the first fold of a rebuild commits has no
+    // position to be held through: none is written, and a read takes it as
+    // held until the commit marks it.
     run(
         conn,
-        "INSERT INTO meta (k, v) VALUES (?1, (SELECT v FROM meta WHERE k = 'folded')) \
+        "INSERT INTO meta (k, v) SELECT ?1, v FROM meta WHERE k = 'folded' \
          ON CONFLICT (k) DO NOTHING",
         [engines::CHOSEN_THROUGH],
     )?;
@@ -710,6 +713,7 @@ fn set_chosen(conn: &Connection, ty: &TypeName, chosen: &Chosen) -> Result<()> {
 
 /// One step of choosing an order index for `ty` (`ProjectionStore::
 /// choose_order`), in a transaction of its own that moves no position.
+#[allow(deprecated)]
 pub(crate) fn choose_order(
     conn: &Connection,
     ty: &TypeName,
@@ -737,21 +741,23 @@ pub(crate) fn choose_order(
     };
     let mut chosen = chosen_of(conn, ty)?;
     // A field a host's setting names is filled by its own build, field by
-    // field; the lake's choice is not the same road, and is not read then.
+    // field; the setting and the lake share the rows, and a step on any
+    // other field is the lake's.
     let setting_build = matches!(
         step,
         Choose::Fill { field, .. } | Choose::Keep(field)
             if chosen.setting_building.contains(field)
     );
-    if matches!(step, Choose::Start(f) if !sortable(f)) {
-        return Ok(None);
-    }
-    if !named.is_empty() && !setting_build {
-        return Ok(None);
-    }
+    let names_field = match step {
+        Choose::Start(f) | Choose::Keep(f) | Choose::Drop(f) => named.contains(f),
+        Choose::Fill { field, .. } | Choose::DropChunk { field, .. } => named.contains(field),
+    };
     // Nothing is chosen on a lake a writer that keeps no chosen field
     // folded past, before a writer's open drops what it left.
-    if (!named.is_empty() && !setting_build) || !chosen_held(conn)? {
+    if matches!(step, Choose::Start(f) if !sortable(f))
+        || (names_field && !setting_build)
+        || !chosen_held(conn)?
+    {
         return Ok(None);
     }
     if !engines::chosen_after(&mut chosen, step) {
@@ -764,21 +770,40 @@ pub(crate) fn choose_order(
             after,
             limit,
         } => fill_chosen(conn, ty, field, after.as_ref(), *limit),
+        // A drop clears a chunk of the field's rows a call; its last, which
+        // finds no more records, takes the mark away. Both write the mark,
+        // so one a writer went between is taken up by the next. `Drop` is
+        // the whole field in one step, kept for a host's build: it answers
+        // none.
+        Choose::Drop(field) => {
+            let _ = drop_chosen(conn, ty, field, None, u32::MAX)?;
+            chosen.dropping.retain(|f| f != field);
+            if chosen == Chosen::default() {
+                set_sorted(conn, ty, None)?;
+            }
+            set_chosen(conn, ty, &chosen)?;
+            Ok(None)
+        }
+        Choose::DropChunk {
+            field,
+            after,
+            limit,
+        } => {
+            let last = drop_chosen(conn, ty, field, after.as_ref(), *limit)?;
+            if last.is_none() {
+                chosen.dropping.retain(|f| f != field);
+                if chosen == Chosen::default() {
+                    set_sorted(conn, ty, None)?;
+                }
+            }
+            set_chosen(conn, ty, &chosen)?;
+            Ok(last)
+        }
         _ => {
             set_chosen(conn, ty, &chosen)?;
             match step {
                 Choose::Start(_) if sorted(conn, ty)?.is_none() => {
                     set_sorted(conn, ty, folded(conn)?)?;
-                }
-                Choose::Drop(f) => {
-                    run(
-                        conn,
-                        "DELETE FROM sort_index WHERE ty = ?1 AND field = ?2",
-                        params![ty.as_str(), f.as_str()],
-                    )?;
-                    if sorted_fields(conn, ty, Some(&decl), true)?.is_empty() {
-                        set_sorted(conn, ty, None)?;
-                    }
                 }
                 _ => {}
             }
@@ -919,6 +944,35 @@ fn fill_chosen(
     Ok(last.filter(|_| page.len() == limit as usize))
 }
 
+/// Clear the `field`'s rows of up to `limit` head records of `ty` after
+/// `after`, in key order; the key the chunk ended at, none once the type
+/// is cleared.
+fn drop_chosen(
+    conn: &Connection,
+    ty: &TypeName,
+    field: &FieldName,
+    after: Option<&RecordKey>,
+    limit: u32,
+) -> Result<Option<RecordKey>> {
+    let after = after.map_or("", RecordKey::as_str);
+    let page = records(
+        conn,
+        concat!(heads!(), " AND k.key > ?2 ORDER BY k.key LIMIT ?3"),
+        params![ty.as_str(), after, limit],
+    )?;
+    for r in &page {
+        run(
+            conn,
+            "DELETE FROM sort_index WHERE ty = ?1 AND field = ?2 AND key = ?3",
+            params![ty.as_str(), field.as_str(), r.key.as_str()],
+        )?;
+    }
+    Ok(page
+        .last()
+        .map(|r| r.key.clone())
+        .filter(|_| page.len() == limit as usize))
+}
+
 /// Rewrite `ty`'s order index from its head records, under its setting and
 /// declaration at the head, and mark it kept through `through`; with no
 /// field to keep, drop its rows and its mark. The fold does this when it
@@ -936,8 +990,14 @@ pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position
     let named = decl
         .as_ref()
         .map(|d| engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)));
-    if named.is_some_and(|n| !n.is_empty()) {
-        set_chosen(conn, ty, &Chosen::default())?;
+    // A host's setting names its fields: the lake's choice of those goes,
+    // and its choice of the type's other fields shares the rebuilt rows.
+    if let Some(named) = named.filter(|n| !n.is_empty()) {
+        let mut chosen = chosen_of(conn, ty)?;
+        chosen.kept.retain(|f| !named.contains(f));
+        chosen.building.retain(|f| !named.contains(f));
+        chosen.dropping.retain(|f| !named.contains(f));
+        set_chosen(conn, ty, &chosen)?;
     }
     let fields = sorted_fields(conn, ty, decl.as_ref(), true)?;
     if fields.is_empty() {
@@ -1528,10 +1588,11 @@ pub(crate) fn put_record(
         )?;
         // A setting's write no longer walks its type: beside the writer it
         // marks what it asks for as building, and the build fills it in
-        // turns; a fold from the log makes it whole at its event.
+        // turns; a fold from the log makes it whole at its event, a retired
+        // setting included, since what it took back is the writer's to drop.
         if let Some(ty) = engines::sort_index_type(r) {
             for ty in engines::ordered_names(&ty) {
-                match whole && !r.retired {
+                match whole {
                     true => rebuild_sorted(conn, &ty, r.position)?,
                     false => start_sorted(conn, &ty)?,
                 }
@@ -1552,26 +1613,48 @@ pub(crate) fn put_record(
 
 /// Mark the fields `ty`'s `sort_index` setting asks for as building, and
 /// ensure the type has a `sorted` mark: reads answer as before until each
-/// field's `Keep`. With no field asked for, the rows go and the mark too,
-/// as a setting that names none does.
+/// field's `Keep`. A field the setting no longer names is marked dropping,
+/// and a `Drop` clears its rows in parts. The setting and the lake share
+/// the rows field by field: a chosen field the setting names is the
+/// setting's now.
 fn start_sorted(conn: &Connection, ty: &TypeName) -> Result<()> {
-    let decl = type_at(conn, ty, None)?;
-    let named = sorted_fields(conn, ty, decl.as_ref(), true)?;
+    let own = engines::kept_view(ty).unwrap_or_else(|| ty.clone());
+    let decl = type_at(conn, &own, None)?;
+    let setting = head_record(
+        conn,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::sort_index_key(ty)),
+    )?;
+    let named = decl
+        .as_ref()
+        .map(|d| engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)))
+        .unwrap_or_default();
     let mut chosen = chosen_of(conn, ty)?;
-    if named.is_empty() {
-        chosen.setting_building.clear();
-        set_chosen(conn, ty, &chosen)?;
-        run(conn, "DELETE FROM sort_index WHERE ty = ?1", [ty.as_str()])?;
-        return set_sorted(conn, ty, None);
+    chosen.kept.retain(|f| !named.contains(f));
+    chosen.building.retain(|f| !named.contains(f));
+    let mut dropping = std::mem::take(&mut chosen.dropping);
+    let rows: Vec<FieldName> = column(
+        conn,
+        "SELECT DISTINCT field FROM sort_index WHERE ty = ?1",
+        [ty.as_str()],
+        |f: String| Ok(FieldName::from(f)),
+    )?;
+    for f in rows {
+        let held = chosen.kept.contains(&f) || chosen.building.contains(&f);
+        if !named.contains(&f) && !held && !dropping.contains(&f) {
+            dropping.push(f);
+        }
     }
-    // A host's setting that names a field wins: the lake's choice goes,
-    // and the build fills the setting's fields instead.
-    chosen.kept.clear();
-    chosen.building.clear();
+    dropping.retain(|f| !named.contains(f));
+    chosen.dropping = dropping;
     chosen.setting_building = named;
     set_chosen(conn, ty, &chosen)?;
-    if sorted(conn, ty)?.is_none() {
-        set_sorted(conn, ty, folded(conn)?)?;
+    if !chosen.setting_building.is_empty() {
+        if sorted(conn, ty)?.is_none() {
+            set_sorted(conn, ty, folded(conn)?)?;
+        }
+    } else if chosen.kept.is_empty() && chosen.building.is_empty() && chosen.dropping.is_empty() {
+        set_sorted(conn, ty, None)?;
     }
     Ok(())
 }
