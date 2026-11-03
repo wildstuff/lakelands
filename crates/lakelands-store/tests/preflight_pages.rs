@@ -207,10 +207,10 @@ async fn the_report_and_its_id_are_what_a_whole_read_made() {
          name a moved key"
     );
     assert_eq!(
-        report.report_id, "11d47a126582a92d2af82d8d5418836c5982200f2cf243b9a1ce161533622e82",
+        report.report_id, "2111-4fc97a19aaafa80338c8690234d646da29af912f927b483919b0fb4774268e2b",
         "the report's id, as the preflight that read the type whole made it, of the report \
-         with what the migration restates (lakelands#554), of it and the head alone \
-         (lakelands#644), with `more` beside a count larger than its keys (lakelands#875), \
+         with what the migration restates (lakelands#554), of it and the position it read \
+         alone (099), with `more` beside a count larger than its keys (lakelands#875), \
          and with the records it computes again counted, none (lakelands#1141)"
     );
 }
@@ -469,7 +469,7 @@ async fn a_value_types_preflight_lists_its_misfits_by_field_across_pages() {
         .collect();
     assert_eq!(first, listed, "`p`'s misfits, a page on, come before `q`'s");
     assert_eq!(
-        report.report_id, "0961385c926416d1e66063156210881f5f662d30981a0ae0bb4bb4e088a127fa",
+        report.report_id, "1105-c9e62ea3ded88e23eedae03f4b1f61fbd5e72801f51ac1679796f2843916469a",
         "the report's id, as the preflight that read the type whole made it"
     );
     assert!(

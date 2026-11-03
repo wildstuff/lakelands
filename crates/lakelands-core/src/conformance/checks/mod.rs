@@ -836,6 +836,7 @@ pub const ALL: &[Check] = &[
     acts::POLL_STOPS_BEFORE_AN_OWED_ACT,
     acts::ACT_TAIL_OVERRUN_MOVES_THE_VIEW,
     acts::REPORT_NOT_STALE_BY_A_WRITE_ELSEWHERE,
+    acts::REPORT_STALE_WHEN_REACHED,
     acts::WRITE_READS_THROUGH_AN_OWED_ACT,
     sealed_apart::APART_SHREDDED,
     sealed_apart::APART_OUTPUT,

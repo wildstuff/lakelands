@@ -233,15 +233,18 @@ row that it is never left behind holds.
   the type whose `where` now matches. It reaches when a selected key moves or a record
   comes to match. A record of another type does not (081). `enact`'s re-selection moves
   to the view, and the check is as above, through `routes_ty`.
-- **Declaration.** A declaration or a migration of a named type or a dependent, or a
-  setting it names. Record writes do not reach, unless a check it reports reads data;
-  then that type's writes do. The check is one read of the ontology's position.
+- **Declaration.** Every write `feed::about` names as about a type the plan's sections
+  name — a record's, that type's `declared` or `migrated`, a value type's migration —
+  reaches it; found by type in the log index. A write of a type no section names does
+  not, and neither does a declaration of a function or a setting: reach is over types,
+  not over the data a function or a check reads, so a write to a type no section names
+  is not followed, whatever a function reads there.
 - **Migrate.** Any write to the type, since it rewrites the type: `routes_ty` in the
   tail. `report_id` and `value_report_id` leave the head.
 - **Proposals'** `id_head` take the same id function.
 
-They hash the same head today, and that is all they share. Plan, declaration and migrate
-stay in one step and can be cut.
+They hashed the same head before this step, and that is all they share. Plan,
+declaration and migrate stay in one step and can be cut.
 
 ### Restate: scoped first, then beside
 
@@ -973,6 +976,38 @@ on the first pull's frame. Forget keeps its one-append path until lakelands#1700
   the write's own position, so neither the scheduler nor a projection mark behind the
   log can widen the count; fifty runs with every core busy did not.
 
+**R3 (lakelands#1718).** A plan, a declaration's plan, and a migration's or a value
+type's report name the position they were read at, and a write after them stales them
+only when it reaches what they name.
+
+- **The id.** A migration's or a value type's report, a plan of declarations, and a
+  plan's section ids are `<through>-<digest>`: `through` is the report head 039 names at
+  the position the report was read, and the digest is made over the report as its reader
+  is shown it there, with its own id empty — and, in a plan, each section's id empty and
+  `at` at `GENESIS`, since a section's id is itself a position and a digest. The one
+  function builds all of these (`writes::report_named`). A change to records' plan is
+  the exception (081): its id is the digest alone, made over `{"plan", "selection"}`
+  with its own id empty and `at` at `GENESIS`, the selection being each selected key
+  with the version it read. It names no position, so it is compared whole, and one that
+  moves a selected key or the selection moves its digest.
+- **The check.** `writes::says` reads the position out of the id the caller repeats and
+  compares digests; `writes::reached_since` reads at most one event past that position
+  through `road::read_tail` with a `Reach` of types and no sources or keys, and answers
+  reached when one is found, when the position is past the head, or when the bound is
+  overrun. `stale_plan` names the types every section and every value type's uses name;
+  `stale_report` names the type a migration rewrites, or the types that use the value
+  type it changes. Each refusal appends nothing.
+- **What reads it.** `declaring`, `migrating` and `migrating_value_type` stop comparing
+  the head; a proposal's `id_head` is the report head the value type's id is made from
+  again, and a listed proposal recomputes the same digest.
+- **Restated where they said otherwise:** 006's report id and a declaration's plan id in
+  062 now name the position, not the head, and 062 says a change to records' plan carries
+  no position (081); `docs/refusals.md` for `plan_stale` and `migration_stale`.
+- **Rows taken on every engine:** `REPORT_STALE_WHEN_REACHED`, and
+  `REPORT_NOT_STALE_BY_A_WRITE_ELSEWHERE` extended to a change to records, a
+  declaration, a migration and a value type. `HASH_OF_THE_SHOWN_SHAPE`, `PLAN_TELLS`,
+  `PLAN_REOPENED` and `STALE_REPORT` are restated for the id and the word "moved".
+
 ## How it came to be
 
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
@@ -983,6 +1018,9 @@ on the first pull's frame. Forget keeps its one-append path until lakelands#1700
   read there.
 - R2's second pull built by lakelands#1691 with remove on the road and a write reading
   through an owed act; forget follows in lakelands#1700.
+- R3 built by lakelands#1718: a plan, a declaration's plan and a migration's or a value
+  type's report name the position they were read at, and only a write that reaches what
+  they name stales them.
 - Amended by 102 (lakelands#1639), proposed for 0.23.0: a thinning act begins
   with `values_thinned`, and a write at a key it selected is refused rather
   than reading through the act.

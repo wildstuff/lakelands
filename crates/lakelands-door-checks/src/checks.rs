@@ -8385,8 +8385,8 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
         "9d89b4ed75c087e803c3e7e8265443c00af7af43a32ad629b02e0f6da7414032",
         "a view type hashes over its conditions' typed form, to the same digest everywhere"
     );
-    // A report's id is the SHA-256 of the report, its id left empty, and
-    // the head, in canonical form.
+    // A report's id is the position it was read at, then the SHA-256 of
+    // the report with its id left empty, in canonical form.
     let tally = |fields: Vec<FieldDecl>| TypeDecl {
         name: "tally".into(),
         key: Vec::new(),
@@ -8405,11 +8405,15 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
         report_id: String::new(),
         ..preview.data.clone()
     };
-    let made = json!({"report": report, "head": preview.position.0});
+    let made = json!({"report": report});
     assert_eq!(
         preview.data.report_id,
-        lakelands_api::canonical::sha256_hex(&made),
-        "a report's id is the SHA-256 of the report and the head"
+        format!(
+            "{}-{}",
+            preview.position.0,
+            lakelands_api::canonical::sha256_hex(&made)
+        ),
+        "a report's id is its position and the SHA-256 of the report"
     );
 
     f.write(&f.cast.owner, "INV-1", &[("status", json!("approved"))])

@@ -556,13 +556,24 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         "proposed_migrate" => {
             matches!(proposed, Some(ProposedWrite::Migrate { report, .. }) if report.lossless)
         }
-        // A kept plan carries its own id: the plan's, at its head (062).
+        // A kept plan carries its own id: the plan's, at the position it
+        // was read at, over the plan's sections' own ids left empty and
+        // `at` at the genesis (062, 099).
         "proposed_plan" => matches!(proposed, Some(ProposedWrite::Declare { plan: Some(p), .. })
         if p.types.iter().any(|t| t.recomputed.is_some_and(|n| n > 0) && !t.unlive.is_empty())
-            && p.report_id == lakelands_core::canonical::sha256_hex(&serde_json::json!({
-                "plan": lakelands_api::write::Plan { report_id: String::new(), ..(**p).clone() },
-                "head": p.at.0,
-            }))),
+            && p.report_id == {
+                let mut said = (**p).clone();
+                said.report_id = String::new();
+                said.at = lakelands_api::Position::GENESIS;
+                for t in &mut said.types {
+                    t.report_id.clear();
+                }
+                for v in &mut said.value_types {
+                    v.report_id.clear();
+                }
+                format!("{}-{}", p.at.0,
+                    lakelands_core::canonical::sha256_hex(&serde_json::json!({"plan": said})))
+            }),
         "proposed_records" => matches!(proposed, Some(ProposedWrite::Records { ty, to, plan, .. })
             if ty.as_str() == "ticket"
                 && to == &lakelands_api::write::ChangeTo::Set(
@@ -800,14 +811,14 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             matches!(&event.body, B::RecordRetired { key, .. } if key == "INV-3")
         }
         // A report counts what it computes again, under its own id at the
-        // head it was made at (062).
+        // position it was read at (062, 099).
         "proposed_migrate_recomputed" => {
             matches!(proposed, Some(ProposedWrite::Migrate { report, .. })
             if report.recomputed == Some(1)
-                && report.report_id == lakelands_core::canonical::sha256_hex(&serde_json::json!({
-                    "report": lakelands_api::write::MigrationReport { report_id: String::new(), ..(**report).clone() },
-                    "head": 70,
-                })))
+                && report.report_id == format!("70-{}",
+                    lakelands_core::canonical::sha256_hex(&serde_json::json!({
+                        "report": lakelands_api::write::MigrationReport { report_id: String::new(), ..(**report).clone() },
+                    }))))
         }
         // A delivery sealed apart, its output, and the act that shreds it
         // alone (065, lakelands#1214).
