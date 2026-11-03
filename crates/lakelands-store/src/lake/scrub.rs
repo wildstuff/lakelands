@@ -273,6 +273,20 @@ impl ProjectionStore for Scoped {
     fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
         self.inner().choose_order(ty, step)
     }
+
+    fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
+        self.inner().put_thinned_act(act, at)
+    }
+
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: lakelands_api::time::Timestamp,
+        at: Position,
+    ) -> Result<()> {
+        self.inner().put_thinned(ty, key, before, at)
+    }
 }
 
 /// The lake as a scoped refold reads it before the event it folds: the
@@ -437,6 +451,18 @@ impl ProjectionView for ScopedView<'_> {
         limit: u32,
     ) -> Result<Matched> {
         self.head.of_source(source, from, through, limit)
+    }
+
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        self.head.thinned_acts(ty)
+    }
+
+    fn thinned_at(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
+        self.head.thinned_at(ty, key)
     }
 }
 

@@ -552,4 +552,30 @@ impl ProjectionView for MemView {
             feed::merged([positions.copied().collect()], limit, last)
         }))
     }
+
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        Ok(self.read(|p, _| {
+            // Read at the head in every read, oldest first by the position
+            // each act began at.
+            let mut acts: Vec<_> = p
+                .thinned_acts
+                .iter()
+                .filter(|((act_ty, _, _), _)| act_ty == ty)
+                .collect();
+            acts.sort_by_key(|(_, (at, _))| *at);
+            acts.into_iter().map(|(_, (_, act))| act.clone()).collect()
+        }))
+    }
+
+    fn thinned_at(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
+        Ok(self.read(|p, _| {
+            p.thinned
+                .get(&(ty.clone(), key.clone()))
+                .map(|(before, _)| *before)
+        }))
+    }
 }

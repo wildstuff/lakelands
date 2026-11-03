@@ -60,8 +60,10 @@ use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::quarantine::QuarantineId;
+use lakelands_api::read::ThinnedAct;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::Declaration;
 use lakelands_core::engines::{self, decode};
 use postgres::Row;
@@ -265,6 +267,15 @@ CREATE TABLE IF NOT EXISTS {s}.text_lengths (
     held BOOLEAN NOT NULL, tokens BIGINT NOT NULL,
     PRIMARY KEY (ty, key, field)
 ){pt};
+CREATE TABLE IF NOT EXISTS {s}.thinned_types (
+    ty TEXT NOT NULL, \"by\" TEXT NOT NULL, \"before\" BIGINT NOT NULL,
+    at BIGINT NOT NULL, through BIGINT NOT NULL, gone BIGINT NOT NULL,
+    PRIMARY KEY (ty, \"by\", \"before\")
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.thinned (
+    ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, \"before\" BIGINT NOT NULL,
+    at BIGINT NOT NULL, PRIMARY KEY (ty, key)
+){pt};
 {vs}CREATE TABLE IF NOT EXISTS {s}.vectors (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, field TEXT NOT NULL,
     since BIGINT NOT NULL, until BIGINT, single BOOLEAN NOT NULL, data BYTEA NOT NULL,
@@ -337,11 +348,11 @@ fn heads_sql(s: &str, pt: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 12;
+pub(crate) const LAYOUT: u64 = 13;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 27] = [
+pub(crate) const LAKE_TABLES: [&str; 29] = [
     "meta",
     "lease",
     "segments",
@@ -369,6 +380,8 @@ pub(crate) const LAKE_TABLES: [&str; 27] = [
     "graph_keys",
     "text_stats",
     "text_lengths",
+    "thinned_types",
+    "thinned",
 ];
 
 /// The projection's tables, cleared by a rebuild; the log, its segments,
@@ -1863,6 +1876,12 @@ pub(crate) struct Buffer {
     /// key whose state it holds, by type, key and field: made when it is
     /// written where the rows its last state leaves differ.
     indexed: BTreeMap<(String, String, String), Option<Vec<f32>>>,
+    /// The thinning acts' rows (`thinned_types`), by type, field and
+    /// horizon: the position each began at, its `through` and its `gone`.
+    thinned_acts: BTreeMap<(String, String, i64), (i64, i64, i64)>,
+    /// The thinned records' tombstones (`thinned`), by type and key: the
+    /// horizon and the position the act began at.
+    thinned: BTreeMap<(String, String), (i64, i64)>,
 }
 
 /// A row of the feed index: position, kind, type, key and source, the
@@ -1882,7 +1901,34 @@ impl Buffer {
         );
         let dropped =
             self.dropped.len() + self.dropped_outputs.len() + usize::from(self.dropped_bases);
-        records + states + self.members.len() + self.routes.len() + dropped
+        records
+            + states
+            + self.members.len()
+            + self.routes.len()
+            + self.thinned_acts.len()
+            + self.thinned.len()
+            + dropped
+    }
+
+    /// A thinning act's row: a row already begun keeps the position it
+    /// began at, and each part moves `through` and `gone`.
+    pub(crate) fn thinned_act(&mut self, act: &ThinnedAct, at: Position) {
+        let key = (act.ty.to_string(), act.by.to_string(), act.before.0);
+        let (through, gone) = (act.through.0 as i64, act.gone as i64);
+        self.thinned_acts
+            .entry(key)
+            .and_modify(|(_, t, g)| {
+                *t = through;
+                *g = gone;
+            })
+            .or_insert((at.0 as i64, through, gone));
+    }
+
+    /// A thinned record's tombstone: the first put of its key is kept.
+    pub(crate) fn thinned(&mut self, ty: &str, key: &str, before: Timestamp, at: Position) {
+        self.thinned
+            .entry((ty.to_owned(), key.to_owned()))
+            .or_insert((before.0, at.0 as i64));
     }
 
     /// Every state of a record goes, with its memberships and its index
@@ -2434,6 +2480,48 @@ impl Buffer {
                     names.t("records")
                 ),
                 &[],
+            )?;
+        }
+        if !self.thinned_acts.is_empty() {
+            let (mut tys, mut bys, mut befores, mut ats) = (vec![], vec![], vec![], vec![]);
+            let (mut throughs, mut gones) = (vec![], vec![]);
+            for ((ty, by, before), (at, through, gone)) in &self.thinned_acts {
+                tys.push(ty.as_str());
+                bys.push(by.as_str());
+                befores.push(*before);
+                ats.push(*at);
+                throughs.push(*through);
+                gones.push(*gone);
+            }
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (ty, \"by\", \"before\", at, through, gone) \
+                     SELECT * FROM unnest($1::text[], $2::text[], $3::int8[], $4::int8[], \
+                     $5::int8[], $6::int8[]) AS b(ty, \"by\", \"before\", at, through, gone) \
+                     ON CONFLICT (ty, \"by\", \"before\") DO UPDATE SET \
+                     through = excluded.through, gone = excluded.gone",
+                    names.t("thinned_types")
+                ),
+                &[&tys, &bys, &befores, &ats, &throughs, &gones],
+            )?;
+        }
+        if !self.thinned.is_empty() {
+            let (mut tys, mut keys, mut befores, mut ats) = (vec![], vec![], vec![], vec![]);
+            for ((ty, key), (before, at)) in &self.thinned {
+                tys.push(ty.as_str());
+                keys.push(key.as_str());
+                befores.push(*before);
+                ats.push(*at);
+            }
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (ty, key, \"before\", at) \
+                     SELECT * FROM unnest($1::text[], $2::text[], $3::int8[], $4::int8[]) \
+                     AS b(ty, key, \"before\", at) \
+                     ON CONFLICT (ty, key) DO NOTHING",
+                    names.t("thinned")
+                ),
+                &[&tys, &keys, &befores, &ats],
             )?;
         }
         Ok(rebuilt)

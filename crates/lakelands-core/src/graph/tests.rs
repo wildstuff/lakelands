@@ -107,6 +107,16 @@ impl ProjectionView for View {
     ) -> Result<lakelands_api::engine::Matched> {
         unreachable!()
     }
+    fn thinned_acts(&self, _: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        unreachable!()
+    }
+    fn thinned_at(
+        &self,
+        _: &TypeName,
+        _: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
+        unreachable!()
+    }
 }
 
 fn view() -> View {

@@ -580,7 +580,8 @@ its mark and changed nowhere else.
 - **`docs/log-format.md` states the kind now**, though the build plan
   gives the page to S2: `api/tests/contract.rs` holds that every kind in
   `KINDS` is on the page, so S1 cannot be green without it. The page says
-  the fold's effect and the two tables land with the act.
+  the two tables landed at S2 and the fold's effect lands with the act,
+  at S3 to S5.
 - **Corrections where the tree holds a rule the sketch did not name:**
   `StrandedAtHeadOnly` takes `position`, not `at`, because the refusals
   catalog reserves `at` for a `Place`'s position and refuses it as a
@@ -617,3 +618,38 @@ its mark and changed nowhere else.
   suite row. The split is the gate's six-crate one;
   `crates/lakelands-cli/tests/walk_1.rs`'s one line each way is outside
   the specification budget.
+- **S2's as built.** The two tables are in SQLite's and PostgreSQL's
+  schema and their lists of tables, their `LAYOUT`s at 11 and 13, and the
+  memory engine's two maps; the four seam methods are in `engine.rs`, the
+  release's accepted-surface list and `docs/seams.md`; the engine seam's
+  row is `THINNED_TABLES`, green on the memory and SQLite engines, and
+  run on PostgreSQL in CI. Both tables are read at the head in every
+  read. The tree forced files the plan's list did not name: every struct
+  that wraps an engine behind `ProjectionStore` or `ProjectionView` — the
+  store's `Scoped`, `ScopedView` and `HeldNow`, and the suite's doubles —
+  had to answer the four methods by forwarding them, since a wrapper that
+  stopped forwarding would answer a read short. Nothing performs the act
+  yet: the fold meets `values_thinned` and does nothing. One limit the
+  tables leave: two acts on one type, field and horizon are one
+  `(ty, by, before)` row, so the second's `gone` replaces the first's,
+  and `ThinnedAct` exposes no position to tell them apart. The decided
+  shape cannot distinguish them either; this is noted, not repaired.
+- **S3 did not land in this round.** The mark it owes is every group and
+  face a taken record's versions held, and the seam holds no read of a
+  key's versions: `get` answers one position. A rebuild meets those
+  versions in order and could track them, but a fold that reaches the act
+  in a later session has long passed them, and the two must agree; the
+  alternatives are a read of a key's states or a replay of its events
+  from the log, and this record decides neither. The first shape is a
+  fifth `ProjectionView` read of a key's states between its `made` and a
+  position, which is another public-surface break. The round stopped at
+  S2, where the issue's size rule sends it.
+- **Measured at S2's head**: product 101 668 of the 108 500 base and
+  specification 186 081 of the 191 500 base; seam 102 of 110; 6 of 20
+  `cfg(feature)` sites; 1 012 checks through the doors and 89 through the
+  engine seam; 1 018 refusal cases. S2's own lines: product +390 −10,
+  specification +128 −1; the plan's 100 and 120 were the sketch, and the
+  extra is the wrappers' forwarding and the seam's row. Nothing was cut.
+  Merging `develop` after S2 landed raised both `LAYOUT`s by one again,
+  to 11 and 13, since the order's tables landed there from their own
+  step; the two additions each took the number after the one they found.
