@@ -592,7 +592,8 @@ impl<'a> Reader<'a> {
         after: Option<&RecordKey>,
         want: usize,
     ) -> Result<Option<Vec<StoredRecord>>> {
-        if core_engines::text_lookups(scan, &|_| true).is_none() {
+        let kind = |f: &FieldName| core_engines::field_kind(decl, f).copied();
+        if core_engines::text_lookups(scan, &|_| true, &kind).is_none() {
             return Ok(None);
         }
         let mut out = Vec::new();

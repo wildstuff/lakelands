@@ -7,12 +7,13 @@
 099 builds these rows in parts; a reader decides from the setting's mark
 until the build is whole.
 
-Each engine that keeps an exact-text index (SQLite and PostgreSQL) keeps
-a row for each string a record's latest state holds, but only in the
-fields of its type that are looked up. The memory engine keeps no such
-index today; 097 gives it one. A number field named in the setting keeps
-a row of its value's token, and a value that reads as no number keeps
-none and is scanned for (097).
+Every engine keeps the exact-text index: SQLite and PostgreSQL as rows
+of a table, the memory engine as a set in its projection (097 §The
+memory engine). It keeps an entry for each string a record's latest
+state holds, but only in the fields of its type that are looked up. A
+number field named in the setting keeps an entry of its value's token,
+and a value that reads as no number keeps none and is scanned for
+(097 §A number's exact lookup).
 
 **The declarations look up these fields of a type:**
 - its key, but a key that is one text field;
@@ -50,8 +51,8 @@ of the key fields re-keys the type's records, and a link type's key is
 two fields.
 
 `lakelands_core::engines::looked_up` decides the set from the
-declarations and the setting at the head. Both engines call it, and no
-other field has rows.
+declarations and the setting at the head. Every engine calls it, and no
+other field has an entry.
 
 **A reader decides from the same set, never from which rows exist.** A
 string the index keeps is looked up. A string of any other field is

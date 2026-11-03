@@ -112,8 +112,8 @@ pub const SETTINGS: &[Setting] = &[
         ..lake("vector_index", PerType::Only, "null")
     },
     Setting {
-        range: "a list of the type's text fields",
-        says: "Keeps an exact-text index on these fields beyond those the declarations look up by, so a read comparing one to a text reads its matches.",
+        range: "a list of the type's text, number and decimal fields",
+        says: "Keeps an exact-text index on these fields beyond those the declarations look up by, so a read comparing one to a text or a number reads its matches.",
         ..lake("lookup_index", PerType::Only, "null")
     },
     Setting {

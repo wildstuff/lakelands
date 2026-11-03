@@ -1871,8 +1871,8 @@ catalog! {
         // ---- settings
         /// An exact-text index of a field computed at the read.
         LookupIndexAtRead { field: FieldName } => "`{field}` is computed at the read; an exact-text index keeps stored values",
-        /// An exact-text index of a field that is no text.
-        LookupIndexKind { field: FieldName, kind: StorageKind } => "`{field}` is of kind {kind}; an exact-text index keeps text fields",
+        /// An exact-text index of a field that is no text, number or decimal.
+        LookupIndexKind { field: FieldName, kind: StorageKind } => "`{field}` is of kind {kind}; an exact-text index keeps text, number and decimal fields",
         /// A type named as a stored type that is none.
         NoStoredType {
             #[serde(rename = "type")]

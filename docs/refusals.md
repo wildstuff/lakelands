@@ -750,7 +750,7 @@ What a refusal is about.
 | `aging_scoped_setting` | `key` (String) | it reads the setting `{key}`, which is kept for one type or source and not told to every reader; a rule's condition is judged once for every reader | An aging rule whose condition reads a setting for a type or a source. |
 | `aging_system_type` | `type` (TypeName) | `{type}` is a system type; aging never moves it | An aging rule on a system type. |
 | `lookup_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; an exact-text index keeps stored values | An exact-text index of a field computed at the read. |
-| `lookup_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; an exact-text index keeps text fields | An exact-text index of a field that is no text. |
+| `lookup_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; an exact-text index keeps text, number and decimal fields | An exact-text index of a field that is no text, number or decimal. |
 | `no_stored_type` | `type` (TypeName) | `{type}` is no declared stored type | A type named as a stored type that is none. |
 | `no_stored_type_or_view` | `type` (TypeName) | `{type}` is no declared stored type or view | A type named for an order index that is neither stored nor a view. |
 | `no_view` | `type` (TypeName) | `{type}` is no declared view | A type named as a view that is none. |

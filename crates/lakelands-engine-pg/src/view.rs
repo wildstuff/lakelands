@@ -949,12 +949,13 @@ impl Read<'_> {
     ) -> Result<Option<WindowText>> {
         let looked = self.looked(ty, decl)?;
         let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
-        if engines::text_lookups(scan, &|_| true).is_some()
-            && engines::text_lookups(scan, &kept).is_none()
+        let kind = |f: &FieldName| decl.and_then(|d| engines::field_kind(d, f)).copied();
+        if engines::text_lookups(scan, &|_| true, &kind).is_some()
+            && engines::text_lookups(scan, &kept, &kind).is_none()
         {
             return Ok(None);
         }
-        Ok(Some(engines::text_lookups(scan, &kept)))
+        Ok(Some(engines::text_lookups(scan, &kept, &kind)))
     }
 
     /// A statement's count, read as a number.
@@ -1496,8 +1497,16 @@ impl ProjectionView for PgView<'_> {
             }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
-            let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
-            let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
+            let kind = |f: &FieldName| {
+                decl.as_ref()
+                    .and_then(|d| engines::field_kind(d, f))
+                    .copied()
+            };
+            // A text narrowing is the storage's own: a JSON number is not
+            // the token the lookup keeps for it.
+            let text = |f: &FieldName| engines::text_kind(kind(f));
+            let lookup = engines::text_lookups(scan, &kept, &kind).filter(|_| r.head);
+            let (narrow, mut held) = (engines::text_lookup(scan, &|_| true, &text), None);
             engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
                 r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)
             })
@@ -1545,13 +1554,15 @@ impl ProjectionView for PgView<'_> {
             }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
-            let lookup = engines::text_lookup(scan, &kept).filter(|_| r.head);
+            let kind = |f: &FieldName| decl.as_ref().and_then(|d| engines::field_kind(d, f)).copied();
+            let text = |f: &FieldName| engines::text_kind(kind(f));
+            let lookup = engines::text_lookup(scan, &kept, &kind).filter(|_| r.head);
             // Ordered by the key alone, the page is read from `after` in
             // key order and stops when it is full: at the head, with a text
             // the scan must hold, from the records holding it.
             if scan.order_by.is_empty() {
-                let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
-                let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
+                let lookup = engines::text_lookups(scan, &kept, &kind).filter(|_| r.head);
+                let (narrow, mut held) = (engines::text_lookup(scan, &|_| true, &text), None);
                 return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
                     let rows = r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)?;
                     // A range of the key index walks what it hands.

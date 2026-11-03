@@ -351,9 +351,9 @@ fields, at the head only, as `chosen` is. A taken-back pair leaves the list.
 - `WINDOW_TAKES_ONE_RANK`: a text field, a literal of another rank, or a text literal in a range on a decimal field narrows nothing and answers as today.
 - `WINDOW_SKIPS_NO_VALUE`: a short window does not walk the records without the field.
 - `WINDOW_KEEPS_KEY_ORDER`: a key page, and `first`, `last` and an inexact sum at ties.
-- `NUMBER_LOOKUP_READS_ITS_HOLDERS`: `=`, `equal`, `equal_any`, `in`.
-- `NUMBER_LOOKUP_ONE_TOKEN`: `= 7`, `= 7.00`, `= '7'` find one set, `-0` and `0` are one, and a long decimal is found by its own text on the old road.
-- `NUMBER_OUTSIDE_THE_SETTING`: reads as today.
+- `NUMBER_LOOKUP_READS_ITS_HOLDERS`: `=`, `equal`, `equal_any`, `in`. As built in steps 5 and 6: 60 000 records, 600 of them holding the asked number, read by about 600 rows on every engine; a put moving one holder off it and a drop of another take both out of the set and the put into the other's.
+- `NUMBER_LOOKUP_ONE_TOKEN`: `= 7`, `= 7.00`, `= '7'` find one set, `-0` and `0` are one, and a value that reads as no number keeps no row and is found by its own text on the old road. As built: a decimal field, a 40-digit text held in it and found by `=`, and an `in` with such a value taking the old road.
+- `NUMBER_OUTSIDE_THE_SETTING`: reads as today. As built: before the setting, during it, and after it is retired, the same answers.
 - `SERIES_READS_ITS_WINDOW`: every road, a series under and over `FEW_HOLDERS`, by a text and by a number.
 - `SERIES_NO_VALUE_LAST`: records with no value come last in a page, ascending and descending, from the series alone.
 - `SERIES_IN_MERGES`: `in` over 50 series walks about the rows read plus a seek a series.
@@ -373,13 +373,12 @@ Lines as reckoned, then ×1.35. Every pull request stays about 600 or under.
 |---|---|---|---|---|
 | 1.+2. `rows_walked`, `window`, one rank, field-order roads, no `missing` (measured) | all, 1633 | 607 | 881 | measured |
 | 3.+4. `window_keys`, `admitted`, aggregate, count, key page, the smaller side (measured) | 1633 | 1288 | 736 | measured |
-| 5. memory lookup, 057 amended in tree | 1635 | 120 | 150 | 162 / 203 |
-| 6. number token, `lookup_index` widened | 1635 | 140 | 170 | 189 / 230 |
+| 5.+6. memory lookup, number token, `lookup_index` widened, 057 amended in tree (measured) | 1635 | 648 | 289 | measured |
 | 7. `series_index`, rows in the fold, `series.<type>`, the rebuild's exemptions | 1638 | 170 | 200 | 230 / 270 |
 | 8. the build, its driver, `describe` | 1638 | 170 | 220 | 230 / 297 |
 | 9. the series road, one value, the tail | 1638 | 130 | 250 | 176 / 338 |
 | 10. `in`, the merge, the matrix row | 1638 | 100 | 170 | 135 / 230 |
-| **sum** | | **3 116** | **3 304** | steps 1 to 4 measured, the rest ×1.35 |
+| **sum** | | **3 314** | **3 041** | steps 1 to 6 measured, the rest ×1.35 |
 
 Steps 1 to 4 stand alone, in order. Steps 5 and 6 need step 1, and steps 7 to 10
 need step 2. Step 8 changes what `describe` says, so its pull request walks.
@@ -387,9 +386,9 @@ Every step lands after 098's last, and step 8 after 099's R7.
 
 The reserve for lines 2, 3, 4, 6 and 7 of lakelands#1578 is 3 500 product and
 6 000 specification lines, and the sum fits it. Shipped pull requests of this
-round ran about twice their reckoning, though. Steps 1 to 4 now measure
-1 895 / 1 617, half the reserve, and the steps after them stay as reckoned
-until they are measured.
+round ran about twice their reckoning, though. Steps 1 to 6 now measure
+2 543 / 1 906, and the steps after them stay as reckoned until they are
+measured.
 
 ### As built: steps 1 and 2 (lakelands#1693)
 
@@ -588,6 +587,52 @@ declines — 61 ms on SQLite and 682 ms on PostgreSQL at half the type
 and beyond, inside the 1.3 line only because today's read of that
 window is already seconds. The page is the reading this record leaves
 dearer than it found it.
+
+### As built: steps 5 and 6 (lakelands#1706)
+
+The two steps landed in one pull request.
+
+- **The number's token.** `engines::lookup_token(value, kind)` answers the
+  index's entry for a number or decimal field: `as_number(value)`,
+  normalised, as its text. So `7`, `7.00` and `'7'` share one token, `-0`
+  and `0` share one, and a value that reads as no number has no token and
+  keeps no row. `engines::literal_token` reads a literal the same way, and
+  `engines::looked_up` admits a number or decimal field the
+  `lookup_index.<type>` setting names. A literal of such a field reads as
+  today when it does not tokenise, and an `in` list with one value that
+  does not is dropped whole.
+- **The memory engine's lookup.** The projection keeps a
+  `BTreeMap<(TypeName, FieldName, String), BTreeSet<RecordKey>>`, filled in
+  `index` beside the order rows and recorded per record so a reindex can
+  take its old entries out; a declaration that widens or narrows the set
+  reindexes its type by pages. A read in key order pages the union of the
+  tokens' sets (`lookup_after`); a read by the order field takes the
+  holders' own rows for `Few` (`few_after`) and the order index filtered by
+  the holders for `Many`; an exact text outside the head's roads reads the
+  tokens' records. An earlier position and a kept view read as today.
+- **The SQL engines.** SQLite's `index_record`, `unlook` and `relook`
+  moved to tokens as PostgreSQL's did: each writes, drops and fills a
+  number or decimal field's entry. PostgreSQL computes the token in Rust
+  and sends it in one `unnest`; a moved record's entries in those fields
+  go whole, its latest state's written again, so a write reads no state of
+  the key it moves. The setting's fill reads the type's head states, a
+  page at a time.
+- **057.** The record now says the memory engine keeps the index in its
+  projection, that a number field named in the setting keeps an entry of
+  its value's token, and that a value reading as no number keeps none and
+  is scanned for.
+- **Conformance.** Three rows, `NUMBER_LOOKUP_READS_ITS_HOLDERS`,
+  `NUMBER_LOOKUP_ONE_TOKEN` and `NUMBER_OUTSIDE_THE_SETTING`, run on every
+  engine. The first is the claim in a test: 60 000 records, `v = 7` held by
+  600, about 600 rows read by `=`, `equal`, `equal_any` and `in`. The
+  setting's refusal now names a boolean asked of it, since a number is
+  admitted.
+- **Measured.** Product in 779, out 131, net 648; specification in 298,
+  out 9, net 289. The core-size gate: product 103 767 of base 108 500,
+  specification 188 108 of base 191 500, neither base nor ceiling raised.
+  Steps 5 and 6 measured 648 / 289 against the 351 / 433 reckoned for them
+  at ×1.35; the estimate table above carries the measured size and leaves
+  the remaining steps as reckoned.
 
 ### What the operator decided
 
