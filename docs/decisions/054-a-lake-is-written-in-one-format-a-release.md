@@ -33,14 +33,23 @@ that restated it.
     last event (`EngineOpener::log_ends`, which reads the log and makes
     and changes nothing) and judges three numbers: the first
     event's `v`, the format its `lake_created` says, and the last
-    event's `v`. Another format is refused as the situation
-    `log_format`, naming the lake, the first of the three that is
-    another and the one read. The engine's `open` is not called, so no
-    projection is judged or touched, no lease taken, nothing cleared,
-    folded or appended: a lake the release before left is told its
-    format, and never that its projection's layout is unknown. Such a
-    lake is not damaged and restoring it would not help, so it is not
-    said to be.
+    event's `v`. Where the three numbers do not contradict each other —
+    its first event and its `lake_created` name one format, and the last
+    event's `v` is not lower than the first's — another format is
+    refused as the situation `log_format`, naming the lake, the first of
+    the three that is another and the one read. The engine's `open` is
+    not called, so no projection is judged or touched, no lease taken,
+    nothing cleared, folded or appended: a lake the release before left
+    is told its format, and never that its projection's layout is
+    unknown. Such a lake is not damaged and restoring it would not help,
+    so it is not said to be.
+  - Two ends that contradict each other in a way no release writes are
+    damage, not another release's lake: a `lake_created` whose `format`
+    is not its own line's `v` (one release wrote both at once), and a
+    tip older than the first event (a release appends only onto a lake
+    whose first event it reads). Such a lake is refused as `damaged` at
+    the event that carries the contradiction, naming its position and
+    the flaw; restoring it from a backup is the remedy.
   - An import asks the same before it opens its target. Onto a lake of
     another format it is refused as `log_format`; onto a lake of this
     format as `import_not_empty`, naming the tip. The engine is opened

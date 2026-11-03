@@ -896,45 +896,85 @@ async fn lake_continued_in(formats: &[u32]) -> (String, (Position, Digest)) {
     (lake, (at, prev))
 }
 
-/// A lake whose newest event another release wrote, in an older format or
-/// a newer one, is refused at an open in every mode, by its name and both
-/// formats, before anything is done to it: its tip stands, its projection
-/// is where it was (a rebuild cleared nothing), and its lease is free
+/// A lake's tip and the point its projection was folded through, taken
+/// through a writer's open, which also proves the lease free.
+fn settled(lake: &str) -> (Option<(Position, Digest)>, Option<Position>) {
+    let engine = opener()
+        .open(&Location::memory(lake), OpenMode::Write)
+        .unwrap();
+    let folded = engine.projection().folded_through().unwrap();
+    let lease = engine.take_lease("a probe").expect("the lease is free");
+    engine.release_lease(&lease).unwrap();
+    (engine.tip().unwrap(), folded)
+}
+
+/// A lake whose newest event another release wrote in a newer format is
+/// refused at an open in every mode, by its name and both formats, before
+/// anything is done to it: its tip stands, its projection is where it was
+/// (a rebuild cleared nothing), and its lease is free
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+/// A tip older than the first event is damage instead, below.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lake_of_another_format_is_refused_at_an_open_and_left_as_it_was() {
     use lakelands_api::error::Situation;
     let reads = lakelands_api::event::LOG_FORMAT_VERSION;
-    for other in [lakelands_api::event::OLDEST_LOG_FORMAT - 1, reads + 1] {
-        let (lake, tip) = lake_continued_in(&[other]).await;
-        let state = || {
-            let engine = opener()
-                .open(&Location::memory(lake.as_str()), OpenMode::Write)
-                .unwrap();
-            let folded = engine.projection().folded_through().unwrap();
-            let lease = engine.take_lease("a probe").expect("the lease is free");
-            engine.release_lease(&lease).unwrap();
-            (engine.tip().unwrap(), folded)
+    let other = reads + 1;
+    let (lake, tip) = lake_continued_in(&[other]).await;
+    let before = settled(&lake);
+    assert_eq!(before.0, Some(tip));
+    assert!(before.1.is_some(), "the store that made the lake folded it");
+    for mode in [
+        OpenMode::Read,
+        OpenMode::Write,
+        OpenMode::Create,
+        OpenMode::Rebuild,
+    ] {
+        let Err(e) = open(&lake, mode).await else {
+            panic!("a lake in format {other} opened for {mode:?}");
         };
-        let before = state();
-        assert_eq!(before.0, Some(tip));
-        assert!(before.1.is_some(), "the store that made the lake folded it");
-        for mode in [
-            OpenMode::Read,
-            OpenMode::Write,
-            OpenMode::Create,
-            OpenMode::Rebuild,
-        ] {
-            let Err(e) = open(&lake, mode).await else {
-                panic!("a lake in format {other} opened for {mode:?}");
-            };
-            assert!(
-                matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r, .. })
-                    if *l == lake && *found == u64::from(other) && *r == u64::from(reads)),
-                "{mode:?}: {e:?}"
-            );
-            assert_eq!(state(), before, "{mode:?} left the lake as it was");
-        }
+        assert!(
+            matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r, .. })
+                if *l == lake && *found == u64::from(other) && *r == u64::from(reads)),
+            "{mode:?}: {e:?}"
+        );
+        assert_eq!(settled(&lake), before, "{mode:?} left the lake as it was");
+    }
+}
+
+/// A lake a release continued in an older format is damaged, not another
+/// release's: a release refuses a lake whose first event it does not
+/// read, so it never appends an older format onto a newer lake. The
+/// open, in every mode, refuses it as damage at the tip, naming that
+/// format and the one this release writes, and leaves the lake as it
+/// was: its tip stands, its projection is where it was, and its lease is
+/// free (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lake_continued_in_an_older_format_is_damaged_at_the_tip_and_left_as_it_was() {
+    use lakelands_api::error::{Flaw, Situation};
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let older = reads - 1;
+    let (lake, tip) = lake_continued_in(&[older]).await;
+    let before = settled(&lake);
+    assert_eq!(before.0.as_ref(), Some(&tip));
+    assert!(before.1.is_some(), "the store that made the lake folded it");
+    for mode in [
+        OpenMode::Read,
+        OpenMode::Write,
+        OpenMode::Create,
+        OpenMode::Rebuild,
+    ] {
+        let Err(e) = open(&lake, mode).await else {
+            panic!("a lake continued in format {older} opened for {mode:?}");
+        };
+        assert!(
+            matches!(e.situation(), Some(Situation::Damaged {
+                position: Some(p),
+                flaw: Flaw::FormatOther { v, reads: r },
+                ..
+            }) if *p == tip.0 && *v == u64::from(older) && *r == u64::from(reads)),
+            "{mode:?}: {e:?}"
+        );
+        assert_eq!(settled(&lake), before, "{mode:?} left the lake as it was");
     }
 }
 
@@ -1001,13 +1041,17 @@ fn lake_written_as(first: u32, created: u32, tip: u32) -> String {
 /// in every mode: where the first event's `v`, the format its
 /// `lake_created` says or the last event's `v` is another release's, the
 /// open is refused by that number and the engine was never opened, so it
-/// judged no projection, made nothing and changed nothing
+/// judged no projection, made nothing and changed nothing; where two
+/// ends contradict each other in a way no release writes, the open is
+/// refused as damage at the end that carries it, and the engine was not
+/// opened either
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 /// A lake of the release's format opens its engine once.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lake_of_another_format_is_judged_before_its_engine_is_opened() {
-    use lakelands_api::error::Situation;
+    use lakelands_api::error::{Flaw, Part, Situation};
     let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let oldest = lakelands_api::event::OLDEST_LOG_FORMAT;
     let opened = Arc::new(AtomicU64::new(0));
     let watched = || Seams {
         engines: vec![Arc::new(Watched {
@@ -1016,13 +1060,46 @@ async fn a_lake_of_another_format_is_judged_before_its_engine_is_opened() {
         })],
         ..Seams::default()
     };
-    for other in [lakelands_api::event::OLDEST_LOG_FORMAT - 1, reads + 1] {
+    for other in [oldest - 1, reads + 1] {
         for (first, created, tip) in [
+            (other, other, other),
             (other, reads, reads),
             (reads, other, reads),
             (reads, reads, other),
         ] {
             let lake = lake_written_as(first, created, tip);
+            let format = |found: u32| Situation::LogFormat {
+                lake: lake.clone(),
+                found: found.into(),
+                reads: reads.into(),
+                oldest: Some(oldest.into()),
+            };
+            let want = if first == created && created == tip {
+                format(other)
+            } else if first != created {
+                // A `lake_created` that says another format than its own
+                // line: one release wrote both at once.
+                Situation::Damaged {
+                    part: Part::Log,
+                    position: Some(Position(0)),
+                    flaw: Flaw::CreatedInAnother {
+                        format: created.into(),
+                        reads: reads.into(),
+                    },
+                }
+            } else if other < reads {
+                // A tip older than the first event.
+                Situation::Damaged {
+                    part: Part::Log,
+                    position: Some(Position(1)),
+                    flaw: Flaw::FormatOther {
+                        v: other.into(),
+                        reads: reads.into(),
+                    },
+                }
+            } else {
+                format(other)
+            };
             for mode in [
                 OpenMode::Read,
                 OpenMode::Write,
@@ -1033,10 +1110,10 @@ async fn a_lake_of_another_format_is_judged_before_its_engine_is_opened() {
                 let Err(e) = lakelands_store::open(location, watched(), mode).await else {
                     panic!("a lake written as {first}, {created}, {tip} opened for {mode:?}");
                 };
-                assert!(
-                    matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r, .. })
-                        if *l == lake && *found == u64::from(other) && *r == u64::from(reads)),
-                    "{first}, {created}, {tip}, {mode:?}: {e:?}"
+                assert_eq!(
+                    e.situation(),
+                    Some(&want),
+                    "{first}, {created}, {tip}, {mode:?}"
                 );
                 let n = opened.load(Ordering::Relaxed);
                 assert_eq!(n, 0, "{mode:?}: the engine was opened");
@@ -1051,13 +1128,16 @@ async fn a_lake_of_another_format_is_judged_before_its_engine_is_opened() {
 
 /// An import asks the same question before it opens the target's
 /// engine: onto a lake of another format it is refused by that format,
-/// and onto a lake of the release's it is told the lake holds events,
-/// through its tip. The engine is opened for neither, so an import takes
-/// no lease on a lake that is there and changes nothing of it.
+/// onto a lake whose ends contradict each other it is refused as damage
+/// at the end that carries it, and onto a lake of the release's it is
+/// told the lake holds events, through its tip. The engine is opened for
+/// none of them, so an import takes no lease on a lake that is there and
+/// changes nothing of it.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_import_judges_the_lake_it_finds_before_its_engine_is_opened() {
-    use lakelands_api::error::Situation;
+    use lakelands_api::error::{Flaw, Part, Situation};
     let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let oldest = lakelands_api::event::OLDEST_LOG_FORMAT;
     let opened = Arc::new(AtomicU64::new(0));
     let watched = || Seams {
         engines: vec![Arc::new(Watched {
@@ -1082,23 +1162,49 @@ async fn an_import_judges_the_lake_it_finds_before_its_engine_is_opened() {
         written.await.unwrap();
         dir
     };
-    for other in [lakelands_api::event::OLDEST_LOG_FORMAT - 1, reads + 1] {
+    for other in [oldest - 1, reads + 1] {
         for (first, created, tip) in [
+            (other, other, other),
             (other, reads, reads),
             (reads, other, reads),
             (reads, reads, other),
         ] {
             let lake = lake_written_as(first, created, tip);
+            let format = |found: u32| Situation::LogFormat {
+                lake: lake.clone(),
+                found: found.into(),
+                reads: reads.into(),
+                oldest: Some(oldest.into()),
+            };
+            let want = if first == created && created == tip {
+                format(other)
+            } else if first != created {
+                Situation::Damaged {
+                    part: Part::Log,
+                    position: Some(Position(0)),
+                    flaw: Flaw::CreatedInAnother {
+                        format: created.into(),
+                        reads: reads.into(),
+                    },
+                }
+            } else if other < reads {
+                Situation::Damaged {
+                    part: Part::Log,
+                    position: Some(Position(1)),
+                    flaw: Flaw::FormatOther {
+                        v: other.into(),
+                        reads: reads.into(),
+                    },
+                }
+            } else {
+                format(other)
+            };
             let dir = exported(&lake).await;
             let onto = Location::memory(lake.as_str());
             let Err(e) = lakelands_store::import(onto, watched(), dir.clone()).await else {
                 panic!("an import onto a lake written as {first}, {created}, {tip} was taken");
             };
-            assert!(
-                matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r, .. })
-                    if *l == lake && *found == u64::from(other) && *r == u64::from(reads)),
-                "{first}, {created}, {tip}: {e:?}"
-            );
+            assert_eq!(e.situation(), Some(&want), "{first}, {created}, {tip}");
             let _ = std::fs::remove_dir_all(&dir);
         }
     }

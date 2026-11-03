@@ -1470,6 +1470,28 @@ pub async fn pause(d: std::time::Duration) {
     .await
 }
 
+/// Try `check` up to `tries` times, `every` apart, until it holds: what a
+/// check waits for where the road beside a writer's open, not the open
+/// itself, settles an owed act (099). Answers the last failure where it
+/// never holds, so the row says what it saw.
+pub async fn settles<F, Fut>(tries: u32, every: std::time::Duration, mut check: F) -> Held
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Held>,
+{
+    let mut last = Failure::new("the road's settle was never tried");
+    for n in 0..tries {
+        match check().await {
+            Ok(()) => return Ok(()),
+            Err(failure) => last = failure,
+        }
+        if n + 1 < tries {
+            pause(every).await;
+        }
+    }
+    Err(last)
+}
+
 /// `learning`, a text `kind` and `cites`, a `json` field carrying the
 /// relation `cites` to `learning`, many to many (091), and a `note` to
 /// move the head by; then each learning, `kind` open, citing what it is

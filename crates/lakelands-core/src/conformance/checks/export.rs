@@ -111,7 +111,7 @@ check!(
 check!(
     ANOTHER_RELEASES =
         a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_where_it_is_read,
-    "054: a lake whose newest event another release wrote, in the format before the release's or the one after, is refused as `log_format` at an open to read, to write and to rebuild, naming the lake and both formats, and is left as it was: its tip, the position its projection is folded through and its free lease; once a writer of the release's format follows, the lake opens to read, and the event of another format is refused as `format_other` at its position by `verify`, by a writer's open and by a rebuild, with the tip where it was and the lease free",
+    "054: a lake whose newest event another release wrote, in the format after the release's, is refused as `log_format` at an open to read, to write and to rebuild, naming the lake and both formats, and is left as it was: its tip, the position its projection is folded through and its free lease; in the format before the release's, which no release appends onto a newer lake, it is refused instead as `damaged` at that event, naming `format_other` and both formats, and is left as it was too; once a writer of the release's format follows, the lake opens to read, and the event of another format is refused as `format_other` at its position by `verify`, by a writer's open and by a rebuild, with the tip where it was and the lease free",
     given
 );
 
@@ -1524,13 +1524,30 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
                 .await
                 .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
             let e = c.opened.err();
+            // A tip newer than the first event is another release's lake,
+            // refused as `log_format`; one older than it is a
+            // contradiction no release writes, damage at that event.
+            let want = if other < reads {
+                Situation::Damaged {
+                    part: lakelands_api::error::Part::Log,
+                    position: c.before.tip.as_ref().map(|(at, _)| *at),
+                    flaw: Flaw::FormatOther {
+                        v: other.into(),
+                        reads: reads.into(),
+                    },
+                }
+            } else {
+                Situation::LogFormat {
+                    lake: lake.as_str().to_owned(),
+                    found: other.into(),
+                    reads: reads.into(),
+                    oldest: Some(lakelands_api::event::OLDEST_LOG_FORMAT.into()),
+                }
+            };
             ensure!(
-                matches!(e.as_ref().and_then(Error::situation),
-                    Some(Situation::LogFormat { lake: l, found, reads: r, .. })
-                        if l == lake.as_str() && *found == u64::from(other) && *r == u64::from(reads)),
+                e.as_ref().and_then(Error::situation) == Some(&want),
                 "a lake whose newest event is in format {other} is refused at an open for \
-                 {mode:?} as `log_format`, naming the lake, that format and the one this \
-                 release reads, {reads}; it answered {e:?}"
+                 {mode:?} as {want:?}; it answered {e:?}"
             );
             ensure!(
                 c.before.lease_free && c.after.as_ref() == Some(&c.before),

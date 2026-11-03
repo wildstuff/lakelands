@@ -31,7 +31,7 @@ check!(
 
 check!(
     FORGET_CRASH = a_forgetting_a_crash_stopped_is_finished_by_the_next_writers_open,
-    "058: a forgetting stopped after its event, before its keys are destroyed, and one stopped after its keys are destroyed, before its rebuild, each leave the source's ingest refused; the first is finished by the act's repeat on the same handle, the second by the writer's next open, each destroying the keys, rebuilding and reclaiming, appending no second event, and the values read as erased at every position; an open after that changes nothing",
+    "058: a forgetting stopped after its event, before its keys are destroyed, and one stopped after its keys are destroyed, before its rebuild, each leave the source's ingest refused; the first is finished by the act's repeat on the same handle, the second by the road beside the writer's next open (099), each destroying the keys, rebuilding and reclaiming, appending no second event, and the values read as erased at every position once it is whole; an open after that changes nothing",
     reopens
 );
 
@@ -444,11 +444,19 @@ async fn a_forgetting_a_crash_stopped_is_finished_by_the_next_writers_open(
             left.is_empty(),
             "the open after a stop {stop} destroyed {source}'s keys: {left:?}"
         );
-        let p5 = person_at(&l, "p5", Some(eve_at)).await?;
-        ensure!(
-            p5.fields.contains_key("name") == (source == "crm"),
-            "after the open, crm2's `p5` holds its name only while crm2 is not forgotten: {p5:?}"
-        );
+        // The open answers before the road beside it takes the owed act up
+        // (099), so what the act left is waited for, bounded, rather than
+        // read at the open's answer.
+        settles(6_000, Duration::from_millis(1), || async {
+            let p5 = person_at(&l, "p5", Some(eve_at)).await?;
+            ensure!(
+                p5.fields.contains_key("name") == (source == "crm"),
+                "after the open, crm2's `p5` holds its name only while crm2 is not forgotten: \
+                 {p5:?}"
+            );
+            Ok(())
+        })
+        .await?;
         if source == "crm" {
             refused(store.as_ref(), &l).await?;
             for at in [None, Some(before)] {
@@ -669,7 +677,7 @@ async fn an_export_imports_with_its_keys_or_with_its_forgetting(
 
 check!(
     RECLAIM_OWED = a_reclaim_that_fails_keeps_no_writer_out,
-    "058 and 065, extended (lakelands#1161, lakelands#1179): a forgetting whose reclaim fails answers its report, the values erased already, with the reclaim owed and its cause, as the lake does and its next preflight; a `rebuild()` whose reclaim fails answers, still owing it; the lake's next writer opens though the reclaim fails again, still owing it, writes and reads the values erased; the open after the reclaim can run finishes it and owes nothing, and the act's repeat answers it done; a removal whose reclaim fails answers as the forgetting does, and so does its preflight; a compact that runs clears what it owed, and the next open reclaims nothing, while one that fails with nothing owed owes nothing; a rebuild a forgetting still owes refuses the writer's open while it fails, as before",
+    "058 and 065, extended (lakelands#1161, lakelands#1179, 099): a forgetting whose reclaim fails answers its report, the values erased already, with the reclaim owed and its cause, as the lake does and its next preflight; a `rebuild()` whose reclaim fails answers, still owing it; the lake's next writer opens though the reclaim fails again, and the road beside the open tries it, failing, so it still owes, while the writer writes and reads the values erased; the open after the reclaim can run finishes it beside the writer and owes nothing, and the act's repeat answers it done; a removal whose reclaim fails answers as the forgetting does, and so does its preflight; a compact that runs clears what it owed, and the next open reclaims nothing, while one that fails with nothing owed owes nothing; a rebuild a forgetting still owes does not refuse the writer's open: the open answers, the road beside it tries the rebuild and, failing, leaves the act owed, and a write lands",
     given
 );
 
@@ -1081,25 +1089,49 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
         rebuilt.is_ok() && tried && store.reclaim_owed().is_some(),
         "a rebuild whose reclaim fails answers, still owing it: {rebuilt:?}, tried {tried}"
     );
-    // The next writer opens though the reclaim fails again.
+    // The next writer opens though the reclaim fails again: the open
+    // answers and the road beside it tries the reclaim.
     fails[0].store(1, Ordering::SeqCst);
     store = fault(store, "while its reclaim fails").await?;
-    let (tried, owed) = (fails[0].load(Ordering::SeqCst) == 0, store.reclaim_owed());
+    settles(6_000, Duration::from_millis(10), || async {
+        ensure!(
+            fails[0].load(Ordering::SeqCst) == 0,
+            "the road beside the writer's open has not tried the owed reclaim"
+        );
+        Ok(())
+    })
+    .await?;
+    let owed = store.reclaim_owed();
     ensure!(
-        tried && owed.is_some(),
-        "the writer's open tries the owed reclaim and, failing, still owes it, saying why: tried \
-         {tried}, owing {owed:?}"
+        owed.is_some(),
+        "the owed reclaim, tried beside the open and failing, still owes, saying why: owing \
+         {owed:?}"
     );
     let l = Lake::of(store.as_ref());
     erased(&l, None).await?;
     l.upsert("person", "p2", json!({"note": "written"})).await?;
-    // The open after the reclaim can run finishes it.
+    // The open after the reclaim can run finishes it, beside the writer.
     store = fault(store, "once its reclaim runs").await?;
+    settles(6_000, Duration::from_millis(10), || async {
+        ensure!(
+            store.reclaim_owed().is_none(),
+            "the road beside the writer's next open has not reclaimed: owing {:?}",
+            store.reclaim_owed()
+        );
+        Ok(())
+    })
+    .await?;
+    let before = store.head().await.must("reading the head")?;
     let done = store.forget_source(&crm, None).await;
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "the act's repeat after the reclaim ran",
+    )
+    .await?;
     ensure!(
-        store.reclaim_owed().is_none() && done.as_ref().is_ok_and(|r| r.reclaimed.is_none()),
-        "the open that can reclaim finishes it and owes nothing, and the act's repeat answers it \
-         done: owing {:?}, the repeat {done:?}",
+        done.is_ok() && store.reclaim_owed().is_none(),
+        "the act's repeat answers it done, owing nothing: {done:?}, owing {:?}",
         store.reclaim_owed()
     );
     // A removal's reclaim is owed as a forgetting's, and a compact that
@@ -1131,7 +1163,9 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
         "after the compact the acts are done: the next open reclaims nothing ({left} reclaim \
          left to fail) and owes nothing"
     );
-    // A rebuild still owed refuses the writer's open while it fails.
+    // A rebuild a forgetting still owes does not refuse the writer's
+    // open: the open answers, and the road beside it tries the rebuild,
+    // failing, so the act stays owed (099).
     let l = Lake::of(store.as_ref());
     let eve = source_record("person", "p5", json!({"id": "p5", "name": "Eve"}));
     l.ingest("crm2", vec![eve])
@@ -1139,11 +1173,29 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
         .must("ingesting from crm2")?;
     fails[1].store(2, Ordering::SeqCst);
     let stopped = store.forget_source(&"crm2".into(), None).await;
-    let refused = (given.fault)(store, seams(), wrap.clone()).await.map(drop);
+    let opened = (given.fault)(store, seams(), wrap.clone()).await;
+    let opened = opened.map_err(|e| Failure::new(format!("the writer's open was refused: {e}")))?;
+    settles(6_000, Duration::from_millis(10), || async {
+        ensure!(
+            fails[1].load(Ordering::SeqCst) == 0,
+            "the road beside the writer's open has not tried the owed rebuild"
+        );
+        Ok(())
+    })
+    .await?;
+    // The writer is not held out: an author's write lands while the
+    // forgotten source's act is owed.
+    let lake = Lake::of(opened.as_ref());
+    lake.upsert("person", "p2", json!({"note": "while crm2 is owed"}))
+        .await
+        .map_err(|e| {
+            Failure::new(format!(
+                "an author's write while an owed rebuild fails: {e}"
+            ))
+        })?;
     ensure!(
-        stopped.is_err() && refused.is_err() && fails[1].load(Ordering::SeqCst) == 0,
-        "a forgetting whose rebuild fails, and the writer's open whose rebuild of it fails \
-         again, are refused; they answered {stopped:?} and {refused:?}"
+        stopped.is_err(),
+        "the forgetting whose rebuild fails answers its failure: {stopped:?}"
     );
     Ok(())
 }

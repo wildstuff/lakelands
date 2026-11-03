@@ -1474,12 +1474,21 @@ impl LakeStore for Store {
         id: Option<&str>,
     ) -> Result<RemoveReport> {
         writes::check_source(source)?;
-        let (source, id) = (source.clone(), id.map(str::to_owned));
-        let selection = selection.clone();
-        let remove = move |t: &Turn<'_>| {
-            crate::remove::run(t, &source, &selection, (shredded, id.as_deref()))
-        };
-        exec::write(&self.lake, remove).await
+        let (source, selection, id) = (
+            source.clone(),
+            crate::remove::checked(selection)?,
+            id.map(str::to_owned),
+        );
+        // The act runs along the road, beside the writer: the door waits
+        // for its last turn without holding the queue.
+        let (answer, waiting) = tokio::sync::oneshot::channel();
+        crate::remove::start(&self.lake, source, selection, shredded, id, Some(answer));
+        let (mut report, own) = waiting.await.unwrap_or_else(|_| Err(exec::halted(true)))?;
+        // The retirements' backed fields settle like any write's.
+        if let Some(last) = crate::backed::settle_after(&self.lake, &own).await {
+            report.position = report.position.max(last);
+        }
+        Ok(report)
     }
 
     async fn remove_values_preflight(

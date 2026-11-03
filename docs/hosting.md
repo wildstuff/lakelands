@@ -984,10 +984,14 @@ are made anew, and `lakelands upgrade` is gone.
   of it is written, and the lake it was to fill stays empty.
 - **A format this release does not read**, older than 23 or newer than
   the release, is refused at the open in every mode, naming the lake,
-  the formats read and the one written (`log_format`). The store reads
-  the two ends of the log before it opens the lake's engine, so such a
-  lake is left as it stands: its projection is not judged, and nothing
-  of it is made, folded or changed. An import asks the same before it
+  the formats read and the one written (`log_format`) — unless the
+  lake's own ends contradict each other, which no release writes: a
+  `lake_created` whose format is not its own line's `v`, or a newest
+  event older than the first, is refused as `damaged` at the end that
+  carries it, and a backup is the remedy. The store reads the two ends of
+  the log before it opens the lake's engine, so such a lake is left as it
+  stands: its projection is not judged, and nothing of it is made, folded
+  or changed. An import asks the same before it
   opens its target: onto such a lake it is refused the same way, and
   onto a lake it reads as `import_not_empty`, with no lease taken and
   nothing changed. The number steps only in a release that changes the

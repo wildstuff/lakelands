@@ -680,13 +680,6 @@ fn retirements(
     Ok((drafts, d.pending.across as u32))
 }
 
-/// The closes of the act's first turn that fit in `room` beside its
-/// `source_purged`; the rest stay owed to the parts.
-fn take_closes(closes: &mut VecDeque<EventBody>, room: usize) -> Vec<EventBody> {
-    let fit = room.saturating_sub(1).min(closes.len());
-    closes.drain(..fit).collect()
-}
-
 /// The purges the log and [`PURGED`] leave owed: every act that is not
 /// whole, taken up again by the next writer's open.
 pub(crate) fn owed(_lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
@@ -970,12 +963,8 @@ impl Purge {
         }
     }
 
-    /// One part: the closes the act still owes and the selection's next
-    /// records, each read again as it stands now, as one append of at most
-    /// `room` events, with `act_whole` in it where nothing is left and it
-    /// fits. A record another hand wrote since keeps its record; one gone
-    /// is dropped (099, "What stands between parts"). One record's
-    /// retirements are one append's, however many of them it takes.
+    /// One part of the act, by the rule a removal's parts share with it
+    /// ([`crate::parts::part`]).
     fn part(
         &mut self,
         lake: &Lake,
@@ -983,51 +972,20 @@ impl Purge {
         now: Timestamp,
         room: usize,
     ) -> Result<(Vec<Draft>, bool)> {
-        let system = lake.system("lakelands");
-        let asked = writes::Asked {
+        let act = self.act.expect("a part follows the act's beginning");
+        crate::parts::part(
             lake,
-            who: &system,
-            context: &WriteContext::default(),
-        };
-        let mut drafts = Vec::new();
-        while drafts.len() < room {
-            let Some(body) = self.closes.pop_front() else {
-                break;
-            };
-            drafts.push(Draft::system(now, body));
-        }
-        // The retirements are caused by their own position in the append,
-        // after the closes the part carries in front of them.
-        let mut d = asked.decide(w, view, now, drafts.len());
-        d.bound = true;
-        d.retiring_as = ChangeKind::Purged;
-        while drafts.len() < room {
-            let Some((_, before)) = self.taken.first_key_value() else {
-                break;
-            };
-            let before = before.clone();
-            let live = match view.get(&before.ty, &before.key)? {
-                Some(live) if live.version == before.version => live,
-                _ => {
-                    self.taken.remove(&(before.ty, before.key));
-                    continue;
-                }
-            };
-            let body = writes::retirement(&live.ty, &live.key, live.version);
-            let written = d.retiring(&live, Draft::system(now, body))?;
-            if !drafts.is_empty() && drafts.len() + written.len() > room {
-                break;
-            }
-            self.taken.remove(&(live.ty.clone(), live.key.clone()));
-            drafts.extend(written);
-        }
-        let ends = self.taken.is_empty() && self.closes.is_empty();
-        let whole = ends && drafts.len() < room;
-        if whole {
-            let act = self.act.expect("a part follows the act's beginning");
-            drafts.push(Draft::system(now, EventBody::ActWhole { act }));
-        }
-        Ok((drafts, whole))
+            (w, view),
+            now,
+            room,
+            Vec::new(),
+            crate::parts::Part {
+                closes: &mut self.closes,
+                taken: &mut self.taken,
+                kind: ChangeKind::Purged,
+                act,
+            },
+        )
     }
 
     /// One turn beside the writer, as [`Job::turn`] describes: the act's
@@ -1072,7 +1030,7 @@ impl Purge {
                     ty: self.ty.clone(),
                 },
             )];
-            let fit = take_closes(&mut self.closes, room);
+            let fit = crate::parts::take_closes(&mut self.closes, room);
             drafts.extend(fit.into_iter().map(|c| Draft::system(now, c)));
             let ends = self.taken.is_empty() && self.closes.is_empty();
             let whole = ends && drafts.len() < room;
