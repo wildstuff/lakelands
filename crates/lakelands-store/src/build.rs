@@ -337,12 +337,13 @@ impl Build {
             projection.rollback();
             return Ok(Turned::More);
         }
-        let part = crate::kept::fill(&at, &mut staged, &self.ty, limit, head).and_then(|last| {
-            match last {
-                Some(_) => Ok(false),
-                None => crate::kept::keep(&at, &mut staged, &self.ty, head).map(|_| true),
-            }
-        });
+        let part =
+            crate::kept::fill(&at, &mut staged, &self.ty, limit, head).and_then(
+                |last| match last {
+                    Some(_) => Ok(false),
+                    None => crate::kept::keep(&at, &mut staged, &self.ty, head).map(|_| true),
+                },
+            );
         match part {
             Ok(kept) => {
                 projection.commit(head)?;

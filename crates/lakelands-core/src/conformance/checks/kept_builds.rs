@@ -86,8 +86,10 @@ async fn by_s(l: &Lake) -> Result<(), Failure> {
 /// What the view `by_s` answers: each group's key, count and total, sorted
 /// so that two reads are compared as answers, not as an order.
 async fn groups(l: &Lake) -> Result<Vec<String>, Failure> {
-    let mut find = Find::default();
-    find.limit = Some(1_000);
+    let find = Find {
+        limit: Some(1_000),
+        ..Default::default()
+    };
     let reply = l
         .cat
         .find(&l.own, &TypeName::from("by_s"), find)
