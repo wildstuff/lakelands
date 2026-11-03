@@ -44,6 +44,86 @@ async fn answers(store: &dyn LakeStore, ty: &TypeName) -> Result<Answers, Failur
 }
 
 check!(
+    WINDOW_AGGREGATE_JUDGES_A_LINKS_ENDS =
+        an_aggregate_over_a_window_judges_a_links_ends_as_a_page_does,
+    "097 §As built, steps 3 and 4: a window's keys are answered by the engine, which holds no end, so an aggregate over a link type whose ends its reader does not hold reads the links as a page reads them, one record per key and the ends judged, and answers the same count and sum as a walk of every page; a count takes the page's road already",
+    given
+);
+
+async fn an_aggregate_over_a_window_judges_a_links_ends_as_a_page_does(
+    store: Store,
+    _given: Given,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let (cat, own) = (l.cat.clone(), l.own.clone());
+    l.declare(type_decl("term", vec![field("code", StorageKind::Text)]))
+        .await?;
+    let mut deal = type_decl("deal", vec![field("n", StorageKind::Number)]);
+    deal.relations = vec![RelationDecl {
+        fields: vec![field("v", StorageKind::Number)],
+        ..RelationDecl::to("with", "term")
+    }];
+    l.declare(deal).await?;
+    for i in 0..5 {
+        l.upsert("term", &format!("t{i}"), json!({"code": format!("c{i}")}))
+            .await?;
+    }
+    for i in 0..10 {
+        l.upsert("deal", &format!("d{i}"), json!({"n": i})).await?;
+    }
+    let link = link_type_name(&"deal".into(), &"with".into());
+    for i in 0..10 {
+        let (from, to) = (format!("d{i}"), format!("t{}", i % 5));
+        let (rel, at, end) = ("with".into(), from.into(), to.into());
+        let fields = patch(json!({"v": i}));
+        cat.link(
+            &own,
+            &"deal".into(),
+            &at,
+            &rel,
+            &end,
+            fields,
+            WriteOpts::default(),
+        )
+        .await
+        .must("linking a deal to its term")?;
+    }
+    // One term is withheld: a page of the links refuses the links to it
+    // as one scan over the links does.
+    restrict(store.as_ref(), "term", "t1", "held here").await?;
+    let setting = format!("sort_index.{}", link.as_str());
+    l.set(&setting, json!(["v"])).await?;
+    drop(l);
+    let who = reads_all(store.as_ref(), "reader");
+    let ty = TypeName::from(link.as_str());
+    // `v` from 2 to 8 is seven links, one of them to the withheld term.
+    let bound = "v >= 2 and v <= 8";
+    let keys = page(cat.as_ref(), &who, &ty, bound, 100).await?;
+    ensure!(
+        keys.len() == 6,
+        "a page over `{bound}` answered {} links {:?}; seven links lie in the bound and the \
+         one to the withheld term must be left out, as a scan leaves it",
+        keys.len(),
+        keys
+    );
+    let totals = group(cat.as_ref(), &who, &ty, sum(bound)).await?;
+    let counted = |name: &str| decimal(totals.get(&FieldName::from(name)));
+    ensure!(
+        counted("n") == Some(dec("6")) && counted("total") == Some(dec("29")),
+        "an aggregate over `{bound}` answered {:?} links summed {:?}; the page answers 6 links \
+         summed 29, and the aggregate must judge the ends as the page does",
+        counted("n"),
+        counted("total")
+    );
+    let counted_links = total(cat.as_ref(), &who, &ty, bound).await?;
+    ensure!(
+        counted_links == 6,
+        "a count over `{bound}` answered {counted_links} links; the page answers 6"
+    );
+    Ok(())
+}
+
+check!(
     WINDOW_PAST_ITS_BOUNDS = a_read_past_its_window_ceiling_answers_as_one_inside_it,
     "097 §Past the bounds: an aggregate over a window wider than `limits.window_keys` takes the other side and answers what the same read answers under a ceiling wide enough to hold the window; a key page over a window of more than `FEW_HOLDERS` rows takes the type and answers the page, and one within the ceiling answers the page; a count has no ceiling and answers the same under either; each answer is the count, the sum and the ten keys a walk of every page gives",
     given

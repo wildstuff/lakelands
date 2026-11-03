@@ -357,7 +357,10 @@ impl<'a> Reader<'a> {
         };
         let mut grouping = aggregate::grouping(a, self.now).map_err(named)?;
         let mut done = false;
-        if self.kept(decl)?.is_none() && decl.view.is_none() {
+        // A link's ends are judged a page at a time, as a count reads them:
+        // the window's keys are answered by the engine, which holds no
+        // end, so a window over them would count links a page refuses.
+        if self.kept(decl)?.is_none() && decl.view.is_none() && !self.sight.judges_ends(decl) {
             // A window's aggregate gathers the window's keys, sorts them
             // and reads them by key; past `limits.window_keys` it takes
             // the other side, having lost only the counts

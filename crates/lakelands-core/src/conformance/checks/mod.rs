@@ -1223,5 +1223,6 @@ pub const ALL: &[Check] = &[
     grid::GRID,
     metered::METERED,
     metered::METERED_LEASE,
+    window::WINDOW_AGGREGATE_JUDGES_A_LINKS_ENDS,
     window::WINDOW_PAST_ITS_BOUNDS,
 ];

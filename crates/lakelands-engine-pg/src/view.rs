@@ -1214,9 +1214,12 @@ impl Read<'_> {
                 self.counted(&q, &args)?
             }
             Some((text_field, texts)) => {
+                // Several texts are sought by their `md5`, the form the
+                // index holds, so the count reads the index alone.
                 let q = format!(
                     "SELECT COUNT(*) FROM (SELECT 1 FROM {text_index} \
-                     WHERE ty = $1 AND field = $2 AND value = ANY($3::text[]) LIMIT $4) x"
+                     WHERE ty = $1 AND field = $2 AND md5(value) IN \
+                     (SELECT md5(x) FROM unnest($3::text[]) x) LIMIT $4) x"
                 );
                 let args: [&(dyn ToSql + Sync); 4] = [&ty_name, &text_field.as_str(), texts, &cap];
                 self.counted(&q, &args)?
@@ -1267,7 +1270,9 @@ impl Read<'_> {
         if texts.len() == 1 {
             query.push_str("md5(t.value) = md5($3)");
         } else {
-            query.push_str("t.value = ANY($3::text[])");
+            // The `md5` form the index holds, as the count and the walk
+            // seek several texts.
+            query.push_str("md5(t.value) IN (SELECT md5(x) FROM unnest($3::text[]) x)");
         }
         let mut next = 4;
         if after.is_some() {

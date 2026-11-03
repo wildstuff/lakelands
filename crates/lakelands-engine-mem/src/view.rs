@@ -165,6 +165,9 @@ impl ProjectionView for MemView {
                 return None;
             }
             let rows = self.window_rows(p, ty, window, after, n)?;
+            // The walk's rows are the index rows walked, as the sides'
+            // count is: a check reads this where it reads a page's.
+            engines::count_walk(rows.len());
             Some(WindowBatch {
                 done: rows.len() < n as usize,
                 after: rows.last().map(|(sort_key, key)| WindowAt {

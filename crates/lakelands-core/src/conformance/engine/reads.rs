@@ -3823,7 +3823,7 @@ fn rows_walked_counts_the_index_rows_each_road_walks(engine: &dyn LakeEngine) ->
 
 engine_check!(
     WINDOW_READS_ITS_ROWS = a_page_bounded_on_its_order_field_reads_its_rows,
-    "097 and lakelands#1633: a page in field order under a filter bounding that field reads its page, both directions, by `rows_read` and `rows_walked`, and its walk does not grow when records outside the bound are added; the rows for an aggregate, a count and a key page follow in later steps"
+    "097 and lakelands#1633: a page in field order under a filter bounding that field reads its page, both directions, by `rows_read` and `rows_walked`, and its walk does not grow when records outside the bound are added; an aggregate, a count and a key page over the window read its keys, walking the window's index rows and handing one record per key, never the type"
 );
 
 fn a_page_bounded_on_its_order_field_reads_its_rows(engine: &dyn LakeEngine) -> Held {
@@ -4020,13 +4020,17 @@ fn a_page_bounded_on_its_order_field_reads_its_rows(engine: &dyn LakeEngine) -> 
         .expect("the check's filter opens a window");
     let scan = scan_with(|s| s.filter = Some(filter));
     let whole = crate::engines::scan(Some(t), &states, &scan);
-    let (keys_read, records, _, read) =
+    let (keys_read, records, walked, read) =
         window_road(head.as_ref(), &ty, t, &scan, &window, u64::MAX)?
             .expect("the engine keeps the window's index");
     ensure!(
-        records == whole && keys_read.len() == IN_WINDOW as usize && read == IN_WINDOW,
+        records == whole
+            && keys_read.len() == IN_WINDOW as usize
+            && walked == IN_WINDOW
+            && read == IN_WINDOW,
         "an aggregate over `{bound}` read {} records of the window's {IN_WINDOW} keys, \
-         handing {read}; one scan over every state answers {} rows",
+         walking {walked} index rows and handing {read}; one scan over every state answers \
+         {} rows, and the walk is the window's rows",
         records.len(),
         whole.len()
     );
@@ -4034,17 +4038,18 @@ fn a_page_bounded_on_its_order_field_reads_its_rows(engine: &dyn LakeEngine) -> 
     let chosen =
         core_engines::takes_window(u64::MAX, |l| head.window_sides(&ty, &window, &scan, l))
             .must("the count's choice")?;
-    let (_, counted, _, read) = window_road(head.as_ref(), &ty, t, &scan, &window, u64::MAX)?
+    let (_, counted, walked, read) = window_road(head.as_ref(), &ty, t, &scan, &window, u64::MAX)?
         .expect("the engine keeps the window's index");
     ensure!(
-        chosen == Some(true) && counted == whole && read == IN_WINDOW,
-        "a count over `{bound}` read {read} records of the window's {IN_WINDOW}; the choice \
-         answered {chosen:?} and the records it read answered {} rows",
+        chosen == Some(true) && counted == whole && walked == IN_WINDOW && read == IN_WINDOW,
+        "a count over `{bound}` read {read} records of the window's {IN_WINDOW}, walking \
+         {walked} index rows; the choice answered {chosen:?} and the records it read \
+         answered {} rows",
         counted.len()
     );
     // The key page: a window of up to `FEW_HOLDERS` keys, sorted and read
     // in key order, the first ten of them.
-    let (keys_read, _, _, _) = window_road(
+    let (keys_read, _, walked, _) = window_road(
         head.as_ref(),
         &ty,
         t,
@@ -4065,8 +4070,9 @@ fn a_page_bounded_on_its_order_field_reads_its_rows(engine: &dyn LakeEngine) -> 
     let mut expected = keys(&whole);
     expected.sort();
     ensure!(
-        read == 10 && keys(&first) == expected[..10],
-        "a key page over `{bound}` read {read} records and answered {:?}; a scan of the window \
+        walked == IN_WINDOW && read == 10 && keys(&first) == expected[..10],
+        "a key page over `{bound}` walked {walked} index rows, read {read} records and \
+         answered {:?}; the walk is the window's {IN_WINDOW} rows, and a scan of the window \
          sorted by key begins {:?}",
         keys(&first),
         &expected[..10]
@@ -4601,7 +4607,7 @@ fn a_window_takes_its_road_only_when_it_is_the_smaller_side(engine: &dyn LakeEng
 
 engine_check!(
     WINDOW_ADMITS_LIKE_A_PAGE = a_window_read_admits_every_record_it_reads_as_a_page_does,
-    "097 §Who counts and who admits: `get_many` reads by key and applies nothing, so the records a window's keys read pass `engines::admitted` and a retired, a restricted and an out-of-time record are left out, as a page leaves them; under an exact text the same read answers the text's records alone, and an engine that keeps no window under a text reads it as a page"
+    "097 §Who counts and who admits: `get_many` reads by key and applies nothing, so the records a window's keys read pass `engines::admitted` and a retired, a restricted and an out-of-time record are left out, as a page leaves them; under an exact text the same read answers the text's records alone, and under several, as a match's `equal_any` gives them, the walk, the sides' count and the probe seek each of them, an engine that keeps no window under a text reading it as a page"
 );
 
 fn a_window_read_admits_every_record_it_reads_as_a_page_does(engine: &dyn LakeEngine) -> Held {
@@ -4624,7 +4630,7 @@ fn a_window_read_admits_every_record_it_reads_as_a_page_does(engine: &dyn LakeEn
             } else {
                 "2026-01-01T00:00:00Z"
             };
-            let s = if i % 2 == 0 { "hit" } else { "miss" };
+            let s = ["hit", "miss", "go"][(i % 3) as usize];
             let mut r = record(
                 "t",
                 &format!("k{i:04}"),
@@ -4698,6 +4704,83 @@ fn a_window_read_admits_every_record_it_reads_as_a_page_does(engine: &dyn LakeEn
                 promised.len()
             );
         }
+    }
+    // Several texts, as a match's `equal_any` gives them: the walk seeks
+    // each text's holders, and the sides' count and the probe seek the
+    // same set. `hit` and `go` are two of the type's three values.
+    let mut some = page.clone();
+    some.equal_any = vec![
+        vec![(FieldName::from("s"), json!("hit"))],
+        vec![(FieldName::from("s"), json!("go"))],
+    ];
+    let both = crate::engines::scan(Some(t), &states, &some);
+    ensure!(
+        !both.is_empty() && both.len() < whole.len(),
+        "two of `s`'s three values must narrow the window's page to some of its {} rows, \
+         but one scan answered {}",
+        whole.len(),
+        both.len()
+    );
+    match window_road(head.as_ref(), &ty, t, &some, &window, u64::MAX)? {
+        Some((_, admitted, _, _)) => ensure!(
+            admitted == both,
+            "a window read under two exact texts admitted {} records; one scan answers {}",
+            admitted.len(),
+            both.len()
+        ),
+        None => {
+            let rows = head.scan(&ty, &some).must("a page under two exact texts")?;
+            ensure!(
+                rows == both,
+                "an engine keeping no window under two texts answered {} records; one scan \
+                 answers {}",
+                rows.len(),
+                both.len()
+            );
+        }
+    }
+    // The choice under two texts: the window's 101 rows against the 133
+    // holders, which four times its rows do not fit inside. An engine that
+    // keeps no sides under a text keeps no probe either.
+    let chosen =
+        core_engines::takes_window(u64::MAX, |l| head.window_sides(&ty, &window, &some, l))
+            .must("the choice under two texts")?;
+    match chosen {
+        Some(false) => {}
+        None => ensure!(
+            head.holders_inside(&ty, &window, &some, None, 1024)
+                .must("the probe under two texts")?
+                .is_none(),
+            "an engine that keeps no sides under a text must keep no probe either"
+        ),
+        Some(true) => {
+            return Err(Failure::new(
+                "a window of 101 rows under two texts 133 hold took the window's road; four \
+                 times its rows do not fit inside the holders",
+            ));
+        }
+    }
+    // The probe under two texts answers both texts' holders in key order,
+    // each marked by the window its order row lies in.
+    let expected: Vec<(String, bool)> = (0..N)
+        .filter(|i| i % 3 != 1)
+        .map(|i| (format!("k{i:04}"), (20..=120).contains(&i)))
+        .collect();
+    if let Some(batch) = head
+        .holders_inside(&ty, &window, &some, None, 1024)
+        .must("the probe under two texts")?
+    {
+        let held: Vec<(String, bool)> = (batch.holders.iter())
+            .map(|(key, inside)| (key.to_string(), *inside))
+            .collect();
+        ensure!(
+            batch.done && held == expected,
+            "the probe under two texts answered {} holders, done {done}; both texts' {} \
+             holders in key order, each marked by the window, must be answered",
+            held.len(),
+            expected.len(),
+            done = batch.done
+        );
     }
     Ok(())
 }
