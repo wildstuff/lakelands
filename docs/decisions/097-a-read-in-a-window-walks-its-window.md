@@ -513,12 +513,13 @@ The two steps landed in one pull request.
   asks the window's first batch first and counts only where the walk was
   long, as the store does.
 - **Measured.** Product in 1 308, out 20, net 1 288; specification in
-  739, out 3, net 736. The core-size gate: product 104 407 of base
-  108 500, specification 188 554 of base 191 500, neither base nor
-  ceiling raised. The two steps measured 1 288 / 736 against the 280 /
-  340 reckoned for them at ×1.35 — four and a half times the product
-  reckoning and twice the specification's; the estimate table above
-  carries the measured size.
+  739, out 3, net 736. The core-size gate, with steps 5 and 6 merged:
+  product 105 068 of base 115 000, specification 188 843 of base
+  202 500. The base and ceiling rose with lakelands#1710's reserve for
+  the round; these two steps raise neither. The two steps measured
+  1 288 / 736 against the 379 / 459 reckoned for them at ×1.35 — three
+  and a half times the product reckoning and one and a half times the
+  specification's; the estimate table above carries the measured size.
 
 #### Measured: the smaller side
 
