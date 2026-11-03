@@ -299,9 +299,10 @@ impl Place {
         lake.expect("the lake opens")
     }
 
-    /// Open as [`Self::open`] does, again while the lake a test stopped
-    /// still holds the lease: the handle that held it lets it go as its
-    /// last reference drops, a moment after the test stopped it.
+    /// Open as [`Self::open`] does, again while a lake a test stopped, or
+    /// the road beside a writer, still holds the lease: the handle that
+    /// held it lets it go as its last reference drops, a moment after the
+    /// test stopped it or the road's turn ended.
     async fn open_when_free(&self, mode: OpenMode) -> Arc<Lake> {
         for _ in 0..1_000 {
             let (at, seams) = (self.location.clone(), self.seams.clone());
@@ -1187,10 +1188,11 @@ async fn a_setting_build_stopped_between_turns_is_finished_by_the_next_open() {
             whole,
             "{on:?}: the open never finished the build; `n` is still building"
         );
-        // A writer whose build is whole owes none: a second open finds no
-        // mark and starts nothing.
+        // A writer whose build is whole owes none: a second open, taken
+        // once the road's last turn has let the lake go, finds no mark and
+        // starts nothing.
         drop(lake);
-        let lake = place.open(OpenMode::Write).await;
+        let lake = place.open_when_free(OpenMode::Write).await;
         let view = lake.engine.view(None).expect("a view");
         let chosen = view.chosen(&"row".into()).expect("the chosen");
         assert!(
