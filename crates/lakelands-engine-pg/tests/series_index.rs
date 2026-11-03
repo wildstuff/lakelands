@@ -186,6 +186,7 @@ fn a_series_pair_is_filled_whole_kept_and_put_back_to_start() {
     p.commit(Position(5)).unwrap();
     assert_eq!(rows(), 0, "a pair taken back leaves no row");
     assert!(state().is_none(), "no pair, no row");
+    common::drop_schema(&url, &schema);
 }
 
 /// A setting folded before the declaration it names starts its pair at the
@@ -236,4 +237,5 @@ fn a_setting_put_before_the_declaration_starts_its_pair() {
         json!([{"series": "series", "order": "at"}]),
         "the pair waits on its build"
     );
+    common::drop_schema(&url, &schema);
 }
