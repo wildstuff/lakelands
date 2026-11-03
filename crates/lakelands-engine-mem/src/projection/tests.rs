@@ -114,6 +114,55 @@ fn a_commit_keeps_the_superseded_record_state() {
 }
 
 #[test]
+fn a_range_bounds_the_key_walk_and_a_crossed_one_answers_none() {
+    let mut p = Projection::default();
+    let puts = ["k1", "k2", "k3", "k4", "k5"]
+        .into_iter()
+        .map(|k| Put::Record(record(k, 1, 1)))
+        .collect();
+    p.commit(puts, Position(1)).unwrap();
+    let ty = TypeName::from("t");
+    let range = |from: Option<&str>, until: Option<&str>| KeyRange {
+        from: from.map(RecordKey::from),
+        until: until.map(RecordKey::from),
+    };
+    let keys = |range: &KeyRange| -> Vec<String> {
+        p.records_after(&ty, Some(Position(1)), None, Some(range), 100)
+            .into_iter()
+            .map(|r| r.key.to_string())
+            .collect()
+    };
+    assert_eq!(keys(&range(Some("k2"), Some("k4"))), ["k2", "k3"]);
+    assert_eq!(
+        keys(&range(None, Some("k3"))),
+        ["k1", "k2"],
+        "from is inclusive, until exclusive"
+    );
+    assert_eq!(keys(&range(Some("k2"), None)), ["k2", "k3", "k4", "k5"]);
+    assert_eq!(keys(&range(None, None)).len(), 5, "either end open");
+    assert!(
+        keys(&range(Some("k4"), Some("k3"))).is_empty(),
+        "a from past the until answers none"
+    );
+    assert!(
+        keys(&range(Some("k3"), Some("k3"))).is_empty(),
+        "the until itself is outside"
+    );
+    let after: Vec<String> = p
+        .records_after(
+            &ty,
+            Some(Position(1)),
+            Some("k3"),
+            Some(&range(Some("k2"), None)),
+            100,
+        )
+        .into_iter()
+        .map(|r| r.key.to_string())
+        .collect();
+    assert_eq!(after, ["k4", "k5"], "the later of `after` and the from");
+}
+
+#[test]
 fn a_commit_behind_the_projection_or_with_a_later_state_changes_nothing() {
     let mut p = Projection::default();
     p.commit(vec![], Position(4)).unwrap();

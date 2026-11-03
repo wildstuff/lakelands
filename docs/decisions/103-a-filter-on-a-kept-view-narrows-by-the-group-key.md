@@ -53,9 +53,14 @@ open.
 - **A date-time or date field narrows every comparison that record 097
   admits a window for.** The literal must read as an instant and not as a
   number (097's rank rule). A `date` field's component is the literal
-  instant's UTC day, floored on both sides; the rulebook still decides
-  the day. A `date_bucket` group field is a date-time field, and its
-  zoned start (record 101) is the value the key holds.
+  instant's UTC day, floored on both sides. Its key may hold that day's
+  text (a direct group field, landed as a day) or an instant of that day:
+  a group term's value is never landed, so a `date_bucket` term's zoned
+  start (record 101) is what the key holds. An upper end is therefore
+  the day's prefix — the day's text and `~`, which sorts above the `T`
+  of an instant's text and below the next day — and an exact on a date
+  ends the walk, since a later component is not reachable past both
+  spellings. The rulebook still decides every row.
 - **A boolean field narrows an exact given as a boolean literal**; it
   takes no bound.
 - **A number or decimal field narrows nothing.** Its component is the
@@ -181,7 +186,8 @@ group field that is not the next unfixed one — stays on the order index.
 `Scan` gains `range: Option<KeyRange>`, where `KeyRange` holds a key
 from, inclusive, and a key until, exclusive, each none for an end the
 filter leaves open. No trait method is added; the engine seam stands at
-the 98 of 110 methods record 098 left it at, and `Scan` is not a wire
+the 104 of 110 methods the tree carries (record 098 left it at 98, and
+later records raised it), and `Scan` is not a wire
 type. Every engine honours the range on its key-ordered road:
 
 - SQLite writes the predicates into the statement `kept_sql` already
@@ -390,3 +396,95 @@ The record does not reorder a view behind the host's back.
   an aggregate under the same filter read 144 000 rows in 2 050.6 ms; a
   page ordered by the bucket with its order index handed 1 001 rows in
   20.5 ms. That is why the rows count `rows_walked`.
+
+## As built
+
+**P1 and P2 in one pull request (lakelands#1634).** The brief makes
+them one claim and one PR, where the plan split them: the engine seam
+and its three engines, and the interval and the store's narrowed reads,
+with the four conformance rows (`KEPT_RANGE`, `KEPT_FILTER_NARROWS`,
+`KEPT_FILTER_WHOLE`, `KEPT_FILTER_POSITIONS`).
+
+- **P1, the seam.** `Scan` gains `range: Option<KeyRange>` and
+  `KeyRange` its two ends, each none for an open end. No trait method is
+  added: the seam stands at the 104 of 110 methods it stood at before.
+  SQLite writes `AND k.key >= ?n` and `AND k.key < ?n` into
+  `kept_sql`, beside the `after` bound, for the page and the count;
+  PostgreSQL writes `AND h.key >= $n` and `AND h.key < $n` into
+  `records_after_sql` and `count_in_force_sql`; the memory engine's
+  `records_after` takes the bounds and answers none before
+  `BTreeMap::range` when the from is past the until. Twice the tree
+  corrected the sketch: SQLite's parameter numbers shift with the
+  interval's ends, so the `after` bound is numbered after them, and
+  PostgreSQL's count at an earlier position bounded the in-force row's
+  key rather than the head's, which the plan test caught (a filter
+  after the lateral, not a seek); the interval now bounds `h.key` on both
+  roads, as this record names them. The engine rows run on every engine.
+  Each engine's own plan test reads the seek: SQLite's
+  `a_kept_name_read_inside_an_interval_seeks_the_keys_inside_it`, the
+  memory engine's `a_range_bounds_the_key_walk_and_a_crossed_one_answers_none`,
+  PostgreSQL's `a_kept_name_read_inside_an_interval_seeks_the_heads_primary_key`.
+- **P2, the interval and the store.** `engines::key_range` builds the two
+  ends apart, in the declared key order, and stops at the first field
+  that does not narrow; `group_component` admits the kinds this record
+  admits and no more. A date-time or date literal is read by
+  `Timestamp::parse`, not `denoted`: an instant outside the years 0000
+  to 9999 writes a component (`10000-…`, `-0001-…`) on the wrong side of
+  every stored key, and a bound built from it would exclude rows the
+  filter admits; such a literal narrows nothing. A date field's upper
+  end and its exact are made on the day's prefix, not the day's text
+  alone: a `date_bucket` term declared under a date field stores its
+  zoned start, and `day = '2026-01-05'` must reach the key
+  `2026-01-05T…` as well as the day's text; the walk ends at a date
+  exact, a later component not reaching both spellings. The store derives the
+  interval only for a kept name (`seam::is_kept_name`), hands it to
+  `find`'s unordered read, to the count (the `total` door) and to the
+  aggregate (which reads through `each_member`), and withholds it from a
+  page that asks another order (P3). An engine's text lookup a kept name
+  would take (an exact on a text group field, or on a text key) is
+  withheld too when the interval is set: the interval owns the read, so
+  the walk is the interval's on every engine, not the lookup's. Store
+  checks run on the blocking
+  pool, where the thread-local `rows_walked` is invisible, so
+  `engines::rows_walked_in_process` counts the walk process-wide, as
+  `rows_read_in_process` does for `rows_read`; the harness runs checks
+  in order, so a check's delta is its own. The counter is shared by the
+  whole process: a conformance binary that runs several checks in one
+  process at once (a plain `cargo test` of a sharded suite) would make a
+  delta inexact; CI runs nextest, a process for each test.
+- **The count door and the year guard, each planted.** `KEPT_FILTER_NARROWS`
+  reads the `total` door too: the page walks the three groups of `x` and
+  the count walks them again, six in all, and a count that read the whole
+  view would walk ten. `KEPT_FILTER_WHOLE` holds a bound on the bucket
+  the filter asks first, in an instant outside the written form's years:
+  planting the guard (reading the literal by `denoted`) turns the `flip`
+  rows red, because the component `10000-…` sorts under every key.
+- **The date's day prefix, the bucket's extremes.** `KEPT_FILTER_NARROWS`
+  now reads a view grouped by a date field whose term is a day bucket:
+  the key holds the bucket's start instant, not a day's text, and the
+  exact answers the group the computation answers while the bounds walk
+  the day's prefix. The view's measures include a bucket's `max`,
+  `first` and `last`, read under the filter through the records, an
+  aggregate and its twin. `KEPT_FILTER_POSITIONS` moves a group's least
+  and first, its greatest and its last out of the group and puts each
+  back.
+- **What the tree did not have.** Record 102's S3 (the thinning act) did
+  not land; only its tables did. `KEPT_FILTER_POSITIONS` therefore does
+  not hold its "stranded group of a thinned series" clause: there is no
+  act to strand one. The check holds the earlier position (the view
+  computed, the kept read unanswered there) and the writes that move a
+  group's extreme, first and last out and back. The plan is corrected
+  here, as the tree wins.
+- **The seam figure.** The draft named the 98 of 110 methods record 098
+  left and the 102 P1 stood at; the tree stands at 104, as
+  `scripts/gates/seam-width.sh` measures. Both are corrected here, as
+  the tree wins.
+- **Measured at the head after this PR's own `git add`**, with
+  `origin/develop` merged: product 104 265 of the 115 000 base,
+  specification 188 847 of the 202 500 base; seam 104 of 110; 6 of 20
+  `cfg(feature)` sites; 1 024 checks through the doors and 98 through the
+  engine seam; 1 018 refusal cases.
+  The PR's own lines: product +602 −104, specification +742 −3. The
+  plan's 290 product and 300 specification for P1 and P2 were the
+  sketch; the extra is the four conformance rows, the three engines'
+  plan tests and the date's day prefix. Nothing was cut.
