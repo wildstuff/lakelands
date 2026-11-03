@@ -20,6 +20,7 @@ pub mod backed;
 mod backing;
 #[doc(hidden)]
 pub mod batch;
+mod build;
 mod choose;
 mod declare;
 mod doors;

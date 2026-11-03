@@ -371,12 +371,21 @@ impl Doors {
         write: writes::Write,
         opts: WriteOpts,
     ) -> Result<Outcome> {
+        let asked = crate::build::asked(&write);
         let defer = opts.defer_computed_fields;
         let (outcome, own) = self
             .write(who, move |c| owing(|| c.record(&write, opts)))
             .await?;
         let by = MadeDue::Call { keyed: false };
-        self.handed(who, ((outcome, None), own), (by, defer)).await
+        let answered = self
+            .handed(who, ((outcome, None), own), (by, defer))
+            .await?;
+        // The setting asked for an index: build it beside the writer and
+        // answer when it is whole, as an act's door answers.
+        if let Some((ty, kind)) = asked {
+            crate::build::finish(&self.lake, &ty, kind).await?;
+        }
+        Ok(answered)
     }
 
     /// What the bound reranker scores a window at, by key. A read: nothing
@@ -537,6 +546,9 @@ impl Doors {
         let (mut jobs, mut asked) = (Vec::new(), Vec::new());
         for (context, who, write, opts) in writes {
             let defer = opts.defer_computed_fields;
+            // A setting that asks for an index: built beside the writer
+            // once it is appended, and the door answers when it is whole.
+            let build = crate::build::asked(&write);
             let (answer, rx) = tokio::sync::oneshot::channel();
             let same = same_lake(&self.lake, &who).map(|()| {
                 let who = who.clone();
@@ -548,20 +560,26 @@ impl Doors {
                     answer,
                 });
             });
-            asked.push((who, defer, same.map(|()| rx)));
+            asked.push((who, defer, build, same.map(|()| rx)));
         }
         if !jobs.is_empty() {
             exec::records(&self.lake, jobs);
         }
         let mut answers = Vec::new();
-        for (who, defer, rx) in asked {
+        for (who, defer, build, rx) in asked {
             let answer = match rx {
                 Ok(rx) => rx.await.unwrap_or_else(|_| Err(exec::halted(true))),
                 Err(e) => Err(e),
             };
             let by = MadeDue::Call { keyed: false };
             answers.push(match answer {
-                Ok((outcome, own)) => self.handed(&who, ((outcome, None), own), (by, defer)).await,
+                Ok((outcome, own)) => match build {
+                    Some((ty, kind)) => match crate::build::finish(&self.lake, &ty, kind).await {
+                        Ok(()) => self.handed(&who, ((outcome, None), own), (by, defer)).await,
+                        Err(e) => Err(e),
+                    },
+                    None => self.handed(&who, ((outcome, None), own), (by, defer)).await,
+                },
                 Err(e) => Err(e),
             });
         }

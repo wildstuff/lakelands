@@ -108,6 +108,7 @@ const KINDS: &[Owes] = &[
     crate::purge::owed,
     crate::remove::owed,
     crate::remove::settle_owed,
+    crate::build::owed,
     owes,
 ];
 
@@ -296,6 +297,31 @@ impl Place {
         let (at, seams) = (self.location.clone(), self.seams.clone());
         let lake = opened_owing(at, seams, mode, KINDS).await;
         lake.expect("the lake opens")
+    }
+
+    /// Open as [`Self::open`] does, again while the lake a test stopped
+    /// still holds the lease: the handle that held it lets it go as its
+    /// last reference drops, a moment after the test stopped it.
+    async fn open_when_free(&self, mode: OpenMode) -> Arc<Lake> {
+        for _ in 0..1_000 {
+            let (at, seams) = (self.location.clone(), self.seams.clone());
+            match opened_owing(at, seams, mode, KINDS).await {
+                Ok(lake) => return lake,
+                Err(e)
+                    if matches!(
+                        e.situation(),
+                        Some(
+                            lakelands_api::error::Situation::LeaseHeld { .. }
+                                | lakelands_api::error::Situation::LeaseLocked { .. }
+                        )
+                    ) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(e) => panic!("the lake opens: {e:?}"),
+            }
+        }
+        panic!("the lake the test stopped never freed its lease");
     }
 }
 
@@ -1099,5 +1125,77 @@ async fn the_log_answers_where_the_index_decides_nothing() {
         assert!(two.is_none(), "{on:?}: more than two");
         let all = logged(&lake, &reach, from, head, 3).expect("a read");
         assert!(all.is_none(), "{on:?}: the log counts every event");
+    }
+}
+
+/// A setting's build stopped between any two of its turns is owed in the
+/// projection's mark, and the next writer's open finishes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_setting_build_stopped_between_turns_is_finished_by_the_next_open() {
+    for on in engines() {
+        let mut place = Place::new(on, "build-stopped");
+        place.location.limits.order_chunk = 1;
+        let (lake, doors) = lake_of(&place).await;
+        let decl = fx::type_decl("row", vec![fx::sourced("n", StorageKind::Text)]);
+        doors.declare(decl).await.expect("the type is declared");
+        let rows = (0..2_000)
+            .map(|i| fx::source_record("row", &format!("n{i:05}"), json!({"n": format!("{i:05}")})))
+            .collect();
+        doors.ingest("load", rows).await.expect("the rows");
+        let mut set = tokio::spawn(async move { doors.set("sort_index.row", json!(["n"])).await });
+        // The setting's append marks the field building before the door
+        // sends the build: stop the lake there, as a process that died.
+        let mut marked = false;
+        for _ in 0..30_000 {
+            let view = lake.engine.view(None).expect("a view");
+            let chosen = view.chosen(&"row".into()).expect("the chosen");
+            if !chosen.setting_building.is_empty() {
+                marked = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        if !marked && set.is_finished() {
+            let answer = (&mut set).await;
+            panic!("{on:?}: the set answered {answer:?} before any mark");
+        }
+        assert!(marked, "{on:?}: the append marked no field building");
+        set.abort();
+        let _ = set.await;
+        drop(lake);
+
+        let lake = place.open_when_free(OpenMode::Write).await;
+        let view = lake.engine.view(None).expect("a view");
+        let left = view.chosen(&"row".into()).expect("the chosen");
+        assert!(
+            !left.setting_building.is_empty(),
+            "{on:?}: the build was whole before the open, so nothing was owed"
+        );
+        drop(view);
+        let at = Instant::now();
+        let mut whole = false;
+        while at.elapsed() < Duration::from_secs(60) {
+            let view = lake.engine.view(None).expect("a view");
+            let chosen = view.chosen(&"row".into()).expect("the chosen");
+            if chosen.setting_building.is_empty() {
+                whole = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            whole,
+            "{on:?}: the open never finished the build; `n` is still building"
+        );
+        // A writer whose build is whole owes none: a second open finds no
+        // mark and starts nothing.
+        drop(lake);
+        let lake = place.open(OpenMode::Write).await;
+        let view = lake.engine.view(None).expect("a view");
+        let chosen = view.chosen(&"row".into()).expect("the chosen");
+        assert!(
+            chosen.setting_building.is_empty(),
+            "{on:?}: a reopened lake owes a build it already finished"
+        );
     }
 }
