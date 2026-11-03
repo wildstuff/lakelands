@@ -42,7 +42,7 @@ async fn sum(l: &Lake, ty: &str, field: &str, what: &str) -> Result<Vec<Group>, 
         ..Find::default()
     };
     let reply = l.cat.find(&l.own, &TypeName::from(ty), find).await;
-    let Found::Groups { rows } = reply.must(what)?.data else {
+    let Found::Groups { rows, .. } = reply.must(what)?.data else {
         return Err(Failure::new(format!(
             "{what}: `find` with an aggregate must answer groups; it answered records"
         )));
@@ -223,7 +223,7 @@ async fn a_sum_reads_at_the_largest_scale_among_its_values(store: Store) -> Held
         ..Find::default()
     };
     let reply = cat.find(own, &TypeName::from("entry"), find).await;
-    let Found::Groups { rows } = reply.must("summing `amount` by `book`")?.data else {
+    let Found::Groups { rows, .. } = reply.must("summing `amount` by `book`")?.data else {
         return Err(Failure::new("`find` with an aggregate must answer groups"));
     };
     let got: Vec<String> = (rows.iter())

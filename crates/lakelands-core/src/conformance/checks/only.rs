@@ -180,7 +180,7 @@ fn short(found: &Found) -> String {
             let total = total.map(|t| format!(" total={t}")).unwrap_or_default();
             format!("{}{total}", keys.join(" "))
         }
-        Found::Groups { rows } => {
+        Found::Groups { rows, .. } => {
             let group = |g: &lakelands_api::read::Group| {
                 let pairs = g.by.iter().chain(&g.values);
                 let pairs: Vec<String> = pairs.map(|(f, v)| format!("{f}={}", value(v))).collect();

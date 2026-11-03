@@ -114,7 +114,7 @@ async fn groups(
         .find(&owner(store), &TypeName::from("entry"), find)
         .await
         .must(what)?;
-    let Found::Groups { rows } = reply.data else {
+    let Found::Groups { rows, .. } = reply.data else {
         return Err(Failure::new(format!("{what} answered records, not groups")));
     };
     rows.into_iter()

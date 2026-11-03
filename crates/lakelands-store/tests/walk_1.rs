@@ -150,7 +150,7 @@ async fn answer(
         .await
         .unwrap()
         .data;
-    let Found::Groups { rows } = found else {
+    let Found::Groups { rows, .. } = found else {
         panic!("an aggregate find answers groups, not {found:?}");
     };
     let mut out = BTreeMap::new();

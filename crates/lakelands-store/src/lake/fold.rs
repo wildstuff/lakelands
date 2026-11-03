@@ -712,6 +712,9 @@ impl Lake {
             | EventBody::VerbCalled { .. }
             | EventBody::TriggerFired { .. }
             | EventBody::TriggerDropped { .. } => {}
+            // The act's fold — the records' states deleted, their groups
+            // stranded — lands with the act itself (102).
+            EventBody::ValuesThinned { .. } => {}
             // A version is its id's row, what is erased of it gone (085).
             EventBody::RecordQuarantined { .. } => {
                 if let Some(q) = crate::quarantine::version_row(&w.ontology, e) {

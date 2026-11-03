@@ -208,6 +208,7 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         | EventBody::ValuesRemoved { .. }
         | EventBody::SourcePurged { .. }
         | EventBody::ActWhole { .. }
+        | EventBody::ValuesThinned { .. }
         | EventBody::Checkpoint { .. } => false,
     }
 }
@@ -1951,6 +1952,8 @@ fn reads_a_record(body: &EventBody) -> bool {
         // The record whose field it fills; one that names no field is put
         // and fills nothing.
         EventBody::OutputRecorded { field, .. } => field.is_some(),
+        // The records' states at every position, which the act deletes.
+        EventBody::ValuesThinned { .. } => true,
         // Nothing of the projection is changed for these but their mark.
         EventBody::LakeCreated { .. }
         // A quarantined record's row, which no record reads (085).

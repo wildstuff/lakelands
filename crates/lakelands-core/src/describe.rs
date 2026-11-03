@@ -1249,6 +1249,8 @@ impl Sight<'_> {
                     .collect(),
             },
             fields,
+            thinned: Vec::new(),
+            stranded: 0,
         })
     }
 

@@ -211,7 +211,7 @@ async fn apart(
         let by: lakelands_api::Find = serde_json::from_value(by).expect("a find reads");
         let grouped = l.cat.find(&l.own, &"job".into(), by).await;
         let held = match grouped.must("grouping the jobs")?.data {
-            lakelands_api::Found::Groups { rows } => (rows.into_iter())
+            lakelands_api::Found::Groups { rows, .. } => (rows.into_iter())
                 .find(|g| g.by.get("k") == Some(&json!(true)))
                 .and_then(|g| g.values.get("c").cloned()),
             _ => None,

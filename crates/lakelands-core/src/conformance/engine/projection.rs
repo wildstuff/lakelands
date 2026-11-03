@@ -17,9 +17,11 @@ use lakelands_api::Refusal;
 use lakelands_api::engine::{LakeEngine, OpenMode, ProjectionStore, ProjectionView};
 use lakelands_api::error::Situation;
 use lakelands_api::event::Digest;
-use lakelands_api::id::{LakeId, Position, RecordKey, RelationName, TypeName, Version};
+use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName, Version};
 use lakelands_api::query::Walk;
+use lakelands_api::read::ThinnedAct;
 use lakelands_api::record::StoredRecord;
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::Declaration;
 use serde_json::{Value, json};
 
@@ -85,6 +87,11 @@ engine_check!(
 engine_check!(
     SAME_POSITION = a_put_at_the_same_position_replaces_the_state_there,
     "seams §ProjectionStore: a put of the same thing at the same position replaces the state there; the fold writing a state again never adds a second one"
+);
+
+engine_check!(
+    THINNED_TABLES = thinned_acts_and_tombstones_read_at_the_head,
+    "102 §What is decided, seams §ProjectionStore and §ProjectionView: an act's row keeps the position it began at while each part moves `through` and `gone`, and a thinned record's tombstone answers its horizon at the head in every read"
 );
 
 engine_check!(
@@ -1237,6 +1244,56 @@ fn a_head_only_name_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Hel
          invalid, and `d` reads {doc:?}",
         counts.0,
         counts.1
+    );
+    Ok(())
+}
+
+fn thinned_acts_and_tombstones_read_at_the_head(engine: &dyn LakeEngine) -> Held {
+    let ty = TypeName::from("t");
+    let key = RecordKey::from("a");
+    let by = FieldName::from("at");
+    let early = Timestamp(1_000);
+    let late = Timestamp(2_000);
+    let row = |before: Timestamp, through: u64, gone: u64| ThinnedAct {
+        ty: ty.clone(),
+        by: by.clone(),
+        before,
+        through: Position(through),
+        gone,
+    };
+    // The later act is written first and carries the earlier horizon, so the
+    // order the read answers is the position each act began at, not its
+    // horizon nor the order the puts came in.
+    fold(engine, 4, |p| {
+        p.put_thinned_act(&row(early, 4, 6), Position(4))
+    })?;
+    fold(engine, 5, |p| {
+        p.put_thinned_act(&row(late, 1, 2), Position(2))
+    })?;
+    fold(engine, 6, |p| {
+        let part = p.put_thinned_act(&row(late, 3, 5), Position(3));
+        part.and_then(|()| p.put_thinned(&ty, &key, early, Position(3)))
+    })?;
+    fold(engine, 7, |p| p.put_thinned(&ty, &key, late, Position(5)))?;
+    let read = |as_of| {
+        let v = view(engine, as_of)?;
+        Ok((
+            v.thinned_acts(&ty)
+                .must("reading the type's thinning acts")?,
+            v.thinned_at(&ty, &key).must("reading the key's horizon")?,
+        ))
+    };
+    let (acts, taken) = read(None)?;
+    let (earlier, taken_earlier) = read(Some(Position(1)))?;
+    let want = vec![row(late, 3, 5), row(early, 4, 6)];
+    ensure!(
+        acts == want && taken == Some(early) && earlier == want && taken_earlier == Some(early),
+        "an act beginning at 2 (horizon 2 000, through 1, gone 2, moved to through 3 and gone \
+         5) and one beginning at 4 (horizon 1 000, through 4, gone 6), the later written first, \
+         with a tombstone for `a` at 3 and a second put of the key with the other horizon at 5, \
+         read {acts:?} and {taken:?} at the head, and {earlier:?} and {taken_earlier:?} at 1; \
+         both reads must answer the acts oldest by the position each began at, and `a`'s first \
+         horizon, since the marks are read at the head in every read"
     );
     Ok(())
 }

@@ -169,7 +169,7 @@ async fn a_read_takes_its_clock_from_the_instant_or_the_position_it_names(store:
             .find(own, &"bill".into(), by)
             .await
             .must("grouping by `today()`")?;
-        let Found::Groups { rows } = groups.data else {
+        let Found::Groups { rows, .. } = groups.data else {
             return Err(Failure::new(format!("{when}, an aggregate answers groups")));
         };
         let said = |v: &Value| v.as_str().and_then(|s| s.parse::<Timestamp>().ok());
