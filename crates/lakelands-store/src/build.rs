@@ -269,7 +269,7 @@ impl Job for Dropping {
             return Ok(Turned::Whole);
         };
         self.field = Some(field.clone());
-        let drop = Choose::Drop {
+        let drop = Choose::DropChunk {
             field,
             after: self.after.clone(),
             limit: t.limits.order_chunk.max(1),

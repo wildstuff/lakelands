@@ -94,7 +94,8 @@ impl Lake {
 
     /// Whether the lake may choose the order index of `field` of `ty`: a
     /// stored, sortable field of a type that is large enough, holds fewer
-    /// chosen fields than the bound, and whose order the host sets none of.
+    /// chosen fields than the bound, and that the host's setting does not
+    /// name, though its setting may name the type's other fields.
     fn eligible(&self, ty: &TypeName, field: &FieldName) -> Result<bool> {
         let l = self.limits;
         let view = self.engine.view(None)?;
@@ -214,7 +215,7 @@ async fn choose_one(lake: &Arc<Lake>, ty: &TypeName, field: &FieldName) -> Resul
 async fn drop_field(lake: &Arc<Lake>, ty: &TypeName, field: &FieldName) -> Result<()> {
     let mut after = None;
     loop {
-        let drop = Choose::Drop {
+        let drop = Choose::DropChunk {
             field: field.clone(),
             after,
             limit: lake.limits.order_chunk.max(1),

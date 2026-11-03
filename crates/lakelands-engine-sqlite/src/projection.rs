@@ -713,6 +713,7 @@ fn set_chosen(conn: &Connection, ty: &TypeName, chosen: &Chosen) -> Result<()> {
 
 /// One step of choosing an order index for `ty` (`ProjectionStore::
 /// choose_order`), in a transaction of its own that moves no position.
+#[allow(deprecated)]
 pub(crate) fn choose_order(
     conn: &Connection,
     ty: &TypeName,
@@ -748,8 +749,8 @@ pub(crate) fn choose_order(
             if chosen.setting_building.contains(field)
     );
     let names_field = match step {
-        Choose::Start(f) | Choose::Keep(f) => named.contains(f),
-        Choose::Fill { field, .. } | Choose::Drop { field, .. } => named.contains(field),
+        Choose::Start(f) | Choose::Keep(f) | Choose::Drop(f) => named.contains(f),
+        Choose::Fill { field, .. } | Choose::DropChunk { field, .. } => named.contains(field),
     };
     // Nothing is chosen on a lake a writer that keeps no chosen field
     // folded past, before a writer's open drops what it left.
@@ -771,8 +772,19 @@ pub(crate) fn choose_order(
         } => fill_chosen(conn, ty, field, after.as_ref(), *limit),
         // A drop clears a chunk of the field's rows a call; its last, which
         // finds no more records, takes the mark away. Both write the mark,
-        // so one a writer went between is taken up by the next.
-        Choose::Drop {
+        // so one a writer went between is taken up by the next. `Drop` is
+        // the whole field in one step, kept for a host's build: it answers
+        // none.
+        Choose::Drop(field) => {
+            let _ = drop_chosen(conn, ty, field, None, u32::MAX)?;
+            chosen.dropping.retain(|f| f != field);
+            if chosen == Chosen::default() {
+                set_sorted(conn, ty, None)?;
+            }
+            set_chosen(conn, ty, &chosen)?;
+            Ok(None)
+        }
+        Choose::DropChunk {
             field,
             after,
             limit,

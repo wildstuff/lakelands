@@ -137,7 +137,8 @@ impl<'a> Reader<'a> {
         let reads = |f: &&FieldName| schema && self.sight.reads(&t.name, f) && seen(f);
         t.lifecycle.chosen = chosen.kept.iter().filter(reads).cloned().collect();
         // What an index build is filling in parts, told as `chosen` is: no
-        // read looks at a field until its `Keep`.
+        // read looks at a field until its `Keep`. A field two builds name,
+        // the lake's a setting's, is named once.
         t.lifecycle.building = chosen
             .building
             .iter()
@@ -145,7 +146,12 @@ impl<'a> Reader<'a> {
             .chain(&chosen.looked_building)
             .filter(reads)
             .cloned()
-            .collect();
+            .fold(Vec::new(), |mut named: Vec<FieldName>, f| {
+                if !named.contains(&f) {
+                    named.push(f);
+                }
+                named
+            });
         // What was ordered by a whole sort, told to a holder of `schema`
         // who reads the field, who can weigh `sort_index.<type>`, and never
         // once it is indexed: its pages count every principal's reads and
@@ -156,7 +162,10 @@ impl<'a> Reader<'a> {
                 && self.sight.reads(&t.name, f)
                 && !t.lifecycle.sorted.contains(f)
                 && !chosen.kept.contains(f)
-                && !t.lifecycle.building.contains(f)
+                // Only the lake's own order build stops a page sorting
+                // whole; a `lookup_index` setting's does not, and a field
+                // a `sort_index` setting names is `sorted` already.
+                && !chosen.building.contains(f)
         };
         let fields = decl.fields.iter().map(|f| &f.name);
         answered

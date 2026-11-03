@@ -550,6 +550,7 @@ impl Projection {
     }
 
     /// One step of choosing an order index (`ProjectionStore::choose_order`).
+    #[allow(deprecated)]
     pub(crate) fn choose(&mut self, ty: &TypeName, step: &Choose) -> Option<RecordKey> {
         // A kept name is built as the view it keeps; a field a host's
         // setting names is filled by the setting's own build, field by
@@ -576,8 +577,8 @@ impl Projection {
                 if chosen.setting_building.contains(field)
         );
         let names_field = match step {
-            Choose::Start(f) | Choose::Keep(f) => named.contains(f),
-            Choose::Fill { field, .. } | Choose::Drop { field, .. } => named.contains(field),
+            Choose::Start(f) | Choose::Keep(f) | Choose::Drop(f) => named.contains(f),
+            Choose::Fill { field, .. } | Choose::DropChunk { field, .. } => named.contains(field),
         };
         if names_field && !setting_build {
             return None;
@@ -596,9 +597,15 @@ impl Projection {
         // A drop clears its field's rows out of each record's, a chunk a
         // call; its last chunk, which finds no more records, takes the
         // mark away. Both write the mark, so one left by a writer that
-        // went is taken up by the next.
+        // went is taken up by the next. `Drop` is the whole field in one
+        // step, kept for a host's build: it answers none.
         let last = match step {
-            Choose::Drop {
+            Choose::Drop(field) => {
+                let _ = self.index_page(ty, None, usize::MAX);
+                chosen.dropping.retain(|f| f != field);
+                None
+            }
+            Choose::DropChunk {
                 field,
                 after,
                 limit,

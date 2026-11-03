@@ -437,9 +437,10 @@ pub trait ProjectionStore: Send + Sync {
     /// does nothing, and so does a step naming a field the type's
     /// `sort_index.<type>` setting names, unless it is the setting's own
     /// build: the setting and the lake share the rows field by field.
-    /// Answers the last key a [`Choose::Fill`] or [`Choose::Drop`] wrote,
-    /// none once the type is filled or its field's rows are gone. An engine
-    /// that keeps no order index refuses as unbound, as this default does.
+    /// Answers the last key a [`Choose::Fill`] or [`Choose::DropChunk`]
+    /// wrote, none once the type is filled or its field's rows are gone. An
+    /// engine that keeps no order index refuses as unbound, as this default
+    /// does.
     fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
         let _ = (ty, step);
         Err(crate::Error::unbound(crate::error::Seam::Operation {
@@ -493,12 +494,22 @@ pub enum Choose {
     },
     /// The field's rows are whole: reads may use the index for it.
     Keep(FieldName),
+    /// Stop keeping the field: its rows leave every record's in one step,
+    /// no read looks at it meanwhile, and the step answers none.
+    /// Deprecated in favour of [`Choose::DropChunk`], which clears them in
+    /// parts beside the writer
+    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    #[deprecated(
+        since = "0.23.0",
+        note = "`Choose::DropChunk` clears the field's rows in parts, a chunk a call"
+    )]
+    Drop(FieldName),
     /// Stop keeping the field, and delete its rows after `after`, at most
     /// `limit` of them, in key order: the mark `dropping` holds it, which
     /// no read looks at, and the last step removes the mark. A setting's
     /// write that takes its field back leaves the same mark, and the
     /// build's next [`Choose::Fill`] finds the mark gone and ends.
-    Drop {
+    DropChunk {
         /// The field.
         field: FieldName,
         /// The key the last chunk ended at; none for the first.

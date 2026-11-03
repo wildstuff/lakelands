@@ -803,9 +803,12 @@ pub fn order_fields(
 
 /// A step of choosing as the chosen fields of a type take it: the fields
 /// after it, and whether it asks the engine to fill, or to delete the rows
-/// of, a field. A step that does nothing leaves them as they are. A `Drop`
-/// moves the field to `dropping` at its first chunk and leaves it there
-/// until the last, whose `None` answer removes it.
+/// of, a field. A step that does nothing leaves them as they are. A
+/// `DropChunk` moves the field to `dropping` at its first chunk and leaves
+/// it there until the last, whose `None` answer removes it; a `Drop`
+/// clears the whole field in its one step, so the engine takes the mark
+/// away with it.
+#[allow(deprecated)]
 pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
     let (kept, building) = (&mut chosen.kept, &mut chosen.building);
     let setting = &mut chosen.setting_building;
@@ -829,7 +832,7 @@ pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
             kept.push(f.clone());
             true
         }
-        Choose::Drop { field: f, .. }
+        Choose::Drop(f) | Choose::DropChunk { field: f, .. }
             if kept.contains(f) || building.contains(f) || setting.contains(f) =>
         {
             kept.retain(|k| k != f);
@@ -840,7 +843,7 @@ pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
         }
         // A field the drop already holds takes the next chunk; the last
         // chunk's engine removes the mark.
-        Choose::Drop { field: f, .. } => dropping.contains(f),
+        Choose::Drop(f) | Choose::DropChunk { field: f, .. } => dropping.contains(f),
         Choose::Fill { field, .. } => building.contains(field) || setting.contains(field),
         _ => false,
     }
