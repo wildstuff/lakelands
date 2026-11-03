@@ -819,6 +819,9 @@ impl Lake {
             // The act is whole: a purge's entry says so, and what the
             // writer's open finds not whole it leaves alone.
             EventBody::ActWhole { act } => {
+                // The act ends here: the reactions its parts set off follow
+                // it, as those of its first append do (099).
+                self.act_at(e.position, e.known_at);
                 let mut list = crate::purge::purged_list(view, staged)?;
                 if let Some(entry) = list.get_mut(act) {
                     entry.whole = true;

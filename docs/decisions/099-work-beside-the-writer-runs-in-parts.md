@@ -942,6 +942,59 @@ on the first pull's frame. Forget keeps its one-append path until lakelands#1700
   the write's own position, so neither the scheduler nor a projection mark behind the
   log can widen the count; fifty runs with every core busy did not.
 
+**R2, third pull, forget on the road (lakelands#1700).** `forget_source` and
+`forget_sources` run as acts on the frame, and no act is left on its one-append path.
+
+- **The act.** The walk gathers off the writer what the set's sources brought: the records,
+  which of them each source holds a value in, which it alone brought, and the events at the
+  report's `through`. The first turn opens a view under the writer, destroys the keys of any
+  source whose `source_forgotten` the log already holds (from a crash inside the act, or an
+  open between its parts), reads again the keys the tail moved, refuses `ForgetPlaintext` for
+  a source not yet in the log, and appends a `source_forgotten` for as many sources as fit,
+  destroying each source's key in the same turn, and then the first part where the room
+  allows it after them. Its report is read
+  again from the records it re-judged, so the door answers what the act did, not what the walk
+  saw. A forgotten source's writes are refused from its `source_forgotten` on, so nothing is
+  sealed under a destroyed key between the parts. The act judges under the ontology it finds
+  there: a declaration or a migration since the walk changes the ontology the set is gathered
+  under — what is erasable, what a field's first `initial` makes co-owned, what recomputes —
+  or the names the log bears, so the set is gathered again under the writer, and the walk's
+  gathering would be the walk's judgement and not the act's (058).
+- **Parts.** A later turn appends the `source_forgotten`s still owed, destroying their keys as
+  they land, or one part of the closes and retirements, at most `part_events`, each re-judged
+  as the part takes it: a record another hand wrote since is co-owned and not retired. The
+  append that ends the act carries `act_whole`. The first turn appends two of those: the
+  `source_forgotten`s as many as fit, and then the first part where the room allows it after
+  them, so it may hold the writer for two appends of `part_events`.
+- **The restate and the reclaim follow the whole.** `finish_forgetting` destroys the keys of
+  an owed source and restates only an act whose `act_whole` is in the log; `reclaim` marks a
+  forgotten source `done` only where its act is whole. `forget::owed` joins `OWED`, so the
+  writer's open sends an unwhole forgetting again, and the settle job restates and reclaims
+  once it is whole.
+- **A write reads through an owed forgetting** as it does a removal: `restate::Viewed` refolds
+  the records a source with an owed act wrote through the erasure the act will leave, so a
+  verb's `requires`, its assignments and a function field's inputs judge on the record the
+  restate will leave.
+- **The report id** is a removal's: `<through>-<digest>`, the digest over the positions the
+  forgetting selects at `through` that no earlier removal act selects. A write elsewhere,
+  and a write of the source after `through`, reach neither and leave it good — the act takes
+  the source's write in. An earlier act of the source takes what the report selected there,
+  so the id over what is left moves, and the act under it is refused `ForgetReportStale`; a
+  removal act of the source written between the walk and the first turn is judged there,
+  under the writer, and the act refused where the id moved.
+- **Rows taken on every engine.** `FORGET_LEAVES_NO_WRITE_BEHIND` is new;
+  `ACT_ERASES_IN_ITS_FIRST_TURN`, `REPORT_NOT_STALE_BY_A_WRITE_ELSEWHERE`,
+  `ACTS_OF_ONE_SOURCE_OVERLAP` and `WRITE_READS_THROUGH_AN_OWED_ACT` gain the forgetting's
+  half, so each runs for both kinds of act.
+- **Measured** on the shared machine of this step, in a debug run, not a quiet one:
+  twenty writes beside parts of one retirement each waited p50 7.8 ms and at most 12.7 ms on
+  the memory engine, p50 16.7 ms and at most 24.9 ms on SQLite — never more than the one part
+  in front of them; an act of 2 000 retirements in parts of 500 took 613 ms from its
+  `source_forgotten` to its `act_whole` on memory (153 ms a part) and 4.0 s on SQLite
+  (1 000 ms a part). The figures are the store's `a_write_waits_for_at_most_a_part_of_a_forget`,
+  which times the act from the log's own wall time, and runs on every engine; the `pg` leg
+  is CI's.
+
 ## How it came to be
 
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
@@ -952,6 +1005,8 @@ on the first pull's frame. Forget keeps its one-append path until lakelands#1700
   read there.
 - R2's second pull built by lakelands#1691 with remove on the road and a write reading
   through an owed act; forget follows in lakelands#1700.
+- R2's third pull built by lakelands#1700 with forget on the road: its keys destroyed in the
+  first turn, its parts after, and its restate and reclaim once it is whole.
 - Amended by 102 (lakelands#1639), proposed for 0.23.0: a thinning act begins
   with `values_thinned`, and a write at a key it selected is refused rather
   than reading through the act.

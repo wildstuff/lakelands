@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::catalog::Verification;
 use lakelands_api::seam::FeedBatch;
-use lakelands_api::write::RemoveReport;
+use lakelands_api::write::{ForgetReport, RemoveReport};
 
 use super::removed::{acts, at, erased};
 use crate::conformance::fixture::source_record;
@@ -56,12 +56,13 @@ check!(
 check!(
     REPORT_NOT_STALE_BY_A_WRITE_ELSEWHERE =
         a_write_that_reaches_nothing_of_the_report_leaves_its_id_good,
-    "099: a report names the position it was read at and the selection there; a write since elsewhere, another source's record of a type the report names and a delivery the report does not select, is neither of those, so the act under the id is taken and answers what the preflight named, for a removal and a purge alike; a forgetting's half follows in lakelands#1700"
+    "099: a report names the position it was read at and the selection there; a write since elsewhere, another source's record of a type the report names and a delivery the report does not select, is neither of those, so the act under the id is taken and answers what the preflight named, for a removal, a purge and a forgetting alike: the forgotten source's record is retired and its value erased, while the other source's record of the type keeps its value",
+    given
 );
 
 check!(
     WRITE_READS_THROUGH_AN_OWED_ACT = a_write_between_an_acts_parts_reads_through_to_the_restate,
-    "099: while a removal is owed, a verb's `requires`, the values its assignments read and a function field's inputs are judged on the record refolded through the erasure the act names: `name is null` passes where the projection still holds the value, no taken value is written back into the log, and the function's output names no taken value; once the act is whole the record reads as the restate left it",
+    "099: while a removal is owed, a verb's `requires`, the values its assignments read and a function field's inputs are judged on the record refolded through the erasure the act names: `name is null` passes where the projection still holds the value, no taken value is written back into the log, and the function's output names no taken value; a forgetting's parts read the same way, its keys destroyed in the first turn; once the act is whole the record reads as the restate left it",
     given
 );
 
@@ -536,7 +537,11 @@ async fn an_act_outrun_by_the_writer_answers_unavailable_and_appends_nothing(
     Ok(())
 }
 
-async fn a_write_that_reaches_nothing_of_the_report_leaves_its_id_good(store: Store) -> Held {
+async fn a_write_that_reaches_nothing_of_the_report_leaves_its_id_good(
+    store: Store,
+    given: Given,
+) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     visits(&l).await?;
     let v = |k: &str, d: u32| json!({"id": k, "duration": d});
@@ -599,6 +604,62 @@ async fn a_write_that_reaches_nothing_of_the_report_leaves_its_id_good(store: St
          answer what the preflight named: the report {purge:?}, the act {purged:?}, c1 {c1:?}, \
          c9 {c9:?}"
     );
+    // A forgetting's report names every event of its source and the
+    // position it read at: another source's record of a type it names, and
+    // an author's write, are neither, so the act under its id is taken.
+    let text = json!({"kind": "text"});
+    l.declare_json(
+        json!({"declare": "type", "name": "memo", "key": ["id"], "fields": [
+        {"name": "id", "type": text, "authority": "source"},
+        {"name": "body", "type": text, "authority": "source", "erasable": true}]}),
+    )
+    .await?;
+    delivered(
+        &l,
+        "beta",
+        "memo",
+        "b1",
+        &[("m1", json!({"id": "m1", "body": "top"}))],
+    )
+    .await?;
+    let beta: SourceId = "beta".into();
+    let forgot = store
+        .forget_preflight(&beta)
+        .await
+        .must("the forgetting's preflight")?;
+    l.ingest(
+        "erp",
+        vec![source_record(
+            "memo",
+            "m2",
+            json!({"id": "m2", "body": "theirs"}),
+        )],
+    )
+    .await
+    .must("ingesting from erp")?;
+    l.upsert("visit", "v9", json!({"note": "elsewhere"}))
+        .await?;
+    let done = store
+        .forget_source(&beta, Some(forgot.report_id.as_str()))
+        .await
+        .must("the forgetting under its report's id after a write elsewhere")?;
+    let m1 = at(&l, "memo", "m1", None).await?;
+    let m2 = at(&l, "memo", "m2", None).await?;
+    ensure!(
+        done.retired == forgot.retired
+            && m1.is_none()
+            && m2
+                .as_ref()
+                .is_some_and(|r| r.fields.get("body") == Some(&json!("theirs"))),
+        "another source's record of the type and an author's write elsewhere must leave the \
+         forgetting's id good, and the act answer what the preflight named: the report {forgot:?}, \
+         the act {done:?}, m1 {m1:?}, m2 {m2:?}"
+    );
+    let left = keys.ids(store.lake(), &beta).ok().unwrap_or_default();
+    ensure!(
+        left.is_empty(),
+        "the forgetting destroys beta's keys: {left:?}"
+    );
     Ok(())
 }
 
@@ -606,9 +667,10 @@ async fn a_write_between_an_acts_parts_reads_through_to_the_restate(
     store: Store,
     given: Given,
 ) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
     let mut few = limits();
     few.part_events = 1;
-    let store = (given.relimit)(store, Seams::default(), few)
+    let store = (given.relimit)(store, super::erasable::with(&keys), few)
         .await
         .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
     let l = Lake::of(store.as_ref());
@@ -622,7 +684,7 @@ async fn a_write_between_an_acts_parts_reads_through_to_the_restate(
     l.declare_json(
         json!({"declare": "type", "name": "person", "key": ["id"], "fields": [
         {"name": "id", "type": text, "authority": "source"},
-        {"name": "name", "type": text, "authority": "source"},
+        {"name": "name", "type": text, "authority": "source", "erasable": true},
         {"name": "note", "type": text},
         {"name": "copied", "type": text},
         {"name": "loud", "type": text, "authority": "derived", "function": "shout",
@@ -724,6 +786,85 @@ async fn a_write_between_an_acts_parts_reads_through_to_the_restate(
          function over `name` must leave no output: the call {called:?}, `p0` after {after:?}, \
          the act {done:?}",
         shown.fields.get("name")
+    );
+    // A forgetting, too, is read through while it is owed: its keys are
+    // destroyed in the first turn, and until its restate a write reads the
+    // record as the restate will leave it (099).
+    let giver: SourceId = "giver".into();
+    let fresh: Vec<SourceRecord> = (0..n)
+        .map(|i| {
+            let k = format!("q{i}");
+            source_record(
+                "person",
+                &k,
+                json!({"id": &k, "name": format!("Grace {i}")}),
+            )
+        })
+        .collect();
+    l.ingest("giver", fresh)
+        .await
+        .must("ingesting from giver")?;
+    l.upsert("person", "q0", json!({"note": "kept"})).await?;
+    let start = store.head().await.must("reading the head")?;
+    let slot: Arc<Mutex<Option<ForgetReport>>> = Arc::default();
+    let written: Arc<Mutex<Option<Outcome>>> = Arc::default();
+    let (s, answer, s2, made) = (store.clone(), slot.clone(), store.clone(), written.clone());
+    let source = giver.clone();
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            let done = s
+                .forget_source(&source, None)
+                .await
+                .must("the forgetting")?;
+            *lock(&answer) = Some(done);
+            Ok(())
+        }),
+        Box::pin(async move {
+            settles(6_000, Duration::from_millis(1), || async {
+                let events = events_after(s2.as_ref(), start).await?;
+                let forgot =
+                    (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
+                let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+                ensure!(
+                    forgot && !whole,
+                    "the forgetting's `source_forgotten`, before its `act_whole`"
+                );
+                Ok(())
+            })
+            .await?;
+            let l = Lake::of(s2.as_ref());
+            let called = l
+                .cat
+                .call(
+                    &l.own,
+                    &"copy".into(),
+                    Some(&RecordKey::from("q0")),
+                    patch(json!({})),
+                    WriteOpts::default(),
+                )
+                .await
+                .must("a verb on `q0` while the forgetting is owed")?;
+            *lock(&made) = Some(called);
+            Ok(())
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let done = lock(&slot).take().expect("the forgetting answered");
+    let called = lock(&written).take().expect("the verb ran");
+    let l = Lake::of(store.as_ref());
+    let after = at(&l, "person", "q0", None)
+        .await?
+        .ok_or_else(|| Failure::new("`q0` after the forgetting"))?;
+    ensure!(
+        erased(&after, "name", "giver")
+            && !after.fields.contains_key("copied")
+            && !after.fields.contains_key("loud")
+            && after.fields.get("note") == Some(&json!("owed"))
+            && called.position() > start,
+        "while the forgetting is owed the projection still holds `q0`'s name, yet the verb's \
+         `name is null` must pass, its assignment of `name` must write no taken value and the \
+         function over `name` must leave no output: the call {called:?}, `q0` after {after:?}, \
+         the act {done:?}"
     );
     Ok(())
 }

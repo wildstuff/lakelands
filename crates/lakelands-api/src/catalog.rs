@@ -636,7 +636,7 @@ pub trait LakeStore: Send + Sync {
     /// log holds no event of, or one whose values the log holds in
     /// plaintext, is refused whole with nothing appended; the first two
     /// before anything is read. With a preflight's id, refused unless
-    /// that report is of this set at this head. A source of the set
+    /// that report is of this set at the position it was read at. A source of the set
     /// forgotten already
     /// appends nothing again; a set whose every source is forgotten
     /// finishes what is owed and answers it done, whatever report it names

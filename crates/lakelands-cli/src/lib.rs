@@ -414,7 +414,7 @@ fn command() -> Command {
                         .help("The source to forget"),
                 )
                 .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the act would erase and retire, and how long it would hold the writer, appending nothing; what `forget` does without --report"))
-                .arg(Arg::new("report").long("report").value_name("ID").help("Forget, only under the id of a preflight of this source at this head")),
+                .arg(Arg::new("report").long("report").value_name("ID").help("Forget, only under the id of a preflight of this source at its position")),
         )
         .subcommand(
             Command::new("values")

@@ -76,7 +76,7 @@ interface store {
         /// Forget a source: its keys destroyed, every value it sealed
         /// erased at every position, the storage reclaimed, in one act
         /// under the writer's lock. With a preflight's id, refused unless
-        /// that report is of this source at this head.
+        /// that report is of this source at the position it was read at.
         forget-source: func(source: source-id, report-id: option<string>) -> result<forget-report, error>;
         /// What `forget-source` would do, appending nothing, with the time
         /// it is expected to hold the writer's lock.
@@ -85,7 +85,8 @@ interface store {
         /// each, one rebuild and one reclaim under one hold of the
         /// writer. A set empty, naming a source twice or one the log
         /// holds no event of is refused whole. With a preflight's id,
-        /// refused unless that report is of this set at this head.
+        /// refused unless that report is of this set at the position it
+        /// was read at.
         forget-sources: func(sources: list<source-id>, report-id: option<string>) -> result<forget-set-report, error>;
         /// What `forget-sources` would do, appending nothing, with the
         /// time the one act is expected to hold the writer's lock.

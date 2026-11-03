@@ -1435,10 +1435,12 @@ impl LakeStore for Store {
     async fn forget_source(&self, source: &SourceId, id: Option<&str>) -> Result<ForgetReport> {
         writes::check_source(source)?;
         let (source, id) = (source.clone(), id.map(str::to_owned));
-        exec::write(&self.lake, move |t| {
-            crate::forget::run(t, &source, id.as_deref())
-        })
-        .await
+        // The act runs along the road, beside the writer: the door waits
+        // for its last turn without holding the queue.
+        let (answer, waiting) = tokio::sync::oneshot::channel();
+        crate::forget::start(&self.lake, vec![source], id, false, Some(answer));
+        let report = waiting.await.unwrap_or_else(|_| Err(exec::halted(true)))?;
+        Ok(crate::forget::alone(report))
     }
 
     async fn forget_preflight(&self, source: &SourceId) -> Result<ForgetReport> {
@@ -1453,11 +1455,11 @@ impl LakeStore for Store {
         id: Option<&str>,
     ) -> Result<ForgetSetReport> {
         sources.iter().try_for_each(writes::check_source)?;
-        let (sources, id) = (sources.to_vec(), id.map(str::to_owned));
-        exec::write(&self.lake, move |t| {
-            crate::forget::run_set(t, &sources, id.as_deref())
-        })
-        .await
+        let (sources, id) = (crate::forget::set(sources)?, id.map(str::to_owned));
+        // As one source's act, for every source at once, and one answer.
+        let (answer, waiting) = tokio::sync::oneshot::channel();
+        crate::forget::start(&self.lake, sources, id, true, Some(answer));
+        waiting.await.unwrap_or_else(|_| Err(exec::halted(true)))
     }
 
     async fn forget_sources_preflight(&self, sources: &[SourceId]) -> Result<ForgetSetReport> {

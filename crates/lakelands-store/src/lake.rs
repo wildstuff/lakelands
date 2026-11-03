@@ -1273,12 +1273,29 @@ impl Lake {
             return Ok(None);
         }
         let head = self.head();
-        let mut restate = list.values().any(|s| s == "owed");
+        let view = self.engine.view(None)?;
+        // Whether a source's forgetting is whole in the log: its
+        // `source_forgotten` and its `act_whole`. A source the list holds
+        // with no act at all is one an older log forgot in one append.
+        let mut whole = BTreeMap::new();
+        for act in crate::forget::acts(self, view.as_ref())? {
+            for source in act.sources {
+                whole.insert(source, act.whole);
+            }
+        }
+        let is_whole = |source: &SourceId| whole.get(source).copied().unwrap_or(true);
+        let mut restate = false;
+        let mut scrub: Vec<SourceId> = Vec::new();
         if list.values().chain(acts.values()).any(|s| s == "owed") {
             for (source, _) in list.iter().filter(|(_, s)| *s == "owed") {
                 self.keys.destroy(source)?;
+                // An act whose `act_whole` is not in the log still owes
+                // appends: its restate is the road's last turn, not this.
+                if is_whole(source) {
+                    restate = true;
+                    scrub.push(source.clone());
+                }
             }
-            let view = self.engine.view(None)?;
             let owed = |r: &crate::remove::Removal| acts.get(&r.at).is_some_and(|s| s == "owed");
             for act in crate::remove::acts(self, view.as_ref())?
                 .iter()
@@ -1286,8 +1303,6 @@ impl Lake {
             {
                 self.keys.destroy_versions(&act.source, &act.keys)?;
                 self.keys.destroy_apart(&act.source, &act.apart)?;
-                // An act whose `act_whole` is not in the log still owes
-                // appends: its restate is the road's last turn, not this.
                 if crate::remove::whole(self, act.at, Some(head))? {
                     restate = true;
                 }
@@ -1297,20 +1312,20 @@ impl Lake {
                 // where nothing else reads them, and the projection
                 // rebuilt otherwise: either restates it as the log now
                 // reads.
-                let owed: Vec<SourceId> = (list.iter())
-                    .filter(|(_, s)| *s == "owed")
-                    .map(|(source, _)| source.clone())
-                    .collect();
-                let plan = scrub::plan(self, view.as_ref(), &owed, self.limits.forget_rebuild)?;
+                let plan = scrub::plan(self, view.as_ref(), &scrub, self.limits.forget_rebuild)?;
                 let events = view.position().map_or(0, |p| p.0);
                 let way = plan.way(self, events);
                 drop(view);
                 match way.scoped {
-                    true => self.scrub_held(w, &plan, &owed)?,
+                    true => self.scrub_held(w, &plan, &scrub)?,
                     false => self.rebuild_held(w)?,
                 }
                 *lakelands_core::lock(&self.way) = Some(way);
+            } else {
+                drop(view);
             }
+        } else {
+            drop(view);
         }
         Ok(self.reclaim()?.ok())
     }
@@ -1425,8 +1440,21 @@ impl Lake {
                     owing.insert(*at);
                 }
             }
-            for state in list.values_mut() {
-                if state == "rebuilt" {
+            // A source whose forgetting is not whole still owes parts: a
+            // rebuild that met it erased its values, and its last turn
+            // marks it done, never this reclaim (099).
+            let mut whole = BTreeMap::new();
+            if list.values().any(|s| s == "rebuilt") {
+                let view = self.engine.view(None)?;
+                for act in crate::forget::acts(self, view.as_ref())? {
+                    for source in act.sources {
+                        whole.insert(source, act.whole);
+                    }
+                }
+                drop(view);
+            }
+            for (source, state) in list.iter_mut() {
+                if state == "rebuilt" && whole.get(source).copied().unwrap_or(true) {
                     *state = "done".to_owned();
                 }
             }
@@ -1982,7 +2010,11 @@ fn last_act(view: &dyn ProjectionView) -> Result<Position> {
     let Some(to) = view.position() else {
         return Ok(Position::GENESIS);
     };
-    let kinds = vec!["source_forgotten".into(), "values_removed".into()];
+    let kinds = vec![
+        "source_forgotten".into(),
+        "values_removed".into(),
+        "act_whole".into(),
+    ];
     let acts = lakelands_api::seam::FeedFilter {
         kinds,
         ..Default::default()

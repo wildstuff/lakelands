@@ -805,6 +805,7 @@ pub const ALL: &[Check] = &[
     forgotten::FORGET_EXPECTED_TIME,
     forgotten::FORGET_SET,
     forgotten::FORGET_SET_OWED,
+    forgotten::FORGET_LEAVES_NO_WRITE_BEHIND,
     scrubbed::SCRUBBED,
     scrubbed::SCRUB_FALLBACK,
     scrubbed::SCRUB_CRASH,

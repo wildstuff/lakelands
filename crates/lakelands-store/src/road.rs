@@ -104,12 +104,14 @@ impl Reach {
 pub(crate) type Owes = fn(&Lake, &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>>;
 
 /// Every kind of job a writer's open takes up: a purge a failure left
-/// not whole ([`crate::purge::PURGED`]), a removal whose `act_whole` is
-/// not in the log, the restate and reclaim a whole act owes or a crash
-/// left, and the builds of the settings a projection marked as building.
+/// not whole ([`crate::purge::PURGED`]), a removal or a forgetting whose
+/// `act_whole` is not in the log, the restate and reclaim a whole act owes
+/// or a crash left, and the builds of the settings a projection marked as
+/// building.
 pub(crate) const OWED: &[Owes] = &[
     crate::purge::owed,
     crate::remove::owed,
+    crate::forget::owed,
     crate::remove::settle_owed,
     crate::build::owed,
 ];

@@ -636,6 +636,7 @@ async fn overruled(store: Store, given: crate::conformance::Given, act: Act) -> 
         reactions(store.as_ref()).await?,
         reactions(twin.as_ref()).await?,
     );
+
     let mut overruled = overruled;
     overruled.sort();
     let want = [

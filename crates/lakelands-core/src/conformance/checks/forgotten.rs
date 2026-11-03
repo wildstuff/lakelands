@@ -25,7 +25,7 @@ use crate::conformance::prelude::*;
 
 check!(
     FORGOTTEN = a_forgotten_sources_values_read_as_erased_at_every_position,
-    "058: `forget_preflight` names the records holding a source's erasable values, the values per field, the records it retires and those another hand co-owns, what is computed again, no plaintext, and the time it expects to hold the writer's lock; `forget_source` with that report appends `source_forgotten` naming the key's version, retires the records the source alone brought, closes the act with `act_whole`, destroys its keys and reclaims the storage; after it the source's values read as erased, with provenance saying `erased`, at the head and `as_of` before the act, and so do a derived field, a function's recorded output and a kept view's group computed from them, while a field that is not erasable keeps its history and another source's values stay; a rebuild answers the same; an ingest from the source is refused and appends nothing, as is a report of a head a write moved past, and forgetting it again answers it done and appends nothing",
+    "058: `forget_preflight` names the records holding a source's erasable values, the values per field, the records it retires and those another hand co-owns, what is computed again, no plaintext, and the time it expects to hold the writer's lock; `forget_source` with that report appends `source_forgotten` naming the key's version, retires the records the source alone brought, closes the act with `act_whole`, destroys its keys and reclaims the storage; after it the source's values read as erased, with provenance saying `erased`, at the head and `as_of` before the act, and so do a derived field, a function's recorded output and a kept view's group computed from them, while a field that is not erasable keeps its history and another source's values stay; a rebuild answers the same; an ingest from the source is refused and appends nothing, a write elsewhere since the report leaves its id good, and forgetting it again answers it done and appends nothing",
     reopens
 );
 
@@ -316,18 +316,10 @@ async fn a_forgotten_sources_values_read_as_erased_at_every_position(
         rate > 0,
         "the preflight expects a time under the lock: {report:?}"
     );
-    // A report of another head is refused.
+    // A report is read at its position, and a write elsewhere does not
+    // stale it (099): the act appends under the id the preflight gave.
     l.upsert("person", "p3", json!({"note": "moved"})).await?;
-    refused_like(
-        "forgetting crm with a report of another head",
-        store.forget_source(&crm, Some(&report.report_id)).await,
-        &json!({"code": "forget_report_stale"}),
-    )?;
     let at = store.head().await.must("reading the head")?;
-    let report = store
-        .forget_preflight(&crm)
-        .await
-        .must("the preflight again")?;
     let done = store
         .forget_source(&crm, Some(&report.report_id))
         .await
@@ -380,6 +372,116 @@ async fn a_forgotten_sources_values_read_as_erased_at_every_position(
         after == head && again.types.is_empty() && again.retired.is_empty(),
         "forgetting crm again answers the act done, appending nothing; it answered {again:?}, the head moving {head} to {after}"
     );
+    Ok(())
+}
+
+check!(
+    FORGET_LEAVES_NO_WRITE_BEHIND =
+        a_write_by_the_source_between_the_report_and_the_act_is_taken_in,
+    "099: `crm`'s preflight is read, then `crm` writes a record before the act; the act under the report's id takes the write in, answering a report read past it, the record retired and its value erased; with `part_events` 1, so its retirements run in later parts, the key store holds none of `crm`'s keys once its `source_forgotten` is in the log and before its `act_whole`, and an ingest from `crm` between the parts is refused, appending nothing, so nothing is sealed under a destroyed key",
+    given
+);
+
+async fn a_write_by_the_source_between_the_report_and_the_act_is_taken_in(
+    store: Store,
+    given: Given,
+) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    let mut few = limits();
+    few.part_events = 1;
+    let store = (given.relimit)(store, super::erasable::with(&keys), few)
+        .await
+        .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let p = |k: &str, name: &str| {
+        source_record("person", k, json!({"id": k, "name": name, "city": "Oslo"}))
+    };
+    let n = 40u32;
+    let records: Vec<SourceRecord> = (0..n)
+        .map(|i| p(&format!("w{i}"), &format!("Ada {i}")))
+        .collect();
+    l.ingest("crm", records)
+        .await
+        .must("ingesting crm's records")?;
+    let crm: SourceId = "crm".into();
+    let report = store.forget_preflight(&crm).await.must("the preflight")?;
+    // The source writes once the report is read, before the act.
+    l.ingest("crm", vec![p("w40", "Zoe")])
+        .await
+        .must("crm's write after the report")?;
+    let start = store.head().await.must("reading the head")?;
+    let slot: Arc<std::sync::Mutex<Option<ForgetReport>>> = Arc::default();
+    let seen: Arc<AtomicBool> = Arc::default();
+    let (s, answer, s2, between, keys2) = (
+        store.clone(),
+        slot.clone(),
+        store.clone(),
+        seen.clone(),
+        keys.clone(),
+    );
+    let source = crm.clone();
+    let id = report.report_id.clone();
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            let done = s
+                .forget_source(&source, Some(id.as_str()))
+                .await
+                .must("the act under the report's id")?;
+            *crate::lock(&answer) = Some(done);
+            Ok(())
+        }),
+        Box::pin(async move {
+            settles(6_000, Duration::from_millis(1), || async {
+                let events = events_after(s2.as_ref(), start).await?;
+                let forgot = (events.iter()).any(|e| {
+                    matches!(&e.body, EventBody::SourceForgotten { source, .. } if source == "crm")
+                });
+                let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+                ensure!(
+                    forgot && !whole,
+                    "the act's `source_forgotten`, before its `act_whole`"
+                );
+                Ok(())
+            })
+            .await?;
+            let left = keys2.ids(s2.lake(), &"crm".into()).ok().unwrap_or_default();
+            ensure!(
+                left.is_empty(),
+                "the first turn destroys crm's keys before any part runs: {left:?}"
+            );
+            let l = Lake::of(s2.as_ref());
+            let refused = l.ingest("crm", vec![p("late", "Eve")]).await;
+            ensure!(
+                refused.is_err(),
+                "crm's ingest between the act's parts is refused, so nothing is sealed under a \
+                 destroyed key; it answered {refused:?}"
+            );
+            between.store(true, Ordering::SeqCst);
+            Ok(())
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    ensure!(
+        seen.load(Ordering::SeqCst),
+        "the act's parts after its `source_forgotten` were seen"
+    );
+    let done = crate::lock(&slot).take().expect("the act answered");
+    let l = Lake::of(store.as_ref());
+    let late = person_at(&l, "w40", Some(start)).await?;
+    ensure!(
+        done.events > report.events
+            && done.retired.iter().map(|t| t.retired).sum::<u32>() == n + 1
+            && !late.fields.contains_key("name"),
+        "the write crm made after the report is taken in: the preflight's report {report:?}, the \
+         act's {done:?}, w40 as of before the act {late:?}"
+    );
+    let left = keys.ids(store.lake(), &crm).ok().unwrap_or_default();
+    ensure!(
+        left.is_empty(),
+        "the key store holds no key of crm after the act: {left:?}"
+    );
+    ends_whole(store.as_ref(), start).await?;
     Ok(())
 }
 
@@ -1394,19 +1496,13 @@ async fn several_sources_are_forgotten_in_one_act(
         "the preflight of the set carries its own id, and its one expected time and head in \
          each source's report: {pre:?}"
     );
-    // A report over the set of another head is refused.
+    // A report is read at its position, and a write elsewhere does not
+    // stale it (099): the act over the set appends under the id the
+    // preflight gave, at the head the write left.
     l.upsert("person", "p6", json!({"note": "moved"})).await?;
     let at = store.head().await.must("reading the head")?;
     let set = [crm.clone(), erp.clone()];
-    refused_like(
-        "forgetting the set with a report of another head",
-        store.forget_sources(&set, Some(&pre.report_id)).await,
-        &json!({"code": "forget_report_stale"}),
-    )?;
-    let after = store.head().await.must("reading the head")?;
-    ensure!(after == at, "the stale report appended up to {after}");
-    let pre = (store.forget_sources_preflight(&set).await).must("the preflight again")?;
-    // A report of one source of the set, at this head, is not the set's.
+    // A report of one source of the set, at its position, is not the set's.
     let part = store.forget_preflight(&erp).await.must("erp's preflight")?;
     refused_like(
         "forgetting the set with the report of erp alone",
