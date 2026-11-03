@@ -659,6 +659,98 @@ The two steps landed in one pull request.
   at ×1.35; the estimate table above carries the measured size and leaves
   the remaining steps as reckoned.
 
+### As built: step 7 (lakelands#1638)
+
+Step 7 is the pair's state, its rows and the roads that keep them. The
+build's driver, `describe`'s `series`, and the reads that take a pair are
+step 8.
+
+- **The setting.** `series_index.<type>` is listed in
+  `lakelands-api`'s settings page, `seam::SERIES_INDEX_SETTING`, and
+  `check_setting` validates a value pair by pair: a stored type the reader
+  is shown, an array of two-name arrays, a series field of text, reference,
+  number or decimal, an order field of a kind the order index keeps, each
+  declared and neither computed at the read. A refusal names the field it
+  is about — `SeriesFieldKind`, `SeriesIndexShape`, and `UnknownField`,
+  `OrderIndexKind` and `OrderIndexAtRead` as the other indexes use them.
+  The value itself is `SeriesPair` / `SeriesState` in `lakelands-api`'s
+  contract.
+- **The rows.** `engines::order_rows` takes the type's declaration and
+  answers a derived field's row for a record: eight bytes of the SHA-256 of
+  the series value's token (`engines::lookup_token`, so a number series is
+  its normalised number), then the order value's `order_key`, or `0xFF`
+  where it holds none. A series value that reads as no number keeps no row,
+  as under the number lookup. A record without a series value keeps none.
+- **The fold.** A `series_index.<type>` setting folded from the log fills
+  its pairs whole at its event and writes them `kept`; put beside the
+  writer, through `put_record_for`'s live road, it writes them `building`
+  for a build to fill and `Keep`, as a redeclaration's `Start` does. A pair the
+  setting no longer names is taken back in that write: its state leaves
+  the row and its rows go in the writer's turn, as the record's `Drop`
+  says, so no row is left without a pair. The state is the `series.<type>`
+  row: SQLite's `meta.v`, PostgreSQL's `meta.t` and the memory
+  projection's map. A write keeps the pairs' rows from `Start`: the fold's
+  field list is the type's order fields and its pairs' derived fields, and
+  a `Start`, `Fill`, `Keep`, `DropChunk` and `Drop` for a derived name
+  take the pair's own road in `choose_order`, apart from `Chosen` and its
+  setting.
+- **The exemptions.** `order_fields` and `sorted_fields` never name a
+  derived field, so no read, no rebuild of the lake's own index and no
+  chooser takes one. `rebuild_sorted` deletes only a `field` without
+  U+001F, `start_sorted` and `mark_sorted` read the distinct fields without
+  it, `eligible` refuses one, and `sweep` drops none.
+- **`put_declaration`.** A type's declaration deletes its order rows and
+  `sorted.<type>`, as 041's rule says; a kept pair in `series.<type>` goes
+  back to `building`, so no reader takes rows the declaration may have
+  moved, and the rows the head's records are indexed again under it. The
+  pairs the setting at the head names are read again there, so a setting
+  folded before the declaration that first declares its fields starts its
+  pair at that declaration, as §How says.
+
+**Where the tree and this record differ.** §How a lake with records gets
+it says taking the setting back is `Drop`, one delete in the writer's
+turn. The tree as 099 R7 left it takes a setting back in parts:
+`DropChunk`, whose last chunk removes the pair, with `Choose::Drop`
+deprecated, clearing the whole field in one step for a caller built against
+it. The tree wins, and the pair takes the parts road as a setting's own
+fields do. A setting put beside the writer that stops naming a pair is
+still one delete in that write, the record's road, beside the parts road a
+caller drives. `choose_order`'s refusal for a type with a `sort_index`
+setting is likewise gone, as 099 R7 records: `eligible` refuses only a
+derived field, and the lake may choose the type's other fields beside a
+pair.
+
+A setting put beside the writer that starts naming a pair leaves it
+`building` with no build scheduled: the store's driver (`asked`, `owed`)
+knows an order index's build, not yet a series pair's, which is step 8's
+work. The settings page says so, marked `INTERIM: lakelands#1638`; a fold
+from the log still fills the pair whole.
+
+**Conformance.** No check row: until step 8 no read takes a pair, so the
+suite has no answer to hold. The engines' tests hold the claim for now —
+`a_series_pair_is_filled_whole_kept_and_put_back_to_start` and
+`a_setting_put_before_the_declaration_starts_its_pair` on SQLite and
+PostgreSQL, and `a_series_pair_is_filled_from_the_log_kept_and_put_back_to_start`
+and `a_setting_put_before_the_declaration_starts_its_pair` on the memory
+projection, which walks the live road too — and `engines`' unit tests hold
+the pair's validation, the hash and `0xFF` row, and the fields the lakes
+never name. Step 8 adds the suite's rows with the reads.
+
+**Measured.** SQLite, five rounds of a fresh lake, 100 000 writes of a
+three-field record in transactions of 1 000, the pair's setting put
+before them: a write cost 13.5–30.1 µs without the pair (median 16.2)
+and 25.1–38.4 µs with it (median 28.2), slower in every round; the
+per-round difference was 5.5–24.7 µs, median 8.9. The one-pass fill of
+the 100 000 records at the setting cost 0.46–1.03 s. The write cost is
+the series token's hash and one more `sort_index` row a record, not the
+row's bytes.
+
+**Size.** The step landed at 1 053 product lines and 880 specification
+lines, against the 230 and 270 the estimate above reckoned with ×1.35,
+and above the record's 600 a pull request. The rows are written three
+times, once in each engine, as the store's other indexes are; nothing in
+it was cut for the number, and step 8's driver stands as reckoned.
+
 ### What the operator decided
 
 Both on 2026-10-31.

@@ -1,6 +1,5 @@
 use super::*;
-use crate::conformance::fixture::order;
-use crate::conformance::fixture::stored_record;
+use crate::conformance::fixture::{field, order, stored_record, type_decl};
 use serde_json::json;
 
 #[test]
@@ -155,6 +154,7 @@ fn walk_by_index(
         .filter_map(|r| {
             order_rows(
                 &sorted_fields(&decl.name, decl, Some(&json!(["v", "w"]))),
+                Some(decl),
                 r,
             )
             .into_iter()
@@ -957,4 +957,125 @@ fn a_value_holds_a_key_or_an_arrays_distinct_strings() {
     for other in [json!(7), json!(null), json!(true), json!({"key": "a"})] {
         assert!(keys(other.clone()).is_empty(), "{other} holds no key");
     }
+}
+
+/// A stored type with a series field, an order field and one of each kind
+/// a series pair never names.
+fn series_decl() -> TypeDecl {
+    type_decl(
+        "book",
+        vec![
+            field("series", StorageKind::Text),
+            field("at", StorageKind::Number),
+            field("flag", StorageKind::Boolean),
+            FieldDecl {
+                computed_at: Some(ComputedAt::Read),
+                ..field("seen_at", StorageKind::Number)
+            },
+        ],
+    )
+}
+
+#[test]
+fn a_series_setting_names_each_pair_the_declaration_keeps_holds_once() {
+    let decl = series_decl();
+    let setting = json!([
+        ["series", "at"],
+        ["series", "at"],
+        ["flag", "at"],
+        ["series", "seen_at"],
+        ["missing", "at"],
+        ["series"],
+        ["series", "at", "flag"],
+        "series"
+    ]);
+    assert_eq!(
+        series_pairs(&decl, Some(&setting)),
+        vec![SeriesPair {
+            series: FieldName::from("series"),
+            order: FieldName::from("at"),
+        }]
+    );
+    assert!(series_pairs(&decl, None).is_empty());
+    assert!(series_pairs(&decl, Some(&json!("no pairs"))).is_empty());
+}
+
+#[test]
+fn a_series_field_is_listed_from_both_its_kept_and_its_building_pairs() {
+    let pair = |series: &str, order: &str| SeriesPair {
+        series: FieldName::from(series),
+        order: FieldName::from(order),
+    };
+    let state = SeriesState {
+        kept: vec![pair("series", "at")],
+        building: vec![pair("series", "flag")],
+    };
+    assert_eq!(
+        series_fields(&state),
+        vec![
+            FieldName::from(lakelands_api::seam::series_field("at", "series")),
+            FieldName::from(lakelands_api::seam::series_field("flag", "series")),
+        ]
+    );
+    assert!(series_fields(&SeriesState::default()).is_empty());
+}
+
+#[test]
+fn a_series_row_is_its_series_hash_then_its_order_key_or_ff() {
+    let decl = series_decl();
+    let field = FieldName::from(lakelands_api::seam::series_field("at", "series"));
+    let record = |key: &str, fields: serde_json::Value| {
+        let fields: serde_json::Map<String, serde_json::Value> =
+            fields.as_object().cloned().unwrap_or_default();
+        stored_record(
+            "book",
+            key,
+            fields
+                .into_iter()
+                .map(|(k, v)| (FieldName::from(k.as_str()), v))
+                .collect(),
+            1,
+        )
+    };
+    let rows = |r: &StoredRecord| order_rows(std::slice::from_ref(&field), Some(&decl), r);
+    let red = record("a", json!({"series": "red", "at": 2}));
+    let red_later = record("b", json!({"series": "red", "at": 3}));
+    let blue = record("c", json!({"series": "blue", "at": 2}));
+    let at = rows(&red);
+    assert_eq!(at.len(), 1);
+    let mut expected = at[0].1[..8].to_vec();
+    expected.extend(order_key(&json!(2)));
+    assert_eq!(at[0].1, expected);
+    // A series keeps one hash over all its records, and another series
+    // hashes elsewhere.
+    assert_eq!(rows(&red_later)[0].1[..8], at[0].1[..8]);
+    assert_ne!(rows(&blue)[0].1[..8], at[0].1[..8]);
+    // A record with a series and no order value ranks above every one
+    // that has one.
+    let no_at = record("d", json!({"series": "red"}));
+    assert_eq!(rows(&no_at)[0].1[8..], [0xFF]);
+    // A record with no series value keeps no row.
+    assert!(rows(&record("e", json!({"at": 2}))).is_empty());
+}
+
+#[test]
+fn a_types_order_fields_never_name_a_series_pair() {
+    let decl = series_decl();
+    let pair = FieldName::from(lakelands_api::seam::series_field("at", "series"));
+    let chosen = Chosen {
+        kept: vec![pair.clone()],
+        ..Chosen::default()
+    };
+    let setting = json!([pair.as_str()]);
+    for building in [true, false] {
+        let fields = order_fields(
+            &TypeName::from("book"),
+            &decl,
+            Some(&setting),
+            &chosen,
+            building,
+        );
+        assert!(!fields.contains(&pair), "{fields:?}");
+    }
+    assert!(sorted_fields(&TypeName::from("book"), &decl, Some(&setting)).is_empty());
 }

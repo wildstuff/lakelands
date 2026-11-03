@@ -55,7 +55,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use lakelands_api::engine::{Applied, Choose, Chosen, Declared, Look, TextCounts};
+use lakelands_api::engine::{
+    Applied, Choose, Chosen, Declared, Look, SeriesPair, SeriesState, TextCounts,
+};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::{StorageKind, TypeDecl};
@@ -642,6 +644,10 @@ pub(crate) struct HeadTypes(HashMap<TypeName, HeadType>);
 pub(crate) struct HeadType {
     pub(crate) decl: Option<TypeDecl>,
     pub(crate) sorted: Vec<FieldName>,
+    /// The derived fields of the type's series pairs, each kept from its
+    /// `Start` (097 §The series index): no order index of the lake's own
+    /// names one, but a write keeps their rows beside the order fields'.
+    pub(crate) series: Vec<FieldName>,
     pub(crate) looked: Option<BTreeSet<FieldName>>,
     pub(crate) vectors: BTreeSet<FieldName>,
 }
@@ -668,7 +674,8 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
         &format!(
             "SELECT (SELECT r.state FROM {d} WHERE h.ident = $1), s.state, \
              (SELECT array_agg(field) FROM {l} WHERE ty = $4), \
-             (SELECT t FROM {m} WHERE k = $5), s.since \
+             (SELECT t FROM {m} WHERE k = $5), s.since, \
+             (SELECT t FROM {m} WHERE k = $6) \
              FROM (SELECT) AS one LEFT JOIN LATERAL \
              (SELECT r.state, r.since FROM {r} WHERE h.ty = $2 AND h.key = $3) AS s ON true",
             d = DECLARATIONS.at_head(names),
@@ -682,12 +689,14 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
             &engines::sort_index_key(ty),
             &ty.as_str(),
             &engines::chosen_mark(ty),
+            &engines::series_mark(ty),
         ],
     )?;
     let looked: Option<Vec<String>> = row.get(2);
     let declared = declared_type(row.get(0))?;
     let setting = setting_at(&row, ty, [1, 4])?;
     let chosen = chosen_decoded(row.get(3));
+    let series = engines::series_fields(&engines::series_decoded(row.get(5)));
     let sorted = match &declared {
         Some(d) => engines::order_fields(ty, d, setting.as_ref(), &chosen, true),
         None => Vec::new(),
@@ -709,6 +718,7 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
     Ok(HeadType {
         decl,
         sorted,
+        series,
         looked,
         vectors,
     })
@@ -795,6 +805,109 @@ pub(crate) fn chosen_of(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Cho
     Ok(chosen_decoded(row.and_then(|row| row.get(0))))
 }
 
+/// The series pairs of `ty` and whether each is whole, as its `series.`
+/// row holds them: none where it holds none.
+pub(crate) fn series_of(db: &mut Db, names: &Names, ty: &TypeName) -> Result<SeriesState> {
+    let row = db.query_opt(
+        &format!("SELECT t FROM {} WHERE k = $1", names.t("meta")),
+        &[&engines::series_mark(ty)],
+    )?;
+    Ok(engines::series_decoded(row.and_then(|row| row.get(0))))
+}
+
+/// Keep `ty`'s series pairs as `state`: no row where it holds none.
+fn set_series(db: &mut Db, names: &Names, ty: &TypeName, state: &SeriesState) -> Result<()> {
+    let (meta, mark) = (names.t("meta"), engines::series_mark(ty));
+    if *state == SeriesState::default() {
+        return db.execute(&format!("DELETE FROM {meta} WHERE k = $1"), &[&mark]);
+    }
+    let text = serde_json::to_string(state).expect("the series pairs serialise");
+    db.execute(
+        &format!("INSERT INTO {meta} (k, t) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET t = $2"),
+        &[&mark, &text],
+    )
+}
+
+/// The field a step of choosing names.
+#[allow(deprecated)]
+fn chosen_field(step: &Choose) -> Option<&FieldName> {
+    match step {
+        Choose::Start(f) | Choose::Keep(f) | Choose::Drop(f) => Some(f),
+        Choose::Fill { field, .. } | Choose::DropChunk { field, .. } => Some(field),
+    }
+}
+
+/// One step of a series pair's build, in a transaction of its own that
+/// moves no position: the pair's state is kept in `series.<type>`, and its
+/// rows under the derived field of `field`.
+#[allow(deprecated)]
+fn choose_series(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    step: &Choose,
+    field: &FieldName,
+) -> Result<Option<RecordKey>> {
+    let Some((order, series)) = lakelands_api::seam::split_series_field(field.as_str()) else {
+        return Ok(None);
+    };
+    let pair = SeriesPair {
+        series: FieldName::from(series),
+        order: FieldName::from(order),
+    };
+    db.batch("BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL synchronous_commit = off")?;
+    let done = (|| {
+        let mut state = series_of(db, names, ty)?;
+        let without = |state: &mut SeriesState| {
+            state.kept.retain(|p| p != &pair);
+            state.building.retain(|p| p != &pair);
+        };
+        match step {
+            Choose::Start(_) => {
+                if !state.kept.contains(&pair) && !state.building.contains(&pair) {
+                    state.building.push(pair.clone());
+                }
+                set_series(db, names, ty, &state)?;
+                Ok(None)
+            }
+            Choose::Fill {
+                field,
+                after,
+                limit,
+            } => fill_chosen(db, names, ty, field, after.as_ref(), *limit),
+            Choose::Keep(_) => {
+                state.building.retain(|p| p != &pair);
+                if !state.kept.contains(&pair) {
+                    state.kept.push(pair.clone());
+                }
+                set_series(db, names, ty, &state)?;
+                Ok(None)
+            }
+            // A pair taken back: its rows go whole in one step, or a chunk
+            // a call, and its state leaves with the last.
+            Choose::Drop(field) => {
+                let _ = drop_chosen(db, names, ty, field, None, u32::MAX)?;
+                without(&mut state);
+                set_series(db, names, ty, &state)?;
+                Ok(None)
+            }
+            Choose::DropChunk {
+                field,
+                after,
+                limit,
+            } => {
+                let last = drop_chosen(db, names, ty, field, after.as_ref(), *limit)?;
+                if last.is_none() {
+                    without(&mut state);
+                    set_series(db, names, ty, &state)?;
+                }
+                Ok(last)
+            }
+        }
+    })();
+    db.end(done)
+}
+
 /// One step of choosing an order index for `ty` (`ProjectionStore::
 /// choose_order`), in a transaction of its own that moves no position.
 #[allow(deprecated)]
@@ -804,6 +917,12 @@ pub(crate) fn choose_order(
     ty: &TypeName,
     step: &Choose,
 ) -> Result<Option<RecordKey>> {
+    // A series pair's derived field is kept in the type's `series.` row,
+    // not in `Chosen`: its own road fills it from the pair (097 §The
+    // series index).
+    if let Some(field) = chosen_field(step).filter(|f| engines::is_series_field(f)) {
+        return choose_series(db, names, ty, step, field);
+    }
     let setting = head_record(
         db,
         names,
@@ -925,7 +1044,7 @@ pub(crate) fn mark_sorted(db: &mut Db, names: &Names, ty: &TypeName) -> Result<(
     let mut dropping = std::mem::take(&mut chosen.dropping);
     let rows = db.query(
         &format!(
-            "SELECT DISTINCT field FROM {} WHERE ty = $1",
+            "SELECT DISTINCT field FROM {} WHERE ty = $1 AND position(chr(31) IN field) = 0",
             names.t("sort_index")
         ),
         &[&ty.as_str()],
@@ -1098,8 +1217,10 @@ fn fill_chosen(
     let after = after.map_or("", RecordKey::as_str);
     let page = head_records_after(db, names, ty, after, i64::from(limit))?;
     let (mut fields, mut keys, mut sort_keys) = (Vec::new(), Vec::new(), Vec::new());
+    let decl = type_at(db, names, ty, None)?;
     for r in &page {
-        for (field, sort_key) in engines::order_rows(std::slice::from_ref(field), r) {
+        for (field, sort_key) in engines::order_rows(std::slice::from_ref(field), decl.as_ref(), r)
+        {
             fields.push(field.as_str().to_owned());
             keys.push(r.key.as_str().to_owned());
             sort_keys.push(sort_key);
@@ -1365,6 +1486,107 @@ pub(crate) fn analyze(db: &mut Db, names: &Names) -> Result<()> {
     db.batch(&format!("ANALYZE {}", tables.join(", ")))
 }
 
+/// Mark the pairs `ty`'s `series_index` setting asks for as building, and
+/// leave the pairs it no longer names out: a read keeps the old road until
+/// each pair's `Keep`, and the fold keeps a building pair's rows from its
+/// `Start`. A pair still named and already kept stays kept.
+pub(crate) fn mark_series(db: &mut Db, names: &Names, ty: &TypeName) -> Result<()> {
+    let Some(decl) = type_at(db, names, ty, None)? else {
+        return Ok(());
+    };
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::series_index_key(ty)),
+    )?;
+    let named = engines::series_pairs(&decl, setting.as_ref().and_then(engines::setting_value));
+    let mut state = series_of(db, names, ty)?;
+    // A pair the setting no longer names is taken back: its rows go in the
+    // writer's turn, as a `Drop` does, so none is left without a pair.
+    let gone: Vec<_> = state
+        .kept
+        .iter()
+        .chain(state.building.iter())
+        .filter(|p| !named.contains(p))
+        .cloned()
+        .collect();
+    for pair in &gone {
+        let field = FieldName::from(lakelands_api::seam::series_field(
+            pair.order.as_str(),
+            pair.series.as_str(),
+        ));
+        let _ = drop_chosen(db, names, ty, &field, None, u32::MAX)?;
+    }
+    state.kept.retain(|p| named.contains(p));
+    state.building.retain(|p| named.contains(p));
+    for pair in named {
+        if !state.kept.contains(&pair) && !state.building.contains(&pair) {
+            state.building.push(pair);
+        }
+    }
+    set_series(db, names, ty, &state)
+}
+
+/// Fill `ty`'s series pairs whole from its head records, under its setting
+/// and declaration at the head, and write them kept: a fold from the log
+/// makes a pair whole at its event rather than marking it for a build. A
+/// setting taken back leaves no pair and drops their rows.
+pub(crate) fn rebuild_series(db: &mut Db, names: &Names, ty: &TypeName) -> Result<()> {
+    db.execute(
+        &format!(
+            "DELETE FROM {} WHERE ty = $1 AND position(chr(31) IN field) > 0",
+            names.t("sort_index")
+        ),
+        &[&ty.as_str()],
+    )?;
+    let Some(decl) = type_at(db, names, ty, None)? else {
+        return set_series(db, names, ty, &SeriesState::default());
+    };
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::series_index_key(ty)),
+    )?;
+    let pairs = engines::series_pairs(&decl, setting.as_ref().and_then(engines::setting_value));
+    let state = SeriesState {
+        kept: pairs,
+        building: Vec::new(),
+    };
+    set_series(db, names, ty, &state)?;
+    let fields = engines::series_fields(&state);
+    if fields.is_empty() {
+        return Ok(());
+    }
+    let mut after = String::new();
+    loop {
+        let page = head_records_after(db, names, ty, &after, REBUILD_PAGE)?;
+        let Some(last) = page.last() else { break };
+        after = last.key.to_string();
+        let (mut found, mut keys, mut sort_keys) = (Vec::new(), Vec::new(), Vec::new());
+        for r in &page {
+            for (field, sort_key) in engines::order_rows(&fields, Some(&decl), r) {
+                found.push(field.as_str().to_owned());
+                keys.push(r.key.as_str().to_owned());
+                sort_keys.push(sort_key);
+            }
+        }
+        db.execute(
+            &format!(
+                "INSERT INTO {} (ty, field, key, sort_key) \
+                 SELECT $1, * FROM unnest($2::text[], $3::text[], $4::bytea[])",
+                names.t("sort_index"),
+            ),
+            &[&ty.as_str(), &found, &keys, &sort_keys],
+        )?;
+        if (page.len() as i64) < REBUILD_PAGE {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Rewrite `ty`'s order index from its head records, under its setting and
 /// declaration at the head, and mark it kept through `through`; with no
 /// field to keep, drop its rows and its mark. The fold does this when it
@@ -1377,8 +1599,14 @@ pub(crate) fn rebuild_sorted(
     ty: &TypeName,
     through: Position,
 ) -> Result<u64> {
+    // A series pair's rows are the host's: a `sort_index` rebuild leaves
+    // them, and `sorted_fields` never names one (097 §How a lake with
+    // records gets it).
     db.execute(
-        &format!("DELETE FROM {} WHERE ty = $1", names.t("sort_index")),
+        &format!(
+            "DELETE FROM {} WHERE ty = $1 AND position(chr(31) IN field) = 0",
+            names.t("sort_index")
+        ),
         &[&ty.as_str()],
     )?;
     // A host's setting that names a field wins: the lake's choice goes.
@@ -1414,7 +1642,7 @@ pub(crate) fn rebuild_sorted(
         after = last.key.to_string();
         let (mut fields, mut keys, mut sort_keys) = (Vec::new(), Vec::new(), Vec::new());
         for r in &page {
-            for (field, sort_key) in engines::order_rows(&head.sorted, r) {
+            for (field, sort_key) in engines::order_rows(&head.sorted, head.decl.as_ref(), r) {
                 fields.push(field.as_str().to_owned());
                 keys.push(r.key.as_str().to_owned());
                 sort_keys.push(sort_key);
@@ -1795,7 +2023,9 @@ pub(crate) fn index_records(
                 }
             }
         }
-        for (field, sort_key) in engines::order_rows(&head.sorted, r) {
+        let mut order: Vec<FieldName> = head.sorted.clone();
+        order.extend(head.series.iter().cloned());
+        for (field, sort_key) in engines::order_rows(&order, head.decl.as_ref(), r) {
             rows.sorted.0.push(ty);
             rows.sorted.1.push(field.as_str().to_owned());
             rows.sorted.2.push(key);
@@ -2130,6 +2360,9 @@ pub(crate) struct Buffer {
     /// building at the commit, not walked there (099).
     live_sorted: BTreeSet<TypeName>,
     live_looked: BTreeSet<TypeName>,
+    /// The types whose `series_index.<type>` setting was put beside the
+    /// writer: marked building at the commit, not filled there (099).
+    live_series: BTreeSet<TypeName>,
     /// The thinning acts' rows (`thinned_types`), by type, field and
     /// horizon: the position each began at, its `through` and its `gone`.
     thinned_acts: BTreeMap<(String, String, i64), (i64, i64, i64)>,
@@ -2288,6 +2521,15 @@ impl Buffer {
         self.record(r);
         if let Some(ty) = engines::lookup_index_type(r) {
             self.live_looked.insert(ty);
+        }
+    }
+
+    /// A record put beside the writer whose type's series pairs the commit
+    /// marks building (`series_index.<type>`), not fills (099).
+    pub(crate) fn live_series(&mut self, r: &StoredRecord) {
+        self.record(r);
+        if let Some(ty) = engines::series_index_type(r) {
+            self.live_series.insert(ty);
         }
     }
 
@@ -2667,6 +2909,8 @@ impl Buffer {
         let mut latest = Vec::with_capacity(heads.len());
         let mut settings = Vec::new();
         let mut live_sorted = Vec::new();
+        let mut series_settings = Vec::new();
+        let mut live_series = Vec::new();
         for (ident, had) in &heads {
             let r = self
                 .records
@@ -2685,6 +2929,17 @@ impl Buffer {
                         true => live_sorted.push(ty),
                         false => settings.push((ty, r.position)),
                     }
+                }
+            }
+            // A `series_index.<type>` setting likewise changes which pairs
+            // of its type are kept whole: read again, or marked building
+            // where it was put beside the writer.
+            if let Some(ty) = engines::series_index_type(r) {
+                let live = self.live_series.contains(&ty);
+                types.0.remove(&ty);
+                match live {
+                    true => live_series.push(ty),
+                    false => series_settings.push(ty),
                 }
             }
             // A `vector_index.<type>` setting whose head state the buffer
@@ -2720,6 +2975,15 @@ impl Buffer {
         // building, and a build fills it in turns.
         for ty in live_sorted {
             mark_sorted(db, names, &ty)?;
+        }
+        // A setting written into the log fills its type's pairs whole, at
+        // its event; one put beside the writer marks them building, and a
+        // build fills them in turns.
+        for ty in series_settings {
+            rebuild_series(db, names, &ty)?;
+        }
+        for ty in live_series {
+            mark_series(db, names, &ty)?;
         }
         for ty in self.live_looked {
             mark_looked(db, names, &ty)?;
@@ -3054,6 +3318,18 @@ pub(crate) fn put_declaration(
     )?;
     let kept = (!head.sorted.is_empty()).then_some(d.since);
     set_sorted(db, names, &t.name, kept)?;
+    // A pair goes back to `Start`: the declaration may have dropped or
+    // changed a field its rows were filled under, so no reader takes rows
+    // the declaration removed.
+    let mut series = series_of(db, names, &t.name)?;
+    if !series.kept.is_empty() {
+        series.building.append(&mut series.kept);
+        set_series(db, names, &t.name, &series)?;
+    }
+    // The pairs the setting at the head names are building under it, so a
+    // setting put before the declaration that first declares its fields
+    // starts its pairs here, as one put over a built pair restarts them.
+    mark_series(db, names, &t.name)?;
     Ok(Some(t.name.clone()))
 }
 

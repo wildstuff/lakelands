@@ -267,3 +267,82 @@ fn a_source_s_key_period_overrides_the_lake_s() {
     let told = seen(told, &none, &|_: &str, _: &str| false).and_then(|s| s.value);
     assert_eq!(told, Some(json!("day")), "a source names no type");
 }
+
+/// A `series_index.<type>` setting names pairs of the type's fields: the
+/// series field keeps text, reference, number or decimal, the order field
+/// any kind an order index keeps, neither computed at the read; and a
+/// value of another shape names none.
+#[test]
+fn a_series_setting_is_checked_pair_by_pair_and_names_the_field_it_refuses() {
+    use crate::describe::TypeDescription;
+    use crate::ontology::{ComputedAt, StorageKind};
+
+    let decl = crate::ontology::TypeDecl {
+        fields: vec![
+            crate::ontology::FieldDecl::of("series", StorageKind::Text),
+            crate::ontology::FieldDecl::of("at", StorageKind::Number),
+            crate::ontology::FieldDecl::of("flag", StorageKind::Boolean),
+            crate::ontology::FieldDecl::of("blob", StorageKind::Bytes),
+            crate::ontology::FieldDecl {
+                computed_at: Some(ComputedAt::Read),
+                ..crate::ontology::FieldDecl::of("seen_at", StorageKind::Number)
+            },
+        ],
+        ..crate::ontology::TypeDecl::named("book")
+    };
+    let shown = |ty: &crate::TypeName| {
+        Some(TypeDescription {
+            name: ty.clone(),
+            fields: (decl.fields.iter())
+                .map(|f| crate::describe::FieldDescription::of(f, crate::principal::Access::Read))
+                .collect(),
+            ..TypeDescription::default()
+        })
+    };
+    let declared = |ty: &crate::TypeName| (ty.as_str() == "book").then_some(&decl);
+    let check =
+        |key: &str, value: Value| crate::seam::check_setting(key, Some(&value), &declared, &shown);
+    let refused = |key: &str, value: Value| -> (String, crate::error::Case) {
+        match check(key, value) {
+            Err(crate::Error::Refused {
+                field: Some(field),
+                reason: crate::Refusal::Invalid(said),
+            }) => (field.to_string(), said.case),
+            other => panic!("not refused on a field: {other:?}"),
+        }
+    };
+    assert!(
+        check("series_index.book", json!([["series", "at"]])).is_ok(),
+        "{:?}",
+        check("series_index.book", json!([["series", "at"]]))
+    );
+    assert!(check("series_index.book", Value::Null).is_ok());
+    assert!(
+        check("series_index.book", json!([["series", "flag"]])).is_ok(),
+        "a boolean order field sorts"
+    );
+
+    let (field, case) = refused("series_index.nope", json!([]));
+    assert_eq!(field, "key");
+    assert!(matches!(case, crate::error::Case::NoStoredType { .. }));
+
+    let (field, case) = refused("series_index.book", json!("series"));
+    assert_eq!(field, "value");
+    assert!(matches!(case, crate::error::Case::SeriesIndexShape { .. }));
+    let (field, case) = refused("series_index.book", json!([["series"]]));
+    assert_eq!(field, "value");
+    assert!(matches!(case, crate::error::Case::SeriesIndexShape { .. }));
+
+    let (field, case) = refused("series_index.book", json!([["flag", "at"]]));
+    assert_eq!(field, "flag", "the series field is named");
+    assert!(matches!(case, crate::error::Case::SeriesFieldKind { .. }));
+    let (field, case) = refused("series_index.book", json!([["series", "blob"]]));
+    assert_eq!(field, "blob", "the order field is named");
+    assert!(matches!(case, crate::error::Case::OrderIndexKind { .. }));
+    let (field, case) = refused("series_index.book", json!([["series", "seen_at"]]));
+    assert_eq!(field, "seen_at");
+    assert!(matches!(case, crate::error::Case::OrderIndexAtRead { .. }));
+    let (field, case) = refused("series_index.book", json!([["series", "gone"]]));
+    assert_eq!(field, "gone");
+    assert!(matches!(case, crate::error::Case::UnknownField { .. }));
+}

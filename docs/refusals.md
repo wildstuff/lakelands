@@ -759,6 +759,8 @@ What a refusal is about.
 | `order_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; an order index keeps text, number, decimal, boolean, date-time, date and reference fields | An order index of a field of a kind it does not keep. |
 | `setting_field_names` | `value` (Value) | it holds field names, and {value} is not one | An index setting holding something other than field names. |
 | `setting_index_shape` | `type` (TypeName) | it holds an array of field names of `{type}`, or null for no index | An index setting that is no list. |
+| `series_field_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; a series index keeps text, reference, number and decimal fields as its series field | A series index of a field that is no series field. |
+| `series_index_shape` | `type` (TypeName) | it holds an array of pairs of field names of `{type}`, the series field first, as [["symbol", "at"]], or null for no index | A `series_index` setting that is no list of pairs. |
 | `setting_kept_holds` | — | it holds `true` for a view that is kept, or `false` | A `view_kept` setting that holds no boolean. |
 | `setting_key_period` | — | it holds `day`, `week` or `month`, the period a source's key is used for, or null for no period | A key period that names none. |
 | `setting_zone` | `value` (Value) | it holds a time zone as the IANA time-zone database names it, as 'Europe/Berlin', and {value} is none | A lake's zone the time-zone database does not name. |

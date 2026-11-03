@@ -324,3 +324,212 @@ fn a_base_is_a_row_where_a_write_shares_it_and_goes_once_no_state_names_it() {
     assert!(p.bases.0.is_empty(), "a base no state names goes");
     assert_eq!(read(&p).len(), SHARED, "the inline ones read theirs");
 }
+
+/// A book's series state and the rows of its derived field.
+fn series_projection() -> (Projection, TypeName, Declaration) {
+    let decl: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "book",
+        "fields": [
+            {"name": "series", "type": {"kind": "text"}},
+            {"name": "at", "type": {"kind": "number"}}
+        ]
+    }))
+    .unwrap();
+    let ty = TypeName::from("book");
+    let mut p = Projection::default();
+    let books = [
+        ("k1", json!({"series": "red", "at": 2})),
+        ("k2", json!({"series": "red", "at": 1})),
+        ("k3", json!({"series": "blue", "at": 3})),
+        ("k4", json!({"series": "red"})),
+    ];
+    let mut puts = vec![Put::Declaration(Declared {
+        declaration: decl.clone(),
+        version: 1,
+        schema_hash: None,
+        since: Position(1),
+    })];
+    puts.extend(books.into_iter().map(|(key, fields)| {
+        Put::Record(stored_record(
+            "book",
+            key,
+            serde_json::from_value(fields).unwrap(),
+            1,
+        ))
+    }));
+    puts.push(Put::Record(series_setting(json!([["series", "at"]]), 1)));
+    p.commit(puts, Position(1)).unwrap();
+    (p, ty, decl)
+}
+
+fn series_setting(value: Value, at: u64) -> StoredRecord {
+    StoredRecord {
+        version: Version(at),
+        ..stored_record(
+            lakelands_api::seam::SETTING_TYPE,
+            "series_index.book",
+            [
+                ("key".into(), json!("series_index.book")),
+                ("value".into(), value),
+            ]
+            .into_iter()
+            .collect(),
+            at,
+        )
+    }
+}
+
+fn series_row(field: &FieldName) -> (TypeName, FieldName) {
+    (TypeName::from("book"), field.clone())
+}
+
+#[test]
+fn a_series_pair_is_filled_from_the_log_kept_and_put_back_to_start() {
+    let (mut p, ty, decl) = series_projection();
+    let field = FieldName::from(lakelands_api::seam::series_field("at", "series"));
+    let rows = |p: &Projection| p.sorted.get(&series_row(&field)).map_or(0, BTreeSet::len);
+    let pair = SeriesPair {
+        series: FieldName::from("series"),
+        order: FieldName::from("at"),
+    };
+    assert_eq!(rows(&p), 4, "a row a book, the one with no order value too");
+    assert_eq!(
+        p.series_state(&ty),
+        SeriesState {
+            kept: vec![pair.clone()],
+            building: Vec::new(),
+        }
+    );
+    let key_of = |p: &Projection, key: &str| -> Vec<u8> {
+        p.sorted_rows
+            .get(&(ty.clone(), RecordKey::from(key)))
+            .and_then(|rows| rows.iter().find(|(f, _)| f == &field))
+            .map(|(_, k)| k.clone())
+            .expect("the row of the key")
+    };
+    assert_eq!(key_of(&p, "k1")[..8], key_of(&p, "k2")[..8]);
+    assert_ne!(key_of(&p, "k1")[..8], key_of(&p, "k3")[..8]);
+    assert_eq!(key_of(&p, "k4")[8..], [0xFF]);
+
+    // Taken back a chunk a call, the pair leaves with its last chunk.
+    let mut after = None;
+    loop {
+        let step = Choose::DropChunk {
+            field: field.clone(),
+            after,
+            limit: 2,
+        };
+        match p.choose(&ty, &step) {
+            Some(last) => after = Some(last),
+            None => break,
+        }
+    }
+    assert_eq!(rows(&p), 0);
+    assert_eq!(p.series_state(&ty), SeriesState::default());
+
+    // Folded from the log again, it is whole again; a redeclaration puts
+    // it back to `Start`.
+    p.commit(
+        vec![Put::Record(series_setting(json!([["series", "at"]]), 2))],
+        Position(2),
+    )
+    .unwrap();
+    assert_eq!(rows(&p), 4);
+    assert_eq!(p.series_state(&ty).kept, vec![pair.clone()]);
+    p.commit(
+        vec![Put::Declaration(Declared {
+            declaration: decl,
+            version: 2,
+            schema_hash: None,
+            since: Position(3),
+        })],
+        Position(3),
+    )
+    .unwrap();
+    assert!(p.series_state(&ty).kept.is_empty());
+    assert_eq!(p.series_state(&ty).building, vec![pair.clone()]);
+
+    // A build beside the writer fills it and keeps it.
+    p.choose(&ty, &Choose::Start(field.clone()));
+    let mut after = None;
+    loop {
+        let step = Choose::Fill {
+            field: field.clone(),
+            after,
+            limit: 3,
+        };
+        match p.choose(&ty, &step) {
+            Some(last) => after = Some(last),
+            None => break,
+        }
+    }
+    p.choose(&ty, &Choose::Keep(field.clone()));
+    assert_eq!(p.series_state(&ty).kept, vec![pair]);
+    assert_eq!(rows(&p), 4);
+
+    // A setting put beside the writer takes its pair back in that write,
+    // and the pair's rows go with it.
+    p.commit(vec![Put::Live(series_setting(Value::Null, 4))], Position(4))
+        .unwrap();
+    assert_eq!(p.series_state(&ty), SeriesState::default());
+    assert_eq!(rows(&p), 0, "a pair taken back leaves no row");
+}
+
+/// A setting committed before the declaration it names starts its pair at
+/// the declaration, and the declaration's reindex fills its rows there.
+#[test]
+fn a_setting_put_before_the_declaration_starts_its_pair() {
+    let decl: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "book",
+        "fields": [
+            {"name": "series", "type": {"kind": "text"}},
+            {"name": "at", "type": {"kind": "number"}}
+        ]
+    }))
+    .unwrap();
+    let ty = TypeName::from("book");
+    let field = FieldName::from(lakelands_api::seam::series_field("at", "series"));
+    let mut p = Projection::default();
+    p.commit(
+        vec![Put::Record(series_setting(json!([["series", "at"]]), 1))],
+        Position(1),
+    )
+    .unwrap();
+    assert_eq!(p.series_state(&ty), SeriesState::default());
+    let mut puts = vec![Put::Declaration(Declared {
+        declaration: decl,
+        version: 1,
+        schema_hash: None,
+        since: Position(2),
+    })];
+    puts.extend(
+        [
+            ("k1", json!({"series": "red", "at": 2})),
+            ("k2", json!({"series": "red", "at": 1})),
+            ("k3", json!({"series": "blue", "at": 3})),
+            ("k4", json!({"series": "red"})),
+        ]
+        .into_iter()
+        .map(|(key, fields)| {
+            Put::Record(stored_record(
+                "book",
+                key,
+                serde_json::from_value(fields).unwrap(),
+                2,
+            ))
+        }),
+    );
+    p.commit(puts, Position(2)).unwrap();
+    let rows = p.sorted.get(&series_row(&field)).map_or(0, BTreeSet::len);
+    assert_eq!(rows, 4, "the declaration starts the pair and its rows");
+    let state = p.series_state(&ty);
+    assert!(state.kept.is_empty());
+    assert_eq!(
+        state.building,
+        vec![SeriesPair {
+            series: FieldName::from("series"),
+            order: FieldName::from("at"),
+        }],
+        "the pair waits on its build"
+    );
+}

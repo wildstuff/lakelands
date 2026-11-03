@@ -36,16 +36,18 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 
+use sha2::{Digest as _, Sha256};
+
 pub use lakelands_api::engine::Window;
 use lakelands_api::engine::{
-    After, CanonicalEvent, Choose, Chosen, KeyRange, Rankings, Scan, TextCounts, TextStats,
-    WindowSides,
+    After, CanonicalEvent, Choose, Chosen, KeyRange, Rankings, Scan, SeriesPair, SeriesState,
+    TextCounts, TextStats, WindowSides,
 };
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::{CmpOp, Condition, Expr, Literal};
 use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName};
-use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
+use lakelands_api::ontology::{ComputedAt, FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::query::{Edge, MATCH_SPANS, Matched, Span};
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{FieldMeta, Origin, Record, StoredRecord, Value};
@@ -720,6 +722,81 @@ pub fn sort_index_type(r: &StoredRecord) -> Option<TypeName> {
     setting_for(r, lakelands_api::seam::SORT_INDEX_SETTING)
 }
 
+/// The type whose series index a setting's state asks for, if it is a
+/// `series_index.<type>` setting.
+pub fn series_index_type(r: &StoredRecord) -> Option<TypeName> {
+    setting_for(r, lakelands_api::seam::SERIES_INDEX_SETTING)
+}
+
+/// The meta row by which an engine keeps a type's series pairs and whether
+/// each is whole.
+pub fn series_mark(ty: &TypeName) -> String {
+    format!("series.{ty}")
+}
+
+/// The pairs a `series_index.<type>` setting of this value asks for, by
+/// `decl`, the type's declaration: those whose series field is text,
+/// reference, number or decimal and whose order field is sortable, neither
+/// computed at the read, once each and in the setting's order. A value of
+/// another shape names none: the setting is checked when it is written,
+/// and a log that came another way holds no other pair.
+pub fn series_pairs(decl: &TypeDecl, setting: Option<&Value>) -> Vec<SeriesPair> {
+    let declared = |f: &FieldName, keeps: fn(&StorageKind) -> bool| {
+        (decl.fields.iter())
+            .any(|d| d.name == *f && keeps(&d.ty.kind) && d.computed_at != Some(ComputedAt::Read))
+    };
+    let mut out: Vec<SeriesPair> = Vec::new();
+    let pairs = setting
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|p| p.as_array());
+    for pair in pairs.flatten() {
+        if pair.len() != 2 {
+            continue;
+        }
+        let (Some(series), Some(order)) = (pair[0].as_str(), pair[1].as_str()) else {
+            continue;
+        };
+        let (series, order) = (FieldName::from(series), FieldName::from(order));
+        let held = out.iter().any(|p| p.series == series && p.order == order);
+        if !held
+            && declared(&series, lakelands_api::seam::series_kind)
+            && declared(&order, lakelands_api::seam::sortable)
+        {
+            out.push(SeriesPair { series, order });
+        }
+    }
+    out
+}
+
+/// The derived field names a type's series pairs keep their rows under,
+/// those being built too: `<order>\u{1F}<series>`.
+pub fn series_fields(state: &SeriesState) -> Vec<FieldName> {
+    (state.kept.iter().chain(state.building.iter()))
+        .map(|p| {
+            FieldName::from(lakelands_api::seam::series_field(
+                p.order.as_str(),
+                p.series.as_str(),
+            ))
+        })
+        .collect()
+}
+
+/// A series state as a meta row holds it: none where it holds none.
+pub fn series_decoded(text: Option<String>) -> SeriesState {
+    text.map_or_else(SeriesState::default, |t| {
+        serde_json::from_str(&t).unwrap_or_default()
+    })
+}
+
+/// Whether `f` is a series pair's derived field: no order index of the
+/// lake's own keeps one, so `sweep`, `eligible`, `rebuild_sorted` and the
+/// fields a read takes skip them.
+pub fn is_series_field(f: &FieldName) -> bool {
+    lakelands_api::seam::is_series_field(f.as_str())
+}
+
 /// The types whose exact-text index a declaration can move: those
 /// [`looked_up`] reads it for. A type's own, the targets of its derived
 /// relations, the types it pairs with by `in_force`, its view's sources;
@@ -883,6 +960,11 @@ pub fn lookup_index_key(ty: &TypeName) -> String {
     format!("{}{ty}", lakelands_api::seam::LOOKUP_INDEX_SETTING)
 }
 
+/// The key of the setting that asks for `ty`'s series pairs.
+pub fn series_index_key(ty: &TypeName) -> String {
+    format!("{}{ty}", lakelands_api::seam::SERIES_INDEX_SETTING)
+}
+
 /// The meta row by which an engine keeps the fields of `ty`'s order index
 /// the lake chose, as JSON (`Chosen`): in the projection and never in the
 /// log.
@@ -917,7 +999,7 @@ pub fn order_fields(
         (decl.fields.iter()).any(|d| d.name == **f && lakelands_api::seam::sortable(&d.ty.kind))
     };
     let chosen_building = chosen.building.iter().filter(|_| building);
-    let chosen_rows: Vec<FieldName> = chosen
+    let mut chosen_rows: Vec<FieldName> = chosen
         .kept
         .iter()
         .chain(chosen_building)
@@ -941,8 +1023,12 @@ pub fn order_fields(
                 fields.push(f);
             }
         }
+        // A series pair's derived field is no order index of the lake's
+        // own: a read, a rebuild of the setting and the chooser skip it.
+        fields.retain(|f| !is_series_field(f));
         return fields;
     }
+    chosen_rows.retain(|f| !is_series_field(f));
     chosen_rows
 }
 
@@ -1011,20 +1097,51 @@ pub fn setting_value(r: &StoredRecord) -> Option<&Value> {
 }
 
 /// The order index rows of a record's state: one per field of `fields`
-/// (the type's [`sorted_fields`]) that the state holds with a value, with
-/// its [`order_key`]. Retired and restricted states have rows too:
-/// [`admits`] decides on them when a page is read.
+/// (the type's [`sorted_fields`] and the derived fields of its
+/// [`series_fields`]) that the state holds with a value, with its
+/// [`order_key`]. A series field keeps one row a pair: eight bytes of the
+/// SHA-256 of its series token, then its order value's key, or `0xFF`
+/// where it holds no order value. Retired and restricted states have rows
+/// too: [`admits`] decides on them when a page is read.
 pub fn order_rows<'a>(
     fields: &'a [FieldName],
+    decl: Option<&TypeDecl>,
     record: &StoredRecord,
 ) -> Vec<(&'a FieldName, Vec<u8>)> {
     fields
         .iter()
         .filter_map(|f| {
+            if let Some((order, series)) = lakelands_api::seam::split_series_field(f.as_str()) {
+                return series_key(decl, record, order, series).map(|k| (f, k));
+            }
             let v = record.fields.get(f).filter(|v| !v.is_null())?;
             Some((f, order_key(v)))
         })
         .collect()
+}
+
+/// The key of a series pair's row for `record`: the first eight bytes of
+/// the SHA-256 of the series token, then the order value's [`order_key`].
+/// A record with a series and no order value has `0xFF` there, above every
+/// rank, so a series' records without one come last in key order and a
+/// window never reaches them. A series value that reads as no number has
+/// no row, as under the number lookup (097 §The series index).
+fn series_key(
+    decl: Option<&TypeDecl>,
+    record: &StoredRecord,
+    order: &str,
+    series: &str,
+) -> Option<Vec<u8>> {
+    let series = FieldName::from(series);
+    let kind = decl.and_then(|d| field_kind(d, &series)).copied();
+    let token = lookup_token(record.fields.get(&series)?, kind)?;
+    let mut key = Sha256::digest(token.as_bytes())[..8].to_vec();
+    let order = FieldName::from(order);
+    match record.fields.get(&order).filter(|v| !v.is_null()) {
+        Some(v) => key.extend(order_key(v)),
+        None => key.push(0xFF),
+    }
+    Some(key)
 }
 
 /// Whether an order index kept by [`order_rows`] for `fields` can answer

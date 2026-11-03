@@ -1163,12 +1163,14 @@ impl ProjectionStore for PgLake {
         // whole, as before.
         let sorted = !whole && engines::sort_index_type(record).is_some();
         let looked = !whole && engines::lookup_index_type(record).is_some();
-        if !sorted && !looked {
+        let series = !whole && engines::series_index_type(record).is_some();
+        if !sorted && !looked && !series {
             return self.put_record(record);
         }
-        self.stage(record.position, |b| match sorted {
-            true => b.live_sorted(record),
-            false => b.live_looked(record),
+        self.stage(record.position, |b| match (sorted, looked) {
+            (true, _) => b.live_sorted(record),
+            (false, true) => b.live_looked(record),
+            (false, false) => b.live_series(record),
         })?;
         if let Some(t) = lock(&self.transaction).as_mut() {
             t.put += 1;

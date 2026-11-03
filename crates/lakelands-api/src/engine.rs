@@ -571,6 +571,32 @@ pub struct Chosen {
     pub dropping: Vec<FieldName>,
 }
 
+/// One pair of a `series_index.<type>` setting: the field naming the
+/// series, then the field its records within the series are ordered by
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// series index).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeriesPair {
+    /// The field naming the series.
+    pub series: FieldName,
+    /// The order field within the series.
+    pub order: FieldName,
+}
+
+/// The pairs a type's `series_index.<type>` setting asks for, and whether
+/// each pair's rows are whole, kept in the projection and never in the
+/// log. A pair is the host's, so it is kept here and not in [`Chosen`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeriesState {
+    /// The pairs reads may use the index for.
+    #[serde(default)]
+    pub kept: Vec<SeriesPair>,
+    /// The pairs being built: the fold keeps their rows, no read uses
+    /// them.
+    #[serde(default)]
+    pub building: Vec<SeriesPair>,
+}
+
 /// What a compact of the projection measured: its storage in bytes before
 /// and after, as the engine measures it. An engine that keeps nothing to
 /// reclaim measures nothing.

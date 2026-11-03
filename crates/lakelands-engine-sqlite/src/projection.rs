@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{Choose, Chosen, Declared, Look, TextCounts};
+use lakelands_api::engine::{Choose, Chosen, Declared, Look, SeriesState, TextCounts};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::{StorageKind, TypeDecl};
@@ -711,6 +711,34 @@ fn set_chosen(conn: &Connection, ty: &TypeName, chosen: &Chosen) -> Result<()> {
     )
 }
 
+/// The series pairs of `ty`, and whether each is whole, as the `series.`
+/// meta row holds them: none where it holds none.
+pub(crate) fn series_state(conn: &Connection, ty: &TypeName) -> Result<SeriesState> {
+    let text: Option<String> = one(
+        conn,
+        "SELECT v FROM meta WHERE k = ?1",
+        [engines::series_mark(ty)],
+    )?;
+    Ok(engines::series_decoded(text))
+}
+
+/// Keep `ty`'s series pairs as `state`: no row where it holds none.
+fn set_series(conn: &Connection, ty: &TypeName, state: &SeriesState) -> Result<()> {
+    if *state == SeriesState::default() {
+        return run(
+            conn,
+            "DELETE FROM meta WHERE k = ?1",
+            [engines::series_mark(ty)],
+        );
+    }
+    let text = serde_json::to_string(state).expect("the series pairs serialise");
+    run(
+        conn,
+        "INSERT INTO meta (k, v) VALUES (?1, ?2) ON CONFLICT (k) DO UPDATE SET v = ?2",
+        params![engines::series_mark(ty), text],
+    )
+}
+
 /// One step of choosing an order index for `ty` (`ProjectionStore::
 /// choose_order`), in a transaction of its own that moves no position.
 #[allow(deprecated)]
@@ -719,6 +747,12 @@ pub(crate) fn choose_order(
     ty: &TypeName,
     step: &Choose,
 ) -> Result<Option<RecordKey>> {
+    // A series pair's derived field is kept in the type's `series.` row,
+    // not in `Chosen`: its own road fills it from the pair (097 §The
+    // series index).
+    if let Some(field) = chosen_field(step).filter(|f| engines::is_series_field(f)) {
+        return choose_series(conn, ty, step, field);
+    }
     // A kept name is built as the view it keeps, as a host's setting for
     // it names the view's fields.
     let kept = engines::kept_view(ty);
@@ -808,6 +842,91 @@ pub(crate) fn choose_order(
                 _ => {}
             }
             Ok(None)
+        }
+    })();
+    match done {
+        Ok(next) => conn.execute_batch("COMMIT").map(|()| next).map_err(sql),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// The field a step of choosing names.
+#[allow(deprecated)]
+fn chosen_field(step: &Choose) -> Option<&FieldName> {
+    match step {
+        Choose::Start(f) | Choose::Keep(f) | Choose::Drop(f) => Some(f),
+        Choose::Fill { field, .. } | Choose::DropChunk { field, .. } => Some(field),
+    }
+}
+
+/// One step of a series pair's build, in a transaction of its own that
+/// moves no position: the pair's state is kept in `series.<type>`, and its
+/// rows under the derived field of `field`.
+#[allow(deprecated)]
+fn choose_series(
+    conn: &Connection,
+    ty: &TypeName,
+    step: &Choose,
+    field: &FieldName,
+) -> Result<Option<RecordKey>> {
+    let Some((order, series)) = lakelands_api::seam::split_series_field(field.as_str()) else {
+        return Ok(None);
+    };
+    let pair = lakelands_api::engine::SeriesPair {
+        series: FieldName::from(series),
+        order: FieldName::from(order),
+    };
+    let without = |state: &mut SeriesState| {
+        state.kept.retain(|p| p != &pair);
+        state.building.retain(|p| p != &pair);
+    };
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(sql)?;
+    let done = (|| {
+        let mut state = series_state(conn, ty)?;
+        match step {
+            Choose::Start(_) => {
+                if !state.kept.contains(&pair) && !state.building.contains(&pair) {
+                    state.building.push(pair.clone());
+                }
+                set_series(conn, ty, &state)?;
+                Ok(None)
+            }
+            Choose::Fill {
+                field,
+                after,
+                limit,
+            } => fill_chosen(conn, ty, field, after.as_ref(), *limit),
+            Choose::Keep(_) => {
+                state.building.retain(|p| p != &pair);
+                if !state.kept.contains(&pair) {
+                    state.kept.push(pair.clone());
+                }
+                set_series(conn, ty, &state)?;
+                Ok(None)
+            }
+            // A pair taken back: its rows go whole in one step, or a chunk
+            // a call, and its state leaves with the last.
+            Choose::Drop(field) => {
+                let _ = drop_chosen(conn, ty, field, None, u32::MAX)?;
+                without(&mut state);
+                set_series(conn, ty, &state)?;
+                Ok(None)
+            }
+            Choose::DropChunk {
+                field,
+                after,
+                limit,
+            } => {
+                let last = drop_chosen(conn, ty, field, after.as_ref(), *limit)?;
+                if last.is_none() {
+                    without(&mut state);
+                    set_series(conn, ty, &state)?;
+                }
+                Ok(last)
+            }
         }
     })();
     match done {
@@ -919,6 +1038,7 @@ fn fill_chosen(
     after: Option<&RecordKey>,
     limit: u32,
 ) -> Result<Option<RecordKey>> {
+    let decl = type_at(conn, ty, None)?;
     let after = after.map_or("", RecordKey::as_str);
     let page = records(
         conn,
@@ -932,7 +1052,8 @@ fn fill_chosen(
             "DELETE FROM sort_index WHERE ty = ?1 AND field = ?2 AND key = ?3",
             params![ty.as_str(), field.as_str(), r.key.as_str()],
         )?;
-        for (field, sort_key) in engines::order_rows(std::slice::from_ref(field), r) {
+        for (field, sort_key) in engines::order_rows(std::slice::from_ref(field), decl.as_ref(), r)
+        {
             run(
                 conn,
                 "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
@@ -979,7 +1100,14 @@ fn drop_chosen(
 /// puts the setting's head state, and a writer's open when the mark is
 /// behind.
 pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position) -> Result<()> {
-    run(conn, "DELETE FROM sort_index WHERE ty = ?1", [ty.as_str()])?;
+    // A series pair's rows are the host's: a `sort_index` rebuild leaves
+    // them, and `sorted_fields` never names one (097 §How a lake with
+    // records gets it).
+    run(
+        conn,
+        "DELETE FROM sort_index WHERE ty = ?1 AND instr(field, char(31)) = 0",
+        [ty.as_str()],
+    )?;
     let decl = type_at(conn, ty, None)?;
     // A host's setting that names a field wins: the lake's choice goes.
     let setting = head_record(
@@ -1012,7 +1140,7 @@ pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position
             params![ty.as_str(), after],
         )?;
         for r in &page {
-            for (field, sort_key) in engines::order_rows(&fields, r) {
+            for (field, sort_key) in engines::order_rows(&fields, decl.as_ref(), r) {
                 run(
                     conn,
                     "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
@@ -1376,7 +1504,7 @@ pub(crate) fn index_record(
              (SELECT id FROM search_rows WHERE ty = ?1 AND key = ?2)",
         )?;
     }
-    for (field, sort_key) in engines::order_rows(sorted, r) {
+    for (field, sort_key) in engines::order_rows(sorted, decl, r) {
         conn.prepare_cached(
             "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
         )
@@ -1599,6 +1727,16 @@ pub(crate) fn put_record(
             }
             kept.clear();
         }
+        // A `series_index.<type>` setting is the host's, kept in its own
+        // row: beside the writer it marks each pair as building, and a fold
+        // from the log fills the pairs whole and writes them kept.
+        if let Some(ty) = engines::series_index_type(r) {
+            match whole {
+                true => rebuild_series(conn, &ty)?,
+                false => mark_series(conn, &ty)?,
+            }
+            kept.clear();
+        }
         // A live `lookup_index.<type>` setting marks the fields that come
         // and go for the build; the commit's relook is not asked for it.
         if let Some(ty) = engines::lookup_index_type(r)
@@ -1633,9 +1771,11 @@ fn start_sorted(conn: &Connection, ty: &TypeName) -> Result<()> {
     chosen.kept.retain(|f| !named.contains(f));
     chosen.building.retain(|f| !named.contains(f));
     let mut dropping = std::mem::take(&mut chosen.dropping);
+    // A series pair's derived field is the host's setting's, not a field
+    // of the order index the lake chose: it is never marked dropping here.
     let rows: Vec<FieldName> = column(
         conn,
-        "SELECT DISTINCT field FROM sort_index WHERE ty = ?1",
+        "SELECT DISTINCT field FROM sort_index WHERE ty = ?1 AND instr(field, char(31)) = 0",
         [ty.as_str()],
         |f: String| Ok(FieldName::from(f)),
     )?;
@@ -1657,6 +1797,100 @@ fn start_sorted(conn: &Connection, ty: &TypeName) -> Result<()> {
         set_sorted(conn, ty, None)?;
     }
     Ok(())
+}
+
+/// Mark the pairs `ty`'s `series_index` setting asks for as building, and
+/// leave the pairs it no longer names out: a read keeps the old road until
+/// each pair's `Keep`, and the fold keeps a building pair's rows from its
+/// `Start`. A pair still named and already kept stays kept.
+fn mark_series(conn: &Connection, ty: &TypeName) -> Result<()> {
+    let decl = type_at(conn, ty, None)?;
+    let setting = head_record(
+        conn,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::series_index_key(ty)),
+    )?;
+    let named = decl
+        .as_ref()
+        .map(|d| engines::series_pairs(d, setting.as_ref().and_then(engines::setting_value)))
+        .unwrap_or_default();
+    let mut state = series_state(conn, ty)?;
+    // A pair the setting no longer names is taken back: its rows go in the
+    // writer's turn, as a `Drop` does, so none is left without a pair.
+    let gone: Vec<_> = state
+        .kept
+        .iter()
+        .chain(state.building.iter())
+        .filter(|p| !named.contains(p))
+        .cloned()
+        .collect();
+    for pair in &gone {
+        let field = FieldName::from(lakelands_api::seam::series_field(
+            pair.order.as_str(),
+            pair.series.as_str(),
+        ));
+        let _ = drop_chosen(conn, ty, &field, None, u32::MAX)?;
+    }
+    state.kept.retain(|p| named.contains(p));
+    state.building.retain(|p| named.contains(p));
+    for pair in named {
+        if !state.kept.contains(&pair) && !state.building.contains(&pair) {
+            state.building.push(pair);
+        }
+    }
+    set_series(conn, ty, &state)
+}
+
+/// Fill `ty`'s series pairs whole from its head records, under its setting
+/// and declaration at the head, and write them kept: a fold from the log
+/// makes a pair whole at its event rather than marking it for a build. A
+/// setting taken back leaves no pair and drops their rows.
+fn rebuild_series(conn: &Connection, ty: &TypeName) -> Result<()> {
+    run(
+        conn,
+        "DELETE FROM sort_index WHERE ty = ?1 AND instr(field, char(31)) > 0",
+        [ty.as_str()],
+    )?;
+    let decl = type_at(conn, ty, None)?;
+    let setting = head_record(
+        conn,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::series_index_key(ty)),
+    )?;
+    let pairs = decl
+        .as_ref()
+        .map(|d| engines::series_pairs(d, setting.as_ref().and_then(engines::setting_value)))
+        .unwrap_or_default();
+    let state = SeriesState {
+        kept: pairs,
+        building: Vec::new(),
+    };
+    set_series(conn, ty, &state)?;
+    let fields = engines::series_fields(&state);
+    if fields.is_empty() {
+        return Ok(());
+    }
+    let mut after = String::new();
+    loop {
+        let page = records(
+            conn,
+            concat!(heads!(), " AND k.key > ?2 ORDER BY k.key LIMIT 1024"),
+            params![ty.as_str(), after],
+        )?;
+        for r in &page {
+            for (field, sort_key) in engines::order_rows(&fields, decl.as_ref(), r) {
+                run(
+                    conn,
+                    "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
+                    params![ty.as_str(), field.as_str(), r.key.as_str(), sort_key],
+                )?;
+            }
+            after = r.key.to_string();
+        }
+        if page.len() < 1024 {
+            return Ok(());
+        }
+    }
 }
 
 /// Mark the fields `ty`'s `lookup_index` setting asks the exact-text
@@ -2055,7 +2289,12 @@ fn indexed(conn: &Connection, ty: &TypeName) -> Result<Indexed> {
         Some(_) => None,
         None => type_at(conn, ty, None)?,
     };
-    let sorted = sorted_fields(conn, ty, decl.as_ref(), true)?;
+    let mut sorted = sorted_fields(conn, ty, decl.as_ref(), true)?;
+    // A type's series pairs keep their rows beside its order fields', from
+    // the pair's `Start` on (097 §The series index).
+    if decl.is_some() {
+        sorted.extend(engines::series_fields(&series_state(conn, ty)?));
+    }
     let vectors = engines::vector_fields(ty, |t| match t == ty {
         true => Ok(decl.clone()),
         false => type_at(conn, t, None),
@@ -2181,6 +2420,18 @@ pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<Option<
         .map_err(sql)?;
     let kept = !sorted_fields(conn, &t.name, Some(t), true)?.is_empty();
     set_sorted(conn, &t.name, kept.then_some(d.since))?;
+    // A pair goes back to `Start`: the declaration may have dropped or
+    // changed a field its rows were filled under, so no reader takes rows
+    // the declaration removed.
+    let mut series = series_state(conn, &t.name)?;
+    if !series.kept.is_empty() {
+        series.building.append(&mut series.kept);
+        set_series(conn, &t.name, &series)?;
+    }
+    // The pairs the setting at the head names are building under it, so a
+    // setting put before the declaration that first declares its fields
+    // starts its pairs here, as one put over a built pair restarts them.
+    mark_series(conn, &t.name)?;
     Ok(Some(t.name.clone()))
 }
 

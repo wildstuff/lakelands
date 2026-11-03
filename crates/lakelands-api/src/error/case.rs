@@ -1901,6 +1901,13 @@ catalog! {
             #[serde(rename = "type")]
             ty: TypeName,
         } => "it holds an array of field names of `{ty}`, or null for no index",
+        /// A series index of a field that is no series field.
+        SeriesFieldKind { field: FieldName, kind: StorageKind } => "`{field}` is of kind {kind}; a series index keeps text, reference, number and decimal fields as its series field",
+        /// A `series_index` setting that is no list of pairs.
+        SeriesIndexShape {
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "it holds an array of pairs of field names of `{ty}`, the series field first, as [[\"symbol\", \"at\"]], or null for no index",
         /// A `view_kept` setting that holds no boolean.
         SettingKeptHolds => "it holds `true` for a view that is kept, or `false`",
         /// A key period that names none.

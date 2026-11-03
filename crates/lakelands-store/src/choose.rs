@@ -97,6 +97,12 @@ impl Lake {
     /// chosen fields than the bound, and that the host's setting does not
     /// name, though its setting may name the type's other fields.
     fn eligible(&self, ty: &TypeName, field: &FieldName) -> Result<bool> {
+        // A series pair's derived field is the host's, filled from its
+        // pair: the lake can neither choose nor drop it (097 §The series
+        // index).
+        if engines::is_series_field(field) {
+            return Ok(false);
+        }
         let l = self.limits;
         let view = self.engine.view(None)?;
         let shape = self.shape(view.as_ref())?;
@@ -270,7 +276,11 @@ async fn sweep(lake: &Arc<Lake>) -> Result<()> {
             for f in &fields.kept {
                 c.used.entry((ty.clone(), f.clone())).or_insert(now);
             }
-            drops.extend(fields.building.iter().map(|f| (ty.clone(), f.clone())));
+            let building = fields
+                .building
+                .iter()
+                .filter(|f| !engines::is_series_field(f));
+            drops.extend(building.map(|f| (ty.clone(), f.clone())));
         }
         let unused = Duration::from_secs(u64::from(lake.limits.order_unused_secs));
         for (key, at) in &c.used {

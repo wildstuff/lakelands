@@ -3134,6 +3134,7 @@ fn settings_lists_every_setting_and_sets_only_the_lake_s() {
 const SETTINGS_SET: &str = "\
 sort_index.<type>                       lake      null (default)
 sort_index.invoice                      lake      [\"amount\"] (default null)
+series_index.<type>                     lake      null (default)
 vector_index.<type>                     lake      null (default)
 lookup_index.<type>                     lake      null (default)
 search_weights.<type>                   lake      null (default)
