@@ -55,6 +55,12 @@ check!(
 );
 
 check!(
+    BUILD_SETTING_TAKEN_BACK = a_setting_taken_back_between_two_parts_of_its_build_ends_clean,
+    "099, R7: a setting taken back between any two parts of its build ends clean: the field it named is marked `dropping`, which no read looks at, and its rows go a chunk a turn; every read answers what it answered before the setting all the while and after, the door that retired it answering only once its rows are gone, and `describe` names the field no longer `sorted`, `chosen` nor `building`",
+    given
+);
+
+check!(
     BUILD_TYPE_DECLARED_AGAIN = a_type_declared_again_beside_the_build_is_whole_once_it_is,
     "099, R7: a type declared again beside the build, with a field added, does not leave the index part built: every read answers as before beside the declaration, and once the build is whole the field's page is the whole type, every key in its place",
     given
@@ -146,6 +152,21 @@ async fn answers(l: &Lake, size: u64) -> Result<Vec<Vec<String>>, Failure> {
 async fn chunked(given: &Given, store: Store) -> Result<Store, Failure> {
     let limits = Limits {
         order_chunk: 1,
+        ..limits()
+    };
+    (given.relimit)(store, Seams::default(), limits)
+        .await
+        .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))
+}
+
+/// The lake opened again as [`chunked`] opens it, and with the lake's own
+/// choice of an order index off: the setting the check writes is the only
+/// order index the type has, and a page sorted whole is read as it always
+/// was.
+async fn chunked_alone(given: &Given, store: Store) -> Result<Store, Failure> {
+    let limits = Limits {
+        order_chunk: 1,
+        choose_order_index: false,
         ..limits()
     };
     (given.relimit)(store, Seams::default(), limits)
@@ -473,6 +494,125 @@ async fn a_rebuild_holds_the_setting_whole_at_its_event(store: Store, given: Giv
         rebuilt == before,
         "a projection rebuilt from the log holds the settings whole at their events, so every \
          read answers what the built lake answered: {before:?} became {rebuilt:?}"
+    );
+    Ok(())
+}
+
+async fn a_setting_taken_back_between_two_parts_of_its_build_ends_clean(
+    store: Store,
+    given: Given,
+) -> Held {
+    let size = u64::from(given.large_lake.clamp(2_000, 4_000));
+    // The lake's own choice is off: the setting's field is the type's only
+    // order index, so what `describe` says is the setting's alone.
+    let store = chunked_alone(&given, store).await?;
+    let l = rows(store.as_ref(), size).await?;
+    let before = answers(&l, size).await?;
+    // The first thousand keys, a page `find` answers whole: the type is
+    // larger than one page, and the order of the first thousand says
+    // whether the index is whole.
+    let whole = 1_000;
+    let ordered = page(&l, "n", whole, 0).await?;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let reader = {
+        let seen = seen.clone();
+        let l = &l;
+        async move {
+            ensure!(
+                until_appended(l, "sort_index.row").await?,
+                "`sort_index.row` was never appended, so no build began"
+            );
+            for _ in 0..20 {
+                let got = answers(l, size).await?;
+                seen.lock().expect("the answers").push(got);
+                pause(Duration::from_millis(1)).await;
+            }
+            Ok::<_, Failure>(())
+        }
+    };
+    let setter = {
+        let l = &l;
+        async move {
+            l.set("sort_index.row", json!(["n"])).await?;
+            Ok::<_, Failure>(())
+        }
+    };
+    let taker = {
+        let l = &l;
+        async move {
+            ensure!(
+                until_appended(l, "sort_index.row").await?,
+                "`sort_index.row` was never appended, so no build began"
+            );
+            // The build holds `n` building: retiring the setting is a
+            // write that lands between two of its parts.
+            let mut building = false;
+            for _ in 0..2_000 {
+                let d = l.describe_type("row").await?;
+                building = d.lifecycle.building.iter().any(|f| f.as_str() == "n");
+                if building {
+                    break;
+                }
+                pause(Duration::from_millis(1)).await;
+            }
+            ensure!(
+                building,
+                "the build of `n` in parts ended before the setting was taken back"
+            );
+            l.retire(SETTING_TYPE, "sort_index.row").await?;
+            Ok::<_, Failure>(())
+        }
+    };
+    let out = join_all(vec![Box::pin(setter), Box::pin(taker), Box::pin(reader)]).await;
+    out[0]
+        .as_ref()
+        .map_err(|e| Failure::new(format!("the setting: {e}")))?;
+    out[1]
+        .as_ref()
+        .map_err(|e| Failure::new(format!("the take-back: {e}")))?;
+    out[2]
+        .as_ref()
+        .map_err(|e| Failure::new(format!("a read: {e}")))?;
+    let during = seen.lock().expect("the answers").clone();
+    for (i, got) in during.iter().enumerate() {
+        ensure!(
+            *got == before,
+            "read {i} beside the build taken back answered differently from the lake before \
+             the setting.\n  before: {before:?}\n  beside: {got:?}"
+        );
+    }
+    let after = answers(&l, size).await?;
+    ensure!(
+        after == before,
+        "once the setting is taken back, every read answers what it answered before it: \
+         {before:?} became {after:?}"
+    );
+    let got = page(&l, "n", whole, 0).await?;
+    ensure!(
+        got == ordered,
+        "with the setting taken back, the first {whole} keys of a page ordered by `n` are in \
+         their order: {} keys, not {}",
+        got.len(),
+        ordered.len()
+    );
+    let d = l.describe_type("row").await?;
+    let names = |fs: &[lakelands_api::FieldName]| -> Vec<String> {
+        fs.iter().map(|f| f.to_string()).collect()
+    };
+    ensure!(
+        d.lifecycle.sorted.is_empty(),
+        "a setting taken back names no `sorted` field; `describe` said {:?}",
+        names(&d.lifecycle.sorted)
+    );
+    ensure!(
+        d.lifecycle.chosen.is_empty(),
+        "a setting taken back names no `chosen` field; `describe` said {:?}",
+        names(&d.lifecycle.chosen)
+    );
+    ensure!(
+        d.lifecycle.building.is_empty(),
+        "a build taken back ends with nothing `building`; `describe` said {:?}",
+        names(&d.lifecycle.building)
     );
     Ok(())
 }

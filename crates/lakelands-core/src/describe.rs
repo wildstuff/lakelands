@@ -1239,6 +1239,7 @@ impl Sight<'_> {
                 schema_hash,
                 sorted: vec![],
                 chosen: vec![],
+                building: vec![],
                 sorted_whole: vec![],
                 indexed: vec![],
                 kept: None,

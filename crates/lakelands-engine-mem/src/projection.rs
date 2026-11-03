@@ -352,6 +352,9 @@ impl Projection {
         let mut records = BTreeSet::new();
         let mut types = BTreeSet::new();
         let mut live = Vec::new();
+        // The fields each setting named before this transaction put it, so
+        // a setting taken back leaves its old fields to a `Drop`.
+        let mut was_named: BTreeMap<TypeName, Vec<FieldName>> = BTreeMap::new();
         for put in puts {
             match &put {
                 Put::DroppedRecord(ty, key) => drop(records.insert((ty.clone(), key.clone()))),
@@ -365,8 +368,17 @@ impl Projection {
                 Put::Live(r) => {
                     records.insert((r.ty.clone(), r.key.clone()));
                     // Beside the writer the setting only marks what it
-                    // asks for as building; a build fills it in turns.
-                    live.extend(lakelands_core::engines::sort_index_type(r));
+                    // asks for as building; a build fills it in turns. What
+                    // it named before and no longer does is read here, over
+                    // the setting this put replaces.
+                    if let Some(ty) = lakelands_core::engines::sort_index_type(r) {
+                        for name in lakelands_core::engines::ordered_names(&ty) {
+                            was_named
+                                .entry(name.clone())
+                                .or_insert_with(|| self.named_fields(&name));
+                        }
+                        live.extend(lakelands_core::engines::sort_index_type(r));
+                    }
                 }
                 Put::Declaration(d) => {
                     if let Declaration::Type(t) = &d.declaration {
@@ -377,10 +389,21 @@ impl Projection {
             }
             self.apply(put);
         }
-        // A host's setting that names a field wins over the lake's choice.
+        // A host's setting wins over the lake's choice for the fields it
+        // names, and only those: the setting and the lake share the rows
+        // field by field.
         for ty in &types {
-            if !self.named_fields(ty).is_empty() {
-                self.chosen.remove(ty);
+            let named = self.named_fields(ty);
+            if named.is_empty() {
+                continue;
+            }
+            if let Some(chosen) = self.chosen.get_mut(ty) {
+                chosen.kept.retain(|f| !named.contains(f));
+                chosen.building.retain(|f| !named.contains(f));
+                chosen.dropping.retain(|f| !named.contains(f));
+                if *chosen == Chosen::default() {
+                    self.chosen.remove(ty);
+                }
             }
         }
         // The order index follows the head: every record whose latest
@@ -401,19 +424,28 @@ impl Projection {
             }
         }
         // A setting put beside the writer marks the fields it asks for as
-        // building: a read keeps the old road until each field's `Keep`.
+        // building: a read keeps the old road until each field's `Keep`. A
+        // field it no longer names is marked dropping, and a `Drop` clears
+        // its rows in parts. The setting and the lake share the rows field
+        // by field: a chosen field the setting names is the setting's now.
         for ty in live {
             for name in lakelands_core::engines::ordered_names(&ty) {
                 let named = self.named_fields(&name);
                 let mut chosen = self.chosen.get(&name).cloned().unwrap_or_default();
-                // A host's setting that names a field wins: the lake's
-                // choice goes, and the build fills the setting's fields
-                // instead.
-                if !named.is_empty() {
-                    chosen.kept.clear();
-                    chosen.building.clear();
+                chosen.kept.retain(|f| !named.contains(f));
+                chosen.building.retain(|f| !named.contains(f));
+                let mut dropping = std::mem::take(&mut chosen.dropping);
+                let was = was_named.get(&name).cloned().unwrap_or_default();
+                for f in was {
+                    if !named.contains(&f) && !dropping.contains(&f) {
+                        dropping.push(f);
+                    }
                 }
+                dropping.retain(|f| {
+                    !named.contains(f) && !chosen.kept.contains(f) && !chosen.building.contains(f)
+                });
                 chosen.setting_building = named;
+                chosen.dropping = dropping;
                 match chosen == Chosen::default() {
                     true => self.chosen.remove(&name),
                     false => self.chosen.insert(name, chosen),
@@ -535,12 +567,19 @@ impl Projection {
                 .any(|d| d.name == *f && lakelands_api::seam::sortable(&d.ty.kind))
         };
         let mut chosen = self.chosen.get(ty).cloned().unwrap_or_default();
+        // A field a host's setting names is the setting's own build's: no
+        // step of the lake's touches it. Every other field shares the road.
+        let named = self.named_fields(ty);
         let setting_build = matches!(
             step,
             Choose::Fill { field, .. } | Choose::Keep(field)
                 if chosen.setting_building.contains(field)
         );
-        if !self.named_fields(ty).is_empty() && !setting_build {
+        let names_field = match step {
+            Choose::Start(f) | Choose::Keep(f) => named.contains(f),
+            Choose::Fill { field, .. } | Choose::Drop { field, .. } => named.contains(field),
+        };
+        if names_field && !setting_build {
             return None;
         }
         if matches!(step, Choose::Start(f) if !sortable(f))
@@ -554,15 +593,32 @@ impl Projection {
                 .filter(|(_, n)| *n == *limit as usize)
                 .map(|(last, _)| last);
         }
+        // A drop clears its field's rows out of each record's, a chunk a
+        // call; its last chunk, which finds no more records, takes the
+        // mark away. Both write the mark, so one left by a writer that
+        // went is taken up by the next.
+        let last = match step {
+            Choose::Drop {
+                field,
+                after,
+                limit,
+            } => {
+                let page = self.index_page(ty, after.as_ref(), *limit as usize);
+                let last = page
+                    .filter(|(_, n)| *n == *limit as usize)
+                    .map(|(last, _)| last);
+                if last.is_none() {
+                    chosen.dropping.retain(|f| f != field);
+                }
+                last
+            }
+            _ => None,
+        };
         match chosen == Chosen::default() {
             true => self.chosen.remove(ty),
             false => self.chosen.insert(ty.clone(), chosen),
         };
-        // A field dropped takes its rows out of every record's.
-        if matches!(step, Choose::Drop(_)) {
-            self.index_page(ty, None, usize::MAX);
-        }
-        None
+        last
     }
 
     /// Re-indexes up to `limit` records of `ty` after the key `after`,

@@ -742,6 +742,7 @@ fn type_description() -> TypeDescription {
             schema_hash: "h".into(),
             sorted: vec!["amount".into()],
             chosen: vec!["due".into()],
+            building: vec!["paid".into()],
             sorted_whole: vec![sorted_whole()],
             indexed: vec!["embedding".into()],
             kept: Some(Kept::Kept),

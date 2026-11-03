@@ -426,35 +426,47 @@ Measured today under the writer, contended: general 300k, `lookup_index` 2.59 s,
 - **The door answers when the build is whole,** as an act's. A small type finishes in its
   first turn, so nothing changes there. `describe` shows `building`.
 - **Taken back:** the setting appends and `Drop` deletes in chunks, each a turn, marked
-  `dropping`, which no read looks at. Today `Drop` deletes in one step.
+  `dropping`, which no read looks at.
 - **`choose_order`'s refusal goes.** `eligible` refuses a type with `sorted_fields` (read),
   because a setting's write and a chosen build could not share the rows. They share one
   road now, field by field: a field the host has set is the host's setting, and a chosen
   one goes when the setting comes.
 
-**As built (2026-11-02).** The `sort_index` and `lookup_index` builds take the road. `Drop`,
-`choose_order`'s refusal, and `describe` naming a `building` field are not built yet: they
-are the rest of R7 and take a second pull request. `BUILD_SETTING_TAKEN_BACK` is deferred
-with `Drop`, which that request brings: a setting written to name none of its fields drops
-the mark and its rows in the fold today, and a build's next `Fill` finds the mark gone and
-ends, so a setting taken back between parts already ends clean — but the row that pins it,
-and the `Drop` step that does it between any two parts, wait for the second request. The
-suite holds nine of R7's build rows: `BUILD_READ_ANSWERS_AS_BEFORE`,
-`BUILD_NEVER_READ_PART_BUILT`, `BUILD_WRITES_GO_ON`, `BUILD_WRITE_REACHES_BOTH_SIDES`,
-`BUILD_RESTART_FINISHES`, `BUILD_TYPE_DECLARED_AGAIN`, `BUILD_BESIDE_A_REMOVAL`,
-`BUILD_REBUILD_SAME_LAKE` and `BUILD_EXPORT_IMPORT_SAME_LAKE`. A setting's event written
-at a door is folded with `whole` false, and the projection records the fields it asks for
-in its mark — `setting_building`, and `looked_building` and `looked_going` for the
-exact-text index. The door that appended it sends one build for each name the type's
-fields are kept under, and answers when they are whole; a build a runner left owed is
-found by the next writer's open from the same mark and sent again, and the open does not
-wait for it. Reads keep the old road: a field in `setting_building` is withheld from
-`order_fields` until its `Keep`, a field in `looked_building` is no lookup's until its
-`Keep` writes `lookup_fields`, and a field that goes keeps its rows and answers until
-that `Keep`. A write beside the build keeps the rows of the fields being built, so a key
-at or before the cursor is reached twice at most,
-and once the build is whole. A host's setting that names a field takes the lake's chosen
-field away, as it does when the log is folded whole.
+**As built (2026-11-02).** The `sort_index` and `lookup_index` builds take the road. A
+setting's event written at a door is folded with `whole` false, and the projection records
+the fields it asks for in its mark — `setting_building`, and `looked_building` and
+`looked_going` for the exact-text index. The door that appended it sends one build for
+each name the type's fields are kept under, and answers when they are whole; a build a
+runner left owed is found by the next writer's open from the same mark and sent again, and
+the open does not wait for it. Reads keep the old road: a field in `setting_building` is
+withheld from `order_fields` until its `Keep`, a field in `looked_building` is no lookup's
+until its `Keep` writes `lookup_fields`, and a field that goes keeps its rows and answers
+until that `Keep`. A write beside the build keeps the rows of the fields being built, so a
+key at or before the cursor is reached twice at most, and once the build is whole. A
+host's setting that names a field takes the lake's chosen field away, as it does when the
+log is folded whole.
+
+**As built (2026-11-03), the rest of R7.** A setting taken back appends, and the fields it
+no longer names are marked `dropping`, which no read looks at; a `Drop { field, after,
+limit }` deletes their rows a key range of `order_chunk` records a turn, each a write of its
+own, and its last chunk, answering none, removes the mark. The lake dropping a chosen
+field takes the same road. A `Drop` step holds between any two parts of a build: the
+build's next `Fill` finds the mark gone and ends, and so does the door that wrote the
+setting taken back. `eligible` no longer refuses a type whose `sort_index` names a field:
+the setting and the lake share the rows field by field, a field the host has set is the
+host's setting, a field the lake chose is the lake's until the setting comes to name it,
+and `choose_order` refuses only a step naming the field the setting names. A field a drop
+holds is the drop's until its last chunk: the lake does not choose it, and a `Start` of it
+does nothing, so no build fills what the drop is clearing. The take-back is the writer's
+live fold; a fold from the log makes a retired setting whole at its event, its index
+rebuilt whole rather than marked for a `Drop`. `describe` names the fields a build is
+filling in `building`. The suite holds all ten of R7's build
+rows — `BUILD_READ_ANSWERS_AS_BEFORE`, `BUILD_NEVER_READ_PART_BUILT`,
+`BUILD_WRITES_GO_ON`, `BUILD_WRITE_REACHES_BOTH_SIDES`, `BUILD_RESTART_FINISHES`,
+`BUILD_SETTING_TAKEN_BACK`, `BUILD_TYPE_DECLARED_AGAIN`, `BUILD_BESIDE_A_REMOVAL`,
+`BUILD_REBUILD_SAME_LAKE` and `BUILD_EXPORT_IMPORT_SAME_LAKE` — and
+`CHOSEN_ORDER_BESIDE_SORT_INDEX`, a chosen field beside a setting's own, the chosen one
+going when the setting comes to name it.
 
 Measured on macOS, a debug build (not optimised), 20 000 records, `order_chunk` 256:
 
@@ -477,6 +489,13 @@ specification 187 001 of 191 500 (from 101 717 and 186 473); seam-width is 100 o
 methods added (`ProjectionStore::put_record_for`, `ProjectionStore::look_index`), and
 `cfg(feature)` is 6 of 20. This is more than R7's 350 product and 350 specification: the
 row's estimate did not hold, and the split it names already falls here.
+
+**The rest of R7 (2026-11-03).** Product: 490 lines in, 134 out; specification: 254 in, 11
+out. The cut is the whole-type delete a `Drop` did in one step, and the refusal that kept a
+setting and a lake's choice from sharing a type; what replaces them is the chunked `Drop`
+and the field-by-field share. The core-size gate moved to product 103 475 of 108 500 and
+specification 188 062 of 191 500 (from 103 119 and 187 819); seam-width stays 100 of 110,
+no method added or removed, and `cfg(feature)` stays 6 of 20.
 
 **`view_kept` is the hard case.** A group's state folds from its members, and a write can
 move a member from a built group to an unbuilt one.

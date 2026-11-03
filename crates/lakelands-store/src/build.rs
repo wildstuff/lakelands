@@ -31,10 +31,13 @@ pub(crate) enum Kind {
 }
 
 /// The type and index a record write asks to have built, when it puts a
-/// setting that asks for one. A retirement is taken back, not built.
+/// setting that asks for one. A setting retired is taken back: the same
+/// road runs, with no field left to build and every field it named to
+/// drop.
 pub(crate) fn asked(write: &Write) -> Option<(TypeName, Kind)> {
-    let Write::Upsert(ty, key, _) = write else {
-        return None;
+    let (ty, key) = match write {
+        Write::Upsert(ty, key, _) | Write::Retire(ty, key) => (ty, key),
+        _ => return None,
     };
     if ty.as_str() != lakelands_api::seam::SETTING_TYPE {
         return None;
@@ -49,11 +52,20 @@ pub(crate) fn asked(write: &Write) -> Option<(TypeName, Kind)> {
 
 /// Send the builds the setting of `ty` asks for, one per name its fields
 /// are kept under, and answer when they are whole: the door answers then,
-/// as it does for an act.
+/// as it does for an act. A field the setting took back is cleared in
+/// parts after them, its `dropping` mark found at the walk.
 pub(crate) async fn finish(lake: &Arc<Lake>, ty: &TypeName, kind: Kind) -> Result<()> {
     for name in engines::ordered_names(ty) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         road::send(lake, Box::new(Build::new(name, kind).answering(tx)));
+        match rx.await {
+            Ok(ended) => ended?,
+            Err(_) => return Err(exec::halted(false)),
+        }
+    }
+    for name in engines::ordered_names(ty) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        road::send(lake, Box::new(Dropping::new(name).answering(tx)));
         match rx.await {
             Ok(ended) => ended?,
             Err(_) => return Err(exec::halted(false)),
@@ -81,7 +93,10 @@ pub(crate) fn owed(_lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dy
                 owed.push(Box::new(Build::new(name.clone(), Kind::Sorted)));
             }
             if !chosen.looked_building.is_empty() || !chosen.looked_going.is_empty() {
-                owed.push(Box::new(Build::new(name, Kind::Looked)));
+                owed.push(Box::new(Build::new(name.clone(), Kind::Looked)));
+            }
+            if !chosen.dropping.is_empty() {
+                owed.push(Box::new(Dropping::new(name)));
             }
         }
     }
@@ -200,5 +215,83 @@ impl Build {
         t.engine.projection().look_index(&self.ty, &keep)?;
         t.undescribe();
         Ok(Turned::Whole)
+    }
+}
+
+/// A setting's field taken back: its `dropping` mark is read at the walk,
+/// and its rows are cleared a key range of `order_chunk` records a turn.
+/// No read looks at a field the mark holds, so a part-cleared index is
+/// never read.
+pub(crate) struct Dropping {
+    ty: TypeName,
+    /// The fields still to clear, read at the walk.
+    fields: Vec<FieldName>,
+    /// The field in hand, and the key its last chunk ended at.
+    field: Option<FieldName>,
+    after: Option<RecordKey>,
+    /// Where the door that asked waits, if one did.
+    answer: Option<tokio::sync::oneshot::Sender<Result<()>>>,
+}
+
+impl Dropping {
+    fn new(ty: TypeName) -> Dropping {
+        Dropping {
+            ty,
+            fields: Vec::new(),
+            field: None,
+            after: None,
+            answer: None,
+        }
+    }
+
+    fn answering(mut self, tx: tokio::sync::oneshot::Sender<Result<()>>) -> Dropping {
+        self.answer = Some(tx);
+        self
+    }
+}
+
+impl Job for Dropping {
+    fn reach(&self) -> Reach {
+        Reach::default()
+    }
+
+    fn walk(&mut self, _lake: &Lake, view: &dyn ProjectionView) -> Result<()> {
+        self.fields = view.chosen(&self.ty)?.dropping;
+        Ok(())
+    }
+
+    fn fold(&mut self, _tail: &[lakelands_api::event::Event]) -> Result<()> {
+        Ok(())
+    }
+
+    fn turn(&mut self, t: &Turn<'_>, _w: &mut Writer) -> Result<Turned> {
+        let Some(field) = self.field.clone().or_else(|| self.fields.last().cloned()) else {
+            return Ok(Turned::Whole);
+        };
+        self.field = Some(field.clone());
+        let drop = Choose::Drop {
+            field,
+            after: self.after.clone(),
+            limit: t.limits.order_chunk.max(1),
+        };
+        let next = t.engine.projection().choose_order(&self.ty, &drop)?;
+        let Some(last) = next else {
+            self.fields.pop();
+            self.field = None;
+            self.after = None;
+            t.undescribe();
+            return Ok(match self.fields.is_empty() {
+                true => Turned::Whole,
+                false => Turned::More,
+            });
+        };
+        self.after = Some(last);
+        Ok(Turned::More)
+    }
+
+    fn end(&mut self, ended: Result<()>) {
+        if let Some(tx) = self.answer.take() {
+            let _ = tx.send(ended);
+        }
     }
 }
