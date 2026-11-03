@@ -207,6 +207,13 @@ The records one chunk of a chosen index's build writes while it holds the writer
 - **Takes:** a count; 0 is taken as 1.
 - **Default:** `1000`.
 
+### `limits.window_keys`
+
+The most rows of a filter's window an aggregate gathers and sorts to read by its keys. Past it the aggregate takes the other side, the holders with their probe or the type as before, and answers the same; only the counts are lost.
+
+- **Takes:** a count.
+- **Default:** `1048576`.
+
 ### `limits.part_events`
 
 The most events one part of an act appends, each part a turn of the writer of its own, so a write sent meanwhile waits for at most the part in front of it. Purge appends in parts (decision 099, R2). A record's retirements are never split across parts, so one part may hold a few more than this for one record.

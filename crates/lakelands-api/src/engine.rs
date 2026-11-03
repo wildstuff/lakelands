@@ -656,6 +656,84 @@ pub struct Scan {
     pub equal_any: Vec<Vec<(FieldName, Value)>>,
 }
 
+/// A filter's bound on an ordered field: the inclusive interval of order
+/// keys an engine's order index for `field` holds for the records a
+/// windowed read may select
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The window).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Window {
+    /// The field the bound is on: the field of the order index the
+    /// window is walked in.
+    pub field: FieldName,
+    /// The least order key inside the window.
+    pub lo: Vec<u8>,
+    /// The greatest order key inside the window.
+    pub hi: Vec<u8>,
+}
+
+impl Window {
+    /// Whether `key`, the sort key of an order-index row, lies inside the
+    /// window.
+    pub fn holds(&self, key: &[u8]) -> bool {
+        key >= self.lo.as_slice() && key <= self.hi.as_slice()
+    }
+}
+
+/// Where a walk of an order index stopped: the sort key and record key of
+/// the last index row it passed.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WindowAt {
+    /// The row's sort key.
+    pub sort_key: Vec<u8>,
+    /// The record's key.
+    pub key: RecordKey,
+}
+
+/// What [`ProjectionView::window_keys`] answers: the keys among the
+/// index rows it passed that hold the scan's exact text, where it stopped,
+/// and whether the window had no row past it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowBatch {
+    /// The keys, in the index's order.
+    pub keys: Vec<RecordKey>,
+    /// The last index row passed; `None` where it passed none.
+    pub after: Option<WindowAt>,
+    /// The walk read fewer rows than it was asked for: the window has no
+    /// row past `after`.
+    pub done: bool,
+}
+
+/// What [`ProjectionView::window_sides`] counted for one round of the
+/// choice between the window's road and today's
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The smaller side).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowSides {
+    /// The window's rows, counted up to the round's bound.
+    pub inside: u64,
+    /// Whether the window held no more rows than the round's bound, so
+    /// `inside` is the whole window.
+    pub whole: bool,
+    /// The other side, counted up to four times `inside`.
+    pub other: u64,
+}
+
+/// What [`ProjectionView::holders_inside`] answers: a batch of the exact
+/// text's holders in key order, each with whether its order row lies
+/// inside the window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HolderBatch {
+    /// The holders, in key order, each with whether its order row for the
+    /// window's field lies inside the window.
+    pub holders: Vec<(RecordKey, bool)>,
+    /// The last holder passed; `None` where it passed none.
+    pub after: Option<RecordKey>,
+    /// The walk read fewer holders than it was asked for: the text has no
+    /// holder past `after`.
+    pub done: bool,
+}
+
 /// The rankings one pull of a search asks an engine for.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rankings {
@@ -784,6 +862,67 @@ pub trait ProjectionView {
     /// keyset position and limit ignored. Counting holds no more than one
     /// batch of the type at a time.
     fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64>;
+
+    /// At most `n` order-index rows of `window.field` inside the window,
+    /// after the index position `after`, and the keys among them that hold
+    /// the scan's exact text (the field and text `lakelands_core::engines`
+    /// reads from the scan); the
+    /// rows are walked in the index's order. `None` from an engine that
+    /// keeps no order index for the field at the head, or no exact-text
+    /// index where the scan holds a text: the read then takes today's
+    /// road. Adds every index row passed to `rows_walked`, and none to
+    /// `rows_read`: it hands on no record
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+    /// §The smaller side).
+    fn window_keys(
+        &self,
+        ty: &TypeName,
+        window: &Window,
+        scan: &Scan,
+        after: Option<&WindowAt>,
+        n: u32,
+    ) -> Result<Option<WindowBatch>> {
+        let _ = (ty, window, scan, after, n);
+        Ok(None)
+    }
+
+    /// One round of the choice between the window's road and today's: the
+    /// window's rows counted up to `l`, whether that was the whole window,
+    /// and the other side (the exact text's holders, or the type's order
+    /// rows) counted up to four times the window's count. `None` from an
+    /// engine that [`ProjectionView::window_keys`] answers `None` for.
+    /// Both counts are index-only and add to `rows_walked`
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+    /// §The smaller side).
+    fn window_sides(
+        &self,
+        ty: &TypeName,
+        window: &Window,
+        scan: &Scan,
+        l: u64,
+    ) -> Result<Option<WindowSides>> {
+        let _ = (ty, window, scan, l);
+        Ok(None)
+    }
+
+    /// At most `n` holders of the scan's exact text, in key order after
+    /// `after`, each with whether its order row for `window.field` lies
+    /// inside the window: the probe the other side reads under a text
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+    /// §The smaller side). `None` from an engine that keeps no exact-text
+    /// index, or where the scan holds no exact text. Adds every holder
+    /// passed to `rows_walked`, none to `rows_read`.
+    fn holders_inside(
+        &self,
+        ty: &TypeName,
+        window: &Window,
+        scan: &Scan,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Option<HolderBatch>> {
+        let _ = (ty, window, scan, after, n);
+        Ok(None)
+    }
 
     /// Many records of one type; a key with no record is left out.
     /// Retired and restricted records included; ordered by key.

@@ -36,8 +36,9 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 
+pub use lakelands_api::engine::Window;
 use lakelands_api::engine::{
-    After, CanonicalEvent, Choose, Chosen, Rankings, Scan, TextCounts, TextStats,
+    After, CanonicalEvent, Choose, Chosen, Rankings, Scan, TextCounts, TextStats, WindowSides,
 };
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
@@ -932,6 +933,7 @@ pub fn window(filter: &Expr, field: &FieldName, kind: &StorageKind) -> Option<Wi
         return None;
     }
     let window = Window {
+        field: field.clone(),
         lo: lo.unwrap_or_else(|| vec![rank]),
         hi: hi.unwrap_or_else(|| rank_edge(rank)),
     };
@@ -944,19 +946,89 @@ pub fn window(filter: &Expr, field: &FieldName, kind: &StorageKind) -> Option<Wi
     Some(window)
 }
 
-/// An inclusive interval of [`order_key`]s: what [`window`] answers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Window {
-    /// The least key a row inside the window holds.
-    pub lo: Vec<u8>,
-    /// The greatest key a row inside the window holds.
-    pub hi: Vec<u8>,
+/// The windows `filter` opens on the fields `decl` declares, one per
+/// field a term bounds, in the declaration's order. A read takes the
+/// first its engine keeps an order index for
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The smaller side).
+pub fn bound_windows(decl: &TypeDecl, filter: Option<&Expr>) -> Vec<Window> {
+    let Some(filter) = filter else {
+        return Vec::new();
+    };
+    decl.fields
+        .iter()
+        .filter_map(|f| window(filter, &f.name, &f.ty.kind))
+        .collect()
 }
 
-impl Window {
-    /// Whether `key`, an [`order_key`], lies inside the window.
-    pub fn holds(&self, key: &[u8]) -> bool {
-        key >= self.lo.as_slice() && key <= self.hi.as_slice()
+/// The records among `records` that `scan` admits: how a read by key
+/// (`get_many`, which applies nothing) is held to the scan's flags,
+/// `valid_at`, exact pairs and filter. Adds each record read to
+/// `rows_read`, in the order given
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §Who counts and who admits).
+pub fn admitted(
+    decl: Option<&TypeDecl>,
+    records: Vec<StoredRecord>,
+    scan: &Scan,
+) -> Vec<StoredRecord> {
+    count_read(records.len());
+    records
+        .into_iter()
+        .filter(|r| admits(decl, r, scan))
+        .collect()
+}
+
+/// The window's road costs about a quarter of today's, so a window of
+/// four times fewer rows or less takes it
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The smaller side).
+pub const WINDOW_RATIO: u64 = 4;
+
+/// The rows the choice counts a window to in its first round; four times
+/// as many each round.
+pub const WINDOW_ROUND: u64 = 4096;
+
+/// The index rows a walk of a window's keys answers at most in one batch:
+/// a short batch is the whole window.
+pub const WINDOW_BATCH: u32 = 1024;
+
+/// Whether a read over a window takes the window's road, asked in rounds:
+/// `count(l)` answers the window counted to `l` and the other side to
+/// four times what the window counted, `ceiling` the most rows `l` may
+/// reach. The window's road is taken when it is whole and four times its
+/// rows fit inside the other side; the other side when it is short or the
+/// window outgrows `ceiling`. `None` when no round answered: the engine
+/// keeps no window
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The smaller side).
+pub fn takes_window<E>(
+    ceiling: u64,
+    mut count: impl FnMut(u64) -> Result<Option<WindowSides>, E>,
+) -> Result<Option<bool>, E> {
+    let ceiling = ceiling.max(1);
+    let mut l = WINDOW_ROUND.min(ceiling);
+    loop {
+        let Some(sides) = count(l)? else {
+            return Ok(None);
+        };
+        if sides.whole {
+            // The whole window is counted: four times it fits inside the
+            // other side, or does not, and either answer stands.
+            return Ok(Some(
+                sides.inside.saturating_mul(WINDOW_RATIO) <= sides.other,
+            ));
+        }
+        // The window outgrew the round, and the other side did not reach
+        // four times what was counted: it is the smaller side.
+        if sides.other < sides.inside.saturating_mul(WINDOW_RATIO) {
+            return Ok(Some(false));
+        }
+        // Both were cut: count further, or give up at the ceiling.
+        if l >= ceiling {
+            return Ok(Some(false));
+        }
+        l = l.saturating_mul(WINDOW_RATIO).min(ceiling);
     }
 }
 

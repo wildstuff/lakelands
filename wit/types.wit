@@ -2041,6 +2041,7 @@ interface types {
         order-max-fields: u32,
         order-unused-secs: u32,
         order-chunk: u32,
+        window-keys: u32,
         part-events: u32,
         part-tail: u32,
         page-events: u32,

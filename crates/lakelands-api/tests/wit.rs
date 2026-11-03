@@ -1795,6 +1795,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 order_max_fields: 13,
                 order_unused_secs: 14,
                 order_chunk: 15,
+                window_keys: 24,
                 part_events: 21,
                 part_tail: 22,
                 page_events: 23,

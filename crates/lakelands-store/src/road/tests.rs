@@ -970,9 +970,11 @@ async fn a_setting_build_stopped_between_turns_is_finished_by_the_next_open() {
             "{on:?}: the open never finished the build; `n` is still building"
         );
         // A writer whose build is whole owes none: a second open finds no
-        // mark and starts nothing.
+        // mark and starts nothing. The handle that held the lease lets it
+        // go a moment after the drop, and PostgreSQL takes longer to say
+        // so, so the open waits as the first one after the stop did.
         drop(lake);
-        let lake = place.open(OpenMode::Write).await;
+        let lake = place.open_when_free(OpenMode::Write).await;
         let view = lake.engine.view(None).expect("a view");
         let chosen = view.chosen(&"row".into()).expect("the chosen");
         assert!(

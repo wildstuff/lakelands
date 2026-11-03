@@ -144,6 +144,12 @@ did.
    times what the window counted. A round ends the counting once either falls
    short. Both are index-only. The other side is the holders under an exact
    text, or the type's order rows standing for the type.
+   The window's side is the rows its road walks, every index row in the window
+   whether it holds the text or not, since the walk pays for each. Counting
+   the text's holders inside instead prices the road by its answer, and takes
+   it where it walks the whole type: measured on SQLite at 600 000 records, a
+   window of a quarter of the type under a text held by one record in a
+   hundred read in 167 ms against today's 20 ms.
 3. **Choose.** Window × 4 ≤ the other side takes the window's road; anything
    else takes the other side. The ratio is the scratch's crossover: a window of
    a quarter costs about what the type or its holders cost. Step 4 of the build
@@ -337,10 +343,10 @@ fields, at the head only, as `chosen` is. A taken-back pair leaves the list.
 ### Conformance rows
 
 - `ROWS_WALKED_COUNTED`: a `Many`, a `Few` and a range read each add what they walked.
-- `WINDOW_READS_ITS_ROWS`: aggregate, count, key page, field page, both directions, by `rows_read` and `rows_walked`. As built in steps 1 and 2: the field page, both directions, its walk unchanged when records outside the bound are added, and a windowed page under an exact text by the `Few` and `Many` roads; an aggregate, a count and a key page follow in step 3.
-- `WINDOW_WALKS_THE_SMALLER_SIDE`: a window narrow and wide against its holders and its type takes the road the rule names, reads no more than today, and walks at most about eight times the smaller side.
-- `WINDOW_ADMITS_LIKE_A_PAGE`: a retired and a restricted record, `valid_at`, `equal`, `equal_any` and a pushed filter inside a window, on the road by keys and the road by holders, by `rows_read`.
-- `WINDOW_PAST_ITS_BOUNDS`: a count past `limits.window_keys` reads the window; an aggregate past it and a key page past `FEW_HOLDERS` take the other side, one answer.
+- `WINDOW_READS_ITS_ROWS`: aggregate, count, key page, field page, both directions, by `rows_read` and `rows_walked`. As built in steps 1 and 2: the field page, both directions, its walk unchanged when records outside the bound are added, and a windowed page under an exact text by the `Few` and `Many` roads. As built in step 3: the aggregate, the count and the key page read the window's keys, each answering what today's road answers and reading only the window's rows.
+- `WINDOW_WALKS_THE_SMALLER_SIDE`: a window narrow and wide against its holders and its type takes the road the rule names, reads no more than today, and walks at most about eight times the smaller side. A window of 31 rows in a type of 5 200 takes its own road and reads 31 rows where today's count reads all 5 200; a walk of 31 rows is the whole window and takes the window's road without counting; a window of 1 031 rows under a text four hold takes the holders' side, four times 1 031 not fitting inside the four.
+- `WINDOW_ADMITS_LIKE_A_PAGE`: a retired and a restricted record, `valid_at`, `equal`, `equal_any` and a pushed filter inside a window, on the road by keys and the road by holders, by `rows_read`. `admitted` keeps exactly what a page keeps, so the window's road answers the page's records.
+- `WINDOW_PAST_ITS_BOUNDS`: a count past `limits.window_keys` reads the window; an aggregate past it and a key page past `FEW_HOLDERS` take the other side, one answer. The same answers under `limits.window_keys` of four and under a ceiling wide enough for every window.
 - `WINDOW_HOLDS_WHAT_IS_ADMITTED`: the interval holds every admitted value, long decimals among them.
 - `WINDOW_TAKES_ONE_RANK`: a text field, a literal of another rank, or a text literal in a range on a decimal field narrows nothing and answers as today.
 - `WINDOW_SKIPS_NO_VALUE`: a short window does not walk the records without the field.
@@ -366,15 +372,14 @@ Lines as reckoned, then ×1.35. Every pull request stays about 600 or under.
 | step | issue | product | spec | ×1.35 |
 |---|---|---|---|---|
 | 1.+2. `rows_walked`, `window`, one rank, field-order roads, no `missing` (measured) | all, 1633 | 607 | 881 | measured |
-| 3. `window_keys`, `admitted`, aggregate, count, key page | 1633 | 170 | 200 | 230 / 270 |
-| 4. the smaller side: `window_sides`, `holders_inside` | 1633 | 110 | 140 | 149 / 189 |
+| 3.+4. `window_keys`, `admitted`, aggregate, count, key page, the smaller side (measured) | 1633 | 1288 | 736 | measured |
 | 5. memory lookup, 057 amended in tree | 1635 | 120 | 150 | 162 / 203 |
 | 6. number token, `lookup_index` widened | 1635 | 140 | 170 | 189 / 230 |
 | 7. `series_index`, rows in the fold, `series.<type>`, the rebuild's exemptions | 1638 | 170 | 200 | 230 / 270 |
 | 8. the build, its driver, `describe` | 1638 | 170 | 220 | 230 / 297 |
 | 9. the series road, one value, the tail | 1638 | 130 | 250 | 176 / 338 |
 | 10. `in`, the merge, the matrix row | 1638 | 100 | 170 | 135 / 230 |
-| **sum** | | **2 108** | **2 908** | steps 1+2 measured, the rest ×1.35 |
+| **sum** | | **3 116** | **3 304** | steps 1 to 4 measured, the rest ×1.35 |
 
 Steps 1 to 4 stand alone, in order. Steps 5 and 6 need step 1, and steps 7 to 10
 need step 2. Step 8 changes what `describe` says, so its pull request walks.
@@ -382,9 +387,9 @@ Every step lands after 098's last, and step 8 after 099's R7.
 
 The reserve for lines 2, 3, 4, 6 and 7 of lakelands#1578 is 3 500 product and
 6 000 specification lines, and the sum fits it. Shipped pull requests of this
-round ran about twice their reckoning, though. At ×2 this line alone takes
-2 640 / 3 640, three quarters of the product reserve, so the first three steps'
-measured sizes should reset this table before the rest is cut.
+round ran about twice their reckoning, though. Steps 1 to 4 now measure
+1 895 / 1 617, half the reserve, and the steps after them stay as reckoned
+until they are measured.
 
 ### As built: steps 1 and 2 (lakelands#1693)
 
@@ -429,6 +434,160 @@ The two steps landed in one pull request.
   held the `Many` road to the window's rows, a bound on a field beside the
   one the page orders by to nothing, a literal on the left, records below
   the bound and a filter read downwards.
+
+### As built: steps 3 and 4 (lakelands#1705)
+
+The two steps landed in one pull request.
+
+- **`window_keys`.** `ProjectionView::window_keys(ty, window, scan, after,
+  n)`, default `None`, answers `WindowBatch { keys, after, done }`: a walk
+  of at most `n` rows of the order index inside the window, from `after`
+  (the sort key and record key of the last row passed), the keys among the
+  rows passed that hold the scan's exact text, and `done` where the walk
+  was short. The batch is the walk, not the admitted set: where it stopped
+  is the last row walked whether it holds the text or not, so `done` and
+  `after` do not move with the text's density. SQLite and PostgreSQL walk
+  the `sort_index` range in `(sort_key, key)` order in a subquery and
+  apply the text to the rows walked; memory walks its sorted set. Every
+  row walked is added to `rows_walked`.
+- **`admitted`.** `engines::admitted(decl, records, scan)` holds
+  `get_many`'s records to the scan's flags, `valid_at`, exact pairs and
+  filter, as a page does, and adds each record read to `rows_read`. A
+  window's road reads its keys by `get_many` and passes them through
+  `admitted`, so it answers the page's records, not the walk's.
+- **The store's roads.** `Reader::window_choice(decl, scan, ceiling)`
+  takes the first window its engine keeps an index for. A short first
+  batch of `WINDOW_BATCH` is the whole window and takes the window's road
+  when its keys fit the ceiling; otherwise `engines::takes_window` counts
+  in rounds from `WINDOW_ROUND`, four times more each round. The count
+  (`window_count`), the aggregate (`window_aggregate`, which gathers the
+  keys, sorts them and folds a `COUNT_PAGE` at a time in key order) and
+  the key page (`window_page`) read the window's keys. The aggregate's
+  ceiling is `limits.window_keys` and the key page's `FEW_HOLDERS`; past a
+  ceiling the count reads the window whole, a count having none, and the
+  aggregate and the key page take the other side. `find`'s aggregate takes
+  the road only where the type is kept whole and is no view's, as before.
+- **The smaller side.** `window_sides(ty, window, scan, l)` counts the
+  window's order rows to `l + 1`, `whole` where the window held no more,
+  and the other side — the exact text's holders, or the type's order rows
+  — to four times the window's count; both counts are index-only and add
+  to `rows_walked`. `holders_inside` answers the text's holders in key
+  order and whether each order row lies inside the window; a batch more
+  than a third inside ends the probe, and the page reads on by
+  `page_plain` from the key before it.
+- **Two defects the measurement found.** `window_sides` first counted the
+  text's holders inside the window with `EXISTS`, which prices the
+  window's road by its answer: a window of a quarter of the type under a
+  text one record in a hundred holds took the window's road and read in
+  167 ms where today's count read in 20 ms. It now counts the window's
+  order rows, every index row inside whether it holds the text or not,
+  which is what the walk pays for. `window_keys` first put the batch's
+  limit on the admitted keys rather than on the index rows walked, so the
+  first batch of a text every record holds walked 60 000 index rows to
+  answer 1 024 keys and reported the window short only at the text's end,
+  and every batch after the first skipped the rows between the keys it
+  answered. It now walks `n` index rows and applies the text to those.
+- **PostgreSQL's JIT, turned off for the read.** The window's statements
+  walk and count index rows, and the planner's estimate for them
+  overshoots `jit_above_cost` by a wide margin: a first batch of 1 024
+  rows under a text six records in a thousand hold was estimated at four
+  million, and took 177 ms compiled and 10 ms not, at 600 000 records.
+  `Reader::jit_off` sets `LOCAL jit = off` for the read that asks a
+  window, as the vector index's statement already sets it for its own.
+- **PostgreSQL's collation, which hid a 3 400-fold plan.** The walk's
+  text probe compared `t.key = w.key` under the database's default
+  collation, and `text_index_value` holds its last column
+  `key COLLATE "C"`: the comparison could not be an index condition, so
+  the probe read every holder of the text for every row walked. A first
+  batch of 1 024 rows under a text all 600 000 records hold took 15.9 s,
+  a bitmap of 600 000 index rows 1 024 times; compared
+  `t.key COLLATE "C" = w.key` it takes 4.6 ms, one seek a row. Several
+  texts had the same shape twice over: `t.value = ANY(...)` is no index
+  condition either, and is sought as
+  `md5(t.value) IN (SELECT md5(x) FROM unnest($::text[]) x)`, the form
+  the index holds, 14 ms a batch of 1 024 under two texts.
+- **A check that skipped step 1.** `WINDOW_WALKS_THE_SMALLER_SIDE` asked
+  `window_sides` alone, so the 31-row window under the four-holder text —
+  a short first batch, and so the whole window, taken without counting —
+  was answered by the sides as the other side on SQLite and PostgreSQL,
+  where the text's four holders count as the other side. The check now
+  asks the window's first batch first and counts only where the walk was
+  long, as the store does.
+- **Measured.** Product in 1 308, out 20, net 1 288; specification in
+  739, out 3, net 736. The core-size gate: product 104 407 of base
+  108 500, specification 188 554 of base 191 500, neither base nor
+  ceiling raised. The two steps measured 1 288 / 736 against the 280 /
+  340 reckoned for them at ×1.35 — four and a half times the product
+  reckoning and twice the specification's; the estimate table above
+  carries the measured size.
+
+#### Measured: the smaller side
+
+A script outside the tree (target directory of its own), the table of
+600 000 records and three texts — one six records in a thousand hold,
+one every record holds, and no text — read at a window of 1, 10, 25, 50
+and 100 % of the type. Each read is the median of three runs after a
+warm one; `today` is the read as it stood before this decision (a `scan`
+paged at 1 024, or `count` over it), `chosen` the read as this record
+builds it — the choice, then the road the rule names — and `forced` the
+window's road taken whatever the rule says, which is what the crossover
+is read from. Times in ms; the count and the aggregate side by side.
+
+SQLite:
+
+| window | today count / agg | chosen count / agg | window's road |
+|---|---|---|---|
+| held by 6 000, 1 % | 20.6 / 20.5 | 23.6 / 20.6 | 7.1 |
+| held by 6 000, 25 % | 19.2 / 19.8 | 20.5 / 20.5 | 801.5 |
+| held by 6 000, 100 % | 21.7 / 22.1 | 23.1 / 23.8 | 11 423.8 |
+| held by all, 1 % | 1 363.8 / 1 364.0 | 28.9 / 28.9 | 29.2 |
+| held by all, 25 % | 1 308.1 / 1 408.3 | 1 359.1 / 1 320.5 | 1 321.3 |
+| held by all, 100 % | 1 455.8 / 1 526.4 | 1 516.1 / 1 556.3 | 13 598.7 |
+| no text, 1 % | 913.6 / 927.6 | 22.4 / 23.0 | 22.9 |
+| no text, 25 % | 901.8 / 965.0 | 1 196.5 / 1 207.1 | 1 191.9 |
+| no text, 100 % | 918.3 / 961.3 | 976.2 / 1 013.1 | 12 578.2 |
+
+PostgreSQL:
+
+| window | today count / agg | chosen count / agg | window's road |
+|---|---|---|---|
+| held by 6 000, 1 % | 116.7 / 96.6 | 104.9 / 92.5 | 30.2 |
+| held by 6 000, 25 % | 89.3 / 98.2 | 97.8 / 102.3 | 2 013.0 |
+| held by 6 000, 100 % | 99.1 / 99.8 | 98.7 / 93.8 | 18 353.2 |
+| held by all, 1 % | 3 843.6 / 3 961.2 | 85.6 / 82.9 | 97.2 |
+| held by all, 25 % | 4 117.2 / 4 076.7 | 2 954.3 / 2 986.7 | 2 920.5 |
+| held by all, 100 % | 3 898.3 / 4 079.3 | 4 598.3 / 4 649.3 | 20 544.8 |
+| no text, 1 % | 2 222.5 / 2 214.2 | 38.0 / 33.1 | 46.8 |
+| no text, 25 % | 2 284.7 / 2 342.2 | 1 807.9 / 1 800.8 | 1 814.4 |
+| no text, 100 % | 2 274.0 / 2 411.2 | 2 423.5 / 2 674.5 | 17 615.8 |
+
+The crossover — the window at which its own road costs today's — is
+where the forced column meets today's. On SQLite it is a quarter of the
+type under a text every record holds (1 321.3 against today's 1 408.3
+at 25 %, 364.3 against 1 423.7 at 10 %) and between a fifth and a
+quarter with no text (1 191.9 against 965.0 at 25 %, 311.7 against
+960.0 at 10 %). On PostgreSQL it lies between a quarter and a half
+(2 920.5 against 4 076.7 at 25 %, 6 988.2 against 4 097.8 at 50 %).
+The ratio of four stands where it was recorded: a window narrower than
+a quarter of the other side takes its own road, and the record's ratio
+is that quarter.
+
+The line the issue set — a window wide against holders or its type
+reads no more than today and takes at most 1.3 times today's time —
+holds on both engines for the count and the aggregate, with one
+boundary: SQLite's plain type at exactly a quarter takes the window's
+road (25 % is the equality the rule admits) and its count takes
+1 196.5 ms where today's took 901.8 ms, 1.33 times — today's own count
+swings 901.8 to 919.5 across the five windows, so the ratio is 1.30 to
+1.33, the line's edge. Every other chosen read is within 1.25.
+
+The key page pays the choice before it takes either road: 1.1 to 2.2 ms
+on SQLite and 3.4 to 26 ms on PostgreSQL against 0.1 and 0.4 to 0.8 ms
+for today's first page, and the choice alone grows with the window it
+declines — 61 ms on SQLite and 682 ms on PostgreSQL at half the type
+and beyond, inside the 1.3 line only because today's read of that
+window is already seconds. The page is the reading this record leaves
+dearer than it found it.
 
 ### What the operator decided
 

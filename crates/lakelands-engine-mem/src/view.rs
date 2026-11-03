@@ -17,12 +17,16 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Scan};
+use lakelands_api::engine::{
+    Chosen, Declared, HolderBatch, Matched, ProjectionView, Scan, WindowAt, WindowBatch,
+    WindowSides,
+};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
 use lakelands_api::quarantine::{QuarantineFilter, QuarantineId, Quarantined};
 use lakelands_api::query::{Edge, Walk};
+use lakelands_api::read::Direction;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Proposal, ProposalFilter};
@@ -41,6 +45,30 @@ pub(crate) struct MemView {
 impl MemView {
     fn read<R>(&self, f: impl FnOnce(&Projection, Option<Position>) -> R) -> R {
         f(&lock(&self.lake).projection, self.at)
+    }
+
+    /// Whether a window walk can answer `scan`: this engine keeps no
+    /// exact-text index, so a scan that holds a text is read as before.
+    fn window_holds(scan: &Scan) -> bool {
+        engines::text_lookups(scan, &|_| true).is_none()
+    }
+
+    /// The order index's rows for `window.field` inside the window, in the
+    /// index's order after `after`, at most `n`: at the head alone, and
+    /// only where the field's index is read.
+    fn window_rows(
+        &self,
+        p: &Projection,
+        ty: &TypeName,
+        window: &engines::Window,
+        after: Option<&WindowAt>,
+        n: u32,
+    ) -> Option<Vec<(Vec<u8>, RecordKey)>> {
+        if self.at != p.folded || !p.read_fields(ty).contains(&window.field) {
+            return None;
+        }
+        let from = after.map(|a| (a.sort_key.as_slice(), a.key.as_str()));
+        Some(p.sorted_after(ty, &window.field, Direction::Asc, Some(window), from, n))
     }
 }
 
@@ -112,6 +140,71 @@ impl ProjectionView for MemView {
                 .filter_map(|key| p.record_of(ty, key, at))
                 .collect()
         }))
+    }
+
+    fn window_keys(
+        &self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        after: Option<&WindowAt>,
+        n: u32,
+    ) -> Result<Option<WindowBatch>> {
+        if !Self::window_holds(scan) {
+            return Ok(None);
+        }
+        Ok(self.read(|p, _| {
+            let rows = self.window_rows(p, ty, window, after, n)?;
+            Some(WindowBatch {
+                done: rows.len() < n as usize,
+                after: rows.last().map(|(sort_key, key)| WindowAt {
+                    sort_key: sort_key.clone(),
+                    key: key.clone(),
+                }),
+                keys: rows.into_iter().map(|(_, key)| key).collect(),
+            })
+        }))
+    }
+
+    fn window_sides(
+        &self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        l: u64,
+    ) -> Result<Option<WindowSides>> {
+        if !Self::window_holds(scan) {
+            return Ok(None);
+        }
+        Ok(self.read(|p, _| {
+            let ask = u32::try_from(l.saturating_add(1)).unwrap_or(u32::MAX);
+            let inside = self.window_rows(p, ty, window, None, ask)?.len() as u64;
+            let whole = inside <= l;
+            let cap = inside.saturating_mul(engines::WINDOW_RATIO);
+            let other = p
+                .sorted
+                .get(&(ty.clone(), window.field.clone()))
+                .map_or(0, |rows| (rows.len() as u64).min(cap));
+            engines::count_walk((inside as usize).saturating_add(other as usize));
+            Some(WindowSides {
+                inside,
+                whole,
+                other,
+            })
+        }))
+    }
+
+    fn holders_inside(
+        &self,
+        _ty: &TypeName,
+        _window: &engines::Window,
+        _scan: &Scan,
+        _after: Option<&RecordKey>,
+        _n: u32,
+    ) -> Result<Option<HolderBatch>> {
+        // The probe reads the exact-text index, which this engine keeps
+        // none of.
+        Ok(None)
     }
 
     fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {

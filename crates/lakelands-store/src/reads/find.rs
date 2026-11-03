@@ -356,10 +356,48 @@ impl<'a> Reader<'a> {
             }))
         };
         let mut grouping = aggregate::grouping(a, self.now).map_err(named)?;
-        self.each_member(decl, filter, COUNT_PAGE, |r| {
-            grouping.add((&r.fields, Some(&r.meta)), Some(self.told()));
-            Ok(())
-        })?;
+        let mut done = false;
+        if self.kept(decl)?.is_none() && decl.view.is_none() {
+            // A window's aggregate gathers the window's keys, sorts them
+            // and reads them by key; past `limits.window_keys` it takes
+            // the other side, having lost only the counts
+            // (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+            // §The window's road, §Past the bounds).
+            let bounded = self.with_bound(decl, filter);
+            let push = bounded.filter(|e| !self.store_only(decl, e));
+            let admit = self.sight.admit(&decl.name);
+            match admit.scanned() {
+                None => done = true,
+                Some((equal, equal_any)) => {
+                    let ceiling = u64::from(self.lake.limits.window_keys);
+                    let scan = Scan {
+                        filter: push,
+                        equal,
+                        equal_any,
+                        valid_at: self.valid_at_for(decl),
+                        retired: self.retired.get(),
+                        restricted: self.sight.sees_restricted(),
+                        ..Default::default()
+                    };
+                    if let Some((window, Some(first))) = self.window_choice(decl, &scan, ceiling)? {
+                        done = self.window_aggregate(
+                            decl,
+                            &window,
+                            &scan,
+                            first,
+                            ceiling,
+                            &mut grouping,
+                        )?;
+                    }
+                }
+            }
+        }
+        if !done {
+            self.each_member(decl, filter, COUNT_PAGE, |r| {
+                grouping.add((&r.fields, Some(&r.meta)), Some(self.told()));
+                Ok(())
+            })?;
+        }
         let mut groups = aggregate::answer(grouping, a).map_err(named)?;
         // A sum, minimum, maximum, first or last of a decimal field whose
         // value type declares a scale answers at that scale, so a sum over

@@ -21,7 +21,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Rankings, Scan};
+use lakelands_api::engine::{
+    Chosen, Declared, HolderBatch, Matched, ProjectionView, Rankings, Scan, WindowAt, WindowBatch,
+    WindowSides,
+};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
@@ -64,6 +67,9 @@ type Asked<'a> = (
     &'a Option<(FieldName, Vec<String>)>,
     &'a Option<(FieldName, String)>,
 );
+
+/// The field a window's walk narrows by, and the texts it must hold.
+type WindowText = Option<(FieldName, Vec<String>)>;
 
 /// The ids `names` gives those of `wanted` it holds, looked up in one
 /// statement; a name no event has brought has none.
@@ -931,6 +937,301 @@ impl Read<'_> {
         Ok(counted.first().map_or(0, |n| n.unsigned_abs()))
     }
 
+    /// The field and texts a window walk narrows by, as the scan asks for
+    /// them and the exact-text index keeps them: `Some(None)` where the
+    /// scan holds no text. `None` where it holds one the index keeps none
+    /// of: no walk can answer it.
+    fn window_text(
+        &mut self,
+        ty: &TypeName,
+        decl: Option<&TypeDecl>,
+        scan: &Scan,
+    ) -> Result<Option<WindowText>> {
+        let looked = self.looked(ty, decl)?;
+        let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
+        if engines::text_lookups(scan, &|_| true).is_some()
+            && engines::text_lookups(scan, &kept).is_none()
+        {
+            return Ok(None);
+        }
+        Ok(Some(engines::text_lookups(scan, &kept)))
+    }
+
+    /// A statement's count, read as a number.
+    fn counted(&mut self, statement: &str, args: &[&(dyn ToSql + Sync)]) -> Result<u64> {
+        let n: Vec<i64> = self.db.column(statement, args)?;
+        Ok(n.first().map_or(0, |n| n.unsigned_abs()))
+    }
+
+    /// Turn the planner's JIT off for the rest of this read. A window's
+    /// statements count and walk index rows, and a plan whose estimate
+    /// overshoots `jit_above_cost` pays more to compile than to run: a
+    /// first batch of 1 024 rows under a text four records in a thousand
+    /// hold took 177 ms compiled and 10 ms not, at 600 000 records.
+    fn jit_off(&mut self) -> Result<()> {
+        self.db.simple("SET LOCAL jit = off").map(drop)
+    }
+
+    /// At most `n` order rows of `window.field` inside the window after
+    /// the index position `after`, with the keys among them holding the
+    /// scan's exact text: a walk of `n` rows of `sort_index_asc`, each row
+    /// kept where the text index holds its key. The walk is the batch: a
+    /// short one was the whole window, and where it stopped is the last
+    /// row it passed, whether that row holds the text or not.
+    fn window_keys(
+        &mut self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        after: Option<&WindowAt>,
+        n: u32,
+    ) -> Result<Option<WindowBatch>> {
+        self.jit_off()?;
+        let Some(decl) = self.type_decl(ty)? else {
+            return Ok(None);
+        };
+        if !self.head || !self.sorted_fields(ty, Some(&decl))?.contains(&window.field) {
+            return Ok(None);
+        }
+        let Some(text) = self.window_text(ty, Some(&decl), scan)? else {
+            return Ok(None);
+        };
+        let (ty_name, field) = (ty.as_str().to_string(), window.field.as_str().to_string());
+        let text_field: Option<String> = text.as_ref().map(|(f, _)| f.to_string());
+        let texts: Option<Vec<String>> = text.as_ref().map(|(_, t)| t.clone());
+        let after_sort: Option<Vec<u8>> = after.map(|a| a.sort_key.clone());
+        let after_key: Option<String> = after.map(|a| a.key.to_string());
+        let limit = i64::from(n);
+        let mut walk = format!(
+            "SELECT s.sort_key, s.key FROM {sorts} s \
+             WHERE s.ty = $1 AND s.field = $2 AND s.sort_key >= $3 AND s.sort_key <= $4",
+            sorts = self.names.t("sort_index"),
+        );
+        let mut next = 5;
+        if after.is_some() {
+            walk.push_str(&format!(
+                " AND (s.sort_key > ${next} OR (s.sort_key = ${next} \
+                 AND s.key COLLATE \"C\" > ${}))",
+                next + 1
+            ));
+            next += 2;
+        }
+        walk.push_str(&format!(
+            " ORDER BY s.sort_key, s.key COLLATE \"C\" LIMIT ${next}"
+        ));
+        let mut args: Vec<&(dyn ToSql + Sync)> = vec![&ty_name, &field, &window.lo, &window.hi];
+        if after.is_some() {
+            args.extend([&after_sort as &(dyn ToSql + Sync), &after_key]);
+        }
+        args.push(&limit);
+        // The walk is the batch: a short one was the whole window, and
+        // where it stopped is the last row it passed, whether that row
+        // holds the text or not. The text is applied to the rows walked.
+        let query = if let Some(texts) = &texts {
+            args.push(&text_field);
+            let (field_at, value_at) = (next + 1, next + 2);
+            if texts.len() == 1 {
+                args.push(&texts[0]);
+                format!(
+                    "SELECT w.sort_key, w.key, EXISTS (SELECT 1 FROM {text} t WHERE t.ty = $1 \
+                     AND t.field = ${field_at} AND md5(t.value) = md5(${value_at}) \
+                     AND t.key COLLATE \"C\" = w.key) FROM ({walk}) w \
+                     ORDER BY w.sort_key, w.key COLLATE \"C\"",
+                    text = self.names.t("text_index"),
+                )
+            } else {
+                args.push(texts);
+                format!(
+                    // Several texts are sought by their `md5`, the form the
+                    // index holds: a value compared directly cannot be an
+                    // index condition and would read every holder of the
+                    // field for each row walked.
+                    "SELECT w.sort_key, w.key, EXISTS (SELECT 1 FROM {text} t WHERE t.ty = $1 \
+                     AND t.field = ${field_at} AND md5(t.value) IN \
+                     (SELECT md5(x) FROM unnest(${value_at}::text[]) x) \
+                     AND t.key COLLATE \"C\" = w.key) FROM ({walk}) w \
+                     ORDER BY w.sort_key, w.key COLLATE \"C\"",
+                    text = self.names.t("text_index"),
+                )
+            }
+        } else {
+            format!(
+                "SELECT w.sort_key, w.key, true FROM ({walk}) w \
+                 ORDER BY w.sort_key, w.key COLLATE \"C\""
+            )
+        };
+        let rows = self.db.query(&query, &args)?;
+        engines::count_walk(rows.len());
+        let rows: Vec<(Vec<u8>, String, bool)> = rows
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2)))
+            .collect();
+        Ok(Some(WindowBatch {
+            done: rows.len() < n as usize,
+            after: rows.last().map(|(sort_key, key, _)| WindowAt {
+                sort_key: sort_key.clone(),
+                key: key.as_str().into(),
+            }),
+            keys: rows
+                .into_iter()
+                .filter(|(_, _, holds)| *holds)
+                .map(|(_, key, _)| key.as_str().into())
+                .collect(),
+        }))
+    }
+
+    /// One round of the choice: the window's index rows counted to `l + 1`,
+    /// and the other side, the text's holders or the type's rows, to four
+    /// times the window's count. Index-only.
+    fn window_sides(
+        &mut self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        l: u64,
+    ) -> Result<Option<WindowSides>> {
+        self.jit_off()?;
+        let Some(decl) = self.type_decl(ty)? else {
+            return Ok(None);
+        };
+        if !self.head || !self.sorted_fields(ty, Some(&decl))?.contains(&window.field) {
+            return Ok(None);
+        }
+        let Some(text) = self.window_text(ty, Some(&decl), scan)? else {
+            return Ok(None);
+        };
+        let bound = i64::try_from(l.saturating_add(1)).unwrap_or(i64::MAX);
+        let (ty_name, field) = (ty.as_str().to_string(), window.field.as_str().to_string());
+        let sorts = self.names.t("sort_index");
+        let text_index = self.names.t("text_index");
+        // The window's side is the rows its road walks, the index's rows in
+        // the window, whether the scan holds a text or not: the walk pays
+        // for each of them and the probe only says which to read. A count
+        // of the text's holders inside would price the road by its answer,
+        // and take it where it walks the whole type.
+        let q = format!(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM {sorts} \
+             WHERE ty = $1 AND field = $2 AND sort_key >= $3 \
+             AND sort_key <= $4 LIMIT $5) x"
+        );
+        let args: [&(dyn ToSql + Sync); 5] = [&ty_name, &field, &window.lo, &window.hi, &bound];
+        let inside = self.counted(&q, &args)?;
+        let whole = inside <= l;
+        let cap = i64::try_from(inside.saturating_mul(engines::WINDOW_RATIO)).unwrap_or(i64::MAX);
+        let other = match &text {
+            None => {
+                let q = format!(
+                    "SELECT COUNT(*) FROM (SELECT 1 FROM {sorts} \
+                     WHERE ty = $1 AND field = $2 LIMIT $3) x"
+                );
+                let args: [&(dyn ToSql + Sync); 3] = [&ty_name, &field, &cap];
+                self.counted(&q, &args)?
+            }
+            Some((text_field, texts)) if texts.len() == 1 => {
+                let q = format!(
+                    "SELECT COUNT(*) FROM (SELECT 1 FROM {text_index} \
+                     WHERE ty = $1 AND field = $2 AND md5(value) = md5($3) LIMIT $4) x"
+                );
+                let args: [&(dyn ToSql + Sync); 4] =
+                    [&ty_name, &text_field.as_str(), &texts[0], &cap];
+                self.counted(&q, &args)?
+            }
+            Some((text_field, texts)) => {
+                let q = format!(
+                    "SELECT COUNT(*) FROM (SELECT 1 FROM {text_index} \
+                     WHERE ty = $1 AND field = $2 AND value = ANY($3::text[]) LIMIT $4) x"
+                );
+                let args: [&(dyn ToSql + Sync); 4] = [&ty_name, &text_field.as_str(), texts, &cap];
+                self.counted(&q, &args)?
+            }
+        };
+        engines::count_walk(inside as usize + other as usize);
+        Ok(Some(WindowSides {
+            inside,
+            whole,
+            other,
+        }))
+    }
+
+    /// At most `n` holders of the scan's exact text in key order after
+    /// `after`, each with whether its order row for `window.field` lies
+    /// inside the window: the text index's rows, each joined to its order
+    /// row, a holder with none outside.
+    fn holders_inside(
+        &mut self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Option<HolderBatch>> {
+        self.jit_off()?;
+        let Some(decl) = self.type_decl(ty)? else {
+            return Ok(None);
+        };
+        let Some(text) = self.window_text(ty, Some(&decl), scan)? else {
+            return Ok(None);
+        };
+        let Some((text_field, texts)) = text else {
+            return Ok(None);
+        };
+        if !self.head {
+            return Ok(None);
+        }
+        let (ty_name, field) = (ty.as_str().to_string(), window.field.as_str().to_string());
+        let text_field = text_field.to_string();
+        let after_key: Option<String> = after.map(|a| a.to_string());
+        let limit = i64::from(n);
+        let mut query = format!(
+            "SELECT t.key, s.sort_key FROM (SELECT t.key FROM {text_index} t \
+             WHERE t.ty = $1 AND t.field = $2 AND ",
+            text_index = self.names.t("text_index"),
+        );
+        if texts.len() == 1 {
+            query.push_str("md5(t.value) = md5($3)");
+        } else {
+            query.push_str("t.value = ANY($3::text[])");
+        }
+        let mut next = 4;
+        if after.is_some() {
+            query.push_str(&format!(" AND t.key COLLATE \"C\" > ${next}"));
+            next += 1;
+        }
+        query.push_str(&format!(
+            " ORDER BY t.key COLLATE \"C\" LIMIT ${next}) t \
+             LEFT JOIN {sorts} s ON s.ty = $1 AND s.field = ${} AND s.key = t.key \
+             ORDER BY t.key COLLATE \"C\"",
+            next + 1,
+            sorts = self.names.t("sort_index"),
+        ));
+        let mut args: Vec<&(dyn ToSql + Sync)> = vec![&ty_name, &text_field];
+        if texts.len() == 1 {
+            args.push(&texts[0]);
+        } else {
+            args.push(&texts);
+        }
+        if after.is_some() {
+            args.push(&after_key);
+        }
+        args.push(&limit);
+        args.push(&field);
+        let rows = self.db.query(&query, &args)?;
+        engines::count_walk(rows.len());
+        let rows: Vec<(String, Option<Vec<u8>>)> =
+            rows.iter().map(|r| (r.get(0), r.get(1))).collect();
+        Ok(Some(HolderBatch {
+            done: rows.len() < n as usize,
+            after: rows.last().map(|(key, _)| key.as_str().into()),
+            holders: rows
+                .into_iter()
+                .map(|(key, sort_key)| {
+                    let inside = sort_key.is_some_and(|k| window.holds(&k));
+                    (key.as_str().into(), inside)
+                })
+                .collect(),
+        }))
+    }
+
     /// At most `n` head records of a type without a row in the order index
     /// for `field`, in key order after `after`: those `holders` names.
     fn unsorted_after(
@@ -1201,6 +1502,38 @@ impl ProjectionView for PgView<'_> {
                 r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)
             })
         })
+    }
+
+    fn window_keys(
+        &self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        after: Option<&WindowAt>,
+        n: u32,
+    ) -> Result<Option<WindowBatch>> {
+        self.read(None, |r| r.window_keys(ty, window, scan, after, n))
+    }
+
+    fn window_sides(
+        &self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        l: u64,
+    ) -> Result<Option<WindowSides>> {
+        self.read(None, |r| r.window_sides(ty, window, scan, l))
+    }
+
+    fn holders_inside(
+        &self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Option<HolderBatch>> {
+        self.read(None, |r| r.holders_inside(ty, window, scan, after, n))
     }
 
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
