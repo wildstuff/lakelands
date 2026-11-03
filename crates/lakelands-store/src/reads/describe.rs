@@ -301,6 +301,11 @@ impl<'a> Reader<'a> {
             restricted: self.sight.sees_restricted(),
             ..Default::default()
         };
+        // A count has no ceiling: it counts the window whole when the
+        // window is the smaller side, and the other side otherwise.
+        if let Some((window, Some(first))) = self.window_choice(decl, &scan, u64::MAX)? {
+            return self.window_count(decl, &window, &scan, first);
+        }
         self.view.count(&decl.name, &scan)
     }
 
@@ -374,6 +379,296 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// The window of `scan`'s filter the engine answers a walk of, and the
+    /// first batch where it took the window's road: `Some((_, Some(batch)))`
+    /// takes it, `Some((window, None))` the other side, `None` no window.
+    /// The first window whose field the engine keeps an order index for is
+    /// the one read; the choice counts it in rounds to `ceiling`
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+    /// §The smaller side).
+    pub(super) fn window_choice(
+        &self,
+        decl: &TypeDecl,
+        scan: &Scan,
+        ceiling: u64,
+    ) -> Result<Option<(core_engines::Window, Option<WindowBatch>)>> {
+        let Some(filter) = scan.filter.as_ref() else {
+            return Ok(None);
+        };
+        for window in core_engines::bound_windows(decl, Some(filter)) {
+            let first = self.view.window_keys(
+                &decl.name,
+                &window,
+                scan,
+                None,
+                core_engines::WINDOW_BATCH,
+            )?;
+            let Some(first) = first else {
+                continue;
+            };
+            // A short walk was the whole window, so nothing is counted.
+            if first.done {
+                return Ok(Some((
+                    window,
+                    ((first.keys.len() as u64) <= ceiling).then_some(first),
+                )));
+            }
+            let taken = core_engines::takes_window(ceiling, |l| {
+                self.view.window_sides(&decl.name, &window, scan, l)
+            })?;
+            return Ok(Some((window, taken.unwrap_or(false).then_some(first))));
+        }
+        Ok(None)
+    }
+
+    /// The keys of `window` the scan holds, the batch in hand and each
+    /// after it, in the index's order: `None` where the engine stops
+    /// answering or the window outgrows `ceiling`.
+    fn window_keys_of(
+        &self,
+        decl: &TypeDecl,
+        window: &core_engines::Window,
+        scan: &Scan,
+        first: WindowBatch,
+        ceiling: u64,
+    ) -> Result<Option<Vec<RecordKey>>> {
+        let mut keys = first.keys;
+        let (mut after, mut done) = (first.after, first.done);
+        while !done {
+            let Some(batch) = self.view.window_keys(
+                &decl.name,
+                window,
+                scan,
+                after.as_ref(),
+                core_engines::WINDOW_BATCH,
+            )?
+            else {
+                return Ok(None);
+            };
+            keys.extend(batch.keys);
+            if keys.len() as u64 > ceiling {
+                return Ok(None);
+            }
+            (after, done) = (batch.after, batch.done);
+        }
+        Ok(Some(keys))
+    }
+
+    /// The count of the records the scan admits among the window's keys,
+    /// a batch at a time.
+    fn window_count(
+        &self,
+        decl: &TypeDecl,
+        window: &core_engines::Window,
+        scan: &Scan,
+        first: WindowBatch,
+    ) -> Result<u64> {
+        let mut n = 0;
+        let mut after = None;
+        let mut next = Some(first);
+        loop {
+            let batch = match next.take() {
+                Some(batch) => batch,
+                None => {
+                    let more = self.view.window_keys(
+                        &decl.name,
+                        window,
+                        scan,
+                        after.as_ref(),
+                        core_engines::WINDOW_BATCH,
+                    )?;
+                    let Some(more) = more else {
+                        return self.view.count(&decl.name, scan);
+                    };
+                    more
+                }
+            };
+            for chunk in batch.keys.chunks(COUNT_PAGE) {
+                let records = self.view.get_many(&decl.name, chunk)?;
+                n += core_engines::admitted(Some(decl), records, scan).len() as u64;
+            }
+            if batch.done {
+                return Ok(n);
+            }
+            after = batch.after;
+        }
+    }
+
+    /// The aggregate over the window's records, gathered by their keys and
+    /// folded in key order: `false` where the window's road is not taken.
+    pub(super) fn window_aggregate(
+        &self,
+        decl: &TypeDecl,
+        window: &core_engines::Window,
+        scan: &Scan,
+        first: WindowBatch,
+        ceiling: u64,
+        grouping: &mut aggregate::Grouping,
+    ) -> Result<bool> {
+        let Some(mut keys) = self.window_keys_of(decl, window, scan, first, ceiling)? else {
+            return Ok(false);
+        };
+        keys.sort();
+        keys.dedup();
+        let admit = self.sight.admit(&decl.name);
+        for chunk in keys.chunks(COUNT_PAGE) {
+            let records = self.view.get_many(&decl.name, chunk)?;
+            let records = core_engines::admitted(Some(decl), records, scan);
+            let records = self.at_read(&decl.name, records)?;
+            for r in records {
+                if self.live_by(decl, &admit, &r) {
+                    grouping.add((&r.fields, Some(&r.meta)), Some(self.told()));
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// At most `want` records at `keys`, in the order given, that the scan
+    /// admits, as a page answers them: read by key and held to the flags,
+    /// the filter, the reader's grants and the ends.
+    fn page_by(
+        &self,
+        decl: &TypeDecl,
+        scan: &Scan,
+        keys: &[RecordKey],
+        want: usize,
+    ) -> Result<Vec<StoredRecord>> {
+        let admit = self.sight.admit(&decl.name);
+        let mut out = Vec::new();
+        for chunk in keys.chunks(COUNT_PAGE) {
+            let records = self.view.get_many(&decl.name, chunk)?;
+            let records = core_engines::admitted(Some(decl), records, scan);
+            let records = self.at_read(&decl.name, records)?;
+            let ends = self.admitted_ends(decl, &records)?;
+            for (r, ends) in records.into_iter().zip(ends) {
+                if ends && self.live_by(decl, &admit, &r) {
+                    out.push(r);
+                    if out.len() >= want {
+                        return Ok(out);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The key page the window's road takes, within `FEW_HOLDERS` keys:
+    /// the window's keys sorted, read by key after `after`; `None` where
+    /// the road is not taken, under an exact text the probe instead
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+    /// §The window's road, §Past the bounds).
+    fn window_page(
+        &self,
+        decl: &TypeDecl,
+        filter: Option<&Expr>,
+        after: Option<&RecordKey>,
+        want: usize,
+    ) -> Result<Option<Vec<StoredRecord>>> {
+        let bounded = self.with_bound(decl, filter);
+        let Some(bounded) = bounded.filter(|e| !self.store_only(decl, e)) else {
+            return Ok(None);
+        };
+        let Some((equal, equal_any)) = self.sight.admit(&decl.name).scanned() else {
+            return Ok(Some(Vec::new()));
+        };
+        let scan = Scan {
+            filter: Some(bounded),
+            equal,
+            equal_any,
+            valid_at: self.valid_at_for(decl),
+            retired: self.retired.get(),
+            restricted: self.sight.sees_restricted(),
+            ..Default::default()
+        };
+        let choice = self.window_choice(decl, &scan, core_engines::FEW_HOLDERS)?;
+        let Some((window, first)) = choice else {
+            return Ok(None);
+        };
+        let keys = match first {
+            Some(first) => {
+                self.window_keys_of(decl, &window, &scan, first, core_engines::FEW_HOLDERS)?
+            }
+            None => None,
+        };
+        let Some(mut keys) = keys else {
+            return self.probe_page(decl, &window, &scan, after, want);
+        };
+        keys.sort();
+        keys.dedup();
+        let start = after.map_or(0, |after| keys.partition_point(|k| k <= after));
+        self.page_by(decl, &scan, &keys[start..], want).map(Some)
+    }
+
+    /// The other side under an exact text: holders of it in key order, the
+    /// ones whose order row lies inside the window read, until the page is
+    /// full or a batch is more than a third inside, where the plain page
+    /// reads on from the key before it
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+    /// §The other side, under an exact text).
+    fn probe_page(
+        &self,
+        decl: &TypeDecl,
+        window: &core_engines::Window,
+        scan: &Scan,
+        after: Option<&RecordKey>,
+        want: usize,
+    ) -> Result<Option<Vec<StoredRecord>>> {
+        let kind = |f: &FieldName| core_engines::field_kind(decl, f).copied();
+        if core_engines::text_lookups(scan, &|_| true, &kind).is_none() {
+            return Ok(None);
+        }
+        let mut out = Vec::new();
+        let mut cursor = after.cloned();
+        loop {
+            let batch = self.view.holders_inside(
+                &decl.name,
+                window,
+                scan,
+                cursor.as_ref(),
+                core_engines::WINDOW_BATCH,
+            )?;
+            let Some(batch) = batch else {
+                let rest = self.page_plain(
+                    decl,
+                    scan.filter.as_ref(),
+                    &[],
+                    cursor.map(|key| (Vec::new(), key)),
+                    want - out.len(),
+                )?;
+                out.extend(rest);
+                return Ok(Some(out));
+            };
+            let inside: Vec<RecordKey> = (batch.holders.iter())
+                .filter(|(_, inside)| *inside)
+                .map(|(key, _)| key.clone())
+                .collect();
+            // Where more than a third are inside, the probe costs more
+            // than it saves: the plain page reads on from the key before
+            // this batch, which this batch's holders all lie after.
+            if inside.len() * 3 > batch.holders.len() {
+                let rest = self.page_plain(
+                    decl,
+                    scan.filter.as_ref(),
+                    &[],
+                    cursor.map(|key| (Vec::new(), key)),
+                    want - out.len(),
+                )?;
+                out.extend(rest);
+                return Ok(Some(out));
+            }
+            let rows = self.page_by(decl, scan, &inside, want - out.len())?;
+            out.extend(rows);
+            if out.len() >= want || batch.done {
+                return Ok(Some(out));
+            }
+            let Some(next) = batch.after else {
+                return Ok(Some(out));
+            };
+            cursor = Some(next);
+        }
+    }
+
     /// The interval a kept name's read narrows to on its group key, from
     /// `filter`, and none for any other name: a stored type's key is not a
     /// group's, and a filter the key cannot carry fixes none
@@ -395,9 +690,28 @@ impl<'a> Reader<'a> {
         after: Option<(Vec<Value>, RecordKey)>,
         want: usize,
     ) -> Result<Vec<StoredRecord>> {
-        // A kept name read in key order narrows to the filter's interval on
-        // the group key; a page ordered otherwise reads the order index,
-        // which the interval would not cut (`docs/decisions/103-...`).
+        if order.is_empty() {
+            let after_key = after.as_ref().map(|(_, key)| key);
+            if let Some(rows) = self.window_page(decl, filter, after_key, want)? {
+                return Ok(rows);
+            }
+        }
+        self.page_plain(decl, filter, order, after, want)
+    }
+
+    /// [`Self::page`]'s other side: the engine's pages, one after another,
+    /// as before the window's road. A kept name read in key order narrows to
+    /// the filter's interval on the group key; a page ordered otherwise
+    /// reads the order index, which the interval would not cut
+    /// (`docs/decisions/103-...`).
+    fn page_plain(
+        &self,
+        decl: &TypeDecl,
+        filter: Option<&Expr>,
+        order: &[Order],
+        after: Option<(Vec<Value>, RecordKey)>,
+        want: usize,
+    ) -> Result<Vec<StoredRecord>> {
         let range = self.narrowed(decl, filter).filter(|_| order.is_empty());
         self.page_with(decl, filter, range, order, after, want)
     }

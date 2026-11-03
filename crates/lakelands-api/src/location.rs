@@ -352,6 +352,12 @@ pub struct Limits {
     /// The records one chunk of a chosen index's build writes while it
     /// holds the writer.
     pub order_chunk: u32,
+    /// The most rows of a filter's window an aggregate gathers and sorts
+    /// to read by its keys; past it the aggregate takes the other side,
+    /// having lost only the counts
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+    /// §The smaller side).
+    pub window_keys: u32,
     /// The most events one part of an act appends, each part a turn of
     /// the writer of its own
     /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
@@ -417,6 +423,7 @@ impl Default for Limits {
             order_max_fields: 2,
             order_unused_secs: 604_800,
             order_chunk: 1_000,
+            window_keys: 1_048_576,
             part_events: 500,
             part_tail: 1_000,
             page_events: 2_000,
