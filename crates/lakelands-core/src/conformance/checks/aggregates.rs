@@ -52,7 +52,7 @@ async fn an_aggregate_over_no_records_answers_zero(store: Store) -> Held {
         .find(own, &TypeName::from("payment"), find)
         .await
         .must("aggregating over no payments")?;
-    let Found::Groups { rows } = reply.data else {
+    let Found::Groups { rows, .. } = reply.data else {
         return Err(Failure::new("an aggregate answered records, not groups"));
     };
     ensure!(
@@ -142,7 +142,7 @@ async fn a_count_answers_as_many_records_as_a_full_find_walk(store: Store) -> He
                 .must(&format!("{name} counting {what}"))?
                 .data;
             let counted = match &reply {
-                Found::Groups { rows } => rows
+                Found::Groups { rows, .. } => rows
                     .first()
                     .and_then(|g| g.values.get("n"))
                     .and_then(Value::as_str)
@@ -186,7 +186,7 @@ async fn a_group_key_reads_a_setting_as_a_where_reads_it(store: Store) -> Held {
     let mut find = aggregate(Vec::new());
     find.aggregate = Some(by.clone());
     let reply = (l.cat).find(&l.own, &TypeName::from("bill"), find).await;
-    let Found::Groups { rows } = reply.must("aggregating bills")?.data else {
+    let Found::Groups { rows, .. } = reply.must("aggregating bills")?.data else {
         return Err(Failure::new("an aggregate answered records, not groups"));
     };
     // A pattern's row holds `amount` as `bill.amount` (lakelands#720).
@@ -530,7 +530,7 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
         .await
         .map(|r| r.data)
     {
-        Ok(Found::Groups { rows }) => grouped(&rows),
+        Ok(Found::Groups { rows, .. }) => grouped(&rows),
         other => vec![format!("{other:?}")],
     };
     if walked != found || walked.len() != 3 {

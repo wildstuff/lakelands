@@ -1550,6 +1550,38 @@
    "field": "f"
   },
   {
+   "code": "thin_by",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "before": "2026-01-01T00:00:00Z",
+   "code": "thinned",
+   "key": "k",
+   "type": "t"
+  },
+  {
+   "code": "stranded_at_head_only",
+   "position": 1,
+   "type": "t"
+  },
+  {
+   "code": "kept_over_thinned",
+   "type": "t",
+   "view": "t"
+  },
+  {
+   "code": "kept_not_exact",
+   "group": "k",
+   "type": "t",
+   "view": "t"
+  },
+  {
+   "code": "stranded_make",
+   "type": "t",
+   "view": "t"
+  },
+  {
    "code": "call_declined",
    "reason": "d",
    "verb": "v"

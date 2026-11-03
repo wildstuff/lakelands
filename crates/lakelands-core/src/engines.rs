@@ -2044,7 +2044,7 @@ pub fn layout(lake: &LakeId, found: Option<u64>, wanted: u64) -> Result<()> {
 /// the order the format lists them. A code is never reused or moved: a
 /// kind a later format adds takes the next number, and 2, a kind no format
 /// from 23 on holds, stays unused.
-pub const KIND_CODES: [(&str, i64); 25] = [
+pub const KIND_CODES: [(&str, i64); 26] = [
     ("lake_created", 1),
     ("lease_taken", 3),
     ("declared", 4),
@@ -2070,6 +2070,7 @@ pub const KIND_CODES: [(&str, i64); 25] = [
     ("quarantine_closed", 24),
     ("source_purged", 25),
     ("act_whole", 26),
+    ("values_thinned", 27),
 ];
 
 /// The code of the event kind `kind`, or none for one the format does not

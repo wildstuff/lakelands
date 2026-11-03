@@ -311,6 +311,7 @@ impl Sight<'_> {
             fields,
             masked,
             meta,
+            stranded: false,
         })
     }
 }

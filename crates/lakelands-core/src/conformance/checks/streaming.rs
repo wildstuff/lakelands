@@ -841,7 +841,7 @@ impl Size<'_> {
                 .must(&format!("counting `reading` where {filter}"))?;
             let (heap, _) = m.stop();
             let counted = match &reply.data {
-                Found::Groups { rows } => rows
+                Found::Groups { rows, .. } => rows
                     .first()
                     .and_then(|g| g.values.get("n"))
                     .and_then(serde_json::Value::as_str)
@@ -889,7 +889,7 @@ impl Size<'_> {
                 .await
                 .must(&format!("grouping `{ty}` by site"))?;
             let (heap, _) = m.stop();
-            let Found::Groups { rows } = &reply.data else {
+            let Found::Groups { rows, .. } = &reply.data else {
                 return Err(Failure::new(format!(
                     "an aggregate over `{ty}` answered records"
                 )));
@@ -976,7 +976,7 @@ impl Size<'_> {
         let measured = (m.stop().0, started.elapsed());
         let reply = reply.must("the owner's sum over `ticks`")?;
         let sum = match &reply.data {
-            Found::Groups { rows } => rows.first().and_then(|g| g.values.get("s")).cloned(),
+            Found::Groups { rows, .. } => rows.first().and_then(|g| g.values.get("s")).cloned(),
             _ => None,
         };
         ensure!(

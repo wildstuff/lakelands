@@ -67,7 +67,7 @@ fn keyed(expr: &str) -> Find {
 /// The keys `expr` groups the lake's records under, a null key as `None`.
 async fn keys(l: &Lake, expr: &str) -> Result<Vec<Option<Decimal>>, Failure> {
     let reply = l.cat.find(&l.own, &TypeName::from(TYPE), keyed(expr)).await;
-    let Found::Groups { rows } = reply.must(&format!("grouping by `{expr}`"))?.data else {
+    let Found::Groups { rows, .. } = reply.must(&format!("grouping by `{expr}`"))?.data else {
         return Err(Failure::new(format!("`{expr}` answered records")));
     };
     // A number is answered as a decimal's text, a duration as a JSON number.

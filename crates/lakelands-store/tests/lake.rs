@@ -2268,7 +2268,7 @@ async fn a_sum_over_nothing_carries_the_fields_scale() {
     }))
     .unwrap();
     let found = cat.find(&o, &"payment".into(), find).await.unwrap().data;
-    let lakelands_api::Found::Groups { rows } = found else {
+    let lakelands_api::Found::Groups { rows, .. } = found else {
         panic!("groups")
     };
     assert_eq!(rows[0].values["total"], json!("0.00"));

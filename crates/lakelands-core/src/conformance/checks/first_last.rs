@@ -176,7 +176,7 @@ async fn walked(l: &Lake, as_of: Option<Position>, grouped: bool) -> Result<Vec<
     let mut find = aggregated(measured(""), grouped);
     find.at.as_of = as_of;
     let found = l.cat.find(&l.own, &TypeName::from("reading"), find).await;
-    let Found::Groups { rows: found } = found.must("finding the readings")?.data else {
+    let Found::Groups { rows: found, .. } = found.must("finding the readings")?.data else {
         return Err(Failure::new("an aggregate answered records, not groups"));
     };
     let (walked, found) = (told(&rows), told(&found));
@@ -196,7 +196,8 @@ async fn compared(
     find.at.as_of = as_of;
     let ty = TypeName::from("reading");
     let found = l.cat.find(&l.own, &ty, find).await;
-    let Found::Groups { rows } = found.must("finding the readings by meter and hour")?.data else {
+    let Found::Groups { rows, .. } = found.must("finding the readings by meter and hour")?.data
+    else {
         return Err(Failure::new("an aggregate answered records, not groups"));
     };
     let mut wrong = Vec::new();

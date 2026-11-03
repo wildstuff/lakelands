@@ -56,7 +56,7 @@ is a promise of speed.
   `aac038fc` by the seam gate's rule (read); the two new facade methods
   and these four make 100 of 110.
 - **Refusals.** `ThinBy { ty, field }`; `Thinned { ty, key, before }`;
-  `StrandedAtHeadOnly { ty, at }`; `KeptOverThinned { view, ty }`;
+  `StrandedAtHeadOnly { ty, position }`; `KeptOverThinned { view, ty }`;
   `KeptNotExact { view, ty, group }`; `StrandedMake { view, ty }`.
 - **No new limit.** The act reads `part_events`, `part_tail`,
   `page_events` and `order_chunk` as 099 sets them.
@@ -238,7 +238,7 @@ since the members it lost are not there to compute it.
 
 - **The raw type.** `find` omits the thinned rows; the page's `thinned`
   lists each act on the type, oldest first, each
-  `{ ty, by, before, through, gone }` — the type, the field, the instant,
+  `{ type, by, before, through, gone }` — the type, the field, the instant,
   the last position the act had got through, and how many records it had
   taken. `ty` is carried because a view's page lists the acts on all its
   sources, and an act is attributed to its type.
@@ -553,3 +553,67 @@ Decided on 2026-11-02 (lakelands#1578): every recommendation below was taken.
   with a horizon.
 - **Not a promise of these bytes or times.** They are reckoned; S7
   measures them on every engine, and the suite holds the behaviour.
+
+## As built
+
+**S1 (lakelands#1695), the kind, the public types and the refusals.**
+Nothing performs the act: a `values_thinned` part is declared, folded to
+its mark and changed nowhere else.
+
+- **The kind joins format 23's list last**, after `quarantine_closed`, so
+  that no kind's stored code moves. 1686's `source_purged` and
+  `act_whole` merged first and took 25 and 26; `values_thinned` takes 27
+  and sits last of `kinds!`. Its variant sits beside `ValuesRemoved` in
+  `EventBody`, where it is read. `LOG_FORMAT_VERSION` and
+  `OLDEST_LOG_FORMAT` stay 23.
+- **The public types**, as this record names them: the selection `Thin`,
+  `ThinReport`, `ThinnedAct`, `stranded` on `Record` and `Group`,
+  `thinned` and `stranded` on both `Found` variants, and on
+  `TypeDescription`. Each new member is omitted from the wire where it
+  is empty or false, so a page or a description with nothing to say
+  reads as it did before. `ThinnedAct` puts its type on the wire as
+  `type`, as every other public type does; its Rust member stays `ty`.
+- **The six refusals** are in the catalog with their ids and sentences,
+  and `THIN_REFUSALS` is the suite's row for them: every engine runs it,
+  and it fails when an id, a sentence or a name the sentence says
+  drifts. The act's own rows are S5's, S6's and S7's.
+- **`docs/log-format.md` states the kind now**, though the build plan
+  gives the page to S2: `api/tests/contract.rs` holds that every kind in
+  `KINDS` is on the page, so S1 cannot be green without it. The page says
+  the fold's effect and the two tables land with the act.
+- **Corrections where the tree holds a rule the sketch did not name:**
+  `StrandedAtHeadOnly` takes `position`, not `at`, because the refusals
+  catalog reserves `at` for a `Place`'s position and refuses it as a
+  case's parameter; `ThinnedAct`'s wire name is `type`; and the six
+  refusals share one suite row, S1's, because the issue's "a conformance
+  row" is read as one row that holds all six — it checks each id, each
+  sentence and every name a sentence says, so a drift in any fails it.
+- **Every file outside S1's plan list the tree forced, and why:**
+  `api/src/describe.rs` carries `TypeDescription`'s two members, which
+  this record's public-types bullet names — S2 is the engines' stored
+  tables, not the description's shape; `api/tests/thin.rs` and
+  `conformance/checks/thin.rs` are the wire tests and the suite's row;
+  `core/src/engines.rs` holds `KIND_CODES`, the format's stored code
+  table, where the kind joins last, as 27; `core/src/describe.rs` builds
+  the description, and now names the two members field by field rather
+  than letting `Default` absorb a member a later step adds;
+  `core/src/expr/aggregate.rs` and `core/src/rights.rs` fill `Group` and
+  `Record` with their new member; `store/src/reads/find.rs` builds the
+  pages, which carry no acts and no stranded count yet; `store/src/lake.rs`
+  (`ends_a_range`, `reads_a_record`) and `store/src/lake/fold.rs` (one
+  no-op arm) are exhaustive matches over `EventBody`, where the kind
+  changes no shape, a fold of it reads the records it takes, and the
+  act's fold is S3's; `wit/types.wit` and `api/tests/wit.rs` are the
+  mirror, with new checks for `records-page` and `groups-page`; the
+  rest patterns in the suite and in the store's and cli's tests follow
+  from the new members; `docs/log-format.md` is required by the contract
+  test, above.
+- **Measured**, at the branch head with 1686 merged: product 100 925 of
+  the 108 500 base and specification 185 175 of the 191 500 base; seam
+  94 of 110; 6 of 20 `cfg(feature)` sites; 1 011 checks through the
+  doors and 87 through the engine seam; 1 018 refusal cases. S1's own
+  lines: product +184 −4, specification +376 −25; the plan's 160 and
+  180 were the sketch, and the row's extra is the wire tests and the
+  suite row. The split is the gate's six-crate one;
+  `crates/lakelands-cli/tests/walk_1.rs`'s one line each way is outside
+  the specification budget.
