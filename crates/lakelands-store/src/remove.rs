@@ -805,13 +805,6 @@ fn closes(
     })
 }
 
-/// The closes of the act's first turn that fit in `room` beside its
-/// `values_removed`; the rest stay owed to the parts.
-fn take_closes(closes: &mut VecDeque<EventBody>, room: usize) -> Vec<EventBody> {
-    let fit = room.saturating_sub(1).min(closes.len());
-    closes.drain(..fit).collect()
-}
-
 /// The id of a report: the position it was read at, then the digest of the
 /// records it selected, by the `made` position of each (099).
 fn token(
@@ -1447,7 +1440,7 @@ impl Remove {
                 apart: apart.clone(),
             },
         )];
-        let fit = take_closes(&mut self.closes, room);
+        let fit = crate::parts::take_closes(&mut self.closes, room);
         drafts.extend(fit.into_iter().map(|c| Draft::system(now, c)));
         let (mut part, whole) = self.fill(lake, (w, view), now, room, drafts)?;
         lake.append(&mut *w, std::mem::take(&mut part))?;
@@ -1525,64 +1518,30 @@ impl Remove {
         Ok(Next::More)
     }
 
-    /// One part: the closes still owed and the selection's next records,
-    /// each read again as it stands now, as one append of at most `room`
-    /// events, with `act_whole` in it where nothing is left and it fits.
-    /// A record another hand wrote since keeps its record; one gone is
-    /// dropped. One record's retirements are one append's, however many of
-    /// them it takes.
+    /// One part of the act, by the rule a purge's parts share with it
+    /// ([`crate::parts::part`]).
     fn fill(
         &mut self,
         lake: &Lake,
         (w, view): (&Writer, &dyn ProjectionView),
         now: Timestamp,
         room: usize,
-        mut drafts: Vec<Draft>,
+        drafts: Vec<Draft>,
     ) -> Result<(Vec<Draft>, bool)> {
-        let system = lake.system("lakelands");
-        let asked = writes::Asked {
+        let act = self.act.expect("a part follows the act's beginning");
+        crate::parts::part(
             lake,
-            who: &system,
-            context: &lakelands_api::WriteContext::default(),
-        };
-        while drafts.len() < room {
-            let Some(body) = self.closes.pop_front() else {
-                break;
-            };
-            drafts.push(Draft::system(now, body));
-        }
-        // The retirements are caused by their own position in the append,
-        // after the closes the part carries in front of them.
-        let mut d = asked.decide(w, view, now, drafts.len());
-        d.bound = true;
-        d.retiring_as = lakelands_api::event::ChangeKind::Retired;
-        while drafts.len() < room {
-            let Some((_, before)) = self.retire.first_key_value() else {
-                break;
-            };
-            let before = before.clone();
-            let live = match view.get(&before.ty, &before.key)? {
-                Some(live) if live.version == before.version => live,
-                _ => {
-                    self.retire.remove(&(before.ty, before.key));
-                    continue;
-                }
-            };
-            let body = writes::retirement(&live.ty, &live.key, live.version);
-            let written = d.retiring(&live, Draft::system(now, body))?;
-            if !drafts.is_empty() && drafts.len() + written.len() > room {
-                break;
-            }
-            self.retire.remove(&(live.ty.clone(), live.key.clone()));
-            drafts.extend(written);
-        }
-        let ends = self.retire.is_empty() && self.closes.is_empty();
-        let whole = ends && drafts.len() < room;
-        if whole {
-            let act = self.act.expect("a part follows the act's beginning");
-            drafts.push(Draft::system(now, EventBody::ActWhole { act }));
-        }
-        Ok((drafts, whole))
+            (w, view),
+            now,
+            room,
+            drafts,
+            crate::parts::Part {
+                closes: &mut self.closes,
+                taken: &mut self.retire,
+                kind: lakelands_api::event::ChangeKind::Retired,
+                act,
+            },
+        )
     }
 }
 

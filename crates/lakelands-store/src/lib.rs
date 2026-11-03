@@ -34,6 +34,7 @@ pub mod lake;
 #[doc(hidden)]
 pub mod log;
 mod ontology;
+mod parts;
 mod purge;
 mod quarantine;
 mod reads;
