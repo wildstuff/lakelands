@@ -62,7 +62,7 @@ check!(
 
 check!(
     REPORT_STALE_WHEN_REACHED = a_write_that_reaches_the_report_refuses_its_id,
-    "099: a report's id names what it read, never the head the lake stood at, and a write after it that reaches what it names makes it stale though its content is the same: a record joined a change to records' selection, a write to a type a declaration's plan computes again, a write to the type a migration rewrites and to a type that uses the value type a migration changes; each act under the id is refused `plan_stale` or `migration_stale`, appending nothing"
+    "099: a report's id names what it read, never the head the lake stood at; a change to records' plan names its selection, so a record joining it makes the plan another, and that refusal is its content; a write to a type a declaration's plan computes again, to the type a migration rewrites, and to a type that uses the value type a migration changes leaves the same change's plan saying one digest, yet each act under the id the caller was shown is refused `plan_stale` or `migration_stale`, appending nothing; reach is over the types a plan's sections name, so a write to a type none names is not followed"
 );
 
 check!(
@@ -785,10 +785,17 @@ async fn a_write_that_reaches_nothing_of_the_report_leaves_its_id_good(store: St
     Ok(())
 }
 
+/// The digest half of a position-named id: what the report said, apart
+/// from where it was read.
+fn digest_of(id: &str) -> &str {
+    id.split_once('-').map_or(id, |(_, digest)| digest)
+}
+
 async fn a_write_that_reaches_the_report_refuses_its_id(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     planning(&l).await?;
-    // A record joins a change to records' selection.
+    // A record joins a change to records' selection: its plan names the
+    // selection alone, so the plan made now is another.
     let planned = l
         .cat
         .plan(&l.own, picked())
@@ -803,6 +810,17 @@ async fn a_write_that_reaches_the_report_refuses_its_id(store: Store) -> Held {
         &[("v2", json!({"id": "v2", "duration": 20}))],
     )
     .await?;
+    let joined = l
+        .cat
+        .plan(&l.own, picked())
+        .await
+        .must("planning the change again")?
+        .data;
+    ensure!(
+        joined.report_id != planned.report_id,
+        "a change to records' plan id is its selection, so one a record joined must be \
+         another: the plan {planned:?}, planned again {joined:?}"
+    );
     let head = store.head().await.must("reading the head")?;
     refused_like(
         "a change to records after a record joined its selection",
@@ -810,8 +828,8 @@ async fn a_write_that_reaches_the_report_refuses_its_id(store: Store) -> Held {
         &json!({"code": "plan_stale"}),
     )?;
     head_unmoved(store.as_ref(), head, "a change under a stale plan").await?;
-    // A write to a type a declaration's plan computes again, leaving the
-    // plan's own content the same.
+    // A write to a type a declaration's plan computes again: the plan made
+    // again says the same digest, so only the reach can refuse it.
     let planned = l
         .cat
         .plan(&l.own, thrice())
@@ -819,6 +837,17 @@ async fn a_write_that_reaches_the_report_refuses_its_id(store: Store) -> Held {
         .must("planning `dbl` declared again")?
         .data;
     l.upsert("meter", "m1", json!({"grade": "b"})).await?;
+    let again = l
+        .cat
+        .plan(&l.own, thrice())
+        .await
+        .must("planning `dbl` again")?
+        .data;
+    ensure!(
+        digest_of(&again.report_id) == digest_of(&planned.report_id),
+        "a declaration's plan says what it says at another position, so its digest must \
+         not move: the plan {planned:?}, planned again {again:?}"
+    );
     let head = store.head().await.must("reading the head")?;
     refused_like(
         "a declaration after a write to the type it computes again",
@@ -842,6 +871,25 @@ async fn a_write_that_reaches_the_report_refuses_its_id(store: Store) -> Held {
         .map(|t| t.report_id.clone())
         .ok_or_else(|| Failure::new("the migration's plan told no type"))?;
     l.upsert("meter", "m1", json!({"reading": 3})).await?;
+    let again = l
+        .cat
+        .plan(
+            &l.own,
+            Change::Migrate {
+                migration: Box::new(flagged()),
+            },
+        )
+        .await
+        .must("planning the migration again")?
+        .data;
+    let again_id = (again.types.first())
+        .map(|t| t.report_id.clone())
+        .ok_or_else(|| Failure::new("the plan made again told no type"))?;
+    ensure!(
+        digest_of(&again_id) == digest_of(&id),
+        "a migration's report says what it says at another position, so its digest must \
+         not move: the report {id}, planned again {again_id}"
+    );
     let head = store.head().await.must("reading the head")?;
     refused_like(
         "a migration after a write to the type it rewrites",
@@ -866,6 +914,25 @@ async fn a_write_that_reaches_the_report_refuses_its_id(store: Store) -> Held {
         .map(|v| v.report_id.clone())
         .ok_or_else(|| Failure::new("the value type's plan told no value type"))?;
     l.upsert("meter", "m1", json!({"grade": "a"})).await?;
+    let again = l
+        .cat
+        .plan(
+            &l.own,
+            Change::MigrateValueType {
+                migration: Box::new(migration.clone()),
+            },
+        )
+        .await
+        .must("planning the value type's migration again")?
+        .data;
+    let again_id = (again.value_types.first())
+        .map(|v| v.report_id.clone())
+        .ok_or_else(|| Failure::new("the plan made again told no value type"))?;
+    ensure!(
+        digest_of(&again_id) == digest_of(&id),
+        "a value type's report says what it says at another position, so its digest must \
+         not move: the report {id}, planned again {again_id}"
+    );
     let head = store.head().await.must("reading the head")?;
     refused_like(
         "a value type's migration after a write to a type that uses it",

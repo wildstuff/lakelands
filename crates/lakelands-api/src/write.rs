@@ -1667,10 +1667,15 @@ pub enum ChangeTo {
 /// `enact` acts only on the plan its caller was shown.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
-    /// Names this plan; `enact` must repeat it. As a migration's report
-    /// id: the position it was read at, a hyphen, and the SHA-256 of the
-    /// plan as its reader is shown it there, in canonical form, with this
-    /// member empty.
+    /// Names this plan; `enact` must repeat it. A plan of declarations is
+    /// named as a migration's report is: the position it was read at, a
+    /// hyphen, and the SHA-256, in canonical form, of `{"plan": <plan>}`
+    /// over the plan as its reader is shown it there, with this member
+    /// and every section's `report_id` empty and `at` at position `0`. A
+    /// change to records' plan is named by that SHA-256 alone, over
+    /// `{"plan": <plan>, "selection": [[key, version], …]}` with this
+    /// member empty and `at` at position `0`, so it names no position and
+    /// a write that moves its selection moves it.
     pub report_id: String,
     /// The position it was read at: the log's last event that is neither
     /// a `lease_taken` nor a `checkpoint`.

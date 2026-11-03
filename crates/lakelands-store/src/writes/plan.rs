@@ -7,6 +7,7 @@
 //! compared before anything that a lossy change is refused for, as a
 //! stale report is.
 
+use lakelands_api::record::Record;
 use lakelands_api::write::{Change as Changed, Plan};
 
 use super::*;
@@ -54,10 +55,12 @@ pub(super) enum Answer {
     Last,
 }
 
-/// A plan's id: `<through>-<digest>`, the position the plan was read at
-/// and what it says, its `at` and each section's id left out, and never
-/// the head (099). A write elsewhere leaves it as it was; a plan read
-/// before a write that reaches it is refused `plan_stale` at its act.
+/// A plan of declarations' id: `<through>-<digest>`, the position the
+/// plan was read at and what it says, its `at` and each section's id left
+/// out, and never the head (099). A write elsewhere leaves it as it was;
+/// a plan read before a write that reaches it is refused `plan_stale` at
+/// its act. A change to records' plan is [`records_id`]'s, which carries
+/// no position; the two shapes are read by `stale_plan` and `stale`.
 pub(crate) fn plan_id(plan: &Plan) -> String {
     let through = plan.at;
     let mut said = plan.clone();
@@ -329,9 +332,9 @@ impl Call<'_> {
             }
         };
         let plan = plan_of(self.lake, w, (bundled.types, Vec::new()))?;
-        if against.plan.is_some() {
+        if let Some(id) = against.plan {
             let view = self.lake.engine.view(None)?;
-            stale_plan(&plan, against, self.lake, view.as_ref())?;
+            stale_plan(id, &plan, self.lake, view.as_ref())?;
         }
         Ok(Planned {
             plan,
@@ -383,7 +386,9 @@ impl Call<'_> {
         let mut types = vec![report];
         types.extend(others_shown(&sight, preflight.others.clone()));
         let plan = plan_of(self.lake, w, (types, Vec::new()))?;
-        stale_plan(&plan, against, self.lake, view.as_ref())?;
+        if let Some(id) = against.plan {
+            stale_plan(id, &plan, self.lake, view.as_ref())?;
+        }
         let renamed = Self::known_renames(&sight, &w.ontology, &m);
         let nothing = unchanged(&w.ontology, &m, &preflight);
         // A plan of a lossy change tells it; any other refuses what its act
@@ -433,7 +438,9 @@ impl Call<'_> {
         self.renames_shown(&w.ontology, &m, &preflight.report)?;
         let report = self.shown_value_type(&w.ontology, preflight.report.clone());
         let plan = plan_of(self.lake, w, (Vec::new(), vec![report.clone()]))?;
-        stale_plan(&plan, against, self.lake, view.as_ref())?;
+        if let Some(id) = against.plan {
+            stale_plan(id, &plan, self.lake, view.as_ref())?;
+        }
         let drafts = match (when, report.fits) {
             (When::Plan, false) => Vec::new(),
             _ => {
@@ -448,14 +455,6 @@ impl Call<'_> {
             drafts,
             answer: Answer::Plain,
         })
-    }
-}
-
-/// Refused `plan_stale` where the change is made against another plan.
-pub(super) fn stale(plan: &Plan, against: Against<'_>) -> Result<()> {
-    match against.plan {
-        Some(id) if id != plan.report_id => Err(Error::invalid(Case::PlanStale)),
-        _ => Ok(()),
     }
 }
 
@@ -477,24 +476,53 @@ fn named(plan: &Plan) -> BTreeSet<TypeName> {
         .collect()
 }
 
-/// Refused `plan_stale` where a change is made against another plan, or
-/// against one a write past its `through` reaches: a record of a type the
-/// plan names, found in the log index by type (099).
+/// A change to records' plan id: its digest alone, over the plan as its
+/// reader is shown it with `at` at `GENESIS` and its own id empty, and
+/// over every selected key with the version read. It names no position,
+/// since the selection in it is what a later write would move, so `stale`
+/// compares it whole (081).
+pub(super) fn records_id(plan: &Plan, selected: &[Record]) -> String {
+    let plan = Plan {
+        report_id: String::new(),
+        at: Position::GENESIS,
+        ..plan.clone()
+    };
+    let selection: Vec<(&RecordKey, Version)> =
+        selected.iter().map(|r| (&r.key, r.version)).collect();
+    lakelands_core::canonical::sha256_hex(&serde_json::json!({
+        "plan": serde_json::to_value(&plan).expect("a plan serialises"),
+        "selection": selection,
+    }))
+}
+
+/// Refused `plan_stale` where a change to records is made against another
+/// plan: `records_id` is a digest of the selection and carries no
+/// position, so the id is compared whole (081). Every other plan is
+/// `stale_plan`'s, compared by digest and reached by type (099).
+pub(super) fn stale(id: &str, plan: &Plan) -> Result<()> {
+    match id == plan.report_id {
+        true => Ok(()),
+        false => Err(Error::invalid(Case::PlanStale)),
+    }
+}
+
+/// Refused `plan_stale` where a plan of declarations is made against
+/// another, or against one a write past its `through` reaches: a record
+/// of a type the plan names, found in the log index by type (099).
 pub(super) fn stale_plan(
+    id: &str,
     plan: &Plan,
-    against: Against<'_>,
     lake: &Lake,
     view: &dyn ProjectionView,
 ) -> Result<()> {
-    let Some(id) = against.plan else {
-        return Ok(());
-    };
-    let stale = || Error::invalid(Case::PlanStale);
-    let through = crate::writes::says(id, &plan.report_id).ok_or_else(stale)?;
-    if crate::writes::reached_since(lake, view, through, &named(plan))? {
-        return Err(stale());
-    }
-    Ok(())
+    stale_report(
+        id,
+        &plan.report_id,
+        Case::PlanStale,
+        lake,
+        view,
+        &named(plan),
+    )
 }
 
 /// Refused `case` where a report is made against another, or against one

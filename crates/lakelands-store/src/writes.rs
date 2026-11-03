@@ -2237,8 +2237,11 @@ pub(crate) fn named(id: &str) -> Option<(Position, &str)> {
 }
 
 /// The `through` `given` names, where it says what `made` says: a report
-/// is the same wherever it is read, so only the digest is compared
-/// (099). `None` where the two say otherwise.
+/// is the same wherever it is read, so only the digests are compared
+/// (099). The position is the caller's claim of where they read it, and
+/// `reached_since` looks past it: a caller who names a later position
+/// shortens the tail looked past, which can only weaken the guard on
+/// their own plan. `None` where the two say otherwise.
 pub(crate) fn says(given: &str, made: &str) -> Option<Position> {
     match (named(given), named(made)) {
         (Some((through, said)), Some((_, mine))) if said == mine => Some(through),

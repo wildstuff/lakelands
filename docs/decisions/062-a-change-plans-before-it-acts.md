@@ -169,16 +169,19 @@ told to a reader who reads the reference and is shown its target type;
 a count over a hidden type would tell which of its keys exist. A plan has no `more` of its own: a reference
 whose target type its reader is not shown is a field it does not know of
 (024), so its reader reads no such reference. A section's `more` keeps a
-report's meaning, counts past their first keys. A plan's id names the
-position it was read at and what its reader is shown there, as a
-report's id does; the position is the one 039 names: the log's last
+report's meaning, counts past their first keys. A plan of declarations'
+id names the position it was read at and what its reader is shown there,
+as a report's id does; the position is the one 039 names: the log's last
 event that is neither a `lease_taken` nor a `checkpoint`, which `at`
-says. The process that makes the change, a CLI's `apply --plan` after
-its `plan`, takes the lease before it acts, and a plan must survive that
-(lakelands#1476). A migration's section and a value type's take their
-ids at the same position. A write since that reaches a type the plan
-names makes it stale, even where its counts did not move; a write
-elsewhere does not (099). No plan id is logged by `declare`,
+says. A change to records' plan is the other shape (081): its id is the
+digest of what it selects, every selected key with the version read, and
+carries no position, so it is compared whole and any write that moves
+the selection moves it. The process that makes the change, a CLI's
+`apply --plan` after its `plan`, takes the lease before it acts, and a
+plan must survive that (lakelands#1476). A migration's section and a
+value type's take their ids at the same position. A write since that
+reaches a type the plan names makes it stale, even where its counts did
+not move; a write elsewhere does not (099). No plan id is logged by `declare`,
 `apply`, `add_field`, `recompute` or `enact`; a `migrated` keeps its
 report's id, as before; and a proposal keeps its plan as it is stored,
 with that plan's own id.
