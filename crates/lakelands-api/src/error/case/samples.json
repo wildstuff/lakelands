@@ -1995,6 +1995,15 @@
    "type": "t"
   },
   {
+   "code": "series_field_kind",
+   "field": "f",
+   "kind": "text"
+  },
+  {
+   "code": "series_index_shape",
+   "type": "t"
+  },
+  {
    "code": "setting_kept_holds"
   },
   {

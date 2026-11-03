@@ -294,7 +294,8 @@ impl ProjectionStore for MemoryLake {
         // building; the build fills it in turns (099). Every other put is
         // whole, as before.
         let beside = !whole
-            && lakelands_core::engines::sort_index_type(record).is_some()
+            && (lakelands_core::engines::sort_index_type(record).is_some()
+                || lakelands_core::engines::series_index_type(record).is_some())
             && !lakelands_api::seam::is_head_only(&record.ty);
         match beside {
             true => self.stage(Put::Live(record.clone())),

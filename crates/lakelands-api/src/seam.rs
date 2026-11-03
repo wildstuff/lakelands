@@ -623,6 +623,42 @@ pub fn setting_type() -> TypeDecl {
 /// field names (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
 pub const SORT_INDEX_SETTING: &str = "sort_index.";
 
+/// The key prefix of the setting that asks for an order index within one
+/// series: the setting `series_index.<type>`, whose value is a JSON array
+/// of pairs of the type's field names, the series field first, as
+/// `[["symbol", "at"]]`
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// series index).
+pub const SERIES_INDEX_SETTING: &str = "series_index.";
+
+/// The byte a series pair's derived field name holds between its order
+/// field and its series field: no field name holds U+001F.
+pub const SERIES_SEPARATOR: char = '\u{1F}';
+
+/// The name of the order index field a series pair keeps its rows under:
+/// `<order>\u{1F}<series>`.
+pub fn series_field(order: &str, series: &str) -> String {
+    format!("{order}{SERIES_SEPARATOR}{series}")
+}
+
+/// The order field and the series field a derived field name names, if it
+/// is one.
+pub fn split_series_field(name: &str) -> Option<(&str, &str)> {
+    name.split_once(SERIES_SEPARATOR)
+}
+
+/// Whether `name` is a series pair's derived field name.
+pub fn is_series_field(name: &str) -> bool {
+    name.contains(SERIES_SEPARATOR)
+}
+
+/// Whether a series index can name a field of this kind as its series
+/// field: text, reference, number and decimal.
+pub fn series_kind(kind: &crate::ontology::StorageKind) -> bool {
+    use crate::ontology::StorageKind as K;
+    matches!(kind, K::Text | K::Number | K::Decimal | K::Reference)
+}
+
 /// Whether an order index can keep a field of this kind: the scalar
 /// kinds. JSON values, vectors, geometries and bytes are ordered by
 /// sorting.
@@ -734,6 +770,11 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///   [`indexable`], text) and not computed at the read; `None` or `null`
 ///   asks for no index. `sort_index` may name a declared view too: the
 ///   index is kept of its kept records.
+/// - `series_index.<type>` names a declared stored type and holds an
+///   array of pairs of the names of fields it declares, the series field
+///   first, or `None` or `null` for no index. A pair's series field is
+///   text, reference, number or decimal; its order field is of a kind an
+///   order index keeps ([`sortable`]); neither is computed at the read.
 /// - `search_weights.<type>` names a declared stored type and holds an
 ///   object of `fields` (each a vector field it declares, with a weight),
 ///   `text_fields` (each a searchable field it declares, with a weight)
@@ -773,6 +814,65 @@ pub fn check_setting<'a>(
             }
             .into(),
         );
+    }
+    if let Some(ty) = key.strip_prefix(SERIES_INDEX_SETTING) {
+        let Some((seen, _)) = known(ty).filter(|(_, d)| d.view.is_none()) else {
+            return refused("key", Case::NoStoredType { ty: ty.into() }.into());
+        };
+        let pairs = match value {
+            None | Some(Value::Null) => return Ok(()),
+            Some(Value::Array(pairs)) => pairs,
+            Some(_) => {
+                return refused("value", Case::SeriesIndexShape { ty: ty.into() }.into());
+            }
+        };
+        for pair in pairs {
+            let named = match pair.as_array().map(Vec::as_slice) {
+                Some([series, order]) => Some((series.as_str(), order.as_str())),
+                _ => None,
+            };
+            let Some((Some(series), Some(order))) = named else {
+                return refused("value", Case::SeriesIndexShape { ty: ty.into() }.into());
+            };
+            let named_series = crate::id::FieldName::from(series);
+            let named_order = crate::id::FieldName::from(order);
+            let declared = seen.fields.iter().find(|f| f.name == named_series);
+            let fault = match declared {
+                None => Case::UnknownField {
+                    ty: ty.into(),
+                    field: named_series.clone(),
+                },
+                Some(f) if !series_kind(&f.ty.kind) => Case::SeriesFieldKind {
+                    field: named_series.clone(),
+                    kind: f.ty.kind,
+                },
+                // As it is shown: one told nothing of how a field is
+                // computed is not told so here either.
+                Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => {
+                    Case::OrderIndexAtRead {
+                        field: named_series.clone(),
+                    }
+                }
+                Some(_) => match seen.fields.iter().find(|f| f.name == named_order) {
+                    None => Case::UnknownField {
+                        ty: ty.into(),
+                        field: named_order.clone(),
+                    },
+                    Some(f) if !sortable(&f.ty.kind) => Case::OrderIndexKind {
+                        field: named_order.clone(),
+                        kind: f.ty.kind,
+                    },
+                    Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => {
+                        Case::OrderIndexAtRead {
+                            field: named_order.clone(),
+                        }
+                    }
+                    Some(_) => continue,
+                },
+            };
+            return refused(series, fault.into());
+        }
+        return Ok(());
     }
     if let Some(rest) =
         (key.strip_prefix(KEY_PERIOD_SETTING)).filter(|r| r.is_empty() || r.starts_with('.'))

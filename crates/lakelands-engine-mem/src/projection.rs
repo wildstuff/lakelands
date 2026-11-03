@@ -18,7 +18,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use lakelands_api::engine::{About, Applied, Choose, Chosen, Declared, KeyRange};
+use lakelands_api::engine::{
+    About, Applied, Choose, Chosen, Declared, KeyRange, SeriesPair, SeriesState,
+};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{
@@ -271,6 +273,10 @@ pub(crate) struct Projection {
     /// the log (`Chosen`): the fold keeps their rows, a read takes only
     /// the ones kept.
     chosen: BTreeMap<TypeName, Chosen>,
+    /// The series pairs of each type and whether each is whole, in place of
+    /// the `series.<type>` meta row: the fold keeps their rows from a
+    /// pair's `Start` (097 §The series index).
+    series: BTreeMap<TypeName, SeriesState>,
     /// Each head record's rows in `sorted`, to take them out again.
     sorted_rows: BTreeMap<(TypeName, RecordKey), RecordRows>,
     /// The ends of the head's link records (`sys.link.*`): per link type,
@@ -339,6 +345,15 @@ type RecordRows = Vec<(FieldName, Vec<u8>)>;
 /// One field's rows of the order index: sort key, then record key.
 pub(crate) type SortedRows = BTreeSet<(Vec<u8>, RecordKey)>;
 
+/// The field a step of choosing names.
+#[allow(deprecated)]
+fn chosen_field(step: &Choose) -> Option<&FieldName> {
+    match step {
+        Choose::Start(f) | Choose::Keep(f) | Choose::Drop(f) => Some(f),
+        Choose::Fill { field, .. } | Choose::DropChunk { field, .. } => Some(field),
+    }
+}
+
 impl Projection {
     /// Applies one transaction's puts and records that the projection now
     /// reflects the log through `through`. Checked first, applied whole:
@@ -364,6 +379,15 @@ impl Projection {
         // The fields each setting named before this transaction put it, so
         // a setting taken back leaves its old fields to a `Drop`.
         let mut was_named: BTreeMap<TypeName, Vec<FieldName>> = BTreeMap::new();
+        // The types whose series pairs the transaction makes whole (a
+        // setting written into the log) and those it marks building (one
+        // put beside the writer).
+        let mut series_types = BTreeSet::new();
+        let mut live_series = Vec::new();
+        // The types a declaration this transaction put declares again: a
+        // series pair goes back to `Start`, since the declaration may have
+        // dropped or changed a field its rows were filled under.
+        let mut redeclared = BTreeSet::new();
         for put in puts {
             match &put {
                 Put::DroppedRecord(ty, key) => drop(records.insert((ty.clone(), key.clone()))),
@@ -375,6 +399,9 @@ impl Projection {
                     }
                     if let Some(ty) = lakelands_core::engines::lookup_index_type(r) {
                         looked.insert(ty);
+                    }
+                    if let Some(ty) = lakelands_core::engines::series_index_type(r) {
+                        series_types.insert(ty);
                     }
                 }
                 Put::Live(r) => {
@@ -391,10 +418,14 @@ impl Projection {
                         }
                         live.extend(lakelands_core::engines::sort_index_type(r));
                     }
+                    if let Some(ty) = lakelands_core::engines::series_index_type(r) {
+                        live_series.push(ty);
+                    }
                 }
                 Put::Declaration(d) => {
                     if let Declaration::Type(t) = &d.declaration {
                         types.insert(t.name.clone());
+                        redeclared.insert(t.name.clone());
                     }
                     looked.extend(lakelands_core::engines::looked_up_by(&d.declaration));
                 }
@@ -418,6 +449,26 @@ impl Projection {
                     self.chosen.remove(ty);
                 }
             }
+        }
+        // A pair's state comes before the records are indexed: a write
+        // keeps a started pair's rows, and a declaration starts the pairs
+        // a setting folded before it named, so the reindex writes theirs.
+        for ty in redeclared {
+            let mut state = self.series_state(&ty);
+            if !state.kept.is_empty() {
+                state.building.append(&mut state.kept);
+                self.set_series(&ty, &state);
+            }
+            self.mark_series(&ty);
+        }
+        // A series setting written into the log fills its type's pairs
+        // whole, at its event; one put beside the writer marks them
+        // building, and a build fills them in turns.
+        for ty in series_types {
+            self.rebuild_series(&ty);
+        }
+        for ty in live_series {
+            self.mark_series(&ty);
         }
         // The order index follows the head: every record whose latest
         // state the transaction put, every record of a type it declared
@@ -544,7 +595,200 @@ impl Projection {
     /// The fields the fold keeps rows of: those the setting names, else
     /// those the lake chose, the ones being built too.
     pub(crate) fn sorted_fields(&self, ty: &TypeName) -> Vec<FieldName> {
-        self.order_fields(ty, true)
+        let mut fields = self.order_fields(ty, true);
+        // A type's series pairs keep their rows beside its order fields',
+        // from the pair's `Start` on; no read takes one as an order field.
+        fields.extend(engines::series_fields(&self.series_state(ty)));
+        fields
+    }
+
+    /// The series pairs of `ty` and whether each is whole: none where the
+    /// projection holds none.
+    pub(crate) fn series_state(&self, ty: &TypeName) -> SeriesState {
+        self.series.get(ty).cloned().unwrap_or_default()
+    }
+
+    /// Keep `ty`'s series pairs as `state`: nothing where it holds none.
+    fn set_series(&mut self, ty: &TypeName, state: &SeriesState) {
+        match *state == SeriesState::default() {
+            true => drop(self.series.remove(ty)),
+            false => drop(self.series.insert(ty.clone(), state.clone())),
+        }
+    }
+
+    /// `ty`'s `series_index.<type>` setting at the head.
+    fn series_setting_at(&self, ty: &TypeName) -> Option<StoredRecord> {
+        let key = engines::series_index_key(ty);
+        self.records
+            .get(&(
+                TypeName::from(lakelands_api::seam::SETTING_TYPE),
+                RecordKey::from(key),
+            ))
+            .and_then(History::latest)
+            .map(|h| h.record(&self.bases))
+    }
+
+    /// The pairs `ty`'s series setting at the head asks for, under its
+    /// declaration at the head.
+    fn series_pairs(&self, ty: &TypeName) -> Vec<SeriesPair> {
+        let declared = engines::kept_view(ty).unwrap_or_else(|| ty.clone());
+        let Some(decl) = self.type_at(&declared, Some(Position(u64::MAX))) else {
+            return Vec::new();
+        };
+        let setting = self.series_setting_at(ty);
+        engines::series_pairs(decl, setting.as_ref().and_then(engines::setting_value))
+    }
+
+    /// Fill `ty`'s series pairs whole from its head records, and write them
+    /// kept: a fold from the log makes a pair whole at its event rather
+    /// than marking it for a build.
+    fn rebuild_series(&mut self, ty: &TypeName) {
+        let pairs = self.series_pairs(ty);
+        let state = SeriesState {
+            kept: pairs,
+            building: Vec::new(),
+        };
+        self.set_series(ty, &state);
+        self.walk_type(ty);
+    }
+
+    /// Mark the pairs `ty`'s series setting asks for as building, and
+    /// leave those it no longer names out; a pair still named and already
+    /// kept stays kept.
+    fn mark_series(&mut self, ty: &TypeName) {
+        let named = self.series_pairs(ty);
+        let mut state = self.series_state(ty);
+        // A pair the setting no longer names is taken back: its rows go in
+        // the writer's turn, as a `Drop` does, so none is left without a
+        // pair.
+        let gone: Vec<_> = state
+            .kept
+            .iter()
+            .chain(state.building.iter())
+            .filter(|p| !named.contains(p))
+            .cloned()
+            .collect();
+        for pair in &gone {
+            let field = FieldName::from(lakelands_api::seam::series_field(
+                pair.order.as_str(),
+                pair.series.as_str(),
+            ));
+            let mut after = None;
+            while let Some(last) = self.clear_series_rows(ty, &field, after.as_ref(), 4096) {
+                after = Some(last);
+            }
+        }
+        state.kept.retain(|p| named.contains(p));
+        state.building.retain(|p| named.contains(p));
+        for pair in named {
+            if !state.kept.contains(&pair) && !state.building.contains(&pair) {
+                state.building.push(pair);
+            }
+        }
+        self.set_series(ty, &state);
+    }
+
+    /// Rewrite every head record of `ty`'s rows, in pages, so a change to
+    /// its fields holds a page, not the type.
+    fn walk_type(&mut self, ty: &TypeName) {
+        let mut after = None;
+        while let Some((last, _)) = self.index_page(ty, after.as_ref(), 1024) {
+            after = Some(last);
+        }
+    }
+
+    /// Clear `field`'s rows of up to `limit` head records of `ty` after
+    /// `after`; the key the chunk ended at, none once the type is cleared.
+    fn clear_series_rows(
+        &mut self,
+        ty: &TypeName,
+        field: &FieldName,
+        after: Option<&RecordKey>,
+        limit: usize,
+    ) -> Option<RecordKey> {
+        let from = after.cloned().unwrap_or_else(|| RecordKey::from(""));
+        let keys: Vec<RecordKey> = (self.records)
+            .range((ty.clone(), from)..)
+            .take_while(|((t, _), _)| t == ty)
+            .map(|((_, k), _)| k.clone())
+            .filter(|k| after != Some(k))
+            .take(limit)
+            .collect();
+        for key in &keys {
+            let id = (ty.clone(), key.clone());
+            let mut gone = Vec::new();
+            if let Some(rows) = self.sorted_rows.get_mut(&id) {
+                rows.retain(|(f, sort_key)| {
+                    let keep = f != field;
+                    if !keep {
+                        gone.push(sort_key.clone());
+                    }
+                    keep
+                });
+            }
+            for sort_key in gone {
+                if let Some(set) = self.sorted.get_mut(&(ty.clone(), field.clone())) {
+                    set.remove(&(sort_key, key.clone()));
+                }
+            }
+        }
+        keys.last().cloned().filter(|_| keys.len() == limit)
+    }
+
+    /// One step of a series pair's build (`ProjectionStore::choose_order`).
+    #[allow(deprecated)]
+    fn choose_series(
+        &mut self,
+        ty: &TypeName,
+        step: &Choose,
+        field: &FieldName,
+    ) -> Option<RecordKey> {
+        let (order, series) = lakelands_api::seam::split_series_field(field.as_str())?;
+        let pair = SeriesPair {
+            series: FieldName::from(series),
+            order: FieldName::from(order),
+        };
+        let mut state = self.series_state(ty);
+        match step {
+            Choose::Start(_) => {
+                if !state.kept.contains(&pair) && !state.building.contains(&pair) {
+                    state.building.push(pair.clone());
+                }
+                self.set_series(ty, &state);
+                None
+            }
+            Choose::Fill { after, limit, .. } => {
+                let page = self.index_page(ty, after.as_ref(), *limit as usize);
+                page.filter(|(_, n)| *n == *limit as usize)
+                    .map(|(last, _)| last)
+            }
+            Choose::Keep(_) => {
+                state.building.retain(|p| p != &pair);
+                if !state.kept.contains(&pair) {
+                    state.kept.push(pair.clone());
+                }
+                self.set_series(ty, &state);
+                None
+            }
+            // A pair taken back: its rows go whole in one step, or a chunk
+            // a call, and its state leaves with the last.
+            Choose::Drop(_) => {
+                let _ = self.clear_series_rows(ty, field, None, usize::MAX);
+                state.kept.retain(|p| p != &pair);
+                state.building.retain(|p| p != &pair);
+                self.set_series(ty, &state);
+                None
+            }
+            Choose::DropChunk { after, limit, .. } => {
+                let last = self.clear_series_rows(ty, field, after.as_ref(), *limit as usize);
+                if last.is_none() {
+                    state.kept.retain(|p| p != &pair);
+                    state.building.retain(|p| p != &pair);
+                    self.set_series(ty, &state);
+                }
+                last
+            }
+        }
     }
 
     /// The fields a read takes the order index for.
@@ -578,6 +822,12 @@ impl Projection {
     /// One step of choosing an order index (`ProjectionStore::choose_order`).
     #[allow(deprecated)]
     pub(crate) fn choose(&mut self, ty: &TypeName, step: &Choose) -> Option<RecordKey> {
+        // A series pair's derived field is kept in the type's `series.`
+        // state, not in `Chosen`: its own road fills it from the pair
+        // (097 §The series index).
+        if let Some(field) = chosen_field(step).filter(|f| engines::is_series_field(f)) {
+            return self.choose_series(ty, step, field);
+        }
         // A kept name is built as the view it keeps; a field a host's
         // setting names is filled by the setting's own build, field by
         // field.
@@ -753,8 +1003,9 @@ impl Projection {
             }
         }
         let record = &record;
+        let decl = self.type_at(ty, Some(Position(u64::MAX))).cloned();
         let fields = self.sorted_fields(ty);
-        let rows: RecordRows = lakelands_core::engines::order_rows(&fields, record)
+        let rows: RecordRows = lakelands_core::engines::order_rows(&fields, decl.as_ref(), record)
             .into_iter()
             .map(|(f, k)| (f.clone(), k))
             .collect();
@@ -767,7 +1018,6 @@ impl Projection {
         if !rows.is_empty() {
             self.sorted_rows.insert(id.clone(), rows);
         }
-        let decl = self.type_at(ty, Some(Position(u64::MAX))).cloned();
         let mut tokens = Vec::new();
         for (field, value) in &record.fields {
             if looked.is_some_and(|l| !l.contains(field)) {

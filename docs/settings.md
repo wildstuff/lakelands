@@ -19,6 +19,15 @@ Keeps an order index on these fields, so a page ordered by one of them reads its
 - **Per type:** one value per type, and none for the lake.
 - **Cost:** each field indexed costs a write about 1–5 % on SQLite and 11 % on PostgreSQL; naming one rebuilds the type's rows while holding the writer, about 0.85 s at 100 000 records on SQLite and 2.4 s on PostgreSQL.
 
+### `series_index.<type>`
+
+Keeps an order index within each series, so a read of one series' window seeks straight to it.
+
+- **Takes:** a list of pairs of the type's fields, the series field first, as [["symbol", "at"]]: its series field is text, reference, number or decimal, its order field text, number, decimal, boolean, date-time, date or reference.
+- **Default:** `null`.
+- **Per type:** one value per type, and none for the lake.
+- **Cost:** each pair indexed costs a write a median 8.9 µs on SQLite at 100 000 records, 16.2 → 28.2 µs (measured), and an order field's 11 % on PostgreSQL; naming one builds the type's rows in chunks beside the writer, 0.46–1.03 s at 100 000 records, and taking it back clears them in parts.
+
 ### `vector_index.<type>`
 
 Keeps a vector index on these fields; a search on one answers the index's set.
