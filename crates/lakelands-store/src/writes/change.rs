@@ -10,7 +10,7 @@ use lakelands_api::read::{Find, Found, ReadAt};
 use lakelands_api::record::Record;
 use lakelands_api::write::{ChangeTo, FieldChanged, Plan, RecordsPlan, RecordsRefused};
 
-use super::plan::{Against, Answer, Planned, stale};
+use super::plan::{Against, Answer, Planned, records_id, stale};
 use super::*;
 
 /// How many first keys a plan names, of its selection and of a refusal.
@@ -109,8 +109,10 @@ impl Call<'_> {
             lossless: section.refused.is_empty(),
             records: Some(Box::new(section)),
         };
-        plan.report_id = plan_id(&plan, &selected);
-        stale(&plan, against)?;
+        plan.report_id = records_id(&plan, &selected);
+        if let Some(id) = against.plan {
+            stale(id, &plan)?;
+        }
         let first = plan.records.as_ref().and_then(|r| r.refused.first());
         if let (Some(_), Some(r)) = (against.plan, first) {
             return Err((*r.refusal).clone());
@@ -233,21 +235,4 @@ fn alike(e: &Error) -> Value {
     let mut v = serde_json::to_value(e).unwrap_or(Value::Null);
     strip(&mut v);
     v
-}
-
-/// A plan of records' id: made over what its reader is shown of it and
-/// over every selected key with the version read, never over the head, so
-/// a write elsewhere in the lake does not stale it (081).
-fn plan_id(plan: &Plan, selected: &[Record]) -> String {
-    let plan = Plan {
-        report_id: String::new(),
-        at: Position::GENESIS,
-        ..plan.clone()
-    };
-    let selection: Vec<(&RecordKey, Version)> =
-        selected.iter().map(|r| (&r.key, r.version)).collect();
-    lakelands_core::canonical::sha256_hex(&serde_json::json!({
-        "plan": serde_json::to_value(&plan).expect("a plan serialises"),
-        "selection": selection,
-    }))
 }

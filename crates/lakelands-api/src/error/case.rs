@@ -1759,8 +1759,8 @@ catalog! {
         PayloadRequired { verb: VerbName, member: FieldName } => "verb `{verb}` requires `{member}` in its payload",
         /// A payload member a verb does not declare.
         PayloadUndeclared { verb: VerbName, member: FieldName } => "verb `{verb}` has no `{member}` in its payload",
-        /// A change enacted against a plan of another head, or one its caller was not shown.
-        PlanStale => "the lake moved since that plan, or it is not the one this caller was shown; plan the change again",
+        /// A change enacted against a plan a write since has reached, or one its caller was not shown.
+        PlanStale => "a write since that plan reached what it names, or it is not the one this caller was shown; plan the change again",
         /// A proposal accepted against a plan that changes no declaration.
         ProposalPlansNothing { proposal: ProposalId } => "the proposal `{proposal}` changes no declaration, so it has no plan; accept it without one",
         /// A purge's report of another purge, or of a selection the log has moved past.
@@ -1964,8 +1964,8 @@ catalog! {
         MigrationOfView { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is a view, and a view changes by being declared again, never by a migration",
         /// A migration that declares another type.
         MigrationOtherType { from: TypeName, to: TypeName } => "a migration of `{from}` declares the type `{to}`",
-        /// A migration applied against a report of another head.
-        MigrationStale => "the lake moved since that preflight report; run the preflight again",
+        /// A migration applied against a report a write since has reached.
+        MigrationStale => "a write since that preflight report reached what it names; run the preflight again",
         /// A migration that takes every key field away.
         MigrationTakesKey { #[serde(rename = "type")] ty: TypeName } => "the migration takes every key field of `{ty}` away, and leaves no rule to make its records' keys",
         /// A migration that removes a relation a verb is declared on the link type of.

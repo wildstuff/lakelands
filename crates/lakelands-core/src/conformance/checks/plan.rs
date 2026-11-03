@@ -9,7 +9,7 @@ use crate::conformance::prelude::*;
 
 check!(
     PLAN_TELLS = a_change_tells_its_plan_before_it_acts,
-    "062 (lakelands#1141, lakelands#1140): every door that changes the ontology is planned on its own path: `plan` of a function declared again, of `recompute`, of an expression a migration changes, of a field added and of a migration that only fills tells each type whose records it would change, the live records computed again, per reference field the live records it would leave naming no live record (one absent or retired; a held one counts as live), the records an admitting constraint would break and those it would fill, each with the first keys its reader is answered, and a value type's migration the values that would no longer fit, not lossless; `enact` with the plan's id makes the change and answers that plan, with an id of another head it is refused `plan_stale`, and `declare`, `apply`, `recompute`, `add_field` and `migrate_apply` each answer the plan that applied; `migrate`'s preview is the plan's section, id included"
+    "062 (lakelands#1141, lakelands#1140): every door that changes the ontology is planned on its own path: `plan` of a function declared again, of `recompute`, of an expression a migration changes, of a field added and of a migration that only fills tells each type whose records it would change, the live records computed again, per reference field the live records it would leave naming no live record (one absent or retired; a held one counts as live), the records an admitting constraint would break and those it would fill, each with the first keys its reader is answered, and a value type's migration the values that would no longer fit, not lossless; `enact` with the plan's id makes the change and answers that plan; under any other id, another plan's or one a write since has reached, it is refused `plan_stale`; and `declare`, `apply`, `recompute`, `add_field` and `migrate_apply` each answer the plan that applied; `migrate`'s preview is the plan's section, id included"
 );
 
 check!(
@@ -35,7 +35,7 @@ check!(
 
 check!(
     PLAN_REOPENED = a_plans_id_holds_across_an_open_and_not_across_a_write,
-    "062, extended (lakelands#1476): a plan's id, and its migration's or value type's section's, names the head 039 names; the lake opened again between `plan` and `enact` of a function declared again, of a migration and of a value type's migration appends a lease, and each is made under the plan's id, a `migrated` it appends naming the id of its section; a migration and a value type's migration proposed after such an open are listed under their sections' ids; a record written after such an open moves the head, and `enact` under the id is refused `plan_stale`, appending nothing",
+    "062, extended (lakelands#1476): a plan's id, and its migration's or value type's section's, names the head 039 names; the lake opened again between `plan` and `enact` of a function declared again, of a migration and of a value type's migration appends a lease, and each is made under the plan's id, a `migrated` it appends naming the id of its section; a migration and a value type's migration proposed after such an open are listed under their sections' ids; a record written after such an open into a type the plan names reaches it, and `enact` under the id is refused `plan_stale`, appending nothing",
     given
 );
 

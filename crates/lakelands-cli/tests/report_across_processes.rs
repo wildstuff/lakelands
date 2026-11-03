@@ -365,16 +365,22 @@ fn a_write_between_the_preflight_and_the_act_refuses_what_it_reached() {
 }
 
 /// `plan` and `apply --plan` as two processes (lakelands#1476): a record
-/// written between them refuses the apply as stale; another process's
-/// lease between them does not, and the bundle is applied under the id.
+/// written between them into a type the plan names refuses the apply as
+/// stale; another process's lease between them does not, and the bundle
+/// is applied under the id (099).
 #[test]
 fn a_bundle_is_applied_under_a_plan_another_process_printed() {
     for (engine, url) in engines() {
         let root = Root::new(&format!("plan_{engine}"), url.as_deref());
         root.ingest("bank", "bank-1");
         let bundle = root.dir.join("bundle");
-        let note = "name: note\nfields:\n  text: { type: text }\n";
-        fs::write(bundle.join("types").join("note.yaml"), note).unwrap();
+        // The bundle adds a field `contact` computes, so its plan names
+        // the type the record below is written into.
+        fs::create_dir_all(bundle.join("functions")).unwrap();
+        let stamp = "name: stamp\nexpr: \"1\"\n";
+        fs::write(bundle.join("functions").join("stamp.yaml"), stamp).unwrap();
+        let contact = "name: contact\nfields:\n  email: { type: text, authority: source, erasable: true }\n  stamp:\n    type: number\n    authority: derived\n    function: stamp\n    depends_on: email\n";
+        fs::write(bundle.join("types").join("contact.yaml"), contact).unwrap();
         let at = bundle.display().to_string();
         let plan = || {
             let out = root.ok(&["plan", &at], true);
@@ -390,8 +396,8 @@ fn a_bundle_is_applied_under_a_plan_another_process_printed() {
         root.ingest("crm", "crm-1");
         let stale = root.run(&["apply", &at, "--plan", &id], true);
         assert!(
-            !stale.ok && stale.err.contains("the lake moved since that plan"),
-            "{engine}: an apply after a write: {}{}",
+            !stale.ok && stale.err.contains("reached what it names"),
+            "{engine}: an apply after a reaching write: {}{}",
             stale.out,
             stale.err
         );

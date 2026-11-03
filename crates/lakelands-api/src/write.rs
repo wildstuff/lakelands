@@ -1519,10 +1519,11 @@ pub struct MigrationReport {
     /// stored values: a migration that only restates is lossless. It says
     /// nothing of what the migration removes, which is `dropped`.
     pub lossless: bool,
-    /// Names this report; `migrate_apply` must repeat it. It is the id of
-    /// the report as its reader is shown it and of the head it was made
-    /// at: the SHA-256 of `{"report": …, "head": …}` in canonical form,
-    /// the report with this member empty.
+    /// Names this report; `migrate_apply` must repeat it. It is the
+    /// position it was read at, a hyphen, and the SHA-256 of the report as
+    /// its reader is shown it there, in canonical form, with this member
+    /// empty. A write since that reaches the type makes it stale; one
+    /// elsewhere does not.
     pub report_id: String,
     /// Whether the report holds more than this reader is shown, or counts
     /// more than it names: an entry left out, a `not_convertible` larger
@@ -1666,12 +1667,18 @@ pub enum ChangeTo {
 /// `enact` acts only on the plan its caller was shown.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
-    /// Names this plan; `enact` must repeat it. As a migration's report id:
-    /// the SHA-256 of `{"plan": …, "head": …}` in canonical form, the plan
-    /// as its reader is shown it with this member empty.
+    /// Names this plan; `enact` must repeat it. A plan of declarations is
+    /// named as a migration's report is: the position it was read at, a
+    /// hyphen, and the SHA-256, in canonical form, of `{"plan": <plan>}`
+    /// over the plan as its reader is shown it there, with this member
+    /// and every section's `report_id` empty and `at` at position `0`. A
+    /// change to records' plan is named by that SHA-256 alone, over
+    /// `{"plan": <plan>, "selection": [[key, version], …]}` with this
+    /// member empty and `at` at position `0`, so it names no position and
+    /// a write that moves its selection moves it.
     pub report_id: String,
-    /// The head it was made at: the log's last event that is neither a
-    /// `lease_taken` nor a `checkpoint`.
+    /// The position it was read at: the log's last event that is neither
+    /// a `lease_taken` nor a `checkpoint`.
     pub at: Position,
     /// Each type whose stored records the change would change, by name: a
     /// migration's report, of the type migrated or of one a declaration
@@ -2487,7 +2494,11 @@ pub struct ValueTypeReport {
     /// (lakelands#1119).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breaches: Vec<Breach>,
-    /// Names this report; `migrate_value_type_apply` must repeat it.
+    /// Names this report; `migrate_value_type_apply` must repeat it. It is
+    /// the position it was read at, a hyphen, and the SHA-256 of the report
+    /// as its reader is shown it there, in canonical form, with this
+    /// member empty. A write since that reaches a type using the value
+    /// type makes it stale; one elsewhere does not.
     pub report_id: String,
 }
 
