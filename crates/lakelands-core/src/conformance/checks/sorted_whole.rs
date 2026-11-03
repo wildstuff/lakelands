@@ -16,6 +16,158 @@ check!(
     "041, extended (lakelands#1029): each `find` page ordered first, by value, by a scalar field the lake keeps no order index for is counted for that field with its time, and `describe_type` tells the count in `sorted_whole` to a holder of `schema` who reads the field, and to no other reader, whatever records are held from it; an order by key, by `known_at` or of a field it indexes is not counted, and a field named in `sort_index.<type>` is told in `sorted` and no longer in `sorted_whole`"
 );
 
+check!(
+    SORTED_WHOLE_BESIDE_A_LOOKUP_BUILD = a_whole_page_beside_a_lookup_build_is_weighed,
+    "041 and 099, R7 (lakelands#1029): a `lookup_index.<type>` setting names no `sorted` field and builds in parts on an engine that keeps an exact-text index, and a page ordered first by its field still sorts the type whole meanwhile: `describe_type` names the field `building` and goes on telling its `sorted_whole` count, and the count goes on after the build is whole",
+    given
+);
+
+async fn a_whole_page_beside_a_lookup_build_is_weighed(store: Store, given: Given) -> Held {
+    let size = u64::from(given.large_lake.clamp(400, 800));
+    let limit = u32::try_from(size).unwrap_or(u32::MAX);
+    let store = super::builds::chunked_alone(&given, store).await?;
+    let l = super::builds::rows(store.as_ref(), size).await?;
+    let before = whole_page(&l, "s", limit).await?;
+    ensure!(
+        before.len() == usize::try_from(size).unwrap_or(usize::MAX),
+        "a page ordered by `s` sorts the whole type before the setting: {} keys, not {size}",
+        before.len()
+    );
+    // `rows` writes `s` as `s{i % 17}` under the key `r{i:05}`, a text
+    // field sorted by its value: a page sorted whole holds the values in
+    // their order, ties in any order.
+    let rank = |k: &str| -> Option<String> {
+        let i: u64 = k.strip_prefix('r')?.parse().ok()?;
+        Some(format!("s{}", i % 17))
+    };
+    let values = |keys: &[String]| -> Vec<String> { keys.iter().filter_map(|k| rank(k)).collect() };
+    ensure!(
+        values(&before).windows(2).all(|w| w[0] <= w[1]),
+        "a page ordered by `s` sorts the whole type: its keys are in the field's order"
+    );
+    let setter = {
+        let l = &l;
+        async move {
+            l.set("lookup_index.row", json!(["s"])).await?;
+            Ok::<_, Failure>(())
+        }
+    };
+    let beside = std::sync::Arc::new(std::sync::Mutex::new(
+        None::<(bool, lakelands_api::describe::TypeDescription, Vec<String>)>,
+    ));
+    let reader = {
+        let beside = beside.clone();
+        let l = &l;
+        async move {
+            // An engine whose exact-text index is built at the setting's
+            // own turn has no parts to read beside: the mark is seen, or
+            // the build is whole before a read can be taken beside it.
+            let building = super::builds::until_building_within(l, "row", "s", 400).await?;
+            let d = l.describe_type("row").await?;
+            let during = whole_page(l, "s", limit).await?;
+            *beside.lock().expect("the read beside the build") = Some((building, d, during));
+            Ok::<_, Failure>(())
+        }
+    };
+    let out = join_all(vec![Box::pin(setter), Box::pin(reader)]).await;
+    out[0]
+        .as_ref()
+        .map_err(|e| Failure::new(format!("the setting: {e}")))?;
+    out[1]
+        .as_ref()
+        .map_err(|e| Failure::new(format!("a read beside the build: {e}")))?;
+    let (building, d, during) = beside
+        .lock()
+        .expect("the read beside the build")
+        .take()
+        .ok_or_else(|| Failure::new("the read beside the build answered nothing"))?;
+    ensure!(
+        during == before,
+        "a page ordered by `s` beside the setting is the whole type in its order, what it \
+         answered before it: {} keys, not {}",
+        during.len(),
+        before.len()
+    );
+    let names = |fs: &[lakelands_api::FieldName]| -> Vec<String> {
+        fs.iter().map(|f| f.to_string()).collect()
+    };
+    if building {
+        // The build has parts here: its mark names the field, and does not
+        // hide the count of the page taken before the setting.
+        ensure!(
+            names(&d.lifecycle.building) == ["s"],
+            "`describe` names the setting's field `building`; it said {:?}",
+            names(&d.lifecycle.building)
+        );
+        ensure!(
+            d.lifecycle.sorted.is_empty(),
+            "a `lookup_index.<type>` setting names no `sorted` field; `describe` said {:?}",
+            names(&d.lifecycle.sorted)
+        );
+        ensure!(
+            weighed(&d, "s") == Some(1),
+            "a page ordered by `s` sorts the whole type while the setting builds, and its \
+             count is told: `describe` said {:?}",
+            weighed(&d, "s")
+        );
+    }
+    // The page beside the setting was a whole sort too: the count goes on.
+    let d = l.describe_type("row").await?;
+    ensure!(
+        d.lifecycle.building.is_empty(),
+        "the setting is whole and nothing is `building`; `describe` said {:?}",
+        names(&d.lifecycle.building)
+    );
+    ensure!(
+        d.lifecycle.sorted.is_empty(),
+        "a `lookup_index.<type>` setting names no `sorted` field; `describe` said {:?}",
+        names(&d.lifecycle.sorted)
+    );
+    ensure!(
+        weighed(&d, "s") == Some(2),
+        "both pages ordered by `s` were whole sorts and the setting's build does not hide \
+         them: `describe` said {:?}",
+        weighed(&d, "s")
+    );
+    Ok(())
+}
+
+/// The keys of a page ordered by `field`'s value, the whole type.
+async fn whole_page(l: &Lake, field: &str, limit: u32) -> Result<Vec<String>, Failure> {
+    let find = Find {
+        order_by: vec![Order {
+            field: field.into(),
+            by: OrderBy::Value,
+            dir: Direction::Asc,
+        }],
+        limit: Some(limit),
+        ..Find::default()
+    };
+    match l
+        .cat
+        .find(&l.own, &"row".into(), find)
+        .await
+        .must("a page ordered by a field")?
+        .data
+    {
+        lakelands_api::read::Found::Records { rows, .. } => {
+            Ok(rows.iter().map(|r| r.key.to_string()).collect())
+        }
+        other => Err(Failure::new(format!(
+            "a page of records answered {other:?}"
+        ))),
+    }
+}
+
+/// The pages `field` was ordered by a whole sort, as `describe` tells them.
+fn weighed(d: &lakelands_api::describe::TypeDescription, field: &str) -> Option<u64> {
+    d.lifecycle
+        .sorted_whole
+        .iter()
+        .find(|s| s.field.as_str() == field)
+        .map(|s| s.pages)
+}
+
 async fn what_was_ordered_by_a_whole_sort_is_told(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare_json(json!({"declare": "type", "name": "row", "key": ["no"],

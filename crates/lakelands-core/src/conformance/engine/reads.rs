@@ -72,7 +72,7 @@ engine_check!(
 
 engine_check!(
     CHOSEN_ORDER = a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept,
-    "041 and lakelands#1131: a field the lake chose an order index for beside the log is started, filled in chunks of the head's records while puts land between the chunks, and kept; a page ordered by it sorts the type until it is kept, answers what one scan over every state answers all the while, and reads its page and at most three rows more once kept, the records put during the build among those it holds; `chosen` names the kept and the building fields; a `sort_index.<type>` setting naming the chosen field takes the choice away and a step naming a field the setting names does nothing, and retiring the setting leaves the type with no index; a chosen field dropped in chunks, its mark `dropping` gone at the last, is sorted whole again; a `Start` of a field the type does not declare does nothing"
+    "041 and lakelands#1131: a field the lake chose an order index for beside the log is started, filled in chunks of the head's records while puts land between the chunks, and kept; a page ordered by it sorts the type until it is kept, answers what one scan over every state answers all the while, and reads its page and at most three rows more once kept, the records put during the build among those it holds; `chosen` names the kept and the building fields; a `sort_index.<type>` setting naming the chosen field takes the choice away and a step naming a field the setting names does nothing, and retiring the setting leaves the type with no index; a chosen field dropped in chunks, its mark `dropping` gone at the last, is sorted whole again, and a `Drop` of the whole field in one step, the step a host built against, clears it and answers none with no mark left; a `Start` of a field the type does not declare does nothing"
 );
 
 engine_check!(
@@ -3436,6 +3436,7 @@ fn a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view(
     Ok(())
 }
 
+#[allow(deprecated)]
 fn a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept(
     engine: &dyn LakeEngine,
 ) -> Held {
@@ -3597,11 +3598,34 @@ fn a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept(
     }
     step(Choose::Keep(field.clone()))?;
     reads_its_page("once `v` is chosen again", &states)?;
-    // Dropped a chunk a turn: the mark `dropping` holds the field until
-    // the last chunk, and no read looks at it.
+    // A `Drop` in its one step, as a host built it: the whole field gone
+    // and no mark left, as before the chunked step.
+    ensure!(
+        step(Choose::Drop(field.clone()))?.is_none(),
+        "a `Drop` of the whole field must clear it and answer none, in its one step"
+    );
+    ensure!(
+        chosen()?.is_none(),
+        "a `Drop` in one step must leave no `dropping` mark; `chosen` names {:?}",
+        chosen()?
+    );
+    sorts("once `v` is dropped whole", &states)?;
+    // Built again, then dropped a chunk a turn: the mark `dropping` holds
+    // the field until the last chunk, and no read looks at it.
+    step(Choose::Start(field.clone()))?;
+    let mut after = None;
+    while let Some(last) = step(Choose::Fill {
+        field: field.clone(),
+        after,
+        limit: CHUNK,
+    })? {
+        after = Some(last);
+    }
+    step(Choose::Keep(field.clone()))?;
+    reads_its_page("once `v` is chosen again for its drop", &states)?;
     let mut after = None;
     loop {
-        let next = step(Choose::Drop {
+        let next = step(Choose::DropChunk {
             field: field.clone(),
             after: after.clone(),
             limit: CHUNK,

@@ -218,7 +218,8 @@ async fn a_lake_with_the_switch_off_chooses_nothing_and_a_hosts_setting_wins(
         told(&l, &l.own).await?.1.is_empty(),
         "with `choose_order_index` off, pages sorted whole must choose nothing"
     );
-    // On, with the host's setting naming `s`: the lake chooses nothing for the type.
+    // On, with the host's setting naming `s`: the lake still chooses the
+    // type's other field, `n`.
     let store = (given.relimit)(store, Seams::default(), limits())
         .await
         .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
