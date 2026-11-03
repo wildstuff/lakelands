@@ -259,7 +259,10 @@ impl Decide<'_> {
         // Only a setting's write ends a view's keeping.
         let setting = (after.ty.as_str() == SETTING_TYPE).then(|| after.key.as_str());
         for view in v.views.iter().filter(|_| setting.is_some()) {
-            if !kept::whole(&at, staged, view)? {
+            // A view a build is making is kept still: a read computes it
+            // until its `Keep`, and the write that starts the build is the
+            // setting's own.
+            if !kept::whole(&at, staged, view)? && !kept::building(&at, staged, view)? {
                 let reads = |r: &Reader| {
                     r.view() == view
                         || sources_read(self.ontology, r.view())

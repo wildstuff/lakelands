@@ -530,11 +530,41 @@ move a member from a built group to an unbuilt one.
   declaration's append, and `max_set_changes` holds. Read: a set needs its view kept
   already (`view_kept_for_set`), so a set is never over a view from before its build.
 
+**As built (2026-11-03), R8 part 1.** A `view_kept.<view>` setting set true appends, and
+the fold marks the view building in the `sys:kept` output — `Building { cursors }`, one
+cursor per source, none reached — rather than making it whole in that turn. The door that
+wrote it sends a build of every view the view reads through, the inner ones first, and
+answers when the last is whole; a writer's open sends what the projection holds owed and
+does not wait. A `Fill` turn folds one `order_chunk` page of the first source whose cursor
+has not reached its last key, adds it to the staged groups, and puts the advanced cursor in
+the view's state in the same commit; a restart therefore goes on from the cursor, not from
+0. Where every source is reached, the turn makes the ungrouped group, sets `whole` and the
+zone data, and takes the mark away: that is `Keep`. A record written beside the build is
+noted on the side of the cursor it lies on — at or before it, by the write; after it, by
+the fill when it gets there — so it is counted once, whichever side it lands on. A read of
+the view computes it live until `whole`, and `describe` does not say it kept while it
+builds. The suite holds `KEPT_BUILD_READ_ANSWERS_AS_BEFORE`, `KEPT_BUILD_WRITE_BESIDE`,
+`KEPT_BUILD_WRITES_GO_ON`, `KEPT_BUILD_RESTART_FINISHES`, `KEPT_BUILD_SETTING_TAKEN_BACK`,
+`KEPT_BUILD_SETTING_SET_AGAIN` and `KEPT_BUILD_REBUILD_SAME_LAKE`.
+
+Part 1 leaves three boundaries, and part 2 or 3 takes them: only a live setting write
+starts a build (a declaration that changes the type, a lease and the recompute paths still
+make a view whole in one fold, and a set that computes a build's source again takes the
+mark away at its first declaration and the view is made whole at its last); a set or
+trigger over a building view is accepted, since the refusal `view_building` is R9's; and
+the mark is not yet told in `describe`'s `building`, nor is a take-back cut into chunks.
+
+The tree departs from the design in one place: the cursors live in the view's state, which
+is the projection's, not in the runner's memory as this record's table first said. The
+group records are in the projection already, so a cursor held only in memory would restart
+the fold from 0 on the next open and count every member twice. The table's restart row is
+corrected below.
+
 ### What stands between parts
 
 | Between parts of | Act | Build |
 |---|---|---|
-| A restart | owed in the log; a write reads through it from the open; the runner re-walks off the writer, retires what remains, appends `act_whole` | the mark holds the cursor; the runner goes on, or from 0 on a kept view, whose stage is memory |
+| A restart | owed in the log; a write reads through it from the open; the runner re-walks off the writer, retires what remains, appends `act_whole` | the mark holds the cursors, one per source, in the view's projection state; the open re-sends the build and it goes on from them |
 | Another act of the source | its walk starts past this act's first turn; its parts wait for this act's restate, then re-judge on what that left | a build's rows follow its retirements, as below |
 | A setting taken back | no bearing | `DropChunk` in parts; a late `Fill` sees the mark gone and ends, and a setting set again takes the field out of the mark |
 | A declaration that changes the type | parts re-judge by key under the current ontology; a type gone is skipped | back to `Start`, since a row's form may have moved |

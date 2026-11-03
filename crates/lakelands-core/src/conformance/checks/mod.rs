@@ -69,6 +69,7 @@ mod in_force;
 mod ingest;
 mod initial;
 mod judged;
+mod kept_builds;
 mod kept_heads;
 mod kept_sets;
 mod kept_triggers;
@@ -1033,6 +1034,13 @@ pub const ALL: &[Check] = &[
     builds::BUILD_BESIDE_A_REMOVAL,
     builds::BUILD_REBUILD_SAME_LAKE,
     builds::BUILD_EXPORT_IMPORT_SAME_LAKE,
+    kept_builds::KEPT_BUILD_READ_ANSWERS_AS_BEFORE,
+    kept_builds::KEPT_BUILD_WRITE_BESIDE,
+    kept_builds::KEPT_BUILD_WRITES_GO_ON,
+    kept_builds::KEPT_BUILD_RESTART_FINISHES,
+    kept_builds::KEPT_BUILD_SETTING_TAKEN_BACK,
+    kept_builds::KEPT_BUILD_SETTING_SET_AGAIN,
+    kept_builds::KEPT_BUILD_REBUILD_SAME_LAKE,
     rerank::RERANK_REORDERS_THE_WINDOW,
     rerank::RERANK_ONE_WINDOW,
     rerank::RERANK_ONE_WINDOW_ONLY,
