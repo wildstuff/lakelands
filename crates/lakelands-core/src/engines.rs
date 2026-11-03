@@ -1002,6 +1002,15 @@ pub fn field_kind<'d>(decl: &'d TypeDecl, field: &FieldName) -> Option<&'d Stora
         .map(|f| &f.ty.kind)
 }
 
+/// The kind a narrowing of the storage's own text may take: any but a
+/// number or a decimal, whose JSON number is not the token the exact
+/// lookup keeps for it (097 §A number's exact lookup). Asked of a field
+/// the declaration gives no kind, it answers none, as it was before
+/// numbers were.
+pub fn text_kind(kind: Option<StorageKind>) -> Option<StorageKind> {
+    kind.filter(|k| !matches!(k, StorageKind::Number | StorageKind::Decimal))
+}
+
 /// A filter's bound on an ordered field: the inclusive interval of
 /// [`order_key`]s a page ordered by the field reads, and outside which it
 /// need not read at all

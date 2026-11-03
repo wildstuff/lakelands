@@ -14,7 +14,7 @@ use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Rankings,
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
-use lakelands_api::ontology::{StorageKind, TypeDecl};
+use lakelands_api::ontology::TypeDecl;
 use lakelands_api::quarantine::{QuarantineFilter, QuarantineState, Quarantined};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order, ThinnedAct};
@@ -1049,9 +1049,7 @@ impl ProjectionView for SqliteView<'_> {
             };
             // A text narrowing is the storage's own: `json_extract` reads a
             // number as a number, not as the token the lookup keeps.
-            let text = |f: &FieldName| {
-                kind(f).filter(|k| !matches!(k, StorageKind::Number | StorageKind::Decimal))
-            };
+            let text = |f: &FieldName| engines::text_kind(kind(f));
             let lookup = engines::text_lookups(scan, &kept, &kind).filter(|_| r.head);
             let (narrow, mut held) = (engines::text_lookup(scan, &|_| true, &text), None);
             engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
@@ -1070,7 +1068,7 @@ impl ProjectionView for SqliteView<'_> {
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
             let kind = |f: &FieldName| decl.as_ref().and_then(|d| engines::field_kind(d, f)).copied();
-            let text = |f: &FieldName| kind(f).filter(|k| !matches!(k, StorageKind::Number | StorageKind::Decimal));
+            let text = |f: &FieldName| engines::text_kind(kind(f));
             let lookup = engines::text_lookup(scan, &kept, &kind).filter(|_| r.head);
             // Ordered by the key alone, the page is read from `after` in
             // key order and stops when it is full: at the head, with a text

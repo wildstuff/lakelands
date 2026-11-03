@@ -4277,7 +4277,7 @@ fn walks_of(
 
 engine_check!(
     NUMBER_LOOKUP_READS_ITS_HOLDERS = a_number_read_under_the_lookup_is_handed_its_holders,
-    "057 and 097 §A number's exact lookup: of 60 000 records, the 600 holding 7 in a number field the `lookup_index.<type>` setting names answer `=`, `equal`, `equal_any` and `in`, and the read is handed about those 600, not the type"
+    "057 and 097 §A number's exact lookup: of 60 000 records, the 600 holding 7 in a number field the `lookup_index.<type>` setting names answer `=`, `equal`, `equal_any` and `in`, the read is handed about those 600, not the type, and a put and a drop after the setting take a holder out of the set and put one in"
 );
 
 fn a_number_read_under_the_lookup_is_handed_its_holders(engine: &dyn LakeEngine) -> Held {
@@ -4342,12 +4342,60 @@ fn a_number_read_under_the_lookup_is_handed_its_holders(engine: &dyn LakeEngine)
              not the type"
         );
     }
+    // A write while the setting names the field: one holder moves off 7 and
+    // another is dropped, and the token each kept goes with the state it
+    // left (057). The read is taken again at the head the write makes.
+    let moved = record("t", "k00000", json!({"v": 8}), 3);
+    let dropped = RecordKey::from("k00001");
+    fold(engine, 3, |p| {
+        p.put_record(&moved)?;
+        p.drop_states(lakelands_api::engine::StatesOf::Record(&ty, &dropped))
+    })?;
+    let head = view(engine, None)?;
+    let held: Vec<StoredRecord> = std::iter::once(moved.clone())
+        .chain(states.iter().skip(2).cloned())
+        .collect();
+    let ask = |text: &str, what: &str| -> Result<(Vec<String>, u64), Failure> {
+        let filter = crate::expr::parse(text).expect("the check's filter parses");
+        let scan = scan_with(|s| s.filter = Some(filter));
+        let (rows, _, read) = walks_of(head.as_ref(), &ty, &scan, false, what)?;
+        let got = keys(&rows);
+        let whole = keys(&crate::engines::scan(Some(t), &held, &scan));
+        ensure!(
+            got == whole,
+            "{what} answered {got:?}; one scan over every state answers {whole:?}"
+        );
+        Ok((got, read))
+    };
+    let (seven, read) = ask("v = 7", "a filter `= 7` after the put and the drop")?;
+    ensure!(
+        seven.len() as u64 == HOLD - 2,
+        "`= 7` answered {} records after a holder moved off 7 and another was dropped; \
+         {} of the {HOLD} hold it still",
+        seven.len(),
+        HOLD - 2
+    );
+    ensure!(
+        !seven.iter().any(|k| k == "k00000" || k == "k00001"),
+        "`= 7` still answered a record whose latest state is not 7, or one dropped: {seven:?}"
+    );
+    ensure!(
+        (HOLD - 2..=HOLD + 100).contains(&read),
+        "`= 7` was handed {read} rows of {N} after the write; the exact lookup names the \
+         {} holders still in the set",
+        HOLD - 2
+    );
+    let (eight, _) = ask("v = 8", "a filter `= 8` after the put")?;
+    ensure!(
+        eight == ["k00000"],
+        "`= 8` answered {eight:?} after a holder moved onto 8; it names `k00000`"
+    );
     Ok(())
 }
 
 engine_check!(
     NUMBER_LOOKUP_ONE_TOKEN = a_number_field_is_looked_up_by_one_token,
-    "097 §A number's exact lookup: `= 7`, `= 7.00` and `= '7'` on a decimal field find one set, `-0` and `0` are one, a literal that reads as no number finds none and sends its `in` to the old road, and the setting's answer is the one the type's records give"
+    "097 §A number's exact lookup: `= 7`, `= 7.00` and `= '7'` on a decimal field find one set, `-0` and `0` are one, a value that reads as no number keeps no row and is found by its own text on the old road, an `in` with one takes the old road, and the setting's answer is the one the type's records give"
 );
 
 fn a_number_field_is_looked_up_by_one_token(engine: &dyn LakeEngine) -> Held {
@@ -4358,12 +4406,16 @@ fn a_number_field_is_looked_up_by_one_token(engine: &dyn LakeEngine) -> Held {
     let Declaration::Type(t) = &decl else {
         unreachable!("the check declares a type")
     };
+    // Forty digits: a decimal no token reads, held as a text (097 §A
+    // number's exact lookup).
+    const LONG: &str = "1234567890123456789012345678901234567890";
     let values = [
         ("a", json!(7)),
         ("b", json!(7.0)),
         ("c", json!(-0.0)),
         ("e", json!(0)),
         ("f", json!(7.5)),
+        ("g", json!(LONG)),
     ];
     let states: Vec<StoredRecord> = values
         .iter()
@@ -4406,7 +4458,13 @@ fn a_number_field_is_looked_up_by_one_token(engine: &dyn LakeEngine) -> Held {
     let none = find("d = 'abc'")?;
     ensure!(
         none.is_empty(),
-        "`d = 'abc'` answered {none:?}; a literal that reads as no number finds none"
+        "`d = 'abc'` answered {none:?}; no record holds it, and the old road finds none"
+    );
+    let long = find(&format!("d = '{LONG}'"))?;
+    ensure!(
+        long == ["g"],
+        "`d = '{LONG}'` answered {long:?}; the 40-digit value keeps no row and is found by its \
+         own text on the old road, as it is today"
     );
     let any = find("d in (7, 'abc')")?;
     ensure!(

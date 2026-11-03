@@ -636,9 +636,10 @@ pub fn sortable(kind: &crate::ontology::StorageKind) -> bool {
 
 /// The key prefix of the setting that asks for a type's exact-text index
 /// over more fields than its declarations look up by: the setting
-/// `lookup_index.<type>`, whose value is a JSON array of the type's text
-/// fields. A field the index keeps no rows for is found by a scan of the
-/// type (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
+/// `lookup_index.<type>`, whose value is a JSON array of the type's text,
+/// number and decimal fields. A field the index keeps no rows for is found
+/// by a scan of the type
+/// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
 pub const LOOKUP_INDEX_SETTING: &str = "lookup_index.";
 
 /// The key prefix of the setting that asks for a type's vector index: the
