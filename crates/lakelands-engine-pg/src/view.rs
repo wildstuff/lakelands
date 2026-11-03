@@ -25,7 +25,7 @@ use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Rankings,
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
-use lakelands_api::ontology::TypeDecl;
+use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::quarantine::{QuarantineFilter, QuarantineState, Quarantined};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
@@ -1194,8 +1194,18 @@ impl ProjectionView for PgView<'_> {
             }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
-            let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
-            let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
+            let kind = |f: &FieldName| {
+                decl.as_ref()
+                    .and_then(|d| engines::field_kind(d, f))
+                    .copied()
+            };
+            // A text narrowing is the storage's own: a JSON number is not
+            // the token the lookup keeps for it.
+            let text = |f: &FieldName| {
+                kind(f).filter(|k| !matches!(k, StorageKind::Number | StorageKind::Decimal))
+            };
+            let lookup = engines::text_lookups(scan, &kept, &kind).filter(|_| r.head);
+            let (narrow, mut held) = (engines::text_lookup(scan, &|_| true, &text), None);
             engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
                 r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)
             })
@@ -1211,13 +1221,15 @@ impl ProjectionView for PgView<'_> {
             }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
-            let lookup = engines::text_lookup(scan, &kept).filter(|_| r.head);
+            let kind = |f: &FieldName| decl.as_ref().and_then(|d| engines::field_kind(d, f)).copied();
+            let text = |f: &FieldName| kind(f).filter(|k| !matches!(k, StorageKind::Number | StorageKind::Decimal));
+            let lookup = engines::text_lookup(scan, &kept, &kind).filter(|_| r.head);
             // Ordered by the key alone, the page is read from `after` in
             // key order and stops when it is full: at the head, with a text
             // the scan must hold, from the records holding it.
             if scan.order_by.is_empty() {
-                let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
-                let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
+                let lookup = engines::text_lookups(scan, &kept, &kind).filter(|_| r.head);
+                let (narrow, mut held) = (engines::text_lookup(scan, &|_| true, &text), None);
                 return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
                     let rows = r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)?;
                     // A range of the key index walks what it hands.

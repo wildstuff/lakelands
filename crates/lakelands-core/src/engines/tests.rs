@@ -362,7 +362,8 @@ fn a_walk_at_an_earlier_position_answers_what_a_whole_sort_there_answers() {
 
 #[test]
 fn only_text_that_compares_as_text_narrows() {
-    let term = |s: &str| exact_text_term(&crate::expr::parse(s).unwrap());
+    let text = |_f: &FieldName| None;
+    let term = |s: &str| exact_text_term(&crate::expr::parse(s).unwrap(), &text);
     assert_eq!(
         term("status = 'open'"),
         Some(("status".into(), "open".into()))

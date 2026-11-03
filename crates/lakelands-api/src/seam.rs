@@ -856,14 +856,21 @@ pub fn check_setting<'a>(
         }
         return Ok(());
     }
-    let text = |k: &crate::ontology::StorageKind| *k == crate::ontology::StorageKind::Text;
+    let lookup = |k: &crate::ontology::StorageKind| {
+        matches!(
+            k,
+            crate::ontology::StorageKind::Text
+                | crate::ontology::StorageKind::Number
+                | crate::ontology::StorageKind::Decimal
+        )
+    };
     let (ty, (order, lookup), keeps): (_, _, &dyn Fn(&crate::ontology::StorageKind) -> bool) =
         if let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) {
             (ty, (true, false), &sortable)
         } else if let Some(ty) = key.strip_prefix(VECTOR_INDEX_SETTING) {
             (ty, (false, false), &indexable)
         } else if let Some(ty) = key.strip_prefix(LOOKUP_INDEX_SETTING) {
-            (ty, (false, true), &text)
+            (ty, (false, true), &lookup)
         } else {
             return Ok(());
         };

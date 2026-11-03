@@ -58,7 +58,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use lakelands_api::engine::{Applied, Choose, Chosen, Declared, TextCounts};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
-use lakelands_api::ontology::TypeDecl;
+use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::quarantine::QuarantineId;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
@@ -644,6 +644,37 @@ impl HeadTypes {
     }
 }
 
+/// The exact-lookup rows a state's number and decimal fields make, as
+/// `(type, field, token, key)`: the fields of `r` that its type's head
+/// declaration declares with a number or decimal kind and the type looks
+/// up (097 §A number's exact lookup).
+fn collect_tokens(
+    db: &mut Db,
+    names: &Names,
+    types: &mut HeadTypes,
+    ty: &str,
+    r: &StoredRecord,
+    out: &mut BTreeSet<(String, String, String, String)>,
+) -> Result<()> {
+    let head = types.get(db, names, &TypeName::from(ty))?;
+    let (Some(decl), Some(looked)) = (head.decl.as_ref(), head.looked.as_ref()) else {
+        return Ok(());
+    };
+    for (field, value) in &r.fields {
+        if !looked.contains(field) {
+            continue;
+        }
+        let kind = engines::field_kind(decl, field).copied();
+        if !matches!(kind, Some(StorageKind::Number | StorageKind::Decimal)) {
+            continue;
+        }
+        if let Some(token) = engines::lookup_token(value, kind) {
+            out.insert((ty.to_owned(), field.to_string(), token, r.key.to_string()));
+        }
+    }
+    Ok(())
+}
+
 /// `ty`'s declaration at the head and the fields its order index keeps:
 /// those its `sort_index.<type>` setting at the head names that the
 /// declaration (a kept name's view's) declares with a kind the index
@@ -936,6 +967,21 @@ pub(crate) fn relook(
     })?;
     let text = names.t("text_index");
     for (ty, f, comes) in changes {
+        // A number or decimal field keeps its value's token, which SQL
+        // cannot make: fill it from the head states in this transaction
+        // (097 §A number's exact lookup).
+        let kind = type_at(db, names, &TypeName::from(ty.as_str()), None)?
+            .as_ref()
+            .and_then(|d| engines::field_kind(d, &FieldName::from(f.as_str())))
+            .copied();
+        if comes && matches!(kind, Some(StorageKind::Number | StorageKind::Decimal)) {
+            fill_tokens(db, names, &ty, &f, kind)?;
+            db.execute(
+                &format!("INSERT INTO {lookup} (ty, field) VALUES ($1, $2)"),
+                &[&ty, &f],
+            )?;
+            continue;
+        }
         let statements = match comes {
             true => [
                 format!(
@@ -956,6 +1002,58 @@ pub(crate) fn relook(
         }
     }
     Ok(())
+}
+
+/// Fill `field`'s exact-lookup rows from `ty`'s head states, a page at a
+/// time, each value's token made in Rust (097 §A number's exact lookup).
+fn fill_tokens(
+    db: &mut Db,
+    names: &Names,
+    ty: &str,
+    field: &str,
+    kind: Option<StorageKind>,
+) -> Result<()> {
+    let name = TypeName::from(ty);
+    let field = FieldName::from(field);
+    let mut after = String::new();
+    loop {
+        let page = head_records_after(db, names, &name, &after, REBUILD_PAGE)?;
+        let mut rows: [Vec<String>; 4] = Default::default();
+        for r in (page.iter()).filter(|r| !r.is_ended()) {
+            let Some(token) = r
+                .fields
+                .get(&field)
+                .and_then(|v| engines::lookup_token(v, kind))
+            else {
+                continue;
+            };
+            for (column, v) in rows.iter_mut().zip([
+                ty.to_owned(),
+                field.as_str().to_owned(),
+                token,
+                r.key.to_string(),
+            ]) {
+                column.push(v);
+            }
+        }
+        if !rows[0].is_empty() {
+            let [r1, r2, r3, r4] = &rows;
+            db.execute(
+                &format!(
+                    "INSERT INTO {text} (ty, field, value, key) \
+                     SELECT u.ty, u.field, u.value, u.key \
+                     FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) \
+                     AS u(ty, field, value, key) ON CONFLICT DO NOTHING",
+                    text = names.t("text_index"),
+                ),
+                &[r1, r2, r3, r4],
+            )?;
+        }
+        match page.len() as i64 {
+            n if n == REBUILD_PAGE => after = page[page.len() - 1].key.to_string(),
+            _ => return Ok(()),
+        }
+    }
 }
 
 /// The statement of a feed filter's positions in `routes` from `$2`
@@ -1406,7 +1504,7 @@ pub(crate) fn head_records(
 /// The head index rows of records, as arrays for one statement each.
 #[derive(Default)]
 struct IndexRows<'r> {
-    text: [Vec<&'r str>; 4],
+    text: [Vec<String>; 4],
     tokens: [Vec<String>; 3],
     edges: [Vec<String>; 5],
     sorted: SortRows<'r>,
@@ -1451,8 +1549,16 @@ pub(crate) fn index_records(
             if head.looked.as_ref().is_some_and(|l| !l.contains(field)) {
                 continue;
             }
-            if let Some(value) = value.as_str() {
-                for (column, v) in rows.text.iter_mut().zip([ty, field.as_str(), value, key]) {
+            // A number or decimal field keeps its value's token; a text
+            // field keeps its text (097 §A number's exact lookup).
+            let kind = decl.and_then(|d| engines::field_kind(d, field)).copied();
+            if let Some(token) = engines::lookup_token(value, kind) {
+                for (column, v) in rows.text.iter_mut().zip([
+                    ty.to_owned(),
+                    field.as_str().to_owned(),
+                    token,
+                    key.to_owned(),
+                ]) {
                     column.push(v);
                 }
             }
@@ -1960,7 +2066,7 @@ impl Buffer {
     /// latest buffered state holds again stays, and is not written again
     /// ([`index_records`]). A head a buffered state does not move past
     /// keeps its rows.
-    fn unindex_texts(&self, db: &mut Db, names: &Names) -> Result<()> {
+    fn unindex_texts(&self, db: &mut Db, names: &Names, types: &mut HeadTypes) -> Result<()> {
         let mut moved: BTreeMap<(&str, &str), i64> = BTreeMap::new();
         for (ident, at) in self.records.keys() {
             moved.insert((&ident[0], &ident[1]), *at);
@@ -1971,6 +2077,7 @@ impl Buffer {
         if moved.is_empty() {
             return Ok(());
         }
+        self.unindex_tokens(db, names, types, &moved)?;
         let mut stay: [Vec<&str>; 4] = Default::default();
         for ((ident, at), r) in &self.records {
             let (ty, key) = (ident[0].as_str(), ident[1].as_str());
@@ -2005,6 +2112,76 @@ impl Buffer {
                 text = names.t("text_index"),
             ),
             &[&tys, &keys, &since, s1, s2, s3, s4],
+        )?;
+        Ok(())
+    }
+
+    /// Delete the exact-lookup rows of the moved heads' number and
+    /// decimal fields: their token is made in Rust, so their old states
+    /// are read and each row is sought by `text_index_value`. A row the
+    /// buffered state holds again stays and is written again by
+    /// [`index_records`]; a `lookup_index.<type>` setting the transaction
+    /// put fills or drops what it changes after it ([`relook`]).
+    fn unindex_tokens(
+        &self,
+        db: &mut Db,
+        names: &Names,
+        types: &mut HeadTypes,
+        moved: &BTreeMap<(&str, &str), i64>,
+    ) -> Result<()> {
+        let ((tys, keys), since): ((Vec<&str>, Vec<&str>), Vec<i64>) = (moved.iter())
+            .map(|((ty, key), at)| ((*ty, *key), *at))
+            .unzip();
+        let mut old = BTreeSet::new();
+        if !tys.is_empty() {
+            let rows = db.query(
+                &format!(
+                    "SELECT h.ty, h.key, h.since, r.state \
+                     FROM unnest($1::text[], $2::text[], $3::int8[]) AS k(ty, key, since) \
+                     JOIN {heads} h ON h.ty = k.ty AND h.key = k.key AND h.since <= k.since \
+                     JOIN {records} r ON r.ty = h.ty AND r.key = h.key AND r.since = h.since",
+                    heads = names.t("records_head"),
+                    records = names.t("records"),
+                ),
+                &[&tys, &keys, &since],
+            )?;
+            for row in &rows {
+                let ty: String = row.get(0);
+                let key: String = row.get(1);
+                let at = Position(row.get::<_, i64>(2) as u64);
+                let state: String = row.get(3);
+                let (r, _) = engines::decode_record(&ty, &key, at, &state)?;
+                collect_tokens(db, names, types, &ty, &r, &mut old)?;
+            }
+        }
+        let mut new = BTreeSet::new();
+        for ((ident, at), r) in &self.records {
+            let (ty, key) = (ident[0].as_str(), ident[1].as_str());
+            if moved.get(&(ty, key)) != Some(at) {
+                continue;
+            }
+            collect_tokens(db, names, types, ty, r, &mut new)?;
+        }
+        let mut gone: [Vec<String>; 4] = Default::default();
+        for (ty, field, token, key) in old.difference(&new) {
+            gone[0].push(ty.clone());
+            gone[1].push(field.clone());
+            gone[2].push(token.clone());
+            gone[3].push(key.clone());
+        }
+        if gone[0].is_empty() {
+            return Ok(());
+        }
+        let [g1, g2, g3, g4] = &gone;
+        db.execute(
+            &format!(
+                "DELETE FROM {text} t USING unnest($1::text[], $2::text[], $3::text[], $4::text[]) \
+                 AS o(ty, field, value, key) WHERE t.ty = o.ty AND t.field = o.field \
+                 AND md5(t.value) = md5(o.value) AND t.key COLLATE \"C\" = o.key \
+                 AND t.value = o.value",
+                text = names.t("text_index"),
+            ),
+            &[g1, g2, g3, g4],
         )?;
         Ok(())
     }
@@ -2081,7 +2258,7 @@ impl Buffer {
         touched: &mut Touched,
         put: u64,
     ) -> Result<u64> {
-        self.unindex_texts(db, names)?;
+        self.unindex_texts(db, names, types)?;
         self.drop_rows(db, names)?;
         for (ty, _) in &self.dropped {
             touched.erased.insert(TypeName::from(ty.as_str()));
