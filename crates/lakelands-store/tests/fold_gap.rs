@@ -775,10 +775,10 @@ async fn a_rebuild_whose_log_read_fails_leaves_the_lake_behind_until_a_fold_catc
 
 /// A forgetting stopped between its rebuild and its reclaim
 /// (`docs/decisions/058-a-source-may-be-forgotten.md`) is reclaimed by the
-/// act's repeat, which appends nothing, or by the next writer's open, and
-/// an open after that reclaims nothing again: only
-/// an engine's fault can stop the reclaim, so the suite holds the other
-/// stops and this one stands here.
+/// act's repeat, which appends nothing, or by the road beside the next
+/// writer's open, after its answer, and an open after that reclaims
+/// nothing again: only an engine's fault can stop the reclaim, so the
+/// suite holds the other stops and this one stands here.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open() {
     let (store, cat, who, l) = lake_with_switches().await;
@@ -813,7 +813,7 @@ async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open()
         again.reclaimed.is_none(),
         "a repeat of the done act reclaims nothing: {again:?}"
     );
-    // A stop the open finishes.
+    // A stop the road beside the open finishes.
     fails.store(1, Ordering::SeqCst);
     let owed = store.forget_source(&"erp".into(), None).await.unwrap();
     assert!(owed.reclaim_owed.is_some(), "{owed:?}");
@@ -830,10 +830,12 @@ async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open()
     store.close().await.unwrap();
     drop((store, cat));
     let store = reopen().await;
+    // The open answers before the road takes the reclaim up (099).
+    until(|| done.load(Ordering::SeqCst) == before + 1).await;
     assert_eq!(
         done.load(Ordering::SeqCst),
         before + 1,
-        "the open reclaims what the act owed"
+        "the road beside the open reclaims what the act owed"
     );
     store.close().await.unwrap();
     drop(store);
@@ -843,4 +845,17 @@ async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open()
         before + 1,
         "the next open owes nothing"
     );
+}
+
+/// Wait until `done`, for a row that needs the road beside the writer to
+/// have got somewhere.
+async fn until(done: impl Fn() -> bool) {
+    for _ in 0..5_000 {
+        if done() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        tokio::task::yield_now().await;
+    }
+    panic!("waited five seconds");
 }

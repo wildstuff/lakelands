@@ -72,8 +72,8 @@ pub(crate) struct At<'a> {
     /// At an accept, what the reviewer is shown: the record before a
     /// constraint's is one both are answered (lakelands#1552).
     pub reviewer: Option<Sight<'a>>,
-    /// The view it reads.
-    pub view: &'a dyn ProjectionView,
+    /// The view it reads, through the acts still owed.
+    pub viewed: crate::restate::Viewed<'a>,
     /// The settings in force.
     pub settings: &'a BTreeMap<String, Value>,
     /// Its time.
@@ -84,6 +84,11 @@ pub(crate) struct At<'a> {
 }
 
 impl<'a> At<'a> {
+    /// The view the decision reads.
+    pub(crate) fn view(&self) -> &dyn ProjectionView {
+        self.viewed.view()
+    }
+
     /// The sights a record read for a judgement must be answered in: the
     /// judged principal's, and at an accept the reviewer's.
     pub fn sights(&self) -> impl Iterator<Item = &Sight<'a>> {
@@ -147,7 +152,7 @@ impl Decide<'_> {
     /// The record of `decl` at `key`, as the drafts so far leave it, for
     /// the judged principal.
     pub(crate) fn target(&self, decl: &TypeDecl, key: &RecordKey) -> Result<Target> {
-        let (view, pending, sees) = (self.at.view, &self.pending, &self.at.sight);
+        let (view, pending, sees) = (self.at.view(), &self.pending, &self.at.sight);
         let before = pending.record(view, &decl.name, key)?;
         let mine = match &before {
             Some(b) => sees.answers(&decl.name, b) && ends(view, pending, sees, decl, &b.fields)?,
@@ -324,7 +329,7 @@ impl Decide<'_> {
                 }
                 let plan = self.record(&lt, &links::link_key(key, to), &patch, expected, None)?;
                 cardinality(
-                    (self.at.view, &self.at.sight),
+                    (self.at.view(), &self.at.sight),
                     &self.pending,
                     (ty, &r),
                     key,
@@ -655,7 +660,8 @@ impl Decide<'_> {
             ..crate::lake::every(false)
         };
         let unheld = |r: &StoredRecord| !self.pending.holds(&decl.name, &r.key) && fits(r);
-        let found = crate::reads::at_or_below(self.at.view, &decl.name, (by, here), scan, unheld)?;
+        let found =
+            crate::reads::at_or_below(self.at.view(), &decl.name, (by, here), scan, unheld)?;
         if let Some(r) = found {
             let head = Place::of(&r, &order_by);
             let kept = best.as_ref().map(|b| Place::of(b, &order_by));
@@ -676,7 +682,7 @@ impl Decide<'_> {
         mut patch: Patch,
         expected: Option<Version>,
     ) -> Result<RecordPlan> {
-        let (o, view, sees) = (self.ontology, self.at.view, &self.at.sight);
+        let (o, view, sees) = (self.ontology, self.at.view(), &self.at.sight);
         untold_setting(sees, decl, key)?;
         // A holder of `only` is judged against the record it owns at the
         // key: another's is, to its write, a key that is free, refused
@@ -811,7 +817,7 @@ impl Decide<'_> {
             };
             let found = self
                 .pending
-                .record(self.at.view, &ty, &RecordKey::from(&**k))?;
+                .record(self.at.view(), &ty, &RecordKey::from(&**k))?;
             Ok(found.filter(|r| !r.retired))
         };
         let (from, to) = (end(links::FROM, Some(owner))?, end(links::TO, target)?);
@@ -836,7 +842,7 @@ impl Decide<'_> {
         let outputs = &mut Outputs {
             staged: Some(&staged),
             apart: Some(&self.pending.apart),
-            ..Outputs::planning(self.at.view, self.plans, &self.call.lake.keys)
+            ..Outputs::planning(self.at.view(), self.plans, &self.call.lake.keys)
         };
         let after = record::apply(self.ontology, before, &event, self.at.settings, outputs)?;
         Ok(after.expect("a record event makes a record"))
@@ -884,7 +890,7 @@ impl Decide<'_> {
             for s in o.object_sets.values().map(|e| &e.decl).filter(of) {
                 let was = self
                     .pending
-                    .member(self.at.view, &s.name, &after.ty, &after.key)?;
+                    .member(self.at.view(), &s.name, &after.ty, &after.key)?;
                 let is = self.member(s, after, self.at.settings)?;
                 if was != is {
                     own.insert((s.name.clone(), at.0.clone(), at.1.clone()), is);
@@ -922,7 +928,7 @@ impl Decide<'_> {
         drafts.extend(self.reactions(self.retiring_as, Some(before), &after)?);
         let calls = match &mut self.pending.calls {
             Some(calls) => calls,
-            none => none.insert(crate::backed::pending_calls(self.at.view)?),
+            none => none.insert(crate::backed::pending_calls(self.at.view())?),
         };
         let mine = calls.remove(&(before.ty.clone(), before.key.clone()));
         let why = "its record is retired";
@@ -946,7 +952,7 @@ impl Decide<'_> {
             return Ok(None);
         };
         let used = (source, sealed, self.next, self.at.now);
-        let read = (&self.pending.sealed, self.at.view, &*self.call.lake.keys);
+        let read = (&self.pending.sealed, self.at.view(), &*self.call.lake.keys);
         crate::sealing::kept(read, used)
     }
 
@@ -1048,7 +1054,7 @@ impl Decide<'_> {
         // sends the reference would be accepted, and by nothing else.
         // One a hiding selects is refused where the verb reads a field
         // lowered there, as on its own record below (006).
-        let (view, pending, sees) = (self.at.view, &self.pending, &self.at.sight);
+        let (view, pending, sees) = (self.at.view(), &self.pending, &self.at.sight);
         let reads = verb.reads_across(on, &|n| o.ty(n).ok()).unwrap_or_default();
         let far = |ty: &TypeName, k: &RecordKey| {
             let found = live_for(view, pending, ty, k, sees)?;
@@ -1142,6 +1148,7 @@ impl<'a> Asked<'a> {
         let sight = Sight::held(self.who, &w.ontology);
         let depth = self.lake.limits.max_depth;
         let (settings, ontology, plans) = (&w.settings, &w.ontology, &w.plans);
+        let viewed = crate::restate::Viewed::of(view, w, self.lake);
         Decide {
             call: self,
             ontology,
@@ -1149,7 +1156,7 @@ impl<'a> Asked<'a> {
             at: At {
                 sight,
                 reviewer: None,
-                view,
+                viewed,
                 settings,
                 now,
                 depth,

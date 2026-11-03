@@ -850,7 +850,8 @@ is on it yet.
   act and a build on the road.
 
 **R2, first pull (lakelands#1686).** Purge is the first act on the road; remove and forget
-keep their one-append path, with `act_whole` set on it, until the second pull.
+keep their one-append path, with `act_whole` set on it, until the second pull, which puts
+remove on the frame (lakelands#1691); forget follows in lakelands#1700.
 
 - **The act's frame.** `source_purged` opens a purge in the log and `act_whole` ends every act:
   kind codes 25 and 26, appended last so no code moves, and the log format stays 23. An
@@ -863,7 +864,11 @@ keep their one-append path, with `act_whole` set on it, until the second pull.
   the act's position as its window. The list holds every act the log has, closed or not, and
   both frame events write it whole: no act is ever dropped from it.
 - **Parts.** The walk judges the selection off the writer, and the report is the walk's.
-  The first turn folds the tail past the walk's view into that selection — it reads again
+  A removal's first turn reads its report again from the records it judged again and the
+  tail folded in, so `retired`, `types`, `kept`, `breaches`, `references`, `recomputed`
+  and `views` name what the act takes; `taken_since` is not built, the act's report being
+  its own and not the walk's patched. The first turn folds the tail past the walk's view
+  into that selection — it reads again
   only the keys the tail wrote — names the records outside it that refer in, and appends
   `source_purged` beside the quarantine closes, recording the act's position. Each part
   then takes up to `part_events` of the selection's records in type and key order, rereads
@@ -902,8 +907,8 @@ keep their one-append path, with `act_whole` set on it, until the second pull.
   `ACT_REPEAT_FINISHES_AND_APPENDS_NOTHING`, `ACT_REBUILD_SAME_LAKE`. The rows that need a
   reader held at an owed act — `ACT_WALKS_OFF_THE_WRITER`, `ACT_BETWEEN_PARTS_EXPORTS`,
   `ACT_BETWEEN_PARTS_VERIFIES`, `POLL_STOPS_BEFORE_AN_OWED_ACT`,
-  `ACT_TAIL_OVERRUN_MOVES_THE_VIEW` — wait for the second pull, which brings reading through
-  an owed act, as do the remove and forget rows.
+  `ACT_TAIL_OVERRUN_MOVES_THE_VIEW` — waited for the second pull, which brought reading
+  through an owed act; it took them. The forget rows wait for lakelands#1700.
 - **Measured** on the shared machine of this step, in a debug run, not a quiet one: a part of
   500 retirements — the act's turns after its first, a mean over five, on 2 000 records —
   took 94 to 128 ms on memory and 412 to 696 ms on SQLite (two runs each); PostgreSQL's run
@@ -914,6 +919,60 @@ keep their one-append path, with `act_whole` set on it, until the second pull.
   `a_write_waits_for_at_most_a_part_of_a_purge`, which runs on every engine; the `pg` leg
   is CI's.
 
+**R2, second pull, remove on the road (lakelands#1691).** `remove_values` runs as an act
+on the first pull's frame. Forget keeps its one-append path until lakelands#1700.
+
+- **The act.** The walk gathers the selection off the writer and judges the records it
+  reached. The first turn folds the tail past the walk's view into that gathering — a
+  selected event goes inside, any other event of the source outside — cuts the versions
+  again, reads again the keys the tail moved, refuses `RemoveNotShredded` before
+  appending, and appends `values_removed`, the closes that fit, the first retirements and
+  `act_whole` where it fits. It then destroys the versions that remain and gives the
+  source its new version, so erasure happens in the first turn. A `written_before`
+  selection moves its cut forward over the tail it reads, since `known_at` never falls.
+  Later turns append the closes and retirements still owed, each read again as the part
+  takes it, and `act_whole` ends them.
+- **The restate and the reclaim follow the whole.** The act's last turn finishes what it
+  appended through `finish_forgetting`. `reclaim` marks an act done only where its
+  `act_whole` is in the log, and `finish_forgetting` restates no act between its parts:
+  a rebuild that meets one leaves it owed, and its last turn marks it done.
+- **The open no longer finishes an act.** `Turn::leased` appends the lake's own events
+  and nothing else. `OWED` gains remove's unwhole acts and a settle job for the restate
+  and reclaim a whole act owes or a crash left, and both run beside the writer after the
+  open answers. `rebuilt_at_open` therefore no longer says the open folded the log to
+  finish an act, and a standby's taking over leaves that work to the road.
+- **A write reads through an owed act.** `restate::Viewed` folds again, for one key and
+  in memory, the events of a record a source with an owed act wrote, through the
+  erasure the act names; a write's `requires`, its functions and its backed fields judge
+  on the restated record. A writer's open tells itself the acts the lists hold, which
+  its fold from the projection's mark does not meet, and dooms the versions those acts
+  took, so both hold from the open, before the road has walked again.
+- **Rows taken on every engine.** The five that waited on reading through an owed act —
+  `ACT_WALKS_OFF_THE_WRITER`, `ACT_BETWEEN_PARTS_VERIFIES`, `ACT_BETWEEN_PARTS_EXPORTS`,
+  `POLL_STOPS_BEFORE_AN_OWED_ACT`, `ACT_TAIL_OVERRUN_MOVES_THE_VIEW` — and remove's:
+  `ACT_ERASES_IN_ITS_FIRST_TURN`, `REMOVE_TAKES_A_DELIVERY_THAT_GREW`,
+  `REMOVE_LEAVES_A_LATER_DELIVERY`, `REMOVE_WRITTEN_BEFORE_JUDGED_AT_ITS_FIRST_TURN`,
+  `REMOVE_TAIL_WRITE_KEEPS_ITS_VERSION`,
+  `REMOVE_TAKEN_IN_UNDER_A_KEPT_VERSION_IS_NOT_SHREDDED`,
+  `REMOVE_STALE_ON_ANOTHER_SOURCES_WRITE`, `ACTS_OF_ONE_SOURCE_OVERLAP`,
+  `WRITE_READS_THROUGH_AN_OWED_ACT`, `REOPENED_WRITE_READS_THROUGH_AN_OWED_ACT`,
+  `REPORT_NOT_STALE_BY_A_WRITE_ELSEWHERE`.
+  `REMOVE_CRASH_SHREDDED` is restated for the act's first turn: a version the act took
+  seals nothing from then, so the source seals under a new one while the act is owed, and
+  only a destroy that failed inside that turn is `key_missing` (065). The forgetting's
+  rows wait for lakelands#1700.
+- **Measured** on the shared machine of this step, in a debug run, not a quiet one:
+  twenty writes sent beside a remove of parts of one retirement each waited for exactly
+  the one part in front of them — p50 6.3 ms and longest 14.5 ms on memory, p50 14.6 ms
+  and longest 17.6 ms on SQLite. A part of 500 retirements, on 2 000 records: 2.76 s in
+  five turns after `values_removed`, 553 ms a turn, on memory; 6.93 s, 1 386 ms a turn,
+  on SQLite. Both figures are the store's `a_write_waits_for_at_most_a_part_of_a_remove`,
+  which runs on every engine; the `pg` leg is CI's. The test holds the turn between
+  parts with an entry of its own that reads the log's tip, queues the act's next part
+  and then the write behind it, and counts the retirements between the gate's tip and
+  the write's own position, so neither the scheduler nor a projection mark behind the
+  log can widen the count; fifty runs with every core busy did not.
+
 ## How it came to be
 
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
@@ -921,8 +980,9 @@ keep their one-append path, with `act_whole` set on it, until the second pull.
 - R1 built by lakelands#1675; what the tree took is under "As built".
 - R2's first pull built by lakelands#1686 with purge as the first act on the road, and the
   report id as the position the report was read at beside a digest of the selection it
-  read there; remove and forget, and a write reading through an owed act, are the
-  second pull.
+  read there.
+- R2's second pull built by lakelands#1691 with remove on the road and a write reading
+  through an owed act; forget follows in lakelands#1700.
 - Amended by 102 (lakelands#1639), proposed for 0.23.0: a thinning act begins
   with `values_thinned`, and a write at a key it selected is refused rather
   than reading through the act.

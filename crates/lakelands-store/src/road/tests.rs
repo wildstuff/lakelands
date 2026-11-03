@@ -15,13 +15,15 @@ use lakelands_api::event::Digest;
 use lakelands_api::location::{EngineConfig, PgTls, PgTlsMode, PgTuning};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::{SETTING_TYPE, Seams};
-use lakelands_api::{Location, Position};
+use lakelands_api::write::Selection;
+use lakelands_api::{Location, Position, Timestamp};
 use lakelands_core::conformance::fixture::{self as fx, Lake as Doors};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 
 use super::*;
 use crate::doors::{Store, opened_owing, standing_by};
+use crate::exec;
 
 /// Where the counter keeps how far it has counted.
 const KEPT: &str = "test:road";
@@ -102,7 +104,13 @@ fn kept(view: &dyn ProjectionView) -> Option<(u32, u32, u64)> {
 }
 
 /// The kinds the test's open finishes: the store's, and the counter's.
-const KINDS: &[Owes] = &[crate::purge::owed, crate::build::owed, owes];
+const KINDS: &[Owes] = &[
+    crate::purge::owed,
+    crate::remove::owed,
+    crate::remove::settle_owed,
+    crate::build::owed,
+    owes,
+];
 
 #[test]
 fn every_kind_the_store_owes_the_test_also_runs() {
@@ -291,9 +299,10 @@ impl Place {
         lake.expect("the lake opens")
     }
 
-    /// Open as [`Self::open`] does, again while the lake a test stopped
-    /// still holds the lease: the handle that held it lets it go as its
-    /// last reference drops, a moment after the test stopped it.
+    /// Open as [`Self::open`] does, again while a lake a test stopped, or
+    /// the road beside a writer, still holds the lease: the handle that
+    /// held it lets it go as its last reference drops, a moment after the
+    /// test stopped it or the road's turn ended.
     async fn open_when_free(&self, mode: OpenMode) -> Arc<Lake> {
         for _ in 0..1_000 {
             let (at, seams) = (self.location.clone(), self.seams.clone());
@@ -455,11 +464,82 @@ fn head(lake: &Lake) -> Position {
     view.position().unwrap_or(Position::GENESIS)
 }
 
+/// A gate the test holds at the writer: an entry that takes the turn
+/// after whatever part is in flight, reads the log's tip, and waits for
+/// the test to let it go. The act queues its next part behind it; a write
+/// the test queues behind that part waits for it and for nothing before
+/// it. The tip is the log as everything in front of the gate left it, so
+/// neither the scheduler's interleaving nor a projection mark behind the
+/// log can widen what the write is counted to have waited for (099).
+struct Gate {
+    /// The log's tip when the gate took the turn.
+    tip: Position,
+    /// Letting it go: dropping it.
+    release: Option<std::sync::mpsc::Sender<()>>,
+    /// The entry's task.
+    held: tokio::task::JoinHandle<()>,
+}
+
+impl Gate {
+    /// Take the turn after the part in flight, read the tip, and hold.
+    async fn hold(lake: &Arc<Lake>) -> Gate {
+        let (said, tip) = oneshot::channel();
+        let (go, went) = std::sync::mpsc::channel::<()>();
+        let gate = Arc::clone(lake);
+        let held = tokio::spawn(async move {
+            let _ = exec::write(&gate, move |t| {
+                let tip = t.engine.tip()?.map_or(Position::GENESIS, |(at, _)| at);
+                let _ = said.send(tip);
+                let _ = went.recv();
+                Ok(())
+            })
+            .await;
+        });
+        let tip = tip.await.expect("the gate reads the log's tip");
+        Gate {
+            tip,
+            release: Some(go),
+            held,
+        }
+    }
+
+    /// Let what stands behind it run.
+    fn release(mut self) -> tokio::task::JoinHandle<()> {
+        drop(self.release.take());
+        self.held
+    }
+}
+
+/// Wait up to `within`, yielding and never sleeping, until `ready` holds
+/// or fail saying `what`: what the test asks is the writer's queue, which
+/// nothing tells it of, so it asks again rather than sleeping on an
+/// estimate of how long the road takes.
+async fn until(within: Duration, ready: impl Fn() -> bool, what: &str) {
+    let until = Instant::now() + within;
+    while !ready() {
+        assert!(Instant::now() < until, "{what}");
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Wait until `n` entries stand in `lake`'s writer queue, behind the gate
+/// that holds the turn.
+async fn behind(lake: &Lake, n: usize) {
+    until(
+        Duration::from_secs(20),
+        || exec::queued(lake) >= n,
+        &format!("the writer's queue never held {n} entries"),
+    )
+    .await;
+}
+
 /// The step's own numbers (099, R2): a part is the act's turn, and a write
-/// sent beside the act waits for at most the part in front of it. Each
-/// write's wait is read from the log — the retirements that landed while
-/// it waited — and the parts' duration from the act's turns after its
-/// first, which the log tells are over once `source_purged` is in it.
+/// sent beside the act waits for at most the part in front of it. The test
+/// holds the writer between parts, queues the act's next part and then the
+/// write behind its gate, and reads the wait from the log — the
+/// retirements between the gate's tip and the write's own position. The
+/// parts' duration comes from the act's turns after its first, which the
+/// log tells are over once `source_purged` is in it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_write_waits_for_at_most_a_part_of_a_purge() {
     for on in engines() {
@@ -489,28 +569,41 @@ async fn a_write_waits_for_at_most_a_part_of_a_purge() {
         crate::purge::start(&lake, "crm".into(), None, None, Some(tx));
         // Wait for the act's first turn: `source_purged` is its event.
         let first = start.next();
-        let mut began = None;
-        for _ in 0..5_000 {
-            if head(&lake) >= first {
-                began = Some(Instant::now());
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        let _began = began.expect("the act's first turn appends `source_purged`");
+        until(
+            Duration::from_secs(30),
+            || head(&lake) >= first,
+            "the act's first turn appends `source_purged`",
+        )
+        .await;
         let mut waited = Vec::new();
         let mut passed = Vec::new();
         for i in 0..20 {
+            // The gate takes the writer after the part in flight; the
+            // act's next part and then the write stand behind it, in that
+            // order.
+            let gate = Gate::hold(&lake).await;
+            let tip = gate.tip;
+            behind(&lake, 1).await;
             let key = format!("w{i}");
-            let before = head(&lake);
+            let other = fx::Lake {
+                cat: doors.cat.clone(),
+                own: doors.own.clone(),
+            };
+            let writing =
+                tokio::spawn(async move { other.upsert("other", &key, json!({"n": "x"})).await });
+            behind(&lake, 2).await;
             let at = Instant::now();
-            let wrote = doors.upsert("other", &key, json!({"n": "x"}));
-            let wrote = wrote.await.expect("the write lands");
+            let released = gate.release();
+            let wrote = writing
+                .await
+                .expect("the write's task ends")
+                .expect("the write lands");
+            released.await.expect("the gate's entry ends");
             let lakelands_api::Outcome::Applied { position, .. } = wrote else {
                 panic!("{on:?}: the write applied");
             };
             waited.push(at.elapsed());
-            let retired = retirements(&lake, before, position);
+            let retired = retirements(&lake, tip, position);
             assert!(
                 retired <= room as usize,
                 "{on:?}: write {i} waited for {retired} retirements, more than a part of {room}"
@@ -557,15 +650,13 @@ async fn a_write_waits_for_at_most_a_part_of_a_purge() {
         let (tx, ended) = oneshot::channel();
         crate::purge::start(&lake, "crm".into(), None, None, Some(tx));
         let first = start.next();
-        let mut began = None;
-        for _ in 0..10_000 {
-            if head(&lake) >= first {
-                began = Some(Instant::now());
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        let began = began.expect("the act's first turn appends `source_purged`");
+        until(
+            Duration::from_secs(30),
+            || head(&lake) >= first,
+            "the act's first turn appends `source_purged`",
+        )
+        .await;
+        let began = Instant::now();
         let whole = tokio::time::timeout(Duration::from_secs(180), ended)
             .await
             .expect("the act ends in time")
@@ -578,6 +669,134 @@ async fn a_write_waits_for_at_most_a_part_of_a_purge() {
         eprintln!(
             "purge {on:?}: {of} retirements in {turns} turns after the first of a part of {room}: \
              {timed:?} after `source_purged`, {each:.1} ms a turn"
+        );
+    }
+}
+
+/// A remove holds the writer for at most the part in front of a write,
+/// as a purge does: the gate below the parts puts the write behind the
+/// act's next part alone, and the act's turns after its first are timed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_waits_for_at_most_a_part_of_a_remove() {
+    let all = || Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    for on in engines() {
+        // A part of one record: every part is one retirement, so a write
+        // that waited for two parts would find two of them in the log.
+        let (of, room) = (200usize, 1u32);
+        let mut place = Place::new(on, "remove-waits");
+        place.location.limits.part_events = room;
+        let (lake, doors) = lake_of(&place).await;
+        // A type only a source writes, so `crm` may bring its records.
+        doors
+            .declare(fx::type_decl(
+                "brought",
+                vec![fx::sourced("n", StorageKind::Text)],
+            ))
+            .await
+            .expect("the type is declared");
+        let records = (0..of)
+            .map(|i| fx::source_record("brought", &format!("n{i}"), json!({"n": "x"})))
+            .collect();
+        doors
+            .ingest("crm", records)
+            .await
+            .expect("the source brings its records");
+        let start = head(&lake);
+        let (tx, ended) = oneshot::channel();
+        crate::remove::start(&lake, "crm".into(), all(), false, None, Some(tx));
+        // Wait for the act's first turn: `values_removed` is its event.
+        let first = start.next();
+        until(
+            Duration::from_secs(30),
+            || head(&lake) >= first,
+            "the act's first turn appends `values_removed`",
+        )
+        .await;
+        let mut waited = Vec::new();
+        let mut passed = Vec::new();
+        for i in 0..20 {
+            // The gate takes the writer after the part in flight; the
+            // act's next part and then the write stand behind it, in that
+            // order.
+            let gate = Gate::hold(&lake).await;
+            let tip = gate.tip;
+            behind(&lake, 1).await;
+            let key = format!("w{i}");
+            let other = fx::Lake {
+                cat: doors.cat.clone(),
+                own: doors.own.clone(),
+            };
+            let writing =
+                tokio::spawn(async move { other.upsert("other", &key, json!({"n": "x"})).await });
+            behind(&lake, 2).await;
+            let at = Instant::now();
+            let released = gate.release();
+            let wrote = writing
+                .await
+                .expect("the write's task ends")
+                .expect("the write lands");
+            released.await.expect("the gate's entry ends");
+            let lakelands_api::Outcome::Applied { position, .. } = wrote else {
+                panic!("{on:?}: the write applied");
+            };
+            waited.push(at.elapsed());
+            let retired = retirements(&lake, tip, position);
+            assert!(
+                retired <= room as usize,
+                "{on:?}: write {i} waited for {retired} retirements, more than a part of {room}"
+            );
+            passed.push(retired);
+        }
+        let whole = tokio::time::timeout(Duration::from_secs(180), ended)
+            .await
+            .expect("the act ends in time")
+            .expect("the act answers");
+        whole.expect("the act is whole");
+        assert!(
+            passed.iter().any(|n| *n > 0),
+            "{on:?}: every write landed before a part did"
+        );
+        let waited = spread(&mut waited);
+        eprintln!(
+            "remove {on:?}: 20 writes beside parts of {room}, the retirements each waited for \
+             {passed:?}: waited {waited}"
+        );
+
+        // A part of `part_events`: the act's turns after its first, timed
+        // from `values_removed` to its answer.
+        let (of, room) = (2_000usize, 500u32);
+        let mut place = Place::new(on, "remove-part-time");
+        place.location.limits.part_events = room;
+        let (lake, doors) = lake_of(&place).await;
+        doors
+            .declare(fx::type_decl(
+                "brought",
+                vec![fx::sourced("n", StorageKind::Text)],
+            ))
+            .await
+            .expect("the type is declared");
+        let records = (0..of)
+            .map(|i| fx::source_record("brought", &format!("n{i}"), json!({"n": "x"})))
+            .collect();
+        doors
+            .ingest("crm", records)
+            .await
+            .expect("the source brings its records");
+        let (tx, ended) = oneshot::channel();
+        crate::remove::start(&lake, "crm".into(), all(), false, None, Some(tx));
+        let began = Instant::now();
+        let whole = tokio::time::timeout(Duration::from_secs(180), ended)
+            .await
+            .expect("the act ends in time")
+            .expect("the act answers");
+        whole.expect("the act is whole");
+        let timed = began.elapsed();
+        let turns = (of as u32).div_ceil(room) + u32::from((of as u32).is_multiple_of(room));
+        let each = timed.as_secs_f64() * 1e3 / f64::from(turns);
+        assert!(turns > 1);
+        eprintln!(
+            "remove {on:?}: {of} retirements in {turns} turns after the first of a part of {room}: \
+             {timed:?} after `values_removed`, {each:.1} ms a turn"
         );
     }
 }
@@ -1058,10 +1277,11 @@ async fn a_setting_build_stopped_between_turns_is_finished_by_the_next_open() {
             whole,
             "{on:?}: the open never finished the build; `n` is still building"
         );
-        // A writer whose build is whole owes none: a second open finds no
-        // mark and starts nothing.
+        // A writer whose build is whole owes none: a second open, taken
+        // once the road's last turn has let the lake go, finds no mark and
+        // starts nothing.
         drop(lake);
-        let lake = place.open(OpenMode::Write).await;
+        let lake = place.open_when_free(OpenMode::Write).await;
         let view = lake.engine.view(None).expect("a view");
         let chosen = view.chosen(&"row".into()).expect("the chosen");
         assert!(

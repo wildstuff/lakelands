@@ -34,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::engine::{Choose, Chosen, Declared, Look, TextCounts};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
-use lakelands_api::ontology::TypeDecl;
+use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{FeedFilter, SETTING_TYPE, SORT_INDEX_SETTING, is_kept_name};
 use lakelands_api::write::Declaration;
@@ -1347,7 +1347,7 @@ pub(crate) fn index_record(
     let fresh = prior.is_none();
     if let Some(prior) = prior {
         unlength(conn, &r.ty, &r.key)?;
-        unlook(conn, prior)?;
+        unlook(conn, decl, prior)?;
         drop("DELETE FROM edges WHERE src_ty = ?1 AND src_key = ?2")?;
         // Only a type the lake keeps an order index for has rows in it:
         // the setting's rebuild and a redeclaration drop a type's rows whole.
@@ -1359,11 +1359,14 @@ pub(crate) fn index_record(
         if looked.is_some_and(|l| !l.contains(field)) {
             continue;
         }
-        if let Some(text) = value.as_str() {
+        // A number or decimal field keeps its value's token; a text
+        // field keeps its text (097 §A number's exact lookup).
+        let kind = decl.and_then(|d| engines::field_kind(d, field)).copied();
+        if let Some(token) = engines::lookup_token(value, kind) {
             conn.prepare_cached(
                 "INSERT OR IGNORE INTO text_index (ty, field, value, key) VALUES (?1, ?2, ?3, ?4)",
             )
-            .and_then(|mut s| s.execute(params![ty, field.as_str(), text, key]))
+            .and_then(|mut s| s.execute(params![ty, field.as_str(), token, key]))
             .map_err(sql)?;
         }
     }
@@ -1428,16 +1431,17 @@ pub(crate) fn index_record(
 }
 
 /// Delete the exact-text rows a head state wrote, each by the primary key
-/// its field and text give: a row is written for a text field and none
-/// other, so these are all the record has.
-fn unlook(conn: &Connection, prior: &StoredRecord) -> Result<()> {
+/// its field and token give: a row is written for a text, number or
+/// decimal field and none other, so these are all the record has.
+fn unlook(conn: &Connection, decl: Option<&TypeDecl>, prior: &StoredRecord) -> Result<()> {
     let (ty, key) = (prior.ty.as_str(), prior.key.as_str());
     for (field, value) in &prior.fields {
-        if let Some(text) = value.as_str() {
+        let kind = decl.and_then(|d| engines::field_kind(d, field)).copied();
+        if let Some(token) = engines::lookup_token(value, kind) {
             run(
                 conn,
                 "DELETE FROM text_index WHERE ty = ?1 AND field = ?2 AND value = ?3 AND key = ?4",
-                params![ty, field.as_str(), text, key],
+                params![ty, field.as_str(), token, key],
             )?;
         }
     }
@@ -1828,7 +1832,8 @@ pub(crate) fn remove_vector(conn: &Connection, (ty, key, field): (&str, &str, &s
 /// projection ever declared, and its rows in the engine's indexes.
 pub(crate) fn drop_record(conn: &Connection, ty: &TypeName, key: &RecordKey) -> Result<()> {
     if let Some(head) = head_record(conn, ty, key)? {
-        unlook(conn, &head)?;
+        let decl = type_at(conn, ty, None)?;
+        unlook(conn, decl.as_ref(), &head)?;
     }
     run(
         conn,
@@ -2104,6 +2109,35 @@ pub(crate) fn relook(
     let setting =
         |key: &str| head_record(conn, &TypeName::from(SETTING_TYPE), &RecordKey::from(key));
     for (ty, f, comes) in engines::relooked(heads, moved, &was, setting)? {
+        let field = FieldName::from(f.as_str());
+        let numbered = heads.values().find_map(|d| match d {
+            Declaration::Type(t) if t.name.as_str() == ty => {
+                engines::field_kind(t, &field).copied()
+            }
+            _ => None,
+        });
+        if comes && matches!(numbered, Some(StorageKind::Number | StorageKind::Decimal)) {
+            // The token is made in Rust, so the fill reads the type's
+            // head states rather than asking `json_extract` for them.
+            let rows = records(conn, heads!(), params![ty.as_str()])?;
+            for r in &rows {
+                let value = r.fields.get(&field);
+                if let Some(token) = value.and_then(|v| engines::lookup_token(v, numbered)) {
+                    run(
+                        conn,
+                        "INSERT OR IGNORE INTO text_index (ty, field, value, key) \
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![ty.as_str(), f.as_str(), token, r.key.as_str()],
+                    )?;
+                }
+            }
+            run(
+                conn,
+                "INSERT INTO lookup_fields (ty, field) VALUES (?1, ?2)",
+                params![ty, f],
+            )?;
+            continue;
+        }
         let statements = match comes {
             true => [
                 "INSERT OR IGNORE INTO text_index (ty, field, value, key) \

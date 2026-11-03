@@ -26,7 +26,7 @@ use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Proposal, ProposalFilter};
-use lakelands_core::engines;
+use lakelands_core::engines::{self, Holders};
 use lakelands_core::feed::{self, Seek};
 
 use crate::projection::Projection;
@@ -116,9 +116,43 @@ impl ProjectionView for MemView {
 
     fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
         Ok(self.read(|p, at| {
+            let decl = p.type_at(ty, at);
+            // A count that must hold a text in a text key reads the records
+            // at the keys it makes. A kept name's interval seeks the
+            // key-ordered road instead: a text lookup would read the keys
+            // holding the text and walk past its bound.
+            if scan.range.is_none()
+                && let Some(keys) = engines::key_lookup(decl, scan)
+            {
+                let records: Vec<StoredRecord> = keys
+                    .iter()
+                    .filter_map(|k| p.record_of(ty, &RecordKey::from(k.as_str()), at))
+                    .collect();
+                return engines::count_of(decl, &records, scan);
+            }
+            // At the head, a count that must hold a token the exact lookup
+            // keeps reads the records holding it, not the type (057).
+            let head = at.is_some() && at == p.folded;
+            let mut held = None;
+            let lookup = match (head && scan.range.is_none(), decl) {
+                (true, decl) => {
+                    let looked = p.looked(ty, decl.is_some());
+                    let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
+                    let kind =
+                        |f: &FieldName| decl.and_then(|d| engines::field_kind(d, f)).copied();
+                    engines::text_lookups(scan, &kept, &kind)
+                }
+                _ => None,
+            };
             let count: std::result::Result<_, std::convert::Infallible> =
-                engines::count_in_key_order(p.type_at(ty, at), scan, |after, n| {
-                    Ok(p.records_after(ty, at, after, n))
+                engines::count_in_key_order(decl, scan, |after, n| {
+                    let rows = match &lookup {
+                        Some((field, tokens)) => {
+                            p.lookup_after(ty, field, tokens, &mut held, at, after, n)
+                        }
+                        None => p.records_after(ty, at, after, scan.range.as_ref(), n),
+                    };
+                    Ok(rows)
                 });
             count.unwrap_or_else(|never| match never {})
         }))
@@ -127,11 +161,37 @@ impl ProjectionView for MemView {
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         Ok(self.read(|p, at| {
             let decl = p.type_at(ty, at);
+            // A scan that must hold a text in a text key reads the records
+            // at the keys it makes. A kept name's interval seeks the
+            // key-ordered road instead: a text lookup would read the keys
+            // holding the text and walk past its bound.
+            if scan.range.is_none()
+                && let Some(keys) = engines::key_lookup(decl, scan)
+            {
+                let records: Vec<StoredRecord> = keys
+                    .iter()
+                    .filter_map(|k| p.record_of(ty, &RecordKey::from(k.as_str()), at))
+                    .collect();
+                return engines::scan(decl, &records, scan);
+            }
+            let head = at.is_some() && at == p.folded;
+            let looked = p.looked(ty, head && decl.is_some());
+            let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
+            let kind = |f: &FieldName| decl.and_then(|d| engines::field_kind(d, f)).copied();
             if scan.order_by.is_empty() {
-                // Ordered by the key alone: read from `after`, stop when full.
+                // Ordered by the key alone: read from `after`, stop when full;
+                // at the head, from the records holding the tokens it must.
+                let lookup = engines::text_lookups(scan, &kept, &kind)
+                    .filter(|_| head && scan.range.is_none());
+                let mut held = None;
                 let page: std::result::Result<_, std::convert::Infallible> =
                     engines::scan_in_key_order(decl, scan, |after, n| {
-                        let rows = p.records_after(ty, at, after, n);
+                        let rows = match &lookup {
+                            Some((field, tokens)) => {
+                                p.lookup_after(ty, field, tokens, &mut held, at, after, n)
+                            }
+                            None => p.records_after(ty, at, after, scan.range.as_ref(), n),
+                        };
                         engines::count_walk(rows.len());
                         Ok(rows)
                     });
@@ -158,6 +218,21 @@ impl ProjectionView for MemView {
                     }
                     _ => None,
                 };
+                // At the head a token the exact lookup keeps narrows the
+                // index rows read to the records holding it (057).
+                let lookup = engines::text_lookup(scan, &kept, &kind).filter(|_| changed.is_none());
+                let holders = (engines::Holders::of(lookup.as_ref(), |f, t, n| {
+                    Ok::<_, std::convert::Infallible>(p.holders(ty, f, t, n))
+                }))
+                .unwrap_or_else(|never| match never {});
+                let holds = |key: &RecordKey| match &lookup {
+                    None => true,
+                    Some((field, token)) => p.holds(ty, field, token, key),
+                };
+                let few = match &holders {
+                    Holders::Few(field, token, _) => Some((field, token)),
+                    _ => None,
+                };
                 // The index and the records without a row answer the head,
                 // a key put since included: the changed keys' states at
                 // `at` take their place.
@@ -172,8 +247,27 @@ impl ProjectionView for MemView {
                     _ => None,
                 };
                 let sorted = |from: Option<(&[u8], &str)>, n| {
-                    let rows =
-                        p.sorted_after(ty, &first.field, first.dir, window.as_ref(), from, n);
+                    let rows = match &few {
+                        Some((looked, token)) => p.few_after(
+                            ty,
+                            &first.field,
+                            first.dir,
+                            window.as_ref(),
+                            looked,
+                            token,
+                            from,
+                            n,
+                        ),
+                        _ => p.sorted_after(
+                            ty,
+                            &first.field,
+                            first.dir,
+                            window.as_ref(),
+                            Some(&holds),
+                            from,
+                            n,
+                        ),
+                    };
                     engines::count_walk(rows.len());
                     Ok(rows
                         .into_iter()
@@ -186,12 +280,12 @@ impl ProjectionView for MemView {
                     // Key-ordered batches, less the records the index holds
                     // for the field.
                     loop {
-                        let batch = p.records_after(ty, p.folded, from.as_deref(), n);
+                        let batch = p.records_after(ty, p.folded, from.as_deref(), None, n);
                         engines::count_walk(batch.len());
                         let done = batch.len() < n as usize;
                         for r in batch {
                             from = Some(r.key.to_string());
-                            if !p.has_sorted(ty, &r.key, &first.field) {
+                            if !p.has_sorted(ty, &r.key, &first.field) && holds(&r.key) {
                                 out.push(r);
                                 if out.len() >= n as usize {
                                     return Ok(out);
@@ -216,6 +310,19 @@ impl ProjectionView for MemView {
                         }
                     };
                 return page.unwrap_or_else(|never| match never {});
+            }
+            // In a field the lake does not index, the records holding the
+            // token are read, or the type.
+            if let Some((field, token)) = engines::text_lookup(scan, &kept, &kind).filter(|_| head)
+            {
+                let records: Vec<StoredRecord> = p
+                    .lookup
+                    .get(&(ty.clone(), field, token))
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|key| p.record_of(ty, key, at))
+                    .collect();
+                return engines::scan(decl, &records, scan);
             }
             engines::scan(decl, &p.records_at(ty, at).collect::<Vec<_>>(), scan)
         }))

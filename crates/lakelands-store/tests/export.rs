@@ -421,8 +421,9 @@ async fn an_export_through_a_feed_that_skips_an_event_is_refused() {
 
 /// An import whose reclaim fails is imported all the same (lakelands#1179):
 /// the removal the export holds is finished but for the reclaim, the
-/// value reads as erased, the writer's next open owes the reclaim while it
-/// fails, naming its cause alone, and a second import onto the lake is refused as onto any lake.
+/// value reads as erased, the road beside the writer's next open takes the
+/// reclaim up after its answer and the open owes it while it fails, naming
+/// its cause alone, and a second import onto the lake is refused as onto any lake.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_import_whose_reclaim_fails_is_imported_owing_it() {
     use lakelands_core::conformance::fixture::{ingest, source_record};
@@ -475,6 +476,9 @@ async fn an_import_whose_reclaim_fails_is_imported_owing_it() {
     let opened = lakelands_store::open(at.clone(), seams.clone(), OpenMode::Write)
         .await
         .unwrap();
+    // The road beside the writer takes the reclaim up after the open has
+    // answered (099): wait, bounded, for it to fail and be owed.
+    until(|| opened.reclaim_owed().is_some()).await;
     // The cause alone, which a host shows as it is: not the whole error.
     let owed = opened.reclaim_owed().unwrap_or_default();
     assert!(
@@ -501,4 +505,17 @@ async fn an_import_whose_reclaim_fails_is_imported_owing_it() {
         refused.is_err_and(|e| e.contains("ImportNotEmpty")),
         "a second import onto the lake is refused as not empty: {again:?}"
     );
+}
+
+/// Wait until `done`, for a row that needs the road beside the writer to
+/// have got somewhere.
+async fn until(done: impl Fn() -> bool) {
+    for _ in 0..5_000 {
+        if done() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        tokio::task::yield_now().await;
+    }
+    panic!("waited five seconds");
 }

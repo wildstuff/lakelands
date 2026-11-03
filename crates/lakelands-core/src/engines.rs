@@ -37,7 +37,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 
 use lakelands_api::engine::{
-    After, CanonicalEvent, Choose, Chosen, Rankings, Scan, TextCounts, TextStats,
+    After, CanonicalEvent, Choose, Chosen, KeyRange, Rankings, Scan, TextCounts, TextStats,
 };
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
@@ -86,46 +86,143 @@ pub fn declaration_key(d: &Declaration) -> String {
     }
 }
 
+/// The token a value is looked up by in a field of `kind`: a text (a
+/// reference's value included) as it is; a number or a decimal as its
+/// number normalised, `as_number(value).normalize()` written out, so `-0`
+/// and `0` are one token and `7`, `7.00` and `'7'` alike are `7`. `None`
+/// for a value of a number field that reads as no number: it keeps no row
+/// and the read takes the old road
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §A
+/// number's exact lookup). A field whose kind is not known is looked up
+/// by its text, as it was before numbers were.
+pub fn lookup_token(value: &Value, kind: Option<StorageKind>) -> Option<String> {
+    match kind {
+        Some(StorageKind::Number | StorageKind::Decimal) => {
+            let read = crate::expr::eval::as_number(&crate::expr::eval::from_json(value))?;
+            Some(read.normalize().to_string())
+        }
+        _ => value.as_str().map(str::to_owned),
+    }
+}
+
+/// The token a literal asks a field of `kind` for, if it asks for one: on
+/// a text field a text that reads as neither a number nor an instant (the
+/// evaluator compares such text as text); on a number or decimal field
+/// any number, written as [`lookup_token`] writes it, so `= 7`, `= 7.00`
+/// and `= '7'` reach the same set.
+fn literal_token(lit: &Literal, kind: Option<StorageKind>) -> Option<String> {
+    match kind {
+        Some(StorageKind::Number | StorageKind::Decimal) => {
+            let number = match lit {
+                Literal::Number(n) => n.as_str(),
+                Literal::Text(t) => t.as_str(),
+                _ => return None,
+            };
+            let read: rust_decimal::Decimal = number.parse().ok()?;
+            Some(read.normalize().to_string())
+        }
+        _ => match lit {
+            Literal::Text(t)
+                if t.parse::<rust_decimal::Decimal>().is_err()
+                    && Timestamp::denoted(t).is_err() =>
+            {
+                Some(t.clone())
+            }
+            _ => None,
+        },
+    }
+}
+
 /// A narrowing an engine may take from a filter, with the one evaluator's
 /// meaning: when the filter is, or has as one of its `and` terms,
 /// `field = 'text'` whose text reads neither as a number nor as an
 /// instant, only records whose `field` holds exactly that JSON string can
-/// be selected (the evaluator compares such text as text). An engine may
-/// then look the candidates up by that value; it still evaluates the whole
-/// filter on each.
-pub fn exact_text_term(filter: &Expr) -> Option<(FieldName, String)> {
-    exact_text_terms(filter).into_iter().next()
+/// be selected (the evaluator compares such text as text); on a number or
+/// decimal field `field = <number>` narrows to the value's token
+/// ([`lookup_token`]). An engine may then look the candidates up by that
+/// token; it still evaluates the whole filter on each.
+pub fn exact_text_term(
+    filter: &Expr,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
+) -> Option<(FieldName, String)> {
+    cmp_terms(filter, kind).into_iter().next()
 }
 
-/// Every such narrowing of a filter, its `and` terms in order.
-pub fn exact_text_terms(filter: &Expr) -> Vec<(FieldName, String)> {
-    use lakelands_api::expr::{CmpOp, Literal};
+/// Every such narrowing of a filter, its `and` terms in order, an `in`'s
+/// values one entry each.
+pub fn exact_text_terms(
+    filter: &Expr,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
+) -> Vec<(FieldName, String)> {
+    let mut out = cmp_terms(filter, kind);
+    out.extend(
+        in_terms(filter, kind)
+            .into_iter()
+            .flat_map(|(f, ts)| ts.into_iter().map(move |t| (f.clone(), t))),
+    );
+    out
+}
+
+/// The `field = literal` narrowings of a filter, its `and` terms in
+/// order.
+fn cmp_terms(
+    filter: &Expr,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
+) -> Vec<(FieldName, String)> {
     match filter {
-        Expr::And { args } => args.iter().flat_map(exact_text_terms).collect(),
+        Expr::And { args } => args.iter().flat_map(|a| cmp_terms(a, kind)).collect(),
         Expr::Cmp {
             cmp: CmpOp::Eq,
             lhs,
             rhs,
-        } => match (lhs.as_ref(), rhs.as_ref()) {
-            (
-                Expr::Path { path },
-                Expr::Lit {
-                    value: Literal::Text(t),
-                },
-            )
-            | (
-                Expr::Lit {
-                    value: Literal::Text(t),
-                },
-                Expr::Path { path },
-            ) if path.len() == 1
-                && t.parse::<rust_decimal::Decimal>().is_err()
-                && Timestamp::denoted(t).is_err() =>
-            {
-                vec![(path[0].clone(), t.clone())]
+        } => {
+            let (path, lit) = match (lhs.as_ref(), rhs.as_ref()) {
+                (Expr::Path { path }, Expr::Lit { value }) => (path, value),
+                (Expr::Lit { value }, Expr::Path { path }) => (path, value),
+                _ => return Vec::new(),
+            };
+            let [field] = path.as_slice() else {
+                return Vec::new();
+            };
+            literal_token(lit, kind(field))
+                .map(|t| vec![(field.clone(), t)])
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The `field in (literals)` narrowings of a filter of a number or decimal
+/// field, its `and` terms in order: every value's token, and none where a
+/// value reads as no number, since then the whole `in` takes the old road.
+fn in_terms(
+    filter: &Expr,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
+) -> Vec<(FieldName, Vec<String>)> {
+    match filter {
+        Expr::And { args } => args.iter().flat_map(|a| in_terms(a, kind)).collect(),
+        Expr::In { arg, list } => {
+            let Expr::Path { path } = arg.as_ref() else {
+                return Vec::new();
+            };
+            let [field] = path.as_slice() else {
+                return Vec::new();
+            };
+            let kind = kind(field);
+            if !matches!(kind, Some(StorageKind::Number | StorageKind::Decimal)) {
+                return Vec::new();
             }
-            _ => Vec::new(),
-        },
+            let tokens: Option<Vec<String>> = list
+                .iter()
+                .map(|e| match e {
+                    Expr::Lit { value } => literal_token(value, kind),
+                    _ => None,
+                })
+                .collect();
+            tokens
+                .map(|ts| vec![(field.clone(), ts)])
+                .unwrap_or_default()
+        }
         _ => Vec::new(),
     }
 }
@@ -242,45 +339,62 @@ pub fn holds_exactly(record: &StoredRecord, equal: &[(FieldName, Value)]) -> boo
         .all(|(f, v)| !v.is_null() && record.fields.get(f) == Some(v))
 }
 
-/// The one field and text an engine may look candidates up by in its text
-/// index at the head, of the fields `kept` says it keeps rows for
-/// ([`looked_up`]): a string the scan must hold exactly, else one of the
-/// filter's [`exact_text_terms`]. The engine still admits each candidate.
-/// Asked with every field kept, it is the text a scan of the type may
-/// narrow its storage's read by.
-pub fn text_lookup(scan: &Scan, kept: &dyn Fn(&FieldName) -> bool) -> Option<(FieldName, String)> {
-    let terms = scan.filter.iter().flat_map(exact_text_terms);
+/// The one field and token an engine may look candidates up by in its
+/// exact lookup at the head, of the fields `kept` says it keeps rows for
+/// ([`looked_up`]): a value the scan must hold exactly, else one of the
+/// filter's [`exact_text_terms`], each as [`lookup_token`] writes it for
+/// the field's kind. The engine still admits each candidate. Asked with
+/// every field kept, it is the value a scan of the type may narrow its
+/// storage's read by.
+pub fn text_lookup(
+    scan: &Scan,
+    kept: &dyn Fn(&FieldName) -> bool,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
+) -> Option<(FieldName, String)> {
+    let terms = scan.filter.iter().flat_map(|f| cmp_terms(f, kind));
     (scan.equal.iter())
-        .filter_map(|(f, v)| Some((f.clone(), v.as_str()?.to_owned())))
+        .filter_map(|(f, v)| Some((f.clone(), lookup_token(v, kind(f))?)))
         .chain(terms)
         .find(|(f, _)| kept(f))
 }
 
-/// The one field and the texts an engine may look candidates up by in its
-/// text index at the head, in one ask: those of `equal_any` where each of
-/// its tuples holds a string for the same field, else [`text_lookup`]'s
-/// one. The engine still admits each candidate.
+/// The one field and the tokens an engine may look candidates up by in
+/// its exact lookup at the head, in one ask: those of `equal_any` where
+/// each of its tuples holds a token for the same field; else an `in` of
+/// the filter on one number or decimal field; else [`text_lookup`]'s one.
+/// The engine still admits each candidate.
 pub fn text_lookups(
     scan: &Scan,
     kept: &dyn Fn(&FieldName) -> bool,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
 ) -> Option<(FieldName, Vec<String>)> {
     let first = |t: &[(FieldName, Value)]| {
-        t.first()
-            .and_then(|(f, v)| Some((f.clone(), v.as_str()?.to_owned())))
+        let (f, v) = t.first()?;
+        Some((f.clone(), lookup_token(v, kind(f))?))
     };
-    let Some((field, _)) = (scan.equal_any.first().and_then(|t| first(t))).filter(|(f, _)| kept(f))
-    else {
-        return text_lookup(scan, kept).map(|(f, t)| (f, vec![t]));
-    };
-    let texts = scan
-        .equal_any
-        .iter()
-        .map(|t| first(t).filter(|(f, _)| *f == field).map(|(_, v)| v));
-    // A tuple that holds no text there: the one lookup `equal` gives.
-    texts
-        .collect::<Option<Vec<String>>>()
-        .map(|texts| (field, texts))
-        .or_else(|| text_lookup(scan, kept).map(|(f, t)| (f, vec![t])))
+    if let Some((field, _)) =
+        (scan.equal_any.first().and_then(|t| first(t))).filter(|(f, _)| kept(f))
+    {
+        let texts = scan
+            .equal_any
+            .iter()
+            .map(|t| first(t).filter(|(f, _)| *f == field).map(|(_, v)| v));
+        // A tuple that holds no token there: the one lookup `equal` gives.
+        if let Some(texts) = texts.collect::<Option<Vec<String>>>() {
+            return Some((field, texts));
+        }
+    }
+    if let Some((field, token)) = (scan.equal.iter())
+        .filter_map(|(f, v)| Some((f.clone(), lookup_token(v, kind(f))?)))
+        .find(|(f, _)| kept(f))
+    {
+        return Some((field, vec![token]));
+    }
+    let ins = scan.filter.iter().flat_map(|f| in_terms(f, kind));
+    if let Some((field, ts)) = ins.into_iter().find(|(f, _)| kept(f)) {
+        return Some((field, ts));
+    }
+    text_lookup(scan, kept, kind).map(|(f, t)| (f, vec![t]))
 }
 
 /// The field of a type whose key is that one text field. A record's key
@@ -303,7 +417,8 @@ pub fn text_key(decl: &TypeDecl) -> Option<&FieldName> {
 /// position and the rulebook admits, orders and cuts them ([`scan`]).
 pub fn key_lookup(decl: Option<&TypeDecl>, scan: &Scan) -> Option<BTreeSet<String>> {
     let key = text_key(decl?)?;
-    let (_, texts) = text_lookups(scan, &|f| f == key)?;
+    let kind = |f: &FieldName| (f == key).then_some(StorageKind::Text);
+    let (_, texts) = text_lookups(scan, &|f| f == key, &kind)?;
     let made = texts.into_iter().map(serde_json::Value::String);
     Some(
         made.filter_map(|t| lakelands_api::key::key_component(&t))
@@ -311,16 +426,21 @@ pub fn key_lookup(decl: Option<&TypeDecl>, scan: &Scan) -> Option<BTreeSet<Strin
     )
 }
 
-/// The text fields of `ty` its exact-text index keeps rows for, of the
-/// lake's declarations at the head `decls` and its `lookup_index.<type>`
+/// The fields of `ty` its exact lookup keeps rows for, of the lake's
+/// declarations at the head `decls` and its `lookup_index.<type>`
 /// setting's value: those its declarations look its records up by (its
 /// key, but a [`text_key`], its references, the fields a derived relation
 /// matches at either end, those a set's condition or a view's `where` over
 /// it compares to a text at the top level, those a constraint's or a
 /// trigger's `preceding` matches its series on, those another type's
-/// `in_force` or a trigger's matches it on) and those the setting names
-/// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
-/// `None`, every field, for a name no type declares: a view's kept records.
+/// `in_force` or a trigger's matches it on) and those the setting names.
+/// A declaration looks a record up by a text or a reference only; a
+/// number or decimal field is looked up only when the setting names it, so
+/// no type pays that it did not ask
+/// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`,
+/// `docs/decisions/097-a-read-in-a-window-walks-its-window.md` §A
+/// number's exact lookup). `None`, every field, for a name no type
+/// declares: a view's kept records.
 pub fn looked_up<'a>(
     ty: &TypeName,
     decls: impl IntoIterator<Item = &'a Declaration>,
@@ -329,7 +449,11 @@ pub fn looked_up<'a>(
     let (mut own, mut out) = (None, BTreeSet::new());
     let mut terms = |c: &Option<Condition>| {
         let e = c.as_ref().and_then(|c| c.typed().ok());
-        out.extend(e.iter().flat_map(exact_text_terms).map(|(f, _)| f));
+        out.extend(
+            e.iter()
+                .flat_map(|f| exact_text_terms(f, &|_| None))
+                .map(|(f, _)| f),
+        );
     };
     let (mut matched, mut series) = (Vec::new(), Vec::new());
     for d in decls {
@@ -380,9 +504,23 @@ pub fn looked_up<'a>(
         .filter(|f| f.ty.kind == StorageKind::Reference);
     out.extend(matched.into_iter().chain(t.key.iter().cloned()));
     out.extend(refs.map(|f| f.name.clone()));
-    out.extend(index_fields(t, setting, false, |k| *k == StorageKind::Text));
+    let named = index_fields(t, setting, false, |k| {
+        matches!(
+            k,
+            StorageKind::Text | StorageKind::Number | StorageKind::Decimal
+        )
+    });
+    out.extend(named.iter().cloned());
     let texts = |f: &FieldDecl| matches!(f.ty.kind, StorageKind::Text | StorageKind::Reference);
-    out.retain(|f| t.fields.iter().any(|d| d.name == *f && texts(d)) && Some(f) != text_key(t));
+    let numbered = |f: &FieldDecl| {
+        matches!(f.ty.kind, StorageKind::Number | StorageKind::Decimal) && named.contains(&f.name)
+    };
+    out.retain(|f| {
+        t.fields
+            .iter()
+            .any(|d| d.name == *f && (texts(d) || numbered(d)))
+            && Some(f) != text_key(t)
+    });
     Some(out)
 }
 
@@ -738,6 +876,11 @@ pub fn sort_index_key(ty: &TypeName) -> String {
     format!("{}{ty}", lakelands_api::seam::SORT_INDEX_SETTING)
 }
 
+/// The key of the setting that asks for `ty`'s exact lookup.
+pub fn lookup_index_key(ty: &TypeName) -> String {
+    format!("{}{ty}", lakelands_api::seam::LOOKUP_INDEX_SETTING)
+}
+
 /// The meta row by which an engine keeps the fields of `ty`'s order index
 /// the lake chose, as JSON (`Chosen`): in the projection and never in the
 /// log.
@@ -897,6 +1040,15 @@ pub fn field_kind<'d>(decl: &'d TypeDecl, field: &FieldName) -> Option<&'d Stora
         .iter()
         .find(|f| f.name == *field)
         .map(|f| &f.ty.kind)
+}
+
+/// The kind a narrowing of the storage's own text may take: any but a
+/// number or a decimal, whose JSON number is not the token the exact
+/// lookup keeps for it (097 §A number's exact lookup). Asked of a field
+/// the declaration gives no kind, it answers none, as it was before
+/// numbers were.
+pub fn text_kind(kind: Option<StorageKind>) -> Option<StorageKind> {
+    kind.filter(|k| !matches!(k, StorageKind::Number | StorageKind::Decimal))
 }
 
 /// A filter's bound on an ordered field: the inclusive interval of
@@ -1065,6 +1217,203 @@ fn narrowing_key(literal: &Literal, op: CmpOp, kind: &StorageKind) -> Option<Vec
     Some(key)
 }
 
+/// What sorts above a date's whole day in a group key, and below the next
+/// day: a date field's key may hold the day's text (`2026-01-05`) or an
+/// instant of that day's zoned bucket (`2026-01-05T00:00:00Z`), whose
+/// next byte is `T`, under this byte. A key's date component holds no
+/// `~` of its own.
+const ABOVE_DAY: &str = "~";
+
+/// The interval of group keys `filter` admits, for a kept view whose group
+/// fields `decl` keys its records by, in their declared order
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`
+/// §What narrows, and the interval it makes): a from, inclusive, and an
+/// until, exclusive, each open where no term fixes it, and `None` where no
+/// term narrows the key at all. The interval is a superset of the keys the
+/// filter admits; the rulebook still decides every row.
+///
+/// The filter is read as the conjunction of its `and` terms, each a
+/// comparison of one group field with one literal. The group fields are
+/// walked in the key's order, and the walk stops at the first field that
+/// does not narrow: a field behind a bound never narrows alone. The two
+/// ends are built apart — the lower from `=`, `>=` and `>`, the upper from
+/// `=`, `<=` and `<`.
+///
+/// - A text or reference field narrows an exact only, and only a literal
+///   that reads as neither a number nor an instant: `compare` coerces two
+///   texts that read alike, so `'0123'` is `'123'`, and a literal that
+///   reads as an instant equals every spelling of it.
+/// - A date-time or date field takes every comparison record 097 admits a
+///   window for, a literal that reads as an instant and not as a number.
+///   A date's component is the literal instant's UTC day. Its key may
+///   hold that day's text or an instant of that day: a group term's
+///   value is never landed, so a `date_bucket` term's zoned start
+///   (record 101) is what the key holds. An upper end is therefore the
+///   day's prefix ([`ABOVE_DAY`]), which sorts above the day's text and
+///   every instant text of that day and below the next day, and an
+///   exact on a date ends the walk, since a later component is not
+///   reachable past both spellings.
+/// - A boolean field narrows an exact given as a boolean, and takes no
+///   bound.
+/// - A number or decimal field narrows nothing, its key order not being
+///   the number order; nor does a text range, the key rule's escapes not
+///   keeping the text's order, nor `or`, `not`, `in`, `!=`, a term under a
+///   function or a comparison of two paths.
+pub fn key_range(decl: &TypeDecl, filter: &Expr) -> Option<KeyRange> {
+    let fields = &decl.key;
+    let mut fixed: Vec<String> = Vec::new();
+    // Where the walk stopped before a field: the exacts it fixed are
+    // followed by another field, and the lower end keeps the `:` that
+    // excludes a value extending the last of them.
+    let mut stopped: Option<usize> = None;
+    let mut lower: Option<String> = None;
+    let mut upper: Option<String> = None;
+    // Whether the last exact is a date's: the walk stops there, and the
+    // ends are made on the day's prefix, which holds both spellings of
+    // the day a key may carry ([`ABOVE_DAY`]).
+    let mut day_exact = false;
+    for (i, field) in fields.iter().enumerate() {
+        let Some(kind) = field_kind(decl, field) else {
+            stopped = Some(i);
+            break;
+        };
+        let terms = window_terms(filter, field);
+        let exact = terms.iter().find_map(|(op, literal)| {
+            (*op == CmpOp::Eq)
+                .then(|| group_component(literal, *op, kind))
+                .flatten()
+        });
+        if let Some(component) = exact {
+            fixed.push(component);
+            if matches!(kind, StorageKind::Date) {
+                day_exact = true;
+                stopped = Some(i);
+                break;
+            }
+            continue;
+        }
+        // The tightest cut of each end among the field's terms.
+        for (op, literal) in &terms {
+            let Some(component) = group_component(literal, *op, kind) else {
+                continue;
+            };
+            match op {
+                CmpOp::Ge | CmpOp::Gt => {
+                    lower = Some(match lower {
+                        Some(l) => l.max(component),
+                        None => component,
+                    })
+                }
+                CmpOp::Le | CmpOp::Lt => {
+                    // An upper end on a date holds the whole day: the day's
+                    // text and an instant of it sort under the prefix, and
+                    // the next day does not.
+                    let component = match kind {
+                        StorageKind::Date => format!("{component}{ABOVE_DAY}"),
+                        _ => component,
+                    };
+                    upper = Some(match upper {
+                        Some(u) => u.min(component),
+                        None => component,
+                    })
+                }
+                _ => {}
+            }
+        }
+        // A bound ends the walk for both ends, as a field with no term does.
+        stopped = Some(i);
+        break;
+    }
+    let joined = fixed.join(":");
+    let with = |bound: &str| match fixed.is_empty() {
+        true => bound.to_owned(),
+        false => format!("{joined}:{bound}"),
+    };
+    let from = match lower {
+        Some(bound) => Some(with(&bound)),
+        None if fixed.is_empty() => None,
+        // A date's exact is held by the day's prefix, which a key may
+        // extend with an instant's `T` as well as with the `:` that joins
+        // another field: the lower starts at the day itself.
+        None if day_exact => Some(joined.clone()),
+        // The last exact is followed by another field.
+        None if stopped.is_some() => Some(format!("{joined}:")),
+        None => Some(joined.clone()),
+    };
+    let until = match upper {
+        Some(bound) => Some(format!("{};", with(&bound))),
+        None if fixed.is_empty() => None,
+        // The day's prefix holds the day's text and every instant text of
+        // that day, and sorts below the next day.
+        None if day_exact => Some(format!("{joined}{ABOVE_DAY};")),
+        None => Some(format!("{joined};")),
+    };
+    if from.is_none() && until.is_none() {
+        return None;
+    }
+    Some(KeyRange {
+        from: from.map(RecordKey::from),
+        until: until.map(RecordKey::from),
+    })
+}
+
+/// The key component `literal` fixes for a group field of `kind` compared
+/// by `op`, or `None` where the comparison narrows nothing ([`key_range`]).
+fn group_component(literal: &Literal, op: CmpOp, kind: &StorageKind) -> Option<String> {
+    let value = match kind {
+        StorageKind::Text | StorageKind::Reference => {
+            if op != CmpOp::Eq {
+                return None;
+            }
+            let Literal::Text(t) = literal else {
+                return None;
+            };
+            // A text that reads alike as a number or an instant compares
+            // coerced, and narrows nothing.
+            if t.parse::<rust_decimal::Decimal>().is_ok() || Timestamp::denoted(t).is_ok() {
+                return None;
+            }
+            Value::String(t.clone())
+        }
+        StorageKind::DateTime | StorageKind::Date => {
+            if !matches!(
+                op,
+                CmpOp::Eq | CmpOp::Ge | CmpOp::Gt | CmpOp::Le | CmpOp::Lt
+            ) {
+                return None;
+            }
+            let Literal::Text(t) = literal else {
+                return None;
+            };
+            if t.parse::<rust_decimal::Decimal>().is_ok() {
+                return None;
+            }
+            // The one written form's years only: a component written
+            // outside them (`10000-…`, `-0001-…`) does not sort where the
+            // stored, canonicalised one does, and a bound on the wrong
+            // side would exclude rows the filter admits. Such a literal
+            // narrows nothing, and the rulebook still decides every row.
+            let at: Timestamp = Timestamp::parse(t).ok()?;
+            match kind {
+                // A date's component is the instant's UTC day, floored.
+                StorageKind::Date => {
+                    let (y, m, d) = at.date();
+                    Value::String(format!("{y:04}-{m:02}-{d:02}"))
+                }
+                _ => Value::String(at.to_string()),
+            }
+        }
+        StorageKind::Boolean => match (op, literal) {
+            (CmpOp::Eq, Literal::Bool(b)) => Value::Bool(*b),
+            _ => return None,
+        },
+        // A number's components are its text and a decimal's written form,
+        // neither in the order the field compares.
+        _ => return None,
+    };
+    lakelands_api::key::key_component(&value)
+}
+
 thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static ROWS_WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -1133,6 +1482,15 @@ pub fn rows_walked() -> u64 {
     ROWS_WALKED.with(|n| n.get())
 }
 
+/// [`rows_walked`] over every thread of the process: for a store check,
+/// whose reads go through a store that runs them on its blocking pool. It
+/// counts what other checks running at the same time walk too.
+pub fn rows_walked_in_process() -> u64 {
+    ROWS_WALKED_IN_PROCESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static ROWS_WALKED_IN_PROCESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Whether a check on this thread asked engines to count the rows a walk
 /// passes: off in a product read, where [`Holders::Many`] does not run
 /// the count that would tell it.
@@ -1152,6 +1510,7 @@ pub fn count_walks(on: bool) {
 /// with its count once a walk, and the memory engine with what it hands.
 pub fn count_walk(n: usize) {
     ROWS_WALKED.with(|c| c.set(c.get() + n as u64));
+    ROWS_WALKED_IN_PROCESS.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The records the edge walks on this thread were handed to find a

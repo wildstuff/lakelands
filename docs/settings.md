@@ -29,9 +29,9 @@ Keeps a vector index on these fields; a search on one answers the index's set.
 
 ### `lookup_index.<type>`
 
-Keeps an exact-text index on these fields beyond those the declarations look up by, so a read comparing one to a text reads its matches.
+Keeps an exact-text index on these fields beyond those the declarations look up by, so a read comparing one to a text or a number reads its matches.
 
-- **Takes:** a list of the type's text fields.
+- **Takes:** a list of the type's text, number and decimal fields.
 - **Default:** `null`.
 - **Per type:** one value per type, and none for the lake.
 

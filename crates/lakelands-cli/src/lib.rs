@@ -437,7 +437,7 @@ fn command() -> Command {
                         .group(clap::ArgGroup::new("selection").args(["before", "delivery", "seen-before"]).required(true))
                         .arg(Arg::new("require-shredded").long("require-shredded").action(ArgAction::SetTrue).help("Refuse while a value of an erasable field would be redacted only, its key version not destroyed"))
                         .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the act would take, retire and leave broken, and how long it would hold the writer, appending nothing; what `values remove` does without --report"))
-                        .arg(Arg::new("report").long("report").value_name("ID").help("Take back, only under the id of a preflight of this removal at this head")),
+                        .arg(Arg::new("report").long("report").value_name("ID").help("Take back, only under the id of a preflight of this removal at its position")),
                 ),
         )
         .subcommand(Command::new("rebuild").about("Rebuild the lake's projection from the log beside it, and put it in the old one's place"))

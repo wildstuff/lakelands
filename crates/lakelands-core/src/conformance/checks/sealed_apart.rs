@@ -55,7 +55,7 @@ check!(
 
 check!(
     APART_STREAMING = a_call_writing_past_an_act_takes_a_new_key_apart,
-    "065 (lakelands#1214): an ingest of the delivery `late`, sealed apart, writes `p2` in its first window and then waits; an act taking `late` back lands before its next window, its key store failing to destroy `late`'s key, so the act answers the failure with the key held; the call then writes `p3`, whose `sealed.apart` names a new key, not the one the act named, since the act did not select it; after the writer's next open finishes the act, `p2` reads its name erased and `p3` reads Cy, as do a writer opened again and a rebuild",
+    "065, 099 (lakelands#1214): an ingest of the delivery `late`, sealed apart, writes `p2` in its first window and then waits; an act taking `late` back lands before its next window, its key store failing to destroy `late`'s key, so the act answers the failure with the key held; the call then writes `p3`, whose `sealed.apart` names a new key, not the one the act named, since the act did not select it; after the road beside the writer's next open finishes the act, `p2` reads its name erased and `p3` reads Cy, as do a writer opened again and a rebuild",
     reopens
 );
 
@@ -67,7 +67,7 @@ check!(
 
 check!(
     APART_KEPT = a_delivery_sealed_apart_is_shredded_after_a_crash_and_an_import,
-    "065 (lakelands#1214): an act taking back the delivery `late`, sealed apart, whose key store fails to destroy its key appends its event and answers the failure, the key held; the writer's next open finishes it, destroying the key, `p2` reads its name erased before the act and at the head, and a repeat appends nothing; an export made after it imports with the key store as it is, `p2` erased and `p1` read; imported beside a key store that makes no key apart, the import opens, nothing asked of it to destroy; imported with a backup of the key store from before the act, the import's finish destroys the backup's key; and imported with no key store it is refused as unbound, `p1`'s version still needed",
+    "065, 099 (lakelands#1214): an act taking back the delivery `late`, sealed apart, whose key store fails to destroy its key appends its event and answers the failure, the key held; the road beside the writer's next open finishes it, destroying the key, `p2` reads its name erased before the act and at the head, and a repeat appends nothing; an export made after it imports with the key store as it is, `p2` erased and `p1` read; imported beside a key store that makes no key apart, the import opens, nothing asked of it to destroy; imported with a backup of the key store from before the act, the import's finish destroys the backup's key; and imported with no key store it is refused as unbound, `p1`'s version still needed",
     given
 );
 
@@ -1142,11 +1142,6 @@ async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: 
          {sealed:?}"
     );
     let store = again(&reopen, store, seams(), "after the stopped act").await?;
-    let left = keys.apart(store.lake(), &crm);
-    ensure!(
-        left == fresh.into_iter().collect::<Vec<_>>(),
-        "the writer's next open destroys {a} alone: {left:?}"
-    );
     let read = async |l: &Lake, by: &str| {
         for when in [Some(before), None] {
             let p2 = at(l, "person", "p2", when).await?;
@@ -1163,6 +1158,25 @@ async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: 
         );
         Ok::<_, Failure>(())
     };
+    // The open leaves the act to the road beside it: poll, bounded, for
+    // the settle that destroys `a` and restates the record, before any
+    // verb is called. The restate, not the destroy alone, is what makes
+    // a read answer.
+    let want = fresh.iter().cloned().collect::<Vec<_>>();
+    settles(6_000, Duration::from_millis(10), || async {
+        read(
+            &Lake::of(store.as_ref()),
+            "the road beside the writer's next open",
+        )
+        .await?;
+        let left = keys.apart(store.lake(), &crm);
+        ensure!(
+            left == want,
+            "the road beside the writer's next open destroys {a} alone: {left:?}"
+        );
+        Ok(())
+    })
+    .await?;
     read(&Lake::of(store.as_ref()), "after the writer's next open").await?;
     let store = again(&reopen, store, seams(), "after the finish").await?;
     read(&Lake::of(store.as_ref()), "a writer opened again").await?;
@@ -1285,6 +1299,12 @@ async fn a_delivery_sealed_apart_is_shredded_after_a_crash_and_an_import(
         );
         Ok::<_, Failure>(())
     };
+    // The open leaves the act to the road beside it: poll, bounded, for
+    // the settle that destroys the key and restates `p2`, before any verb.
+    settles(6_000, Duration::from_millis(10), || {
+        read(&l, "the road beside the writer's next open")
+    })
+    .await?;
     read(&l, "after the writer's next open").await?;
     let left = keys.apart(store.lake(), &crm);
     let head = store.head().await.must("reading the head")?;

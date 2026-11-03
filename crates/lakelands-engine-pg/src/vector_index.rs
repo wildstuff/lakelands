@@ -1283,8 +1283,9 @@ fn exact(
                 &[&ty.as_str()],
             )?;
             let key = decl.and_then(engines::text_key);
+            let kind = |f: &FieldName| decl.and_then(|d| engines::field_kind(d, f)).copied();
             let kept = |f: &FieldName| looked.contains(f.as_str()) && Some(f) != key;
-            engines::text_lookups(scan, &kept)
+            engines::text_lookups(scan, &kept, &kind)
         }
         None => None,
     };

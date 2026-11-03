@@ -1160,13 +1160,21 @@ each line is canonical, and `v` next.) Nothing is translated: a lake of
 an older format is not upgraded, and its data comes in again by a new
 lake.
 
-- An open of a lake whose first event, its `lake_created` or its newest
-  event is in a format the release does not read is refused before the
-  lake is opened, naming the lake, that format, the formats read and the
-  one written (`log_format`). So is a lake whose newest event is in a
-  format below its first's. Nothing of the lake is judged, made, folded
-  or appended to. The lake is not damaged, and restoring it would not
-  help: it is another release's.
+- An open of a lake whose three numbers do not contradict each other —
+  its first event and its `lake_created` name one format, and its newest
+  event is not older than its first — is refused as `log_format` before
+  the lake is opened where any of the three names a format the release
+  does not read, naming the lake, that format, the formats read and the
+  one written. Nothing of the lake is judged, made, folded or appended
+  to. The lake is not damaged, and restoring it would not help: it is
+  another release's.
+- Two ends that contradict each other in a way no release writes are
+  damage, refused before the lake is opened, at the event that carries
+  the contradiction: a `lake_created` whose format is not its own line's
+  `v` (`created_in_another`), and a newest event in a format below its
+  first's (`format_other`), since a release appends only onto a lake
+  whose first event it reads. Nothing of the lake is judged, made, folded
+  or appended to; a backup is the remedy.
 - Wherever else an event is read (a verification of the lake or of an
   export, the feed, a rebuild, an import), one in a format the release
   does not read is refused at its position, naming both numbers

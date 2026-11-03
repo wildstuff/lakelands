@@ -3,10 +3,11 @@
 //! `--report` id their preflight printed in a process of its own, and
 //! `apply --plan` under the id `plan` printed (lakelands#1476), though
 //! each process that opens the lake for writing appends its own
-//! `lease_taken` between the two; a record written between them still
-//! refuses the act. On SQLite, and on PostgreSQL when
-//! `LAKELANDS_TEST_PG_URL` names a server (`scripts/conformance.sh pg`
-//! runs this file against one).
+//! `lease_taken` between the two; a record written between them refuses a
+//! forgetting, and a removal or purge refuses one that reaches a record
+//! its report named and takes one that reaches nothing of it (099). On
+//! SQLite, and on PostgreSQL when `LAKELANDS_TEST_PG_URL` names a server
+//! (`scripts/conformance.sh pg` runs this file against one).
 
 use std::fs;
 use std::path::PathBuf;
@@ -212,10 +213,11 @@ fn an_act_goes_through_under_a_preflight_another_process_printed() {
     }
 }
 
-/// A write between the preflight and the act refuses forget and `values
-/// remove`; a purge refuses it only where the write reached a record its
-/// report named. A write elsewhere, and the purge's own source's later
-/// write, are taken in; a preflight after a refusal is acted on.
+/// A write between the preflight and the act refuses forget; `values
+/// remove` and a purge refuse it only where the write reached a record
+/// their report named. A removal and a purge take a write elsewhere, and
+/// the purge's own source's later write; a preflight after a refusal is
+/// acted on.
 #[test]
 fn a_write_between_the_preflight_and_the_act_refuses_what_it_reached() {
     for (engine, url) in engines() {
@@ -223,37 +225,86 @@ fn a_write_between_the_preflight_and_the_act_refuses_what_it_reached() {
         for source in ["bank", "crm", "tracker", "ledger"] {
             root.ingest(source, &format!("{source}-1"));
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-        let cut = lakelands_api::Timestamp(now.unwrap().as_micros() as i64).to_string();
-        let refused: [(&[&str], &str); 2] = [
-            (&["forget", "--source", "crm"], "not of this forgetting"),
-            (
-                &["values", "remove", "--source", "tracker", "--before", &cut],
-                "not of this removal",
-            ),
+        let cut = || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+            lakelands_api::Timestamp(now.unwrap().as_micros() as i64).to_string()
+        };
+        let first = cut();
+
+        // A forgetting's report is of the head it read: a write since, of
+        // any source, refuses it, and a preflight after the refusal is
+        // acted on.
+        let forget = ["forget", "--source", "crm"];
+        let id = root.preflight(&forget);
+        root.ingest("other", "other-0");
+        let stale = root.act(&forget, &id);
+        assert!(
+            !stale.ok && stale.err.contains("not of this forgetting"),
+            "{engine}: `forget` after a write: {}{}",
+            stale.out,
+            stale.err
+        );
+        let id = root.preflight(&forget);
+        let done = root.act(&forget, &id);
+        assert!(
+            done.ok && done.out.contains("forgot crm through position "),
+            "{engine}: `forget` after a fresh preflight: {}{}",
+            done.out,
+            done.err
+        );
+
+        // A removal's report names the records the selection took at its
+        // position (099): a write elsewhere is taken in with it.
+        let remove = [
+            "values",
+            "remove",
+            "--source",
+            "tracker",
+            "--before",
+            first.as_str(),
         ];
-        for (n, (act, said)) in refused.iter().enumerate() {
-            let id = root.preflight(act);
-            root.ingest("other", &format!("other-{n}"));
-            let stale = root.act(act, &id);
-            assert!(
-                !stale.ok && stale.err.contains(said),
-                "{engine}: `{}` after a write: {}{}",
-                act.join(" "),
-                stale.out,
-                stale.err
-            );
-            let id = root.preflight(act);
-            let done = root.act(act, &id);
-            assert!(
-                done.ok && done.out.contains("through position "),
-                "{engine}: `{}` after a fresh preflight: {}{}",
-                act.join(" "),
-                done.out,
-                done.err
-            );
-        }
+        let id = root.preflight(&remove);
+        root.ingest("other", "other-1");
+        let done = root.act(&remove, &id);
+        assert!(
+            done.ok && done.out.contains("through position "),
+            "{engine}: `values remove` after a write elsewhere: {}{}",
+            done.out,
+            done.err
+        );
+
+        // A write that reaches a record the report named refuses it, and
+        // a preflight after the refusal is acted on.
+        root.ingest("tracker", "tracker-2");
+        root.ingest("tracker", "tracker-3");
+        let second = cut();
+        let remove = [
+            "values",
+            "remove",
+            "--source",
+            "tracker",
+            "--before",
+            second.as_str(),
+        ];
+        let id = root.preflight(&remove);
+        // The same value would change nothing; `other`'s must differ.
+        root.ingest_with("other", "tracker-2", "other@example.org");
+        let stale = root.act(&remove, &id);
+        assert!(
+            !stale.ok && stale.err.contains("not of this removal"),
+            "{engine}: `values remove` on a record the report named: {}{}",
+            stale.out,
+            stale.err
+        );
+        let id = root.preflight(&remove);
+        let done = root.act(&remove, &id);
+        assert!(
+            done.ok && done.out.contains("through position "),
+            "{engine}: `values remove` after a fresh preflight: {}{}",
+            done.out,
+            done.err
+        );
 
         let purge = ["purge", "--source", "bank"];
         let id = root.preflight(&purge);

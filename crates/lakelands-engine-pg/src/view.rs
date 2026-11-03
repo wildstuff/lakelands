@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Rankings, Scan};
+use lakelands_api::engine::{Chosen, Declared, KeyRange, Matched, ProjectionView, Rankings, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
@@ -104,7 +104,13 @@ fn in_force_sql(records: &str, head: bool) -> String {
 /// before their states are sought: a walk of one table's primary key, which
 /// the planner takes in its order whether it holds statistics of the table
 /// or not.
-fn records_after_sql(records: &str, head: bool, after: bool, narrow: bool) -> String {
+fn records_after_sql(
+    records: &str,
+    head: bool,
+    after: bool,
+    narrow: bool,
+    range: Option<&KeyRange>,
+) -> String {
     let from = match (after, narrow) {
         (false, _) => "",
         (true, false) => "AND h.key > $4",
@@ -115,41 +121,70 @@ fn records_after_sql(records: &str, head: bool, after: bool, narrow: bool) -> St
     } else {
         ""
     };
+    // The range's ends follow every parameter the statement binds.
+    let range = key_range(
+        "h.key",
+        range,
+        4 + 2 * usize::from(narrow) + usize::from(after),
+    );
     if head && narrow {
         return format!(
             "SELECT {RECORD} FROM {records}_head h \
              CROSS JOIN LATERAL (SELECT x.* FROM {records} x \
              WHERE x.ty = h.ty AND x.key = h.key AND x.since = h.since LIMIT 1) r \
-             WHERE h.ty = $1 AND h.since <= $2 {from} {text} ORDER BY h.key LIMIT $3"
+             WHERE h.ty = $1 AND h.since <= $2 {from} {text} {range} ORDER BY h.key LIMIT $3"
         );
     }
     if head {
         return format!(
             "SELECT {RECORD} FROM (SELECT * FROM {records}_head h \
-             WHERE h.ty = $1 AND h.since <= $2 {from} ORDER BY h.key LIMIT $3) h \
+             WHERE h.ty = $1 AND h.since <= $2 {from} {range} ORDER BY h.key LIMIT $3) h \
              CROSS JOIN LATERAL (SELECT x.* FROM {records} x \
              WHERE x.ty = h.ty AND x.key = h.key AND x.since = h.since LIMIT 1) r \
              ORDER BY h.key"
         );
     }
     format!(
-        "SELECT {RECORD} FROM {} WHERE h.ty = $1 {from} {text} ORDER BY h.key LIMIT $3",
+        "SELECT {RECORD} FROM {} WHERE h.ty = $1 {from} {text} {range} ORDER BY h.key LIMIT $3",
         in_force_sql(records, false)
     )
 }
 
+/// The predicates on the key `column` that the interval `range` makes,
+/// each end bound from the parameter `at` up in the order `from`, `until`
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`).
+fn key_range(column: &str, range: Option<&KeyRange>, at: usize) -> String {
+    let Some(range) = range else {
+        return String::new();
+    };
+    let mut sql = String::new();
+    let mut n = at;
+    if range.from.is_some() {
+        sql.push_str(&format!("AND {column} >= ${n} "));
+        n += 1;
+    }
+    if range.until.is_some() {
+        sql.push_str(&format!("AND {column} < ${n} "));
+    }
+    sql
+}
+
 /// The statement of [`Read::count_in_force`]: the records of `$1` in force
 /// at `$2`, under the two flags `$3` and `$4`, read from the `flags`
-/// column ([`projection::flags`]). At the head a walk of the heads alone,
-/// which hold their states' flags; earlier, of the states in force.
-fn count_in_force_sql(records: &str, head: bool) -> String {
+/// column ([`projection::flags`]), inside the interval `range` whose ends
+/// `$5` and `$6` bind. At the head a walk of the heads alone, which hold
+/// their states' flags; earlier, of the states in force. Either way the
+/// interval bounds the heads' key, which is the walk's, so the count seeks
+/// the heads' primary key inside it and reads no state's flags outside it.
+fn count_in_force_sql(records: &str, head: bool, range: Option<&KeyRange>) -> String {
     let (from, f) = match head {
         true => (format!("{records}_head h WHERE h.since <= $2 AND"), "h"),
         false => (format!("{} WHERE", in_force_sql(records, false)), "r"),
     };
     format!(
         "SELECT COUNT(*) FROM {from} h.ty = $1 \
-         AND ($3 OR {f}.flags & {retired} = 0) AND ($4 OR {f}.flags & {held} = 0)",
+         AND ($3 OR {f}.flags & {retired} = 0) AND ($4 OR {f}.flags & {held} = 0) {}",
+        key_range("h.key", range, 5),
         retired = projection::RETIRED,
         held = projection::HELD,
     )
@@ -444,11 +479,29 @@ pub fn few_batch_statements(schema: &str) -> [String; 2] {
 pub fn read_statements(schema: &str, head: bool) -> [String; 5] {
     let records = format!("{schema}.records");
     [
-        records_after_sql(&records, head, false, false),
-        records_after_sql(&records, head, true, false),
-        count_in_force_sql(&records, head),
+        records_after_sql(&records, head, false, false, None),
+        records_after_sql(&records, head, true, false, None),
+        count_in_force_sql(&records, head, None),
         records_by_key_sql(&records),
         output_sql(&format!("{schema}.outputs")),
+    ]
+}
+
+/// The statements of a kept name's read inside a key interval
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`),
+/// the page and the count, at the head (`head`) or at an earlier position.
+/// For the engine's own test of their plans: the page binds the name, the
+/// position, the limit and the interval's ends, the count the name, the
+/// position, the two flags and the ends.
+pub fn range_statements(schema: &str, head: bool) -> [String; 2] {
+    let records = format!("{schema}.records");
+    let range = KeyRange {
+        from: Some(RecordKey::from("")),
+        until: Some(RecordKey::from("")),
+    };
+    [
+        records_after_sql(&records, head, false, false, Some(&range)),
+        count_in_force_sql(&records, head, Some(&range)),
     ]
 }
 
@@ -576,17 +629,28 @@ impl Read<'_> {
 
     /// Every record of a type at the view's position, in key order.
     fn records(&mut self, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-        self.records_after(ty, None, None, None)
+        self.records_after(ty, None, None, None, None)
     }
 
     /// How many records of a type are in force at the view's position, the
     /// retired and the restricted ones only when asked, their flags read
-    /// from the column beside the stored state.
-    fn count_in_force(&mut self, ty: &TypeName, retired: bool, restricted: bool) -> Result<u64> {
-        let query = count_in_force_sql(&self.names.t("records"), self.head);
-        let counted: Vec<i64> = self
-            .db
-            .column(&query, &[&ty.as_str(), &self.at, &retired, &restricted])?;
+    /// from the column beside the stored state, inside `range` where a read
+    /// narrowed by the key.
+    fn count_in_force(
+        &mut self,
+        ty: &TypeName,
+        retired: bool,
+        restricted: bool,
+        range: Option<&KeyRange>,
+    ) -> Result<u64> {
+        let query = count_in_force_sql(&self.names.t("records"), self.head, range);
+        let name = ty.as_str();
+        let mut args: Vec<&(dyn ToSql + Sync)> = vec![&name, &self.at, &retired, &restricted];
+        let from = range.and_then(|r| r.from.as_ref()).map(RecordKey::as_str);
+        let until = range.and_then(|r| r.until.as_ref()).map(RecordKey::as_str);
+        args.extend(from.as_ref().map(|k| k as &(dyn ToSql + Sync)));
+        args.extend(until.as_ref().map(|k| k as &(dyn ToSql + Sync)));
+        let counted: Vec<i64> = self.db.column(&query, &args)?;
         Ok(counted.first().map_or(0, |n| n.unsigned_abs()))
     }
 
@@ -600,12 +664,19 @@ impl Read<'_> {
         ty: &TypeName,
         narrow: Option<&(FieldName, String)>,
         after: Option<&str>,
+        range: Option<&KeyRange>,
         n: Option<u32>,
     ) -> Result<Vec<StoredRecord>> {
         let limit = n.map(i64::from);
         let narrow = narrow.filter(|_| !is_kept_name(ty));
         let records = self.names.t("records");
-        let query = records_after_sql(&records, self.head, after.is_some(), narrow.is_some());
+        let query = records_after_sql(
+            &records,
+            self.head,
+            after.is_some(),
+            narrow.is_some(),
+            range,
+        );
         // Each argument is bound only where the statement names it.
         let name = ty.as_str();
         let mut args: Vec<&(dyn ToSql + Sync)> = vec![&name, &self.at, &limit];
@@ -613,6 +684,10 @@ impl Read<'_> {
         args.extend(field.as_ref().map(|f| f as &(dyn ToSql + Sync)));
         args.extend(narrow.map(|(_, t)| t as &(dyn ToSql + Sync)));
         args.extend(after.as_ref().map(|a| a as &(dyn ToSql + Sync)));
+        let from = range.and_then(|r| r.from.as_ref()).map(RecordKey::as_str);
+        let until = range.and_then(|r| r.until.as_ref()).map(RecordKey::as_str);
+        args.extend(from.as_ref().map(|k| k as &(dyn ToSql + Sync)));
+        args.extend(until.as_ref().map(|k| k as &(dyn ToSql + Sync)));
         self.db.records(self.names, &query, &args)
     }
 
@@ -649,10 +724,11 @@ impl Read<'_> {
         (lookup, narrow): Asked<'_>,
         held: &mut Option<Vec<String>>,
         after: Option<&str>,
+        range: Option<&KeyRange>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         let Some((field, texts)) = lookup else {
-            return self.records_after(ty, narrow.as_ref(), after, Some(n));
+            return self.records_after(ty, narrow.as_ref(), after, range, Some(n));
         };
         if texts.len() > 1 {
             let keys = match held {
@@ -1182,23 +1258,44 @@ impl ProjectionView for PgView<'_> {
                 && scan.equal.is_empty()
                 && scan.equal_any.is_empty()
                 && scan.valid_at.is_none()
+                && (scan.range.is_none() || is_kept_name(ty))
             {
-                return r.count_in_force(ty, scan.retired, scan.restricted);
+                return r.count_in_force(ty, scan.retired, scan.restricted, scan.range.as_ref());
             }
             // A count that must hold a text in a text key reads the records
             // at the keys it makes; at the head, one that must hold another
-            // text reads the records holding it, not the type.
+            // text reads the records holding it, not the type. A kept name's
+            // interval seeks the key-ordered road instead: a text lookup
+            // would read the keys holding the text and walk past its bound.
             let decl = r.type_decl(ty)?;
-            if let Some(keys) = engines::key_lookup(decl.as_ref(), scan) {
+            if scan.range.is_none()
+                && let Some(keys) = engines::key_lookup(decl.as_ref(), scan)
+            {
                 let records = r.records_by_key(ty, keys)?;
                 return Ok(engines::count_of(decl.as_ref(), &records, scan));
             }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
-            let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
-            let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
+            let kind = |f: &FieldName| {
+                decl.as_ref()
+                    .and_then(|d| engines::field_kind(d, f))
+                    .copied()
+            };
+            // A text narrowing is the storage's own: a JSON number is not
+            // the token the lookup keeps for it.
+            let text = |f: &FieldName| engines::text_kind(kind(f));
+            let lookup = engines::text_lookups(scan, &kept, &kind)
+                .filter(|_| r.head && scan.range.is_none());
+            let (narrow, mut held) = (engines::text_lookup(scan, &|_| true, &text), None);
             engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
-                r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)
+                r.in_key_order(
+                    ty,
+                    (&lookup, &narrow),
+                    &mut held,
+                    after,
+                    scan.range.as_ref(),
+                    n,
+                )
             })
         })
     }
@@ -1206,21 +1303,30 @@ impl ProjectionView for PgView<'_> {
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
-            if let Some(keys) = engines::key_lookup(decl.as_ref(), scan) {
+            // A kept name's interval seeks the key-ordered road; a text
+            // lookup would read the keys holding the text and walk past its
+            // bound.
+            if scan.range.is_none()
+                && let Some(keys) = engines::key_lookup(decl.as_ref(), scan)
+            {
                 let records = r.records_by_key(ty, keys)?;
                 return Ok(engines::scan(decl.as_ref(), &records, scan));
             }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
-            let lookup = engines::text_lookup(scan, &kept).filter(|_| r.head);
+            let kind = |f: &FieldName| decl.as_ref().and_then(|d| engines::field_kind(d, f)).copied();
+            let text = |f: &FieldName| engines::text_kind(kind(f));
+            let lookup = engines::text_lookup(scan, &kept, &kind).filter(|_| r.head);
             // Ordered by the key alone, the page is read from `after` in
             // key order and stops when it is full: at the head, with a text
             // the scan must hold, from the records holding it.
             if scan.order_by.is_empty() {
-                let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
-                let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
+                let lookup = engines::text_lookups(scan, &kept, &kind)
+                    .filter(|_| r.head && scan.range.is_none());
+                let (narrow, mut held) = (engines::text_lookup(scan, &|_| true, &text), None);
                 return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
-                    let rows = r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)?;
+                    let range = scan.range.as_ref();
+                    let rows = r.in_key_order(ty, (&lookup, &narrow), &mut held, after, range, n)?;
                     // A range of the key index walks what it hands.
                     engines::count_walk(rows.len());
                     Ok(rows)

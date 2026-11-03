@@ -34,12 +34,14 @@ pub mod lake;
 #[doc(hidden)]
 pub mod log;
 mod ontology;
+mod parts;
 mod purge;
 mod quarantine;
 mod reads;
 mod record;
 mod rekey;
 mod remove;
+mod restate;
 mod road;
 mod sealing;
 #[doc(hidden)]
