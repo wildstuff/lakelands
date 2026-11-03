@@ -912,7 +912,15 @@ pub fn order_fields(
 ) -> Vec<FieldName> {
     let named = sorted_fields(ty, decl, setting);
     if !named.is_empty() || decl.view.is_some() || kept_view(ty).is_some() {
-        return named;
+        // A field a setting is having built is no read's until its `Keep`;
+        // the fold keeps its rows from the setting's event on.
+        return match building {
+            true => named,
+            false => named
+                .into_iter()
+                .filter(|f| !chosen.setting_building.contains(f))
+                .collect(),
+        };
     }
     let held = |f: &&FieldName| {
         (decl.fields.iter()).any(|d| d.name == **f && lakelands_api::seam::sortable(&d.ty.kind))
@@ -932,9 +940,16 @@ pub fn order_fields(
 /// of, a field. A step that does nothing leaves them as they are.
 pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
     let (kept, building) = (&mut chosen.kept, &mut chosen.building);
+    let setting = &mut chosen.setting_building;
     match step {
         Choose::Start(f) if !kept.contains(f) && !building.contains(f) => {
             building.push(f.clone());
+            true
+        }
+        Choose::Keep(f) if setting.contains(f) => {
+            // A host's setting names the field: keeping it is no choice,
+            // and the read takes it from the setting, not from `kept`.
+            setting.retain(|b| b != f);
             true
         }
         Choose::Keep(f) if building.contains(f) => {
@@ -942,12 +957,13 @@ pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
             kept.push(f.clone());
             true
         }
-        Choose::Drop(f) if kept.contains(f) || building.contains(f) => {
+        Choose::Drop(f) if kept.contains(f) || building.contains(f) || setting.contains(f) => {
             kept.retain(|k| k != f);
             building.retain(|b| b != f);
+            setting.retain(|b| b != f);
             true
         }
-        Choose::Fill { field, .. } => building.contains(field),
+        Choose::Fill { field, .. } => building.contains(field) || setting.contains(field),
         _ => false,
     }
 }

@@ -469,8 +469,8 @@ The two steps landed in one pull request.
   setting's refusal now names a boolean asked of it, since a number is
   admitted.
 - **Measured.** Product in 779, out 131, net 648; specification in 298,
-  out 9, net 289. The core-size gate: product 102 923 of base 108 500,
-  specification 187 251 of base 191 500, neither base nor ceiling raised.
+  out 9, net 289. The core-size gate: product 106 179 of base 108 500,
+  specification 188 108 of base 191 500, neither base nor ceiling raised.
   Steps 5 and 6 measured 648 / 289 against the 351 / 433 reckoned for them
   at ×1.35; the estimate table above carries the measured size and leaves
   the remaining steps as reckoned.

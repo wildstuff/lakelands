@@ -23,7 +23,7 @@ fn two_types_put_in_turn_are_each_read_once() {
             Default::default(),
             at,
         );
-        put_record(&conn, (&mut kept, &mut sharing), &record).unwrap();
+        put_record(&conn, (&mut kept, &mut sharing), &record, true).unwrap();
     }
     // The statement of `type_at` at the head, as it prepares it.
     let read = conn

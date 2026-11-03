@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use fs4::{FileExt, TryLockError};
 use lakelands_api::engine::{
-    Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
+    Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, Look, OpenMode, ProjectionStore,
     ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
 };
 use lakelands_api::error::Result;
@@ -850,9 +850,21 @@ impl ProjectionStore for SqliteLake {
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
+        self.put_record_for(record, true)
+    }
+
+    fn put_record_for(&self, record: &StoredRecord, whole: bool) -> Result<()> {
+        // A live `lookup_index.<type>` setting is built beside the writer:
+        // the fold marks its fields, and the commit does not decide the
+        // exact-text index again for it.
+        let beside = !whole
+            && !record.retired
+            && lakelands_core::engines::lookup_index_type(record).is_some();
         self.stage(record.position, |conn, t| {
-            t.relook.record(record);
-            projection::put_record(conn, (&mut t.kept, &mut t.sharing), record)
+            if !beside {
+                t.relook.record(record);
+            }
+            projection::put_record(conn, (&mut t.kept, &mut t.sharing), record, whole)
         })
     }
 
@@ -1071,6 +1083,17 @@ impl ProjectionStore for SqliteLake {
         self.write(|conn| {
             abandon(conn)?;
             projection::choose_order(conn, ty, step)
+        })
+    }
+
+    fn look_index(&self, ty: &TypeName, step: &Look) -> Result<Option<RecordKey>> {
+        let transaction = lock(&self.transaction);
+        if transaction.is_some() {
+            return Err(Error::invalid(Case::CompactInTransaction));
+        }
+        self.write(|conn| {
+            abandon(conn)?;
+            projection::look_index(conn, ty, step)
         })
     }
 }

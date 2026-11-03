@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{
-    Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
+    Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, Look, OpenMode, ProjectionStore,
     ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
@@ -1157,6 +1157,28 @@ impl ProjectionStore for PgLake {
         Ok(())
     }
 
+    fn put_record_for(&self, record: &StoredRecord, whole: bool) -> Result<()> {
+        // A setting put beside the writer marks what it asks for as
+        // building; the build fills it in turns (099). Every other put is
+        // whole, as before.
+        let sorted = !whole && engines::sort_index_type(record).is_some();
+        let looked = !whole && engines::lookup_index_type(record).is_some();
+        if !sorted && !looked {
+            return self.put_record(record);
+        }
+        self.stage(record.position, |b| match sorted {
+            true => b.live_sorted(record),
+            false => b.live_looked(record),
+        })?;
+        if let Some(t) = lock(&self.transaction).as_mut() {
+            t.put += 1;
+            if !looked {
+                t.relook.record(record);
+            }
+        }
+        Ok(())
+    }
+
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         engines::head_only(name)?;
         self.stage(at, |b| b.end_heads(name.as_str()))
@@ -1309,6 +1331,19 @@ impl ProjectionStore for PgLake {
             let _ = db.batch(&format!("ANALYZE {}", self.names.t("sort_index")));
         }
         Ok(next)
+    }
+
+    /// One step of a `lookup_index` setting's build, in a transaction of
+    /// its own (`projection::look_index`), outside the fold's.
+    fn look_index(&self, ty: &TypeName, step: &Look) -> Result<Option<RecordKey>> {
+        let writing = self.writing()?;
+        let transaction = lock(&self.transaction);
+        if transaction.is_some() {
+            return Err(Error::invalid(Case::CompactInTransaction));
+        }
+        let mut db = self.projecting(writing)?;
+        let _ = db.batch("ROLLBACK");
+        projection::look_index(&mut db, &self.names, ty, step)
     }
 }
 
