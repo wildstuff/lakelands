@@ -35,7 +35,7 @@ check!(
 
 check!(
     LOOKED_UP_OR_SCANNED = a_text_scanned_for_answers_as_one_looked_up,
-    "057: a `where` on a text field the exact-text index keeps no rows for answers as it does once `lookup_index.<type>` or a set's condition looks the field up, and again once the setting is retired; the setting refuses a field that is no text, naming it"
+    "057: a `where` on a text field the exact-text index keeps no rows for answers as it does once `lookup_index.<type>` or a set's condition looks the field up, and again once the setting is retired; the setting refuses a field that is no text, number or decimal, naming it"
 );
 
 check!(
@@ -194,11 +194,11 @@ async fn a_text_scanned_for_answers_as_one_looked_up(store: Store) -> Held {
             "after {how}, `label` answered {got:?}, scanned {scanned:?}"
         );
     }
-    let qty = json!({"key": setting, "value": ["qty"]});
-    let refused = try_upsert(l.cat.as_ref(), &l.own, SETTING_TYPE, setting, qty).await;
+    let flag = json!({"key": setting, "value": ["flag"]});
+    let refused = try_upsert(l.cat.as_ref(), &l.own, SETTING_TYPE, setting, flag).await;
     ensure!(
-        refused_on(&refused).is_some_and(|(f, _)| f == "qty"),
-        "a number field asked of the exact-text index: {refused:?}"
+        refused_on(&refused).is_some_and(|(f, _)| f == "flag"),
+        "a boolean field asked of the exact lookup: {refused:?}"
     );
     Ok(())
 }

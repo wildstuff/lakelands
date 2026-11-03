@@ -4274,3 +4274,288 @@ fn walks_of(
     core_engines::count_walks(false);
     Ok((rows.must(what)?, walked, read))
 }
+
+engine_check!(
+    NUMBER_LOOKUP_READS_ITS_HOLDERS = a_number_read_under_the_lookup_is_handed_its_holders,
+    "057 and 097 §A number's exact lookup: of 60 000 records, the 600 holding 7 in a number field the `lookup_index.<type>` setting names answer `=`, `equal`, `equal_any` and `in`, the read is handed about those 600, not the type, and a put and a drop after the setting take a holder out of the set and put one in"
+);
+
+fn a_number_read_under_the_lookup_is_handed_its_holders(engine: &dyn LakeEngine) -> Held {
+    const N: u64 = 60_000;
+    const HOLD: u64 = 600;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [{"name": "v", "type": {"kind": "number"}}]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let states: Vec<StoredRecord> = (0..N)
+        .map(|i| {
+            let v = if i < HOLD { 7 } else { i };
+            record("t", &format!("k{i:05}"), json!({"v": v}), 1)
+        })
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(engine, 2, lookup_setting("t", json!(["v"]), 2))?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("t");
+    let roads = [
+        (
+            scan_with(|s| s.filter = Some(crate::expr::parse("v = 7").expect("parses"))),
+            "a filter `= 7`",
+        ),
+        (
+            scan_with(|s| s.equal = vec![(FieldName::from("v"), json!(7))]),
+            "`equal` of 7",
+        ),
+        (
+            scan_with(|s| s.equal_any = vec![vec![(FieldName::from("v"), json!(7))]]),
+            "`equal_any` of 7",
+        ),
+        (
+            scan_with(|s| s.filter = Some(crate::expr::parse("v in (7)").expect("parses"))),
+            "a filter `in (7)`",
+        ),
+    ];
+    for (scan, what) in roads {
+        let (rows, _, read) = walks_of(head.as_ref(), &ty, &scan, false, what)?;
+        let got = keys(&rows);
+        let whole = keys(&crate::engines::scan(Some(t), &states, &scan));
+        ensure!(
+            got == whole,
+            "{what} answered {:?} of {N} records; one scan over every state answers {:?}",
+            got.len(),
+            whole.len()
+        );
+        ensure!(
+            got.len() as u64 == HOLD,
+            "{what} answered {} records; {HOLD} hold 7",
+            got.len()
+        );
+        ensure!(
+            (HOLD..=HOLD + 100).contains(&read),
+            "{what} was handed {read} rows of {N}; the exact lookup names the {HOLD} holders, \
+             not the type"
+        );
+    }
+    // A write while the setting names the field: one holder moves off 7 and
+    // another is dropped, and the token each kept goes with the state it
+    // left (057). The read is taken again at the head the write makes.
+    let moved = record("t", "k00000", json!({"v": 8}), 3);
+    let dropped = RecordKey::from("k00001");
+    fold(engine, 3, |p| {
+        p.put_record(&moved)?;
+        p.drop_states(lakelands_api::engine::StatesOf::Record(&ty, &dropped))
+    })?;
+    let head = view(engine, None)?;
+    let held: Vec<StoredRecord> = std::iter::once(moved.clone())
+        .chain(states.iter().skip(2).cloned())
+        .collect();
+    let ask = |text: &str, what: &str| -> Result<(Vec<String>, u64), Failure> {
+        let filter = crate::expr::parse(text).expect("the check's filter parses");
+        let scan = scan_with(|s| s.filter = Some(filter));
+        let (rows, _, read) = walks_of(head.as_ref(), &ty, &scan, false, what)?;
+        let got = keys(&rows);
+        let whole = keys(&crate::engines::scan(Some(t), &held, &scan));
+        ensure!(
+            got == whole,
+            "{what} answered {got:?}; one scan over every state answers {whole:?}"
+        );
+        Ok((got, read))
+    };
+    let (seven, read) = ask("v = 7", "a filter `= 7` after the put and the drop")?;
+    ensure!(
+        seven.len() as u64 == HOLD - 2,
+        "`= 7` answered {} records after a holder moved off 7 and another was dropped; \
+         {} of the {HOLD} hold it still",
+        seven.len(),
+        HOLD - 2
+    );
+    ensure!(
+        !seven.iter().any(|k| k == "k00000" || k == "k00001"),
+        "`= 7` still answered a record whose latest state is not 7, or one dropped: {seven:?}"
+    );
+    ensure!(
+        (HOLD - 2..=HOLD + 100).contains(&read),
+        "`= 7` was handed {read} rows of {N} after the write; the exact lookup names the \
+         {} holders still in the set",
+        HOLD - 2
+    );
+    let (eight, _) = ask("v = 8", "a filter `= 8` after the put")?;
+    ensure!(
+        eight == ["k00000"],
+        "`= 8` answered {eight:?} after a holder moved onto 8; it names `k00000`"
+    );
+    Ok(())
+}
+
+engine_check!(
+    NUMBER_LOOKUP_ONE_TOKEN = a_number_field_is_looked_up_by_one_token,
+    "097 §A number's exact lookup: `= 7`, `= 7.00` and `= '7'` on a decimal field find one set, `-0` and `0` are one, a value that reads as no number keeps no row and is found by its own text on the old road, an `in` with one takes the old road, and the setting's answer is the one the type's records give"
+);
+
+fn a_number_field_is_looked_up_by_one_token(engine: &dyn LakeEngine) -> Held {
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [{"name": "d", "type": {"kind": "decimal"}}]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    // Forty digits: a decimal no token reads, held as a text (097 §A
+    // number's exact lookup).
+    const LONG: &str = "1234567890123456789012345678901234567890";
+    let values = [
+        ("a", json!(7)),
+        ("b", json!(7.0)),
+        ("c", json!(-0.0)),
+        ("e", json!(0)),
+        ("f", json!(7.5)),
+        ("g", json!(LONG)),
+    ];
+    let states: Vec<StoredRecord> = values
+        .iter()
+        .map(|(key, v)| record("t", key, json!({"d": v}), 1))
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(engine, 2, lookup_setting("t", json!(["d"]), 2))?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("t");
+    let find = |text: &str| {
+        let filter = crate::expr::parse(text).expect("the check's filter parses");
+        let scan = scan_with(|s| s.filter = Some(filter));
+        let rows = head.scan(&ty, &scan).must(text)?;
+        let whole = keys(&crate::engines::scan(Some(t), &states, &scan));
+        let got = keys(&rows);
+        ensure!(
+            got == whole,
+            "`{text}` answered {got:?}; one scan over every state answers {whole:?}"
+        );
+        Ok(got)
+    };
+    for text in ["d = 7", "d = 7.00", "d = '7'"] {
+        let got = find(text)?;
+        ensure!(
+            got == ["a", "b"],
+            "`{text}` answered {got:?}; the tokens `7` and `7.00` are one, the set the \
+             comparison finds"
+        );
+    }
+    for text in ["d = 0", "d = -0", "d = '0.0'"] {
+        let got = find(text)?;
+        ensure!(
+            got == ["c", "e"],
+            "`{text}` answered {got:?}; `-0` and `0` are one"
+        );
+    }
+    let none = find("d = 'abc'")?;
+    ensure!(
+        none.is_empty(),
+        "`d = 'abc'` answered {none:?}; no record holds it, and the old road finds none"
+    );
+    let long = find(&format!("d = '{LONG}'"))?;
+    ensure!(
+        long == ["g"],
+        "`d = '{LONG}'` answered {long:?}; the 40-digit value keeps no row and is found by its \
+         own text on the old road, as it is today"
+    );
+    let any = find("d in (7, 'abc')")?;
+    ensure!(
+        any == ["a", "b"],
+        "`d in (7, 'abc')` answered {any:?}; a value that reads as no number sends the `in` \
+         to the old road, and the one that reads still finds its holders"
+    );
+    Ok(())
+}
+
+engine_check!(
+    NUMBER_OUTSIDE_THE_SETTING = a_number_field_outside_the_setting_reads_as_today,
+    "097 §A number's exact lookup: `=`, `in`, `equal`, `equal_any` and a range on a number field answer the same before the `lookup_index.<type>` setting names it, while it does, and after it is retired"
+);
+
+fn a_number_field_outside_the_setting_reads_as_today(engine: &dyn LakeEngine) -> Held {
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [
+            {"name": "v", "type": {"kind": "number"}},
+            {"name": "w", "type": {"kind": "text"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let states: Vec<StoredRecord> = (0..30)
+        .map(|i| {
+            record(
+                "t",
+                &format!("k{i:02}"),
+                json!({"v": i % 7, "w": format!("w{}", i % 3)}),
+                1,
+            )
+        })
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    let asks = || {
+        let text =
+            |text: &str| scan_with(|s| s.filter = Some(crate::expr::parse(text).expect("parses")));
+        [
+            (text("v = 3"), "`v = 3`"),
+            (text("v in (3, 4)"), "`v in (3, 4)`"),
+            (text("v >= 2 and v < 5"), "`v >= 2 and v < 5`"),
+            (text("w = 'w1'"), "`w = 'w1'`"),
+            (
+                scan_with(|s| s.equal = vec![(FieldName::from("v"), json!(3))]),
+                "`equal` of 3",
+            ),
+            (
+                scan_with(|s| s.equal_any = vec![vec![(FieldName::from("v"), json!(3))]]),
+                "`equal_any` of 3",
+            ),
+        ]
+    };
+    let ty = TypeName::from("t");
+    let whole = |head: &dyn ProjectionView| -> Result<Vec<Vec<String>>, Failure> {
+        asks()
+            .into_iter()
+            .map(|(scan, what)| {
+                let rows = keys(&head.scan(&ty, &scan).must(what)?);
+                let want = keys(&crate::engines::scan(Some(t), &states, &scan));
+                ensure!(
+                    rows == want,
+                    "{what} answered {rows:?}; one scan over every state answers {want:?}"
+                );
+                Ok(rows)
+            })
+            .collect()
+    };
+    let before = whole(view(engine, None)?.as_ref())?;
+    fold_one(engine, 2, lookup_setting("t", json!(["v"]), 2))?;
+    let during = whole(view(engine, None)?.as_ref())?;
+    fold_one(
+        engine,
+        3,
+        record(
+            lakelands_api::seam::SETTING_TYPE,
+            "lookup_index.t",
+            json!({"key": "lookup_index.t"}),
+            3,
+        ),
+    )?;
+    let after = whole(view(engine, None)?.as_ref())?;
+    ensure!(
+        before == during && during == after,
+        "the number field's reads answered {before:?} before the setting, {during:?} while it \
+         was set and {after:?} after its retirement"
+    );
+    Ok(())
+}

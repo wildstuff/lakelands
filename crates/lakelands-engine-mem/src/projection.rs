@@ -285,6 +285,11 @@ pub(crate) struct Projection {
     pub(crate) in_edges: BTreeMap<(TypeName, RecordKey), BTreeMap<EdgeFrom, Edge>>,
     /// Each head record's entries in `in_edges`: the target and the edge.
     in_edge_rows: BTreeMap<(TypeName, RecordKey), Vec<(Target, EdgeFrom)>>,
+    /// The exact lookup of the head (057, 097 §The memory engine): per
+    /// type, field and value token, the head records holding it.
+    pub(crate) lookup: BTreeMap<(TypeName, FieldName, String), BTreeSet<RecordKey>>,
+    /// Each head record's entries in `lookup`, to take them out again.
+    lookup_rows: BTreeMap<(TypeName, RecordKey), Vec<(FieldName, String)>>,
     /// The thinning acts, one a type, field and horizon (`thinned_types`):
     /// the position each began at and the act's row, moved by each part.
     pub(crate) thinned_acts: BTreeMap<(TypeName, FieldName, Timestamp), (Position, ThinnedAct)>,
@@ -351,6 +356,10 @@ impl Projection {
         self.bases.2 = engines::shared_bases(states);
         let mut records = BTreeSet::new();
         let mut types = BTreeSet::new();
+        // The types whose exact lookup the transaction moves: a
+        // `lookup_index.<type>` setting's, a declaration's own and those
+        // it reads the type by (057, 097 §The memory engine).
+        let mut looked = BTreeSet::new();
         let mut live = Vec::new();
         for put in puts {
             match &put {
@@ -360,6 +369,9 @@ impl Projection {
                     // The setting's write rebuilds the index it asks for.
                     if let Some(ty) = lakelands_core::engines::sort_index_type(r) {
                         types.extend(lakelands_core::engines::ordered_names(&ty));
+                    }
+                    if let Some(ty) = lakelands_core::engines::lookup_index_type(r) {
+                        looked.insert(ty);
                     }
                 }
                 Put::Live(r) => {
@@ -372,6 +384,7 @@ impl Projection {
                     if let Declaration::Type(t) = &d.declaration {
                         types.insert(t.name.clone());
                     }
+                    looked.extend(lakelands_core::engines::looked_up_by(&d.declaration));
                 }
                 _ => {}
             }
@@ -387,14 +400,27 @@ impl Projection {
         // state the transaction put, every record of a type it declared
         // again, and of a type and its kept name whose `sort_index.<type>`
         // setting it put.
+        let mut lap: Option<(TypeName, Option<BTreeSet<FieldName>>)> = None;
         for (ty, key) in records {
             if !types.contains(&ty) {
-                self.index(&ty, &key);
+                if lap.as_ref().is_none_or(|(t, _)| *t != ty) {
+                    lap = Some((ty.clone(), self.looked_fields(&ty)));
+                }
+                self.index(&ty, &key, lap.as_ref().and_then(|(_, l)| l.as_ref()));
             }
         }
         // A whole type, a page of keys at a time, so a rebuild that refolds
         // a declaration or a setting holds a page, not the type.
         for ty in &types {
+            let mut after = None;
+            while let Some((last, _)) = self.index_page(ty, after.as_ref(), 1024) {
+                after = Some(last);
+            }
+        }
+        for ty in &looked {
+            if types.contains(ty) {
+                continue;
+            }
             let mut after = None;
             while let Some((last, _)) = self.index_page(ty, after.as_ref(), 1024) {
                 after = Some(last);
@@ -581,16 +607,29 @@ impl Projection {
             .filter(|k| after != Some(k))
             .take(limit)
             .collect();
-        keys.iter().for_each(|key| self.index(ty, key));
+        let looked = self.looked_fields(ty);
+        keys.iter()
+            .for_each(|key| self.index(ty, key, looked.as_ref()));
         keys.last().map(|last| (last.clone(), keys.len()))
     }
 
     /// Rewrite one record's rows in the head indexes from its latest
     /// state: the order index, under its type's setting and declaration
     /// at the head; the ends of a link record; the edges it declares into
-    /// other records.
-    fn index(&mut self, ty: &TypeName, key: &RecordKey) {
+    /// other records; and the exact lookup, of the fields `looked` keeps
+    /// (`None`, every one a string value, a view's), each under the kind
+    /// its declaration gives it (057, 097 §A number's exact lookup).
+    fn index(&mut self, ty: &TypeName, key: &RecordKey, looked: Option<&BTreeSet<FieldName>>) {
         let id = (ty.clone(), key.clone());
+        for (field, token) in self.lookup_rows.remove(&id).unwrap_or_default() {
+            let entry = (ty.clone(), field, token);
+            if let Some(set) = self.lookup.get_mut(&entry) {
+                set.remove(key);
+                if set.is_empty() {
+                    self.lookup.remove(&entry);
+                }
+            }
+        }
         for (field, sort_key) in self.sorted_rows.remove(&id).unwrap_or_default() {
             if let Some(set) = self.sorted.get_mut(&(ty.clone(), field)) {
                 set.remove(&(sort_key, key.clone()));
@@ -663,8 +702,59 @@ impl Projection {
                 .insert((sort_key.clone(), key.clone()));
         }
         if !rows.is_empty() {
-            self.sorted_rows.insert(id, rows);
+            self.sorted_rows.insert(id.clone(), rows);
         }
+        let decl = self.type_at(ty, Some(Position(u64::MAX))).cloned();
+        let mut tokens = Vec::new();
+        for (field, value) in &record.fields {
+            if looked.is_some_and(|l| !l.contains(field)) {
+                continue;
+            }
+            let kind = decl
+                .as_ref()
+                .and_then(|d| lakelands_core::engines::field_kind(d, field))
+                .copied();
+            if let Some(token) = lakelands_core::engines::lookup_token(value, kind) {
+                self.lookup
+                    .entry((ty.clone(), field.clone(), token.clone()))
+                    .or_default()
+                    .insert(key.clone());
+                tokens.push((field.clone(), token));
+            }
+        }
+        if !tokens.is_empty() {
+            self.lookup_rows.insert(id, tokens);
+        }
+    }
+
+    /// The fields of `ty` the exact lookup keeps at the head, a type it
+    /// declares: `None` at an earlier position, and for a view or a name
+    /// no type declares (every string field, as the SQL engines keep it).
+    pub(crate) fn looked(&self, ty: &TypeName, declared: bool) -> Option<BTreeSet<FieldName>> {
+        declared.then(|| self.looked_fields(ty)).flatten()
+    }
+
+    /// The fields of `ty` the exact lookup keeps at the head: those
+    /// [`engines::looked_up`] decides of the declarations in force and
+    /// its `lookup_index.<type>` setting's value (`None`, a view's every
+    /// string field, and a name no type declares).
+    fn looked_fields(&self, ty: &TypeName) -> Option<BTreeSet<FieldName>> {
+        let setting = self
+            .records
+            .get(&(
+                TypeName::from(lakelands_api::seam::SETTING_TYPE),
+                RecordKey::from(lakelands_core::engines::lookup_index_key(ty)),
+            ))
+            .and_then(History::latest)
+            .map(|h| h.record(&self.bases));
+        let decls = self.declarations_at(Some(Position(u64::MAX)));
+        lakelands_core::engines::looked_up(
+            ty,
+            decls.iter().map(|d| &d.declaration),
+            setting
+                .as_ref()
+                .and_then(lakelands_core::engines::setting_value),
+        )
     }
 
     /// The least key greater than every key at or below `hi`: the next byte
@@ -686,12 +776,14 @@ impl Projection {
     /// index's order for `dir` (the sort key ascending or descending, the
     /// key ascending either way), strictly after `from` and inside
     /// `window` when it bounds the field.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn sorted_after(
         &self,
         ty: &TypeName,
         field: &FieldName,
         dir: Direction,
         window: Option<&engines::Window>,
+        holds: Option<&dyn Fn(&RecordKey) -> bool>,
         from: Option<(&[u8], &str)>,
         n: u32,
     ) -> Vec<(Vec<u8>, RecordKey)> {
@@ -710,29 +802,35 @@ impl Projection {
             Some(key) => Bound::Excluded((key, RecordKey::from(""))),
             None => Bound::Unbounded,
         });
-        let holds = |key: &[u8]| window.is_none_or(|w| w.holds(key));
+        let in_window = |key: &[u8]| window.is_none_or(|w| w.holds(key));
+        let keeps = |key: &RecordKey| holds.is_none_or(|h| h(key));
         match dir {
             Direction::Asc => {
                 let start = match &from {
-                    Some(f) if holds(&f.0) => Bound::Excluded(f.clone()),
+                    Some(f) if in_window(&f.0) => Bound::Excluded(f.clone()),
                     // Above the window: the seek starts past every row in it.
                     Some(f) if window.is_some_and(|w| f.0 > w.hi) => return Vec::new(),
                     _ => lower.clone(),
                 };
-                set.range((start, upper)).take(n).cloned().collect()
+                set.range((start, upper))
+                    .filter(|(_, key)| keeps(key))
+                    .take(n)
+                    .cloned()
+                    .collect()
             }
             Direction::Desc => {
                 let mut out = Vec::new();
                 // The rest of the run `from` is in, then the runs below it,
                 // each in key order.
                 let below = match &from {
-                    Some((k, key)) if holds(k) => {
+                    Some((k, key)) if in_window(k) => {
                         out.extend(
                             set.range((
                                 Bound::Excluded((k.clone(), key.clone())),
                                 Bound::Unbounded,
                             ))
-                            .take_while(|(sk, _)| sk == k && holds(sk))
+                            .take_while(|(sk, _)| sk == k && in_window(sk))
+                            .filter(|(_, key)| keeps(key))
                             .take(n)
                             .cloned(),
                         );
@@ -747,6 +845,9 @@ impl Projection {
                 for row in set.range((lower, below)).rev() {
                     if out.len() >= n {
                         break;
+                    }
+                    if !keeps(&row.1) {
+                        continue;
                     }
                     if run.first().is_some_and(|(sk, _)| *sk != row.0) {
                         out.extend(run.drain(..).rev().take(n - out.len()));
@@ -768,6 +869,106 @@ impl Projection {
         self.sorted_rows
             .get(&(ty.clone(), key.clone()))
             .is_some_and(|rows| rows.iter().any(|(f, _)| f == field))
+    }
+
+    /// How many head records of `ty` hold `token` in `field`, counted up
+    /// to `n`: the size of the exact lookup's set.
+    pub(crate) fn holders(&self, ty: &TypeName, field: &FieldName, token: &str, n: u64) -> u64 {
+        self.lookup
+            .get(&(ty.clone(), field.clone(), token.to_owned()))
+            .map_or(0, |set| (set.len() as u64).min(n))
+    }
+
+    /// Whether the head record `key` of `ty` holds `token` in `field`.
+    pub(crate) fn holds(
+        &self,
+        ty: &TypeName,
+        field: &FieldName,
+        token: &str,
+        key: &RecordKey,
+    ) -> bool {
+        self.lookup
+            .get(&(ty.clone(), field.clone(), token.to_owned()))
+            .is_some_and(|set| set.contains(key))
+    }
+
+    /// At most `n` rows of the order index for `field` of `ty` under a
+    /// token few records hold, in the index's order for `dir`: the rows
+    /// of the holders alone, read from each record's own rows, sorted, and
+    /// taken after `from` and inside `window` (097 §The memory engine).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn few_after(
+        &self,
+        ty: &TypeName,
+        field: &FieldName,
+        dir: Direction,
+        window: Option<&engines::Window>,
+        looked: &FieldName,
+        token: &str,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+    ) -> Vec<(Vec<u8>, RecordKey)> {
+        let keys = self
+            .lookup
+            .get(&(ty.clone(), looked.clone(), token.to_owned()));
+        let mut rows: Vec<(Vec<u8>, RecordKey)> = keys
+            .into_iter()
+            .flatten()
+            .filter_map(|key| {
+                let rows = self.sorted_rows.get(&(ty.clone(), key.clone()))?;
+                let (_, sort_key) = rows.iter().find(|(f, _)| f == field)?;
+                Some((sort_key.clone(), key.clone()))
+            })
+            .filter(|(sort_key, _)| window.is_none_or(|w| w.holds(sort_key)))
+            .collect();
+        match dir {
+            Direction::Asc => rows.sort(),
+            Direction::Desc => rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1))),
+        }
+        let seek = from.map(|(k, key)| (k.to_vec(), RecordKey::from(key)));
+        rows.into_iter()
+            .filter(|row| match (&seek, dir) {
+                (None, _) => true,
+                (Some(f), Direction::Asc) => *row > *f,
+                (Some(f), Direction::Desc) => row.0 < f.0 || (row.0 == f.0 && row.1 > f.1),
+            })
+            .take(n as usize)
+            .collect()
+    }
+
+    /// At most `n` head records of `ty` whose `field` holds one of
+    /// `tokens` in key order after `after`, the keys read once when
+    /// several (`held`). The candidates the rulebook admits follow.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn lookup_after(
+        &self,
+        ty: &TypeName,
+        field: &FieldName,
+        tokens: &[String],
+        held: &mut Option<Vec<RecordKey>>,
+        at: Option<Position>,
+        after: Option<&str>,
+        n: u32,
+    ) -> Vec<StoredRecord> {
+        let keys = held.get_or_insert_with(|| {
+            let mut set = BTreeSet::new();
+            for token in tokens {
+                set.extend(
+                    self.lookup
+                        .get(&(ty.clone(), field.clone(), token.clone()))
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+            }
+            set.into_iter().collect()
+        });
+        let from = after.map_or(0, |a| keys.partition_point(|k| k.as_str() <= a));
+        (keys[from..])
+            .iter()
+            .take(n as usize)
+            .filter_map(|key| self.record_of(ty, key, at))
+            .collect()
     }
 
     fn apply(&mut self, put: Put) {
