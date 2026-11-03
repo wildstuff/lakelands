@@ -612,14 +612,31 @@ impl Projection {
         }
     }
 
+    /// The least key greater than every key at or below `hi`: the next byte
+    /// string after it. `None` when `hi` is all `0xff`s, above every key.
+    fn past(hi: &[u8]) -> Option<Vec<u8>> {
+        let mut out = hi.to_vec();
+        while let Some(last) = out.last_mut() {
+            if *last == u8::MAX {
+                out.pop();
+            } else {
+                *last += 1;
+                return Some(out);
+            }
+        }
+        None
+    }
+
     /// At most `n` rows of the order index for `field` of `ty`, in the
     /// index's order for `dir` (the sort key ascending or descending, the
-    /// key ascending either way), strictly after `from`.
+    /// key ascending either way), strictly after `from` and inside
+    /// `window` when it bounds the field.
     pub(crate) fn sorted_after(
         &self,
         ty: &TypeName,
         field: &FieldName,
         dir: Direction,
+        window: Option<&engines::Window>,
         from: Option<(&[u8], &str)>,
         n: u32,
     ) -> Vec<(Vec<u8>, RecordKey)> {
@@ -629,38 +646,50 @@ impl Projection {
         };
         let n = n as usize;
         let from = from.map(|(k, key)| (k.to_vec(), RecordKey::from(key)));
+        // A window narrows the index's rows to its key interval; the
+        // rulebook still rejects rows the filter does not admit.
+        let lower = window.map_or(Bound::Unbounded, |w| {
+            Bound::Included((w.lo.clone(), RecordKey::from("")))
+        });
+        let upper = window.map_or(Bound::Unbounded, |w| match Self::past(&w.hi) {
+            Some(key) => Bound::Excluded((key, RecordKey::from(""))),
+            None => Bound::Unbounded,
+        });
+        let holds = |key: &[u8]| window.is_none_or(|w| w.holds(key));
         match dir {
             Direction::Asc => {
                 let start = match &from {
-                    Some(f) => Bound::Excluded(f.clone()),
-                    None => Bound::Unbounded,
+                    Some(f) if holds(&f.0) => Bound::Excluded(f.clone()),
+                    // Above the window: the seek starts past every row in it.
+                    Some(f) if window.is_some_and(|w| f.0 > w.hi) => return Vec::new(),
+                    _ => lower.clone(),
                 };
-                set.range((start, Bound::Unbounded))
-                    .take(n)
-                    .cloned()
-                    .collect()
+                set.range((start, upper)).take(n).cloned().collect()
             }
             Direction::Desc => {
                 let mut out = Vec::new();
                 // The rest of the run `from` is in, then the runs below it,
                 // each in key order.
                 let below = match &from {
-                    Some((k, key)) => {
+                    Some((k, key)) if holds(k) => {
                         out.extend(
                             set.range((
                                 Bound::Excluded((k.clone(), key.clone())),
                                 Bound::Unbounded,
                             ))
-                            .take_while(|(sk, _)| sk == k)
+                            .take_while(|(sk, _)| sk == k && holds(sk))
                             .take(n)
                             .cloned(),
                         );
                         Bound::Excluded((k.clone(), RecordKey::from("")))
                     }
-                    None => Bound::Unbounded,
+                    // Below the window: every row the seek reaches is out
+                    // of it.
+                    Some((k, _)) if window.is_some_and(|w| *k < w.lo) => return Vec::new(),
+                    _ => upper,
                 };
                 let mut run: Vec<(Vec<u8>, RecordKey)> = Vec::new();
-                for row in set.range((Bound::Unbounded, below)).rev() {
+                for row in set.range((lower, below)).rev() {
                     if out.len() >= n {
                         break;
                     }

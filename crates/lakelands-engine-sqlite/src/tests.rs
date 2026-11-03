@@ -141,6 +141,102 @@ fn state(at: u64) -> StoredRecord {
     )
 }
 
+/// A page under a text more than `FEW_HOLDERS` records hold walks every
+/// order row it passes, and runs the count of that walk only while a check
+/// asked for walks (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §What `rows_read` counts, and what is added): the switch keeps a product
+/// read from paying a statement a batch.
+#[test]
+fn a_many_holders_walk_is_counted_only_when_a_check_asks() {
+    use lakelands_api::engine::Scan;
+    use lakelands_api::read::{Direction, OrderBy};
+    use lakelands_api::write::Declaration;
+    use lakelands_core::conformance::fixture::order;
+
+    let dir = std::env::temp_dir().join(format!("lakelands-walked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let tuning = SqliteTuning::default();
+    let lake = SqliteLake::open(
+        "walked".into(),
+        (dir.clone(), dir.clone()),
+        tuning,
+        OpenMode::Create,
+    )
+    .unwrap();
+    let decl: Declaration = serde_json::from_value(serde_json::json!({
+        "declare": "type", "name": "t",
+        "fields": [
+            {"name": "v", "type": {"kind": "number"}},
+            {"name": "s", "type": {"kind": "text"}}
+        ]
+    }))
+    .unwrap();
+    let p = lake.projection();
+    p.begin().unwrap();
+    p.put_declaration(&decl, 1, None, Position(0)).unwrap();
+    for i in 0..4_200 {
+        p.put_record(&stored_record(
+            "t",
+            format!("k{i:04}"),
+            serde_json::from_value(serde_json::json!({"v": i, "s": "many"})).unwrap(),
+            1,
+        ))
+        .unwrap();
+    }
+    p.commit(Position(1)).unwrap();
+    p.begin().unwrap();
+    p.put_record(&stored_record(
+        lakelands_api::seam::SETTING_TYPE,
+        "sort_index.t",
+        serde_json::from_value(serde_json::json!({
+            "key": "sort_index.t", "value": ["v"]
+        }))
+        .unwrap(),
+        2,
+    ))
+    .unwrap();
+    p.commit(Position(2)).unwrap();
+    p.begin().unwrap();
+    p.put_record(&stored_record(
+        lakelands_api::seam::SETTING_TYPE,
+        "lookup_index.t",
+        serde_json::from_value(serde_json::json!({
+            "key": "lookup_index.t", "value": ["s"]
+        }))
+        .unwrap(),
+        3,
+    ))
+    .unwrap();
+    p.commit(Position(3)).unwrap();
+    let view = lake.view(None).unwrap();
+    let filter = lakelands_core::expr::parse("s = 'many'").unwrap();
+    let scan = Scan {
+        order_by: vec![order("v", OrderBy::Value, Direction::Asc)],
+        filter: Some(filter),
+        limit: 10,
+        ..Scan::default()
+    };
+    let read = |counting: bool| {
+        lakelands_core::engines::count_walks(counting);
+        let before = lakelands_core::engines::rows_walked();
+        let rows = view.scan(&TypeName::from("t"), &scan).unwrap();
+        let walked = lakelands_core::engines::rows_walked() - before;
+        lakelands_core::engines::count_walks(false);
+        (rows.len(), walked)
+    };
+    let (rows, walked) = read(false);
+    assert_eq!((rows, walked), (10, 0), "no check asked for walks");
+    let (rows, walked) = read(true);
+    assert_eq!(
+        (rows, walked),
+        (10, 10),
+        "a check asked: the count of the range walked is the page"
+    );
+    drop(view);
+    drop(lake);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A statement the engine keeps prepared is compiled once: taken from the
 /// connection's cache again and run with other values, it keeps its
 /// plan. On SQLite 3.54 a kept statement with an equality on a column its
