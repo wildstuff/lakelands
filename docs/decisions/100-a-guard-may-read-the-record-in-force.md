@@ -439,6 +439,31 @@ Where the tree differed from the text above:
 - **`GUARD_IN_FORCE_BOX`'s "reads its partition once"** is a count, so it waits for
   G5's `rows_read` with `GUARD_IN_FORCE_READS_ONE_PARTITION`.
 
+### As built: G4 (lakelands#1729)
+
+G4 landed on its own, after G1 to G3 and on R2's seam (099, lakelands#1720). Where the
+tree differed from the text above:
+
+- **Both resolvers read through once R2 stood; the holding is G4's work.** `preceding`
+  and `in_force` reach the record through `At::view`, which is the restate's view
+  wherever the writer holds an owed act, so a guard saw the erased record between turns
+  already. What G4 adds is the holding the row's last clause names: the view keeps what
+  each record and version was restated to, so a guard, a constraint and the verb that
+  read one record in a write's decision fold it once. The change is the memo in the
+  restate's view and nothing else; no resolver and no act moved.
+- **The row runs at one record a part.** `GUARD_READS_THROUGH_AN_OWED_ACT` forgets a
+  source with `part_events = 1`, waits for the act's `source_forgotten` before its
+  `act_whole`, and then writes a tick. Its constraint's `preceding` reads null, and the
+  guard's `preceding` and `in_force` fire as if the tick before it and the bound were
+  erased, while a plain read of the same records still shows what the projection holds.
+  The bound is the last part the act retires, so the window is held with every earlier
+  part landed, ticks and all. After the act those records read as the restate left them,
+  and the next tick fires on the erased bound alone.
+- **The row's last clause is held, not counted.** No seam the suite reads counts a fold,
+  and `rows_read` and `rows_walked` count the engine's rows rather than a restate, so
+  "a record and version reads through once in a turn" rests on the view's memo and its
+  review, not on a count.
+
 ### Decided by the operator
 
 Decided on 2026-11-01 (lakelands#1578): every recommendation below was taken.
