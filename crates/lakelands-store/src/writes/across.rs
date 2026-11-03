@@ -209,7 +209,7 @@ impl Decide<'_> {
     /// append's drafts.
     fn with_heads<R>(&self, f: impl FnOnce(Heads<'_>) -> R) -> R {
         let max = self.at.depth;
-        heads((self.at.view, &self.pending, max), f)
+        heads((self.at.view(), &self.pending, max), f)
     }
 
     /// Whether a trigger fires on a write that leaves `after` (it was
@@ -377,7 +377,7 @@ impl Decide<'_> {
             let reached = reaches(o, on, &e);
             let mut found = BTreeMap::new();
             for r in reached.iter().filter(|r| r.ty == &after.ty && moved(r)) {
-                for rec in back((self.at.view, &self.pending), &r.back, after.clone())? {
+                for rec in back((self.at.view(), &self.pending), &r.back, after.clone())? {
                     found.insert(rec.key.clone(), rec);
                 }
             }
@@ -388,7 +388,7 @@ impl Decide<'_> {
                 continue;
             }
             let held = match set {
-                true => self.at.view.members(name, of)?,
+                true => self.at.view().members(name, of)?,
                 false => BTreeSet::new(),
             };
             for r in found.into_values() {

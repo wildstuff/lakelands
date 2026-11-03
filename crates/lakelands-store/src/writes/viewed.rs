@@ -245,7 +245,7 @@ impl Decide<'_> {
         out: &mut Vec<(Draft, Option<Change>)>,
     ) -> Result<()> {
         let at = At {
-            view: self.at.view,
+            view: self.at.view(),
             projection: None,
             ontology: self.ontology,
             settings: v.settings.as_ref().expect("the settings are held"),
@@ -328,7 +328,7 @@ impl Decide<'_> {
                 let of = (s.name.clone(), view.clone(), key.clone());
                 let was = match mine.get(&of) {
                     Some(m) => *m,
-                    None => self.pending.member(self.at.view, &s.name, view, key)?,
+                    None => self.pending.member(self.at.view(), &s.name, view, key)?,
                 };
                 let is = match &row {
                     Some(r) => self.member(s, r, at.settings)?,

@@ -162,9 +162,11 @@ impl Keys {
     /// newest version the log used, [`USED`]), or where `rotate` says it
     /// belongs to a period past ([`rotates`]). A key store that lost the
     /// last of them answers `key_missing` here, at the write, and is never
-    /// given a new key the old values would read as erased. So does a
-    /// version an act of removal named, which the key store may not have
-    /// destroyed yet: a value sealed under it would be erased with it.
+    /// given a new key the old values would read as erased. A version an
+    /// act of removal took is not lost, though: from its first turn it
+    /// seals nothing, and the source seals under a new one (099). One the
+    /// key store still holds, its destroy failed inside that turn, leaves
+    /// 065's case.
     /// Without a key store, refused as `Unbound`.
     pub fn sealing(
         &self,
@@ -187,13 +189,25 @@ impl Keys {
             None => {
                 let store = self.store()?;
                 let mut ids = store.ids(&self.lake, source)?;
+                let held_by_store = newest.is_some_and(|u| ids.contains(u));
                 {
                     let held = lock(&self.held);
                     ids.retain(|k| !held.doomed.contains(&(source.clone(), k.clone())));
                 }
                 if let Some(last) = newest.filter(|u| !ids.contains(u)) {
-                    let (source, key) = (source.clone(), last.clone());
-                    return Err(Error::unavailable(Situation::KeyMissing { source, key }));
+                    // A version the act destroyed is not lost: from its
+                    // first turn it seals nothing, and the source seals
+                    // under a new one (099). One the key store still
+                    // holds was not destroyed, a crash inside that turn:
+                    // it is 065's case, a lost key.
+                    let taken = !held_by_store
+                        && lock(&self.held)
+                            .doomed
+                            .contains(&(source.clone(), last.clone()));
+                    if !taken {
+                        let (source, key) = (source.clone(), last.clone());
+                        return Err(Error::unavailable(Situation::KeyMissing { source, key }));
+                    }
                 }
                 // A version made and not yet used is a new period's
                 // already.
@@ -432,6 +446,18 @@ impl Keys {
             }
         }
         Ok(())
+    }
+
+    /// Keep that an act of removal named `source`'s keys `keys`, versions
+    /// and keys apart alike, without asking the key store anything: what a
+    /// writer just opened is told of the acts the projection lists (099),
+    /// whose destroys left no trace but the versions' absence.
+    pub fn doom(&self, source: &SourceId, keys: &[KeyId]) {
+        if keys.is_empty() {
+            return;
+        }
+        let doomed = keys.iter().map(|k| (source.clone(), k.clone()));
+        lock(&self.held).doomed.extend(doomed);
     }
 
     /// Whether an act of removal named `source`'s key `id`: from then on

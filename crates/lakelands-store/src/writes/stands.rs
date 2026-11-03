@@ -76,9 +76,11 @@ impl<'l> AsOf<'l> {
 }
 
 /// The positions of the reactions among `events` that an act overruled,
-/// in order; and the first one past what the projection has folded, as
-/// while a rebuild runs, where deciding stops: such a reaction is told
-/// neither standing nor overruled.
+/// in order; and the first one before which deciding stops: a reaction
+/// past what the projection has folded, as while a rebuild runs, or one
+/// while any act is owed, its restate not yet run, since the projection
+/// cannot decide it yet (099). Such a reaction is told neither standing
+/// nor overruled.
 pub(crate) fn overruled<'e>(
     lake: &Lake,
     events: impl IntoIterator<Item = &'e Event>,
@@ -92,7 +94,7 @@ pub(crate) fn overruled<'e>(
         shapes: BTreeMap::new(),
         ends: BTreeMap::new(),
     };
-    let (mut out, mut folded) = (Vec::new(), None);
+    let (mut out, mut folded, mut owed) = (Vec::new(), None, None);
     // The act's own append decided its retirements' reactions over the
     // values it erases: they share its time.
     let followed = |e: &&Event| e.position < acted || e.known_at == known;
@@ -106,6 +108,13 @@ pub(crate) fn overruled<'e>(
         let Some(cause) = e.cause.filter(|_| reaction) else {
             continue;
         };
+        let is_owed = match owed {
+            Some(is) => is,
+            None => *owed.insert(lake.acts_owed()?),
+        };
+        if is_owed {
+            return Ok((out, Some(e.position)));
+        }
         let folded = match folded {
             Some(f) => f,
             None => *folded.insert(lake.engine.projection().folded_through()?),

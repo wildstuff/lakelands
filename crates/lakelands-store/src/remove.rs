@@ -4,27 +4,35 @@
 //! every position, and a record the source made left holding nothing of
 //! another hand is retired.
 //!
-//! The act runs as forgetting runs (058), under the writer's lock, each
+//! The act runs on the road, beside the writer
+//! (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`), each
 //! step idempotent:
-//! 1. one append: `values_removed`, naming the versions of the source's
-//!    key it destroys, and a `record_retired` for each live record the
-//!    source made left holding nothing but what the selection wrote;
-//! 2. those versions are dropped from memory and destroyed: the longest
-//!    prefix of them whose values it all selects, so what they sealed is
-//!    shredded, and the rest is redacted only;
-//! 3. the projection is rebuilt from the log, where the fold, told every
-//!    act before it begins, folds each selected value as erased, and a
-//!    value under a version an act destroyed as erased, not lost;
-//! 4. the engine reclaims the storage.
+//! 1. the walk, off the writer, gathers the selection and judges every
+//!    record it reached; a report is read at its position, and its id is
+//!    that position with a digest of what the selection took there;
+//! 2. the first turn, under the writer, folds the tail the walk did not
+//!    see into that gathering, cuts the versions again, reads again the
+//!    keys the tail moved, and appends `values_removed` — naming the
+//!    versions of the source's key it destroys — the quarantine closes
+//!    that fit, the first retirements, and `act_whole` where it fits;
+//! 3. those versions are then dropped from memory and destroyed: the
+//!    longest prefix of them whose values it all selects, so what they
+//!    sealed is shredded, and the rest is redacted only;
+//! 4. later turns append the closes and the retirements still owed, each
+//!    read again as the part takes it, and `act_whole` ends them;
+//! 5. the act's last turn rebuilds the projection from the log, where the
+//!    fold, told every act before it begins, folds each selected value as
+//!    erased, and a value under a version an act destroyed as erased, not
+//!    lost, then the engine reclaims the storage.
 //!
-//! What a crash leaves after the append is finished by the next writer's
-//! open, and a repeat of the act appends nothing again
-//! ([`Lake::finish_forgetting`]). The fold learns the acts from the list
-//! [`REMOVED`] keeps, read before a rebuild clears it; one it meets
-//! unknown, as an import or a lost projection brings it, leaves the act
-//! owed, and the rebuild after it knows it.
+//! What a crash leaves is taken up again by the road's owed kinds at the
+//! next writer's open, which answers before they run, and a repeat of the
+//! act appends nothing again ([`Lake::finish_forgetting`]). The fold
+//! learns the acts from the list [`REMOVED`] keeps, read before a rebuild
+//! clears it; one it meets unknown, as an import or a lost projection
+//! brings it, leaves the act owed, and the rebuild after it knows it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::Case;
@@ -41,11 +49,12 @@ use lakelands_core::sight::Sight;
 
 use crate::exec::Turn;
 use crate::forget::{History, count, counted, each_of, named_now};
-use crate::lake::{Lake, Staged, Writer};
+use crate::lake::{Lake, Staged, Writer, owing_now};
 use crate::log::Draft;
 use crate::ontology::Ontology;
 use crate::purge::made_by;
-use crate::writes::{self, Call, Judging, Walked};
+use crate::road::{Job, Reach, Turned};
+use crate::writes::{self, Judging, Walked};
 
 /// The store's own seam under which the fold keeps the acts of removal
 /// the log holds, by position, each with what of it is owed: `owed`
@@ -259,90 +268,156 @@ pub(crate) fn told(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Removal
     Ok(acts)
 }
 
-/// What taking back `selection` of `source` at `at` (the head's next
-/// position when `None`) does at `view`, beside the acts `earlier`, whose
-/// events it leaves out: the report, and the live records it retires.
-fn found(
-    lake: &Lake,
-    (w, view): (&Writer, &dyn ProjectionView),
-    (source, selection): (&SourceId, &Selection),
-    (at, earlier): (Option<Position>, &[Removal]),
-) -> Result<(RemoveReport, Vec<StoredRecord>, Vec<EventBody>)> {
-    let ontology = &w.ontology;
-    let head = view.position();
-    // `known_at` never falls.
-    let before = match selection {
-        Selection::WrittenBefore(t) => Some(match lake.position_at(Timestamp(t.0 - 1))? {
-            Some(p) => p.next(),
-            None => Position::GENESIS,
-        }),
-        Selection::Delivery(_) | Selection::Deliveries(_) | Selection::SeenBefore(_) => None,
+/// Whether `e` is what the selection of `source` takes at `at`: the
+/// [`Removal::selects`] test, for the walk, the tail and the closes.
+fn picks(
+    source: &SourceId,
+    selection: &Selection,
+    before: Option<Position>,
+    at: Position,
+    e: &Event,
+) -> bool {
+    let ingested = matches!(
+        e.body,
+        EventBody::RecordIngested { .. } | EventBody::RecordQuarantined { .. }
+    );
+    let picked = || match selection {
+        Selection::WrittenBefore(_) => before.is_some_and(|b| e.position < b),
+        Selection::Delivery(d) => e.delivery.as_ref() == Some(d),
+        Selection::Deliveries(ds) => {
+            (e.delivery.as_ref()).is_some_and(|d| ds.binary_search(d).is_ok())
+        }
+        // A quarantined record states its `seen_at` in its payload.
+        Selection::SeenBefore(t) => match &e.body {
+            EventBody::RecordQuarantined { seen_at, .. } => *seen_at,
+            _ => e.seen_at,
+        }
+        .is_some_and(|s| s < *t),
     };
-    let act = Removal {
-        at: at.unwrap_or(head.map_or(Position::GENESIS, Position::next)),
-        source: source.clone(),
-        selection: selection.clone(),
-        before,
-        keys: Vec::new(),
-        apart: Vec::new(),
-        fixed: Fixed::default(),
-    };
-    // From the log: the selected events, the records they reached and the
-    // values they carry, each by the names and the key it bears now. A
-    // value is taken where its field identifies records neither at its
-    // event nor at the act, as the fold takes it (lakelands#1228).
-    let history = History::new(lake, view)?;
-    let (mut events, mut undelivered, mut unseen) = (0, 0, 0);
-    let mut selected = BTreeSet::new();
-    let mut reached: BTreeSet<(TypeName, RecordKey)> = BTreeSet::new();
-    // The values of the selected events it does not take, by the event's
-    // position and the field's name now.
-    let mut untaken: BTreeSet<(Position, FieldName)> = BTreeSet::new();
-    // Per field: values taken, and of them those sealed, by key.
-    type Tally = (u64, BTreeMap<(KeyId, Vec<KeyId>), u64>);
-    let mut fields: BTreeMap<(TypeName, FieldName), Tally> = BTreeMap::new();
-    // Keys (versions, and of deliveries sealed apart) sealing values it selects / others.
-    let (mut inside, mut outside) = (BTreeSet::new(), BTreeSet::new());
-    let keys_of = |s: &lakelands_api::event::Sealed| -> Vec<(bool, KeyId)> {
-        let apart = s.apart.iter().map(|k| (true, k.clone()));
-        std::iter::once((false, s.key.clone()))
-            .chain(apart)
-            .collect()
-    };
-    each_of(lake, view, std::slice::from_ref(source), |_, e| {
-        if e.source.as_ref() != Some(source) {
+    ingested && e.position < at && e.source.as_ref() == Some(source) && picked()
+}
+
+/// The versions and the keys of deliveries sealed apart that sealed a
+/// value, the version first.
+fn keys_of(s: &lakelands_api::event::Sealed) -> Vec<(bool, KeyId)> {
+    let apart = s.apart.iter().map(|k| (true, k.clone()));
+    std::iter::once((false, s.key.clone()))
+        .chain(apart)
+        .collect()
+}
+
+/// Per field: values taken, and of them those sealed, by key.
+type Tally = (u64, BTreeMap<(KeyId, Vec<KeyId>), u64>);
+
+/// What the selection takes of the source, gathered off the writer: its
+/// selected events, the values they carry, the records they reached and
+/// the keys that sealed them, inside the act or outside it.
+struct Gathered {
+    source: SourceId,
+    selection: Selection,
+    /// Where the act's first event lands, or landed.
+    at: Position,
+    before: Option<Position>,
+    /// The acts before this one, whose events it leaves out.
+    earlier: Vec<Removal>,
+    history: History,
+    events: u64,
+    undelivered: u64,
+    unseen: u64,
+    selected: BTreeSet<Position>,
+    reached: BTreeSet<(TypeName, RecordKey)>,
+    /// The values of the selected events it does not take, by the event's
+    /// position and the field's name now.
+    untaken: BTreeSet<(Position, FieldName)>,
+    fields: BTreeMap<(TypeName, FieldName), Tally>,
+    inside: BTreeSet<(bool, KeyId)>,
+    outside: BTreeSet<(bool, KeyId)>,
+}
+
+impl Gathered {
+    fn gather(
+        lake: &Lake,
+        view: &dyn ProjectionView,
+        ontology: &Ontology,
+        (source, selection): (&SourceId, &Selection),
+        (at, earlier): (Position, &[Removal]),
+    ) -> Result<Gathered> {
+        // `known_at` never falls.
+        let before = match selection {
+            Selection::WrittenBefore(t) => Some(match lake.position_at(Timestamp(t.0 - 1))? {
+                Some(p) => p.next(),
+                None => Position::GENESIS,
+            }),
+            Selection::Delivery(_) | Selection::Deliveries(_) | Selection::SeenBefore(_) => None,
+        };
+        let mut g = Gathered {
+            source: source.clone(),
+            selection: selection.clone(),
+            at,
+            before,
+            earlier: earlier.to_vec(),
+            history: History::new(lake, view)?,
+            events: 0,
+            undelivered: 0,
+            unseen: 0,
+            selected: BTreeSet::new(),
+            reached: BTreeSet::new(),
+            untaken: BTreeSet::new(),
+            fields: BTreeMap::new(),
+            inside: BTreeSet::new(),
+            outside: BTreeSet::new(),
+        };
+        each_of(lake, view, std::slice::from_ref(source), |_, e| {
+            g.event(ontology, e);
+        })?;
+        if !matches!(selection, Selection::Delivery(_) | Selection::Deliveries(_)) {
+            g.undelivered = 0;
+        }
+        if !matches!(selection, Selection::SeenBefore(_)) {
+            g.unseen = 0;
+        }
+        Ok(g)
+    }
+
+    /// Take the contribution of `e`, an event of the source's, as the
+    /// walk and the first turn's tail both do.
+    fn event(&mut self, ontology: &Ontology, e: &Event) {
+        if e.source.as_ref() != Some(&self.source) {
             return;
         }
         // A quarantined version is selected as a `record_ingested` is, its
         // keys inside the act or outside it; it lands no value (085).
         if let EventBody::RecordQuarantined { sealed, .. } = &e.body {
-            let (now, taken) = (act.selects(e), earlier.iter().any(|r| r.selects(e)));
+            let (now, taken) = (
+                picks(&self.source, &self.selection, self.before, self.at, e),
+                self.earlier.iter().any(|r| r.selects(e)),
+            );
             let keys = sealed.iter().flat_map(keys_of);
             match now || taken {
-                true => inside.extend(keys),
-                false => outside.extend(keys),
+                true => self.inside.extend(keys),
+                false => self.outside.extend(keys),
             }
-            events += u64::from(now && !taken);
+            self.events += u64::from(now && !taken);
             return;
         }
         let EventBody::RecordIngested { ty, key, patch, .. } = &e.body else {
             return;
         };
-        undelivered += u64::from(e.delivery.is_none());
-        unseen += u64::from(e.seen_at.is_none());
+        self.undelivered += u64::from(e.delivery.is_none());
+        self.unseen += u64::from(e.seen_at.is_none());
         let sealed = e.sealed.as_ref();
-        let taken = earlier.iter().any(|r| r.selects(e));
-        if !act.selects(e) && !taken {
-            outside.extend(sealed.into_iter().flat_map(keys_of));
+        let taken = self.earlier.iter().any(|r| r.selects(e));
+        if !picks(&self.source, &self.selection, self.before, self.at, e) && !taken {
+            self.outside.extend(sealed.into_iter().flat_map(keys_of));
             return;
         }
-        inside.extend(sealed.into_iter().flat_map(keys_of));
+        self.inside.extend(sealed.into_iter().flat_map(keys_of));
         if taken {
             return;
         }
-        events += 1;
-        selected.insert(e.position);
-        let then = history.ty(ty, e.position);
+        self.events += 1;
+        self.selected.insert(e.position);
+        let then = self.history.ty(ty, e.position);
         // A box's members are not in the patch: `sealed` names them (083).
         let boxed = sealed
             .filter(|s| s.boxed.is_some())
@@ -352,132 +427,270 @@ fn found(
             let under = sealed
                 .filter(|s| s.fields.contains(written))
                 .map(|s| (s.key.clone(), s.apart.clone()));
-            let (t, f) = history.named((e.position, act.at), ty, written);
+            let (t, f) = self.history.named((e.position, self.at), ty, written);
             let taken = then.is_some_and(|d| takeable(d, written))
-                && history.ty(&t, act.at).is_some_and(|d| takeable(d, &f));
-            let (t, f) = named_now(&history.renames, e.position, ty, written);
+                && self
+                    .history
+                    .ty(&t, self.at)
+                    .is_some_and(|d| takeable(d, &f));
+            let (t, f) = named_now(&self.history.renames, e.position, ty, written);
             if !taken {
-                untaken.insert((e.position, f));
+                self.untaken.insert((e.position, f));
             } else if ontology.ty(&t).is_ok() {
-                let tally = fields.entry((t, f)).or_default();
+                let tally = self.fields.entry((t, f)).or_default();
                 tally.0 += 1;
                 if let Some(k) = under {
                     *tally.1.entry(k).or_default() += 1;
                 }
             }
         }
-        reached.insert(history.moved(e.position, ty, key));
-    })?;
-    // The longest prefix of the versions the key store holds whose values
-    // it all selects: versions die oldest first (058). A key store that
-    // destroys only whole sources shreds none.
-    let held = lake.keys.ids(source)?;
-    let keys: Vec<KeyId> = (held.iter())
-        .take_while(|k| {
-            let k = (false, (*k).clone());
-            lake.keys.shreds() && inside.contains(&k) && !outside.contains(&k)
-        })
-        .cloned()
-        .collect();
-    // Every key of a delivery sealed apart whose values it all selects,
-    // and that the key store still holds: it is in no chain, so it goes
-    // alone (065).
-    let mut apart = Vec::new();
-    for (_, k) in inside.iter().filter(|(a, _)| *a) {
-        if !outside.contains(&(true, k.clone())) && lake.keys.holds(source, k)? {
-            apart.push(k.clone());
-        }
+        self.reached.insert(self.history.moved(e.position, ty, key));
     }
-    // A value under a version it destroys, or under any of a source the
-    // log forgot, is shredded; one a key store lost is not. An earlier
-    // act's values are not counted again.
-    let forgot = crate::lake::forgotten_list(view, &Staged::default())?.contains_key(source);
-    let gone = |(k, a): &(KeyId, Vec<KeyId>)| {
-        keys.contains(k) || a.iter().any(|a| apart.contains(a)) || forgot
-    };
-    if !matches!(selection, Selection::Delivery(_) | Selection::Deliveries(_)) {
-        undelivered = 0;
-    }
-    if !matches!(selection, Selection::SeenBefore(_)) {
-        unseen = 0;
-    }
-    let mine = |m: &lakelands_api::FieldMeta| {
-        m.origin == Origin::Source
-            && m.source.as_ref() == Some(source)
-            && selected.contains(&m.position)
-    };
-    let (mut types, mut kept, mut retire) = (Vec::new(), Vec::new(), Vec::new());
-    let mut breaches: Vec<Breach> = Vec::new();
-    let host = lake.system("lakelands");
-    let sight = Sight::held(&host, ontology);
-    let by_type = reached.iter().fold(BTreeMap::new(), |mut m, (t, k)| {
-        m.entry(t.clone()).or_insert_with(Vec::new).push(k.clone());
-        m
-    });
-    for (ty, keys) in by_type {
-        let Ok(decl) = ontology.ty(&ty) else { continue };
-        let (mut holding, mut staying) = (counted(&ty), counted(&ty));
-        let mut judged = Vec::new();
-        let mut holders = Vec::new();
-        for r in view.get_many(&ty, &keys)? {
-            let lost: BTreeSet<FieldName> = (r.fields.keys())
-                .filter(|f| {
-                    let m = r.meta.get(*f).filter(|m| mine(m));
-                    let kept = m.is_some_and(|m| untaken.contains(&(m.position, (*f).clone())));
-                    takeable(decl, f) && m.is_some() && !kept
-                })
-                .cloned()
-                .collect();
-            // A record made again since holds nothing the selection wrote.
-            if r.retired || (lost.is_empty() && !selected.contains(&r.made)) {
-                continue;
+
+    /// The versions the act destroys, and the keys of deliveries sealed
+    /// apart it destroys: the longest prefix of the versions the key store
+    /// holds whose values it all selects, as a forget destroys. Versions
+    /// die oldest first (058), and a key store that destroys only whole
+    /// sources shreds none.
+    fn keys(&self, lake: &Lake) -> Result<(Vec<KeyId>, Vec<KeyId>)> {
+        let held = lake.keys.ids(&self.source)?;
+        let keys: Vec<KeyId> = (held.iter())
+            .take_while(|k| {
+                let k = (false, (*k).clone());
+                lake.keys.shreds() && self.inside.contains(&k) && !self.outside.contains(&k)
+            })
+            .cloned()
+            .collect();
+        // Every key of a delivery sealed apart whose values it all selects,
+        // and that the key store still holds: it is in no chain, so it goes
+        // alone (065).
+        let mut apart = Vec::new();
+        for (_, k) in self.inside.iter().filter(|(a, _)| *a) {
+            if !self.outside.contains(&(true, k.clone())) && lake.keys.holds(&self.source, k)? {
+                apart.push(k.clone());
             }
-            count(&mut holding, &r);
-            let starts = |f: &FieldName| {
-                decl.fields
-                    .iter()
-                    .any(|d| &d.name == f && d.initial.is_some())
-            };
-            let holds = r.fields.keys().any(|f| {
-                let m = r.meta.get(f);
-                !decl.key.contains(f)
-                    && !starts(f)
-                    && m.is_some_and(|m| {
-                        !mine(m) && matches!(m.origin, Origin::Authored | Origin::Source)
-                    })
-            });
-            holders.push((r, lost, holds));
+        }
+        Ok((keys, apart))
+    }
+}
+
+/// A record the selection touched, as it stands, and what the selection
+/// takes of it.
+#[derive(Clone)]
+struct Holder {
+    r: StoredRecord,
+    lost: BTreeSet<FieldName>,
+    holds: bool,
+}
+
+/// The live records the selection touched, by type then key, and the
+/// positions at which the source made the ones it retires.
+#[derive(Default)]
+struct Judged {
+    holders: BTreeMap<TypeName, BTreeMap<RecordKey, Holder>>,
+    made: BTreeSet<Position>,
+}
+
+impl Judged {
+    fn of(
+        lake: &Lake,
+        view: &dyn ProjectionView,
+        ontology: &Ontology,
+        g: &Gathered,
+    ) -> Result<Judged> {
+        let mut by_type: BTreeMap<TypeName, Vec<RecordKey>> = BTreeMap::new();
+        for (ty, key) in &g.reached {
+            by_type.entry(ty.clone()).or_default().push(key.clone());
+        }
+        let mut holders: BTreeMap<TypeName, BTreeMap<RecordKey, Holder>> = BTreeMap::new();
+        for (ty, keys) in by_type {
+            let Ok(decl) = ontology.ty(&ty) else { continue };
+            let mut at = BTreeMap::new();
+            for r in view.get_many(&ty, &keys)? {
+                if let Some(h) = holder_of(decl, g, &r) {
+                    at.insert(r.key.clone(), h);
+                }
+            }
+            if !at.is_empty() {
+                holders.insert(ty, at);
+            }
         }
         // A record the source did not make is never retired, by the test
         // the purge and forgetting retire by (039).
-        let bare: Vec<&StoredRecord> = (holders.iter().filter(|h| !h.2)).map(|h| &h.0).collect();
-        let made = made_by(lake, &bare, std::slice::from_ref(source))?;
-        for (r, lost, holds) in holders {
-            if !holds && made.contains(&r.made) {
-                retire.push(r);
+        let bare: Vec<&StoredRecord> = (holders.values().flatten().map(|(_, h)| h))
+            .filter(|h| !h.holds)
+            .map(|h| &h.r)
+            .collect();
+        let made = made_by(lake, &bare, std::slice::from_ref(&g.source))?;
+        Ok(Judged { holders, made })
+    }
+
+    /// The records the act retires: the source made them and no other
+    /// hand holds a value.
+    fn retirable(&self) -> impl Iterator<Item = &Holder> {
+        (self.holders.values().flatten().map(|(_, h)| h))
+            .filter(|h| !h.holds && self.made.contains(&h.r.made))
+    }
+
+    /// Read the keys the tail moved again, as they stand under the
+    /// writer, and judge them by the walk's selection: one the source
+    /// wrote since is taken in, and one another hand wrote drops out.
+    fn again(
+        &mut self,
+        lake: &Lake,
+        view: &dyn ProjectionView,
+        ontology: &Ontology,
+        g: &Gathered,
+        moved: &BTreeSet<(TypeName, RecordKey)>,
+    ) -> Result<()> {
+        for (ty, key) in moved {
+            if let Some(h) = self.holders.get_mut(ty) {
+                h.remove(key);
+            }
+            let now = match view.get(ty, key)? {
+                Some(r) if !r.retired => {
+                    ontology.ty(ty).ok().and_then(|decl| holder_of(decl, g, &r))
+                }
+                _ => None,
+            };
+            let Some(h) = now else { continue };
+            if !h.holds {
+                let made = made_by(
+                    lake,
+                    std::slice::from_ref(&&h.r),
+                    std::slice::from_ref(&g.source),
+                )?;
+                self.made.extend(made);
+            }
+            self.holders
+                .entry(ty.clone())
+                .or_default()
+                .insert(key.clone(), h);
+        }
+        Ok(())
+    }
+}
+
+/// `r` as the selection judges it, where it judged it at all.
+fn holder_of(decl: &TypeDecl, g: &Gathered, r: &StoredRecord) -> Option<Holder> {
+    let mine = |m: &lakelands_api::FieldMeta| {
+        m.origin == Origin::Source
+            && m.source.as_ref() == Some(&g.source)
+            && g.selected.contains(&m.position)
+    };
+    let lost: BTreeSet<FieldName> = (r.fields.keys())
+        .filter(|f| {
+            let m = r.meta.get(*f).filter(|m| mine(m));
+            let kept = m.is_some_and(|m| g.untaken.contains(&(m.position, (*f).clone())));
+            takeable(decl, f) && m.is_some() && !kept
+        })
+        .cloned()
+        .collect();
+    // A record made again since holds nothing the selection wrote.
+    if r.retired || (lost.is_empty() && !g.selected.contains(&r.made)) {
+        return None;
+    }
+    let starts = |f: &FieldName| {
+        decl.fields
+            .iter()
+            .any(|d| &d.name == f && d.initial.is_some())
+    };
+    let holds = r.fields.keys().any(|f| {
+        let m = r.meta.get(f);
+        !decl.key.contains(f)
+            && !starts(f)
+            && m.is_some_and(|m| !mine(m) && matches!(m.origin, Origin::Authored | Origin::Source))
+    });
+    Some(Holder {
+        r: r.clone(),
+        lost,
+        holds,
+    })
+}
+
+/// The fields the act redacts, and of them the ones no destroyed key
+/// shreds: the values of erasable fields of `g`.
+fn fields_of(
+    ontology: &Ontology,
+    g: &Gathered,
+    (keys, apart): (&[KeyId], &[KeyId]),
+    forgot: bool,
+) -> (Vec<RemovedField>, u64) {
+    let gone = |(k, a): &(KeyId, Vec<KeyId>)| {
+        keys.contains(k) || a.iter().any(|a| apart.contains(a)) || forgot
+    };
+    let mut unshredded = 0;
+    let fields: Vec<RemovedField> = (g.fields.iter())
+        .map(|((ty, field), (redacted, sealed))| {
+            let shredded = sealed.iter().filter(|(k, _)| gone(k)).map(|(_, n)| n).sum();
+            let erasable = ontology.ty(ty).ok().and_then(|d| d.field(field));
+            if erasable.is_some_and(|f| f.erasable) {
+                unshredded += redacted - shredded;
+            }
+            RemovedField {
+                ty: ty.clone(),
+                field: field.clone(),
+                redacted: *redacted,
+                shredded,
+            }
+        })
+        .collect();
+    (fields, unshredded)
+}
+
+/// The report of the selection `g` judged: its tally, the records held and
+/// retired, and what is computed from them.
+#[allow(clippy::too_many_arguments)]
+fn report_of(
+    lake: &Lake,
+    (w, view): (&Writer, &dyn ProjectionView),
+    ontology: &Ontology,
+    g: &Gathered,
+    judged: &Judged,
+    (keys, apart): (&[KeyId], &[KeyId]),
+    forgot: bool,
+    quarantined: Vec<lakelands_api::quarantine::TypeQuarantined>,
+    head: Option<Position>,
+) -> Result<RemoveReport> {
+    let retire: Vec<StoredRecord> = judged.retirable().map(|h| h.r.clone()).collect();
+    let mut types = Vec::new();
+    let mut kept = Vec::new();
+    let mut breaches: Vec<Breach> = Vec::new();
+    let host = lake.system("lakelands");
+    let sight = Sight::held(&host, ontology);
+    for (ty, holders) in &judged.holders {
+        let Ok(decl) = ontology.ty(ty) else { continue };
+        let (mut holding, mut staying) = (counted(ty), counted(ty));
+        let mut judged_here: Vec<(StoredRecord, StoredRecord, BTreeSet<FieldName>)> = Vec::new();
+        for h in holders.values() {
+            count(&mut holding, &h.r);
+            if !h.holds && judged.made.contains(&h.r.made) {
                 continue;
             }
-            count(&mut staying, &r);
-            if !lost.is_empty() {
-                // What is computed from a value it takes goes with it.
-                let mut gone = lost.clone();
-                while let Some(f) = decl.fields.iter().find(|f| {
-                    let computed = f.derived.is_some() || f.function.is_some() || f.embed.is_some();
-                    computed
-                        && !gone.contains(&f.name)
-                        && f.depends_on.iter().any(|d| gone.contains(d))
-                }) {
-                    gone.insert(f.name.clone());
-                }
-                let mut is = r.clone();
-                is.fields.retain(|f, _| !gone.contains(f));
-                judged.push((r, is, lost));
+            count(&mut staying, &h.r);
+            if h.lost.is_empty() {
+                continue;
             }
+            // What is computed from a value it takes goes with it.
+            let mut gone_fields = h.lost.clone();
+            while let Some(f) = decl.fields.iter().find(|f| {
+                let computed = f.derived.is_some() || f.function.is_some() || f.embed.is_some();
+                computed
+                    && !gone_fields.contains(&f.name)
+                    && f.depends_on.iter().any(|d| gone_fields.contains(d))
+            }) {
+                gone_fields.insert(f.name.clone());
+            }
+            let mut is = h.r.clone();
+            is.fields.retain(|f, _| !gone_fields.contains(f));
+            judged_here.push((h.r.clone(), is, h.lost.clone()));
         }
-        let moving: BTreeSet<FieldName> = judged.iter().flat_map(|j| j.2.iter().cloned()).collect();
+        let moving: BTreeSet<FieldName> = (judged_here.iter())
+            .flat_map(|j| j.2.iter().cloned())
+            .collect();
         if !moving.is_empty() {
             let mut walked = Walked::of(ontology, decl, &moving, (&sight, Judging::Proposal))?;
-            for (was, is, _) in &judged {
+            for (was, is, _) in &judged_here {
                 walked.judge((was, is), (w, w.last_known_at), &|_| Ok(true))?;
             }
             breaches.extend(walked.kept(Judging::Proposal)?.0);
@@ -485,7 +698,7 @@ fn found(
         // A field declared `required` it leaves empty is listed too, as a
         // breach of `required` on that field: the act does not refuse it.
         for f in decl.fields.iter().filter(|f| f.required) {
-            let mut emptied: Vec<RecordKey> = (judged.iter())
+            let mut emptied: Vec<RecordKey> = (judged_here.iter())
                 .filter(|(was, is, _)| {
                     was.fields.contains_key(&f.name) && !is.fields.contains_key(&f.name)
                 })
@@ -518,22 +731,7 @@ fn found(
             }),
         }
     }
-    let mut unshredded = 0;
-    let fields: Vec<RemovedField> = (fields.into_iter())
-        .map(|((ty, field), (redacted, sealed))| {
-            let shredded = sealed.iter().filter(|(k, _)| gone(k)).map(|(_, n)| n).sum();
-            let erasable = ontology.ty(&ty).ok().and_then(|d| d.field(&field));
-            if erasable.is_some_and(|f| f.erasable) {
-                unshredded += redacted - shredded;
-            }
-            RemovedField {
-                ty,
-                field,
-                redacted,
-                shredded,
-            }
-        })
-        .collect();
+    let (fields, unshredded) = fields_of(ontology, g, (keys, apart), forgot);
     let mut recomputed = Vec::new();
     let mut views = Vec::new();
     for (name, entry) in &ontology.types {
@@ -554,24 +752,15 @@ fn found(
             }
         }
     }
-    let references = crate::purge::report(view, ontology, (source, None), &retire, Vec::new())?;
-    // Its open quarantined records whose last version it selects, each of
-    // which it closes (085); one it selects only an earlier version of
-    // stays open with its last.
-    let why = lakelands_api::quarantine::ClosedWhy::Removed;
-    let (closes, quarantined) =
-        crate::quarantine::act_closes(view, (source, None), why, &mut |q| {
-            let last = lake.read_these(&[q.position])?;
-            Ok(last.first().is_some_and(|e| act.selects(e)))
-        })?;
+    let references = crate::purge::report(view, ontology, (&g.source, None), &retire, Vec::new())?;
     let log_events = head.map_or(0, |p| p.0);
-    let report = RemoveReport {
-        source: source.clone(),
-        selection: selection.clone(),
-        before,
-        events,
-        undelivered,
-        unseen,
+    Ok(RemoveReport {
+        source: g.source.clone(),
+        selection: g.selection.clone(),
+        before: g.before,
+        events: g.events,
+        undelivered: g.undelivered,
+        unseen: g.unseen,
         types,
         fields,
         retired,
@@ -580,8 +769,8 @@ fn found(
         views,
         breaches,
         references: references.references,
-        keys,
-        apart,
+        keys: keys.to_vec(),
+        apart: apart.to_vec(),
         unshredded,
         log_events,
         expected_ms: lake.expected_ms(log_events),
@@ -591,21 +780,66 @@ fn found(
         reclaim_owed: lake.reclaim_owed(),
         report_id: String::new(),
         quarantined,
-    };
-    Ok((report, retire, closes))
+    })
 }
 
-/// The id of the preflight of taking back `selection` of `source`, read
-/// at `head`: the report is a function of the three.
-fn id(source: &SourceId, selection: &Selection, head: Option<Position>) -> String {
-    let of = serde_json::json!({"remove": source, "selection": selection,
-                                "head": head.map_or(0, |p| p.0)});
-    lakelands_core::canonical::sha256_hex(&of)
+/// The closes of the open quarantined records of `source` whose last
+/// version the selection takes, every one of which the act closes (085),
+/// and their count per type.
+fn closes(
+    lake: &Lake,
+    view: &dyn ProjectionView,
+    source: &SourceId,
+    selection: &Selection,
+    g: &Gathered,
+) -> Result<(
+    Vec<EventBody>,
+    Vec<lakelands_api::quarantine::TypeQuarantined>,
+)> {
+    let why = lakelands_api::quarantine::ClosedWhy::Removed;
+    crate::quarantine::act_closes(view, (source, None), why, &mut |q| {
+        let last = lake.read_these(&[q.position])?;
+        Ok(last
+            .first()
+            .is_some_and(|e| picks(source, selection, g.before, g.at, e)))
+    })
+}
+
+/// The id of a report: the position it was read at, then the digest of the
+/// records it selected, by the `made` position of each (099).
+fn token(
+    source: &SourceId,
+    selection: &Selection,
+    through: Position,
+    made: &BTreeSet<Position>,
+) -> String {
+    let made: Vec<u64> = made.iter().map(|p| p.0).collect();
+    let of = serde_json::json!({"remove": source, "selection": selection, "made": made});
+    format!(
+        "{}-{}",
+        through.0,
+        lakelands_core::canonical::sha256_hex(&of)
+    )
+}
+
+/// The window a `report_id` names; a string that is not one is a report of
+/// no removal this lake reads.
+fn window_of(id: &str) -> Result<Window> {
+    let (through, digest) = id
+        .split_once('-')
+        .ok_or_else(|| Error::invalid(Case::RemoveReportStale))?;
+    let through: u64 = through
+        .parse()
+        .map_err(|_| Error::invalid(Case::RemoveReportStale))?;
+    Ok(Window::Report {
+        through: Position(through),
+        digest: digest.to_owned(),
+    })
 }
 
 /// `selection` as the act takes it, a time the log cannot write, one
 /// outside the years 0000 to 9999, refused.
-fn checked(selection: &Selection) -> Result<Selection> {
+pub(crate) fn checked(selection: &Selection) -> Result<Selection> {
     match selection {
         Selection::WrittenBefore(t) | Selection::SeenBefore(t) if !t.in_years() => {
             let value = t.to_string();
@@ -628,105 +862,726 @@ fn settled(selection: Selection) -> Selection {
     }
 }
 
-/// What [`run`] would do, appending nothing, under the id the act may repeat.
+/// Whether the act at `at` appended its `act_whole`.
+pub(crate) fn whole(lake: &Lake, at: Position, head: Option<Position>) -> Result<bool> {
+    let Some(head) = head.filter(|h| *h >= at) else {
+        return Ok(false);
+    };
+    for page in lake.pages(at) {
+        for e in page? {
+            if e.position > head {
+                return Ok(false);
+            }
+            if let EventBody::ActWhole { act } = e.body
+                && act == at
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// What [`preflight`] would do, appending nothing, under the id the act
+/// may repeat.
 pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Result<RemoveReport> {
     let selection = &checked(selection)?;
     let began = std::time::Instant::now();
     let view = lake.engine.view(None)?;
     let w = lake.reading(view.as_ref())?;
-    let earlier = acts(lake, view.as_ref())?;
-    let (mut report, _, _) = found(
+    let ontology = Ontology::at(view.as_ref())?;
+    let all = acts(lake, view.as_ref())?;
+    let at = view.position().map_or(Position::GENESIS, Position::next);
+    let g = Gathered::gather(
+        lake,
+        view.as_ref(),
+        &ontology,
+        (source, selection),
+        (at, &all),
+    )?;
+    let judged = Judged::of(lake, view.as_ref(), &ontology, &g)?;
+    let (keys, apart) = g.keys(lake)?;
+    let forgot =
+        crate::lake::forgotten_list(view.as_ref(), &Staged::default())?.contains_key(source);
+    let (_, quarantined) = closes(lake, view.as_ref(), source, selection, &g)?;
+    let mut report = report_of(
         lake,
         (&w, view.as_ref()),
-        (source, selection),
-        (None, &earlier),
+        &ontology,
+        &g,
+        &judged,
+        (&keys, &apart),
+        forgot,
+        quarantined,
+        view.position(),
     )?;
-    report.report_id = id(source, selection, lake.report_head(view.position())?);
+    let through = view.position().unwrap_or(Position::GENESIS);
+    report.report_id = token(source, selection, through, &judged.made);
     report.expected_ms = (report.expected_ms).saturating_add(crate::lake::elapsed_ms(began));
     Ok(report)
 }
 
-/// Take back `selection` of `source`, as the module says; with a
-/// preflight's `report_id`, only if that report is of this removal and
-/// the lake has not moved since; with `shredded`, only if no value of an
-/// erasable field would be redacted alone. A selection that selects
-/// nothing appends nothing.
-pub fn run(
-    lake: &Turn<'_>,
-    source: &SourceId,
-    selection: &Selection,
-    (shredded, report_id): (bool, Option<&str>),
-) -> Result<RemoveReport> {
-    let selection = &checked(selection)?;
-    let mut w = lake.for_write()?;
-    let view = lake.engine.view(None)?;
-    // The same act in the log, still owed: its repeat finishes what a
-    // failure left, whatever report it names, and appends nothing again.
-    let earlier = acts(lake, view.as_ref())?;
-    let list = removed_list(view.as_ref(), &Staged::default())?;
-    let owed = |r: &&Removal| list.get(&r.at).is_some_and(|s| s != "done");
-    let same = |r: &&Removal| &r.source == source && &r.selection == selection;
-    if let Some(act) = earlier.iter().filter(same).find(owed) {
-        drop(view);
-        let reclaimed = lake.finish_forgetting(&mut w)?;
-        let view = lake.engine.view(None)?;
-        let others: Vec<Removal> = (earlier.iter())
-            .filter(|r| r.at < act.at)
-            .cloned()
+/// What a remove answers its caller: the report of the act, and the
+/// positions it wrote, whose backed fields settle after it.
+pub(crate) type Reported = Result<(RemoveReport, BTreeSet<Position>)>;
+
+/// What a turn leaves for the restate: nothing appended, another part, or
+/// an `act_whole` whose restate and reclaim run with the view let go.
+enum Next {
+    Nothing,
+    More,
+    Whole,
+}
+
+/// How a report names the selection it read.
+enum Window {
+    /// No report: the whole of what the selection takes.
+    Whole,
+    /// A report read at `through`, whose digest is of the records it
+    /// selected there.
+    Report { through: Position, digest: String },
+    /// An act the log began, taken up again.
+    Act,
+}
+
+/// One remove on the road: the act of taking `selection` of `source`
+/// back, in parts of at most `part_events` (099).
+pub(crate) struct Remove {
+    source: SourceId,
+    selection: Selection,
+    shredded: bool,
+    report_id: Option<String>,
+    window: Window,
+    gathered: Option<Gathered>,
+    judged: Judged,
+    /// The records the report named as retirable, by key, with the
+    /// position that made each: a tail write that changes one stales it.
+    named: BTreeMap<(TypeName, RecordKey), Position>,
+    /// The records still to retire, in type then key order.
+    retire: BTreeMap<(TypeName, RecordKey), StoredRecord>,
+    /// The closes the act owes, in the order the walk found them.
+    closes: VecDeque<EventBody>,
+    /// The keys the tail moved past the walk, read again under the writer
+    /// in the first turn.
+    moved: BTreeSet<(TypeName, RecordKey)>,
+    /// The tail's events, judged in the first turn.
+    tail: Vec<Event>,
+    /// The acts the walk knew: one written since is judged again.
+    walked: BTreeSet<Position>,
+    report: Option<RemoveReport>,
+    /// The position of the act's first event; `None` until it is in the log.
+    act: Option<Position>,
+    /// The versions and the apart keys the act destroys.
+    keys: Vec<KeyId>,
+    apart: Vec<KeyId>,
+    /// The last position the act wrote.
+    position: Position,
+    own: BTreeSet<Position>,
+    answer: Option<tokio::sync::oneshot::Sender<Reported>>,
+}
+
+/// The removes the log and [`REMOVED`] leave owed: every act that is not
+/// whole, taken up again by the next writer's open.
+pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
+    let list = removed_list(view, &Staged::default())?;
+    let head = view.position();
+    let mut owing: Vec<Box<dyn Job>> = Vec::new();
+    for act in acts(lake, view)? {
+        let Some(state) = list.get(&act.at) else {
+            continue;
+        };
+        if state == "done" || whole(lake, act.at, head)? {
+            continue;
+        }
+        owing.push(Box::new(Remove {
+            source: act.source.clone(),
+            selection: act.selection.clone(),
+            shredded: false,
+            report_id: None,
+            window: Window::Act,
+            gathered: None,
+            judged: Judged::default(),
+            named: BTreeMap::new(),
+            retire: BTreeMap::new(),
+            closes: VecDeque::new(),
+            moved: BTreeSet::new(),
+            tail: Vec::new(),
+            walked: BTreeSet::new(),
+            report: None,
+            act: Some(act.at),
+            keys: act.keys.clone(),
+            apart: act.apart.clone(),
+            position: act.at,
+            own: BTreeSet::new(),
+            answer: None,
+        }));
+    }
+    Ok(owing)
+}
+
+/// The restate and reclaim a whole act owes, and what a crashed forgetting
+/// left: one job where any act or source is not done, taken up by the next
+/// writer's open, since the open no longer finishes one (099).
+pub(crate) fn settle_owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
+    let list = crate::lake::forgotten_list(view, &Staged::default())?;
+    let acts = removed_list(view, &Staged::default())?;
+    let head = view.position();
+    let mut pending = list.values().any(|s| s != "done");
+    for (at, state) in &acts {
+        // An act between its parts is the road's remove, not this: only a
+        // whole act's restate and reclaim, or a rebuild's, is settled here.
+        pending |= state != "done" && (state == "rebuilt" || whole(lake, *at, head)?);
+    }
+    Ok(match pending {
+        true => vec![Box::new(Settle)],
+        false => Vec::new(),
+    })
+}
+
+/// The job that finishes what a log left owed: the restate and the
+/// reclaim, once the act is whole.
+struct Settle;
+
+impl Job for Settle {
+    fn reach(&self) -> Reach {
+        Reach::default()
+    }
+
+    fn walk(&mut self, _lake: &Lake, _view: &dyn ProjectionView) -> Result<()> {
+        Ok(())
+    }
+
+    fn fold(&mut self, _tail: &[Event]) -> Result<()> {
+        Ok(())
+    }
+
+    fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
+        let lake: &Lake = t;
+        lake.finish_forgetting(w)?;
+        Ok(Turned::Whole)
+    }
+}
+
+impl Job for Remove {
+    /// What of the tail reaches the act: its source's writes, and every
+    /// write about a record of a type it reached, which another hand's
+    /// write on one of its records is.
+    fn reach(&self) -> Reach {
+        let types = (self.gathered.iter())
+            .flat_map(|g| g.reached.iter().map(|(t, _)| t.clone()))
+            .collect::<BTreeSet<_>>();
+        let keys = (self.gathered.iter())
+            .flat_map(|g| g.reached.iter().map(|(_, k)| k.clone()))
             .collect();
-        let of = (Some(act.at), others.as_slice());
-        let (mut report, _, _) = found(lake, (&w, view.as_ref()), (source, selection), of)?;
-        report.reclaimed = reclaimed;
-        return Ok(report);
+        Reach {
+            sources: vec![self.source.clone()],
+            types: types.into_iter().collect(),
+            keys,
+        }
     }
-    if let Some(given) = report_id
-        && given != id(source, selection, lake.report_head(view.position())?)
-    {
-        return Err(Error::invalid(Case::RemoveReportStale));
+
+    /// The walk, off the writer: gather the selection at the view, judge
+    /// the records it reached, and hold the report away from the
+    /// projection's own.
+    fn walk(&mut self, lake: &Lake, view: &dyn ProjectionView) -> Result<()> {
+        let ontology = Ontology::at(view)?;
+        let head = view.position();
+        let all = acts(lake, view)?;
+        self.walked = all.iter().map(|r| r.at).collect();
+        // An act the log already began, for this selection, is taken up
+        // again, whatever report the caller names.
+        if self.act.is_none()
+            && let Some(at) = self.owing(&all, view)?
+        {
+            self.window = Window::Act;
+            self.act = Some(at);
+        }
+        let (at, earlier) = match self.act {
+            Some(at) => (
+                at,
+                all.iter()
+                    .filter(|r| r.at < at)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
+            None => (head.map_or(Position::GENESIS, Position::next), all),
+        };
+        let g = Gathered::gather(
+            lake,
+            view,
+            &ontology,
+            (&self.source, &self.selection),
+            (at, &earlier),
+        )?;
+        let judged = Judged::of(lake, view, &ontology, &g)?;
+        if self.act.is_none()
+            && let Some(id) = &self.report_id
+        {
+            let window = window_of(id)?;
+            if let Window::Report { through, digest } = &window {
+                if *through > head.unwrap_or(Position::GENESIS) {
+                    return Err(Error::invalid(Case::RemoveReportStale));
+                }
+                let past = lake.engine.view(Some(*through))?;
+                let past_ontology = Ontology::at(past.as_ref())?;
+                let past_acts = acts(lake, past.as_ref())?;
+                let earlier: Vec<Removal> =
+                    past_acts.into_iter().filter(|r| r.at < *through).collect();
+                let past_g = Gathered::gather(
+                    lake,
+                    past.as_ref(),
+                    &past_ontology,
+                    (&self.source, &self.selection),
+                    (through.next(), &earlier),
+                )?;
+                let past_j = Judged::of(lake, past.as_ref(), &past_ontology, &past_g)?;
+                let id = token(&self.source, &self.selection, *through, &past_j.made);
+                if id.split_once('-').map(|(_, d)| d) != Some(digest.as_str()) {
+                    return Err(Error::invalid(Case::RemoveReportStale));
+                }
+                self.named = (past_j.retirable())
+                    .map(|h| ((h.r.ty.clone(), h.r.key.clone()), h.r.made))
+                    .collect();
+                self.window = window;
+            }
+        }
+        let (keys, apart) = g.keys(lake)?;
+        let forgot =
+            crate::lake::forgotten_list(view, &Staged::default())?.contains_key(&self.source);
+        let (shut, quarantined) = closes(lake, view, &self.source, &self.selection, &g)?;
+        if self.act.is_some() {
+            self.closes = shut.into();
+        }
+        let report = report_of(
+            lake,
+            (&lake.reading(view)?, view),
+            &ontology,
+            &g,
+            &judged,
+            (&keys, &apart),
+            forgot,
+            quarantined,
+            head,
+        )?;
+        self.retire = (judged.retirable())
+            .map(|h| ((h.r.ty.clone(), h.r.key.clone()), h.r.clone()))
+            .collect();
+        self.keys = keys;
+        self.apart = apart;
+        self.report = Some(report);
+        self.judged = judged;
+        self.gathered = Some(g);
+        Ok(())
     }
-    // What an earlier act took is not taken again: a repeat that selects
-    // nothing more appends nothing.
-    let of = (None, earlier.as_slice());
-    let (mut report, retire, closes) = found(lake, (&w, view.as_ref()), (source, selection), of)?;
-    if report.events == 0 {
-        return Ok(report);
+
+    /// The tail past the walk's view, held for the first turn, and the
+    /// keys it moved, which the first turn reads again under the writer.
+    fn fold(&mut self, tail: &[Event]) -> Result<()> {
+        for e in tail {
+            for about in lakelands_core::feed::about(&e.body) {
+                if let (Some(ty), Some(key)) = (about.ty, about.key) {
+                    self.moved.insert((ty, key));
+                }
+            }
+            self.tail.push(e.clone());
+        }
+        Ok(())
     }
-    if shredded && report.unshredded > 0 {
-        let (source, count) = (source.clone(), report.unshredded);
-        return Err(Error::invalid(Case::RemoveNotShredded { source, count }));
+
+    fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
+        let turned = self.one_turn(t, w)?;
+        // What the turn's append and the catch-up the writer took before
+        // it left owed, which its caller settles.
+        self.own.extend(owing_now());
+        Ok(turned)
     }
-    let now = lake.clock(&mut w);
-    let removed = EventBody::ValuesRemoved {
-        source: source.clone(),
-        selection: selection.clone(),
-        before: report.before,
-        keys: report.keys.clone(),
-        apart: report.apart.clone(),
+
+    fn end(&mut self, ended: Result<()>) {
+        let Some(answer) = self.answer.take() else {
+            return;
+        };
+        let answered = ended.map(|()| {
+            let report = self.report.take().expect("a whole remove has its report");
+            (report, std::mem::take(&mut self.own))
+        });
+        let _ = answer.send(answered);
+    }
+}
+
+impl Remove {
+    /// An act the log began for this selection and has not ended, if there
+    /// is one: the walk and the first turn both look, since a projection
+    /// the writer had not caught up yet hides it from the walk.
+    fn owing(&self, all: &[Removal], view: &dyn ProjectionView) -> Result<Option<Position>> {
+        let list = removed_list(view, &Staged::default())?;
+        for act in all {
+            if act.source != self.source || act.selection != self.selection {
+                continue;
+            }
+            // An act the list does not call done is taken up: one between
+            // its parts appends the rest, and one whole whose restate or
+            // reclaim a crash left is settled by its repeat (099).
+            let owed = list.get(&act.at).is_some_and(|s| s != "done");
+            if owed {
+                return Ok(Some(act.at));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Whether a record the report named is no longer what it was: gone,
+    /// made again, or now held by another hand. A selected write of the
+    /// source is taken in, not stale.
+    fn stale(&self) -> bool {
+        (self.named.iter()).any(|((ty, key), made)| {
+            (self.judged.holders.get(ty).and_then(|h| h.get(key)))
+                .is_none_or(|h| h.holds || h.r.made != *made)
+        })
+    }
+
+    /// One turn beside the writer (099): the act's first event, a part of
+    /// its retirements, or its restate.
+    fn one_turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
+        let lake: &Lake = t;
+        let view = lake.engine.view(None)?;
+        // The writer's catch-up may have left the projection holding an act
+        // the walk off it did not see: take that act up before beginning
+        // another.
+        if self.act.is_none()
+            && let Some(at) = self.owing(&acts(lake, view.as_ref())?, view.as_ref())?
+        {
+            self.window = Window::Act;
+            self.act = Some(at);
+            self.gathered = None;
+        }
+        if let Some(at) = self.act
+            && whole(lake, at, view.position())?
+        {
+            // The appends ended in a turn this handle did not run: the
+            // restate and the reclaim are left, answered as owed through
+            // the head the act's appends reached.
+            let through = view.position().unwrap_or(Position::GENESIS);
+            drop(view);
+            let reclaimed = lake.finish_act(w, through)?;
+            let mut report = self.report.take().unwrap_or_else(|| RemoveReport {
+                source: self.source.clone(),
+                selection: self.selection.clone(),
+                before: None,
+                events: 0,
+                undelivered: 0,
+                unseen: 0,
+                types: Vec::new(),
+                fields: Vec::new(),
+                retired: Vec::new(),
+                kept: Vec::new(),
+                recomputed: Vec::new(),
+                views: Vec::new(),
+                breaches: Vec::new(),
+                references: Vec::new(),
+                keys: self.keys.clone(),
+                apart: self.apart.clone(),
+                unshredded: 0,
+                log_events: 0,
+                expected_ms: 0,
+                reclaim_untimed: lake.untimed(),
+                position: self.position,
+                reclaimed: None,
+                reclaim_owed: lake.reclaim_owed(),
+                report_id: String::new(),
+                quarantined: Vec::new(),
+            });
+            report.reclaimed = reclaimed;
+            report.reclaim_owed = lake.reclaim_owed();
+            report.position = report.position.max(self.position);
+            self.report = Some(report);
+            return Ok(Turned::Whole);
+        }
+        let next = match self.act {
+            None => self.begin(lake, w, view.as_ref())?,
+            Some(_) => self.part_turn(lake, w, view.as_ref())?,
+        };
+        // The restate and the reclaim rebuild the projection: the view this
+        // turn held is let go first.
+        drop(view);
+        match next {
+            Next::Nothing => Ok(Turned::Whole),
+            Next::More => Ok(Turned::More),
+            Next::Whole => {
+                let reclaimed = lake.finish_act(w, self.position)?;
+                let mut report = self.report.take().expect("an act's part has its report");
+                report.reclaimed = reclaimed;
+                report.reclaim_owed = lake.reclaim_owed();
+                report.position = report.position.max(self.position);
+                self.report = Some(report);
+                Ok(Turned::Whole)
+            }
+        }
+    }
+
+    /// The act's first turn: the tail folded into the selection, the keys
+    /// judged again, `values_removed` and the first part appended, and the
+    /// keys the act destroys destroyed.
+    fn begin(&mut self, lake: &Lake, w: &mut Writer, view: &dyn ProjectionView) -> Result<Next> {
+        let all = acts(lake, view)?;
+        let at = writes::position_after(w, 0);
+        // An act of this source written since the walk changes what this
+        // one leaves out: judge the selection again.
+        if all.iter().any(|r| !self.walked.contains(&r.at)) {
+            let ontology = Ontology::at(view)?;
+            let earlier: Vec<Removal> = all.iter().filter(|r| r.at < at).cloned().collect();
+            let g = Gathered::gather(
+                lake,
+                view,
+                &ontology,
+                (&self.source, &self.selection),
+                (at, &earlier),
+            )?;
+            self.judged = Judged::of(lake, view, &ontology, &g)?;
+            self.gathered = Some(g);
+            let (keys, apart) = self
+                .gathered
+                .as_ref()
+                .expect("the selection was gathered")
+                .keys(lake)?;
+            let (_, quarantined) = closes(
+                lake,
+                view,
+                &self.source,
+                &self.selection,
+                self.gathered.as_ref().unwrap(),
+            )?;
+            let forgot =
+                crate::lake::forgotten_list(view, &Staged::default())?.contains_key(&self.source);
+            self.report = Some(report_of(
+                lake,
+                (&*w, view),
+                &ontology,
+                self.gathered.as_ref().expect("the selection was gathered"),
+                &self.judged,
+                (&keys, &apart),
+                forgot,
+                quarantined,
+                view.position(),
+            )?);
+            self.keys = keys;
+            self.apart = apart;
+        }
+        let tail = std::mem::take(&mut self.tail);
+        let moved = std::mem::take(&mut self.moved);
+        if let Some(g) = self.gathered.as_mut() {
+            g.at = at;
+            // `known_at` never falls, so a time's cut moves forward over the
+            // tail the first turn reads and never back (099).
+            if let Selection::WrittenBefore(t) = &g.selection {
+                let t = *t;
+                g.before = Some(match lake.position_at(Timestamp(t.0 - 1))? {
+                    Some(p) => p.next(),
+                    None => Position::GENESIS,
+                });
+            }
+            for e in &tail {
+                g.event(&w.ontology, e);
+            }
+        }
+        {
+            let g = self.gathered.as_ref().expect("the walk gathered");
+            let (keys, apart) = g.keys(lake)?;
+            let forgot =
+                crate::lake::forgotten_list(view, &Staged::default())?.contains_key(&self.source);
+            let (shut, quarantined) = closes(lake, view, &self.source, &self.selection, g)?;
+            self.judged.again(lake, view, &w.ontology, g, &moved)?;
+            if !self.named.is_empty() && self.stale() {
+                return Err(Error::invalid(Case::RemoveReportStale));
+            }
+            // The report is read again from the records as they stand: a
+            // tail event the act takes changes which records it retires,
+            // what is computed from them and what they strand, not only
+            // the tally (099).
+            let report = report_of(
+                lake,
+                (w, view),
+                &w.ontology,
+                g,
+                &self.judged,
+                (&keys, &apart),
+                forgot,
+                quarantined,
+                view.position(),
+            )?;
+            if self.shredded && report.unshredded > 0 {
+                let (source, count) = (self.source.clone(), report.unshredded);
+                return Err(Error::invalid(Case::RemoveNotShredded { source, count }));
+            }
+            self.keys = keys;
+            self.apart = apart;
+            self.closes = shut.into();
+            self.report = Some(report);
+        }
+        self.retire = (self.judged.retirable())
+            .map(|h| ((h.r.ty.clone(), h.r.key.clone()), h.r.clone()))
+            .collect();
+        let empty = {
+            let g = self.gathered.as_ref().expect("the walk gathered");
+            g.events == 0 && self.retire.is_empty() && self.closes.is_empty()
+        };
+        if empty {
+            let mut report = self.report.take().expect("the walk made the report");
+            report.position = view.position().unwrap_or(Position::GENESIS);
+            self.report = Some(report);
+            return Ok(Next::Nothing);
+        }
+        let (keys, apart) = (self.keys.clone(), self.apart.clone());
+        let before = self.gathered.as_ref().expect("the walk gathered").before;
+        let now = lake.clock(w);
+        let room = usize::try_from(lake.limits.part_events.max(1)).unwrap_or(usize::MAX);
+        self.act = Some(at);
+        let mut drafts = vec![Draft::system(
+            now,
+            EventBody::ValuesRemoved {
+                source: self.source.clone(),
+                selection: self.selection.clone(),
+                before,
+                keys: keys.clone(),
+                apart: apart.clone(),
+            },
+        )];
+        let fit = crate::parts::take_closes(&mut self.closes, room);
+        drafts.extend(fit.into_iter().map(|c| Draft::system(now, c)));
+        let (mut part, whole) = self.fill(lake, (w, view), now, room, drafts)?;
+        lake.append(&mut *w, std::mem::take(&mut part))?;
+        self.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+        self.act = Some(at);
+        // The keys the act destroys go in its first turn, so nothing a
+        // write seals after it is sealed under one (099).
+        lake.keys.destroy_versions(&self.source, &keys)?;
+        lake.keys.destroy_apart(&self.source, &apart)?;
+        if let Some(report) = self.report.as_mut() {
+            report.position = self.position;
+        }
+        if whole {
+            return Ok(Next::Whole);
+        }
+        Ok(Next::More)
+    }
+
+    /// A later turn of an act the log began: a part of the retirements and
+    /// closes still owed, each read again as it stands now.
+    fn part_turn(
+        &mut self,
+        lake: &Lake,
+        w: &mut Writer,
+        view: &dyn ProjectionView,
+    ) -> Result<Next> {
+        let at = self.act.expect("a part follows the act's beginning");
+        if self.gathered.is_none() {
+            // Taken up under the writer: the walk off it did not see the act.
+            let ontology = Ontology::at(view)?;
+            let all = acts(lake, view)?;
+            let earlier: Vec<Removal> = all.iter().filter(|r| r.at < at).cloned().collect();
+            let g = Gathered::gather(
+                lake,
+                view,
+                &ontology,
+                (&self.source, &self.selection),
+                (at, &earlier),
+            )?;
+            self.judged = Judged::of(lake, view, &ontology, &g)?;
+            let (shut, quarantined) = closes(lake, view, &self.source, &self.selection, &g)?;
+            let (keys, apart) = g.keys(lake)?;
+            let forgot =
+                crate::lake::forgotten_list(view, &Staged::default())?.contains_key(&self.source);
+            self.report = Some(report_of(
+                lake,
+                (&*w, view),
+                &ontology,
+                &g,
+                &self.judged,
+                (&keys, &apart),
+                forgot,
+                quarantined,
+                view.position(),
+            )?);
+            self.closes = shut.into();
+            self.keys = keys;
+            self.apart = apart;
+            self.gathered = Some(g);
+        }
+        self.retire = (self.judged.retirable())
+            .map(|h| ((h.r.ty.clone(), h.r.key.clone()), h.r.clone()))
+            .collect();
+        let now = lake.clock(w);
+        let room = usize::try_from(lake.limits.part_events.max(1)).unwrap_or(usize::MAX);
+        let (mut part, whole) = self.fill(lake, (w, view), now, room, Vec::new())?;
+        lake.append(&mut *w, std::mem::take(&mut part))?;
+        self.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+        if let Some(report) = self.report.as_mut() {
+            report.position = self.position;
+        }
+        if whole {
+            return Ok(Next::Whole);
+        }
+        Ok(Next::More)
+    }
+
+    /// One part of the act, by the rule a purge's parts share with it
+    /// ([`crate::parts::part`]).
+    fn fill(
+        &mut self,
+        lake: &Lake,
+        (w, view): (&Writer, &dyn ProjectionView),
+        now: Timestamp,
+        room: usize,
+        drafts: Vec<Draft>,
+    ) -> Result<(Vec<Draft>, bool)> {
+        let act = self.act.expect("a part follows the act's beginning");
+        crate::parts::part(
+            lake,
+            (w, view),
+            now,
+            room,
+            drafts,
+            crate::parts::Part {
+                closes: &mut self.closes,
+                taken: &mut self.retire,
+                kind: lakelands_api::event::ChangeKind::Retired,
+                act,
+            },
+        )
+    }
+}
+
+/// Send a remove of `source` along the lake's road, answering `answer`
+/// where the caller waits: the store's door, which holds no writer lock
+/// while the act runs.
+pub(crate) fn start(
+    lake: &std::sync::Arc<Lake>,
+    source: SourceId,
+    selection: Selection,
+    shredded: bool,
+    report_id: Option<String>,
+    answer: Option<tokio::sync::oneshot::Sender<Reported>>,
+) {
+    let job = Remove {
+        source,
+        selection,
+        shredded,
+        report_id,
+        window: Window::Whole,
+        gathered: None,
+        judged: Judged::default(),
+        named: BTreeMap::new(),
+        retire: BTreeMap::new(),
+        closes: VecDeque::new(),
+        moved: BTreeSet::new(),
+        tail: Vec::new(),
+        walked: BTreeSet::new(),
+        report: None,
+        act: None,
+        keys: Vec::new(),
+        apart: Vec::new(),
+        position: Position::GENESIS,
+        own: BTreeSet::new(),
+        answer,
     };
-    let system = lake.system("lakelands");
-    let call = Call {
-        lake,
-        who: &system,
-        context: lakelands_api::WriteContext::default(),
-        followed: None,
-        shown: None,
-    };
-    let act = writes::position_after(&w, 0);
-    let mut drafts = vec![Draft::system(now, removed)];
-    let mut d = call.decide(&w, view.as_ref(), now, drafts.len());
-    for before in retire {
-        let body = writes::retirement(&before.ty, &before.key, before.version);
-        drafts.extend(d.retiring(&before, Draft::system(now, body))?);
-    }
-    drafts.extend(closes.into_iter().map(|c| Draft::system(now, c)));
-    // Every act ends with its `act_whole` (099), so the acts' lists can
-    // say of an act that is not whole that it is owed.
-    drafts.push(Draft::system(now, EventBody::ActWhole { act }));
-    drop(view);
-    lake.append(&mut w, drafts)?;
-    let at = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
-    report.reclaimed = lake.finish_act(&mut w, at)?;
-    report.reclaim_owed = lake.reclaim_owed();
-    report.position = at;
-    Ok(report)
+    crate::road::send(lake, Box::new(job));
 }

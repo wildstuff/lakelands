@@ -26,7 +26,7 @@ check!(
 
 check!(
     SCRUB_CRASH = a_scoped_refold_stopped_between_pages_is_finished_by_the_next_open,
-    "058, extended (lakelands#1120): a scoped refold restates one page of records in each transaction; one stopped after its first page leaves the source's ingest refused, and the writer's next open refolds every page again, appending nothing, after which the act is done and the lake answers as it does after a rebuild",
+    "058, extended (lakelands#1120, 099): a scoped refold restates one page of records in each transaction; one stopped after its first page leaves the source's ingest refused, and the road beside the writer's next open refolds every page again, appending nothing, after which the act is done and the lake answers as it does after a rebuild",
     given
 );
 
@@ -572,6 +572,17 @@ async fn a_scoped_refold_stopped_between_pages_is_finished_by_the_next_open(
     )?;
     let head = store.head().await.must("reading the head")?;
     let store = fault(store).await.map_err(opened("lake"))?;
+    // The open leaves the act to the road beside it: poll, bounded, for
+    // the refold it runs before any verb is called.
+    settles(6_000, Duration::from_millis(10), || async {
+        let refolded = fails[6].load(Ordering::SeqCst) as usize - first;
+        ensure!(
+            refolded == MANY,
+            "the road beside the next open has refolded {refolded} of crm's {MANY} records"
+        );
+        Ok(())
+    })
+    .await?;
     let refolded = fails[6].load(Ordering::SeqCst) as usize - first;
     let opened_at = store.head().await.must("reading the head")?;
     let l = Lake::of(store.as_ref());
@@ -582,9 +593,9 @@ async fn a_scoped_refold_stopped_between_pages_is_finished_by_the_next_open(
     let after = store.head().await.must("reading the head")?;
     ensure!(
         refolded == MANY && again.types.is_empty() && after == opened_at && head <= opened_at,
-        "the next open refolds all {MANY} of crm's records, after which the act is done and \
-         appends nothing: {refolded} refolded, the act answered {again:?}, the head {opened_at} \
-         to {after}"
+        "the road beside the next open refolds all {MANY} of crm's records, after which the act \
+         is done and appends nothing: {refolded} refolded, the act answered {again:?}, the head \
+         {opened_at} to {after}"
     );
     let c1 = l.read("person", "c1").await?;
     ensure!(

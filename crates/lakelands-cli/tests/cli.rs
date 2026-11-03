@@ -2786,7 +2786,7 @@ fn values_remove_takes_back_part_of_a_source_and_prints_what_it_did() {
             stale.code != 0
                 && stale
                     .err
-                    .contains("that report is not of this removal at this head"),
+                    .contains("that report is not of this removal at its position"),
             "{backend:?}: {}",
             stale.err
         );
