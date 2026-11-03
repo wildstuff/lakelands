@@ -986,6 +986,7 @@ fn a_series_setting_names_each_pair_the_declaration_keeps_holds_once() {
         ["series", "seen_at"],
         ["missing", "at"],
         ["series"],
+        ["series", "at", "flag"],
         "series"
     ]);
     assert_eq!(

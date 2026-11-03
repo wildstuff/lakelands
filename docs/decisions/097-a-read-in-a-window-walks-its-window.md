@@ -720,6 +720,12 @@ setting is likewise gone, as 099 R7 records: `eligible` refuses only a
 derived field, and the lake may choose the type's other fields beside a
 pair.
 
+A setting put beside the writer that starts naming a pair leaves it
+`building` with no build scheduled: the store's driver (`asked`, `owed`)
+knows an order index's build, not yet a series pair's, which is step 8's
+work. The settings page says so, marked `INTERIM: lakelands#1638`; a fold
+from the log still fills the pair whole.
+
 **Conformance.** No check row: until step 8 no read takes a pair, so the
 suite has no answer to hold. The engines' tests hold the claim for now —
 `a_series_pair_is_filled_whole_kept_and_put_back_to_start` and

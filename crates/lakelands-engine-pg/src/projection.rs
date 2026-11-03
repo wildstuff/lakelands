@@ -696,7 +696,7 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
     let declared = declared_type(row.get(0))?;
     let setting = setting_at(&row, ty, [1, 4])?;
     let chosen = chosen_decoded(row.get(3));
-    let series = engines::series_fields(&series_decoded(row.get(5)));
+    let series = engines::series_fields(&engines::series_decoded(row.get(5)));
     let sorted = match &declared {
         Some(d) => engines::order_fields(ty, d, setting.as_ref(), &chosen, true),
         None => Vec::new(),
@@ -812,14 +812,7 @@ pub(crate) fn series_of(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Ser
         &format!("SELECT t FROM {} WHERE k = $1", names.t("meta")),
         &[&engines::series_mark(ty)],
     )?;
-    Ok(series_decoded(row.and_then(|row| row.get(0))))
-}
-
-/// A series state as its meta row holds it: none where it holds none.
-pub(crate) fn series_decoded(text: Option<String>) -> SeriesState {
-    text.map_or_else(SeriesState::default, |t| {
-        serde_json::from_str(&t).unwrap_or_default()
-    })
+    Ok(engines::series_decoded(row.and_then(|row| row.get(0))))
 }
 
 /// Keep `ty`'s series pairs as `state`: no row where it holds none.

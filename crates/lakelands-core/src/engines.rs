@@ -752,10 +752,10 @@ pub fn series_pairs(decl: &TypeDecl, setting: Option<&Value>) -> Vec<SeriesPair>
         .flatten()
         .map(|p| p.as_array());
     for pair in pairs.flatten() {
-        let (Some(series), Some(order)) = (
-            pair.first().and_then(Value::as_str),
-            pair.get(1).and_then(Value::as_str),
-        ) else {
+        if pair.len() != 2 {
+            continue;
+        }
+        let (Some(series), Some(order)) = (pair[0].as_str(), pair[1].as_str()) else {
             continue;
         };
         let (series, order) = (FieldName::from(series), FieldName::from(order));

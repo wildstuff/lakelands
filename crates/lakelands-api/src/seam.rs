@@ -837,40 +837,54 @@ pub fn check_setting<'a>(
             let named_series = crate::id::FieldName::from(series);
             let named_order = crate::id::FieldName::from(order);
             let declared = seen.fields.iter().find(|f| f.name == named_series);
-            let fault = match declared {
-                None => Case::UnknownField {
-                    ty: ty.into(),
-                    field: named_series.clone(),
-                },
-                Some(f) if !series_kind(&f.ty.kind) => Case::SeriesFieldKind {
-                    field: named_series.clone(),
-                    kind: f.ty.kind,
-                },
-                // As it is shown: one told nothing of how a field is
-                // computed is not told so here either.
-                Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => {
-                    Case::OrderIndexAtRead {
-                        field: named_series.clone(),
-                    }
-                }
-                Some(_) => match seen.fields.iter().find(|f| f.name == named_order) {
-                    None => Case::UnknownField {
+            let (member, fault) = match declared {
+                None => (
+                    series,
+                    Case::UnknownField {
                         ty: ty.into(),
-                        field: named_order.clone(),
+                        field: named_series.clone(),
                     },
-                    Some(f) if !sortable(&f.ty.kind) => Case::OrderIndexKind {
-                        field: named_order.clone(),
+                ),
+                Some(f) if !series_kind(&f.ty.kind) => (
+                    series,
+                    Case::SeriesFieldKind {
+                        field: named_series.clone(),
                         kind: f.ty.kind,
                     },
-                    Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => {
+                ),
+                // As it is shown: one told nothing of how a field is
+                // computed is not told so here either.
+                Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => (
+                    series,
+                    Case::OrderIndexAtRead {
+                        field: named_series.clone(),
+                    },
+                ),
+                Some(_) => match seen.fields.iter().find(|f| f.name == named_order) {
+                    None => (
+                        order,
+                        Case::UnknownField {
+                            ty: ty.into(),
+                            field: named_order.clone(),
+                        },
+                    ),
+                    Some(f) if !sortable(&f.ty.kind) => (
+                        order,
+                        Case::OrderIndexKind {
+                            field: named_order.clone(),
+                            kind: f.ty.kind,
+                        },
+                    ),
+                    Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => (
+                        order,
                         Case::OrderIndexAtRead {
                             field: named_order.clone(),
-                        }
-                    }
+                        },
+                    ),
                     Some(_) => continue,
                 },
             };
-            return refused(series, fault.into());
+            return refused(member, fault.into());
         }
         return Ok(());
     }

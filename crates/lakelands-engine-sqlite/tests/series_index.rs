@@ -197,37 +197,52 @@ fn a_setting_put_before_the_declaration_starts_its_pair() {
     let location = Location::sqlite("series", &dir);
     let engine = SqliteOpener.open(&location, OpenMode::Create).unwrap();
     let p = engine.projection();
-    p.begin().unwrap();
-    p.put_record(&setting("series_index.book", json!([["series", "at"]]), 1))
-        .unwrap();
-    p.commit(Position(1)).unwrap();
-    p.begin().unwrap();
-    p.put_declaration(&declaration(), 1, None, Position(2))
-        .unwrap();
-    for r in records() {
-        p.put_record(&r).unwrap();
-    }
-    p.commit(Position(2)).unwrap();
+    // The log: the setting at 1, the declaration and its records at 2.
+    let fold_log = || {
+        p.begin().unwrap();
+        p.put_record(&setting("series_index.book", json!([["series", "at"]]), 1))
+            .unwrap();
+        p.commit(Position(1)).unwrap();
+        p.begin().unwrap();
+        p.put_declaration(&declaration(), 1, None, Position(2))
+            .unwrap();
+        for r in records() {
+            p.put_record(&r).unwrap();
+        }
+        p.commit(Position(2)).unwrap();
+    };
     let db = || rusqlite::Connection::open(dir.join("projection.db")).unwrap();
-    let rows: i64 = db()
-        .query_row(
+    let rows = || -> i64 {
+        db().query_row(
             "SELECT count(*) FROM sort_index WHERE ty = 'book' AND field = ?1",
             [series_field().as_str()],
             |r| r.get(0),
         )
-        .unwrap();
-    assert_eq!(rows, 4, "the declaration starts the pair and its rows");
-    let state: String = db()
-        .query_row("SELECT v FROM meta WHERE k = 'series.book'", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    let state: Value = serde_json::from_str(&state).unwrap();
-    assert_eq!(state["kept"], json!([]));
+        .unwrap()
+    };
+    let state = || -> Value {
+        let text: String = db()
+            .query_row("SELECT v FROM meta WHERE k = 'series.book'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        serde_json::from_str(&text).unwrap()
+    };
+    let building = json!([{"series": "series", "order": "at"}]);
+    fold_log();
+    assert_eq!(rows(), 4, "the declaration starts the pair and its rows");
+    assert_eq!(state()["kept"], json!([]));
+    assert_eq!(state()["building"], building, "the pair waits on its build");
+
+    // A re-fold of the same log leaves the pair the same way.
+    p.clear().unwrap();
+    fold_log();
+    assert_eq!(rows(), 4, "the re-fold starts the pair at the declaration");
+    assert_eq!(state()["kept"], json!([]));
     assert_eq!(
-        state["building"],
-        json!([{"series": "series", "order": "at"}]),
-        "the pair waits on its build"
+        state()["building"],
+        building,
+        "and the pair waits on its build again"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -337,12 +337,12 @@ fn a_series_setting_is_checked_pair_by_pair_and_names_the_field_it_refuses() {
     assert_eq!(field, "flag", "the series field is named");
     assert!(matches!(case, crate::error::Case::SeriesFieldKind { .. }));
     let (field, case) = refused("series_index.book", json!([["series", "blob"]]));
-    assert_eq!(field, "series");
+    assert_eq!(field, "blob", "the order field is named");
     assert!(matches!(case, crate::error::Case::OrderIndexKind { .. }));
     let (field, case) = refused("series_index.book", json!([["series", "seen_at"]]));
-    assert_eq!(field, "series");
+    assert_eq!(field, "seen_at");
     assert!(matches!(case, crate::error::Case::OrderIndexAtRead { .. }));
     let (field, case) = refused("series_index.book", json!([["series", "gone"]]));
-    assert_eq!(field, "series");
+    assert_eq!(field, "gone");
     assert!(matches!(case, crate::error::Case::UnknownField { .. }));
 }
