@@ -595,6 +595,14 @@ pub struct SeriesState {
     /// them.
     #[serde(default)]
     pub building: Vec<SeriesPair>,
+    /// How many times a pair of this type has been started: a build reads
+    /// it each turn, and one whose number moved fills its field from the
+    /// first key again. A pair taken back and set again beside the writer
+    /// is a new pair — its rows went with the take-back — and a build that
+    /// went on from its cursor would skip the rows the take-back cleared
+    /// and keep a pair that is not whole.
+    #[serde(default)]
+    pub started: u64,
 }
 
 /// What a compact of the projection measured: its storage in bytes before
@@ -896,6 +904,16 @@ pub trait ProjectionView {
     fn chosen(&self, ty: &TypeName) -> Result<Chosen> {
         let _ = ty;
         Ok(Chosen::default())
+    }
+
+    /// The series pairs `ty`'s `series_index.<type>` setting asks for, and
+    /// whether each pair's rows are whole, at the head: none from an engine
+    /// that keeps no such index
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+    /// series index).
+    fn series(&self, ty: &TypeName) -> Result<SeriesState> {
+        let _ = ty;
+        Ok(SeriesState::default())
     }
 
     /// One record, retired and restricted ones included.

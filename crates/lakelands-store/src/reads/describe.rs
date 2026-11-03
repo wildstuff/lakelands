@@ -128,6 +128,37 @@ impl<'a> Reader<'a> {
         let setting = set(core_engines::sort_index_key(&ordered));
         t.lifecycle.sorted = core_engines::sorted_fields(&ordered, decl, setting);
         t.lifecycle.sorted.retain(seen);
+        // The series pairs the type's setting asks for, told to a holder of
+        // `schema` who reads both fields, at the head only, as `chosen` is;
+        // a pair taken back leaves the list
+        // (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §How
+        // a lake with records gets it).
+        let pairs = self.view.series(&t.name).ok().filter(|_| self.at_head);
+        let pairs = pairs.unwrap_or_default();
+        let told_pair = |p: &lakelands_api::engine::SeriesPair| {
+            self.sight.who().grants.schema
+                && self.sight.reads(&t.name, &p.series)
+                && self.sight.reads(&t.name, &p.order)
+                && seen(&p.series)
+                && seen(&p.order)
+        };
+        t.series = pairs
+            .kept
+            .iter()
+            .map(|p| (p, SeriesToldState::Kept))
+            .chain(
+                pairs
+                    .building
+                    .iter()
+                    .map(|p| (p, SeriesToldState::Building)),
+            )
+            .filter(|(p, _)| told_pair(p))
+            .map(|(p, state)| SeriesTold {
+                series: p.series.clone(),
+                order: p.order.clone(),
+                state,
+            })
+            .collect();
         // What the lake chose by itself, told like the pages it sorted
         // whole: to a holder of `schema` who reads the field, and at the
         // head only, where it is kept (041).

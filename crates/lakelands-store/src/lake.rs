@@ -289,6 +289,10 @@ pub struct Lake {
     /// The head again, for a wait on the next one (`ChangeFeed::wait`).
     heads: tokio::sync::watch::Sender<u64>,
     holds_lease: AtomicBool,
+    /// Whether the writer took its lease again since the last turn looked:
+    /// what the log and the lists leave owed is sent then, as an open
+    /// sends it (`crate::build::owed`, 097).
+    regained: AtomicBool,
     /// The caller's handles to the lake: the store facade and the doors
     /// taken from it. The last one gone gives the lease up, though a job
     /// beside the writer still holds the lake while it runs.
@@ -824,6 +828,9 @@ impl Lake {
         )?;
         w.lost = false;
         self.publish(w);
+        // A writer that took its lease again owes what an open owes: the
+        // turn's end sends it (`crate::exec::Holding::run`).
+        self.regained.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -1562,6 +1569,12 @@ impl Lake {
     /// Whether this handle holds the lease.
     pub fn is_writer(&self) -> bool {
         self.holds_lease.load(Ordering::Acquire)
+    }
+
+    /// Whether the writer took its lease again since the last turn looked,
+    /// clearing the mark.
+    pub(crate) fn took_lease_again(&self) -> bool {
+        self.regained.swap(false, Ordering::AcqRel)
     }
 }
 

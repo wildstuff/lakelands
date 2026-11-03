@@ -647,6 +647,11 @@ impl Projection {
         let state = SeriesState {
             kept: pairs,
             building: Vec::new(),
+            // A fold from the log makes the pairs whole, so a build may go
+            // on from its cursor; the count goes on rather than back, so a
+            // build never reads a number again for a pair whose rows a
+            // take-back beside the writer has since cleared.
+            started: self.series_state(ty).started,
         };
         self.set_series(ty, &state);
         self.walk_type(ty);
@@ -680,10 +685,15 @@ impl Projection {
         }
         state.kept.retain(|p| named.contains(p));
         state.building.retain(|p| named.contains(p));
+        let mut started = false;
         for pair in named {
             if !state.kept.contains(&pair) && !state.building.contains(&pair) {
                 state.building.push(pair);
+                started = true;
             }
+        }
+        if started {
+            state.started += 1;
         }
         self.set_series(ty, &state);
     }
@@ -749,25 +759,35 @@ impl Projection {
             order: FieldName::from(order),
         };
         let mut state = self.series_state(ty);
+        // A build fills and keeps a pair only while it is `building`: a
+        // setting put back beside the writer takes the pair back, whole, in
+        // that write, and the part in hand must not fill it again.
+        let building = state.building.contains(&pair);
         match step {
             Choose::Start(_) => {
                 if !state.kept.contains(&pair) && !state.building.contains(&pair) {
                     state.building.push(pair.clone());
+                    state.started += 1;
                 }
                 self.set_series(ty, &state);
                 None
             }
             Choose::Fill { after, limit, .. } => {
+                if !building {
+                    return None;
+                }
                 let page = self.index_page(ty, after.as_ref(), *limit as usize);
                 page.filter(|(_, n)| *n == *limit as usize)
                     .map(|(last, _)| last)
             }
             Choose::Keep(_) => {
-                state.building.retain(|p| p != &pair);
-                if !state.kept.contains(&pair) {
-                    state.kept.push(pair.clone());
+                if building {
+                    state.building.retain(|p| p != &pair);
+                    if !state.kept.contains(&pair) {
+                        state.kept.push(pair.clone());
+                    }
+                    self.set_series(ty, &state);
                 }
-                self.set_series(ty, &state);
                 None
             }
             // A pair taken back: its rows go whole in one step, or a chunk

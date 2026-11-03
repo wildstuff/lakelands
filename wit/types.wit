@@ -1396,6 +1396,22 @@ interface types {
         millis: u64,
     }
 
+    /// One series pair a type's `series_index.<type>` setting asks for,
+    /// and whether its rows are whole.
+    record series-told {
+        series: field-name,
+        order: field-name,
+        state: series-told-state,
+    }
+
+    /// Whether a series pair's rows are whole.
+    enum series-told-state {
+        /// A build is filling the pair's rows: no read takes the pair.
+        building,
+        /// The pair's rows are whole: a read may take the pair.
+        kept,
+    }
+
     /// Whether a view's records are kept as its sources are written, or
     /// computed at each read.
     variant kept {
@@ -1464,6 +1480,10 @@ interface types {
         verbs: list<verb-name>,
         lineage: type-lineage,
         lifecycle: type-lifecycle,
+        /// The series pairs the type's `series_index.<type>` setting asks
+        /// for, kept pairs first: told to a holder of `schema` who reads
+        /// both fields, and only at the head.
+        series: list<series-told>,
         /// The host's own marks, to a principal who may see them.
         annotations: list<tuple<string, json>>,
         /// From `describe-type`: the declaration of each value type the

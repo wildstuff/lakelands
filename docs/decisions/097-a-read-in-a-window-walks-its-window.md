@@ -358,12 +358,12 @@ fields, at the head only, as `chosen` is. A taken-back pair leaves the list.
 - `SERIES_READS_ITS_WINDOW`: every road, a series under and over `FEW_HOLDERS`, by a text and by a number.
 - `SERIES_NO_VALUE_LAST`: records with no value come last in a page, ascending and descending, from the series alone.
 - `SERIES_IN_MERGES`: `in` over 50 series walks about the rows read plus a seek a series.
-- `SERIES_SETTING_BUILDS`: before `Keep` the old road, after it the new, one answer.
-- `SERIES_BUILD_RESUMES`: a restart mid-build finishes with no read and no further write.
+- `SERIES_SETTING_BUILDS`: before `Keep` the old road, after it the new, one answer. As built in step 8: a build beside reads, the pair told `building` then `kept`, every answer unchanged.
+- `SERIES_BUILD_RESUMES`: a restart mid-build finishes with no read and no further write. As built in step 8.
 - `SERIES_KEPT_BY_THE_HOST`: the switch off, `order_max_fields` reached, a `sweep` and a `sort_index` setting over a built pair leave it kept and read.
-- `SERIES_TOLD`: `describe` says `building` then `kept`, to a holder of `schema` who reads both fields and to no one else.
-- `SERIES_REBUILD_SAME_ROWS`: a rebuild from the log gives the same rows.
-- `SERIES_TAKEN_BACK`: during a build and after it, the rows are gone, and the answer stands.
+- `SERIES_TOLD`: `describe` says `building` then `kept`, to a holder of `schema` who reads both fields and to no one else. As built in step 8.
+- `SERIES_REBUILD_SAME_ROWS`: a rebuild from the log gives the same rows. As built in step 8: the pair is kept at its event and owes no build.
+- `SERIES_TAKEN_BACK`: during a build and after it, the rows are gone, and the answer stands. As built in step 8.
 - `SERIES_DECLARED_OVER`: a setting before a declaration, and a declaration over a built pair (lakelands#591).
 
 ### The estimate
@@ -723,8 +723,8 @@ pair.
 A setting put beside the writer that starts naming a pair leaves it
 `building` with no build scheduled: the store's driver (`asked`, `owed`)
 knows an order index's build, not yet a series pair's, which is step 8's
-work. The settings page says so, marked `INTERIM: lakelands#1638`; a fold
-from the log still fills the pair whole.
+work (taken up in §As built: step 8). The settings page said so, marked
+`INTERIM: lakelands#1638`; a fold from the log still fills the pair whole.
 
 **Conformance.** No check row: until step 8 no read takes a pair, so the
 suite has no answer to hold. The engines' tests hold the claim for now —
@@ -750,6 +750,83 @@ lines, against the 230 and 270 the estimate above reckoned with ×1.35,
 and above the record's 600 a pull request. The rows are written three
 times, once in each engine, as the store's other indexes are; nothing in
 it was cut for the number, and step 8's driver stands as reckoned.
+
+### As built: step 8 (lakelands#1638)
+
+Step 8 builds a pair beside the writer, tells its state, and owes it at
+the next open. The reads that take a pair are steps 9 and 10.
+
+- **The driver.** `build.rs`'s `Kind` gains `Series`; `asked` reads a
+  write of a `series_index.<type>` key on `sys.setting` as that type's
+  build; `owed` owes a `Series` build wherever `view.series` holds a
+  `building` pair; and `finish` sends one job for the type and waits for
+  it, so the setting's door answers when the pair is whole. One job for
+  the type, not one per kept-name view: a pair is the type's own, and no
+  view holds one.
+- **The turns.** `Build::walk` names the building pairs' derived fields
+  and no others — a pair already kept is never filled again — and
+  `Build::turn` takes `turn_sorted`, the road `sort_index`'s build
+  takes: the `Start` is the setting's own write, as step 7 records, and
+  then a `Fill` of a key range of `limits.order_chunk` records is a turn,
+  and `Keep` ends it. A take-back beside the writer is that write, whole, as
+  step 7 records; no `Dropping` job is sent for a pair.
+- **The race.** A setting put back beside the writer while its build runs
+  takes the pair back in that write, and the part in hand must not fill
+  it again: `choose_series` fills and keeps a pair only while the state
+  holds it `building`, on every engine. A pair taken back and set again
+  between two turns is a *new* pair — the take-back cleared its first
+  rows — and a build that went on from its cursor would skip them and
+  keep a pair that is not whole. So `SeriesState` counts the starts of
+  its type in `started`: only a `Start` of a pair the state does not
+  already hold moves it, a take-back leaves it standing, and a fold from
+  the log keeps it rather than starting its count again. `Build` reads
+  the count each turn; a count that moved sets its cursor to none, and
+  the fill begins at the first key again.
+- **The resume.** An open consults `owed`, as it did; now a writer that
+  takes its lease again does too. `Lake::regain` marks it, and the entry
+  that wrote sends `road::resume` when it ends — so a build a process
+  left between two turns is finished by the next open, and by a standby
+  that takes the lease, with no read and no write to ask for it.
+- **`describe`.** `TypeDescription.series` is a list of
+  `{series, order, state}`, kept pairs first, told at the head only, to a
+  holder of `schema` who reads both fields, as `chosen` is told; a pair
+  taken back leaves the list, and an engine that keeps no such index
+  tells none. `state` is `building` while a build fills the pair and
+  `kept` once it is whole. The read never takes a pair that is not
+  `kept`; steps 9 and 10 take it.
+- **The settings page.** The `INTERIM: lakelands#1638` mark step 7 left
+  is gone: the setting's cost line says what the build and the take-back
+  do.
+- **Conformance.** Six rows in `checks/series_builds.rs`, run on every
+  engine: `SERIES_SETTING_BUILDS` (a build beside reads, the pair
+  `building` then `kept`, every answer unchanged), `SERIES_BUILD_RESUMES`
+  (a build a writer left between two turns is finished by the next
+  open), `SERIES_TAKEN_BACK` (during and after the build: no pair told,
+  no answer moved), `SERIES_REBUILD_SAME_ROWS` (a projection refolded
+  from the log holds the pair kept at its event and owes no build),
+  `SERIES_BUILD_REGAINED` (a build a fault stopped between two turns,
+  the writer's lease lost and taken again in the same process: the pair
+  is finished with no read and no write to ask for it; the resume is
+  cut in `exec.rs` and the row is seen red), and `SERIES_TOLD`
+  (who is told the pair, and when: the check reads a lake whose setting
+  is in the log as of before it, and is told no pair, so the head clause
+  is held red when the filter goes). The engine seam holds the state a
+  build reads in `SERIES_STARTED` (`engine/reads.rs`): a start counts
+  one, a second start of a pair in hand, its fills and its keep count
+  nothing, a take-back leaves the count standing, and a pair started
+  again counts a new start (the bump is cut and the row is seen red).
+- **By hand.** SQLite, a lake of 20 000 invoices with
+  `limits.order_chunk` 1: `describe` told no pair; the setting's write
+  marked the pair `building` and `describe` told it so at the first
+  poll; it told `kept` as the write returned, 8.5 s later on a quiet
+  machine and 33 s beside a conformance run; and the take-back of the
+  pair's rows returned in 0.8–2.4 s and left no pair.
+- **Size.** 1 153 lines in, 47 out: product 270 and specification 768,
+  against the 230 and 297 the estimate reckoned; the review's changes
+  are the start count, the regained-lease row and the engine-seam row
+  that holds the count. Nothing was cut. The gates read product 109 416
+  of 115 000 and specification 195 844 of 202 500, and the seam 108 of
+  110 methods.
 
 ### What the operator decided
 

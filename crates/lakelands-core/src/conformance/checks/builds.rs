@@ -145,7 +145,7 @@ async fn keys(l: &Lake, find: Find) -> Result<Vec<String>, Failure> {
 
 /// The answers the checks compare: the first and a deep page ordered by
 /// `n`, and every record whose `s` is `value`.
-async fn answers(l: &Lake, size: u64) -> Result<Vec<Vec<String>>, Failure> {
+pub(super) async fn answers(l: &Lake, size: u64) -> Result<Vec<Vec<String>>, Failure> {
     let deep = size.saturating_sub(50);
     Ok(vec![
         page(l, "n", 50, 0).await?,

@@ -858,6 +858,10 @@ fn choose_series(
     db.batch("BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL synchronous_commit = off")?;
     let done = (|| {
         let mut state = series_of(db, names, ty)?;
+        // A build fills and keeps a pair only while it is `building`: a
+        // setting put back beside the writer takes the pair back, whole, in
+        // that write, and the part in hand must not fill it again.
+        let building = state.building.contains(&pair);
         let without = |state: &mut SeriesState| {
             state.kept.retain(|p| p != &pair);
             state.building.retain(|p| p != &pair);
@@ -866,6 +870,7 @@ fn choose_series(
             Choose::Start(_) => {
                 if !state.kept.contains(&pair) && !state.building.contains(&pair) {
                     state.building.push(pair.clone());
+                    state.started += 1;
                 }
                 set_series(db, names, ty, &state)?;
                 Ok(None)
@@ -874,13 +879,18 @@ fn choose_series(
                 field,
                 after,
                 limit,
-            } => fill_chosen(db, names, ty, field, after.as_ref(), *limit),
+            } => match building {
+                true => fill_chosen(db, names, ty, field, after.as_ref(), *limit),
+                false => Ok(None),
+            },
             Choose::Keep(_) => {
-                state.building.retain(|p| p != &pair);
-                if !state.kept.contains(&pair) {
-                    state.kept.push(pair.clone());
+                if building {
+                    state.building.retain(|p| p != &pair);
+                    if !state.kept.contains(&pair) {
+                        state.kept.push(pair.clone());
+                    }
+                    set_series(db, names, ty, &state)?;
                 }
-                set_series(db, names, ty, &state)?;
                 Ok(None)
             }
             // A pair taken back: its rows go whole in one step, or a chunk
@@ -1520,10 +1530,15 @@ pub(crate) fn mark_series(db: &mut Db, names: &Names, ty: &TypeName) -> Result<(
     }
     state.kept.retain(|p| named.contains(p));
     state.building.retain(|p| named.contains(p));
+    let mut started = false;
     for pair in named {
         if !state.kept.contains(&pair) && !state.building.contains(&pair) {
             state.building.push(pair);
+            started = true;
         }
+    }
+    if started {
+        state.started += 1;
     }
     set_series(db, names, ty, &state)
 }
@@ -1533,6 +1548,11 @@ pub(crate) fn mark_series(db: &mut Db, names: &Names, ty: &TypeName) -> Result<(
 /// makes a pair whole at its event rather than marking it for a build. A
 /// setting taken back leaves no pair and drops their rows.
 pub(crate) fn rebuild_series(db: &mut Db, names: &Names, ty: &TypeName) -> Result<()> {
+    // A fold from the log makes the pairs whole, so a build may go on from
+    // its cursor; the count goes on rather than back, so a build never
+    // reads a number again for a pair whose rows a take-back beside the
+    // writer has since cleared.
+    let started = series_of(db, names, ty)?.started;
     db.execute(
         &format!(
             "DELETE FROM {} WHERE ty = $1 AND position(chr(31) IN field) > 0",
@@ -1541,7 +1561,11 @@ pub(crate) fn rebuild_series(db: &mut Db, names: &Names, ty: &TypeName) -> Resul
         &[&ty.as_str()],
     )?;
     let Some(decl) = type_at(db, names, ty, None)? else {
-        return set_series(db, names, ty, &SeriesState::default());
+        let state = SeriesState {
+            started,
+            ..SeriesState::default()
+        };
+        return set_series(db, names, ty, &state);
     };
     let setting = head_record(
         db,
@@ -1553,6 +1577,7 @@ pub(crate) fn rebuild_series(db: &mut Db, names: &Names, ty: &TypeName) -> Resul
     let state = SeriesState {
         kept: pairs,
         building: Vec::new(),
+        started,
     };
     set_series(db, names, ty, &state)?;
     let fields = engines::series_fields(&state);

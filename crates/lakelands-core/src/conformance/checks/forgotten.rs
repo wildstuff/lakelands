@@ -710,8 +710,9 @@ check!(
 /// (lakelands#1309); how many of the next appends find the lease another
 /// writer took, and whether that writer gives it up at the next take of
 /// the lease (lakelands#1385); how many milliseconds each reclaim waits
-/// before it runs (lakelands#1486).
-pub type Fails = Arc<[AtomicU32; 11]>;
+/// before it runs (lakelands#1486); and how many of the next steps of a
+/// build fail, so a build stops between its turns.
+pub type Fails = Arc<[AtomicU32; 12]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -936,6 +937,23 @@ impl ProjectionStore for Reclaims {
         record: &lakelands_api::record::StoredRecord,
     ) -> lakelands_api::Result<()> {
         self.inner.projection().put_record(record)
+    }
+    fn put_record_for(
+        &self,
+        record: &lakelands_api::record::StoredRecord,
+        whole: bool,
+    ) -> lakelands_api::Result<()> {
+        self.inner.projection().put_record_for(record, whole)
+    }
+    fn choose_order(
+        &self,
+        ty: &TypeName,
+        step: &lakelands_api::engine::Choose,
+    ) -> lakelands_api::Result<Option<lakelands_api::RecordKey>> {
+        if fails(&self.fails, 11) {
+            return Err(crashed());
+        }
+        self.inner.projection().choose_order(ty, step)
     }
     fn drop_states(&self, of: lakelands_api::engine::StatesOf<'_>) -> lakelands_api::Result<()> {
         if matches!(of, lakelands_api::engine::StatesOf::Record(..)) {

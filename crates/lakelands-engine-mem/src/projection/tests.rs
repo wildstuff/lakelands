@@ -398,6 +398,9 @@ fn a_series_pair_is_filled_from_the_log_kept_and_put_back_to_start() {
         SeriesState {
             kept: vec![pair.clone()],
             building: Vec::new(),
+            // The pair was started at the declaration and kept whole by
+            // the fold; the count stands.
+            started: 1,
         }
     );
     let key_of = |p: &Projection, key: &str| -> Vec<u8> {
@@ -425,7 +428,14 @@ fn a_series_pair_is_filled_from_the_log_kept_and_put_back_to_start() {
         }
     }
     assert_eq!(rows(&p), 0);
-    assert_eq!(p.series_state(&ty), SeriesState::default());
+    assert_eq!(
+        p.series_state(&ty),
+        SeriesState {
+            started: 1,
+            ..SeriesState::default()
+        },
+        "a take-back clears the pair and leaves the count standing"
+    );
 
     // Folded from the log again, it is whole again; a redeclaration puts
     // it back to `Start`.
@@ -471,7 +481,14 @@ fn a_series_pair_is_filled_from_the_log_kept_and_put_back_to_start() {
     // and the pair's rows go with it.
     p.commit(vec![Put::Live(series_setting(Value::Null, 4))], Position(4))
         .unwrap();
-    assert_eq!(p.series_state(&ty), SeriesState::default());
+    assert_eq!(
+        p.series_state(&ty),
+        SeriesState {
+            started: 1,
+            ..SeriesState::default()
+        },
+        "the take-back leaves the count where the redeclaration left it"
+    );
     assert_eq!(rows(&p), 0, "a pair taken back leaves no row");
 }
 

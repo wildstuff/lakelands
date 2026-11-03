@@ -11,8 +11,8 @@
 use std::collections::BTreeSet;
 
 use lakelands_api::engine::{
-    Chosen, Declared, HolderBatch, KeyRange, Matched, ProjectionView, Rankings, Scan, WindowAt,
-    WindowBatch, WindowSides,
+    Chosen, Declared, HolderBatch, KeyRange, Matched, ProjectionView, Rankings, Scan, SeriesState,
+    WindowAt, WindowBatch, WindowSides,
 };
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
@@ -1305,6 +1305,12 @@ impl ProjectionView for SqliteView<'_> {
 
     fn chosen(&self, ty: &TypeName) -> Result<Chosen> {
         self.read(Chosen::default(), |r| projection::chosen_kept(r.conn, ty))
+    }
+
+    fn series(&self, ty: &TypeName) -> Result<SeriesState> {
+        self.read(SeriesState::default(), |r| {
+            projection::series_state(r.conn, ty)
+        })
     }
 
     fn declarations(&self) -> Result<Vec<Declared>> {

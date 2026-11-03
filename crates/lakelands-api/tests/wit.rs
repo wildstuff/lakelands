@@ -22,9 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use lakelands_api::describe::{
-    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept,
-    SettingPeriod, SettingValue, SortedWhole, TypeAccess, TypeDescription, TypeLifecycle,
-    TypeLineage, TypeRights, VerbDescription,
+    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept, SeriesTold,
+    SeriesToldState, SettingPeriod, SettingValue, SortedWhole, TypeAccess, TypeDescription,
+    TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::event::ChangeKind;
 use lakelands_api::expr::Condition;
@@ -748,6 +748,11 @@ fn type_description() -> TypeDescription {
             kept: Some(Kept::Kept),
             value_types: [("money".into(), 2)].into(),
         },
+        series: vec![SeriesTold {
+            series: "paid".into(),
+            order: "due".into(),
+            state: SeriesToldState::Building,
+        }],
     }
 }
 
@@ -1546,6 +1551,14 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ("renamed", members(&renamed())),
         ("type_lifecycle", members(&type_description().lifecycle)),
         ("sorted_whole", members(&sorted_whole())),
+        (
+            "series_told",
+            members(&SeriesTold {
+                series: "paid".into(),
+                order: "due".into(),
+                state: SeriesToldState::Building,
+            }),
+        ),
         ("field_description", members(&field_description())),
         ("type_description", members(&type_description())),
         (
@@ -1909,6 +1922,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         ),
     ));
     units!("verb_scope", VerbScope, [Record, Type]);
+    units!("series_told_state", SeriesToldState, [Building, Kept]);
     units!(
         "origin",
         Origin,

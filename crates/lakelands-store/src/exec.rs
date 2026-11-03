@@ -231,6 +231,11 @@ impl Holding {
         // Between two entries, so never inside a batch: an entry is one.
         let seal = || Turn(&lake).seal_by_size();
         drop(catch_unwind(AssertUnwindSafe(seal)));
+        // A writer that took its lease again in this entry owes what an
+        // open owes: its build finishes beside the writer from here on.
+        if lake.took_lease_again() {
+            crate::road::resume(&lake, crate::road::OWED);
+        }
     }
 
     /// Give the answers decided.

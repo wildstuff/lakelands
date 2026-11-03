@@ -141,6 +141,13 @@ pub struct TypeDescription {
     pub lineage: TypeLineage,
     /// Lifecycle: version and shape.
     pub lifecycle: TypeLifecycle,
+    /// The series pairs its `series_index.<type>` setting asks for, and
+    /// whether each pair's rows are whole: told to a holder of `schema`
+    /// who reads both fields, at the head only, as `chosen` is
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §How a
+    /// lake with records gets it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub series: Vec<SeriesTold>,
     /// The constraints every record of the type holds, those whose
     /// fields its reader reads (lakelands#1119).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -446,6 +453,30 @@ pub struct SortedWhole {
     pub pages: u64,
     /// The time those reads took, in milliseconds.
     pub millis: u64,
+}
+
+/// One series pair a type's `series_index.<type>` setting asks for, and
+/// whether its rows are whole
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// series index).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeriesTold {
+    /// The field naming the series.
+    pub series: FieldName,
+    /// The order field within the series.
+    pub order: FieldName,
+    /// Whether the pair's rows are whole.
+    pub state: SeriesToldState,
+}
+
+/// Whether a series pair's rows are whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SeriesToldState {
+    /// A build is filling the pair's rows: no read takes the pair.
+    Building,
+    /// The pair's rows are whole: a read may take the pair.
+    Kept,
 }
 
 /// Whether a view's records are kept as its sources are written, or
