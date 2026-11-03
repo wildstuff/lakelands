@@ -174,6 +174,7 @@ mod view_stack;
 mod views;
 mod vocabulary;
 mod walks;
+mod window;
 mod withdraw;
 mod write_judged;
 mod writer_filled;
@@ -349,6 +350,7 @@ pub const ALL: &[Check] = &[
     upsert_preflight::UPSERT_JUDGED_ON_WHAT_IT_MAKES,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,
     sorted_whole::SORTED_WHOLE_TOLD,
+    sorted_whole::SORTED_WHOLE_BESIDE_A_LOOKUP_BUILD,
     rebuild::REBUILD_ANSWERS_AS_BEFORE,
     rebuild::REBUILD_REPRODUCES_THE_CHAIN,
     rebuild::REBUILD_FOLDS_OVER_RECORDS,
@@ -1019,6 +1021,7 @@ pub const ALL: &[Check] = &[
     chosen::CHOSEN_ORDER_INDEX,
     chosen::CHOSEN_BUILD_BESIDE_WRITES,
     chosen::CHOSEN_SWITCH,
+    chosen::CHOSEN_ORDER_BESIDE_SORT_INDEX,
     chosen::CHOSEN_UNUSED,
     chosen::CHOSEN_TOLD_TO_SCHEMA,
     builds::BUILD_READ_ANSWERS_AS_BEFORE,
@@ -1026,6 +1029,8 @@ pub const ALL: &[Check] = &[
     builds::BUILD_WRITES_GO_ON,
     builds::BUILD_WRITE_REACHES_BOTH_SIDES,
     builds::BUILD_RESTART_FINISHES,
+    builds::BUILD_SETTING_TAKEN_BACK,
+    builds::BUILD_SETTING_SET_AGAIN,
     builds::BUILD_TYPE_DECLARED_AGAIN,
     builds::BUILD_BESIDE_A_REMOVAL,
     builds::BUILD_REBUILD_SAME_LAKE,
@@ -1223,4 +1228,6 @@ pub const ALL: &[Check] = &[
     grid::GRID,
     metered::METERED,
     metered::METERED_LEASE,
+    window::WINDOW_AGGREGATE_JUDGES_A_LINKS_ENDS,
+    window::WINDOW_PAST_ITS_BOUNDS,
 ];

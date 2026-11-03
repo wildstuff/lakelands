@@ -20,7 +20,7 @@ check!(
 
 check!(
     CHOSEN_SWITCH = a_lake_with_the_switch_off_chooses_nothing_and_a_hosts_setting_wins,
-    "041 and lakelands#1131: with `limits.choose_order_index` off, pages sorted whole at any number choose nothing; with it on, a host's `sort_index.<type>` setting naming a field keeps the lake from choosing for the type, takes away what it had chosen when written, and retiring the setting hands the type back so that the lake may choose again, and a lake opened with the switch off drops what an earlier writer chose",
+    "041 and lakelands#1131: with `limits.choose_order_index` off, pages sorted whole at any number choose nothing; with it on, a host's `sort_index.<type>` setting naming a field keeps the lake from choosing that field, while it may still choose another beside it, and a setting that comes to name the chosen field takes it away; retiring the setting hands the type back so that the lake may choose again, and a lake opened with the switch off drops what an earlier writer chose",
     given
 );
 
@@ -218,7 +218,8 @@ async fn a_lake_with_the_switch_off_chooses_nothing_and_a_hosts_setting_wins(
         told(&l, &l.own).await?.1.is_empty(),
         "with `choose_order_index` off, pages sorted whole must choose nothing"
     );
-    // On, with the host's setting naming `s`: the lake chooses nothing for the type.
+    // On, with the host's setting naming `s`: the lake still chooses the
+    // type's other field, `n`.
     let store = (given.relimit)(store, Seams::default(), limits())
         .await
         .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
@@ -239,9 +240,10 @@ async fn a_lake_with_the_switch_off_chooses_nothing_and_a_hosts_setting_wins(
     pause(Duration::from_millis(500)).await;
     let (sorted, chosen, _) = told(&l, &l.own).await?;
     ensure!(
-        chosen.is_empty() && sorted == ["s"],
-        "a type whose `sort_index` names a field is the host's: the lake must choose nothing, \
-         and `sorted` must be [\"s\"]; it said sorted {sorted:?}, chosen {chosen:?}"
+        chosen == ["n"] && sorted == ["s"],
+        "a setting naming `s` keeps the lake from choosing `s`, not `n`: the two share the \
+         rows field by field, so `chosen` must be [\"n\"] and `sorted` [\"s\"]; it said \
+         sorted {sorted:?}, chosen {chosen:?}"
     );
     // Retired, the type is handed back.
     l.retire("sys.setting", "sort_index.row").await?;
@@ -279,13 +281,14 @@ async fn a_lake_with_the_switch_off_chooses_nothing_and_a_hosts_setting_wins(
         "with `order_max_fields` 1 the lake must keep to the field it chose, `n`, and not \
          choose `s`; it said chosen {chosen:?}"
     );
-    // Written again: the lake's choice goes, the host's stays.
-    l.set("sort_index.row", json!(["s"])).await?;
+    // The setting comes to name the chosen field: that field is the
+    // setting's now, and the lake's choice goes.
+    l.set("sort_index.row", json!(["s", "n"])).await?;
     let (sorted, chosen, _) = told(&l, &l.own).await?;
     ensure!(
-        chosen.is_empty() && sorted == ["s"],
-        "a `sort_index` written over the lake's choice must take it away; it said sorted \
-         {sorted:?}, chosen {chosen:?}"
+        chosen.is_empty() && sorted == ["s", "n"],
+        "a `sort_index` that comes to name the lake's chosen field must take it away; it said \
+         sorted {sorted:?}, chosen {chosen:?}"
     );
     // Chosen again, then the switch turned off: the choice an earlier
     // writer made is dropped, and only what the host sets is indexed.
@@ -457,6 +460,82 @@ async fn a_chosen_field_is_told_only_to_a_holder_of_schema_who_reads_it(
         got.0,
         got.1,
         got.2
+    );
+    Ok(())
+}
+
+check!(
+    CHOSEN_ORDER_BESIDE_SORT_INDEX = a_setting_and_the_lakes_choice_share_the_rows_field_by_field,
+    "099, R7 and 041: a `sort_index.<type>` setting naming one field no longer refuses the lake choosing another: the two share the rows field by field, `describe` naming the setting's field `sorted` and the lake's `chosen`, and pages ordered by either answering what one scan over every state answers; when the setting comes to name the chosen field its rows go and the setting's index answers in its place; retiring the setting hands every field back to the lake",
+    given
+);
+
+async fn a_setting_and_the_lakes_choice_share_the_rows_field_by_field(
+    store: Store,
+    given: Given,
+) -> Held {
+    let size = u64::from(given.large_lake.max(2_000));
+    let l = rows(store.as_ref(), size).await?;
+    let before = [page(&l, &l.own, 0).await?, page(&l, &l.own, 1500).await?];
+    let by_s = page_of(&l, &l.own, "row", "s", 0).await?;
+    // The host's setting names `s`; the lake weighs `n`, which the
+    // setting does not name, and chooses it beside the setting.
+    l.set("sort_index.row", json!(["s"])).await?;
+    weigh(&l).await?;
+    ensure!(
+        until_chosen(&l, true).await?,
+        "with the setting naming `s`, pages ordered by `n` must still make the lake choose it; \
+         it chose nothing"
+    );
+    let (sorted, chosen, _) = told(&l, &l.own).await?;
+    ensure!(
+        sorted == ["s"] && chosen == ["n"],
+        "a setting and the lake share the rows field by field: `describe` must say sorted \
+         [\"s\"], chosen [\"n\"]; it said sorted {sorted:?}, chosen {chosen:?}"
+    );
+    let after = [page(&l, &l.own, 0).await?, page(&l, &l.own, 1500).await?];
+    ensure!(
+        after == before,
+        "the setting's index and the lake's answer what they answered before: {before:?} \
+         became {after:?}"
+    );
+    ensure!(
+        page_of(&l, &l.own, "row", "s", 0).await? == by_s,
+        "a page ordered by the setting's field answers what it answered before the setting"
+    );
+    // The setting comes to name `n`: the lake's field is the setting's
+    // now, its rows cleared in parts, and the setting's index answers in
+    // its place.
+    l.set("sort_index.row", json!(["s", "n"])).await?;
+    let (sorted, chosen, _) = told(&l, &l.own).await?;
+    ensure!(
+        sorted == ["s", "n"] && chosen.is_empty(),
+        "a setting that comes to name the chosen field takes it away: `describe` must say \
+         sorted [\"s\", \"n\"], chosen none; it said sorted {sorted:?}, chosen {chosen:?}"
+    );
+    let after = [page(&l, &l.own, 0).await?, page(&l, &l.own, 1500).await?];
+    ensure!(
+        after == before,
+        "a field the setting took back answers as before it was chosen: {before:?} became \
+         {after:?}"
+    );
+    // Retired, every field is the lake's again.
+    l.retire("sys.setting", "sort_index.row").await?;
+    ensure!(
+        told(&l, &l.own).await?.0.is_empty(),
+        "a retired setting names no `sorted` field"
+    );
+    for _ in 0..3 {
+        page(&l, &l.own, 0).await?;
+    }
+    ensure!(
+        until_chosen(&l, true).await?,
+        "a retired setting hands the type back, so the lake may choose `n` again"
+    );
+    let after = [page(&l, &l.own, 0).await?, page(&l, &l.own, 1500).await?];
+    ensure!(
+        after == before,
+        "with the setting retired the pages still answer as before: {before:?} became {after:?}"
     );
     Ok(())
 }

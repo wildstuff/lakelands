@@ -11,7 +11,7 @@
 //! state, with its position. A vector's list is exact: the true top `k`
 //! by cosine, ties by key.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::{
     After, Declared, KeyRange, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan,
@@ -19,6 +19,7 @@ use lakelands_api::engine::{
 };
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
+use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState, ProposedWrite};
@@ -73,7 +74,7 @@ engine_check!(
 
 engine_check!(
     CHOSEN_ORDER = a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept,
-    "041 and lakelands#1131: a field the lake chose an order index for beside the log is started, filled in chunks of the head's records while puts land between the chunks, and kept; a page ordered by it sorts the type until it is kept, answers what one scan over every state answers all the while, and reads its page and at most three rows more once kept, the records put during the build among those it holds; `chosen` names the kept and the building fields; a `sort_index.<type>` setting naming a field takes the choice away and a step on such a type does nothing, and retiring the setting leaves the type with no index; a field dropped is sorted whole again; a `Start` of a field the type does not declare does nothing"
+    "041 and lakelands#1131: a field the lake chose an order index for beside the log is started, filled in chunks of the head's records while puts land between the chunks, and kept; a page ordered by it sorts the type until it is kept, answers what one scan over every state answers all the while, and reads its page and at most three rows more once kept, the records put during the build among those it holds; `chosen` names the kept and the building fields; a `sort_index.<type>` setting naming the chosen field takes the choice away and a step naming a field the setting names does nothing, and retiring the setting leaves the type with no index; a chosen field dropped in chunks, its mark `dropping` gone at the last, is sorted whole again, and a `Drop` of the whole field in one step, the step a host built against, clears it and answers none with no mark left; a `Start` of a field the type does not declare does nothing"
 );
 
 engine_check!(
@@ -3541,6 +3542,7 @@ fn a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view(
     Ok(())
 }
 
+#[allow(deprecated)]
 fn a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept(
     engine: &dyn LakeEngine,
 ) -> Held {
@@ -3702,7 +3704,52 @@ fn a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept(
     }
     step(Choose::Keep(field.clone()))?;
     reads_its_page("once `v` is chosen again", &states)?;
-    step(Choose::Drop(field.clone()))?;
+    // A `Drop` in its one step, as a host built it: the whole field gone
+    // and no mark left, as before the chunked step.
+    ensure!(
+        step(Choose::Drop(field.clone()))?.is_none(),
+        "a `Drop` of the whole field must clear it and answer none, in its one step"
+    );
+    ensure!(
+        chosen()?.is_none(),
+        "a `Drop` in one step must leave no `dropping` mark; `chosen` names {:?}",
+        chosen()?
+    );
+    sorts("once `v` is dropped whole", &states)?;
+    // Built again, then dropped a chunk a turn: the mark `dropping` holds
+    // the field until the last chunk, and no read looks at it.
+    step(Choose::Start(field.clone()))?;
+    let mut after = None;
+    while let Some(last) = step(Choose::Fill {
+        field: field.clone(),
+        after,
+        limit: CHUNK,
+    })? {
+        after = Some(last);
+    }
+    step(Choose::Keep(field.clone()))?;
+    reads_its_page("once `v` is chosen again for its drop", &states)?;
+    let mut after = None;
+    loop {
+        let next = step(Choose::DropChunk {
+            field: field.clone(),
+            after: after.clone(),
+            limit: CHUNK,
+        })?;
+        let Some(last) = next else {
+            ensure!(
+                after.is_some(),
+                "a drop of {N} records must come in chunks of {CHUNK}, not one step"
+            );
+            break;
+        };
+        ensure!(
+            chosen()?.is_some_and(|c| c.dropping == [field.clone()]),
+            "between the chunks of a drop, `dropping` must still hold `v`; `chosen` names {:?}",
+            chosen()?
+        );
+        after = Some(last);
+    }
     ensure!(
         chosen()?.is_none(),
         "a dropped field must no longer be chosen"
@@ -3822,7 +3869,7 @@ fn rows_walked_counts_the_index_rows_each_road_walks(engine: &dyn LakeEngine) ->
 
 engine_check!(
     WINDOW_READS_ITS_ROWS = a_page_bounded_on_its_order_field_reads_its_rows,
-    "097 and lakelands#1633: a page in field order under a filter bounding that field reads its page, both directions, by `rows_read` and `rows_walked`, and its walk does not grow when records outside the bound are added; the rows for an aggregate, a count and a key page follow in later steps"
+    "097 and lakelands#1633: a page in field order under a filter bounding that field reads its page, both directions, by `rows_read` and `rows_walked`, and its walk does not grow when records outside the bound are added; an aggregate, a count and a key page over the window read its keys, walking the window's index rows and handing one record per key, never the type"
 );
 
 fn a_page_bounded_on_its_order_field_reads_its_rows(engine: &dyn LakeEngine) -> Held {
@@ -4009,6 +4056,72 @@ fn a_page_bounded_on_its_order_field_reads_its_rows(engine: &dyn LakeEngine) -> 
         core_engines::FEW_HOLDERS,
         rows.len(),
         keys(&whole)
+    );
+    // An aggregate, a count and a key page read the window's keys: each
+    // reads one record per key and admits it, never the type.
+    let field = FieldName::from("v");
+    let bound = "v >= 1000 and v <= 1030";
+    let filter = crate::expr::parse(bound).expect("the check's filter parses");
+    let window = core_engines::window(&filter, &field, &StorageKind::Number)
+        .expect("the check's filter opens a window");
+    let scan = scan_with(|s| s.filter = Some(filter));
+    let whole = crate::engines::scan(Some(t), &states, &scan);
+    let (keys_read, records, walked, read) =
+        window_road(head.as_ref(), &ty, t, &scan, &window, u64::MAX)?
+            .expect("the engine keeps the window's index");
+    ensure!(
+        records == whole
+            && keys_read.len() == IN_WINDOW as usize
+            && walked == IN_WINDOW
+            && read == IN_WINDOW,
+        "an aggregate over `{bound}` read {} records of the window's {IN_WINDOW} keys, \
+         walking {walked} index rows and handing {read}; one scan over every state answers \
+         {} rows, and the walk is the window's rows",
+        records.len(),
+        whole.len()
+    );
+    // The count: the window's rows counted, then its keys read the same.
+    let chosen =
+        core_engines::takes_window(u64::MAX, |l| head.window_sides(&ty, &window, &scan, l))
+            .must("the count's choice")?;
+    let (_, counted, walked, read) = window_road(head.as_ref(), &ty, t, &scan, &window, u64::MAX)?
+        .expect("the engine keeps the window's index");
+    ensure!(
+        chosen == Some(true) && counted == whole && walked == IN_WINDOW && read == IN_WINDOW,
+        "a count over `{bound}` read {read} records of the window's {IN_WINDOW}, walking \
+         {walked} index rows; the choice answered {chosen:?} and the records it read \
+         answered {} rows",
+        counted.len()
+    );
+    // The key page: a window of up to `FEW_HOLDERS` keys, sorted and read
+    // in key order, the first ten of them.
+    let (keys_read, _, walked, _) = window_road(
+        head.as_ref(),
+        &ty,
+        t,
+        &scan,
+        &window,
+        core_engines::FEW_HOLDERS,
+    )?
+    .expect("the engine keeps the window's index");
+    let mut sorted = keys_read.clone();
+    sorted.sort();
+    let before = core_engines::rows_read();
+    let mut first = Vec::new();
+    for chunk in sorted[..10].chunks(core_engines::WINDOW_BATCH as usize) {
+        let read = head.get_many(&ty, chunk).must("a key page's records")?;
+        first.extend(core_engines::admitted(Some(t), read, &scan));
+    }
+    let read = core_engines::rows_read() - before;
+    let mut expected = keys(&whole);
+    expected.sort();
+    ensure!(
+        walked == IN_WINDOW && read == 10 && keys(&first) == expected[..10],
+        "a key page over `{bound}` walked {walked} index rows, read {read} records and \
+         answered {:?}; the walk is the window's {IN_WINDOW} rows, and a scan of the window \
+         sorted by key begins {:?}",
+        keys(&first),
+        &expected[..10]
     );
     Ok(())
 }
@@ -4358,6 +4471,545 @@ fn a_short_window_walks_no_record_without_the_field(engine: &dyn LakeEngine) -> 
         MISSING + 3
     );
     Ok(())
+}
+
+engine_check!(
+    WINDOW_WALKS_THE_SMALLER_SIDE = a_window_takes_its_road_only_when_it_is_the_smaller_side,
+    "097 §The smaller side: the window is counted in rounds and the window's road is taken when four times its rows fit inside the other side, which is the type's order rows or the exact text's holders; a window of 31 rows in a type of 5 200 takes its own road and reads its records where today's count reads the type, a window holding the type takes the type, and a walk of 31 rows is the whole window and takes the window's road without counting; a window of 1 031 rows under a text four hold takes the holders' side, four times 1 031 not fitting inside the four though the window fits inside the type's 5 200 order rows; the probe answers those four in key order, each saying whether its order row lies inside the window"
+);
+
+fn a_window_takes_its_road_only_when_it_is_the_smaller_side(engine: &dyn LakeEngine) -> Held {
+    const N: u64 = 5200;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [
+            {"name": "v", "type": {"kind": "number"}},
+            {"name": "s", "type": {"kind": "text"}},
+            {"name": "rare", "type": {"kind": "text"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let states: Vec<StoredRecord> = (0..N)
+        .map(|i| {
+            let rare = if [1002, 1005, 1202, 1500].contains(&(i as i64)) {
+                "rare"
+            } else {
+                "none"
+            };
+            record(
+                "t",
+                &format!("k{i:04}"),
+                json!({"v": i, "s": "hit", "rare": rare}),
+                1,
+            )
+        })
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(engine, 2, sort_setting(json!(["v"]), 2))?;
+    fold_one(engine, 3, lookup_setting("t", json!(["s", "rare"]), 3))?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("t");
+    let field = FieldName::from("v");
+    let scan_of = |text: &str| {
+        scan_with(|s| s.filter = Some(crate::expr::parse(text).expect("the check's filter parses")))
+    };
+    let window_of = |text: &str| {
+        let filter = crate::expr::parse(text).expect("the check's filter parses");
+        core_engines::window(&filter, &field, &StorageKind::Number)
+            .expect("the check's filter opens a window")
+    };
+    let choose = |window: &core_engines::Window, scan: &Scan| {
+        // Step 1 of 097: the window's first batch, and a short walk is the
+        // whole window, so the window's road is taken without counting.
+        let first = head
+            .window_keys(&ty, window, scan, None, core_engines::WINDOW_BATCH)
+            .must("a window's first batch")?;
+        match first {
+            None => Ok(None),
+            Some(batch) if batch.done => Ok(Some(true)),
+            Some(_) => {
+                core_engines::takes_window(u64::MAX, |l| head.window_sides(&ty, window, scan, l))
+                    .must("the choice between the window's road and the other side")
+            }
+        }
+    };
+    // A narrow window in a wide type: the window's road, and its count
+    // reads the window where today's reads the type.
+    let narrow = window_of("v >= 1000 and v <= 1030");
+    let narrow_scan = scan_of("v >= 1000 and v <= 1030");
+    let today = {
+        let before = core_engines::rows_read();
+        let n = head
+            .count(&ty, &narrow_scan)
+            .must("today's count of the window")?;
+        (n, core_engines::rows_read() - before)
+    };
+    ensure!(
+        today.0 == 31 && today.1 > 31,
+        "today's count of `v` in 1000..=1030 answered {} records after reading {}, which must \
+         be the type and not the window",
+        today.0,
+        today.1
+    );
+    let chosen = choose(&narrow, &narrow_scan)?;
+    ensure!(
+        chosen == Some(true),
+        "a window of 31 rows in a type of {N} must take the window's road, but the choice \
+         answered {chosen:?}"
+    );
+    let (_, records, _, read) =
+        window_road(head.as_ref(), &ty, t, &narrow_scan, &narrow, u64::MAX)?
+            .expect("the engine keeps the window's index");
+    ensure!(
+        records.len() == 31 && read == 31 && read < today.1,
+        "the narrow window's road read {read} records and admitted {}; today's count read {}",
+        records.len(),
+        today.1
+    );
+    // A window holding the type: the other side.
+    let wide = window_of("v <= 99999");
+    let wide_scan = scan_of("v <= 99999");
+    let chosen = choose(&wide, &wide_scan)?;
+    ensure!(
+        chosen == Some(false),
+        "a window holding the whole type of {N} rows must take the type's road, but the \
+         choice answered {chosen:?}"
+    );
+    // Under an exact text the other side is the text's holders. A walk of 31
+    // rows is the whole window, so the window's road is taken without
+    // counting; a window of 1 031 rows is not, and four times its rows do
+    // not fit inside the four holders.
+    let rare = window_of("v >= 1000 and v <= 1030 and rare = 'rare'");
+    let rare_scan = scan_with(|s| {
+        s.filter = Some(
+            crate::expr::parse("v >= 1000 and v <= 1030 and rare = 'rare'")
+                .expect("the filter parses"),
+        );
+        // The exact text reaches the engine as the scan's own: a filter's
+        // `=` is the rulebook's comparison, not the identity a text lookup
+        // holds.
+        s.equal = vec![(FieldName::from("rare"), json!("rare"))];
+    });
+    let wide_text = "v >= 1000 and v <= 2030 and rare = 'rare'";
+    let rare_wide = window_of(wide_text);
+    let rare_wide_scan = scan_with(|s| {
+        s.filter = Some(crate::expr::parse(wide_text).expect("the filter parses"));
+        s.equal = vec![(FieldName::from("rare"), json!("rare"))];
+    });
+    match (
+        choose(&rare, &rare_scan)?,
+        choose(&rare_wide, &rare_wide_scan)?,
+    ) {
+        (Some(false), _) => {
+            return Err(Failure::new(
+                "a walk of 31 rows under a text four hold is the whole window and takes the \
+                 window's road; the choice answered the other side",
+            ));
+        }
+        (_, Some(true)) => {
+            return Err(Failure::new(
+                "a window of 1 031 rows under a text four hold took the window's road; four \
+                 times its rows do not fit inside the four holders, though the window fits \
+                 inside the type's 5 200 order rows",
+            ));
+        }
+        (Some(true), Some(false)) => {}
+        _ => ensure!(
+            head.holders_inside(&ty, &rare_wide, &rare_wide_scan, None, 1024)
+                .must("the probe under a text")?
+                .is_none(),
+            "an engine that keeps no sides for an exact text must keep no probe either"
+        ),
+    }
+    // The probe answers the holders in key order, each saying whether its
+    // order row lies inside the window.
+    if let Some(batch) = head
+        .holders_inside(&ty, &rare, &rare_scan, None, 1024)
+        .must("the probe under a text")?
+    {
+        let held: Vec<(String, bool)> = (batch.holders.iter())
+            .map(|(key, inside)| (key.to_string(), *inside))
+            .collect();
+        let expected = [
+            ("k1002".to_owned(), true),
+            ("k1005".to_owned(), true),
+            ("k1202".to_owned(), false),
+            ("k1500".to_owned(), false),
+        ];
+        ensure!(
+            batch.done && held == expected,
+            "the probe under `rare = 'rare'` answered {held:?}, done {done}; the four holders \
+             in key order, the two inside the window marked, must be {expected:?}",
+            done = batch.done
+        );
+    }
+    Ok(())
+}
+
+engine_check!(
+    WINDOW_ADMITS_LIKE_A_PAGE = a_window_read_admits_every_record_it_reads_as_a_page_does,
+    "097 §Who counts and who admits: `get_many` reads by key and applies nothing, so the records a window's keys read pass `engines::admitted` and a retired, a restricted and an out-of-time record are left out, as a page leaves them; under an exact text the same read answers the text's records alone, and under several, as a match's `equal_any` gives them, the walk, the sides' count and the probe seek each of them, an engine that keeps no window under a text reading it as a page"
+);
+
+fn a_window_read_admits_every_record_it_reads_as_a_page_does(engine: &dyn LakeEngine) -> Held {
+    const N: u64 = 200;
+    let decl = declare(json!({
+        "declare": "type", "name": "t", "valid_from": "from",
+        "fields": [
+            {"name": "v", "type": {"kind": "number"}},
+            {"name": "s", "type": {"kind": "text"}},
+            {"name": "from", "type": {"kind": "date_time"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let states: Vec<StoredRecord> = (0..N)
+        .map(|i| {
+            let from = if i % 4 == 0 {
+                "2027-01-01T00:00:00Z"
+            } else {
+                "2026-01-01T00:00:00Z"
+            };
+            let s = ["hit", "miss", "go"][(i % 3) as usize];
+            let mut r = record(
+                "t",
+                &format!("k{i:04}"),
+                json!({"v": i, "s": s, "from": from}),
+                1,
+            );
+            (r.retired, r.restricted) = (i % 5 == 0, i % 7 == 0);
+            r
+        })
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(engine, 2, sort_setting(json!(["v"]), 2))?;
+    fold_one(engine, 3, lookup_setting("t", json!(["s"]), 3))?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("t");
+    let bound = "v >= 20 and v <= 120";
+    let window = core_engines::window(
+        &crate::expr::parse(bound).expect("the check's filter parses"),
+        &FieldName::from("v"),
+        &StorageKind::Number,
+    )
+    .expect("the check's filter opens a window");
+    let page = scan_with(|s| {
+        s.filter = Some(crate::expr::parse(bound).expect("the check's filter parses"));
+        s.valid_at = Some(Timestamp::parse("2026-06-01T00:00:00Z").expect("an instant"));
+    });
+    let whole = crate::engines::scan(Some(t), &states, &page);
+    let (keys_read, records, _, read) =
+        window_road(head.as_ref(), &ty, t, &page, &window, u64::MAX)?
+            .expect("the engine keeps the window's index");
+    ensure!(
+        keys_read.len() == 101
+            && records == whole
+            && records.len() < keys_read.len()
+            && read == keys_read.len() as u64,
+        "a window of {} keys read {read} records and admitted {}; one scan over every state \
+         answers {} rows, and a retired, a restricted and an out-of-time record must be left \
+         out of the window's read as a page leaves them",
+        keys_read.len(),
+        records.len(),
+        whole.len()
+    );
+    // Under an exact text the window's keys are the text's records.
+    let mut held = page.clone();
+    held.equal = vec![(FieldName::from("s"), json!("hit"))];
+    let promised = crate::engines::scan(Some(t), &states, &held);
+    ensure!(
+        !promised.is_empty() && promised.len() < whole.len(),
+        "the exact text must narrow the window's page to some of its {} rows, but one scan \
+         answered {}",
+        whole.len(),
+        promised.len()
+    );
+    match window_road(head.as_ref(), &ty, t, &held, &window, u64::MAX)? {
+        Some((_, admitted, _, _)) => ensure!(
+            admitted == promised,
+            "a window read under an exact text admitted {} records; one scan answers {}",
+            admitted.len(),
+            promised.len()
+        ),
+        None => {
+            let rows = head.scan(&ty, &held).must("a page under an exact text")?;
+            ensure!(
+                rows == promised,
+                "an engine keeping no window under a text answered {} records; one scan \
+                 answers {}",
+                rows.len(),
+                promised.len()
+            );
+        }
+    }
+    // Several texts, as a match's `equal_any` gives them: the walk seeks
+    // each text's holders, and the sides' count and the probe seek the
+    // same set. `hit` and `go` are two of the type's three values.
+    let mut some = page.clone();
+    some.equal_any = vec![
+        vec![(FieldName::from("s"), json!("hit"))],
+        vec![(FieldName::from("s"), json!("go"))],
+    ];
+    let both = crate::engines::scan(Some(t), &states, &some);
+    ensure!(
+        !both.is_empty() && both.len() < whole.len(),
+        "two of `s`'s three values must narrow the window's page to some of its {} rows, \
+         but one scan answered {}",
+        whole.len(),
+        both.len()
+    );
+    match window_road(head.as_ref(), &ty, t, &some, &window, u64::MAX)? {
+        Some((_, admitted, _, _)) => ensure!(
+            admitted == both,
+            "a window read under two exact texts admitted {} records; one scan answers {}",
+            admitted.len(),
+            both.len()
+        ),
+        None => {
+            let rows = head.scan(&ty, &some).must("a page under two exact texts")?;
+            ensure!(
+                rows == both,
+                "an engine keeping no window under two texts answered {} records; one scan \
+                 answers {}",
+                rows.len(),
+                both.len()
+            );
+        }
+    }
+    // The choice under two texts: the window's 101 rows against the 133
+    // holders, which four times its rows do not fit inside. An engine that
+    // keeps no sides under a text keeps no probe either.
+    let chosen =
+        core_engines::takes_window(u64::MAX, |l| head.window_sides(&ty, &window, &some, l))
+            .must("the choice under two texts")?;
+    match chosen {
+        Some(false) => {}
+        None => ensure!(
+            head.holders_inside(&ty, &window, &some, None, 1024)
+                .must("the probe under two texts")?
+                .is_none(),
+            "an engine that keeps no sides under a text must keep no probe either"
+        ),
+        Some(true) => {
+            return Err(Failure::new(
+                "a window of 101 rows under two texts 133 hold took the window's road; four \
+                 times its rows do not fit inside the holders",
+            ));
+        }
+    }
+    // The probe under two texts answers both texts' holders in key order,
+    // each marked by the window its order row lies in.
+    let expected: Vec<(String, bool)> = (0..N)
+        .filter(|i| i % 3 != 1)
+        .map(|i| (format!("k{i:04}"), (20..=120).contains(&i)))
+        .collect();
+    if let Some(batch) = head
+        .holders_inside(&ty, &window, &some, None, 1024)
+        .must("the probe under two texts")?
+    {
+        let held: Vec<(String, bool)> = (batch.holders.iter())
+            .map(|(key, inside)| (key.to_string(), *inside))
+            .collect();
+        ensure!(
+            batch.done && held == expected,
+            "the probe under two texts answered {} holders, done {done}; both texts' {} \
+             holders in key order, each marked by the window, must be answered",
+            held.len(),
+            expected.len(),
+            done = batch.done
+        );
+    }
+    Ok(())
+}
+
+engine_check!(
+    WINDOW_KEEPS_KEY_ORDER = a_window_walk_answers_each_key_once_in_its_indexs_order,
+    "097 §The window's road: `window_keys` answers the window's index rows in the index's order, each key once, and `after` continues across batches as one walk answers, whatever the batch; `get_many` answers the keys in key order, so a read that sorts them and folds a chunk at a time, as an aggregate and a key page do, answers the same rows in key order"
+);
+
+fn a_window_walk_answers_each_key_once_in_its_indexs_order(engine: &dyn LakeEngine) -> Held {
+    const N: u64 = 300;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [{"name": "v", "type": {"kind": "number"}}]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    // `v` is a permutation of 0..300, so the index's order and the keys'
+    // order hold the same rows in different places.
+    let states: Vec<StoredRecord> = (0..N)
+        .map(|i| record("t", &format!("k{i:04}"), json!({"v": (i * 37) % N}), 1))
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(engine, 2, sort_setting(json!(["v"]), 2))?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("t");
+    let bound = "v >= 40 and v <= 80";
+    let filter = crate::expr::parse(bound).expect("the check's filter parses");
+    let window = core_engines::window(&filter, &FieldName::from("v"), &StorageKind::Number)
+        .expect("the check's filter opens a window");
+    let scan = scan_with(|s| s.filter = Some(filter));
+    let v_of = |r: &StoredRecord| {
+        r.fields[&FieldName::from("v")]
+            .as_i64()
+            .expect("the check writes a number")
+    };
+    let mut expected: Vec<(i64, String)> = (states.iter())
+        .filter(|r| (40..=80).contains(&v_of(r)))
+        .map(|r| (v_of(r), r.key.to_string()))
+        .collect();
+    expected.sort();
+    let expected: Vec<String> = expected.into_iter().map(|(_, key)| key).collect();
+    let one = head
+        .window_keys(&ty, &window, &scan, None, 1024)
+        .must("a window's keys")?
+        .expect("the engine keeps the window's index");
+    let answered: Vec<String> = (one.keys.iter()).map(ToString::to_string).collect();
+    ensure!(
+        one.done && answered.len() == 41 && answered == expected,
+        "one batch of the window answered {} keys, done {}; the window holds 41 records, in \
+         the index's order {expected:?}",
+        answered.len(),
+        one.done
+    );
+    // A key at a time, from `after`: the same walk, each key once.
+    let mut walked = Vec::new();
+    let mut after = None;
+    loop {
+        let batch = head
+            .window_keys(&ty, &window, &scan, after.as_ref(), 7)
+            .must("a window's keys a batch at a time")?
+            .expect("the engine keeps the window's index");
+        walked.extend(batch.keys);
+        if batch.done {
+            break;
+        }
+        match batch.after {
+            Some(at) => after = Some(at),
+            None => break,
+        }
+    }
+    ensure!(
+        walked == one.keys,
+        "a window walked seven keys at a time answered {} keys; one batch answered {answered:?}",
+        walked.len()
+    );
+    let unique: BTreeSet<String> = walked.iter().map(ToString::to_string).collect();
+    ensure!(
+        unique.len() == walked.len(),
+        "a window's walk answered {} keys, {} of them distinct; each key comes once",
+        walked.len(),
+        unique.len()
+    );
+    // Read by key they are the window's records, in key order; sorted and
+    // read a chunk at a time, as an aggregate and a key page read them, the
+    // same records in key order again.
+    let mut sorted = one.keys.clone();
+    sorted.sort();
+    let key_order: Vec<String> = sorted.iter().map(ToString::to_string).collect();
+    let records = head.get_many(&ty, &one.keys).must("a window's records")?;
+    ensure!(
+        keys(&records) == key_order,
+        "`get_many` answered the window's 41 records in key order {:?}; it answered {:?}",
+        key_order,
+        keys(&records)
+    );
+    let mut chunked = Vec::new();
+    for chunk in sorted.chunks(5) {
+        chunked.extend(
+            head.get_many(&ty, chunk)
+                .must("a window's records a chunk at a time")?,
+        );
+    }
+    ensure!(
+        keys(&chunked) == key_order,
+        "reading the window's keys sorted, five at a time, answered {:?}; in key order they \
+         are {key_order:?}",
+        keys(&chunked)
+    );
+    // A key page's first ten are the scan's first ten by key.
+    let first: Vec<RecordKey> = sorted.iter().take(10).cloned().collect();
+    let page = head.get_many(&ty, &first).must("a key page's records")?;
+    let whole = crate::engines::scan(
+        Some(t),
+        &states,
+        &scan_with(|s| {
+            s.filter = Some(crate::expr::parse(bound).expect("the check's filter parses"));
+            s.limit = 10;
+        }),
+    );
+    ensure!(
+        keys(&page) == keys(&whole),
+        "a key page's first ten records are {:?}; one scan ordered by key answers {:?}",
+        keys(&page),
+        keys(&whole)
+    );
+    Ok(())
+}
+
+/// What a window's road answered: the keys walked, the records their
+/// batches read and `core_engines::admitted` kept, and the index rows
+/// walked and rows read.
+type WindowRoad = (Vec<RecordKey>, Vec<StoredRecord>, u64, u64);
+
+/// A window's road over `states`: its keys walked in batches, each batch's
+/// keys read by `get_many` and every record admitted by
+/// `core_engines::admitted`, with the keys, the records and what the walk
+/// and the reads added. `None` when the engine keeps no window for the
+/// scan or the window outgrows `ceiling`.
+fn window_road(
+    head: &dyn ProjectionView,
+    ty: &TypeName,
+    decl: &TypeDecl,
+    scan: &Scan,
+    window: &core_engines::Window,
+    ceiling: u64,
+) -> Result<Option<WindowRoad>, Failure> {
+    let before = (core_engines::rows_walked(), core_engines::rows_read());
+    let mut keys = Vec::new();
+    let mut after = None;
+    loop {
+        let Some(batch) = head
+            .window_keys(ty, window, scan, after.as_ref(), core_engines::WINDOW_BATCH)
+            .must("a window's keys")?
+        else {
+            return Ok(None);
+        };
+        keys.extend(batch.keys);
+        if batch.done {
+            break;
+        }
+        match batch.after {
+            Some(at) => after = Some(at),
+            None => break,
+        }
+    }
+    if keys.len() as u64 > ceiling {
+        return Ok(None);
+    }
+    let mut records = Vec::new();
+    for chunk in keys.chunks(core_engines::WINDOW_BATCH as usize) {
+        let read = head.get_many(ty, chunk).must("a window's records")?;
+        records.extend(core_engines::admitted(Some(decl), read, scan));
+    }
+    let (walked, read) = (
+        core_engines::rows_walked() - before.0,
+        core_engines::rows_read() - before.1,
+    );
+    Ok(Some((keys, records, walked, read)))
 }
 
 /// One read of `scan` through `head`, with the index rows it walked and the

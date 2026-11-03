@@ -797,6 +797,7 @@ pub(crate) fn chosen_of(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Cho
 
 /// One step of choosing an order index for `ty` (`ProjectionStore::
 /// choose_order`), in a transaction of its own that moves no position.
+#[allow(deprecated)]
 pub(crate) fn choose_order(
     db: &mut Db,
     names: &Names,
@@ -824,13 +825,18 @@ pub(crate) fn choose_order(
     };
     let mut chosen = chosen_of(db, names, ty)?;
     // A field a host's setting names is filled by its own build, field by
-    // field; the lake's choice is not read then.
+    // field; the setting and the lake share the rows, and a step on any
+    // other field is the lake's.
     let setting_build = matches!(
         step,
         Choose::Fill { field, .. } | Choose::Keep(field)
             if chosen.setting_building.contains(field)
     );
-    if matches!(step, Choose::Start(f) if !sortable(f)) || (!named.is_empty() && !setting_build) {
+    let names_field = match step {
+        Choose::Start(f) | Choose::Keep(f) | Choose::Drop(f) => named.contains(f),
+        Choose::Fill { field, .. } | Choose::DropChunk { field, .. } => named.contains(field),
+    };
+    if matches!(step, Choose::Start(f) if !sortable(f)) || (names_field && !setting_build) {
         return Ok(None);
     }
     // Nothing is chosen on a lake a writer that keeps no chosen field
@@ -849,32 +855,44 @@ pub(crate) fn choose_order(
             after,
             limit,
         } => fill_chosen(db, names, ty, field, after.as_ref(), *limit),
+        // A drop clears a chunk of the field's rows a call; its last, which
+        // finds no more records, takes the mark away. Both write the mark,
+        // so one a writer went between is taken up by the next. `Drop` is
+        // the whole field in one step, kept for a host's build: it answers
+        // none.
+        Choose::Drop(field) => drop_chosen(db, names, ty, field, None, u32::MAX).and_then(|_| {
+            chosen.dropping.retain(|f| f != field);
+            if chosen == Chosen::default() {
+                set_sorted(db, names, ty, None)?;
+            }
+            set_chosen(db, names, ty, &chosen)?;
+            Ok(None)
+        }),
+        Choose::DropChunk {
+            field,
+            after,
+            limit,
+        } => drop_chosen(db, names, ty, field, after.as_ref(), *limit).and_then(|last| {
+            if last.is_none() {
+                chosen.dropping.retain(|f| f != field);
+                if chosen == Chosen::default() {
+                    set_sorted(db, names, ty, None)?;
+                }
+            }
+            set_chosen(db, names, ty, &chosen)?;
+            Ok(last)
+        }),
         _ => set_chosen(db, names, ty, &chosen).and_then(|()| {
-            match step {
-                Choose::Start(_) => {
-                    let marked = db.query_opt(
-                        &format!("SELECT 1 FROM {} WHERE k = $1", names.t("meta")),
-                        &[&engines::sorted_mark(ty)],
-                    )?;
-                    if marked.is_none()
-                        && let Some(at) = folded(db, names)?
-                    {
-                        set_sorted(db, names, ty, Some(at))?;
-                    }
+            if let Choose::Start(_) = step {
+                let marked = db.query_opt(
+                    &format!("SELECT 1 FROM {} WHERE k = $1", names.t("meta")),
+                    &[&engines::sorted_mark(ty)],
+                )?;
+                if marked.is_none()
+                    && let Some(at) = folded(db, names)?
+                {
+                    set_sorted(db, names, ty, Some(at))?;
                 }
-                Choose::Drop(f) => {
-                    db.execute(
-                        &format!(
-                            "DELETE FROM {} WHERE ty = $1 AND field = $2",
-                            names.t("sort_index")
-                        ),
-                        &[&ty.as_str(), &f.as_str()],
-                    )?;
-                    if chosen == Chosen::default() {
-                        set_sorted(db, names, ty, None)?;
-                    }
-                }
-                _ => {}
             }
             Ok(None)
         }),
@@ -884,8 +902,10 @@ pub(crate) fn choose_order(
 
 /// Mark the fields `ty`'s `sort_index` setting asks for as building, and
 /// ensure the type has a `sorted` mark: a read keeps the old road until
-/// each field's `Keep`. With no field asked for, the mark goes, as a
-/// setting that names none leaves none.
+/// each field's `Keep`. A field the setting no longer names is marked
+/// dropping, and a `Drop` clears its rows in parts. The setting and the
+/// lake share the rows field by field: a chosen field the setting names is
+/// the setting's now.
 pub(crate) fn mark_sorted(db: &mut Db, names: &Names, ty: &TypeName) -> Result<()> {
     let own = engines::kept_view(ty).unwrap_or_else(|| ty.clone());
     let Some(decl) = type_at(db, names, &own, None)? else {
@@ -900,16 +920,32 @@ pub(crate) fn mark_sorted(db: &mut Db, names: &Names, ty: &TypeName) -> Result<(
     let named =
         engines::sorted_fields(ty, &decl, setting.as_ref().and_then(engines::setting_value));
     let mut chosen = chosen_of(db, names, ty)?;
-    // A host's setting that names a field wins: the lake's choice goes,
-    // and the build fills the setting's fields instead.
-    if !named.is_empty() {
-        chosen.kept.clear();
-        chosen.building.clear();
+    chosen.kept.retain(|f| !named.contains(f));
+    chosen.building.retain(|f| !named.contains(f));
+    let mut dropping = std::mem::take(&mut chosen.dropping);
+    let rows = db.query(
+        &format!(
+            "SELECT DISTINCT field FROM {} WHERE ty = $1",
+            names.t("sort_index")
+        ),
+        &[&ty.as_str()],
+    )?;
+    for row in &rows {
+        let f = FieldName::from(row.get::<_, String>(0));
+        let held = chosen.kept.contains(&f) || chosen.building.contains(&f);
+        if !named.contains(&f) && !held && !dropping.contains(&f) {
+            dropping.push(f);
+        }
     }
+    dropping.retain(|f| !named.contains(f));
+    chosen.dropping = dropping;
     chosen.setting_building = named;
     set_chosen(db, names, ty, &chosen)?;
     if chosen.setting_building.is_empty() {
-        return set_sorted(db, names, ty, None);
+        if chosen.kept.is_empty() && chosen.building.is_empty() && chosen.dropping.is_empty() {
+            return set_sorted(db, names, ty, None);
+        }
+        return Ok(());
     }
     let marked = db.query_opt(
         &format!("SELECT 1 FROM {} WHERE k = $1", names.t("meta")),
@@ -1084,6 +1120,33 @@ fn fill_chosen(
             names.t("sort_index"),
         ),
         &[&ty.as_str(), &fields, &keys, &sort_keys],
+    )?;
+    Ok(page
+        .last()
+        .map(|r| r.key.clone())
+        .filter(|_| page.len() == limit as usize))
+}
+
+/// Clear the `field`'s rows of up to `limit` head records of `ty` after
+/// `after`, in key order; the key the chunk ended at, none once the type
+/// is cleared.
+fn drop_chosen(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    field: &FieldName,
+    after: Option<&RecordKey>,
+    limit: u32,
+) -> Result<Option<RecordKey>> {
+    let after = after.map_or("", RecordKey::as_str);
+    let page = head_records_after(db, names, ty, after, i64::from(limit))?;
+    let all: Vec<&str> = page.iter().map(|r| r.key.as_str()).collect();
+    db.execute(
+        &format!(
+            "DELETE FROM {} WHERE ty = $1 AND field = $2 AND key = ANY($3)",
+            names.t("sort_index")
+        ),
+        &[&ty.as_str(), &field.as_str(), &all],
     )?;
     Ok(page
         .last()
@@ -1325,18 +1388,21 @@ pub(crate) fn rebuild_sorted(
         &TypeName::from(SETTING_TYPE),
         &RecordKey::from(engines::sort_index_key(ty)),
     )?;
-    let head = head_type(db, names, ty)?;
+    let mut head = head_type(db, names, ty)?;
     let named = head
         .decl
         .as_ref()
         .map(|d| engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)));
-    let head = match named.is_some_and(|n| !n.is_empty()) {
-        true => {
-            set_chosen(db, names, ty, &Chosen::default())?;
-            head_type(db, names, ty)?
-        }
-        false => head,
-    };
+    // A host's setting names its fields: the lake's choice of those goes,
+    // and its choice of the type's other fields shares the rebuilt rows.
+    if let Some(named) = named.filter(|n| !n.is_empty()) {
+        let mut chosen = chosen_of(db, names, ty)?;
+        chosen.kept.retain(|f| !named.contains(f));
+        chosen.building.retain(|f| !named.contains(f));
+        chosen.dropping.retain(|f| !named.contains(f));
+        set_chosen(db, names, ty, &chosen)?;
+        head = head_type(db, names, ty)?;
+    }
     if head.sorted.is_empty() {
         return set_sorted(db, names, ty, None).map(|()| 0);
     }

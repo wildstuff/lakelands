@@ -14,7 +14,7 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::event::Digest;
 use lakelands_api::location::{EngineConfig, PgTls, PgTlsMode, PgTuning};
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::seam::Seams;
+use lakelands_api::seam::{SETTING_TYPE, Seams};
 use lakelands_api::write::Selection;
 use lakelands_api::{LakeStore, Location, Position, Timestamp};
 use lakelands_core::conformance::fixture::{self as fx, Lake as Doors};
@@ -1447,6 +1447,95 @@ async fn the_log_answers_where_the_index_decides_nothing() {
     }
 }
 
+/// A setting's take-back stopped between two chunks of its drop is owed in
+/// the projection's mark `dropping`, and the next writer's open finishes
+/// the drop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drop_stopped_between_chunks_is_finished_by_the_next_open() {
+    for on in engines() {
+        let mut place = Place::new(on, "drop-stopped");
+        place.location.limits.order_chunk = 1;
+        let (lake, doors) = lake_of(&place).await;
+        let decl = fx::type_decl("row", vec![fx::sourced("n", StorageKind::Text)]);
+        doors.declare(decl).await.expect("the type is declared");
+        let rows = (0..2_000)
+            .map(|i| fx::source_record("row", &format!("n{i:05}"), json!({"n": format!("{i:05}")})))
+            .collect();
+        doors.ingest("load", rows).await.expect("the rows");
+        doors
+            .set("sort_index.row", json!(["n"]))
+            .await
+            .expect("the setting is whole");
+        let view = lake.engine.view(None).expect("a view");
+        let built = view.chosen(&"row".into()).expect("the chosen");
+        assert!(
+            built.setting_building.is_empty(),
+            "{on:?}: the build is not whole, so there is no setting to take back"
+        );
+        drop(view);
+        let mut take_back =
+            tokio::spawn(async move { doors.retire(SETTING_TYPE, "sort_index.row").await });
+        // The retire's fold marks the field `dropping` before the door's
+        // drop runs its chunks: stop the lake there, as a process that died.
+        let mut marked = false;
+        for _ in 0..30_000 {
+            let view = lake.engine.view(None).expect("a view");
+            let chosen = view.chosen(&"row".into()).expect("the chosen");
+            if !chosen.dropping.is_empty() {
+                marked = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        if !marked && take_back.is_finished() {
+            let answer = (&mut take_back).await;
+            panic!("{on:?}: the take-back answered {answer:?} before any mark");
+        }
+        assert!(marked, "{on:?}: the retire marked no field dropping");
+        take_back.abort();
+        let _ = take_back.await;
+        drop(lake);
+
+        let lake = place.open_when_free(OpenMode::Write).await;
+        let view = lake.engine.view(None).expect("a view");
+        let left = view.chosen(&"row".into()).expect("the chosen");
+        assert!(
+            !left.dropping.is_empty(),
+            "{on:?}: the drop was whole before the open, so nothing was owed"
+        );
+        drop(view);
+        let at = Instant::now();
+        let mut cleared = false;
+        while at.elapsed() < Duration::from_secs(60) {
+            let view = lake.engine.view(None).expect("a view");
+            let chosen = view.chosen(&"row".into()).expect("the chosen");
+            if chosen.dropping.is_empty() {
+                cleared = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            cleared,
+            "{on:?}: the open never finished the drop; `n` is still dropping"
+        );
+        // A writer whose drop is whole owes none: a second open finds no
+        // mark and starts nothing.
+        drop(lake);
+        let lake = place.open(OpenMode::Write).await;
+        let view = lake.engine.view(None).expect("a view");
+        let chosen = view.chosen(&"row".into()).expect("the chosen");
+        assert!(
+            chosen.dropping.is_empty(),
+            "{on:?}: a reopened lake owes a drop it already finished"
+        );
+        assert!(
+            chosen.setting_building.is_empty(),
+            "{on:?}: a take-back left a build owed"
+        );
+    }
+}
+
 /// A setting's build stopped between any two of its turns is owed in the
 /// projection's mark, and the next writer's open finishes it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1508,7 +1597,9 @@ async fn a_setting_build_stopped_between_turns_is_finished_by_the_next_open() {
         );
         // A writer whose build is whole owes none: a second open, taken
         // once the road's last turn has let the lake go, finds no mark and
-        // starts nothing.
+        // starts nothing. The handle that held the lease lets it go a
+        // moment after the drop, and PostgreSQL takes longer to say so, so
+        // the open waits as the first one after the stop did.
         drop(lake);
         let lake = place.open_when_free(OpenMode::Write).await;
         let view = lake.engine.view(None).expect("a view");

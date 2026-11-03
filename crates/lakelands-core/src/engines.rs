@@ -36,8 +36,10 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 
+pub use lakelands_api::engine::Window;
 use lakelands_api::engine::{
     After, CanonicalEvent, Choose, Chosen, KeyRange, Rankings, Scan, TextCounts, TextStats,
+    WindowSides,
 };
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
@@ -898,11 +900,12 @@ pub fn chosen_mark(ty: &TypeName) -> String {
 pub const CHOSEN_THROUGH: &str = "chosen_through";
 
 /// The fields a type's order index keeps for the fold: those its setting
-/// names, else those the lake chose, `building` ones too for the fold and
-/// not for a read. A host's setting wins: where it names any field the
-/// lake's choice is not read, and an engine drops it at the setting's
-/// rebuild. A chosen field the declaration no longer holds with a kind the
-/// index keeps is left out, and a view keeps none of its own.
+/// names and those the lake chose, `building` ones too for the fold and
+/// not for a read. The setting and the lake share the rows field by
+/// field: a field the host has set is the host's setting, and a chosen
+/// one goes when the setting comes. A chosen field the declaration no
+/// longer holds with a kind the index keeps is left out, and a view keeps
+/// none of its own.
 pub fn order_fields(
     ty: &TypeName,
     decl: &TypeDecl,
@@ -910,38 +913,55 @@ pub fn order_fields(
     chosen: &Chosen,
     building: bool,
 ) -> Vec<FieldName> {
+    let held = |f: &&FieldName| {
+        (decl.fields.iter()).any(|d| d.name == **f && lakelands_api::seam::sortable(&d.ty.kind))
+    };
+    let chosen_building = chosen.building.iter().filter(|_| building);
+    let chosen_rows: Vec<FieldName> = chosen
+        .kept
+        .iter()
+        .chain(chosen_building)
+        .filter(held)
+        .cloned()
+        .collect();
     let named = sorted_fields(ty, decl, setting);
     if !named.is_empty() || decl.view.is_some() || kept_view(ty).is_some() {
         // A field a setting is having built is no read's until its `Keep`;
-        // the fold keeps its rows from the setting's event on.
-        return match building {
+        // the fold keeps its rows from the setting's event on. A chosen
+        // field the setting does not name keeps its rows beside them.
+        let mut fields: Vec<FieldName> = match building {
             true => named,
             false => named
                 .into_iter()
                 .filter(|f| !chosen.setting_building.contains(f))
                 .collect(),
         };
+        for f in chosen_rows {
+            if !fields.contains(&f) && !chosen.setting_building.contains(&f) {
+                fields.push(f);
+            }
+        }
+        return fields;
     }
-    let held = |f: &&FieldName| {
-        (decl.fields.iter()).any(|d| d.name == **f && lakelands_api::seam::sortable(&d.ty.kind))
-    };
-    let building = chosen.building.iter().filter(|_| building);
-    chosen
-        .kept
-        .iter()
-        .chain(building)
-        .filter(held)
-        .cloned()
-        .collect()
+    chosen_rows
 }
 
 /// A step of choosing as the chosen fields of a type take it: the fields
 /// after it, and whether it asks the engine to fill, or to delete the rows
-/// of, a field. A step that does nothing leaves them as they are.
+/// of, a field. A step that does nothing leaves them as they are. A
+/// `DropChunk` moves the field to `dropping` at its first chunk and leaves
+/// it there until the last, whose `None` answer removes it; a `Drop`
+/// clears the whole field in its one step, so the engine takes the mark
+/// away with it.
+#[allow(deprecated)]
 pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
     let (kept, building) = (&mut chosen.kept, &mut chosen.building);
     let setting = &mut chosen.setting_building;
+    let dropping = &mut chosen.dropping;
     match step {
+        // A field a drop holds is the drop's until its last chunk: no
+        // `Start` of it builds rows the drop is clearing.
+        Choose::Start(f) if dropping.contains(f) => false,
         Choose::Start(f) if !kept.contains(f) && !building.contains(f) => {
             building.push(f.clone());
             true
@@ -957,12 +977,18 @@ pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
             kept.push(f.clone());
             true
         }
-        Choose::Drop(f) if kept.contains(f) || building.contains(f) || setting.contains(f) => {
+        Choose::Drop(f) | Choose::DropChunk { field: f, .. }
+            if kept.contains(f) || building.contains(f) || setting.contains(f) =>
+        {
             kept.retain(|k| k != f);
             building.retain(|b| b != f);
             setting.retain(|b| b != f);
+            dropping.push(f.clone());
             true
         }
+        // A field the drop already holds takes the next chunk; the last
+        // chunk's engine removes the mark.
+        Choose::Drop(f) | Choose::DropChunk { field: f, .. } => dropping.contains(f),
         Choose::Fill { field, .. } => building.contains(field) || setting.contains(field),
         _ => false,
     }
@@ -1084,6 +1110,7 @@ pub fn window(filter: &Expr, field: &FieldName, kind: &StorageKind) -> Option<Wi
         return None;
     }
     let window = Window {
+        field: field.clone(),
         lo: lo.unwrap_or_else(|| vec![rank]),
         hi: hi.unwrap_or_else(|| rank_edge(rank)),
     };
@@ -1096,19 +1123,89 @@ pub fn window(filter: &Expr, field: &FieldName, kind: &StorageKind) -> Option<Wi
     Some(window)
 }
 
-/// An inclusive interval of [`order_key`]s: what [`window`] answers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Window {
-    /// The least key a row inside the window holds.
-    pub lo: Vec<u8>,
-    /// The greatest key a row inside the window holds.
-    pub hi: Vec<u8>,
+/// The windows `filter` opens on the fields `decl` declares, one per
+/// field a term bounds, in the declaration's order. A read takes the
+/// first its engine keeps an order index for
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The smaller side).
+pub fn bound_windows(decl: &TypeDecl, filter: Option<&Expr>) -> Vec<Window> {
+    let Some(filter) = filter else {
+        return Vec::new();
+    };
+    decl.fields
+        .iter()
+        .filter_map(|f| window(filter, &f.name, &f.ty.kind))
+        .collect()
 }
 
-impl Window {
-    /// Whether `key`, an [`order_key`], lies inside the window.
-    pub fn holds(&self, key: &[u8]) -> bool {
-        key >= self.lo.as_slice() && key <= self.hi.as_slice()
+/// The records among `records` that `scan` admits: how a read by key
+/// (`get_many`, which applies nothing) is held to the scan's flags,
+/// `valid_at`, exact pairs and filter. Adds each record read to
+/// `rows_read`, in the order given
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §Who counts and who admits).
+pub fn admitted(
+    decl: Option<&TypeDecl>,
+    records: Vec<StoredRecord>,
+    scan: &Scan,
+) -> Vec<StoredRecord> {
+    count_read(records.len());
+    records
+        .into_iter()
+        .filter(|r| admits(decl, r, scan))
+        .collect()
+}
+
+/// The window's road costs about a quarter of today's, so a window of
+/// four times fewer rows or less takes it
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The smaller side).
+pub const WINDOW_RATIO: u64 = 4;
+
+/// The rows the choice counts a window to in its first round; four times
+/// as many each round.
+pub const WINDOW_ROUND: u64 = 4096;
+
+/// The index rows a walk of a window's keys answers at most in one batch:
+/// a short batch is the whole window.
+pub const WINDOW_BATCH: u32 = 1024;
+
+/// Whether a read over a window takes the window's road, asked in rounds:
+/// `count(l)` answers the window counted to `l` and the other side to
+/// four times what the window counted, `ceiling` the most rows `l` may
+/// reach. The window's road is taken when it is whole and four times its
+/// rows fit inside the other side; the other side when it is short or the
+/// window outgrows `ceiling`. `None` when no round answered: the engine
+/// keeps no window
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The smaller side).
+pub fn takes_window<E>(
+    ceiling: u64,
+    mut count: impl FnMut(u64) -> Result<Option<WindowSides>, E>,
+) -> Result<Option<bool>, E> {
+    let ceiling = ceiling.max(1);
+    let mut l = WINDOW_ROUND.min(ceiling);
+    loop {
+        let Some(sides) = count(l)? else {
+            return Ok(None);
+        };
+        if sides.whole {
+            // The whole window is counted: four times it fits inside the
+            // other side, or does not, and either answer stands.
+            return Ok(Some(
+                sides.inside.saturating_mul(WINDOW_RATIO) <= sides.other,
+            ));
+        }
+        // The window outgrew the round, and the other side did not reach
+        // four times what was counted: it is the smaller side.
+        if sides.other < sides.inside.saturating_mul(WINDOW_RATIO) {
+            return Ok(Some(false));
+        }
+        // Both were cut: count further, or give up at the ceiling.
+        if l >= ceiling {
+            return Ok(Some(false));
+        }
+        l = l.saturating_mul(WINDOW_RATIO).min(ceiling);
     }
 }
 

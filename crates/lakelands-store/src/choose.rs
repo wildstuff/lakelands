@@ -94,7 +94,8 @@ impl Lake {
 
     /// Whether the lake may choose the order index of `field` of `ty`: a
     /// stored, sortable field of a type that is large enough, holds fewer
-    /// chosen fields than the bound, and whose order the host sets none of.
+    /// chosen fields than the bound, and that the host's setting does not
+    /// name, though its setting may name the type's other fields.
     fn eligible(&self, ty: &TypeName, field: &FieldName) -> Result<bool> {
         let l = self.limits;
         let view = self.engine.view(None)?;
@@ -106,15 +107,21 @@ impl Lake {
             f.name == *field && sortable(&f.ty.kind) && f.computed_at != Some(ComputedAt::Read)
         };
         let setting = shape.settings.get(&engines::sort_index_key(ty));
-        if !engines::sorted_fields(ty, decl, setting).is_empty()
+        // A field the host's setting names is the host's: the setting and
+        // the lake share the rows field by field, so the lake may still
+        // choose the type's other fields.
+        if engines::sorted_fields(ty, decl, setting).contains(field)
             || decl.fields.iter().find(stored).is_none()
         {
             return Ok(false);
         }
         let chosen = view.chosen(ty)?;
         let held = chosen.kept.len() + chosen.building.len();
+        // A field a drop holds is the drop's until its rows are gone: a
+        // build started beside it would fill what the drop clears.
         if chosen.kept.contains(field)
             || chosen.building.contains(field)
+            || chosen.dropping.contains(field)
             || held >= l.order_max_fields as usize
         {
             return Ok(false);
@@ -169,7 +176,7 @@ async fn choose_all(lake: &Arc<Lake>) -> Result<()> {
         let Some((ty, field)) = next else { break };
         if let Err(e) = choose_one(lake, &ty, &field).await {
             // A field left half built is dropped, not read.
-            let _ = step(lake, &ty, Choose::Drop(field)).await;
+            let _ = drop_field(lake, &ty, &field).await;
             return Err(e);
         }
     }
@@ -200,6 +207,24 @@ async fn choose_one(lake: &Arc<Lake>, ty: &TypeName, field: &FieldName) -> Resul
         .used
         .insert((ty.clone(), field.clone()), Instant::now());
     Ok(())
+}
+
+/// Clear the field's rows a chunk a turn, so a field taken back leaves no
+/// chunk longer than an ordinary write; the mark `dropping` holds it until
+/// the last.
+async fn drop_field(lake: &Arc<Lake>, ty: &TypeName, field: &FieldName) -> Result<()> {
+    let mut after = None;
+    loop {
+        let drop = Choose::DropChunk {
+            field: field.clone(),
+            after,
+            limit: lake.limits.order_chunk.max(1),
+        };
+        match step(lake, ty, drop).await? {
+            Some(last) => after = Some(last),
+            None => return Ok(()),
+        }
+    }
 }
 
 /// One step, a write of its own in the lake's queue: a write sent during
@@ -255,7 +280,7 @@ async fn sweep(lake: &Arc<Lake>) -> Result<()> {
         }
     }
     for (ty, field) in drops {
-        step(lake, &ty, Choose::Drop(field.clone())).await?;
+        drop_field(lake, &ty, &field).await?;
         lock(&lake.choosing).used.remove(&(ty, field));
     }
     Ok(())

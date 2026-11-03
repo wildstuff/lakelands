@@ -404,6 +404,13 @@ pub struct TypeLifecycle {
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chosen: Vec<FieldName>,
+    /// The fields an index build is filling in parts, which no read looks
+    /// at until its `Keep`: a `sort_index.<type>` or `lookup_index.<type>`
+    /// setting's, or the lake's own. Told like `chosen`, to a holder of
+    /// `schema` who reads the field, and only at the head
+    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub building: Vec<FieldName>,
     /// The fields a `find` ordered first by and the lake answered by
     /// sorting the type, since it was opened in the process that answers:
     /// the pages and the time they cost. Each is one `sort_index.<type>`
