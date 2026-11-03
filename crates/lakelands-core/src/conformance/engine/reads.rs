@@ -14,7 +14,8 @@
 use std::collections::BTreeMap;
 
 use lakelands_api::engine::{
-    After, Declared, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan, TextCounts,
+    After, Declared, KeyRange, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan,
+    TextCounts,
 };
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
@@ -3294,6 +3295,110 @@ fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn Lak
     }
     Ok(())
 }
+
+fn a_scan_of_a_kept_name_hands_the_states_inside_its_range(engine: &dyn LakeEngine) -> Held {
+    // 2 600 keys under a kept name, one state each, read in the key order
+    // every engine keeps: a scan inside an interval hands exactly the keys
+    // in it, page after page, and walks what it hands
+    // (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`).
+    const KEYS: u64 = 2_600;
+    let ty = lakelands_api::seam::kept_name(&TypeName::from("v"));
+    let key = |i: u64| format!("k{i:04}");
+    fold(engine, 1, |p| {
+        (0..KEYS).try_for_each(|i| {
+            let r = record(ty.as_str(), &key(i), json!({"n": i}), 1);
+            p.put_record(&r)
+        })
+    })?;
+    let all: Vec<String> = (0..KEYS).map(key).collect();
+    let inside = |from: Option<&str>, until: Option<&str>| -> Vec<String> {
+        all.iter()
+            .filter(|k| {
+                from.is_none_or(|f| k.as_str() >= f) && until.is_none_or(|u| k.as_str() < u)
+            })
+            .cloned()
+            .collect()
+    };
+    let range = |from: Option<&str>, until: Option<&str>| {
+        scan_with(|s| {
+            s.range = Some(KeyRange {
+                from: from.map(RecordKey::from),
+                until: until.map(RecordKey::from),
+            })
+        })
+    };
+    let v = view(engine, None)?;
+    let bounds = [
+        (Some("k0100"), Some("k0200")),
+        (Some("k2500"), None),
+        (None, Some("k0100")),
+        (None, None),
+        // Crossed, and equal: the interval holds nothing.
+        (Some("k0300"), Some("k0200")),
+        (Some("k0100"), Some("k0100")),
+    ];
+    for (from, until) in bounds {
+        let scan = range(from, until);
+        let (rows, walked, _) = walks_of(v.as_ref(), &ty, &scan, true, "scanning a range")?;
+        let got = keys(&rows);
+        ensure!(
+            got == inside(from, until),
+            "a scan of [{from:?}, {until:?}) handed {} states, {} in the interval, first {:?}",
+            got.len(),
+            inside(from, until).len(),
+            got.first()
+        );
+        ensure!(
+            walked == got.len() as u64,
+            "a scan of [{from:?}, {until:?}) walked {walked} keys and handed {}, of the {} the \
+             name holds",
+            got.len(),
+            KEYS
+        );
+        let counted = v.count(&ty, &scan).must("counting a range")?;
+        ensure!(
+            counted == got.len() as u64,
+            "a count of [{from:?}, {until:?}) answered {counted}; its scan handed {}",
+            got.len()
+        );
+    }
+    // Pages of seven: the cursor continues by key inside the interval, and
+    // no page hands a key outside it.
+    let (from, until) = bounds[0];
+    let mut after: Option<After> = None;
+    let mut paged = Vec::new();
+    for _ in 0..100 {
+        let mut scan = range(from, until);
+        (scan.limit, scan.after) = (7, after.clone());
+        let (rows, walked, _) =
+            walks_of(v.as_ref(), &ty, &scan, true, "scanning a page of a range")?;
+        ensure!(
+            walked == rows.len() as u64,
+            "a page of seven in [{from:?}, {until:?}) walked {walked} keys and handed {}",
+            rows.len()
+        );
+        after = rows.last().map(|r| After {
+            values: vec![],
+            key: r.key.clone(),
+        });
+        paged.extend(keys(&rows));
+        if after.is_none() {
+            break;
+        }
+    }
+    ensure!(
+        paged == inside(from, until),
+        "pages of seven in [{from:?}, {until:?}) handed {} states, {} in the interval",
+        paged.len(),
+        inside(from, until).len()
+    );
+    Ok(())
+}
+
+engine_check!(
+    KEPT_RANGE = a_scan_of_a_kept_name_hands_the_states_inside_its_range,
+    "seams §ProjectionView, 103: a scan of a kept name under a range hands exactly the states inside it, in key order, across pages and batches, with either end open and both, with a cursor continuing by key; a from past the until answers none, and `rows_walked` is what it hands"
+);
 
 fn a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view(
     engine: &dyn LakeEngine,

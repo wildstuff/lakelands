@@ -27,7 +27,7 @@ use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{kept_name, order_name};
 use lakelands_core::conformance::fixture::stored_record;
-use lakelands_engine_pg::{PgOpener, read_statements};
+use lakelands_engine_pg::{PgOpener, range_statements, read_statements};
 use postgres::types::ToSql;
 use serde_json::json;
 
@@ -352,6 +352,82 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
          and in the middle of the states of a key with {STATES} of them, fetched {each:?} \
          tuples of `records` and of `outputs`; the heads were read {through_head} times"
     );
+}
+
+/// A read of a kept name inside a key interval seeks the head table's
+/// primary key at the kept name
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`):
+/// the interval's ends bound the key the walk starts from, and no plan
+/// reads a table whole or sorts for it.
+#[test]
+fn a_kept_name_read_inside_an_interval_seeks_the_heads_primary_key() {
+    let Some(url) = common::url_or_skip("the pg test of a kept name in an interval") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let kept = kept_name(&TypeName::from("v"));
+    let engine = PgOpener
+        .open(
+            &common::location(&url, "kept-range", &schema),
+            OpenMode::Create,
+        )
+        .unwrap();
+    drop(engine);
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    // As the engine's sessions plan: each run for its values.
+    client
+        .batch_execute("SET plan_cache_mode = force_custom_plan")
+        .unwrap();
+    let (at, limit) = (10_i64, 10_i64);
+    let [from, until] = ["k2", "k4"].map(RecordKey::from);
+    let has = |plan: &[String], step: &str| plan.iter().any(|line| line.contains(step));
+    for head in [true, false] {
+        let [page, count] = range_statements(&schema, head);
+        let mut plan = |statement: &str, args: &[&(dyn ToSql + Sync)]| -> Vec<String> {
+            let rows = client
+                .query(&format!("EXPLAIN (COSTS OFF) {statement}"), args)
+                .unwrap();
+            rows.iter().map(|row| row.get(0)).collect()
+        };
+        for (what, statement, args) in [
+            (
+                "page",
+                page.as_str(),
+                vec![
+                    &kept.as_str() as &(dyn ToSql + Sync),
+                    &at,
+                    &limit,
+                    &from.as_str(),
+                    &until.as_str(),
+                ],
+            ),
+            (
+                "count",
+                count.as_str(),
+                vec![
+                    &kept.as_str() as &(dyn ToSql + Sync),
+                    &at,
+                    &true,
+                    &true,
+                    &from.as_str(),
+                    &until.as_str(),
+                ],
+            ),
+        ] {
+            let plan = plan(statement, &args);
+            assert!(
+                has(&plan, "records_head_pkey on records_head h")
+                    && plan
+                        .iter()
+                        .any(|line| line.contains("key >= ") && line.contains("key < "))
+                    && !has(&plan, "Seq Scan")
+                    && !has(&plan, "Sort"),
+                "a kept name's read inside an interval does not seek the head table's primary \
+                 key inside it, the {what} at the head ({head}):\n  {statement}\n  {plan:#?}"
+            );
+        }
+    }
+    common::drop_schema(&url, &schema);
 }
 
 #[test]

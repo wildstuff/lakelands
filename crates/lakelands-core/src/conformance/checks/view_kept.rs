@@ -1507,3 +1507,470 @@ async fn a_group_term_that_is_no_bucket_of_a_source_field_is_refused(store: Stor
     }
     Ok(())
 }
+
+check!(
+    KEPT_FILTER_NARROWS = a_filter_on_a_kept_view_reads_the_groups_of_its_interval,
+    "103: a kept view grouped `[g, b]`, `g` a text and `b` an hour of time, read filtered `g = x` answers as the computation, and its count and aggregate, a bucket's `max`, `first` and `last` among the measures, with it, walking the groups of `x` and not a value extending it; read with a bound on `b` above, below and both, the terms in the filter's other order, a window covering every bucket, and a bound that crosses another, it answers as the computation, walking the groups its interval holds; a view grouped `[b, g]` read `b = lo and g = x` walks the groups of `x` and of a value extending it, which a final exact cannot exclude; a view grouped by a date field whose term is a day bucket, its key holding the bucket's start instant, answers the bucket the computation answers on an exact day and walks the day's prefix for an exact and for a bound"
+);
+
+check!(
+    KEPT_FILTER_WHOLE = a_filter_the_group_key_cannot_carry_reads_the_whole_view,
+    "103: a filter the group key cannot carry answers as the computation and walks the whole view: `or`, `not`, `!=`, `in`, a term under a function, a text range, a text literal that reads as a number or as an instant, a term on the second group field alone, a number group field and a boolean bound"
+);
+
+check!(
+    KEPT_FILTER_POSITIONS =
+        a_narrowed_read_answers_as_the_computation_at_an_earlier_position_and_after_a_write,
+    "103: a filtered read of a kept view at an earlier position answers as the computation there, the kept records narrowing nothing; after a write takes a group's least and first, its greatest and its last out of the group and puts each back, the narrowed read and its aggregate answer as the computation, walking the group"
+);
+
+/// An hour of 2026-01-01 as a filter's literal names it.
+fn clock(h: u8) -> String {
+    format!("2026-01-01T{h:02}:00:00Z")
+}
+
+/// A find of every record `condition` holds for.
+fn filtered(condition: &str) -> Find {
+    Find {
+        filter: Some(Condition::Text(condition.to_owned())),
+        ..Find::default()
+    }
+}
+
+/// The lake the filter checks read: a tick's group, instant, number and
+/// boolean; a view kept by `[g, hour]` and its twin computed, one by
+/// `[hour, g]`, one by the number, one by the boolean, one by `g` alone
+/// holding a least and the bucket's extremes, and one, over a stamp's
+/// instant, by a date field whose term is a day bucket.
+async fn ticks(store: Store) -> Result<Lake, Failure> {
+    let l = Lake::of(store.as_ref());
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    let fields = [
+        field("g", "text"),
+        field("at", "date_time"),
+        field("n", "decimal"),
+        field("ok", "boolean"),
+    ];
+    l.declare_json(json!({"declare": "type", "name": "tick", "fields": fields}))
+        .await?;
+    let hour = json!({"name": "hour", "expr": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')"});
+    let (c, total) = (
+        json!({"name": "c", "expr": "count()"}),
+        json!({"name": "total", "expr": "sum(n)"}),
+    );
+    let least = json!({"name": "low", "expr": "min(n)"});
+    let (high, opened, closed) = (
+        json!({"name": "high", "expr": "max(n)"}),
+        json!({"name": "opened", "expr": "first(n, at)"}),
+        json!({"name": "closed", "expr": "last(n, at)"}),
+    );
+    let bucketed = |groups: serde_json::Value, group_fields: Vec<serde_json::Value>| {
+        (
+            groups,
+            group_fields,
+            json!([
+                c.clone(),
+                total.clone(),
+                high.clone(),
+                opened.clone(),
+                closed.clone()
+            ]),
+            vec![
+                field("c", "number"),
+                field("total", "decimal"),
+                field("high", "decimal"),
+                field("opened", "decimal"),
+                field("closed", "decimal"),
+            ],
+        )
+    };
+    let (roll, flip) = (
+        bucketed(
+            json!(["g", hour]),
+            vec![field("g", "text"), field("hour", "date_time")],
+        ),
+        bucketed(
+            json!([hour, "g"]),
+            vec![field("hour", "date_time"), field("g", "text")],
+        ),
+    );
+    let measures = vec![
+        roll,
+        flip,
+        (
+            json!(["n"]),
+            vec![field("n", "decimal")],
+            json!([c.clone()]),
+            vec![field("c", "number")],
+        ),
+        (
+            json!(["ok"]),
+            vec![field("ok", "boolean")],
+            json!([c.clone()]),
+            vec![field("c", "number")],
+        ),
+        (
+            json!(["g"]),
+            vec![field("g", "text")],
+            json!([least, c, high, opened, closed]),
+            vec![
+                field("low", "decimal"),
+                field("high", "decimal"),
+                field("opened", "decimal"),
+                field("closed", "decimal"),
+                field("c", "number"),
+            ],
+        ),
+    ];
+    for (name, (groups, group_fields, measures, measure_fields)) in
+        ["roll", "flip", "by_n", "by_ok", "least"]
+            .into_iter()
+            .zip(measures)
+    {
+        let mut fields = group_fields;
+        fields.extend(measure_fields);
+        for end in ["", "_twin"] {
+            let view = json!({"source": "tick", "group_by": groups,
+                "measures": measures});
+            l.declare_json(json!({"declare": "type", "name": format!("{name}{end}"),
+                "fields": fields, "view": view}))
+                .await?;
+        }
+        l.set(&format!("view_kept.{name}"), json!(true)).await?;
+    }
+    let ticks = [
+        (
+            "t1",
+            json!({"g": "m-7", "at": "2026-01-01T00:10:00Z", "n": "1", "ok": true}),
+        ),
+        (
+            "t2",
+            json!({"g": "m-7", "at": "2026-01-01T00:40:00Z", "n": "2", "ok": false}),
+        ),
+        (
+            "t3",
+            json!({"g": "m-7", "at": "2026-01-01T01:10:00Z", "n": "3", "ok": true}),
+        ),
+        (
+            "t4",
+            json!({"g": "m-7", "at": "2026-01-01T02:20:00Z", "n": "4", "ok": true}),
+        ),
+        (
+            "t5",
+            json!({"g": "m-70", "at": "2026-01-01T00:15:00Z", "n": "5", "ok": true}),
+        ),
+        (
+            "t6",
+            json!({"g": "m-8", "at": "2026-01-01T00:05:00Z", "n": "6", "ok": true}),
+        ),
+        (
+            "t7",
+            json!({"g": "123", "at": "2026-01-01T00:30:00Z", "n": "7", "ok": false}),
+        ),
+        (
+            "t8",
+            json!({"g": "2026-01-01T00:00:00Z", "at": "2026-01-01T00:45:00Z", "n": "8", "ok": false}),
+        ),
+    ];
+    for (key, fields) in ticks {
+        l.upsert("tick", key, fields).await?;
+    }
+    // A view whose group field is declared a date and whose term is a
+    // bucket of one: a term's value is never landed, so the key holds the
+    // bucket's start instant, where a day's key holds its text.
+    l.declare_json(json!({"declare": "type", "name": "stamp",
+        "fields": [field("on", "date_time")]}))
+        .await?;
+    for end in ["", "_twin"] {
+        let view = json!({"source": "stamp",
+            "group_by": [{"name": "day", "expr": "date_bucket(on, 'day')"}],
+            "measures": [{"name": "c", "expr": "count()"}]});
+        l.declare_json(json!({"declare": "type", "name": format!("stamped{end}"),
+            "fields": [field("day", "date"), field("c", "number")],
+            "view": view}))
+            .await?;
+    }
+    l.set("view_kept.stamped", json!(true)).await?;
+    for (key, on) in [
+        ("s1", "2026-01-05T00:10:00Z"),
+        ("s2", "2026-01-05T23:50:00Z"),
+        ("s3", "2026-01-06T00:10:00Z"),
+        ("s4", "2026-01-07T12:00:00Z"),
+    ] {
+        l.upsert("stamp", key, json!({"on": on})).await?;
+    }
+    for view in ["roll", "flip", "by_n", "by_ok", "least", "stamped"] {
+        says(&l, view, "kept").await?;
+    }
+    Ok(l)
+}
+
+/// What `view` answers to `find`, and the rows the read walked.
+async fn walked_read(l: &Lake, view: &str, find: Find) -> (String, u64) {
+    let before = crate::engines::rows_walked_in_process();
+    let reply = l.cat.find(&l.own, &TypeName::from(view), find).await;
+    let walked = crate::engines::rows_walked_in_process() - before;
+    (told(reply), walked)
+}
+
+/// Fails unless a read of `view` `what` describes answers as its twin
+/// computed, and walks `walked` rows.
+async fn narrowed_as(l: &Lake, view: &str, what: &str, find: Find, walked: u64) -> Held {
+    let twin = format!("{view}_twin");
+    let (kept, seen) = walked_read(l, view, find.clone()).await;
+    let computed = told(l.cat.find(&l.own, &TypeName::from(twin), find).await);
+    let computed = computed.replace("_twin", "");
+    ensure!(
+        kept == computed,
+        "`{view}` read {what} answers {kept}, and the computation {computed}"
+    );
+    ensure!(
+        seen == walked,
+        "`{view}` read {what} walked {seen} rows, not {walked}"
+    );
+    Ok(())
+}
+
+async fn a_filter_on_a_kept_view_reads_the_groups_of_its_interval(store: Store) -> Held {
+    let l = ticks(store).await?;
+    let (zero, one, two, three) = (clock(0), clock(1), clock(2), clock(3));
+    let reading = "g = 'm-7'";
+    let cases = [
+        ("g = 'm-7'".to_owned(), 3),
+        (format!("g = 'm-7' and hour >= '{one}'"), 2),
+        (format!("g = 'm-7' and hour < '{two}'"), 3),
+        (
+            format!("g = 'm-7' and hour >= '{one}' and hour < '{two}'"),
+            2,
+        ),
+        (
+            format!("g = 'm-7' and hour < '{two}' and hour >= '{one}'"),
+            2,
+        ),
+        (
+            format!("g = 'm-7' and hour >= '{zero}' and hour < '{three}'"),
+            3,
+        ),
+        ("g = 'nope'".to_owned(), 0),
+        (
+            format!("g = 'm-7' and hour >= '{two}' and hour < '{one}'"),
+            0,
+        ),
+    ];
+    for (condition, walked) in cases {
+        let what = format!("`{condition}`");
+        narrowed_as(&l, "roll", &what, filtered(&condition), walked).await?;
+    }
+    narrowed_as(
+        &l,
+        "flip",
+        &format!("`hour = '{zero}' and g = 'm-7'`"),
+        filtered(&format!("hour = '{zero}' and g = 'm-7'")),
+        2,
+    )
+    .await?;
+    let count = aggregate(vec![agg("c", AggFunc::Count, None)]);
+    let total = aggregate(vec![
+        agg("c", AggFunc::Count, None),
+        agg("total", AggFunc::Sum, Some("total")),
+    ]);
+    // The bucket's max, first and last, folded under the filter: the
+    // kept view carries them by bucket, and the aggregate reads the
+    // groups the interval holds.
+    let (mut opened, mut closed) = (
+        agg("opened", AggFunc::First, Some("opened")),
+        agg("closed", AggFunc::Last, Some("closed")),
+    );
+    opened.by = Some("hour".into());
+    closed.by = Some("hour".into());
+    let extremes = aggregate(vec![
+        agg("high", AggFunc::Max, Some("high")),
+        opened,
+        closed,
+    ]);
+    for door in [count, total, extremes] {
+        let find = Find {
+            filter: Some(Condition::Text(reading.to_owned())),
+            ..door
+        };
+        narrowed_as(&l, "roll", &format!("`{reading}`, an aggregate"), find, 3).await?;
+    }
+    // The count door: the page walks its three groups and the total
+    // walks them again, rather than the whole view.
+    let counting = Find {
+        total: true,
+        filter: Some(Condition::Text(reading.to_owned())),
+        ..Find::default()
+    };
+    narrowed_as(&l, "roll", &format!("`{reading}`, a total"), counting, 6).await?;
+    // A date field whose term is a bucket: the key holds the bucket's
+    // start instant, where a day's key holds its text. The exact answers
+    // the group the computation answers, and the day's prefix, not the
+    // day's text alone, is the upper end.
+    for (condition, walked) in [
+        ("day = '2026-01-05'", 1),
+        ("day >= '2026-01-05' and day < '2026-01-07'", 3),
+        ("day <= '2026-01-06'", 2),
+        ("day > '2026-01-06'", 2),
+        ("day = '2026-01-04'", 0),
+    ] {
+        let what = format!("`{condition}`");
+        narrowed_as(&l, "stamped", &what, filtered(condition), walked).await?;
+    }
+    Ok(())
+}
+
+async fn a_filter_the_group_key_cannot_carry_reads_the_whole_view(store: Store) -> Held {
+    let l = ticks(store).await?;
+    for condition in [
+        "g = 'm-7' or g = 'm-8'",
+        "not (g = 'm-7')",
+        "g != 'm-7'",
+        "g in ('m-7', 'm-8')",
+        "lower(g) = 'm-7'",
+        "g >= 'm-7'",
+        "g = '123'",
+        "g = '2026-01-01T00:00:00Z'",
+        "hour = '2026-01-01T00:00:00Z'",
+    ] {
+        let what = format!("`{condition}`");
+        narrowed_as(&l, "roll", &what, filtered(condition), 7).await?;
+    }
+    // A bound on the bucket the filter asks first, in instants the one
+    // written form's years cannot hold: their components would sort on
+    // the wrong side of every key, so the interval stays open and the
+    // rulebook decides the whole view.
+    for condition in [
+        "hour <= '9999-12-31T23:59:59-14:00'",
+        "hour >= '0000-01-01T00:00:00+14:00'",
+    ] {
+        let what = format!("`{condition}`");
+        narrowed_as(&l, "flip", &what, filtered(condition), 7).await?;
+    }
+    narrowed_as(&l, "by_n", "`n = 1`", filtered("n = 1"), 8).await?;
+    narrowed_as(&l, "by_ok", "`ok >= false`", filtered("ok >= false"), 2).await?;
+    Ok(())
+}
+
+async fn a_narrowed_read_answers_as_the_computation_at_an_earlier_position_and_after_a_write(
+    store: Store,
+) -> Held {
+    let head = store.clone();
+    let l = ticks(store).await?;
+    let at = ReadAt {
+        as_of: Some(head.head().await.must("the head")?),
+        ..ReadAt::default()
+    };
+    l.upsert(
+        "tick",
+        "t9",
+        json!({"g": "m-7", "at": "2026-01-01T01:30:00Z", "n": "9"}),
+    )
+    .await?;
+    let find = Find {
+        at,
+        ..filtered("g = 'm-7'")
+    };
+    let kept = told(
+        l.cat
+            .find(&l.own, &TypeName::from("roll"), find.clone())
+            .await,
+    );
+    let twin = told(l.cat.find(&l.own, &TypeName::from("roll_twin"), find).await);
+    let twin = twin.replace("_twin", "");
+    ensure!(
+        kept == twin,
+        "`roll` read `g = 'm-7'` at an earlier position answers {kept}, and the computation {twin}"
+    );
+    // A group's least and first, its greatest and its last each leave
+    // the group and come back.
+    let narrow = filtered("g = 'm-7'");
+    narrowed_as(&l, "least", "`g = 'm-7'`", narrow.clone(), 2).await?;
+    l.retire("tick", "t1").await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its least and first retired",
+        narrow.clone(),
+        2,
+    )
+    .await?;
+    l.retire("tick", "t9").await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its greatest retired",
+        narrow.clone(),
+        2,
+    )
+    .await?;
+    l.retire("tick", "t4").await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its last retired",
+        narrow.clone(),
+        2,
+    )
+    .await?;
+    l.upsert(
+        "tick",
+        "t1",
+        json!({"g": "m-7", "at": "2026-01-01T00:10:00Z", "n": "1"}),
+    )
+    .await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its least and first came back",
+        narrow.clone(),
+        2,
+    )
+    .await?;
+    l.upsert(
+        "tick",
+        "t9",
+        json!({"g": "m-7", "at": "2026-01-01T01:30:00Z", "n": "9"}),
+    )
+    .await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its greatest came back",
+        narrow.clone(),
+        2,
+    )
+    .await?;
+    l.upsert(
+        "tick",
+        "t4",
+        json!({"g": "m-7", "at": "2026-01-01T02:20:00Z", "n": "4"}),
+    )
+    .await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its last came back",
+        narrow,
+        2,
+    )
+    .await?;
+    let (mut opened, mut closed) = (
+        agg("opened", AggFunc::First, Some("opened")),
+        agg("closed", AggFunc::Last, Some("closed")),
+    );
+    opened.by = Some("g".into());
+    closed.by = Some("g".into());
+    let folds = aggregate(vec![
+        agg("low", AggFunc::Min, Some("low")),
+        agg("high", AggFunc::Max, Some("high")),
+        opened,
+        closed,
+    ]);
+    let find = Find {
+        filter: Some(Condition::Text("g = 'm-7'".to_owned())),
+        ..folds
+    };
+    narrowed_as(&l, "least", "an aggregate of `g = 'm-7'`", find, 2).await?;
+    Ok(())
+}

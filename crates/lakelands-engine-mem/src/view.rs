@@ -118,8 +118,12 @@ impl ProjectionView for MemView {
         Ok(self.read(|p, at| {
             let decl = p.type_at(ty, at);
             // A count that must hold a text in a text key reads the records
-            // at the keys it makes.
-            if let Some(keys) = engines::key_lookup(decl, scan) {
+            // at the keys it makes. A kept name's interval seeks the
+            // key-ordered road instead: a text lookup would read the keys
+            // holding the text and walk past its bound.
+            if scan.range.is_none()
+                && let Some(keys) = engines::key_lookup(decl, scan)
+            {
                 let records: Vec<StoredRecord> = keys
                     .iter()
                     .filter_map(|k| p.record_of(ty, &RecordKey::from(k.as_str()), at))
@@ -130,7 +134,7 @@ impl ProjectionView for MemView {
             // keeps reads the records holding it, not the type (057).
             let head = at.is_some() && at == p.folded;
             let mut held = None;
-            let lookup = match (head, decl) {
+            let lookup = match (head && scan.range.is_none(), decl) {
                 (true, decl) => {
                     let looked = p.looked(ty, decl.is_some());
                     let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
@@ -146,7 +150,7 @@ impl ProjectionView for MemView {
                         Some((field, tokens)) => {
                             p.lookup_after(ty, field, tokens, &mut held, at, after, n)
                         }
-                        None => p.records_after(ty, at, after, n),
+                        None => p.records_after(ty, at, after, scan.range.as_ref(), n),
                     };
                     Ok(rows)
                 });
@@ -158,8 +162,12 @@ impl ProjectionView for MemView {
         Ok(self.read(|p, at| {
             let decl = p.type_at(ty, at);
             // A scan that must hold a text in a text key reads the records
-            // at the keys it makes.
-            if let Some(keys) = engines::key_lookup(decl, scan) {
+            // at the keys it makes. A kept name's interval seeks the
+            // key-ordered road instead: a text lookup would read the keys
+            // holding the text and walk past its bound.
+            if scan.range.is_none()
+                && let Some(keys) = engines::key_lookup(decl, scan)
+            {
                 let records: Vec<StoredRecord> = keys
                     .iter()
                     .filter_map(|k| p.record_of(ty, &RecordKey::from(k.as_str()), at))
@@ -173,7 +181,8 @@ impl ProjectionView for MemView {
             if scan.order_by.is_empty() {
                 // Ordered by the key alone: read from `after`, stop when full;
                 // at the head, from the records holding the tokens it must.
-                let lookup = engines::text_lookups(scan, &kept, &kind).filter(|_| head);
+                let lookup = engines::text_lookups(scan, &kept, &kind)
+                    .filter(|_| head && scan.range.is_none());
                 let mut held = None;
                 let page: std::result::Result<_, std::convert::Infallible> =
                     engines::scan_in_key_order(decl, scan, |after, n| {
@@ -181,7 +190,7 @@ impl ProjectionView for MemView {
                             Some((field, tokens)) => {
                                 p.lookup_after(ty, field, tokens, &mut held, at, after, n)
                             }
-                            None => p.records_after(ty, at, after, n),
+                            None => p.records_after(ty, at, after, scan.range.as_ref(), n),
                         };
                         engines::count_walk(rows.len());
                         Ok(rows)
@@ -271,7 +280,7 @@ impl ProjectionView for MemView {
                     // Key-ordered batches, less the records the index holds
                     // for the field.
                     loop {
-                        let batch = p.records_after(ty, p.folded, from.as_deref(), n);
+                        let batch = p.records_after(ty, p.folded, from.as_deref(), None, n);
                         engines::count_walk(batch.len());
                         let done = batch.len() < n as usize;
                         for r in batch {
