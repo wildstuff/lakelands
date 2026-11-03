@@ -103,9 +103,11 @@ impl Reach {
 /// leave owed of it, found off the writer.
 pub(crate) type Owes = fn(&Lake, &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>>;
 
-/// Every kind of job a writer's open finishes: a purge a failure left
-/// not whole is taken up again from [`crate::purge::PURGED`].
-pub(crate) const OWED: &[Owes] = &[crate::purge::owed];
+/// Every kind of job a writer's open finishes: a purge a failure left not
+/// whole is taken up again from [`crate::purge::PURGED`], and the builds of
+/// the settings a projection marked as building. The acts and the further
+/// builds that take the road name themselves here.
+pub(crate) const OWED: &[Owes] = &[crate::purge::owed, crate::build::owed];
 
 /// How many times a first turn finds the tail past its view too long
 /// before the job answers unavailable, appending nothing.

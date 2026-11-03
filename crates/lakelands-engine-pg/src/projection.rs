@@ -55,7 +55,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use lakelands_api::engine::{Applied, Choose, Chosen, Declared, TextCounts};
+use lakelands_api::engine::{Applied, Choose, Chosen, Declared, Look, TextCounts};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
@@ -698,9 +698,14 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
         false => type_at(db, names, t, None),
     })?;
     let decl = declared.filter(|_| view.is_none());
-    let looked = decl
-        .as_ref()
-        .map(|_| looked.into_iter().flatten().map(FieldName::from).collect());
+    let looked = decl.as_ref().map(|_| {
+        // A field the setting is having built is no read's until its
+        // `Keep`, but a write beside the build keeps its rows too.
+        let mut fields: BTreeSet<FieldName> =
+            looked.into_iter().flatten().map(FieldName::from).collect();
+        fields.extend(chosen.looked_building.iter().cloned());
+        fields
+    });
     Ok(HeadType {
         decl,
         sorted,
@@ -804,15 +809,28 @@ pub(crate) fn choose_order(
         &TypeName::from(SETTING_TYPE),
         &RecordKey::from(engines::sort_index_key(ty)),
     )?;
-    let head = head_type(db, names, ty)?;
-    let Some(decl) = head.decl.as_ref().filter(|d| d.view.is_none()) else {
+    // A kept name is built as the view it keeps, as a host's setting for
+    // it names the view's fields.
+    let kept = engines::kept_view(ty);
+    let own = kept.clone().unwrap_or_else(|| ty.clone());
+    let Some(decl) = type_at(db, names, &own, None)?.filter(|d| kept.is_some() || d.view.is_none())
+    else {
         return Ok(None);
     };
-    let named = engines::sorted_fields(ty, decl, setting.as_ref().and_then(engines::setting_value));
+    let named =
+        engines::sorted_fields(ty, &decl, setting.as_ref().and_then(engines::setting_value));
     let sortable = |f: &FieldName| {
         (decl.fields.iter()).any(|d| d.name == *f && lakelands_api::seam::sortable(&d.ty.kind))
     };
-    if !named.is_empty() || matches!(step, Choose::Start(f) if !sortable(f)) {
+    let mut chosen = chosen_of(db, names, ty)?;
+    // A field a host's setting names is filled by its own build, field by
+    // field; the lake's choice is not read then.
+    let setting_build = matches!(
+        step,
+        Choose::Fill { field, .. } | Choose::Keep(field)
+            if chosen.setting_building.contains(field)
+    );
+    if matches!(step, Choose::Start(f) if !sortable(f)) || (!named.is_empty() && !setting_build) {
         return Ok(None);
     }
     // Nothing is chosen on a lake a writer that keeps no chosen field
@@ -821,7 +839,6 @@ pub(crate) fn choose_order(
         &format!("SELECT {}", held(names, "$1")),
         &[&engines::CHOSEN_THROUGH],
     )?;
-    let mut chosen = chosen_of(db, names, ty)?;
     if !held.get::<_, bool>(0) || !engines::chosen_after(&mut chosen, step) {
         return Ok(None);
     }
@@ -863,6 +880,173 @@ pub(crate) fn choose_order(
         }),
     };
     db.end(done)
+}
+
+/// Mark the fields `ty`'s `sort_index` setting asks for as building, and
+/// ensure the type has a `sorted` mark: a read keeps the old road until
+/// each field's `Keep`. With no field asked for, the mark goes, as a
+/// setting that names none leaves none.
+pub(crate) fn mark_sorted(db: &mut Db, names: &Names, ty: &TypeName) -> Result<()> {
+    let own = engines::kept_view(ty).unwrap_or_else(|| ty.clone());
+    let Some(decl) = type_at(db, names, &own, None)? else {
+        return Ok(());
+    };
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::sort_index_key(ty)),
+    )?;
+    let named =
+        engines::sorted_fields(ty, &decl, setting.as_ref().and_then(engines::setting_value));
+    let mut chosen = chosen_of(db, names, ty)?;
+    // A host's setting that names a field wins: the lake's choice goes,
+    // and the build fills the setting's fields instead.
+    if !named.is_empty() {
+        chosen.kept.clear();
+        chosen.building.clear();
+    }
+    chosen.setting_building = named;
+    set_chosen(db, names, ty, &chosen)?;
+    if chosen.setting_building.is_empty() {
+        return set_sorted(db, names, ty, None);
+    }
+    let marked = db.query_opt(
+        &format!("SELECT 1 FROM {} WHERE k = $1", names.t("meta")),
+        &[&engines::sorted_mark(ty)],
+    )?;
+    if marked.is_none()
+        && let Some(at) = folded(db, names)?
+    {
+        set_sorted(db, names, ty, Some(at))?;
+    }
+    Ok(())
+}
+
+/// Mark the fields a live `lookup_index` setting asks the exact-text index
+/// for as building — those coming, and those going — and leave
+/// `lookup_fields` as it is: a read keeps the old road until `Keep`.
+pub(crate) fn mark_looked(db: &mut Db, names: &Names, ty: &TypeName) -> Result<()> {
+    let decls = head_declarations(db, names)?;
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(format!("{}{ty}", lakelands_api::seam::LOOKUP_INDEX_SETTING)),
+    )?;
+    let now: BTreeSet<FieldName> = engines::looked_up(
+        ty,
+        decls.iter(),
+        setting.as_ref().and_then(engines::setting_value),
+    )
+    .unwrap_or_default();
+    let rows = db.query(
+        &format!(
+            "SELECT field FROM {} WHERE ty = $1",
+            names.t("lookup_fields")
+        ),
+        &[&ty.as_str()],
+    )?;
+    let was: BTreeSet<FieldName> = rows
+        .iter()
+        .map(|r| FieldName::from(r.get::<_, String>(0)))
+        .collect();
+    let mut chosen = chosen_of(db, names, ty)?;
+    chosen.looked_building = now.difference(&was).cloned().collect();
+    chosen.looked_going = was.difference(&now).cloned().collect();
+    set_chosen(db, names, ty, &chosen)
+}
+
+/// One step of building the exact-text index a `lookup_index.<type>`
+/// setting asks for (`ProjectionStore::look_index`), in a transaction of
+/// its own that moves no position.
+pub(crate) fn look_index(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    step: &Look,
+) -> Result<Option<RecordKey>> {
+    db.batch("BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL synchronous_commit = off")?;
+    let done = (|| {
+        let mut chosen = chosen_of(db, names, ty)?;
+        match step {
+            Look::Fill {
+                fields,
+                after,
+                limit,
+            } => fill_looked(db, names, ty, fields, after.as_ref(), *limit),
+            Look::Keep { fields } => {
+                let lookup = names.t("lookup_fields");
+                let text = names.t("text_index");
+                for f in fields {
+                    db.execute(
+                        &format!("INSERT INTO {lookup} (ty, field) VALUES ($1, $2)"),
+                        &[&ty.as_str(), &f.as_str()],
+                    )?;
+                }
+                chosen.looked_building.retain(|f| !fields.contains(f));
+                for f in std::mem::take(&mut chosen.looked_going) {
+                    db.execute(
+                        &format!("DELETE FROM {text} WHERE ty = $1 AND field = $2"),
+                        &[&ty.as_str(), &f.as_str()],
+                    )?;
+                    db.execute(
+                        &format!("DELETE FROM {lookup} WHERE ty = $1 AND field = $2"),
+                        &[&ty.as_str(), &f.as_str()],
+                    )?;
+                }
+                set_chosen(db, names, ty, &chosen)?;
+                Ok(None)
+            }
+        }
+    })();
+    db.end(done)
+}
+
+/// Write the rows of `fields` for up to `limit` head records of `ty` after
+/// `after`; the key the chunk ended at, none once the type is filled.
+fn fill_looked(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    fields: &[FieldName],
+    after: Option<&RecordKey>,
+    limit: u32,
+) -> Result<Option<RecordKey>> {
+    let after = after.map_or("", RecordKey::as_str);
+    let page = head_records_after(db, names, ty, after, i64::from(limit))?;
+    let (mut found, mut values, mut keys) = (Vec::new(), Vec::new(), Vec::new());
+    for r in &page {
+        for field in fields {
+            let Some(text) = r.fields.get(field).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            found.push(field.as_str().to_owned());
+            values.push(text.to_owned());
+            keys.push(r.key.as_str().to_owned());
+        }
+    }
+    let all: Vec<&str> = page.iter().map(|r| r.key.as_str()).collect();
+    let held: Vec<&str> = fields.iter().map(FieldName::as_str).collect();
+    db.execute(
+        &format!(
+            "DELETE FROM {} WHERE ty = $1 AND key = ANY($2) AND field = ANY($3)",
+            names.t("text_index")
+        ),
+        &[&ty.as_str(), &all, &held],
+    )?;
+    db.execute(
+        &format!(
+            "INSERT INTO {} (ty, field, value, key) \
+             SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[]) ON CONFLICT DO NOTHING",
+            names.t("text_index"),
+        ),
+        &[&ty.as_str(), &found, &values, &keys],
+    )?;
+    Ok(page
+        .last()
+        .map(|r| r.key.clone())
+        .filter(|_| page.len() == limit as usize))
 }
 
 /// Write the rows of `field` for up to `limit` head records of `ty` after
@@ -1801,6 +1985,10 @@ pub(crate) struct Buffer {
     /// key whose state it holds, by type, key and field: made when it is
     /// written where the rows its last state leaves differ.
     indexed: BTreeMap<(String, String, String), Option<Vec<f32>>>,
+    /// The settings put beside the writer: their types are marked
+    /// building at the commit, not walked there (099).
+    live_sorted: BTreeSet<TypeName>,
+    live_looked: BTreeSet<TypeName>,
     /// The thinning acts' rows (`thinned_types`), by type, field and
     /// horizon: the position each began at, its `through` and its `gone`.
     thinned_acts: BTreeMap<(String, String, i64), (i64, i64, i64)>,
@@ -1941,6 +2129,25 @@ impl Buffer {
             return;
         }
         self.records.insert((ident, r.position.0 as i64), r.clone());
+    }
+
+    /// A record put beside the writer: a `sort_index.<type>` setting's
+    /// state, whose type is marked building at the commit rather than
+    /// walked there (099).
+    pub(crate) fn live_sorted(&mut self, r: &StoredRecord) {
+        self.record(r);
+        if let Some(ty) = engines::sort_index_type(r) {
+            self.live_sorted.insert(ty);
+        }
+    }
+
+    /// A record put beside the writer whose type's exact-text index the
+    /// commit marks building (`lookup_index.<type>`), not rebuilds (099).
+    pub(crate) fn live_looked(&mut self, r: &StoredRecord) {
+        self.record(r);
+        if let Some(ty) = engines::lookup_index_type(r) {
+            self.live_looked.insert(ty);
+        }
     }
 
     /// Every key of the head-only name `ty` ended: what the buffer holds
@@ -2259,6 +2466,7 @@ impl Buffer {
         MEMBERS.put_many(db, names, &self.members, &[])?;
         let mut latest = Vec::with_capacity(heads.len());
         let mut settings = Vec::new();
+        let mut live_sorted = Vec::new();
         for (ident, had) in &heads {
             let r = self
                 .records
@@ -2267,11 +2475,16 @@ impl Buffer {
                 .map(|(_, r)| r)
                 .expect("a head the buffer put");
             // A `sort_index.<type>` setting whose head state the buffer holds
-            // changes which fields of its type are indexed: read again.
-            if let Some(ty) = engines::sort_index_type(r) {
-                for ty in engines::ordered_names(&ty) {
+            // changes which fields of its type are indexed: read again, or
+            // marked building where the setting was put beside the writer.
+            if let Some(view) = engines::sort_index_type(r) {
+                let live = self.live_sorted.contains(&view);
+                for ty in engines::ordered_names(&view) {
                     types.0.remove(&ty);
-                    settings.push((ty, r.position));
+                    match live {
+                        true => live_sorted.push(ty),
+                        false => settings.push((ty, r.position)),
+                    }
                 }
             }
             // A `vector_index.<type>` setting whose head state the buffer
@@ -2302,6 +2515,14 @@ impl Buffer {
         }
         for (ty, at) in settings {
             rebuilt += rebuild_sorted(db, names, &ty, at)?;
+        }
+        // A setting put beside the writer marks what it asks for as
+        // building, and a build fills it in turns.
+        for ty in live_sorted {
+            mark_sorted(db, names, &ty)?;
+        }
+        for ty in self.live_looked {
+            mark_looked(db, names, &ty)?;
         }
         if !self.routes.is_empty() {
             let (mut at, mut kinds, mut tys, mut keys) = (vec![], vec![], vec![], vec![]);

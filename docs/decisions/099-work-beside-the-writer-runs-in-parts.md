@@ -432,6 +432,52 @@ Measured today under the writer, contended: general 300k, `lookup_index` 2.59 s,
   road now, field by field: a field the host has set is the host's setting, and a chosen
   one goes when the setting comes.
 
+**As built (2026-11-02).** The `sort_index` and `lookup_index` builds take the road. `Drop`,
+`choose_order`'s refusal, and `describe` naming a `building` field are not built yet: they
+are the rest of R7 and take a second pull request. `BUILD_SETTING_TAKEN_BACK` is deferred
+with `Drop`, which that request brings: a setting written to name none of its fields drops
+the mark and its rows in the fold today, and a build's next `Fill` finds the mark gone and
+ends, so a setting taken back between parts already ends clean — but the row that pins it,
+and the `Drop` step that does it between any two parts, wait for the second request. The
+suite holds nine of R7's build rows: `BUILD_READ_ANSWERS_AS_BEFORE`,
+`BUILD_NEVER_READ_PART_BUILT`, `BUILD_WRITES_GO_ON`, `BUILD_WRITE_REACHES_BOTH_SIDES`,
+`BUILD_RESTART_FINISHES`, `BUILD_TYPE_DECLARED_AGAIN`, `BUILD_BESIDE_A_REMOVAL`,
+`BUILD_REBUILD_SAME_LAKE` and `BUILD_EXPORT_IMPORT_SAME_LAKE`. A setting's event written
+at a door is folded with `whole` false, and the projection records the fields it asks for
+in its mark — `setting_building`, and `looked_building` and `looked_going` for the
+exact-text index. The door that appended it sends one build for each name the type's
+fields are kept under, and answers when they are whole; a build a runner left owed is
+found by the next writer's open from the same mark and sent again, and the open does not
+wait for it. Reads keep the old road: a field in `setting_building` is withheld from
+`order_fields` until its `Keep`, a field in `looked_building` is no lookup's until its
+`Keep` writes `lookup_fields`, and a field that goes keeps its rows and answers until
+that `Keep`. A write beside the build keeps the rows of the fields being built, so a key
+at or before the cursor is reached twice at most,
+and once the build is whole. A host's setting that names a field takes the lake's chosen
+field away, as it does when the log is folded whole.
+
+Measured on macOS, a debug build (not optimised), 20 000 records, `order_chunk` 256:
+
+| The build's `Fill` turn | Engine | Turns | Held, p50 | Held, max | The door answered in |
+|---|---|---:|---:|---:|---:|
+| `sort_index` | memory | 80 | 6.2 ms | 6.8 ms | 0.49 s |
+| `sort_index` | SQLite | 80 | 4.5 ms | 6.4 ms | 0.36 s |
+| `lookup_index` | SQLite | 80 | 254 ms | 501 ms | 20.0 s |
+| `lookup_index` | memory | 2 | — | — | under 1 ms |
+
+The memory engine keeps no exact-text index, so its `lookup_index` setting is whole at its
+own event. The SQLite exact-text turn is the slow one: 256 records a turn, each a delete
+and an insert a field. A caller's write sent beside either build waits for one turn, as
+`BUILD_WRITES_GO_ON` pins.
+
+Product: 913 lines in, 69 out; specification: 530 in, 2 out. The cut is `Look::Start`, a
+step with no caller: the fill writes the rows of a field being built, and a field that goes
+is deleted at its `Keep`. The core-size gate moved to product 102 559 of 108 500 and
+specification 187 001 of 191 500 (from 101 717 and 186 473); seam-width is 100 of 110, two
+methods added (`ProjectionStore::put_record_for`, `ProjectionStore::look_index`), and
+`cfg(feature)` is 6 of 20. This is more than R7's 350 product and 350 specification: the
+row's estimate did not hold, and the split it names already falls here.
+
 **`view_kept` is the hard case.** A group's state folds from its members, and a write can
 move a member from a built group to an unbuilt one.
 
@@ -489,7 +535,7 @@ move a member from a built group to an unbuilt one.
 | First turn: tail and keys judged | 11 for 1 000 events, measured, then the key store's 9 to 70, measured | `part_tail` | the tail, the source's versions, the key store |
 | A page | a removal's 89 to 155, a forget's 25 to 59 on smaller lakes, measured | 256 records, `page_events` | its events, `wide`, `walks`; a forget's also with the lake |
 | A chunk of the sweep | as a build's, reckoned | `order_chunk` | its chunk, the tail |
-| A build's chunk | 80 to 210, reckoned | `order_chunk` | its chunk |
+| A build's chunk | 6.2 to 6.8 on memory and 4.5 to 6.4 on SQLite for a sort index, 254 to 501 on SQLite for a lookup index, measured at 20 000 records and 256 a turn in a debug run | `order_chunk` | its chunk |
 | A reclaim's turn | 15.6 to 130, measured | 10 MiB | nothing else |
 | A seal | 700, reckoned (098) | `seal_after_bytes` | its segment; any write pays this, act or not |
 | Last tail and swap, on a rebuild beside | 1 250 and 1 960, measured | the catch-up | the tail |
