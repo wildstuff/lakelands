@@ -560,6 +560,12 @@ group records are in the projection already, so a cursor held only in memory wou
 the fold from 0 on the next open and count every member twice. The table's restart row is
 corrected below.
 
+**The ledger (2026-11-03).** Product: 455 lines in, 29 out; specification: 666 in, 7 out.
+The cut is the fold that made a kept view whole at its setting's append; the mark, and
+the `Fill` and `Keep` turns, take its place. The core-size gate moved to product 107 857 of
+115 000 and specification 193 188 of 202 500 (from 107 431 and 192 529 on develop);
+seam-width is 107 of 110, no method added by this part, and `cfg(feature)` stays 6 of 20.
+
 ### What stands between parts
 
 | Between parts of | Act | Build |
