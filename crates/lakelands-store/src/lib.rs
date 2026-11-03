@@ -39,6 +39,7 @@ mod reads;
 mod record;
 mod rekey;
 mod remove;
+mod restate;
 mod road;
 mod sealing;
 #[doc(hidden)]

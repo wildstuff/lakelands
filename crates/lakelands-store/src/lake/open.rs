@@ -140,7 +140,7 @@ impl Lake {
         if rebuilds && !matches!(built, Swapped::In(_)) {
             lake.engine.projection().clear()?;
         }
-        let mut said = rebuilt_at_open.map(|why| match built {
+        let said = rebuilt_at_open.map(|why| match built {
             Swapped::In(Built {
                 ahead: Some(at),
                 events,
@@ -180,19 +180,8 @@ impl Lake {
             };
             lake.measured(began, events);
         }
-        let refolded = match &lease {
-            Some(lease) => lake.leased(lease)?,
-            None => false,
-        };
-        // An act erasing values the folded log held and the projection had
-        // not erased, written after a build ahead or met by a fold not told
-        // of it, is finished by a rebuild of the whole log: said, since the
-        // open then took as long as one.
-        if let Some(why) = said.as_mut().filter(|_| refolded) {
-            why.push_str(
-                "; the log held an act erasing values that the projection had not erased, so the \
-                 open then folded the whole log again to finish it",
-            );
+        if let Some(lease) = &lease {
+            lake.leased(lease)?;
         }
         {
             // A read-only handle keeps the folded position `catch_up`
@@ -339,11 +328,14 @@ impl Lake {
 
 impl Turn<'_> {
     /// What a writer does once it holds `lease` and has folded the log,
-    /// on its open and on a standby's taking over: it finishes a
-    /// forgetting a crash left half done, then appends the lake's
-    /// creation, the `lease_taken` and the types the
-    /// lake may hold and does not, and seals past the bound. Answers
-    /// whether finishing the forgetting folded the whole log again.
+    /// on its open and on a standby's taking over: it appends the lake's
+    /// creation, the `lease_taken` and the types the lake may hold and
+    /// does not, and seals past the bound.
+    ///
+    /// What a crash left of an act is not finished here: the road takes it
+    /// up beside the writer once the open has answered (099), and a
+    /// projection that still holds what an owed act takes is read through
+    /// it until its restate, as a write is.
     ///
     /// Everything else that can refuse the open runs before the append,
     /// so an open refused before it leaves the log as it was
@@ -351,16 +343,8 @@ impl Turn<'_> {
     /// last step that can fail: one that fails says what it left
     /// (`append_failed`), one whose fold fails after the log took it says
     /// so (`not_folded`), and the seal after it refuses nothing.
-    pub(crate) fn leased(&self, lease: &Lease) -> Result<bool> {
+    pub(crate) fn leased(&self, lease: &Lease) -> Result<()> {
         let mut w = self.writer();
-        // What a crash left of a forgetting is finished first (058).
-        // An owed rebuild refuses the open, since the projection is not
-        // whole without it; a reclaim that fails again stays owed and
-        // is told, never a lock-out (lakelands#1161). It reads the log
-        // as it stands and appends nothing.
-        let rebuilt = self.rebuilds.load(Ordering::SeqCst);
-        self.finish_forgetting(&mut w)?;
-        let refolded = self.rebuilds.load(Ordering::SeqCst) != rebuilt;
         let now = self.clock(&mut w);
         let mut drafts = Vec::new();
         if w.tip.is_none() {
@@ -480,6 +464,6 @@ impl Turn<'_> {
         // checkpoint in the log and the feed (074).
         drop(w);
         self.seal_by_size();
-        Ok(refolded)
+        Ok(())
     }
 }

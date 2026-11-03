@@ -895,6 +895,7 @@ impl Lake {
         // Only the writer folds; a handle opened read-only reads what the
         // writer folded, and writes nothing.
         if w.lease.is_some() {
+            self.tell_owed(w)?;
             let from = folded.map_or(Position::GENESIS, Position::next);
             self.fold_from(w, from)?;
             self.publish(w);
@@ -1255,10 +1256,11 @@ impl Lake {
     }
 
     /// Finish what a forgetting (058) or a removal (065) left owed, as the
-    /// act itself does and the writer's open after a crash between its
-    /// steps: each source whose act the projection may still hold the
-    /// values of has its keys destroyed, the projection is rebuilt, and the
-    /// storage reclaimed ([`Self::reclaim`]). Each step is idempotent.
+    /// act itself does and the road beside the writer takes a crash between
+    /// its steps up (099): each source whose act the projection may still
+    /// hold the values of has its keys destroyed, the projection is
+    /// rebuilt, and the storage reclaimed ([`Self::reclaim`]). Each step is
+    /// idempotent.
     /// `None` where nothing was owed, and where the reclaim failed: the
     /// values are erased already, so a failed reclaim is owed and told,
     /// never an error (lakelands#1179).
@@ -1270,6 +1272,8 @@ impl Lake {
         if list.values().chain(acts.values()).all(|s| s == "done") {
             return Ok(None);
         }
+        let head = self.head();
+        let mut restate = list.values().any(|s| s == "owed");
         if list.values().chain(acts.values()).any(|s| s == "owed") {
             for (source, _) in list.iter().filter(|(_, s)| *s == "owed") {
                 self.keys.destroy(source)?;
@@ -1282,23 +1286,31 @@ impl Lake {
             {
                 self.keys.destroy_versions(&act.source, &act.keys)?;
                 self.keys.destroy_apart(&act.source, &act.apart)?;
+                // An act whose `act_whole` is not in the log still owes
+                // appends: its restate is the road's last turn, not this.
+                if crate::remove::whole(self, act.at, Some(head))? {
+                    restate = true;
+                }
             }
-            // The records the owed sources wrote are refolded alone where
-            // nothing else reads them, and the projection rebuilt
-            // otherwise: either restates it as the log now reads.
-            let owed: Vec<SourceId> = (list.iter())
-                .filter(|(_, s)| *s == "owed")
-                .map(|(source, _)| source.clone())
-                .collect();
-            let plan = scrub::plan(self, view.as_ref(), &owed, self.limits.forget_rebuild)?;
-            let events = view.position().map_or(0, |p| p.0);
-            let way = plan.way(self, events);
-            drop(view);
-            match way.scoped {
-                true => self.scrub_held(w, &plan, &owed)?,
-                false => self.rebuild_held(w)?,
+            if restate {
+                // The records the owed sources wrote are refolded alone
+                // where nothing else reads them, and the projection
+                // rebuilt otherwise: either restates it as the log now
+                // reads.
+                let owed: Vec<SourceId> = (list.iter())
+                    .filter(|(_, s)| *s == "owed")
+                    .map(|(source, _)| source.clone())
+                    .collect();
+                let plan = scrub::plan(self, view.as_ref(), &owed, self.limits.forget_rebuild)?;
+                let events = view.position().map_or(0, |p| p.0);
+                let way = plan.way(self, events);
+                drop(view);
+                match way.scoped {
+                    true => self.scrub_held(w, &plan, &owed)?,
+                    false => self.rebuild_held(w)?,
+                }
+                *lakelands_core::lock(&self.way) = Some(way);
             }
-            *lakelands_core::lock(&self.way) = Some(way);
         }
         Ok(self.reclaim()?.ok())
     }
@@ -1328,6 +1340,56 @@ impl Lake {
         Ok((list, acts))
     }
 
+    /// Whether any act is owed, its restate or its last turn still to
+    /// run: a removal's, a purge's or a forgetting's (099). A poll stops
+    /// before a reaction such an act may overrule, since the projection
+    /// cannot decide it yet.
+    pub(crate) fn acts_owed(&self) -> Result<bool> {
+        let (list, acts) = self.acts_listed()?;
+        Ok(list.values().chain(acts.values()).any(|s| s != "done"))
+    }
+
+    /// Tell the writer the acts the log still owes, which its fold from the
+    /// projection's mark does not meet: a write reads through them from the
+    /// open, before the road has walked again (099). The versions every act
+    /// the lists name are doomed again in memory, since a destroy leaves no
+    /// trace in the key store but the version's absence: a source that
+    /// writes after this open seals under a new one (099), and only a
+    /// version the key store still holds is 065's lost key.
+    fn tell_owed(&self, w: &mut Writer) -> Result<()> {
+        let (forgotten, acts) = self.acts_listed()?;
+        if forgotten.is_empty() && acts.is_empty() {
+            return Ok(());
+        }
+        let at: Vec<Position> = acts.keys().copied().collect();
+        for act in self
+            .read_these(&at)?
+            .iter()
+            .filter_map(crate::remove::Removal::of)
+        {
+            self.keys.doom(&act.source, &act.keys);
+            self.keys.doom(&act.source, &act.apart);
+        }
+        for (source, state) in &forgotten {
+            if state != "done" {
+                w.forgotten.insert(source.clone());
+            }
+        }
+        if !acts.values().any(|s| s != "done") {
+            return Ok(());
+        }
+        let view = self.engine.view(None)?;
+        let told = crate::remove::told(self, view.as_ref())?;
+        drop(view);
+        for act in told {
+            let owed = acts.get(&act.at).is_some_and(|s| s != "done");
+            if owed && !w.removals.iter().any(|r| r.at == act.at) {
+                w.removals.push(act);
+            }
+        }
+        Ok(())
+    }
+
     /// Give back the storage the projection no longer uses, under the
     /// writer's lock its caller holds: the last step of an act and a
     /// manual compact alike. The engine's answer is the inner result. One
@@ -1354,8 +1416,22 @@ impl Lake {
         };
         let head = self.head();
         if waiting {
-            for state in list.values_mut().chain(acts.values_mut()) {
+            // An act that has not appended its `act_whole` still has parts
+            // to write: a rebuild that met it erased its values, and its
+            // last turn marks it done, never this reclaim (099).
+            let mut owing = BTreeSet::new();
+            for (at, state) in &acts {
+                if state == "rebuilt" && !crate::remove::whole(self, *at, Some(head))? {
+                    owing.insert(*at);
+                }
+            }
+            for state in list.values_mut() {
                 if state == "rebuilt" {
+                    *state = "done".to_owned();
+                }
+            }
+            for (at, state) in acts.iter_mut() {
+                if state == "rebuilt" && !owing.contains(at) {
                     *state = "done".to_owned();
                 }
             }

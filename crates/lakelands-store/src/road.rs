@@ -103,9 +103,15 @@ impl Reach {
 /// leave owed of it, found off the writer.
 pub(crate) type Owes = fn(&Lake, &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>>;
 
-/// Every kind of job a writer's open finishes: a purge a failure left
-/// not whole is taken up again from [`crate::purge::PURGED`].
-pub(crate) const OWED: &[Owes] = &[crate::purge::owed];
+/// Every kind of job a writer's open takes up: a purge a failure left
+/// not whole ([`crate::purge::PURGED`]), a removal whose `act_whole` is
+/// not in the log, and the restate and reclaim a whole act owes or a
+/// crash left.
+pub(crate) const OWED: &[Owes] = &[
+    crate::purge::owed,
+    crate::remove::owed,
+    crate::remove::settle_owed,
+];
 
 /// How many times a first turn finds the tail past its view too long
 /// before the job answers unavailable, appending nothing.

@@ -10,6 +10,7 @@ use super::Check;
 pub use forgotten::{Fails, failing};
 
 mod accepted_whole;
+mod acts;
 mod admitted;
 mod after;
 mod aggregates;
@@ -814,6 +815,22 @@ pub const ALL: &[Check] = &[
     removed::REMOVED_COMPUTED,
     removed::REMOVED_REPLAYED,
     removed::REMOVE_CRASH_SHREDDED,
+    removed::REOPENED_WRITE_READS_THROUGH_AN_OWED_ACT,
+    removed::ACT_ERASES_IN_ITS_FIRST_TURN,
+    removed::REMOVE_TAKES_A_DELIVERY_THAT_GREW,
+    removed::REMOVE_LEAVES_A_LATER_DELIVERY,
+    removed::REMOVE_WRITTEN_BEFORE_JUDGED_AT_ITS_FIRST_TURN,
+    removed::REMOVE_TAIL_WRITE_KEEPS_ITS_VERSION,
+    removed::REMOVE_TAKEN_IN_UNDER_A_KEPT_VERSION_IS_NOT_SHREDDED,
+    removed::REMOVE_STALE_ON_ANOTHER_SOURCES_WRITE,
+    removed::ACTS_OF_ONE_SOURCE_OVERLAP,
+    acts::ACT_WALKS_OFF_THE_WRITER,
+    acts::ACT_BETWEEN_PARTS_VERIFIES,
+    acts::ACT_BETWEEN_PARTS_EXPORTS,
+    acts::POLL_STOPS_BEFORE_AN_OWED_ACT,
+    acts::ACT_TAIL_OVERRUN_MOVES_THE_VIEW,
+    acts::REPORT_NOT_STALE_BY_A_WRITE_ELSEWHERE,
+    acts::WRITE_READS_THROUGH_AN_OWED_ACT,
     sealed_apart::APART_SHREDDED,
     sealed_apart::APART_OUTPUT,
     sealed_apart::APART_READ,
