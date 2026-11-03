@@ -19,7 +19,11 @@
 //!    between parts;
 //! 3. the first part follows, and later turns append the closes and the
 //!    retirements still owed, each read again as the part takes it, and
-//!    `act_whole` ends them;
+//!    `act_whole` ends them; each later turn reads the tail past the act's
+//!    last append first, as the first turn read the walk's, so a write by a
+//!    source whose `source_forgotten` is still owed is taken in and judged
+//!    under the writer, and a record it leaves quarantined is closed with
+//!    the act's closes;
 //! 4. the act's last turn restates the projection from the log, where the
 //!    fold meets sealed values with no key and the act that forgot them,
 //!    and erases them, and the engine reclaims the storage.
@@ -52,7 +56,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use lakelands_api::engine::ProjectionView;
-use lakelands_api::error::Case;
+use lakelands_api::error::{Case, Situation};
 use lakelands_api::event::{ChangeKind, Event, EventBody};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::principal::Renamed;
@@ -69,7 +73,7 @@ use crate::log::Draft;
 use crate::ontology::Ontology;
 use crate::purge::{brought_by, co_owned, made_by};
 use crate::remove::Removal;
-use crate::road::{Job, Reach, Turned};
+use crate::road::{self, Job, Reach, Turned};
 use crate::writes;
 
 /// How many keys a report names per type.
@@ -245,8 +249,7 @@ fn gather(
     each_of(lake, view, set, |i, e| {
         let source = &set[i];
         if let Some(earlier) = digest
-            && indexed(e).as_ref() == Some(source)
-            && !earlier.iter().any(|r| r.selects(e))
+            && selected(earlier, source, e)
         {
             seen.insert(e.position);
         }
@@ -606,9 +609,13 @@ pub(crate) struct Act {
 }
 
 /// The acts of forgetting the log holds, in order, each with the sources
-/// it forgot: its `source_forgotten` events lie between the previous
-/// act's `act_whole` and its own, since a job's turns append nothing of
-/// another act's between them.
+/// it forgot, grouped by adjacency: its `source_forgotten` events lie
+/// between the previous act's `act_whole` and its own. That holds while a
+/// job runs its turns with no other act between them, and not once the
+/// act is left owed between its turns — by a crash, or by a turn that
+/// failed — and another act begins and ends before it is taken up again:
+/// it then appends past that act, and the two read as one, the colliding
+/// act's source in it and its own `act_whole` naming no act.
 pub(crate) fn acts(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Act>> {
     let Some(head) = view.position() else {
         return Ok(Vec::new());
@@ -649,6 +656,8 @@ pub(crate) fn acts(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Act>> {
     Ok(grouped(lake.read_these(&Vec::from_iter(at))?))
 }
 
+// INTERIM: lakelands#1725 carries an act that names itself, so that a
+// resumed act's events are not read together with a colliding act's.
 fn grouped(events: Vec<Event>) -> Vec<Act> {
     let mut acts: Vec<Act> = Vec::new();
     for e in events {
@@ -672,6 +681,12 @@ fn grouped(events: Vec<Event>) -> Vec<Act> {
     acts
 }
 
+/// Whether `e` is an event of `source` that no act of `earlier` selects:
+/// one a report's digest is over.
+fn selected(earlier: &[Removal], source: &SourceId, e: &Event) -> bool {
+    indexed(e).as_ref() == Some(source) && !earlier.iter().any(|r| r.selects(e))
+}
+
 /// The events of the sources of `set` at `view`'s position that no act of
 /// `earlier` selects: what a report's digest is over.
 fn selection_events(
@@ -682,7 +697,7 @@ fn selection_events(
 ) -> Result<BTreeSet<Position>> {
     let mut seen = BTreeSet::new();
     each_of(lake, view, set, |i, e| {
-        if indexed(e).as_ref() == Some(&set[i]) && !earlier.iter().any(|r| r.selects(e)) {
+        if selected(earlier, &set[i], e) {
             seen.insert(e.position);
         }
     })?;
@@ -1164,7 +1179,17 @@ impl Forget {
         drop(view);
         match next {
             Next::More => Ok(Turned::More),
-            Next::Nothing | Next::Whole => {
+            // Nothing was appended and no act of this call is in the log:
+            // the set's sources were forgotten already. `finish_act` would
+            // wrap what is still owed in an `ActUnfinished` at a position
+            // this call never wrote; `finish_forgetting` does the work and
+            // answers its failure as itself.
+            Next::Nothing => {
+                let reclaimed = lake.finish_forgetting(w)?;
+                self.finish_report(lake, reclaimed);
+                Ok(Turned::Whole)
+            }
+            Next::Whole => {
                 let reclaimed = lake.finish_act(w, self.position)?;
                 self.finish_report(lake, reclaimed);
                 Ok(Turned::Whole)
@@ -1299,16 +1324,122 @@ impl Forget {
         Ok(if whole { Next::Whole } else { Next::More })
     }
 
+    /// A later turn: the tail the act's last append did not see is read and
+    /// judged under the writer as the first turn judges the walk's — a
+    /// write by a source whose `source_forgotten` is still owed is taken
+    /// in, retired with the rest and counted in the report, and a record it
+    /// left quarantined is closed `forgotten` with the act's closes, its
+    /// count beside theirs — then the `source_forgotten`s still owed, a
+    /// turn's room of them, and the part that follows in the same turn once
+    /// none is left. The report's other counts follow the tail; its
+    /// quarantined ones are the closes the act has read and made, held as
+    /// the parts append them, which the view holds none of once a part has
+    /// closed them.
     fn part_turn(
         &mut self,
         lake: &Lake,
         w: &mut Writer,
         view: &dyn ProjectionView,
     ) -> Result<Next> {
+        let ontology = Ontology::at(view)?;
+        let bound = lake.limits.part_tail.max(1);
+        let Some(tail) = road::read_tail(lake, view, &self.reach(), Some(self.position), bound)?
+        else {
+            return Err(Error::unavailable(Situation::TailOverran {
+                tries: 1,
+                bound,
+            }));
+        };
+        if !tail.is_empty() {
+            self.fold(&tail)?;
+            self.see_the_tail(lake, view, &ontology)?;
+            self.refuse_plaintext()?;
+            // A write between turns may have left a record of a source the
+            // act has not forgotten yet quarantined: its close is this
+            // act's, taken into the closes owed as a landed write is taken
+            // into the gathering (085).
+            let added = self.take_quarantined(view)?;
+            // The other counts follow the tail; the quarantined ones are
+            // the closes read before this turn and those just taken in,
+            // held as the parts append them.
+            let held = self.report.as_ref().map(|r| {
+                (r.sources.iter())
+                    .map(|source| source.quarantined.clone())
+                    .collect::<Vec<_>>()
+            });
+            self.report = Some(self.report_again(lake, view, &ontology)?);
+            self.hold_quarantined(held.unwrap_or_default(), added);
+        }
         if !self.pending.is_empty() {
             return self.forget_more(lake, w, view);
         }
         self.come_parts(lake, w, view)
+    }
+
+    /// The closes of the records a write between turns left quarantined
+    /// for a source the act has not forgotten yet, appended to the closes
+    /// owed once each, and their count per source and type. A close the
+    /// act already owes for the same record is not owed twice.
+    fn take_quarantined(
+        &mut self,
+        view: &dyn ProjectionView,
+    ) -> Result<BTreeMap<(SourceId, TypeName), u64>> {
+        let mut queued: BTreeSet<lakelands_api::quarantine::QuarantineId> = (self.closes.iter())
+            .filter_map(|body| match body {
+                EventBody::QuarantineClosed { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut added = BTreeMap::new();
+        for source in &self.set {
+            if !self.pending.contains(source) {
+                continue;
+            }
+            let (shut, _) = quarantined(view, source)?;
+            for close in shut {
+                let EventBody::QuarantineClosed { id, ty, .. } = &close else {
+                    unreachable!("a close is a `quarantine_closed`")
+                };
+                if !queued.insert(id.clone()) {
+                    continue;
+                }
+                *added.entry((source.clone(), ty.clone())).or_default() += 1;
+                self.closes.push_back(close);
+            }
+        }
+        Ok(added)
+    }
+
+    /// The report's quarantined counts as the act's closes leave them: the
+    /// ones read before, and those just taken in added to them, so a part
+    /// that closed a record before this turn is still counted in it.
+    fn hold_quarantined(
+        &mut self,
+        held: Vec<Vec<lakelands_api::quarantine::TypeQuarantined>>,
+        added: BTreeMap<(SourceId, TypeName), u64>,
+    ) {
+        let Some(report) = self.report.as_mut() else {
+            return;
+        };
+        for (i, source) in report.sources.iter_mut().enumerate() {
+            let mut counts: BTreeMap<TypeName, u64> = held
+                .get(i)
+                .map(|q| (q.iter()).map(|q| (q.ty.clone(), q.quarantined)).collect())
+                .unwrap_or_default();
+            for ((of, ty), n) in &added {
+                if *of == source.source {
+                    *counts.entry(ty.clone()).or_default() += n;
+                }
+            }
+            source.quarantined = (counts.into_iter())
+                .map(
+                    |(ty, quarantined)| lakelands_api::quarantine::TypeQuarantined {
+                        ty,
+                        quarantined,
+                    },
+                )
+                .collect();
+        }
     }
 
     /// One part of the act, by the rule a purge's and a removal's parts
@@ -1341,6 +1472,7 @@ impl Forget {
     /// and take their contribution out of the gathering and back in as
     /// they are now: one the source wrote since is taken in, one another
     /// hand wrote drops out, and one made since is retired with the rest.
+    /// One a part retired already is left as the act judged it.
     fn see_the_tail(
         &mut self,
         lake: &Lake,
@@ -1350,6 +1482,14 @@ impl Forget {
         let moved = std::mem::take(&mut self.moved);
         for (ty, key) in moved {
             let id = (ty.clone(), key.clone());
+            // A part retired this record already: its retirement is in the
+            // log and the report's count of it stands, whatever the tail
+            // holds at the key since — a record another hand made there is
+            // not the act's to retire. Only a record still owed, or a
+            // co-owned one no part takes, is judged again here.
+            if self.records.get(&id).is_some_and(|r| !r.shared) && !self.retire.contains_key(&id) {
+                continue;
+            }
             if let Some(old) = self.records.remove(&id) {
                 for i in 0..self.set.len() {
                     self.taken[i].sub(i, &ty, &key, &old);

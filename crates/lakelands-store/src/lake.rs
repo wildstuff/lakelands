@@ -324,10 +324,12 @@ pub struct Lake {
     /// How the last forgetting this handle finished restated the
     /// projection.
     way: Mutex<Option<lakelands_api::write::ForgetWay>>,
-    /// The position of the last act that erased values (058, 065) this
-    /// handle found folded or folded itself, 0 where none, and its time:
-    /// only a reaction before it, or of its own append, is decided again
-    /// ([`crate::writes::overruled`]).
+    /// The end of the last act (058, 065, 099) this handle folded itself,
+    /// or read at its open for the forgetting and removal acts the open
+    /// knows: its `act_whole` where the log holds one, else the
+    /// `source_forgotten` or `values_removed` that begins it; 0 where
+    /// none, and its time: only a reaction before it, or of its own
+    /// append, is decided again ([`crate::writes::overruled`]).
     acted: (AtomicU64, AtomicI64),
     /// The sources' keys the lake was given, and the key store (058).
     pub(crate) keys: Arc<crate::sealing::Keys>,
@@ -2003,9 +2005,11 @@ pub(crate) fn forgotten_list(
     Ok(crate::sealing::forgotten(list.as_ref()))
 }
 
-/// The position of the last act that erased values `view` has folded, by
-/// the feed's index; `view`'s own position where the index decides
-/// nothing, so a reaction it cannot place is decided again.
+/// The end of the last act `view` has folded, by the feed's index: the
+/// act's `act_whole` where the log holds one, and otherwise the
+/// `source_forgotten` or `values_removed` that begins it; `view`'s own
+/// position where the index decides nothing, so a reaction it cannot
+/// place is decided again.
 fn last_act(view: &dyn ProjectionView) -> Result<Position> {
     let Some(to) = view.position() else {
         return Ok(Position::GENESIS);

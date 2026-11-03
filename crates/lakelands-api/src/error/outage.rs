@@ -970,7 +970,7 @@ catalog! {
         /// The types a write reads, or what its principal is shown of them, moved while the write waited; send it again.
         TypesMoved => "the lake's types moved while this write waited; send it again",
         /// The lake was written faster than a job's view moved: at each try its tail was longer than one turn may read; nothing was appended.
-        TailOverran { tries: u32, bound: u32 } => "the lake was written faster than this work's view could move up: after {tries} tries the writes past it were still more than one turn reads (`limits.part_tail`, {bound}); nothing was appended, so send it again",
+        TailOverran { tries: u32, bound: u32 } => "the lake was written faster than this work's view could move up: the writes past it were still more than one turn reads (`limits.part_tail`, {bound}) after {tries} attempt(s); nothing was appended, so send it again",
         /// A call of a verb that reaches outside the lake failed before its executor was handed it.
         Executor { retry: Retry, cause: Box<Error> } => "the verb's executor was not handed this call ({cause}); {retry}",
         /// A call's executor answered, recording its answer failed, and the answer is held and recorded before the next write; what sending it again answers, unless it has no key.

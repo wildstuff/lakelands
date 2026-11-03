@@ -16,7 +16,7 @@ use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::KeyId;
 use lakelands_api::read::Found;
 use lakelands_api::seam::DataKey;
-use lakelands_api::write::ForgetReport;
+use lakelands_api::write::{ForgetReport, ForgetSetReport};
 use lakelands_api::{LakeId, Location};
 
 use super::erasable::{Keys, again, person, read, with};
@@ -378,7 +378,7 @@ async fn a_forgotten_sources_values_read_as_erased_at_every_position(
 check!(
     FORGET_LEAVES_NO_WRITE_BEHIND =
         a_write_by_the_source_between_the_report_and_the_act_is_taken_in,
-    "099: `crm`'s preflight is read, then `crm` writes a record before the act; the act under the report's id takes the write in, answering a report read past it, the record retired and its value erased; with `part_events` 1, so its retirements run in later parts, the key store holds none of `crm`'s keys once its `source_forgotten` is in the log and before its `act_whole`, and an ingest from `crm` between the parts is refused, appending nothing, so nothing is sealed under a destroyed key",
+    "099: `crm`'s preflight over a set is read, then `crm` writes a record before the act; the act under the report's id takes the write in, answering a report read past it, the record retired and its value erased; with `part_events` 1, so the set's `source_forgotten`s and its retirements run in later turns, the key store holds none of `crm`'s keys once its `source_forgotten` is in the log and before its `act_whole`, and an ingest from `crm` between the parts is refused, appending nothing, so nothing is sealed under a destroyed key; a set larger than one turn's room, a write by a source the act has not forgotten yet, between two of its turns, is taken in too: the record it made is retired and counted in the act's report",
     given
 );
 
@@ -397,21 +397,35 @@ async fn a_write_by_the_source_between_the_report_and_the_act_is_taken_in(
     let p = |k: &str, name: &str| {
         source_record("person", k, json!({"id": k, "name": name, "city": "Oslo"}))
     };
-    let n = 40u32;
+    let crm: SourceId = "crm".into();
+    let n = 10u32;
     let records: Vec<SourceRecord> = (0..n)
         .map(|i| p(&format!("w{i}"), &format!("Ada {i}")))
         .collect();
     l.ingest("crm", records)
         .await
         .must("ingesting crm's records")?;
-    let crm: SourceId = "crm".into();
-    let report = store.forget_preflight(&crm).await.must("the preflight")?;
+    // A set larger than one turn's room, so its `source_forgotten`s run in
+    // several turns; `late` is the last source the act forgets.
+    let sides: Vec<SourceId> = (1..=48).map(|i| format!("s{i:02}").into()).collect();
+    for (i, side) in sides.iter().enumerate() {
+        l.ingest(side.as_str(), vec![p(&format!("k{i:02}"), "Ada")])
+            .await
+            .must("ingesting a side's record")?;
+    }
+    let mut set = vec![crm.clone()];
+    set.extend(sides.iter().cloned());
+    let late: SourceId = "s48".into();
+    let report = store
+        .forget_sources_preflight(&set)
+        .await
+        .must("the preflight of the set")?;
     // The source writes once the report is read, before the act.
-    l.ingest("crm", vec![p("w40", "Zoe")])
+    l.ingest("crm", vec![p("w10", "Zoe")])
         .await
         .must("crm's write after the report")?;
     let start = store.head().await.must("reading the head")?;
-    let slot: Arc<std::sync::Mutex<Option<ForgetReport>>> = Arc::default();
+    let slot: Arc<std::sync::Mutex<Option<ForgetSetReport>>> = Arc::default();
     let seen: Arc<AtomicBool> = Arc::default();
     let (s, answer, s2, between, keys2) = (
         store.clone(),
@@ -420,12 +434,12 @@ async fn a_write_by_the_source_between_the_report_and_the_act_is_taken_in(
         seen.clone(),
         keys.clone(),
     );
-    let source = crm.clone();
+    let (set2, crm2, late2) = (set.clone(), crm.clone(), late.clone());
     let id = report.report_id.clone();
     let callers: Vec<Caller<'static, Held>> = vec![
         Box::pin(async move {
             let done = s
-                .forget_source(&source, Some(id.as_str()))
+                .forget_sources(&set2, Some(id.as_str()))
                 .await
                 .must("the act under the report's id")?;
             *crate::lock(&answer) = Some(done);
@@ -434,13 +448,16 @@ async fn a_write_by_the_source_between_the_report_and_the_act_is_taken_in(
         Box::pin(async move {
             settles(6_000, Duration::from_millis(1), || async {
                 let events = events_after(s2.as_ref(), start).await?;
-                let forgot = (events.iter()).any(|e| {
-                    matches!(&e.body, EventBody::SourceForgotten { source, .. } if source == "crm")
-                });
+                let forgot: Vec<&SourceId> = (events.iter())
+                    .filter_map(|e| match &e.body {
+                        EventBody::SourceForgotten { source, .. } => Some(source),
+                        _ => None,
+                    })
+                    .collect();
                 let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
                 ensure!(
-                    forgot && !whole,
-                    "the act's `source_forgotten`, before its `act_whole`"
+                    forgot.contains(&&crm2) && !forgot.contains(&&late2) && !whole,
+                    "crm's `source_forgotten`, before s48's and before `act_whole`: {forgot:?}"
                 );
                 Ok(())
             })
@@ -457,6 +474,14 @@ async fn a_write_by_the_source_between_the_report_and_the_act_is_taken_in(
                 "crm's ingest between the act's parts is refused, so nothing is sealed under a \
                  destroyed key; it answered {refused:?}"
             );
+            // A source the act has not forgotten yet writes: its
+            // `source_forgotten` is still owed, so the write lands behind
+            // no destroyed key and the act must take it in.
+            let written = l.ingest(late2.as_str(), vec![p("late", "Lyn")]).await;
+            ensure!(
+                written.is_ok(),
+                "s48's write, its `source_forgotten` still owed, is taken: {written:?}"
+            );
             between.store(true, Ordering::SeqCst);
             Ok(())
         }),
@@ -468,13 +493,22 @@ async fn a_write_by_the_source_between_the_report_and_the_act_is_taken_in(
     );
     let done = crate::lock(&slot).take().expect("the act answered");
     let l = Lake::of(store.as_ref());
-    let late = person_at(&l, "w40", Some(start)).await?;
+    let wrote = person_at(&l, "w10", Some(start)).await?;
+    let retired = |r: &ForgetReport| r.retired.iter().map(|t| t.retired).sum::<u32>();
+    let count: u32 = done.sources.iter().map(retired).sum();
     ensure!(
         done.events > report.events
-            && done.retired.iter().map(|t| t.retired).sum::<u32>() == n + 1
-            && !late.fields.contains_key("name"),
-        "the write crm made after the report is taken in: the preflight's report {report:?}, the \
-         act's {done:?}, w40 as of before the act {late:?}"
+            && count == n + 1 + sides.len() as u32 + 1
+            && !wrote.fields.contains_key("name"),
+        "the writes the set's sources made since the report are taken in: the preflight's report \
+         {report:?}, the act's {done:?}, w10 as of before the act {wrote:?}"
+    );
+    // `late`, written by s48 between two of the act's turns, is retired
+    // with the rest.
+    let still = person_at(&l, "late", None).await;
+    ensure!(
+        still.is_err(),
+        "s48's record, written between the act's turns, is retired: {still:?}"
     );
     let left = keys.ids(store.lake(), &crm).ok().unwrap_or_default();
     ensure!(

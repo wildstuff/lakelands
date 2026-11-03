@@ -859,6 +859,7 @@ pub const ALL: &[Check] = &[
     reached::FORGOTTEN_ACROSS,
     reached::REMOVED_FIRED,
     reached::FORGOTTEN_FIRED,
+    reached::ACT_WHOLE_FOLLOWS_ITS_PARTS_FIRED,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,
     embeddings::EMBED_ONCE,

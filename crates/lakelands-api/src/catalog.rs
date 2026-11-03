@@ -614,9 +614,9 @@ pub trait LakeStore: Send + Sync {
     /// reclaim the storage, all under the writer's lock. Refused while the
     /// log holds its values of an erasable field in plaintext. With a
     /// preflight's id, refused unless that report is of this source at
-    /// this head. A step a crash left owed is finished by the next
-    /// writer's open; a reclaim that fails is not a failure of the act,
-    /// which answers it in its report's `reclaim_owed`.
+    /// the position it was read at. A step a crash left owed is finished
+    /// by the next writer's open; a reclaim that fails is not a failure
+    /// of the act, which answers it in its report's `reclaim_owed`.
     async fn forget_source(
         &self,
         source: &SourceId,
@@ -636,10 +636,11 @@ pub trait LakeStore: Send + Sync {
     /// log holds no event of, or one whose values the log holds in
     /// plaintext, is refused whole with nothing appended; the first two
     /// before anything is read. With a preflight's id, refused unless
-    /// that report is of this set at the position it was read at. A source of the set
-    /// forgotten already
-    /// appends nothing again; a set whose every source is forgotten
-    /// finishes what is owed and answers it done, whatever report it names
+    /// that report is of this set at the position it was read at. A
+    /// source of the set forgotten already appends nothing again; a set
+    /// whose every source is forgotten finishes what is owed and answers
+    /// it done, its id judged as any act's: one the log does not bear at
+    /// its position is refused `forget_report_stale`
     /// (`docs/decisions/058-a-source-may-be-forgotten.md`, extended).
     async fn forget_sources(
         &self,
