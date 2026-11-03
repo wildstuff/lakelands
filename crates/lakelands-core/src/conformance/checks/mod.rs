@@ -557,6 +557,7 @@ pub const ALL: &[Check] = &[
     view_kept::KEPT_POSITIONS,
     view_kept::KEPT_RUNS,
     view_kept::KEPT_ORDER,
+    view_kept::KEPT_FILTER_PAGE,
     view_kept::KEPT_BUCKETS,
     view_kept::KEPT_TERMS,
     view_kept::KEPT_FILTER_NARROWS,

@@ -20,9 +20,42 @@ impl<'a> Reader<'a> {
             drop(tally);
             self.lake.note_whole(ty, &field);
         } else if let Some(o) = find.order_by.first().filter(|o| o.by == OrderBy::Value) {
-            self.lake.note_used(ty, &o.field);
+            // A page a kept view's key serves reads no order index, so the
+            // field's index is not used
+            // (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`
+            // §A page in the group fields' order).
+            if !self.served_by_key(ty, find) {
+                self.lake.note_used(ty, &o.field);
+            }
         }
         found
+    }
+
+    /// Whether `find`'s page of a kept view is read from the group key
+    /// rather than an order index, under the filter and order a page in
+    /// the remaining safe group fields' order admits (P3 of record 103).
+    fn served_by_key(&self, ty: &TypeName, find: &Find) -> bool {
+        let Ok(decl) = self.named_type(ty) else {
+            return false;
+        };
+        // The page is the kept name's, whose key is the view's group
+        // fields: the kept declaration is what `page_plain` reads.
+        let Ok(Some((stored, _))) = self.kept(decl) else {
+            return false;
+        };
+        let filter = find
+            .filter
+            .as_ref()
+            .map(|c| self.named_sets(&decl.name, c, &[Place::Where]))
+            .transpose();
+        match filter {
+            Ok(filter) => lakelands_core::engines::orders_by_group_key(
+                &stored,
+                filter.as_ref(),
+                &find.order_by,
+            ),
+            Err(_) => false,
+        }
     }
 
     /// The field a `find` orders first by, where the lake keeps no order

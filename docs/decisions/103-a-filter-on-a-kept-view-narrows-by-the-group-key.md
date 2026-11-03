@@ -281,12 +281,14 @@ that count count `rows_walked`.
   primary key, PostgreSQL's a seek of the head table's primary key at the
   kept name, the memory engine's a range of its map.
 - **`KEPT_FILTER_PAGE`** (store checks, beside `KEPT_ORDER`): a page
-  ordered by the remaining group fields answers in the comparator's
-  order across pages and batches, from the key where every remaining
-  field is a date-time, date or boolean, and from the order index where
-  one is text or a number; a text group field holding `9` and `10`
+  ordered by the remaining group fields, one or more in the declared
+  order, answers in the comparator's order across pages and batches,
+  from the key where every remaining field is a date-time, date or
+  boolean, and from the order index where one is a text, reference,
+  number or decimal field; a text group field holding `9` and `10`
   answers `9` first, as the computation does, and the key order's
-  bytewise `10` first is not served.
+  bytewise `10` first is not served; the reversed pair of a two-field
+  order answers in its own order.
 
 ### The build plan
 
@@ -300,7 +302,7 @@ read and `KEPT_FILTER_POSITIONS` need.
 |---|---|---|---:|---:|
 | P1 | `Scan.range` and `KeyRange`, either end open; the three engines' key roads; `KEPT_RANGE` | `api/src/engine.rs`, the three engines' `view.rs`, the memory engine's `projection.rs`, and tests; `conformance/engine/reads.rs` | 120 | 90 |
 | P2 | the interval from the filter; the store's kept read, count and aggregate narrowed; the three filter rows | `core/src/engines.rs`, `store/src/kept.rs`, `store/src/reads/describe.rs`, `store/src/reads.rs`, `conformance/checks/view_kept.rs` | 170 | 210 |
-| P3 | a page in the remaining safe-kind group fields' order; `KEPT_FILTER_PAGE` | `store/src/reads/describe.rs`, `store/src/reads.rs`, the same check file | 70 | 100 |
+| P3 | a page in the remaining safe-kind group fields' order; `KEPT_FILTER_PAGE` | `core/src/engines.rs`, `store/src/reads/describe.rs`, `store/src/reads/find.rs`, the same check file | 70 | 100 |
 | | **Sum** | | **360** | **400** |
 | | **×1.35** | | **486** | **540** |
 
@@ -468,6 +470,44 @@ with the four conformance rows (`KEPT_RANGE`, `KEPT_FILTER_NARROWS`,
   aggregate and its twin. `KEPT_FILTER_POSITIONS` moves a group's least
   and first, its greatest and its last out of the group and puts each
   back.
+- **P3, the page in the group fields' order.** `key_range` keeps its
+  signature and now answers through a private `key_interval`, which
+  gives besides the range the number of leading group fields the
+  filter's exacts fix before the walk stops.
+  `engines::orders_by_group_key` accepts a page's order only when it is
+  exactly the fields after those, in the declared order, ascending by
+  value, and every one a date-time, date or boolean field; `page_plain`
+  then reads the page on the key road with an empty order and the
+  interval, so no order index is read and its cursor continues by key.
+  A descending order, a measure, or an order by any other group field
+  keeps the order index, and `find` no longer notes an order index as
+  used for a page the key serves. The tree corrected the plan twice: the
+  road is in `describe.rs` alone, since `page` and `kept_rows` already
+  reached `page_plain`, and `reads.rs`, which the plan named, took no
+  line, where `core/src/engines.rs` and `reads/find.rs` did; the build
+  row is corrected to name them.
+- **The safe kinds, planted.** `KEPT_FILTER_PAGE` holds twelve views and
+  their computed twins: over one source of eight records, views grouped
+  by `[g, at]`, by `at` alone, by the boolean, by the text, the decimal,
+  the number and the reference, by `[g, at, ok]`, by `[g, ok]` and by
+  `[ok, at]`; over a bucket's source, by `[g, day]` and by `[day, at]`.
+  The page of `series` under `g = 'a'` by `at` walks the interval's three
+  keys, and the count of `times` under a two-hour bound walks five; the
+  page of `flags` under `ok = true` by `at` walks the six `true` groups
+  where the order index holds eight; the page of `dated` under `g = 'a'`
+  by `day` walks three; the page of `days` under a date exact walks the
+  day's three where the order index holds five. Each answers as the
+  computation does across pages and batches. `booleans` and `by_ok` put
+  `false` first; `numbers`, `digits`, `nums` and `refs` answer `9` before
+  `10` from the order index, where the key's bytes put `10` first.
+  `grid` asks for the two remaining fields in the declared order and
+  reads the interval's three keys; the same fields the other way about
+  answer in their own order, where the key's order would answer `at`'s.
+  Dropping a kind from the test turns the check red: without `Date`,
+  `dated` walks seven rows instead of three; without `Boolean`, `grid`
+  walks none; without the test whole, `numbers` answers
+  `["10", "9", "a", "b", "c"]` against the computation's `9` first.
+  Restored, it is green.
 - **What the tree did not have.** Record 102's S3 (the thinning act) did
   not land; only its tables did. `KEPT_FILTER_POSITIONS` therefore does
   not hold its "stranded group of a thinned series" clause: there is no
@@ -476,9 +516,9 @@ with the four conformance rows (`KEPT_RANGE`, `KEPT_FILTER_NARROWS`,
   group's extreme, first and last out and back. The plan is corrected
   here, as the tree wins.
 - **The seam figure.** The draft named the 98 of 110 methods record 098
-  left and the 102 P1 stood at; the tree stands at 104, as
-  `scripts/gates/seam-width.sh` measures. Both are corrected here, as
-  the tree wins.
+  left and the 102 P1 stood at; P1 and P2 landed at 104, and the tree
+  now stands at 107, as `scripts/gates/seam-width.sh` measures. Both are
+  corrected here, as the tree wins.
 - **Measured at the head after this PR's own `git add`**, with
   `origin/develop` merged: product 104 265 of the 115 000 base,
   specification 188 847 of the 202 500 base; seam 104 of 110; 6 of 20
@@ -488,3 +528,13 @@ with the four conformance rows (`KEPT_RANGE`, `KEPT_FILTER_NARROWS`,
   plan's 290 product and 300 specification for P1 and P2 were the
   sketch; the extra is the four conformance rows, the three engines'
   plan tests and the date's day prefix. Nothing was cut.
+
+**P3 measured at the head after this PR's own `git add`**, with
+`origin/develop` merged: product 107 684 of the 115 000 base,
+specification 193 528 of the 202 500 base; the base stands at product
+107 602 and specification 192 882; seam 107 of 110; 6 of 20
+`cfg(feature)` sites; 1 048 checks through the doors and 101 through the
+engine seam. The PR's own lines: product +92 −10, specification +646,
+and the record's prose +58 −9. The plan's 70 and 100 for P3 were the
+sketch; the extra is the twelve views and their twins, the walk counts
+and the planted kinds. Nothing was cut.
