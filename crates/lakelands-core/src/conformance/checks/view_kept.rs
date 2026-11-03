@@ -63,6 +63,11 @@ check!(
 );
 
 check!(
+    KEPT_FILTER_PAGE = a_kept_filter_page_answers_in_the_group_fields_order,
+    "103: a kept view's page ordered by the group fields the filter leaves, ascending, answers as the computation across pages and batches: from the key interval and without an order-index read where every one of them is a date-time, date or boolean — one field, two, or a date a bucket fills — and from the order index where one is a text, reference, number or decimal field, a text group field holding `9` and `10` answering `9` first as the computation does; a descending order, an order that is not the remaining group fields and the remaining fields in another order keep the order index"
+);
+
+check!(
     KEPT_BUCKETS =
         a_kept_first_and_last_answer_as_their_twins_in_a_view_grouped_by_a_bucket_of_time,
     "049, extended (lakelands#1603, lakelands#1605): a view grouped by a text field and an hour derived by `date_bucket` is kept, its `min`, `max`, `first(v, at)` and `last(v, at)` answering as their twins, read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own, while members arrive, two tie on `at`, one has no `at` and one no value, a bucket's first, last and least member is retired, a member moves to the next hour and an earlier one arrives, a holder's value changes and another's goes null, a holder leaves after another member's value changed, and a bucket's last member leaves, `describe_type` saying `kept` after each; `first` and `last` of a text by a decimal are kept in a view grouped by text alone, and by a date under a week bucket of it; a boolean, a JSON value, an expression and a value ordered by itself are carried as their twins carry them, through holders retired and moved; a `max` grouped by an instant the host writes, a `min` by a bucket alone, a `first` by two buckets and a `last` of no group are kept (lakelands#1614), answering as their twins while members arrive, an update moves each extreme to another holder and each holder is retired; declared again with a `first` that orders by a text, a kept view cannot be kept, and answers as its twin, until it is declared as it was",
@@ -1972,5 +1977,645 @@ async fn a_narrowed_read_answers_as_the_computation_at_an_earlier_position_and_a
         ..folds
     };
     narrowed_as(&l, "least", "an aggregate of `g = 'm-7'`", find, 2).await?;
+    Ok(())
+}
+
+/// The lake the paged checks read: ticks of the series `a`, `b` and `c`
+/// and of the texts `9` and `10`, a view kept by `[g, at]`, one by `at`
+/// alone, one by the boolean, one by the text alone, one by the number,
+/// one by the three fields `[g, at, ok]` and one by the two `[g, ok]`, a
+/// view of a reference to a target keyed `9` and `10`, a view of a date
+/// bucketed from an instant, and a view by the remaining date of another,
+/// each with a twin computed, and an order index on the field its page is
+/// asked for where it keeps one.
+async fn pokes(store: Store) -> Result<Lake, Failure> {
+    let l = Lake::of(store.as_ref());
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    let to_target = json!({"name": "r", "type": {"kind": "reference", "target": "target"}});
+    l.declare_json(json!({"declare": "type", "name": "target",
+        "fields": [field("v", "number")]}))
+        .await?;
+    for k in 1..=10 {
+        l.upsert("target", &k.to_string(), json!({"v": k})).await?;
+    }
+    let fields = [
+        field("g", "text"),
+        field("at", "date_time"),
+        field("ok", "boolean"),
+        field("n", "decimal"),
+        field("num", "number"),
+        to_target.clone(),
+    ];
+    l.declare_json(json!({"declare": "type", "name": "poke", "fields": fields}))
+        .await?;
+    let c = json!({"name": "c", "expr": "count()"});
+    // Each view, its group fields, the fields it declares, and the field
+    // its order index keeps.
+    let views = [
+        (
+            "series",
+            json!(["g", "at"]),
+            vec![field("g", "text"), field("at", "date_time")],
+            "at",
+        ),
+        ("times", json!(["at"]), vec![field("at", "date_time")], "at"),
+        ("by_ok", json!(["ok"]), vec![field("ok", "boolean")], "ok"),
+        ("numbers", json!(["g"]), vec![field("g", "text")], "g"),
+        ("digits", json!(["n"]), vec![field("n", "decimal")], "n"),
+        ("nums", json!(["num"]), vec![field("num", "number")], "num"),
+        ("refs", json!(["r"]), vec![to_target.clone()], "r"),
+        (
+            "grid",
+            json!(["g", "at", "ok"]),
+            vec![
+                field("g", "text"),
+                field("at", "date_time"),
+                field("ok", "boolean"),
+            ],
+            "ok",
+        ),
+        (
+            "booleans",
+            json!(["g", "ok"]),
+            vec![field("g", "text"), field("ok", "boolean")],
+            "ok",
+        ),
+        (
+            "flags",
+            json!(["ok", "at"]),
+            vec![field("ok", "boolean"), field("at", "date_time")],
+            "at",
+        ),
+    ];
+    for (name, group_by, group_fields, ordered) in views {
+        let mut fields = group_fields;
+        fields.push(field("c", "number"));
+        for end in ["", "_twin"] {
+            let view = json!({"source": "poke", "group_by": group_by,
+                "measures": [c.clone()]});
+            l.declare_json(json!({"declare": "type", "name": format!("{name}{end}"),
+                "fields": fields, "view": view}))
+                .await?;
+        }
+        l.set(&format!("view_kept.{name}"), json!(true)).await?;
+        l.set(&format!("sort_index.{name}"), json!([ordered]))
+            .await?;
+    }
+    // A date group field a bucket fills: the key holds the bucket's start
+    // instant, where a day's key holds its text.
+    l.declare_json(json!({"declare": "type", "name": "stamp",
+        "fields": [field("g", "text"), field("on", "date_time"),
+            field("at", "date_time")]}))
+        .await?;
+    for end in ["", "_twin"] {
+        let view = json!({"source": "stamp", "group_by": ["g",
+            {"name": "day", "expr": "date_bucket(on, 'day')"}],
+            "measures": [c.clone()]});
+        l.declare_json(json!({"declare": "type", "name": format!("dated{end}"),
+            "fields": [field("g", "text"), field("day", "date"), field("c", "number")],
+            "view": view}))
+            .await?;
+    }
+    for end in ["", "_twin"] {
+        let view = json!({"source": "stamp", "group_by": [
+            {"name": "day", "expr": "date_bucket(on, 'day')"}, "at"],
+            "measures": [c.clone()]});
+        l.declare_json(json!({"declare": "type", "name": format!("days{end}"),
+            "fields": [field("day", "date"), field("at", "date_time"),
+                field("c", "number")], "view": view}))
+            .await?;
+    }
+    l.set("view_kept.dated", json!(true)).await?;
+    l.set("sort_index.dated", json!(["day"])).await?;
+    l.set("view_kept.days", json!(true)).await?;
+    l.set("sort_index.days", json!(["at"])).await?;
+    let ticks = [
+        (
+            "a0",
+            json!({"g": "a", "at": "2026-01-01T00:10:00Z", "ok": true, "n": "9", "num": 1, "r": "1"}),
+        ),
+        (
+            "a1",
+            json!({"g": "a", "at": "2026-01-01T01:10:00Z", "ok": false, "n": "10", "num": 2, "r": "2"}),
+        ),
+        (
+            "a2",
+            json!({"g": "a", "at": "2026-01-01T02:10:00Z", "ok": true, "n": "2", "num": 3, "r": "3"}),
+        ),
+        (
+            "b0",
+            json!({"g": "b", "at": "2026-01-01T00:20:00Z", "ok": true, "n": "3", "num": 4, "r": "4"}),
+        ),
+        (
+            "b1",
+            json!({"g": "b", "at": "2026-01-01T01:20:00Z", "ok": false, "n": "4", "num": 5, "r": "5"}),
+        ),
+        (
+            "c0",
+            json!({"g": "c", "at": "2026-01-01T00:30:00Z", "ok": true, "n": "5", "num": 6, "r": "6"}),
+        ),
+        (
+            "t9",
+            json!({"g": "9", "at": "2026-01-01T03:10:00Z", "ok": true, "n": "6", "num": 9, "r": "9"}),
+        ),
+        (
+            "t10",
+            json!({"g": "10", "at": "2026-01-01T03:20:00Z", "ok": true, "n": "7", "num": 10, "r": "10"}),
+        ),
+    ];
+    for (key, fields) in ticks {
+        l.upsert("poke", key, fields).await?;
+    }
+    for (key, day) in [
+        ("s1", "2026-01-05T00:10:00Z"),
+        ("s2", "2026-01-05T23:50:00Z"),
+        ("s3", "2026-01-06T00:10:00Z"),
+        ("s4", "2026-01-07T12:00:00Z"),
+        ("s5", "2026-01-05T00:05:00Z"),
+    ] {
+        let g = if key == "s5" { "b" } else { "a" };
+        l.upsert("stamp", key, json!({"g": g, "on": day, "at": day}))
+            .await?;
+    }
+    for view in [
+        "series", "times", "by_ok", "numbers", "digits", "nums", "refs", "grid", "booleans",
+        "flags", "dated", "days",
+    ] {
+        says(&l, view, "kept").await?;
+    }
+    Ok(l)
+}
+
+/// The keys of one page of `view` read `find`, and the rows the read
+/// walked in this process.
+async fn keys_walked(l: &Lake, view: &str, find: Find) -> Result<(Vec<String>, u64), Failure> {
+    let before = crate::engines::rows_walked_in_process();
+    let reply = l
+        .cat
+        .find(&l.own, &TypeName::from(view), find)
+        .await
+        .must("a page of a kept view")?;
+    let walked = crate::engines::rows_walked_in_process() - before;
+    match reply.data {
+        Found::Records { rows, .. } => Ok((
+            rows.iter().map(|r| r.key.as_str().to_owned()).collect(),
+            walked,
+        )),
+        Found::Groups { .. } => Err(Failure::new(format!("a page of `{view}` answered groups"))),
+    }
+}
+
+/// The keys of each page of `view` read `find` to its last, following its
+/// cursors.
+async fn keys_by_cursor(l: &Lake, view: &str, mut find: Find) -> Result<Vec<Vec<String>>, Failure> {
+    let mut out = Vec::new();
+    for _ in 0..64 {
+        let reply = l
+            .cat
+            .find(&l.own, &TypeName::from(view), find.clone())
+            .await
+            .must("a page of a kept view")?;
+        match reply.data {
+            Found::Records {
+                rows, next_cursor, ..
+            } => {
+                out.push(rows.iter().map(|r| r.key.as_str().to_owned()).collect());
+                match next_cursor {
+                    Some(c) => find.cursor = Some(c),
+                    None => return Ok(out),
+                }
+            }
+            Found::Groups { .. } => {
+                return Err(Failure::new(format!("a page of `{view}` answered groups")));
+            }
+        }
+    }
+    Err(Failure::new(format!(
+        "`{view}` walked more than 64 pages without its last"
+    )))
+}
+
+/// Fails unless every page of `view` read `find`, its cursors followed,
+/// answers the page the computation answers.
+async fn paged_as(l: &Lake, view: &str, what: &str, find: Find) -> Held {
+    let kept = keys_by_cursor(l, view, find.clone()).await?;
+    let computed = keys_by_cursor(l, &format!("{view}_twin"), find).await?;
+    ensure!(
+        kept == computed,
+        "`{view}` read {what} answers pages {kept:?}, and the computation {computed:?}"
+    );
+    Ok(())
+}
+
+async fn a_kept_filter_page_answers_in_the_group_fields_order(store: Store) -> Held {
+    let l = pokes(store).await?;
+    let (a, by_at) = ("g = 'a'".to_owned(), "at".to_owned());
+    let filter = |condition: &str| Some(Condition::Text(condition.to_owned()));
+    let ascending = || vec![order(&by_at, OrderBy::Value, Direction::Asc)];
+    // `series` is grouped `[g, at]`: the filter fixes `g`, so the page's
+    // remaining group field is `at`, and the three groups of `a` are the
+    // interval. The order index holds every series' groups in the at
+    // order, so a page read there walks more than the interval.
+    let reading = Find {
+        filter: filter(&a),
+        order_by: ascending(),
+        limit: Some(5),
+        ..Find::default()
+    };
+    let (keys, walked) = keys_walked(&l, "series", reading.clone()).await?;
+    ensure!(
+        keys.len() == 3,
+        "`series` read `g = 'a'` by `at` answers {} groups, not 3: {keys:?}",
+        keys.len()
+    );
+    ensure!(
+        walked == 3,
+        "`series` read `g = 'a'` by `at` walked {walked} rows, not the interval's 3: the page \
+         is not read from the key"
+    );
+    let (computed, _) = keys_walked(&l, "series_twin", reading).await?;
+    ensure!(
+        keys == computed,
+        "`series` read `g = 'a'` by `at` answers {keys:?}, and the computation {computed:?}"
+    );
+    // Across pages and batches, two a page, the cursor continuing by key.
+    paged_as(
+        &l,
+        "series",
+        "`g = 'a'` by `at`, two a page",
+        Find {
+            filter: filter(&a),
+            order_by: ascending(),
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // Three safe group fields, the filter fixing the first: the page asks
+    // for the two the filter leaves, in the declared order, and reads the
+    // interval's three keys.
+    let by_both = vec![
+        order(&by_at, OrderBy::Value, Direction::Asc),
+        order("ok", OrderBy::Value, Direction::Asc),
+    ];
+    let grid = Find {
+        filter: filter(&a),
+        order_by: by_both,
+        limit: Some(5),
+        ..Find::default()
+    };
+    let (keys, walked) = keys_walked(&l, "grid", grid.clone()).await?;
+    ensure!(
+        keys.len() == 3 && walked == 3,
+        "`grid` read `g = 'a'` by `at` and `ok` answers {} groups and walks {walked} rows, not \
+         the interval's 3",
+        keys.len()
+    );
+    let (computed, _) = keys_walked(&l, "grid_twin", grid).await?;
+    ensure!(
+        keys == computed,
+        "`grid` read `g = 'a'` by `at` and `ok` answers {keys:?}, and the computation {computed:?}"
+    );
+    paged_as(
+        &l,
+        "grid",
+        "`g = 'a'` by `at` and `ok`, two a page",
+        Find {
+            filter: filter(&a),
+            order_by: vec![
+                order(&by_at, OrderBy::Value, Direction::Asc),
+                order("ok", OrderBy::Value, Direction::Asc),
+            ],
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // A bound on the remaining field leaves the interval its own: the five
+    // groups of the first two hours.
+    let bounded = "at >= '2026-01-01T00:00:00Z' and at < '2026-01-01T02:00:00Z'";
+    let (keys, walked) = keys_walked(
+        &l,
+        "times",
+        Find {
+            filter: filter(bounded),
+            order_by: ascending(),
+            limit: Some(8),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 5 && walked == 5,
+        "`times` read `{bounded}` by `at` answers {} groups and walks {walked} rows, not the \
+         interval's 5",
+        keys.len()
+    );
+    paged_as(
+        &l,
+        "times",
+        &format!("`{bounded}` by `at`, two a page"),
+        Find {
+            filter: filter(bounded),
+            order_by: ascending(),
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // A boolean group field's components order as `false` and `true`
+    // compare.
+    let (keys, walked) = keys_walked(
+        &l,
+        "by_ok",
+        Find {
+            order_by: vec![order("ok", OrderBy::Value, Direction::Asc)],
+            limit: Some(5),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 2 && walked == 2,
+        "`by_ok` read by `ok` answers {} groups and walks {walked} rows, not the key's two",
+        keys.len()
+    );
+    ensure!(
+        keys.first().is_some_and(|k| k.starts_with("false")),
+        "`by_ok` read by `ok` answers {keys:?}, not the key's `false` first"
+    );
+    paged_as(
+        &l,
+        "by_ok",
+        "by `ok`, one a page",
+        Find {
+            order_by: vec![order("ok", OrderBy::Value, Direction::Asc)],
+            limit: Some(1),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // Grouped `[g, ok]`, the filter fixes `g` and the page asks for the
+    // boolean: the key's two interval keys are read, `false` before
+    // `true`.
+    let (keys, walked) = keys_walked(
+        &l,
+        "booleans",
+        Find {
+            filter: filter(&a),
+            order_by: vec![order("ok", OrderBy::Value, Direction::Asc)],
+            limit: Some(5),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys == ["a:false", "a:true"] && walked == 2,
+        "`booleans` read `g = 'a'` by `ok` answers {keys:?} and walks {walked} rows, not the \
+         key's `a:false`, `a:true` and 2"
+    );
+    paged_as(
+        &l,
+        "booleans",
+        "`g = 'a'` by `ok`, one a page",
+        Find {
+            filter: filter(&a),
+            order_by: vec![order("ok", OrderBy::Value, Direction::Asc)],
+            limit: Some(1),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // Grouped `[ok, at]`, a boolean exact fixes the first field: the
+    // interval's six `true` groups are walked, where the order index on
+    // `at`, which no text lookup narrows here, would walk all eight.
+    let truly = "ok = true".to_owned();
+    let (keys, walked) = keys_walked(
+        &l,
+        "flags",
+        Find {
+            filter: filter(&truly),
+            order_by: ascending(),
+            limit: Some(9),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 6 && walked == 6,
+        "`flags` read `{truly}` by `at` answers {} groups and walks {walked} rows, not the \
+         interval's 6",
+        keys.len()
+    );
+    let (computed, _) = keys_walked(
+        &l,
+        "flags_twin",
+        Find {
+            filter: filter(&truly),
+            order_by: ascending(),
+            limit: Some(9),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys == computed,
+        "`flags` read `{truly}` by `at` answers {keys:?}, and the computation {computed:?}"
+    );
+    paged_as(
+        &l,
+        "flags",
+        &format!("`{truly}` by `at`, two a page"),
+        Find {
+            filter: filter(&truly),
+            order_by: ascending(),
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // A date group field a bucket fills, its key the bucket's start
+    // instant: the page of the three days `a` holds reads the interval's
+    // three keys.
+    let by_day = || vec![order("day", OrderBy::Value, Direction::Asc)];
+    let (keys, walked) = keys_walked(
+        &l,
+        "dated",
+        Find {
+            filter: filter(&a),
+            order_by: by_day(),
+            limit: Some(5),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 3 && walked == 3,
+        "`dated` read `g = 'a'` by `day` answers {} groups and walks {walked} rows, not the \
+         interval's 3",
+        keys.len()
+    );
+    ensure!(
+        keys.first().is_some_and(|k| k.starts_with("a:2026-01-05")),
+        "`dated` read `g = 'a'` by `day` answers {keys:?}, not the day's first"
+    );
+    paged_as(
+        &l,
+        "dated",
+        "`g = 'a'` by `day`, one a page",
+        Find {
+            filter: filter(&a),
+            order_by: by_day(),
+            limit: Some(1),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // A day's upper end holds that day's text and every instant of it: the
+    // bound cuts the third day, its key an instant of that day, and the
+    // page walks the two the filter admits.
+    let by_a_day = "g = 'a' and day <= '2026-01-06'";
+    let (keys, walked) = keys_walked(
+        &l,
+        "dated",
+        Find {
+            filter: filter(by_a_day),
+            order_by: by_day(),
+            limit: Some(5),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 2 && walked == 2,
+        "`dated` read `{by_a_day}` by `day` answers {} groups and walks {walked} rows, not the \
+         bound's 2",
+        keys.len()
+    );
+    paged_as(
+        &l,
+        "dated",
+        &format!("`{by_a_day}` by `day`, one a page"),
+        Find {
+            filter: filter(by_a_day),
+            order_by: by_day(),
+            limit: Some(1),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // A date exact fixes the first field, whose key holds the bucket's
+    // start instant; the day's prefix holds both spellings, so the three
+    // groups of that day are walked, where the order index on `at`, which
+    // the exact does not narrow, holds all five.
+    let on_day = "day = '2026-01-05'";
+    let (keys, walked) = keys_walked(
+        &l,
+        "days",
+        Find {
+            filter: filter(on_day),
+            order_by: ascending(),
+            limit: Some(9),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 3 && walked == 3,
+        "`days` read `{on_day}` by `at` answers {} groups and walks {walked} rows, not the \
+         day's 3",
+        keys.len()
+    );
+    paged_as(
+        &l,
+        "days",
+        &format!("`{on_day}` by `at`, one a page"),
+        Find {
+            filter: filter(on_day),
+            order_by: ascending(),
+            limit: Some(1),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // Text, decimal, number and reference group fields keep their page on
+    // the order index: `9` answers before `10`, as the computation orders
+    // them, where the key's bytes put `10` first.
+    for (view, grouped, field) in [
+        ("numbers", "g", "g"),
+        ("digits", "n", "n"),
+        ("nums", "num", "num"),
+        ("refs", "r", "r"),
+    ] {
+        let find = Find {
+            order_by: vec![order(field, OrderBy::Value, Direction::Asc)],
+            limit: Some(99),
+            ..Find::default()
+        };
+        let (keys, _) = keys_walked(&l, view, find.clone()).await?;
+        let position = |key: &str| keys.iter().position(|k| k == key);
+        ensure!(
+            matches!((position("9"), position("10")), (Some(n9), Some(n10)) if n9 < n10),
+            "`{view}` read by `{grouped}` answers {keys:?}, not the computation's `9` before `10`"
+        );
+        paged_as(
+            &l,
+            view,
+            &format!("by `{grouped}`, two a page"),
+            Find {
+                limit: Some(2),
+                ..find
+            },
+        )
+        .await?;
+    }
+    // A descending order, an order that is not the remaining group
+    // fields, and the remaining fields the other way about keep the order
+    // index. The descending page read in the key's order would answer
+    // ascending, and the reversed pair would answer `at`'s order rather
+    // than `ok`'s then `at`'s, so a predicate that took any same-length
+    // set of the safe fields is red on the pair.
+    paged_as(
+        &l,
+        "series",
+        "`g = 'a'` by `at` descending",
+        Find {
+            filter: filter(&a),
+            order_by: vec![order("at", OrderBy::Value, Direction::Desc)],
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    paged_as(
+        &l,
+        "series",
+        "`g = 'a'` by `g` and `at`",
+        Find {
+            filter: filter(&a),
+            order_by: vec![
+                order("g", OrderBy::Value, Direction::Asc),
+                order("at", OrderBy::Value, Direction::Asc),
+            ],
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    paged_as(
+        &l,
+        "grid",
+        "`g = 'a'` by `ok` and `at`",
+        Find {
+            filter: filter(&a),
+            order_by: vec![
+                order("ok", OrderBy::Value, Direction::Asc),
+                order(&by_at, OrderBy::Value, Direction::Asc),
+            ],
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
     Ok(())
 }

@@ -701,8 +701,10 @@ impl<'a> Reader<'a> {
 
     /// [`Self::page`]'s other side: the engine's pages, one after another,
     /// as before the window's road. A kept name read in key order narrows to
-    /// the filter's interval on the group key; a page ordered otherwise
-    /// reads the order index, which the interval would not cut
+    /// the filter's interval on the group key, and a page ordered by the
+    /// remaining group fields, where the key's bytes order as the
+    /// comparator does, is read there too; a page ordered otherwise reads
+    /// the order index, which the interval would not cut
     /// (`docs/decisions/103-...`).
     fn page_plain(
         &self,
@@ -712,8 +714,21 @@ impl<'a> Reader<'a> {
         after: Option<(Vec<Value>, RecordKey)>,
         want: usize,
     ) -> Result<Vec<StoredRecord>> {
-        let range = self.narrowed(decl, filter).filter(|_| order.is_empty());
-        self.page_with(decl, filter, range, order, after, want)
+        let narrowed = self.narrowed(decl, filter);
+        // A page ordered by the group fields the filter leaves is read in
+        // the key's order, which is the comparator's there, and the
+        // filter's interval cuts it: no order index is read and its cursor
+        // continues by key
+        // (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`
+        // §A page in the group fields' order).
+        let by_key = order.is_empty()
+            || (lakelands_api::seam::is_kept_name(&decl.name)
+                && lakelands_core::engines::orders_by_group_key(decl, filter, order));
+        if by_key {
+            let order = if order.is_empty() { order } else { &[] };
+            return self.page_with(decl, filter, narrowed, order, after, want);
+        }
+        self.page_with(decl, filter, None, order, after, want)
     }
 
     /// [`Self::page`] with the interval `range` a kept name's read narrows

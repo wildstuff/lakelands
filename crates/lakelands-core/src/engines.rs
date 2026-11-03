@@ -1333,6 +1333,13 @@ const ABOVE_DAY: &str = "~";
 ///   keeping the text's order, nor `or`, `not`, `in`, `!=`, a term under a
 ///   function or a comparison of two paths.
 pub fn key_range(decl: &TypeDecl, filter: &Expr) -> Option<KeyRange> {
+    key_interval(decl, filter).0
+}
+
+/// [`key_range`], with the number of group fields the filter's exacts fix
+/// before the first field that does not narrow: the fields a page ordered
+/// by the key's order must ask for after ([`orders_by_group_key`]).
+fn key_interval(decl: &TypeDecl, filter: &Expr) -> (Option<KeyRange>, usize) {
     let fields = &decl.key;
     let mut fixed: Vec<String> = Vec::new();
     // Where the walk stopped before a field: the exacts it fixed are
@@ -1421,13 +1428,44 @@ pub fn key_range(decl: &TypeDecl, filter: &Expr) -> Option<KeyRange> {
         None if day_exact => Some(format!("{joined}{ABOVE_DAY};")),
         None => Some(format!("{joined};")),
     };
-    if from.is_none() && until.is_none() {
-        return None;
-    }
-    Some(KeyRange {
+    let range = (from.is_some() || until.is_some()).then(|| KeyRange {
         from: from.map(RecordKey::from),
         until: until.map(RecordKey::from),
-    })
+    });
+    (range, fixed.len())
+}
+
+/// Whether a page of a kept view keyed by `decl.key`, filtered by `filter`
+/// and ordered `order`, is read from the group key rather than from an
+/// order index
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`
+/// §A page in the group fields' order). The page must ask for the group
+/// fields the filter's exacts leave, in the declared order and ascending,
+/// and the key's bytes must order each of them as the comparator does:
+/// every one a date-time, date or boolean field. A text or reference
+/// field's bytes order by spelling — two values that read as numbers or
+/// as one instant compare equal or by number — and a number or decimal
+/// field's by its written text (`9` after `10`), so those keep their page
+/// on the order index.
+pub fn orders_by_group_key(decl: &TypeDecl, filter: Option<&Expr>, order: &[Order]) -> bool {
+    let remaining = &decl.key[fixed_fields(decl, filter)..];
+    !order.is_empty()
+        && order.len() == remaining.len()
+        && order.iter().zip(remaining).all(|(o, field)| {
+            o.by == OrderBy::Value && o.dir == Direction::Asc && o.field == *field
+        })
+        && remaining.iter().all(|field| {
+            matches!(
+                field_kind(decl, field),
+                Some(StorageKind::DateTime | StorageKind::Date | StorageKind::Boolean)
+            )
+        })
+}
+
+/// How many of a kept view's group fields a filter's exacts fix before the
+/// first field that does not narrow ([`key_range`]).
+fn fixed_fields(decl: &TypeDecl, filter: Option<&Expr>) -> usize {
+    filter.map_or(0, |f| key_interval(decl, f).1.min(decl.key.len()))
 }
 
 /// The key component `literal` fixes for a group field of `kind` compared
