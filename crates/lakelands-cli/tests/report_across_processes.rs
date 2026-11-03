@@ -213,16 +213,16 @@ fn an_act_goes_through_under_a_preflight_another_process_printed() {
     }
 }
 
-/// A write between the preflight and the act refuses forget; `values
-/// remove` and a purge refuse it only where the write reached a record
-/// their report named. A removal and a purge take a write elsewhere, and
-/// the purge's own source's later write; a preflight after a refusal is
-/// acted on.
+/// A write between a preflight and its act: a forgetting and a removal
+/// take one elsewhere in, and so does a purge, the purge's own source's
+/// later write too; `values remove` and a purge refuse it only where the
+/// write reached a record their report named. A forgetting refuses a
+/// report of another source, and a preflight after a refusal is acted on.
 #[test]
 fn a_write_between_the_preflight_and_the_act_refuses_what_it_reached() {
     for (engine, url) in engines() {
         let root = Root::new(&format!("moved_{engine}"), url.as_deref());
-        for source in ["bank", "crm", "tracker", "ledger"] {
+        for source in ["bank", "crm", "tracker", "ledger", "spare"] {
             root.ingest(source, &format!("{source}-1"));
         }
         let cut = || {
@@ -232,24 +232,33 @@ fn a_write_between_the_preflight_and_the_act_refuses_what_it_reached() {
         };
         let first = cut();
 
-        // A forgetting's report is of the head it read: a write since, of
-        // any source, refuses it, and a preflight after the refusal is
-        // acted on.
+        // A forgetting's report names the position it read and what it
+        // selected there: a write elsewhere since is taken in (099), and a
+        // report of another source is refused; a preflight after the
+        // refusal is acted on.
         let forget = ["forget", "--source", "crm"];
         let id = root.preflight(&forget);
         root.ingest("other", "other-0");
-        let stale = root.act(&forget, &id);
-        assert!(
-            !stale.ok && stale.err.contains("not of this forgetting"),
-            "{engine}: `forget` after a write: {}{}",
-            stale.out,
-            stale.err
-        );
-        let id = root.preflight(&forget);
         let done = root.act(&forget, &id);
         assert!(
             done.ok && done.out.contains("forgot crm through position "),
-            "{engine}: `forget` after a fresh preflight: {}{}",
+            "{engine}: `forget` after a write elsewhere: {}{}",
+            done.out,
+            done.err
+        );
+        let spare = ["forget", "--source", "spare"];
+        let elsewhere = root.preflight(&spare);
+        let stale = root.act(&forget, &elsewhere);
+        assert!(
+            !stale.ok && stale.err.contains("not of this forgetting"),
+            "{engine}: `forget` under another source's report: {}{}",
+            stale.out,
+            stale.err
+        );
+        let done = root.act(&spare, &elsewhere);
+        assert!(
+            done.ok && done.out.contains("forgot spare through position "),
+            "{engine}: `forget` under its own report after a refusal: {}{}",
             done.out,
             done.err
         );
