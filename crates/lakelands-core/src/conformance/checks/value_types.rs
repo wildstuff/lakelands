@@ -53,7 +53,7 @@ check!(
 
 check!(
     STALE_REPORT = a_value_type_report_from_before_the_lake_moved_is_refused,
-    "027 and 006: a value-type migration is applied only against the report of the lake as it stands; after the lake moved it is refused as invalid; and only by the id of the report its caller was shown: two readers kept from different uses of one tightening, each applying by the other's id, are refused as `migration_stale`, appending nothing, where its own applies (lakelands#935)"
+    "027 and 006: a value-type migration is applied only against the report of the lake as it stands; after a write reached what it names it is refused as invalid; and only by the id of the report its caller was shown: two readers kept from different uses of one tightening, each applying by the other's id, are refused as `migration_stale`, appending nothing, where its own applies (lakelands#935)"
 );
 
 check!(

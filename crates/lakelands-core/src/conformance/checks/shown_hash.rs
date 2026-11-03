@@ -8,7 +8,7 @@ use crate::conformance::prelude::*;
 
 check!(
     HASH_OF_THE_SHOWN_SHAPE = a_schema_hash_is_that_of_the_shape_its_reader_is_shown,
-    "024, extended (lakelands#644): a schema hash answered to a reader is that of the declaration it is shown, without the fields and link fields it may not know of, the relations it is not shown (lakelands#662) and a view it is not described, in `describe`, a preview and a listed proposal; `more` is decided before the hashes, a report's id is made over what it shows and the head, the `to` hash is judged through the migration's renames, a stale proposal's `from` is that of the type it was made from; the accept, the log and the owner keep the whole hash"
+    "024, extended (lakelands#644): a schema hash answered to a reader is that of the declaration it is shown, without the fields and link fields it may not know of, the relations it is not shown (lakelands#662) and a view it is not described, in `describe`, a preview and a listed proposal; `more` is decided before the hashes, a report's id names the position it was read at and is made over what it shows there, the `to` hash is judged through the migration's renames, a stale proposal's `from` is that of the type it was made from; the accept, the log and the owner keep the whole hash"
 );
 
 check!(
@@ -137,7 +137,7 @@ async fn a_schema_hash_is_that_of_the_shape_its_reader_is_shown(store: Store) ->
 
     // A preview of what touches nothing hidden: its hashes are the shapes
     // the reader sent and was shown, `more` is false, and the reader makes
-    // its id from the report and the head.
+    // its id from the report at the position it was read.
     let mut sent = account("text", true, true);
     let kept: Vec<Value> = (sent["fields"].as_array().into_iter().flatten())
         .filter(|f| f["name"] != "score")
@@ -148,12 +148,12 @@ async fn a_schema_hash_is_that_of_the_shape_its_reader_is_shown(store: Store) ->
     let preview = l.cat.migrate(&hid, sent.clone()).await;
     let preview = preview.must("hid's preview")?;
     let (head, report) = (preview.position, preview.data);
-    let made = json!({"report": MigrationReport { report_id: String::new(), ..report.clone() },
-        "head": head.0});
+    let made = json!({"report": MigrationReport { report_id: String::new(), ..report.clone() }});
     let sent_hash = crate::shape::schema_hash(&sent.to).expect("no view");
+    let id = format!("{}-{}", head.0, lakelands_api::canonical::sha256_hex(&made));
     ensure!(
         (report.from_schema_hash == h0 && report.to_schema_hash == sent_hash && !report.more)
-            && report.report_id == lakelands_api::canonical::sha256_hex(&made),
+            && report.report_id == id,
         "hid's preview is answered the hashes {h0} and {sent_hash}, no more, and the id of what it \
          shows at {head:?}; it is answered {report:?}"
     );

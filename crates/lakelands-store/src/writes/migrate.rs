@@ -1269,27 +1269,31 @@ impl Call<'_> {
     }
 }
 
-/// A value type's report named by what it says to its reader and where
-/// the lake stood (`head`), its own id left empty: an apply after the lake
-/// moved is refused. Its uses, its misfits named and its `conditions` are
-/// its reader's, so two readers shown otherwise are given two ids for one
-/// lake, and what a reader is not shown moves no id; one that renames is
-/// shown whole or not at all, and named whole.
+/// A value type's report named by `<through>-<digest>`: the position it
+/// was read at and what it says to its reader, its own id left empty, and
+/// never the head, so that a write elsewhere leaves it good (099). Its
+/// uses, its misfits named and its `conditions` are its reader's, so two
+/// readers shown otherwise are given two ids for one lake, and what a
+/// reader is not shown moves no id; one that renames is shown whole or
+/// not at all, and named whole.
 pub(crate) fn value_report_id(
     report: &ValueTypeReport,
     to: &ValueTypeDecl,
     renames: &[(String, String)],
-    head: u64,
+    through: Option<Position>,
 ) -> String {
+    let report = ValueTypeReport {
+        report_id: String::new(),
+        ..report.clone()
+    };
     let mut said = serde_json::json!({
-        "report": serde_json::to_value(report).expect("a report serialises"),
+        "report": serde_json::to_value(&report).expect("a report serialises"),
         "to": serde_json::to_value(to).expect("a declaration serialises"),
-        "head": head,
     });
     if !renames.is_empty() {
         said["renames"] = serde_json::json!(renames);
     }
-    lakelands_core::canonical::sha256_hex(&said)
+    report_named(through, said)
 }
 
 /// The declarations in `ontology` whose expressions hold an old value of
@@ -1676,11 +1680,11 @@ impl Call<'_> {
         if !renames.is_empty() {
             conditions(&w.ontology, view, self.who, &mut report, &renames)?;
         }
-        let head = (self.lake.report_head(view.position())?).map_or(0, |p| p.0);
+        let through = self.lake.report_head(view.position())?;
         // Named as its reader is shown it; one that renames is never trimmed.
         let shown = self.shown_value_type(&w.ontology, report.clone());
         let said = if renames.is_empty() { &shown } else { &report };
-        report.report_id = value_report_id(said, to, &m.renames, head);
+        report.report_id = value_report_id(said, to, &m.renames, through);
         plan.report = report;
         Ok(plan)
     }

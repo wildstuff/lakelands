@@ -240,8 +240,8 @@ row that it is never left behind holds.
   tail. `report_id` and `value_report_id` leave the head.
 - **Proposals'** `id_head` take the same id function.
 
-They hash the same head today, and that is all they share. Plan, declaration and migrate
-stay in one step and can be cut.
+They hashed the same head before this step, and that is all they share. Plan,
+declaration and migrate stay in one step and can be cut.
 
 ### Restate: scoped first, then beside
 
@@ -942,6 +942,36 @@ on the first pull's frame. Forget keeps its one-append path until lakelands#1700
   the write's own position, so neither the scheduler nor a projection mark behind the
   log can widen the count; fifty runs with every core busy did not.
 
+**R3 (lakelands#1718).** A plan, a declaration's plan, and a migration's or a value
+type's report name the position they were read at, and a write after them stales them
+only when it reaches what they name.
+
+- **The id.** `report_id`, `value_report_id` and `plan_id` are `<through>-<digest>`:
+  `through` is the report head 039 names at the position the report was read, and the
+  digest is made over the report as its reader is shown it there, with its own id empty
+  — and, in a plan, each section's id empty and `at` at `GENESIS`, since a section's id
+  is itself a position and a digest. The one function builds all three
+  (`writes::report_named`). A records change's plan has the same shape, its digest made
+  over what it selects — each selected key with the version it read — so a write
+  elsewhere leaves it good, and one that moves a selected key or joins the selection
+  moves its digest (081).
+- **The check.** `writes::says` reads the position out of the id the caller repeats and
+  compares digests; `writes::reached_since` reads at most one event past that position
+  through `road::read_tail` with a `Reach` of types and no sources or keys, and answers
+  reached when one is found, when the position is past the head, or when the bound is
+  overrun. `stale_plan` names the types every section and every value type's uses name;
+  `stale_report` names the type a migration rewrites, or the types that use the value
+  type it changes. Each refusal appends nothing.
+- **What reads it.** `declaring`, `migrating` and `migrating_value_type` stop comparing
+  the head; a proposal's `id_head` is the report head the value type's id is made from
+  again, and a listed proposal recomputes the same digest.
+- **Restated where they said otherwise:** 006's report id and 062's plan id now name the
+  position, not the head; `docs/refusals.md` for `plan_stale` and `migration_stale`.
+- **Rows taken on every engine:** `REPORT_STALE_WHEN_REACHED`, and
+  `REPORT_NOT_STALE_BY_A_WRITE_ELSEWHERE` extended to a change to records, a
+  declaration, a migration and a value type. `HASH_OF_THE_SHOWN_SHAPE`, `PLAN_TELLS`,
+  `PLAN_REOPENED` and `STALE_REPORT` are restated for the id and the word "moved".
+
 ## How it came to be
 
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
@@ -952,6 +982,9 @@ on the first pull's frame. Forget keeps its one-append path until lakelands#1700
   read there.
 - R2's second pull built by lakelands#1691 with remove on the road and a write reading
   through an owed act; forget follows in lakelands#1700.
+- R3 built by lakelands#1718: a plan, a declaration's plan and a migration's or a value
+  type's report name the position they were read at, and only a write that reaches what
+  they name stales them.
 - Amended by 102 (lakelands#1639), proposed for 0.23.0: a thinning act begins
   with `values_thinned`, and a write at a key it selected is refused rather
   than reading through the act.

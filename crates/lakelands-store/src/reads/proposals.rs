@@ -898,13 +898,14 @@ impl<'a> Reader<'a> {
             }
         }
         report.report_id = String::new();
-        let head = self.id_head(at)?.map_or(0, |p| p.0);
-        report.report_id = crate::writes::value_report_id(report, to, renames, head);
+        let through = self.id_head(at)?;
+        report.report_id = crate::writes::value_report_id(report, to, renames, through);
         Ok(())
     }
 
-    /// The head a proposal's report id is made again at: the one 039 names
-    /// before the proposal, as the preflight it was proposed from named it.
+    /// The position a proposal's report id is made again at: the one 039
+    /// names before the proposal, as the preflight it was proposed from
+    /// named it.
     fn id_head(&self, at: Position) -> Result<Option<Position>> {
         self.lake
             .report_head(Some(Position(at.0.saturating_sub(1))))

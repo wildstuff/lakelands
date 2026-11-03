@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::catalog::Verification;
 use lakelands_api::seam::FeedBatch;
-use lakelands_api::write::RemoveReport;
+use lakelands_api::write::{Change, ChangeTo, RemoveReport, ValueTypeMigration};
 
+use super::only::de;
 use super::removed::{acts, at, erased};
 use crate::conformance::fixture::source_record;
 use crate::conformance::prelude::*;
@@ -56,7 +57,12 @@ check!(
 check!(
     REPORT_NOT_STALE_BY_A_WRITE_ELSEWHERE =
         a_write_that_reaches_nothing_of_the_report_leaves_its_id_good,
-    "099: a report names the position it was read at and the selection there; a write since elsewhere, another source's record of a type the report names and a delivery the report does not select, is neither of those, so the act under the id is taken and answers what the preflight named, for a removal and a purge alike; a forgetting's half follows in lakelands#1700"
+    "099: a report names the position it was read at and the selection there; a write since elsewhere, another source's record of a type the report names and a delivery the report does not select, is neither of those, so the act under the id is taken and answers what the preflight named, for a removal and a purge alike; a plan of a change to records, a declaration's plan, a migration's report and a value type's hold alike when their caller writes a record of a type they do not name; a forgetting's half follows in lakelands#1700"
+);
+
+check!(
+    REPORT_STALE_WHEN_REACHED = a_write_that_reaches_the_report_refuses_its_id,
+    "099: a report's id names what it read, never the head the lake stood at, and a write after it that reaches what it names makes it stale though its content is the same: a record joined a change to records' selection, a write to a type a declaration's plan computes again, a write to the type a migration rewrites and to a type that uses the value type a migration changes; each act under the id is refused `plan_stale` or `migration_stale`, appending nothing"
 );
 
 check!(
@@ -105,6 +111,90 @@ async fn delivered(l: &Lake, source: &str, ty: &str, id: &str, records: &[(&str,
         .await
         .must("ingesting a delivery")?;
     Ok(())
+}
+
+/// `meter`'s declaration, with `flag` when asked.
+fn meter(flag: bool) -> Value {
+    let mut fields = vec![
+        json!({"name": "id", "type": {"kind": "text"}}),
+        json!({"name": "reading", "type": {"kind": "number"}}),
+        json!({"name": "grade", "type": {"kind": "text", "value_type": "grade"}}),
+        json!({"name": "twice", "type": {"kind": "number"}, "authority": "derived",
+               "function": "dbl", "depends_on": ["reading"]}),
+    ];
+    if flag {
+        fields.push(json!({"name": "flag", "type": {"kind": "text"}}));
+    }
+    json!({"name": "meter", "key": ["id"], "fields": fields})
+}
+
+/// `visit` and `invoice` from their sources, a `meter` whose `twice` is
+/// `dbl`'s and whose `grade` is a `grade`, and the four declarations:
+/// the lake a plan of each act is made on.
+async fn planning(l: &Lake) -> Held {
+    visits(l).await?;
+    l.declare_json(json!({"declare": "type", "name": "invoice", "fields": [
+        {"name": "amount", "type": {"kind": "number"}, "authority": "source"}]}))
+        .await?;
+    l.declare_json(
+        json!({"declare": "value_type", "name": "grade", "kind": "text",
+        "one_of": ["a", "b", "c"]}),
+    )
+    .await?;
+    l.declare_json(
+        json!({"declare": "function", "name": "dbl", "backing": "expr",
+        "inputs": [{"name": "reading", "type": {"kind": "number"}}],
+        "expr": "reading * 2"}),
+    )
+    .await?;
+    let mut declared = meter(false);
+    declared["declare"] = json!("type");
+    l.declare_json(declared).await?;
+    delivered(
+        l,
+        "tracker",
+        "visit",
+        "b1",
+        &[("v1", json!({"id": "v1", "duration": 10}))],
+    )
+    .await?;
+    delivered(l, "crm", "invoice", "c1", &[("c1", json!({"amount": 1}))]).await?;
+    l.upsert("meter", "m1", json!({"reading": 2, "grade": "a"}))
+        .await?;
+    Ok(())
+}
+
+/// A change to `visit` where `duration` is 10 or more, its `note` set.
+fn picked() -> Change {
+    Change::Records {
+        ty: "visit".into(),
+        filter: Box::new("duration >= 10".into()),
+        to: ChangeTo::Set(de(json!({"note": "picked"}))),
+        only: BTreeMap::new(),
+        skip_restricted: false,
+    }
+}
+
+/// `dbl` declared again so that `twice` is three times the reading.
+fn thrice() -> Change {
+    Change::Declare {
+        declarations: vec![de(json!({"declare": "function", "name": "dbl",
+            "backing": "expr",
+            "inputs": [{"name": "reading", "type": {"kind": "number"}}],
+            "expr": "reading * 3"}))],
+    }
+}
+
+/// A migration of `meter` adding `flag`.
+fn flagged() -> Migration {
+    Migration::to(de(meter(true)))
+}
+
+/// `grade` tightened to the two values the lake's records fit.
+fn tighten() -> ValueTypeMigration {
+    ValueTypeMigration::from(de::<ValueTypeDecl>(
+        json!({"name": "grade", "kind": "text", "one_of": ["a", "b"]}),
+    ))
 }
 
 /// A far date, so a `WrittenBefore` act selects every write before it.
@@ -538,18 +628,8 @@ async fn an_act_outrun_by_the_writer_answers_unavailable_and_appends_nothing(
 
 async fn a_write_that_reaches_nothing_of_the_report_leaves_its_id_good(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
-    visits(&l).await?;
+    planning(&l).await?;
     let v = |k: &str, d: u32| json!({"id": k, "duration": d});
-    delivered(&l, "tracker", "visit", "b1", &[("v1", v("v1", 10))]).await?;
-    l.declare_json(json!({"declare": "type", "name": "invoice", "fields": [
-        {"name": "amount", "type": {"kind": "number"}, "authority": "source"}]}))
-        .await?;
-    l.ingest(
-        "crm",
-        vec![source_record("invoice", "c1", json!({"amount": 1}))],
-    )
-    .await
-    .must("ingesting from crm")?;
     let tracker: SourceId = "tracker".into();
     let sel = Selection::Delivery(lakelands_api::DeliveryId::from("b1"));
     let report = store
@@ -599,6 +679,200 @@ async fn a_write_that_reaches_nothing_of_the_report_leaves_its_id_good(store: St
          answer what the preflight named: the report {purge:?}, the act {purged:?}, c1 {c1:?}, \
          c9 {c9:?}"
     );
+    // A change to records, a declaration, a migration and a value type's:
+    // each is applied after a write to a type its report does not name.
+    let planned = l
+        .cat
+        .plan(&l.own, picked())
+        .await
+        .must("planning a change to records")?
+        .data;
+    delivered(&l, "web", "invoice", "b5", &[("c2", json!({"amount": 2}))]).await?;
+    l.cat
+        .enact(&l.own, picked(), &planned.report_id)
+        .await
+        .must("a change to records under its plan after a write elsewhere")?;
+    let picked_note =
+        (at(&l, "visit", "v9", None).await?).and_then(|r| r.fields.get("note").cloned());
+    ensure!(
+        picked_note == Some(json!("picked")),
+        "a change to records under its plan after a write elsewhere must have set v9's note: \
+         the plan {planned:?}, v9's note {picked_note:?}"
+    );
+    let planned = l
+        .cat
+        .plan(&l.own, thrice())
+        .await
+        .must("planning `dbl` declared again")?
+        .data;
+    delivered(&l, "web", "invoice", "b3", &[("c3", json!({"amount": 3}))]).await?;
+    l.cat
+        .enact(&l.own, thrice(), &planned.report_id)
+        .await
+        .must("a declaration under its plan after a write elsewhere")?;
+    let twice = (at(&l, "meter", "m1", None).await?).and_then(|r| r.fields.get("twice").cloned());
+    ensure!(
+        twice == Some(json!(6)),
+        "a declaration under its plan after a write elsewhere must have computed `twice` again: \
+         the plan {planned:?}, m1's twice {twice:?}"
+    );
+    let planned = l
+        .cat
+        .plan(
+            &l.own,
+            Change::Migrate {
+                migration: Box::new(flagged()),
+            },
+        )
+        .await
+        .must("planning the migration of `meter`")?
+        .data;
+    let id = (planned.types.first())
+        .map(|t| t.report_id.clone())
+        .ok_or_else(|| Failure::new("the migration's plan told no type"))?;
+    delivered(
+        &l,
+        "tracker",
+        "visit",
+        "b7",
+        &[("v3", json!({"id": "v3", "duration": 30}))],
+    )
+    .await?;
+    l.cat
+        .migrate_apply(&l.own, flagged(), &id)
+        .await
+        .must("a migration under its plan after a write elsewhere")?;
+    ensure!(
+        (l.describe_type("meter").await?.fields)
+            .iter()
+            .any(|f| f.name.as_str() == "flag"),
+        "a migration under its plan after a write elsewhere must have added `flag` to `meter`: \
+         the plan {planned:?}"
+    );
+    let migration = tighten();
+    let planned = l
+        .cat
+        .plan(
+            &l.own,
+            Change::MigrateValueType {
+                migration: Box::new(migration.clone()),
+            },
+        )
+        .await
+        .must("planning the value type's migration")?
+        .data;
+    let id = (planned.value_types.first())
+        .map(|v| v.report_id.clone())
+        .ok_or_else(|| Failure::new("the value type's plan told no value type"))?;
+    delivered(&l, "web", "invoice", "b4", &[("c4", json!({"amount": 4}))]).await?;
+    l.cat
+        .migrate_value_type_apply(&l.own, migration, &id)
+        .await
+        .must("a value type's migration under its plan after a write elsewhere")?;
+    let outside = try_upsert(
+        l.cat.as_ref(),
+        &l.own,
+        "meter",
+        "m2",
+        json!({"reading": 1, "grade": "c"}),
+    )
+    .await;
+    ensure!(
+        outside.is_err(),
+        "the value type's migration under its plan after a write elsewhere must have tightened \
+         `grade`: a write of `c` answered {outside:?}"
+    );
+    Ok(())
+}
+
+async fn a_write_that_reaches_the_report_refuses_its_id(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    planning(&l).await?;
+    // A record joins a change to records' selection.
+    let planned = l
+        .cat
+        .plan(&l.own, picked())
+        .await
+        .must("planning a change to records")?
+        .data;
+    delivered(
+        &l,
+        "tracker",
+        "visit",
+        "b2",
+        &[("v2", json!({"id": "v2", "duration": 20}))],
+    )
+    .await?;
+    let head = store.head().await.must("reading the head")?;
+    refused_like(
+        "a change to records after a record joined its selection",
+        l.cat.enact(&l.own, picked(), &planned.report_id).await,
+        &json!({"code": "plan_stale"}),
+    )?;
+    head_unmoved(store.as_ref(), head, "a change under a stale plan").await?;
+    // A write to a type a declaration's plan computes again, leaving the
+    // plan's own content the same.
+    let planned = l
+        .cat
+        .plan(&l.own, thrice())
+        .await
+        .must("planning `dbl` declared again")?
+        .data;
+    l.upsert("meter", "m1", json!({"grade": "b"})).await?;
+    let head = store.head().await.must("reading the head")?;
+    refused_like(
+        "a declaration after a write to the type it computes again",
+        l.cat.enact(&l.own, thrice(), &planned.report_id).await,
+        &json!({"code": "plan_stale"}),
+    )?;
+    head_unmoved(store.as_ref(), head, "a declaration under a stale plan").await?;
+    // A write to the type a migration rewrites, its report the same.
+    let planned = l
+        .cat
+        .plan(
+            &l.own,
+            Change::Migrate {
+                migration: Box::new(flagged()),
+            },
+        )
+        .await
+        .must("planning the migration of `meter`")?
+        .data;
+    let id = (planned.types.first())
+        .map(|t| t.report_id.clone())
+        .ok_or_else(|| Failure::new("the migration's plan told no type"))?;
+    l.upsert("meter", "m1", json!({"reading": 3})).await?;
+    let head = store.head().await.must("reading the head")?;
+    refused_like(
+        "a migration after a write to the type it rewrites",
+        l.cat.migrate_apply(&l.own, flagged(), &id).await,
+        &json!({"code": "migration_stale"}),
+    )?;
+    head_unmoved(store.as_ref(), head, "a migration under a stale report").await?;
+    // A write to a type that uses the value type a migration changes.
+    let migration = tighten();
+    let planned = l
+        .cat
+        .plan(
+            &l.own,
+            Change::MigrateValueType {
+                migration: Box::new(migration.clone()),
+            },
+        )
+        .await
+        .must("planning the value type's migration")?
+        .data;
+    let id = (planned.value_types.first())
+        .map(|v| v.report_id.clone())
+        .ok_or_else(|| Failure::new("the value type's plan told no value type"))?;
+    l.upsert("meter", "m1", json!({"grade": "a"})).await?;
+    let head = store.head().await.must("reading the head")?;
+    refused_like(
+        "a value type's migration after a write to a type that uses it",
+        l.cat.migrate_value_type_apply(&l.own, migration, &id).await,
+        &json!({"code": "migration_stale"}),
+    )?;
+    head_unmoved(store.as_ref(), head, "a value type under a stale report").await?;
     Ok(())
 }
 

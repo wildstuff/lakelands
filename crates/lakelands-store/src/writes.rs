@@ -2203,19 +2203,76 @@ fn head(w: &Writer) -> Position {
     tip.map_or(Position::GENESIS, |t| t.0)
 }
 
-/// A migration report's id: named by what it says to its reader and where
-/// the lake stood, its head as [`Lake::report_head`] names it, so that an
-/// apply after the lake moved is refused, and computed by its reader from
-/// what it holds, which names nothing hidden (024, extended).
-pub(crate) fn report_id(report: &MigrationReport, head: Option<Position>) -> String {
+/// A migration report's id: `<through>-<digest>`, the position it was read
+/// at and what it said there, never the head, so that a write elsewhere
+/// leaves it good and only a write to the type stales it (099). Computed
+/// by its reader from what it holds, which names nothing hidden (024,
+/// extended).
+pub(crate) fn report_id(report: &MigrationReport, through: Option<Position>) -> String {
     let report = MigrationReport {
         report_id: String::new(),
         ..report.clone()
     };
-    lakelands_core::canonical::sha256_hex(&serde_json::json!({
-        "report": serde_json::to_value(&report).expect("a report serialises"),
-        "head": head.map_or(0, |p| p.0),
-    }))
+    report_named(
+        through,
+        serde_json::json!({"report": serde_json::to_value(&report).expect("a report serialises")}),
+    )
+}
+
+/// A report's id from what it says and the position it was read at: the
+/// position, then the digest of `said` in canonical form (099).
+pub(crate) fn report_named(through: Option<Position>, said: serde_json::Value) -> String {
+    format!(
+        "{}-{}",
+        through.map_or(0, |p| p.0),
+        lakelands_core::canonical::sha256_hex(&said)
+    )
+}
+
+/// The position and digest a report's id names: `<through>-<digest>`.
+/// `None` where the string is no report of this shape.
+pub(crate) fn named(id: &str) -> Option<(Position, &str)> {
+    let (through, digest) = id.split_once('-')?;
+    Some((Position(through.parse().ok()?), digest))
+}
+
+/// The `through` `given` names, where it says what `made` says: a report
+/// is the same wherever it is read, so only the digest is compared
+/// (099). `None` where the two say otherwise.
+pub(crate) fn says(given: &str, made: &str) -> Option<Position> {
+    match (named(given), named(made)) {
+        (Some((through, said)), Some((_, mine))) if said == mine => Some(through),
+        _ => None,
+    }
+}
+
+/// Whether a write past `through` reaches a report naming records of
+/// `types`: found in the log index by type (`routes_ty`), the log read
+/// where the index decides nothing; one such write is a reach, and so is
+/// a tail past its bound or a `through` past the view's head (099).
+pub(crate) fn reached_since(
+    lake: &Lake,
+    view: &dyn ProjectionView,
+    through: Position,
+    types: &BTreeSet<TypeName>,
+) -> Result<bool> {
+    if types.is_empty() {
+        return Ok(false);
+    }
+    if through > view.position().unwrap_or(Position::GENESIS) {
+        return Ok(true);
+    }
+    let reach = crate::road::Reach {
+        sources: Vec::new(),
+        types: types.iter().cloned().collect(),
+        keys: BTreeSet::new(),
+    };
+    Ok(
+        match crate::road::read_tail(lake, view, &reach, Some(through), 1)? {
+            Some(events) => !events.is_empty(),
+            None => true,
+        },
+    )
 }
 
 /// The next position in an append that already holds `n` drafts, after
