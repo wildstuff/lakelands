@@ -676,8 +676,9 @@ pub trait LakeStore: Send + Sync {
     /// destroyed, and what they sealed is shredded; with
     /// `require_shredded`, refused while a value of an erasable field would
     /// be redacted only. With a preflight's id, refused unless that report
-    /// is of this removal at this head. A step a crash left owed is
-    /// finished by the next writer's open; a reclaim that fails is
+    /// is of this removal at the position it was read at, and names the
+    /// selection the act finds there. A step a crash left owed is finished
+    /// by the road beside the next writer's open; a reclaim that fails is
     /// answered in the report's `reclaim_owed`, as for
     /// [`Self::forget_source`].
     async fn remove_values(

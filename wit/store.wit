@@ -97,7 +97,7 @@ interface store {
         /// its key whose values it all selects are destroyed. With
         /// `require-shredded`, refused while a value of an erasable field
         /// would be redacted only. With a preflight's id, refused unless
-        /// that report is of this removal at this head.
+        /// that report is of this removal at the position it was read at.
         remove-values: func(source: source-id, selection: selection, require-shredded: bool, report-id: option<string>) -> result<remove-report, error>;
         /// What `remove-values` would do, appending nothing, with the time
         /// it is expected to hold the writer's lock.
