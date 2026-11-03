@@ -833,7 +833,11 @@ remove on the frame (lakelands#1691); forget follows in lakelands#1700.
   the act's position as its window. The list holds every act the log has, closed or not, and
   both frame events write it whole: no act is ever dropped from it.
 - **Parts.** The walk judges the selection off the writer, and the report is the walk's.
-  The first turn folds the tail past the walk's view into that selection — it reads again
+  A removal's first turn reads its report again from the records it judged again and the
+  tail folded in, so `retired`, `types`, `kept`, `breaches`, `references`, `recomputed`
+  and `views` name what the act takes; `taken_since` is not built, the act's report being
+  its own and not the walk's patched. The first turn folds the tail past the walk's view
+  into that selection — it reads again
   only the keys the tail wrote — names the records outside it that refer in, and appends
   `source_purged` beside the quarantine closes, recording the act's position. Each part
   then takes up to `part_events` of the selection's records in type and key order, rereads

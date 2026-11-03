@@ -1949,16 +1949,23 @@ async fn a_tail_event_before_the_time_is_taken_and_one_after_is_not(store: Store
     let done = crate::lock(&slot).take().expect("the act answered");
     let early = at(&l, "visit", "early", None).await?;
     let late = at(&l, "visit", "late", None).await?;
+    // The report is of the records the act judged again at its first turn,
+    // not of the walk's: the one the tail made is retired, and counted.
+    let retired: u32 = done.retired.iter().map(|t| t.retired).sum();
+    let held: u64 = done.types.iter().map(|t| t.records).sum();
     ensure!(
         pre.events == 1_200
             && done.events == pre.events + 1
+            && held == pre.events + 1
+            && u64::from(retired) == pre.events + 1
+            && done.kept.is_empty()
             && early.is_none()
             && late
                 .as_ref()
                 .is_some_and(|r| r.fields.get("duration") == Some(&json!(7))),
         "the act takes the event written before the time while it walked, one more than its \
-         report read, and leaves the one written after it: the preflight {pre:?}, the act \
-         {done:?}, early {early:?}, late {late:?}"
+         report read, retires it and counts it: the preflight {pre:?}, the act {done:?}, early \
+         {early:?}, late {late:?}"
     );
     Ok(())
 }

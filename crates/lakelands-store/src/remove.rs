@@ -1393,18 +1393,23 @@ impl Remove {
             if !self.named.is_empty() && self.stale() {
                 return Err(Error::invalid(Case::RemoveReportStale));
             }
-            let (fields, unshredded) = fields_of(&w.ontology, g, (&keys, &apart), forgot);
-            let mut report = self.report.take().expect("the walk made the report");
-            report.events = g.events;
-            report.undelivered = g.undelivered;
-            report.unseen = g.unseen;
-            report.fields = fields;
-            report.unshredded = unshredded;
-            report.keys = keys.clone();
-            report.apart = apart.clone();
-            report.quarantined = quarantined;
-            if self.shredded && unshredded > 0 {
-                let (source, count) = (self.source.clone(), unshredded);
+            // The report is read again from the records as they stand: a
+            // tail event the act takes changes which records it retires,
+            // what is computed from them and what they strand, not only
+            // the tally (099).
+            let report = report_of(
+                lake,
+                (w, view),
+                &w.ontology,
+                g,
+                &self.judged,
+                (&keys, &apart),
+                forgot,
+                quarantined,
+                view.position(),
+            )?;
+            if self.shredded && report.unshredded > 0 {
+                let (source, count) = (self.source.clone(), report.unshredded);
                 return Err(Error::invalid(Case::RemoveNotShredded { source, count }));
             }
             self.keys = keys;
