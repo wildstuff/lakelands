@@ -644,37 +644,6 @@ impl HeadTypes {
     }
 }
 
-/// The exact-lookup rows a state's number and decimal fields make, as
-/// `(type, field, token, key)`: the fields of `r` that its type's head
-/// declaration declares with a number or decimal kind and the type looks
-/// up (097 §A number's exact lookup).
-fn collect_tokens(
-    db: &mut Db,
-    names: &Names,
-    types: &mut HeadTypes,
-    ty: &str,
-    r: &StoredRecord,
-    out: &mut BTreeSet<(String, String, String, String)>,
-) -> Result<()> {
-    let head = types.get(db, names, &TypeName::from(ty))?;
-    let (Some(decl), Some(looked)) = (head.decl.as_ref(), head.looked.as_ref()) else {
-        return Ok(());
-    };
-    for (field, value) in &r.fields {
-        if !looked.contains(field) {
-            continue;
-        }
-        let kind = engines::field_kind(decl, field).copied();
-        if !matches!(kind, Some(StorageKind::Number | StorageKind::Decimal)) {
-            continue;
-        }
-        if let Some(token) = engines::lookup_token(value, kind) {
-            out.insert((ty.to_owned(), field.to_string(), token, r.key.to_string()));
-        }
-    }
-    Ok(())
-}
-
 /// `ty`'s declaration at the head and the fields its order index keeps:
 /// those its `sort_index.<type>` setting at the head names that the
 /// declaration (a kept name's view's) declares with a kind the index
@@ -2117,11 +2086,11 @@ impl Buffer {
     }
 
     /// Delete the exact-lookup rows of the moved heads' number and
-    /// decimal fields: their token is made in Rust, so their old states
-    /// are read and each row is sought by `text_index_value`. A row the
-    /// buffered state holds again stays and is written again by
-    /// [`index_records`]; a `lookup_index.<type>` setting the transaction
-    /// put fills or drops what it changes after it ([`relook`]).
+    /// decimal fields: their token is made in Rust, so no row can be
+    /// sought by value. Each moved key's entries in those fields go
+    /// whole, and [`index_records`] writes its buffered state's again; a
+    /// `lookup_index.<type>` setting the transaction put fills or drops
+    /// what it changes after it ([`relook`]).
     fn unindex_tokens(
         &self,
         db: &mut Db,
@@ -2129,59 +2098,47 @@ impl Buffer {
         types: &mut HeadTypes,
         moved: &BTreeMap<(&str, &str), i64>,
     ) -> Result<()> {
-        let ((tys, keys), since): ((Vec<&str>, Vec<&str>), Vec<i64>) = (moved.iter())
-            .map(|((ty, key), at)| ((*ty, *key), *at))
-            .unzip();
-        let mut old = BTreeSet::new();
-        if !tys.is_empty() {
-            let rows = db.query(
-                &format!(
-                    "SELECT h.ty, h.key, h.since, r.state \
-                     FROM unnest($1::text[], $2::text[], $3::int8[]) AS k(ty, key, since) \
-                     JOIN {heads} h ON h.ty = k.ty AND h.key = k.key AND h.since <= k.since \
-                     JOIN {records} r ON r.ty = h.ty AND r.key = h.key AND r.since = h.since",
-                    heads = names.t("records_head"),
-                    records = names.t("records"),
-                ),
-                &[&tys, &keys, &since],
-            )?;
-            for row in &rows {
-                let ty: String = row.get(0);
-                let key: String = row.get(1);
-                let at = Position(row.get::<_, i64>(2) as u64);
-                let state: String = row.get(3);
-                let (r, _) = engines::decode_record(&ty, &key, at, &state)?;
-                collect_tokens(db, names, types, &ty, &r, &mut old)?;
-            }
-        }
-        let mut new = BTreeSet::new();
-        for ((ident, at), r) in &self.records {
-            let (ty, key) = (ident[0].as_str(), ident[1].as_str());
-            if moved.get(&(ty, key)) != Some(at) {
+        let mut fields: BTreeMap<&str, Vec<FieldName>> = BTreeMap::new();
+        for (ty, _) in moved.keys() {
+            if fields.contains_key(ty) {
                 continue;
             }
-            collect_tokens(db, names, types, ty, r, &mut new)?;
+            let head = types.get(db, names, &TypeName::from(*ty))?;
+            let kept = match (head.decl.as_ref(), head.looked.as_ref()) {
+                (Some(decl), Some(looked)) => looked
+                    .iter()
+                    .filter(|f| {
+                        matches!(
+                            engines::field_kind(decl, f).copied(),
+                            Some(StorageKind::Number | StorageKind::Decimal)
+                        )
+                    })
+                    .cloned()
+                    .collect(),
+                _ => Vec::new(),
+            };
+            fields.insert(ty, kept);
         }
-        let mut gone: [Vec<String>; 4] = Default::default();
-        for (ty, field, token, key) in old.difference(&new) {
-            gone[0].push(ty.clone());
-            gone[1].push(field.clone());
-            gone[2].push(token.clone());
-            gone[3].push(key.clone());
+        let mut gone: [Vec<&str>; 3] = Default::default();
+        for (ty, key) in moved.keys() {
+            for field in &fields[ty] {
+                for (column, v) in gone.iter_mut().zip([*ty, *key, field.as_str()]) {
+                    column.push(v);
+                }
+            }
         }
         if gone[0].is_empty() {
             return Ok(());
         }
-        let [g1, g2, g3, g4] = &gone;
+        let [g1, g2, g3] = &gone;
         db.execute(
             &format!(
-                "DELETE FROM {text} t USING unnest($1::text[], $2::text[], $3::text[], $4::text[]) \
-                 AS o(ty, field, value, key) WHERE t.ty = o.ty AND t.field = o.field \
-                 AND md5(t.value) = md5(o.value) AND t.key COLLATE \"C\" = o.key \
-                 AND t.value = o.value",
+                "DELETE FROM {text} t USING unnest($1::text[], $2::text[], $3::text[]) \
+                 AS d(ty, key, field) WHERE t.ty = d.ty AND t.field = d.field \
+                 AND t.key COLLATE \"C\" = d.key",
                 text = names.t("text_index"),
             ),
-            &[g1, g2, g3, g4],
+            &[g1, g2, g3],
         )?;
         Ok(())
     }
