@@ -1,5 +1,8 @@
 # 103 — A filter on a kept view narrows by the group key
 
+**Accepted** by the operator on 2026-11-03, for 0.23.0, on epic
+lakelands#1578. The build of lakelands#1634 follows.
+
 Decided on lakelands#1634, for 0.23.0. No code yet. Green field: format
 23, and no compatibility is kept. Standing on record 097 (the window over
 an ordered field and `rows_walked`, being built in lakelands#1693 and its
