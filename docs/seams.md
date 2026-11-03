@@ -461,6 +461,21 @@ indexes describe the head, and `ranked` reads them (below).
   them up in its exact-text index as it does for `equal`, by a field
   the index keeps; it still evaluates the whole filter on each.
 
+**A kept name's interval.** `scan.range` bounds the key of a kept view's
+records — the group's values in the declared order — from `from`,
+inclusive, to `until`, exclusive, either none for an end a filter leaves
+open (`lakelands_api::engine::KeyRange`,
+`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`).
+The store hands it only to a read of a kept name whose filter narrows to
+it (`lakelands_core::engines::key_range`) and only to a read that asks
+no other order: a page in a field's order reads the order index whole,
+as before. An engine seeks the interval on its key-ordered road and
+hands, and walks, no record past either end; `rows_walked` counts what
+it walked, which is how a read shows it narrowed. The interval is a
+superset of the keys the filter admits, and the rulebook above still
+decides every record. At an earlier position a kept view is computed,
+and the interval narrows none of it.
+
 The qualifying records come ordered by `scan.order_by` — each key the
 field's value, or its `known_at` or `seen_at`, or, with no field,
 `latest`: the position of the event that made the record's state at the

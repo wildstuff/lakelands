@@ -38,7 +38,8 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 
 pub use lakelands_api::engine::Window;
 use lakelands_api::engine::{
-    After, CanonicalEvent, Choose, Chosen, Rankings, Scan, TextCounts, TextStats, WindowSides,
+    After, CanonicalEvent, Choose, Chosen, KeyRange, Rankings, Scan, TextCounts, TextStats,
+    WindowSides,
 };
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
@@ -1265,6 +1266,203 @@ fn narrowing_key(literal: &Literal, op: CmpOp, kind: &StorageKind) -> Option<Vec
     Some(key)
 }
 
+/// What sorts above a date's whole day in a group key, and below the next
+/// day: a date field's key may hold the day's text (`2026-01-05`) or an
+/// instant of that day's zoned bucket (`2026-01-05T00:00:00Z`), whose
+/// next byte is `T`, under this byte. A key's date component holds no
+/// `~` of its own.
+const ABOVE_DAY: &str = "~";
+
+/// The interval of group keys `filter` admits, for a kept view whose group
+/// fields `decl` keys its records by, in their declared order
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`
+/// §What narrows, and the interval it makes): a from, inclusive, and an
+/// until, exclusive, each open where no term fixes it, and `None` where no
+/// term narrows the key at all. The interval is a superset of the keys the
+/// filter admits; the rulebook still decides every row.
+///
+/// The filter is read as the conjunction of its `and` terms, each a
+/// comparison of one group field with one literal. The group fields are
+/// walked in the key's order, and the walk stops at the first field that
+/// does not narrow: a field behind a bound never narrows alone. The two
+/// ends are built apart — the lower from `=`, `>=` and `>`, the upper from
+/// `=`, `<=` and `<`.
+///
+/// - A text or reference field narrows an exact only, and only a literal
+///   that reads as neither a number nor an instant: `compare` coerces two
+///   texts that read alike, so `'0123'` is `'123'`, and a literal that
+///   reads as an instant equals every spelling of it.
+/// - A date-time or date field takes every comparison record 097 admits a
+///   window for, a literal that reads as an instant and not as a number.
+///   A date's component is the literal instant's UTC day. Its key may
+///   hold that day's text or an instant of that day: a group term's
+///   value is never landed, so a `date_bucket` term's zoned start
+///   (record 101) is what the key holds. An upper end is therefore the
+///   day's prefix ([`ABOVE_DAY`]), which sorts above the day's text and
+///   every instant text of that day and below the next day, and an
+///   exact on a date ends the walk, since a later component is not
+///   reachable past both spellings.
+/// - A boolean field narrows an exact given as a boolean, and takes no
+///   bound.
+/// - A number or decimal field narrows nothing, its key order not being
+///   the number order; nor does a text range, the key rule's escapes not
+///   keeping the text's order, nor `or`, `not`, `in`, `!=`, a term under a
+///   function or a comparison of two paths.
+pub fn key_range(decl: &TypeDecl, filter: &Expr) -> Option<KeyRange> {
+    let fields = &decl.key;
+    let mut fixed: Vec<String> = Vec::new();
+    // Where the walk stopped before a field: the exacts it fixed are
+    // followed by another field, and the lower end keeps the `:` that
+    // excludes a value extending the last of them.
+    let mut stopped: Option<usize> = None;
+    let mut lower: Option<String> = None;
+    let mut upper: Option<String> = None;
+    // Whether the last exact is a date's: the walk stops there, and the
+    // ends are made on the day's prefix, which holds both spellings of
+    // the day a key may carry ([`ABOVE_DAY`]).
+    let mut day_exact = false;
+    for (i, field) in fields.iter().enumerate() {
+        let Some(kind) = field_kind(decl, field) else {
+            stopped = Some(i);
+            break;
+        };
+        let terms = window_terms(filter, field);
+        let exact = terms.iter().find_map(|(op, literal)| {
+            (*op == CmpOp::Eq)
+                .then(|| group_component(literal, *op, kind))
+                .flatten()
+        });
+        if let Some(component) = exact {
+            fixed.push(component);
+            if matches!(kind, StorageKind::Date) {
+                day_exact = true;
+                stopped = Some(i);
+                break;
+            }
+            continue;
+        }
+        // The tightest cut of each end among the field's terms.
+        for (op, literal) in &terms {
+            let Some(component) = group_component(literal, *op, kind) else {
+                continue;
+            };
+            match op {
+                CmpOp::Ge | CmpOp::Gt => {
+                    lower = Some(match lower {
+                        Some(l) => l.max(component),
+                        None => component,
+                    })
+                }
+                CmpOp::Le | CmpOp::Lt => {
+                    // An upper end on a date holds the whole day: the day's
+                    // text and an instant of it sort under the prefix, and
+                    // the next day does not.
+                    let component = match kind {
+                        StorageKind::Date => format!("{component}{ABOVE_DAY}"),
+                        _ => component,
+                    };
+                    upper = Some(match upper {
+                        Some(u) => u.min(component),
+                        None => component,
+                    })
+                }
+                _ => {}
+            }
+        }
+        // A bound ends the walk for both ends, as a field with no term does.
+        stopped = Some(i);
+        break;
+    }
+    let joined = fixed.join(":");
+    let with = |bound: &str| match fixed.is_empty() {
+        true => bound.to_owned(),
+        false => format!("{joined}:{bound}"),
+    };
+    let from = match lower {
+        Some(bound) => Some(with(&bound)),
+        None if fixed.is_empty() => None,
+        // A date's exact is held by the day's prefix, which a key may
+        // extend with an instant's `T` as well as with the `:` that joins
+        // another field: the lower starts at the day itself.
+        None if day_exact => Some(joined.clone()),
+        // The last exact is followed by another field.
+        None if stopped.is_some() => Some(format!("{joined}:")),
+        None => Some(joined.clone()),
+    };
+    let until = match upper {
+        Some(bound) => Some(format!("{};", with(&bound))),
+        None if fixed.is_empty() => None,
+        // The day's prefix holds the day's text and every instant text of
+        // that day, and sorts below the next day.
+        None if day_exact => Some(format!("{joined}{ABOVE_DAY};")),
+        None => Some(format!("{joined};")),
+    };
+    if from.is_none() && until.is_none() {
+        return None;
+    }
+    Some(KeyRange {
+        from: from.map(RecordKey::from),
+        until: until.map(RecordKey::from),
+    })
+}
+
+/// The key component `literal` fixes for a group field of `kind` compared
+/// by `op`, or `None` where the comparison narrows nothing ([`key_range`]).
+fn group_component(literal: &Literal, op: CmpOp, kind: &StorageKind) -> Option<String> {
+    let value = match kind {
+        StorageKind::Text | StorageKind::Reference => {
+            if op != CmpOp::Eq {
+                return None;
+            }
+            let Literal::Text(t) = literal else {
+                return None;
+            };
+            // A text that reads alike as a number or an instant compares
+            // coerced, and narrows nothing.
+            if t.parse::<rust_decimal::Decimal>().is_ok() || Timestamp::denoted(t).is_ok() {
+                return None;
+            }
+            Value::String(t.clone())
+        }
+        StorageKind::DateTime | StorageKind::Date => {
+            if !matches!(
+                op,
+                CmpOp::Eq | CmpOp::Ge | CmpOp::Gt | CmpOp::Le | CmpOp::Lt
+            ) {
+                return None;
+            }
+            let Literal::Text(t) = literal else {
+                return None;
+            };
+            if t.parse::<rust_decimal::Decimal>().is_ok() {
+                return None;
+            }
+            // The one written form's years only: a component written
+            // outside them (`10000-…`, `-0001-…`) does not sort where the
+            // stored, canonicalised one does, and a bound on the wrong
+            // side would exclude rows the filter admits. Such a literal
+            // narrows nothing, and the rulebook still decides every row.
+            let at: Timestamp = Timestamp::parse(t).ok()?;
+            match kind {
+                // A date's component is the instant's UTC day, floored.
+                StorageKind::Date => {
+                    let (y, m, d) = at.date();
+                    Value::String(format!("{y:04}-{m:02}-{d:02}"))
+                }
+                _ => Value::String(at.to_string()),
+            }
+        }
+        StorageKind::Boolean => match (op, literal) {
+            (CmpOp::Eq, Literal::Bool(b)) => Value::Bool(*b),
+            _ => return None,
+        },
+        // A number's components are its text and a decimal's written form,
+        // neither in the order the field compares.
+        _ => return None,
+    };
+    lakelands_api::key::key_component(&value)
+}
+
 thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static ROWS_WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -1333,6 +1531,15 @@ pub fn rows_walked() -> u64 {
     ROWS_WALKED.with(|n| n.get())
 }
 
+/// [`rows_walked`] over every thread of the process: for a store check,
+/// whose reads go through a store that runs them on its blocking pool. It
+/// counts what other checks running at the same time walk too.
+pub fn rows_walked_in_process() -> u64 {
+    ROWS_WALKED_IN_PROCESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static ROWS_WALKED_IN_PROCESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Whether a check on this thread asked engines to count the rows a walk
 /// passes: off in a product read, where [`Holders::Many`] does not run
 /// the count that would tell it.
@@ -1352,6 +1559,7 @@ pub fn count_walks(on: bool) {
 /// with its count once a walk, and the memory engine with what it hands.
 pub fn count_walk(n: usize) {
     ROWS_WALKED.with(|c| c.set(c.get() + n as u64));
+    ROWS_WALKED_IN_PROCESS.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The records the edge walks on this thread were handed to find a

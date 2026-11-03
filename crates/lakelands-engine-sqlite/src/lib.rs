@@ -56,7 +56,10 @@ use handle::SqliteLake;
 pub use projection::order_statements;
 #[doc(hidden)]
 pub use view::keyed_routes_plan;
-pub use view::{few_holders_statements, first_page_statements, read_statements, seek_statements};
+pub use view::{
+    few_holders_statements, first_page_statements, range_statements, read_statements,
+    seek_statements,
+};
 
 /// The name the engine answers to, in [`EngineConfig::Sqlite`] and in
 /// [`LakeEngine::name`].

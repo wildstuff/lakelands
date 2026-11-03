@@ -25,7 +25,7 @@ use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{kept_name, order_name};
 use lakelands_core::conformance::fixture::stored_record;
-use lakelands_engine_sqlite::{SqliteOpener, order_statements, read_statements};
+use lakelands_engine_sqlite::{SqliteOpener, order_statements, range_statements, read_statements};
 use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, StatementStatus, params_from_iter};
 use serde_json::json;
@@ -125,6 +125,44 @@ fn every_statement_of_a_kept_name_is_planned_as_a_seek() {
              {plan:#?}"
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A read of a kept name inside a key interval is a seek of `keys`'
+/// primary key inside the interval as well
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`):
+/// the interval's ends bound the same key the walk starts from, and no
+/// plan walks the name's keys or sorts them.
+#[test]
+fn a_kept_name_read_inside_an_interval_seeks_the_keys_inside_it() {
+    let (dir, engine) = lake("range-plans");
+    drop(engine);
+    let db = Connection::open(dir.join("projection.db")).unwrap();
+    let kept = kept_name(&TypeName::from("v"));
+    let has = |plan: &[String], step: &str| plan.iter().any(|s| s.contains(step));
+    for head in [true, false] {
+        for statement in range_statements(&kept, head) {
+            let plan = plan(&db, &statement);
+            assert!(
+                plan[0].starts_with("SEARCH k USING PRIMARY KEY (ty=? AND key")
+                    && plan[0].contains("key<?")
+                    && !has(&plan, "SCAN k")
+                    && !has(&plan, "TEMP B-TREE"),
+                "a kept name's read inside an interval does not seek `keys`' primary key inside \
+                 it, at the head ({head}):\n  {statement}\n  {plan:#?}"
+            );
+        }
+    }
+    // At the head the interval is the whole statement's first step, with
+    // each key's state with no end through `records_at`.
+    let [page, _] = range_statements(&kept, true);
+    let plan = plan(&db, &page);
+    assert_eq!(
+        plan.len(),
+        2,
+        "a kept name's read inside an interval at the head takes more than the key's seek and \
+         its state's:\n  {page}\n  {plan:#?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -217,6 +217,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::REPLACED,
     reads::PROPOSALS_PAGED,
     reads::KEPT_NAME,
+    reads::KEPT_RANGE,
     reads::TEXT_PAGE,
     reads::FIELD_ORDER_WALK,
     reads::SETTINGS_ORDERED,

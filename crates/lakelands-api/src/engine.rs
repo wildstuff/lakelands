@@ -628,6 +628,17 @@ pub struct After {
     pub key: RecordKey,
 }
 
+/// An interval on the key a scan reads in key order: a from, inclusive,
+/// and an until, exclusive, each none for an end the read leaves open
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeyRange {
+    /// The first key the scan hands.
+    pub from: Option<RecordKey>,
+    /// The first key the scan does not hand.
+    pub until: Option<RecordKey>,
+}
+
 /// A scan of one type's records.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scan {
@@ -635,6 +646,10 @@ pub struct Scan {
     pub filter: Option<Expr>,
     /// Sort keys; the record key breaks ties.
     pub order_by: Vec<Order>,
+    /// Only records of a kept name whose key is in this interval, on the
+    /// key-ordered road. A read that asks for no other order narrows by
+    /// it; every other read leaves it none.
+    pub range: Option<KeyRange>,
     /// Continue after this row.
     pub after: Option<After>,
     /// At most this many.

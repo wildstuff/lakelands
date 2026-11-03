@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use lakelands_api::engine::{About, Applied, Choose, Chosen, Declared};
+use lakelands_api::engine::{About, Applied, Choose, Chosen, Declared, KeyRange};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{
@@ -1179,21 +1179,48 @@ impl Projection {
 
     /// At most `n` records of `ty` in their state at `at` after the key
     /// `after` (from the first when `None`), in key order, whatever their
-    /// flags.
+    /// flags, and inside `range` where the read narrowed by the key.
     pub(crate) fn records_after(
         &self,
         ty: &TypeName,
         at: Option<Position>,
         after: Option<&str>,
+        range: Option<&KeyRange>,
         n: u32,
     ) -> Vec<StoredRecord> {
         use std::ops::Bound;
-        let from = match after {
+        let start = match after {
             Some(k) => Bound::Excluded((ty.clone(), RecordKey::from(k))),
             None => Bound::Included((ty.clone(), RecordKey::from(""))),
         };
+        let (from, until) = match range {
+            Some(range) => {
+                let from = match &range.from {
+                    Some(k) if after.is_none_or(|a| a < k.as_str()) => {
+                        Bound::Included((ty.clone(), k.clone()))
+                    }
+                    _ => start,
+                };
+                let until = match &range.until {
+                    Some(k) => Bound::Excluded((ty.clone(), k.clone())),
+                    None => Bound::Unbounded,
+                };
+                (from, until)
+            }
+            None => (start, Bound::Unbounded),
+        };
+        // `BTreeMap::range` panics on an empty range whose ends meet
+        // exactly and exclude it: a from past the until, or the until
+        // itself, answers none before it is asked.
+        let crossed = match (&from, &until) {
+            (Bound::Included(a) | Bound::Excluded(a), Bound::Excluded(b)) => a >= b,
+            _ => false,
+        };
+        if crossed {
+            return Vec::new();
+        }
         self.records
-            .range((from, Bound::Unbounded))
+            .range((from, until))
             .take_while(|((t, _), _)| t == ty)
             .filter_map(|(_, h)| h.at(at))
             .take(n as usize)

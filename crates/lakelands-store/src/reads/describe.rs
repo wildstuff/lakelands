@@ -334,21 +334,24 @@ impl<'a> Reader<'a> {
                 |r: &&StoredRecord| (bounded.as_ref()).is_none_or(|e| self.holds(e, r, false));
             return all.iter().filter(held).try_for_each(each);
         }
-        self.each_stored(decl, filter, page, &mut each)
+        let range = self.narrowed(decl, filter);
+        self.each_stored(decl, filter, range, page, &mut each)
     }
 
     /// [`Self::each_member`] for a stored type or a kept name: its records
-    /// read `page` at a time from the engine.
+    /// read `page` at a time from the engine, inside `range` where the
+    /// read narrows a kept name by its group key.
     fn each_stored(
         &self,
         decl: &TypeDecl,
         filter: Option<&Expr>,
+        range: Option<KeyRange>,
         page: usize,
         each: &mut dyn FnMut(&StoredRecord) -> Result<()>,
     ) -> Result<()> {
         let mut after = None;
         loop {
-            let rows = self.page(decl, filter, &[], after, page)?;
+            let rows = self.page_with(decl, filter, range.clone(), &[], after, page)?;
             rows.iter().try_for_each(&mut *each)?;
             if rows.len() < page {
                 return Ok(());
@@ -647,6 +650,15 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// The interval a kept name's read narrows to on its group key, from
+    /// `filter`, and none for any other name: a stored type's key is not a
+    /// group's, and a filter the key cannot carry fixes none
+    /// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`).
+    fn narrowed(&self, decl: &TypeDecl, filter: Option<&Expr>) -> Option<KeyRange> {
+        let filter = filter.filter(|_| lakelands_api::seam::is_kept_name(&decl.name))?;
+        lakelands_core::engines::key_range(decl, filter)
+    }
+
     /// At most `want` records of a stored type the principal may see, in
     /// `order` after `after`, read from the engine a page at a time: the
     /// filter goes down when the engine can apply it, and is applied here
@@ -669,11 +681,30 @@ impl<'a> Reader<'a> {
     }
 
     /// [`Self::page`]'s other side: the engine's pages, one after another,
-    /// as before the window's road.
+    /// as before the window's road. A kept name read in key order narrows to
+    /// the filter's interval on the group key; a page ordered otherwise
+    /// reads the order index, which the interval would not cut
+    /// (`docs/decisions/103-...`).
     fn page_plain(
         &self,
         decl: &TypeDecl,
         filter: Option<&Expr>,
+        order: &[Order],
+        after: Option<(Vec<Value>, RecordKey)>,
+        want: usize,
+    ) -> Result<Vec<StoredRecord>> {
+        let range = self.narrowed(decl, filter).filter(|_| order.is_empty());
+        self.page_with(decl, filter, range, order, after, want)
+    }
+
+    /// [`Self::page`] with the interval `range` a kept name's read narrows
+    /// to already decided.
+    #[allow(clippy::too_many_arguments)]
+    fn page_with(
+        &self,
+        decl: &TypeDecl,
+        filter: Option<&Expr>,
+        range: Option<KeyRange>,
         order: &[Order],
         after: Option<(Vec<Value>, RecordKey)>,
         want: usize,
@@ -688,6 +719,7 @@ impl<'a> Reader<'a> {
         };
         let mut scan = Scan {
             filter: push,
+            range,
             equal,
             equal_any,
             order_by: order.to_vec(),
@@ -807,20 +839,19 @@ impl<'a> Reader<'a> {
         mut each: impl FnMut(&StoredRecord) -> Result<()>,
     ) -> Result<()> {
         let admit = self.sight.admit(&stored.name);
-        self.each_stored(
-            &stored,
-            None,
-            page,
-            &mut |r| match kept::shown(r.clone(), view, whole) {
-                Some(r)
-                    if filter.is_none_or(|e| self.holds(e, &r, false))
-                        && admit.holds(&r.fields) =>
-                {
-                    each(&r)
-                }
-                _ => Ok(()),
-            },
-        )
+        let range = self.narrowed(&stored, filter);
+        self.each_stored(&stored, None, range, page, &mut |r| match kept::shown(
+            r.clone(),
+            view,
+            whole,
+        ) {
+            Some(r)
+                if filter.is_none_or(|e| self.holds(e, &r, false)) && admit.holds(&r.fields) =>
+            {
+                each(&r)
+            }
+            _ => Ok(()),
+        })
     }
 
     /// The records of the kept view `view` with these keys, as this reader
@@ -870,6 +901,9 @@ impl<'a> Reader<'a> {
         let stored = TypeDecl {
             name: lakelands_api::seam::kept_name(&decl.name),
             view: None,
+            // The group's key is the record's: the view's group fields, in
+            // the order it declares them, by the one key rule.
+            key: v.group_names(),
             ..decl.clone()
         };
         Ok(Some((stored, face == 1 && state.differ > 0)))
