@@ -48,7 +48,7 @@ check!(
 
 check!(
     KEPT_BUILD_RESTART_FINISHES = a_kept_build_stopped_between_parts_is_finished_by_the_next_open,
-    "099, R8: a kept view's build whose writer goes between two of its parts is owed in the projection's mark, cursors and all, and the next open of the lake sends it again without waiting: the reopened lake computes the view at once as before, a write sent beside it is answered before a setting whose door waits for the build, and once that setting is whole the view is kept and answers what it computed",
+    "099, R8: a kept view's build whose writer goes between two of its parts is owed in the projection's mark, and the next open of the lake sends it again without waiting: the reopened lake computes the view at once as before, a write sent beside it is answered before a setting whose door waits for the build, and once that setting is whole the view is kept and answers what it computed",
     given
 );
 

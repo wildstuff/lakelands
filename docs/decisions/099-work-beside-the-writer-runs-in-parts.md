@@ -553,6 +553,10 @@ make a view whole in one fold, and a set that computes a build's source again ta
 mark away at its first declaration and the view is made whole at its last); a set or
 trigger over a building view is accepted, since the refusal `view_building` is R9's; and
 the mark is not yet told in `describe`'s `building`, nor is a take-back cut into chunks.
+No row holds a kept view over a view either: with the outer's setting set before the
+inner's, the outer is made whole in the fold with no groups, and it answers right only
+because the inner's `Keep` notes fill it and a read computes while the inner is not whole;
+`VIEW_BUILD_OVER_A_VIEW` is part 3's.
 
 The tree departs from the design in one place: the cursors live in the view's state, which
 is the projection's, not in the runner's memory as this record's table first said. The
@@ -560,9 +564,9 @@ group records are in the projection already, so a cursor held only in memory wou
 the fold from 0 on the next open and count every member twice. The table's restart row is
 corrected below.
 
-**The ledger (2026-11-03).** Product: 455 lines in, 29 out; specification: 666 in, 7 out.
+**The ledger (2026-11-03).** Product: 454 lines in, 29 out; specification: 666 in, 7 out.
 The cut is the fold that made a kept view whole at its setting's append; the mark, and
-the `Fill` and `Keep` turns, take its place. The core-size gate moved to product 107 857 of
+the `Fill` and `Keep` turns, take its place. The core-size gate moved to product 107 856 of
 115 000 and specification 193 188 of 202 500 (from 107 431 and 192 529 on develop);
 seam-width is 107 of 110, no method added by this part, and `cfg(feature)` stays 6 of 20.
 

@@ -12,7 +12,6 @@
 use std::sync::Arc;
 
 use lakelands_api::engine::{Choose, Declared, Look, ProjectionView};
-use lakelands_api::record::Value;
 use lakelands_api::seam::{LOOKUP_INDEX_SETTING, SORT_INDEX_SETTING, VIEW_KEPT_SETTING};
 use lakelands_api::write::Declaration;
 use lakelands_api::{FieldName, Position, RecordKey, Result, TypeName};
@@ -54,8 +53,8 @@ pub(crate) fn asked(write: &Write) -> Option<(TypeName, Kind)> {
         return Some((TypeName::from(ty), Kind::Looked));
     }
     let view = key.as_str().strip_prefix(VIEW_KEPT_SETTING)?;
-    let asked = patch.is_some_and(|p| p.get(&FieldName::from("value")) == Some(&Value::Bool(true)));
-    asked.then(|| (TypeName::from(view), Kind::Kept))
+    let value = patch.and_then(|p| p.get(&FieldName::from("value")));
+    lakelands_api::seam::view_kept(value).then(|| (TypeName::from(view), Kind::Kept))
 }
 
 /// Send the builds the setting of `ty` asks for, one per name its fields
