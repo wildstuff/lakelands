@@ -739,7 +739,7 @@ the 100 000 records at the setting cost 0.46–1.03 s. The write cost is
 the series token's hash and one more `sort_index` row a record, not the
 row's bytes.
 
-**Size.** The step landed at 1 051 product lines and 821 specification
+**Size.** The step landed at 1 053 product lines and 880 specification
 lines, against the 230 and 270 the estimate above reckoned with ×1.35,
 and above the record's 600 a pull request. The rows are written three
 times, once in each engine, as the store's other indexes are; nothing in
