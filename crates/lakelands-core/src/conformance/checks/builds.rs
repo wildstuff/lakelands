@@ -207,7 +207,7 @@ pub(super) async fn until_building_within(
 
 /// Wait, up to a while, for a setting's record to be in the log: the
 /// door has appended it and the build is owed.
-async fn until_appended(l: &Lake, key: &str) -> Result<bool, Failure> {
+pub(super) async fn until_appended(l: &Lake, key: &str) -> Result<bool, Failure> {
     for _ in 0..2_000 {
         if l.read(SETTING_TYPE, key).await.is_ok() {
             return Ok(true);
@@ -218,7 +218,7 @@ async fn until_appended(l: &Lake, key: &str) -> Result<bool, Failure> {
 }
 
 /// Which of two futures answered first.
-enum First<A, B> {
+pub(super) enum First<A, B> {
     Made(A),
     Done(B),
 }
@@ -227,7 +227,7 @@ enum First<A, B> {
 /// `made` is polled once more first: a door that has appended its record
 /// sends its build in that poll, before it is dropped here, so the lake
 /// is left with a build between its turns.
-async fn until_first<A, B>(
+pub(super) async fn until_first<A, B>(
     made: impl Future<Output = A>,
     done: impl Future<Output = B>,
 ) -> First<A, B> {

@@ -1135,7 +1135,7 @@ impl Lake {
                 }
             }
         }
-        kept::settle(&kept_at!(w, view, projection), staged, e)?;
+        kept::settle(&kept_at!(w, view, projection), staged, e, whole)?;
         if let Some(zone) = &mut w.zone {
             if zone.viewing() {
                 let at = (e.position, e.known_at);

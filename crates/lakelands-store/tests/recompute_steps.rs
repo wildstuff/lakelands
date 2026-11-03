@@ -1792,10 +1792,10 @@ fn row_27_a_kept_view_over_a_set_is_made_once_after_it() {
     };
     assert_eq!(
         (puts(q[0]), puts(q[1])),
-        (3, 3),
-        "row 27: the set's first declaration ends the view's three records, and the view is \
-         made once, after the set's records are computed again, not again from the records \
-         before the set"
+        (0, 3),
+        "row 27: the view is building, so the set's first declaration has no records of it to \
+         end, and the view is made once, after the set's records are computed again, not \
+         again from the records before the set"
     );
     let t = |n: i64| {
         l.record(None, kept.as_str(), &n.to_string())

@@ -74,6 +74,16 @@ fn within(i: usize, j: usize, group: &RecordKey, letter: char) -> String {
     format!("{i}.{j}.{}.{letter}.", &digest[..32])
 }
 
+/// A view the fold is building, a part at a time
+/// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Building {
+    /// The key of the last record folded, for each of the view's sources
+    /// in the order they are declared: none for a source no part has
+    /// reached.
+    pub cursors: Vec<Option<RecordKey>>,
+}
+
 /// What the store records of a kept view at a position: counters, and
 /// nothing that grows with the view.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +91,11 @@ pub(crate) struct State {
     /// Whether the view's records are whole: made, and brought up to date
     /// by every event since.
     pub whole: bool,
+    /// The build the view's records are being made by, if one is: its
+    /// sources' cursors. A read computes the view until the build's
+    /// `Keep`, as it does for a view no fold keeps ([`State::whole`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub building: Option<Building>,
     /// The groups that are not exact, on the open face and on the whole
     /// one: a measure that fails, a sum outside what is exact, a member
     /// that does not fold.
@@ -649,10 +664,50 @@ fn group<'g>(
 }
 
 impl Work {
+    /// Whether a build of the view has not reached `r`, a record of the
+    /// source `i`: a record whose key the build's cursor has not passed is
+    /// the build's to fold, and nothing is counted for it here.
+    fn unreached(&self, i: usize, r: Option<&StoredRecord>) -> bool {
+        let Some(building) = &self.state.building else {
+            return false;
+        };
+        let Some(r) = r else {
+            return false;
+        };
+        match building.cursors.get(i).and_then(Option::as_ref) {
+            Some(cursor) => r.key > *cursor,
+            None => true,
+        }
+    }
+
     /// A record of the source `i` was `before` and is `after`: it leaves
     /// the group it was a member of, arrives in the one it is a member of,
     /// or changes within it, on each face.
     fn note(
+        &mut self,
+        at: &At<'_>,
+        staged: &Staged,
+        i: usize,
+        before: Option<&StoredRecord>,
+        after: Option<&StoredRecord>,
+    ) -> Result<()> {
+        // A build has folded the source only up to its cursor: a record
+        // past it is counted when the build reaches it, its state then,
+        // so that each member is counted once, at its head.
+        if self.unreached(i, after.or(before)) {
+            return Ok(());
+        }
+        self.apply(at, staged, i, before, after)
+    }
+
+    /// A record of the source `i` a part of the build folds, `r` as it
+    /// stands: no cursor is asked, since the part is the build.
+    fn folded(&mut self, at: &At<'_>, staged: &Staged, i: usize, r: &StoredRecord) -> Result<()> {
+        self.apply(at, staged, i, None, Some(r))
+    }
+
+    /// [`Self::note`], past the build's cursor.
+    fn apply(
         &mut self,
         at: &At<'_>,
         staged: &Staged,
@@ -839,9 +894,12 @@ impl Views {
             }
             let state = at.state(staged, &ty)?;
             let kept = (at.ontology.ty(&ty).ok()).and_then(|d| Kept::of(at.ontology, d));
+            // A view a build is making is read in as one: a write beside
+            // the build is folded into the groups it has reached.
+            let making = state.whole || state.building.is_some();
             match kept {
-                Some(kept) if state.whole => self.insert(kept, state),
-                None if state.whole => self.orphans.push(ty),
+                Some(kept) if making => self.insert(kept, state),
+                None if making => self.orphans.push(ty),
                 _ => {}
             }
         }
@@ -993,7 +1051,10 @@ impl Views {
             self.unmake(at, staged, &reader, position)?;
         }
         self.views.remove(view);
-        if !at.state(staged, view)?.whole {
+        // A view a build has started holds the groups it has reached: they
+        // end with the build's mark, as a whole view's do.
+        let state = at.state(staged, view)?;
+        if !state.whole && state.building.is_none() {
             return Ok(());
         }
         let mut keys = Vec::new();
@@ -1078,9 +1139,17 @@ impl Views {
         kept.sources.iter().all(read).then_some(kept)
     }
 
-    /// Whatever is to be kept now and is not is made, and whatever is
-    /// kept and is not to be is ended, innermost first.
-    fn want(&mut self, at: &At<'_>, staged: &mut Staged, position: Position) -> Result<()> {
+    /// Whatever is to be kept now and is not is made, `start` except: the
+    /// view a live setting starts building is marked, and a read computes
+    /// it until the build's `Keep`. Whatever is kept and is not to be is
+    /// ended, innermost first.
+    fn want(
+        &mut self,
+        at: &At<'_>,
+        staged: &mut Staged,
+        position: Position,
+        start: Option<&TypeName>,
+    ) -> Result<()> {
         loop {
             let unwanted = (self.views.keys())
                 .find(|v| self.wanted(at, staged, v).is_none())
@@ -1094,9 +1163,45 @@ impl Views {
             let Some(kept) = missing.find_map(|v| self.wanted(at, staged, &v)) else {
                 return Ok(());
             };
-            self.make(at, staged, kept, position)?;
+            match start {
+                Some(view) if view == &kept.decl.name => self.start(at, staged, kept, position)?,
+                _ => self.make(at, staged, kept, position)?,
+            }
         }
     }
+
+    /// Start `view`'s build: the state records a cursor for each of its
+    /// sources, none reached, and a read computes the view until the
+    /// build's [`keep`]. Nothing of a source is walked in the fold.
+    fn start(
+        &mut self,
+        at: &At<'_>,
+        staged: &mut Staged,
+        kept: Kept,
+        position: Position,
+    ) -> Result<()> {
+        let view = kept.decl.name.clone();
+        let building = Building {
+            cursors: vec![None; kept.sources.len()],
+        };
+        let state = State {
+            building: Some(building),
+            ..State::default()
+        };
+        self.insert(kept, state);
+        let work = self.views.get_mut(&view).expect("the view was put");
+        let state = work.state.clone();
+        at.put_state(staged, &view, &state, position)
+    }
+}
+
+/// The view the setting `setting` starts a build of, where it is a
+/// `view_kept.` setting the settings hold asked for.
+fn started(setting: Option<&str>, settings: &BTreeMap<String, Value>) -> Option<TypeName> {
+    let key = setting?;
+    let view = key.strip_prefix(SETTING)?;
+    let asked = lakelands_api::seam::view_kept(settings.get(key));
+    asked.then(|| TypeName::from(view))
 }
 
 /// The views a `view_kept.` setting names, from one seek: the setting
@@ -1136,11 +1241,17 @@ struct Moves<'a> {
     setting: Option<&'a str>,
     /// Whether the event is the writer's lease.
     leased: bool,
+    /// The view a live `view_kept` setting starts a build of, where the
+    /// event writes one: made whole in one fold otherwise.
+    start: Option<TypeName>,
 }
 
 /// The end of one event's fold: the views it makes or ends are made or
-/// ended, and every group it touched is put, at its position.
-pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> {
+/// ended, and every group it touched is put, at its position. `whole`
+/// where the fold reads the log and makes what a setting asks for whole at
+/// its event; a live fold starts a build instead, and a read computes the
+/// view until its `Keep`.
+pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event, whole: bool) -> Result<()> {
     // What the event may move: a setting, or the types whose declaration
     // or records it changes under a view: a declared type, and every type
     // a migration's step, or a value type's, reached.
@@ -1182,12 +1293,18 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
             e.body,
             Declared { .. } | Migrated { .. } | ValueTypeMigrated { .. }
         );
+    // A live `view_kept` setting starts its view's build; a fold from the
+    // log makes it whole at its event, as an import does (041).
+    let start = (!whole)
+        .then(|| started(setting.as_deref(), at.settings))
+        .flatten();
     let mut views = std::mem::take(&mut staged.kept);
     let moves = Moves {
         any,
         declared: &declared,
         setting: setting.as_deref(),
         leased,
+        start,
     };
     let settled = views.settle(at, staged, moves, e.position);
     staged.kept = views;
@@ -1210,6 +1327,7 @@ impl Views {
             declared,
             setting,
             leased,
+            start,
         } = moves;
         // A setting's write and a declaration may move any view: all are
         // read in. A record's write moves the views that read its type,
@@ -1239,7 +1357,7 @@ impl Views {
             self.unmake(at, staged, view, position)?;
         }
         if setting.is_some() || !declared.is_empty() || leased {
-            self.want(at, staged, position)?;
+            self.want(at, staged, position, start.as_ref())?;
         }
         self.flush(at, staged, position)
     }
@@ -1255,9 +1373,153 @@ pub(crate) fn made(at: &At<'_>, staged: &mut Staged, position: Position) -> Resu
         return Ok(());
     }
     let mut views = std::mem::take(&mut staged.kept);
-    let made = (views.load(at, staged, None, None)).and_then(|()| views.want(at, staged, position));
+    let made =
+        (views.load(at, staged, None, None)).and_then(|()| views.want(at, staged, position, None));
     staged.kept = views;
     made
+}
+
+/// Fold the next part of `view`'s build into it: `limit` records of the
+/// first source with records past its cursor, in key order, and the state
+/// records the cursor the part reached. `Some` the key it reached; `None`
+/// where this part folded nothing — every source is reached, and the build
+/// is [`keep`]'s, or the view is not building, or an inner view it reads
+/// is not whole. A caller keeps the view only after its own checks that it
+/// builds and that every inner view is whole ([`ready`]).
+///
+/// A group's folds are its record's, so a part reads the groups it moves
+/// from the projection and puts them back as it goes: what is folded is
+/// in the lake after each part, and a later part goes on from the cursor
+/// the state holds, as a runner that stopped does.
+pub(crate) fn fill(
+    at: &At<'_>,
+    staged: &mut Staged,
+    view: &TypeName,
+    limit: u32,
+    position: Position,
+) -> Result<Option<RecordKey>> {
+    let mut views = Views::default();
+    views.load(at, staged, None, Some(view))?;
+    let Some(work) = views.views.get_mut(view) else {
+        return Ok(None);
+    };
+    let Some(building) = work.state.building.clone() else {
+        return Ok(None);
+    };
+    let mut filled = None;
+    for i in 0..work.kept.sources.len() {
+        let (ty, inner) = {
+            let src = &work.kept.sources[i];
+            let ty = match src.view {
+                true => kept_name(&src.ty),
+                false => src.ty.clone(),
+            };
+            (ty, src.view.then(|| src.ty.clone()))
+        };
+        // A view over a view starts after its inner view's `Keep`: what is
+        // not whole is not folded, and this part folds nothing.
+        if let Some(inner) = inner
+            && !at.state(staged, &inner)?.whole
+        {
+            return Ok(None);
+        }
+        let cursor = building.cursors.get(i).cloned().flatten();
+        let after = cursor.map(|key| lakelands_api::engine::After {
+            values: Vec::new(),
+            key,
+        });
+        let scan = lakelands_api::engine::Scan {
+            limit,
+            retired: true,
+            restricted: true,
+            after,
+            ..Default::default()
+        };
+        let rows = at.view.scan(&ty, &scan)?;
+        let Some(last) = rows.last().map(|r| r.key.clone()) else {
+            continue;
+        };
+        for r in &rows {
+            work.folded(at, staged, i, r)?;
+        }
+        let cursors = &mut work
+            .state
+            .building
+            .as_mut()
+            .expect("the view builds")
+            .cursors;
+        cursors[i] = Some(last.clone());
+        filled = Some(last);
+        break;
+    }
+    // The cursor is the part's own: the flush writes the groups the part
+    // moved, counting the ones that fail, and the state it leaves is put
+    // after it, so that the next part goes on from where this one ended
+    // and a runner that stopped goes on there.
+    views.flush(at, staged, position)?;
+    let state = views.views.get(view).map(|w| w.state.clone());
+    if let Some(state) = state {
+        at.put_state(staged, view, &state, position)?;
+    }
+    Ok(filled)
+}
+
+/// Whether every source of `view` that is itself a view is whole.
+pub(crate) fn ready(at: &At<'_>, staged: &Staged, view: &TypeName) -> Result<bool> {
+    let kept = at
+        .ontology
+        .ty(view)
+        .ok()
+        .and_then(|d| Kept::of(at.ontology, d));
+    let Some(kept) = kept else {
+        return Ok(false);
+    };
+    for src in kept.sources.iter().filter(|s| s.view) {
+        if !at.state(staged, &src.ty)?.whole {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Keep `view` whole at `position`: the mark goes, and a read takes the
+/// records. `false` where it is not building, which is nothing to keep.
+pub(crate) fn keep(
+    at: &At<'_>,
+    staged: &mut Staged,
+    view: &TypeName,
+    position: Position,
+) -> Result<bool> {
+    let mut views = Views::default();
+    views.load(at, staged, None, Some(view))?;
+    let Some(work) = views.views.get_mut(view) else {
+        return Ok(false);
+    };
+    if work.state.building.take().is_none() {
+        return Ok(false);
+    }
+    // A view without group fields has one group, which no source's record
+    // makes: the fold makes it, as [`Views::make`] does.
+    if work.kept.view().group_by.is_empty() {
+        let all = RecordKey::from(lakelands_api::key::UNGROUPED);
+        let Work {
+            kept,
+            groups,
+            touched,
+            ..
+        } = work;
+        group((groups, touched), kept, (at, staged), &all, &Row::new())?;
+    }
+    work.state.whole = true;
+    work.state.tzdb = work.kept.zoned.then(|| zone::copy().to_owned());
+    // The `Keep` is the state's own, put with the last part's groups: a
+    // read takes the records from the position the state names.
+    views.flush(at, staged, position)?;
+    let state = views.views.get(view).map(|w| w.state.clone());
+    if let Some(state) = state {
+        at.put_state(staged, view, &state, position)?;
+    }
+    Ok(true)
 }
 
 /// The write path's run of the fold's own hooks (lakelands#1185), over
@@ -1287,6 +1549,7 @@ pub(crate) fn step(
         declared,
         setting: setting.as_deref(),
         leased: false,
+        start: started(setting.as_deref(), at.settings),
     };
     let settled = views.settle(at, staged, moves, position);
     let moved = views.moved.take().unwrap_or_default();
@@ -1304,6 +1567,11 @@ pub(crate) fn moved(staged: &mut Staged) -> Moved {
 /// Whether the views as the transaction leaves them hold `view` whole.
 pub(crate) fn whole(at: &At<'_>, staged: &Staged, view: &TypeName) -> Result<bool> {
     Ok(at.state(staged, view)?.whole)
+}
+
+/// Whether the views as the transaction leaves them are building `view`.
+pub(crate) fn building(at: &At<'_>, staged: &Staged, view: &TypeName) -> Result<bool> {
+    Ok(at.state(staged, view)?.building.is_some())
 }
 
 /// The record a set over `view` decides on at `key`, as the transaction

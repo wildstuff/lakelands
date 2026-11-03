@@ -11,13 +11,14 @@
 
 use std::sync::Arc;
 
-use lakelands_api::engine::{Choose, Look, ProjectionView};
-use lakelands_api::seam::{LOOKUP_INDEX_SETTING, SORT_INDEX_SETTING};
-use lakelands_api::{FieldName, RecordKey, Result, TypeName};
+use lakelands_api::engine::{Choose, Declared, Look, ProjectionView};
+use lakelands_api::seam::{LOOKUP_INDEX_SETTING, SORT_INDEX_SETTING, VIEW_KEPT_SETTING};
+use lakelands_api::write::Declaration;
+use lakelands_api::{FieldName, Position, RecordKey, Result, TypeName};
 use lakelands_core::engines;
 
 use crate::exec::{self, Turn};
-use crate::lake::{Lake, Writer};
+use crate::lake::{Lake, Staged, Writer};
 use crate::road::{self, Job, Reach, Turned};
 use crate::writes::Write;
 
@@ -28,6 +29,8 @@ pub(crate) enum Kind {
     Sorted,
     /// `lookup_index.<type>`: the exact-text index.
     Looked,
+    /// `view_kept.<view>`: the view's kept records.
+    Kept,
 }
 
 /// The type and index a record write asks to have built, when it puts a
@@ -35,8 +38,9 @@ pub(crate) enum Kind {
 /// road runs, with no field left to build and every field it named to
 /// drop.
 pub(crate) fn asked(write: &Write) -> Option<(TypeName, Kind)> {
-    let (ty, key) = match write {
-        Write::Upsert(ty, key, _) | Write::Retire(ty, key) => (ty, key),
+    let (ty, key, patch) = match write {
+        Write::Upsert(ty, key, patch) => (ty, key, Some(patch)),
+        Write::Retire(ty, key) => (ty, key, None),
         _ => return None,
     };
     if ty.as_str() != lakelands_api::seam::SETTING_TYPE {
@@ -45,9 +49,12 @@ pub(crate) fn asked(write: &Write) -> Option<(TypeName, Kind)> {
     if let Some(ty) = key.as_str().strip_prefix(SORT_INDEX_SETTING) {
         return Some((TypeName::from(ty), Kind::Sorted));
     }
-    key.as_str()
-        .strip_prefix(LOOKUP_INDEX_SETTING)
-        .map(|ty| (TypeName::from(ty), Kind::Looked))
+    if let Some(ty) = key.as_str().strip_prefix(LOOKUP_INDEX_SETTING) {
+        return Some((TypeName::from(ty), Kind::Looked));
+    }
+    let view = key.as_str().strip_prefix(VIEW_KEPT_SETTING)?;
+    let value = patch.and_then(|p| p.get(&FieldName::from("value")));
+    lakelands_api::seam::view_kept(value).then(|| (TypeName::from(view), Kind::Kept))
 }
 
 /// Send the builds the setting of `ty` asks for, one per name its fields
@@ -55,6 +62,19 @@ pub(crate) fn asked(write: &Write) -> Option<(TypeName, Kind)> {
 /// as it does for an act. A field the setting took back is cleared in
 /// parts after them, its `dropping` mark found at the walk.
 pub(crate) async fn finish(lake: &Arc<Lake>, ty: &TypeName, kind: Kind) -> Result<()> {
+    if let Kind::Kept = kind {
+        // An outer view starts after its inner view's `Keep`, so the views
+        // it reads through are built first and awaited.
+        for view in under(lake, ty).await? {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            road::send(lake, Box::new(Build::new(view, Kind::Kept).answering(tx)));
+            match rx.await {
+                Ok(ended) => ended?,
+                Err(_) => return Err(exec::halted(false)),
+            }
+        }
+        return Ok(());
+    }
     for name in engines::ordered_names(ty) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         road::send(lake, Box::new(Build::new(name, kind).answering(tx)));
@@ -81,13 +101,22 @@ pub(crate) async fn finish(lake: &Arc<Lake>, ty: &TypeName, kind: Kind) -> Resul
 /// as of an earlier position to reuse.
 pub(crate) fn owed(_lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
     let declared = view.declarations()?;
-    let types = lakelands_core::sight::InForce::types(&declared);
-    let stored = (types.into_iter())
-        .filter(|t| t.view.is_none())
-        .map(|t| t.name.clone());
     let mut owed: Vec<Box<dyn Job>> = Vec::new();
-    for ty in stored {
-        for name in engines::ordered_names(&ty) {
+    // The views a build is making, each after the views it reads through:
+    // the road runs one job at a time, in the order they are sent.
+    let mut kept: Vec<(usize, TypeName)> = Vec::new();
+    for d in &declared {
+        let Declaration::Type(t) = &d.declaration else {
+            continue;
+        };
+        if t.view.is_some() {
+            let building = crate::kept::state(view, &t.name)?.is_some_and(|s| s.building.is_some());
+            if building {
+                kept.push((under_in(&declared, &t.name).len(), t.name.clone()));
+            }
+            continue;
+        }
+        for name in engines::ordered_names(&t.name) {
             let chosen = view.chosen(&name)?;
             if !chosen.setting_building.is_empty() {
                 owed.push(Box::new(Build::new(name.clone(), Kind::Sorted)));
@@ -100,7 +129,54 @@ pub(crate) fn owed(_lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dy
             }
         }
     }
+    kept.sort_by_key(|(depth, _)| *depth);
+    let kept = kept
+        .into_iter()
+        .map(|(_, v)| Box::new(Build::new(v, Kind::Kept)) as Box<dyn Job>);
+    owed.extend(kept);
     Ok(owed)
+}
+
+/// The view `ty` and every view it reads through, in the order their
+/// builds are sent: a view after the views it reads.
+async fn under(lake: &Arc<Lake>, ty: &TypeName) -> Result<Vec<TypeName>> {
+    let (lake, ty) = (lake.clone(), ty.clone());
+    exec::run(move || {
+        let view = lake.engine.view(None)?;
+        Ok(under_in(&view.declarations()?, &ty))
+    })
+    .await
+}
+
+/// [`under`]'s order, from the declarations in force.
+fn under_in(declared: &[Declared], ty: &TypeName) -> Vec<TypeName> {
+    let mut order = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    push_under(declared, ty, &mut order, &mut seen);
+    order
+}
+
+fn push_under(
+    declared: &[Declared],
+    ty: &TypeName,
+    order: &mut Vec<TypeName>,
+    seen: &mut std::collections::BTreeSet<TypeName>,
+) {
+    if !seen.insert(ty.clone()) {
+        return;
+    }
+    let view = declared.iter().find_map(|d| match &d.declaration {
+        Declaration::Type(t) if &t.name == ty => t.view.as_deref(),
+        _ => None,
+    });
+    let Some(view) = view else {
+        return;
+    };
+    let sources = std::iter::once(&view.source).chain(view.merge.iter().map(|m| &m.source));
+    for source in sources {
+        push_under(declared, source, order, seen);
+    }
+    order.push(ty.clone());
 }
 
 /// One setting's build: the fields marked building, filled a key range at
@@ -139,10 +215,16 @@ impl Job for Build {
     }
 
     fn walk(&mut self, _lake: &Lake, view: &dyn ProjectionView) -> Result<()> {
+        // A kept view's mark is read in each turn, which goes on from the
+        // cursor it holds: the walk holds nothing.
+        if let Kind::Kept = self.kind {
+            return Ok(());
+        }
         let chosen = view.chosen(&self.ty)?;
         self.fields = match self.kind {
             Kind::Sorted => chosen.setting_building,
             Kind::Looked => chosen.looked_building,
+            Kind::Kept => Vec::new(),
         };
         Ok(())
     }
@@ -151,11 +233,12 @@ impl Job for Build {
         Ok(())
     }
 
-    fn turn(&mut self, t: &Turn<'_>, _w: &mut Writer) -> Result<Turned> {
+    fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
         let limit = t.limits.order_chunk.max(1);
         match self.kind {
             Kind::Sorted => self.turn_sorted(t, limit),
             Kind::Looked => self.turn_looked(t, limit),
+            Kind::Kept => self.turn_kept(t, w, limit),
         }
     }
 
@@ -215,6 +298,77 @@ impl Build {
         t.engine.projection().look_index(&self.ty, &keep)?;
         t.undescribe();
         Ok(Turned::Whole)
+    }
+
+    /// One part of a kept view's build: a key range of the first source
+    /// with records its cursor has not reached, folded into the view's
+    /// groups and put, then, where every source is reached, the view kept.
+    /// The mark is read here, not held from the walk: a part that a runner
+    /// stopped at is gone on from the cursor the state kept.
+    fn turn_kept(&mut self, t: &Turn<'_>, w: &mut Writer, limit: u32) -> Result<Turned> {
+        let head = w.tip.as_ref().map_or(Position::GENESIS, |(p, _)| *p);
+        // Kept whole already, or taken back between two parts.
+        let state = crate::kept::state(t.engine.view(None)?.as_ref(), &self.ty)?;
+        if !state.is_some_and(|s| !s.whole && s.building.is_some()) {
+            return Ok(Turned::Whole);
+        }
+        let projection = t.engine.projection();
+        projection.begin()?;
+        // A view of the transaction's own, read after it began, as the
+        // fold reads one.
+        let view = match t.engine.view(None) {
+            Ok(view) => view,
+            Err(e) => {
+                projection.rollback();
+                return Err(e);
+            }
+        };
+        let at = crate::kept::At {
+            view: view.as_ref(),
+            projection: Some(projection),
+            ontology: &w.ontology,
+            settings: &w.settings,
+        };
+        let mut staged = Staged::default();
+        let ready = match crate::kept::ready(&at, &staged, &self.ty) {
+            Ok(ready) => ready,
+            Err(e) => {
+                projection.rollback();
+                return Err(e);
+            }
+        };
+        if !ready {
+            // An inner view is not whole: nothing of this one is folded
+            // until its `Keep`. This job ends here with the mark kept, and
+            // a later open sends it again once the inner is whole; it does
+            // not turn again, since the road runs one job at a time and the
+            // same part would answer the same nothing.
+            projection.rollback();
+            return Ok(Turned::Whole);
+        }
+        let part =
+            crate::kept::fill(&at, &mut staged, &self.ty, limit, head).and_then(
+                |last| match last {
+                    Some(_) => Ok(false),
+                    None => crate::kept::keep(&at, &mut staged, &self.ty, head).map(|_| true),
+                },
+            );
+        match part {
+            Ok(kept) => {
+                projection.commit(head)?;
+                if kept {
+                    t.undescribe();
+                }
+                Ok(match kept {
+                    true => Turned::Whole,
+                    false => Turned::More,
+                })
+            }
+            Err(e) => {
+                projection.rollback();
+                Err(e)
+            }
+        }
     }
 }
 
