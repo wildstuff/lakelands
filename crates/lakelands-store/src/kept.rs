@@ -1381,8 +1381,11 @@ pub(crate) fn made(at: &At<'_>, staged: &mut Staged, position: Position) -> Resu
 
 /// Fold the next part of `view`'s build into it: `limit` records of the
 /// first source with records past its cursor, in key order, and the state
-/// records the cursor the part reached. `Some` the key it reached, and
-/// `None` where every source is reached: the build's [`keep`].
+/// records the cursor the part reached. `Some` the key it reached; `None`
+/// where this part folded nothing — every source is reached, and the build
+/// is [`keep`]'s, or the view is not building, or an inner view it reads
+/// is not whole. A caller keeps the view only after its own checks that it
+/// builds and that every inner view is whole ([`ready`]).
 ///
 /// A group's folds are its record's, so a part reads the groups it moves
 /// from the projection and puts them back as it goes: what is folded is

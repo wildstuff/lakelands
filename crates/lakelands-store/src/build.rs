@@ -331,11 +331,21 @@ impl Build {
             settings: &w.settings,
         };
         let mut staged = Staged::default();
-        if !crate::kept::ready(&at, &staged, &self.ty)? {
-            // An inner view is not whole yet: nothing of this one is folded
-            // until its `Keep`, and the next part looks again.
+        let ready = match crate::kept::ready(&at, &staged, &self.ty) {
+            Ok(ready) => ready,
+            Err(e) => {
+                projection.rollback();
+                return Err(e);
+            }
+        };
+        if !ready {
+            // An inner view is not whole: nothing of this one is folded
+            // until its `Keep`. This job ends here with the mark kept, and
+            // a later open sends it again once the inner is whole; it does
+            // not turn again, since the road runs one job at a time and the
+            // same part would answer the same nothing.
             projection.rollback();
-            return Ok(Turned::More);
+            return Ok(Turned::Whole);
         }
         let part =
             crate::kept::fill(&at, &mut staged, &self.ty, limit, head).and_then(
