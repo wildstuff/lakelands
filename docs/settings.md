@@ -240,7 +240,7 @@ The most events past the view it walked on that a job's first turn reads under t
 
 ### `limits.page_events`
 
-Not read yet: restating in pages comes with step R4 of decision 099. Then it is the most events one page of a restate refolds in a turn of the writer, and a job whose page would refold more restates beside the projection instead.
+The most events one page of a scoped restate refolds; a page over it takes the rebuild instead, and its report says so. A page is not yet a turn of the writer of its own, so this bounds a page's size, not a write's wait. Restating beside the projection instead comes with step R5 of decision 099.
 
 - **Takes:** a count; 0 is taken as 1.
 - **Default:** `2000`.

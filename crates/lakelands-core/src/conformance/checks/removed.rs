@@ -71,7 +71,7 @@ check!(
 
 check!(
     REMOVE_CRASH_SHREDDED = a_shredding_act_a_crash_stopped_is_finished_at_each_step,
-    "065, 099: an act that would destroy `crm`'s version, stopped after its event because the key store failed to destroy it, leaves the version, which seals nothing more: `crm`'s next sealed value on that handle is refused `key_missing`, appending nothing; a rebuild does not count the act done while the version is held, and finishes it, destroying the version; one stopped after the destroy, before its rebuild, took the version from its first turn, so `crm`'s next sealed value is taken under a new version while the act is owed, and the road beside the writer's next open runs its restate; each appends no second event, and the values read as erased before the act",
+    "065, 099: an act that would destroy `crm`'s version, stopped after its event because the key store failed to destroy it, leaves the version, which seals nothing more: `crm`'s next sealed value on that handle is refused `key_missing`, appending nothing; a rebuild does not count the act done while the version is held, and finishes it, destroying the version; one stopped after the destroy, before its scoped restate's first page commits, took the version from its first turn, so `crm`'s next sealed value is taken under a new version while the act is owed, and the road beside the writer's next open runs its restate; each appends no second event, and the values read as erased before the act",
     given
 );
 
@@ -1538,18 +1538,19 @@ async fn a_shredding_act_a_crash_stopped_is_finished_at_each_step(
         "a rebuild after the failed destroy finishes the act: the version is gone: {held:?}"
     );
     erased_before(&store, "p1", before, 1).await?;
-    // Stopped after the destroy, before the rebuild.
+    // Stopped after the destroy, before its scoped restate: the first
+    // page's commit fails, after the page dropped the records' states.
     let l = Lake::of(store.as_ref());
     l.ingest("crm", vec![p("p2", "Bea")])
         .await
         .must("ingesting p2")?;
     l.upsert("person", "p2", json!({"note": "kept"})).await?;
-    fails[1].store(1, Ordering::SeqCst);
+    fails[5].store(1, Ordering::SeqCst);
     let stopped = store.remove_values(&crm, &all, false, None).await;
     let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
     ensure!(
         stopped.is_err() && held.is_empty(),
-        "the act whose rebuild fails answers {stopped:?}, its version destroyed: {held:?}"
+        "the act whose scoped restate fails answers {stopped:?}, its version destroyed: {held:?}"
     );
     // The version took: it seals nothing more from the act's first turn,
     // and the source seals under a new one while the act is owed (099).
@@ -1632,16 +1633,16 @@ async fn a_writer_that_opened_while_an_act_is_owed_reads_through_it(
         l.upsert("person", k, json!({"note": "kept"})).await?;
     }
     // The act stops after its first turn, its version destroyed, its
-    // rebuild failed.
-    fails[1].store(1, Ordering::SeqCst);
+    // scoped restate failed at its first page's commit.
+    fails[5].store(1, Ordering::SeqCst);
     let stopped = store.remove_values(&crm, &all, false, None).await;
     let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
     ensure!(
         stopped.is_err() && held.is_empty(),
-        "the act whose rebuild fails answers {stopped:?}, its version destroyed: {held:?}"
+        "the act whose scoped restate fails answers {stopped:?}, its version destroyed: {held:?}"
     );
-    // Every rebuild fails, so the act stays owed through the open.
-    fails[1].store(1_000_000, Ordering::SeqCst);
+    // Every page's commit fails, so the act stays owed through the open.
+    fails[5].store(1_000_000, Ordering::SeqCst);
     store = fault(store).await?;
     let l = Lake::of(store.as_ref());
     let head = store.head().await.must("reading the head")?;
@@ -1669,8 +1670,8 @@ async fn a_writer_that_opened_while_an_act_is_owed_reads_through_it(
         "crm's write after the open whose act took the old version seals under a new one the \
          key store holds: {sealed:?}, the head moved from {head} to {moved}, {held:?}"
     );
-    // The rebuilds succeed again, and the road the open started restates.
-    fails[1].store(0, Ordering::SeqCst);
+    // The pages commit again, and the road the open started restates.
+    fails[5].store(0, Ordering::SeqCst);
     store = fault(store).await?;
     let l = Lake::of(store.as_ref());
     settles(6_000, Duration::from_millis(1), || async {

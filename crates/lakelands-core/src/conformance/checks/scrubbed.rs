@@ -6,6 +6,7 @@
 
 use lakelands_api::read::{Find, ReadAt};
 use lakelands_api::write::ForgetWay;
+use lakelands_api::{DeliveryId, IngestOpts};
 
 use super::erasable::{Keys, person, with};
 use super::forgotten::{Fails, failing};
@@ -27,6 +28,25 @@ check!(
 check!(
     SCRUB_CRASH = a_scoped_refold_stopped_between_pages_is_finished_by_the_next_open,
     "058, extended (lakelands#1120, 099): a scoped refold restates one page of records in each transaction; one stopped after its first page leaves the source's ingest refused, and the road beside the writer's next open refolds every page again, appending nothing, after which the act is done and the lake answers as it does after a rebuild",
+    given
+);
+
+check!(
+    RESTATE_SCOPED_FOR_A_REMOVAL =
+        a_value_another_delivery_keeps_reads_erased_through_a_scoped_restate,
+    "099: `crm` writes `p1` in its first delivery and `p2` in its second, both under its one version, and `erp` writes `p1`'s city; taking the first back takes `p1`'s name alone, the version staying for `p2`'s, and `p1` reads its name erased after the act and after a writer opens again, keeping `erp`'s city; forgetting `erp` then names the scoped refold in its preflight and its act, though the lake holds an act of removal, and the page refolds `p1` under the older act with its name erased still, leaving `p1` with neither value and `p2`'s name whole; a rebuild after the act answers the same",
+    reopens
+);
+
+check!(
+    RESTATE_TELLS_EVERY_ACT = a_scoped_pass_after_a_reopen_leaves_every_older_acts_values_erased,
+    "099: `crm`'s two deliveries seal under its one version and `erp` co-writes `p1`, which the act of taking `crm`'s first delivery back redacts, and a writer opens again; a scoped refold of `erp` then names the scoped refold in its preflight and its act, and the page that restates `p1` folds it under the older act, whose value stays erased, as every act the lists hold is told before the first page; a rebuild after the act answers the same",
+    reopens
+);
+
+check!(
+    RESTATE_PAGE_OVER_ITS_BOUND = a_page_over_page_events_takes_the_rebuild,
+    "099: with `limits.page_events` below what a page of a migrated lake folds, `forget_preflight` and `forget_source` name the rebuild, saying the page refolds more events than the limit, and the act answers after it as a rebuild does",
     given
 );
 
@@ -54,6 +74,16 @@ fn people(zip: bool) -> TypeDecl {
     }
     if zip {
         t.fields.push(sourced("zip", StorageKind::Text));
+    }
+    t
+}
+
+/// `person` with `city` erasable too, so two sources each hold an
+/// erasable value on one record.
+fn people_both() -> TypeDecl {
+    let mut t = person();
+    for f in t.fields.iter_mut().filter(|f| f.name == "city") {
+        f.erasable = true;
     }
     t
 }
@@ -617,6 +647,218 @@ async fn a_scoped_refold_stopped_between_pages_is_finished_by_the_next_open(
     ensure!(
         dropped == first + MANY,
         "the rebuild drops no key's states: {dropped} dropped in all"
+    );
+    Ok(())
+}
+
+/// Feed one record from `source` as delivery `id` of `l`'s lake.
+async fn delivered_as(l: &Lake, source: &str, id: &str, record: SourceRecord) -> Held {
+    let opts = IngestOpts {
+        delivery: Some(DeliveryId::from(id)),
+        ..IngestOpts::default()
+    };
+    let source = SourceId::from(source);
+    let fed = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, opts, vec![record]);
+    fed.await.must("ingesting a delivery")?;
+    Ok(())
+}
+
+async fn a_value_another_delivery_keeps_reads_erased_through_a_scoped_restate(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    use super::erasable::again;
+    use super::removed::{at, erased};
+
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(people_both()).await?;
+    let row = |fields: Value| source_record("person", "p1", fields);
+    delivered_as(&l, "crm", "crm-1", row(json!({"id": "p1", "name": "Ada"}))).await?;
+    let bob = source_record("person", "p2", json!({"id": "p2", "name": "Bob"}));
+    delivered_as(&l, "crm", "crm-2", bob).await?;
+    delivered_as(&l, "erp", "e1", row(json!({"id": "p1", "city": "Oslo"}))).await?;
+    let crm: SourceId = "crm".into();
+    let done = store
+        .remove_values(&crm, &Selection::Delivery("crm-1".into()), false, None)
+        .await
+        .must("removing crm's first delivery")?;
+    ensure!(
+        done.keys.is_empty() && done.unshredded == 1,
+        "taking `crm-1` back keeps the version `p2`'s name is under and redacts `p1`'s name \
+         alone: {done:?}"
+    );
+    let p1 = at(&l, "person", "p1", None).await?;
+    let p2 = at(&l, "person", "p2", None).await?;
+    ensure!(
+        p1.as_ref().is_some_and(
+            |r| erased(r, "name", "crm") && r.fields.get("city") == Some(&json!("Oslo"))
+        ) && p2
+            .as_ref()
+            .is_some_and(|r| r.fields.get("name") == Some(&json!("Bob"))),
+        "after the act `p1` reads its name erased and erp's city, and `p2` reads Bob: \
+         {p1:?}, {p2:?}"
+    );
+    // A writer opens again, and erp's forgetting refolds `p1`, which the
+    // older act took.
+    let store = again(&reopen, store, with(&keys), "after the act").await?;
+    let l = Lake::of(store.as_ref());
+    let p1 = at(&l, "person", "p1", None).await?;
+    ensure!(
+        p1.as_ref().is_some_and(|r| erased(r, "name", "crm")),
+        "a writer that opened again reads `p1`'s name erased: {p1:?}"
+    );
+    let erp: SourceId = "erp".into();
+    let asked = store.forget_preflight(&erp).await.must("the preflight")?;
+    let done = store
+        .forget_source(&erp, Some(&asked.report_id))
+        .await
+        .must("forgetting erp")?;
+    ensure!(
+        asked.way.scoped && done.way.scoped,
+        "the preflight and the act name the scoped refold, though the lake holds an act of \
+         removal: {asked:?}, {done:?}"
+    );
+    let p1 = at(&l, "person", "p1", None).await?;
+    let p2 = at(&l, "person", "p2", None).await?;
+    ensure!(
+        p1.as_ref()
+            .is_some_and(|r| erased(r, "name", "crm") && erased(r, "city", "erp"))
+            && p2
+                .as_ref()
+                .is_some_and(|r| r.fields.get("name") == Some(&json!("Bob"))),
+        "the scoped refold leaves `p1` with neither value, its name erased by the older act \
+         and its city by erp's, and `p2`'s name whole: {p1:?}, {p2:?}"
+    );
+    let read = ["p1", "p2"];
+    let got = reads(store.as_ref(), &read, &[None]).await?;
+    store.rebuild().await.must("rebuilding")?;
+    let want = reads(store.as_ref(), &read, &[None]).await?;
+    let differ = apart(&got, &want);
+    ensure!(
+        differ.is_empty(),
+        "a rebuild after the act answers the same; {} reads differ: {:?}",
+        differ.len(),
+        &differ[..differ.len().min(4)]
+    );
+    Ok(())
+}
+
+async fn a_scoped_pass_after_a_reopen_leaves_every_older_acts_values_erased(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    use super::erasable::again;
+    use super::removed::{at, erased};
+
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(people_both()).await?;
+    let p = |key: &str, name: &str| source_record("person", key, json!({"id": key, "name": name}));
+    // crm's two deliveries seal under its one version, which the first
+    // act redacts; web's one delivery seals under a version the second
+    // destroys.
+    delivered_as(&l, "crm", "crm-1", p("p1", "Ada")).await?;
+    delivered_as(&l, "crm", "crm-2", p("p2", "Bob")).await?;
+    delivered_as(&l, "web", "w1", p("p3", "Cy")).await?;
+    let coast =
+        |key: &str, city: &str| source_record("person", key, json!({"id": key, "city": city}));
+    delivered_as(&l, "erp", "e1", coast("p1", "Oslo")).await?;
+    delivered_as(&l, "erp", "e2", coast("p3", "Rome")).await?;
+    let crm: SourceId = "crm".into();
+    let web: SourceId = "web".into();
+    store
+        .remove_values(&crm, &Selection::Delivery("crm-1".into()), false, None)
+        .await
+        .must("removing crm's first delivery")?;
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let destroyed = store
+        .remove_values(&web, &all, false, None)
+        .await
+        .must("removing all web wrote")?;
+    ensure!(
+        destroyed.keys.len() == 1,
+        "taking back all web wrote destroys its version: {destroyed:?}"
+    );
+    // A writer opens again, and a scoped pass over erp restates `p1` and
+    // `p3`, which the older acts took.
+    let store = again(&reopen, store, with(&keys), "after the acts").await?;
+    let l = Lake::of(store.as_ref());
+    let erp: SourceId = "erp".into();
+    let asked = store.forget_preflight(&erp).await.must("the preflight")?;
+    let done = store
+        .forget_source(&erp, Some(&asked.report_id))
+        .await
+        .must("forgetting erp")?;
+    ensure!(
+        asked.way.scoped && done.way.scoped,
+        "the preflight and the act name the scoped refold, though the lake holds two acts \
+         of removal: {asked:?}, {done:?}"
+    );
+    let p1 = at(&l, "person", "p1", None).await?;
+    let p3 = at(&l, "person", "p3", None).await?;
+    ensure!(
+        p1.as_ref()
+            .is_some_and(|r| erased(r, "name", "crm") && erased(r, "city", "erp"))
+            && p3
+                .as_ref()
+                .is_some_and(|r| erased(r, "name", "web") && erased(r, "city", "erp")),
+        "the page refolds `p1` under the act that redacted it and `p3` under the one that \
+         destroyed its version, each name erased: {p1:?}, {p3:?}"
+    );
+    let read = ["p1", "p2", "p3"];
+    let got = reads(store.as_ref(), &read, &[None]).await?;
+    store.rebuild().await.must("rebuilding")?;
+    let want = reads(store.as_ref(), &read, &[None]).await?;
+    let differ = apart(&got, &want);
+    ensure!(
+        differ.is_empty(),
+        "a rebuild after the act answers the same; {} reads differ: {:?}",
+        differ.len(),
+        &differ[..differ.len().min(4)]
+    );
+    Ok(())
+}
+
+async fn a_page_over_page_events_takes_the_rebuild(store: Store, given: Given) -> Held {
+    let keys = Arc::new(Keys::default());
+    let low = Limits {
+        page_events: 1,
+        ..limits()
+    };
+    let store = (given.relimit)(store, with(&keys), low)
+        .await
+        .map_err(opened("lake"))?;
+    let l = Lake::of(store.as_ref());
+    declared(&l).await?;
+    // A migration the page folds beside the records.
+    l.migrate(people(true)).await?;
+    let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
+    let bob = source_record("person", "p2", json!({"id": "p2", "name": "Bob"}));
+    l.ingest("crm", vec![ada, bob])
+        .await
+        .must("ingesting from crm")?;
+    let crm: SourceId = "crm".into();
+    let asked = store.forget_preflight(&crm).await.must("the preflight")?;
+    let done = store
+        .forget_source(&crm, Some(&asked.report_id))
+        .await
+        .must("forgetting crm")?;
+    ensure!(
+        rebuilds(&asked.way, "limits.page_events") && rebuilds(&done.way, "limits.page_events"),
+        "with `limits.page_events` below the page's events, the preflight and the act name \
+         the rebuild, saying so: {asked:?}, {done:?}"
+    );
+    let read = ["p1", "p2"];
+    let got = reads(store.as_ref(), &read, &[None]).await?;
+    store.rebuild().await.must("rebuilding")?;
+    let want = reads(store.as_ref(), &read, &[None]).await?;
+    let differ = apart(&got, &want);
+    ensure!(
+        differ.is_empty(),
+        "the act answers after the rebuild as a rebuild does; {} reads differ: {:?}",
+        differ.len(),
+        &differ[..differ.len().min(4)]
     );
     Ok(())
 }

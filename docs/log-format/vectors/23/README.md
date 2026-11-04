@@ -76,7 +76,7 @@ The files:
     (`docs/decisions/055-a-path-steps-through-a-reference.md`);
   - a type declared with two constraints, one that admits at ingest and
     one that reads `previous` (46);
-  - a `source_forgotten` of `crm`, naming its key's version `1` (47):
+  - a `source_forgotten` of `crm`, naming its key's version `1` and the act it belongs to (47):
     a reader that folds the lake reads every value `crm` sealed as erased;
   - a type `parcel` whose `state` only its verbs write, `authority:
     verb`, with an `initial` (48) (lakelands#1130);

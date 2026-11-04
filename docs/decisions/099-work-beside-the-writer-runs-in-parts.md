@@ -285,8 +285,10 @@ on a lake of about 6 000 records, 136 to 155 at 2.5M.
     is one log read and one `Ontology::at` per act, so it is O(acts), not O(page):
     45 ms at 1 077 acts (measured, on a lake of few declarations), so about 105 ms at
     lakelands#1649's 2 499 (reckoned), more with more declarations. It runs once per
-    writer, in the walk, on the view, and its result is merged into `w.removals` in a
-    turn; the fold adds each act after it. An act `taken`
+    writer, on the view, and its result is merged into `w.removals`; the plan placed it
+    in the walk, beside the first turn, where it costs a write nothing, and the tree runs
+    it in the restate's turn, where a write waits for it until pages are turns of their
+    own. The fold adds each act after it. An act `taken`
     pushed when it met a missing key has no `fixed` (read, `fold.rs`), so the merge
     replaces it. `Ontology::at` can be shared by the acts between two declarations.
   - **`redacted` stays as it is.** It tests every event against every act (read), so a
@@ -771,7 +773,9 @@ The act:
   the result equals a rebuild.
 - `RESTATE_TELLS_EVERY_ACT`: a scoped pass on a reopened lake leaves every older act's values
   erased.
-- `RESTATE_PAGE_OVER_ITS_BOUND_GOES_BESIDE`: a page over `page_events` on a migrated lake.
+- `RESTATE_PAGE_OVER_ITS_BOUND` (named `RESTATE_PAGE_OVER_ITS_BOUND_GOES_BESIDE` in this
+  plan; this pull takes the rebuild half, R5 the "goes beside" half): a page over
+  `page_events` on a migrated lake.
 - `ACT_AFTER_A_PASS_BEGAN_RESTATES_AFTER_THE_SWAP`.
 - `SWEEP_IN_TURNS`: no base a record names goes, and a write naming one during the sweep keeps it.
 - `ACT_NEVER_FOLDS_IN_PLACE`: a busy swap leaves it owed.
@@ -871,8 +875,8 @@ is on it yet.
   first turn reads it under the writer and folds it before it turns. Three tries that each find it
   longer end the job unavailable, `TailOverran`, with nothing appended.
 - **`limits`** hold `part_events`, `part_tail` and `page_events` with the defaults above, and
-  `order_chunk` is 1 000. Nothing reads `page_events` yet, and its settings row says so: R4
-  reads it. `part_events` is read from R2, where purge appends in parts.
+  `order_chunk` is 1 000. `page_events` bounds a page of a scoped restate, and a page over it
+  takes the rebuild (R4). `part_events` is read from R2, where purge appends in parts.
 - **The writer's open** asks every kind of job in `OWED` what the log and the lists owe, off the
   writer and after the open has answered, and sends it; a writer taken over from standby asks
   the same. `OWED` is empty; the open and the standby take the kinds they ask as an argument
@@ -1128,6 +1132,66 @@ only when it reaches what they name.
   declaration, a migration and a value type. `HASH_OF_THE_SHOWN_SHAPE`, `PLAN_TELLS`,
   `PLAN_REOPENED` and `STALE_REPORT` are restated for the id and the word "moved".
 
+**R4 (lakelands#1728), with lakelands#1725.** A removal's restate and a forgetting's
+refold are one scoped pass: the records an act of removal selects join those of the
+forgotten sources in one walk of the feed index, and every act the lists hold is told to
+the fold before its first page.
+
+- **`source_forgotten` names its act (lakelands#1725).** The event carries `act`, the
+  position of its act's first event, and `forget::grouped` groups by it in place of
+  adjacency: an act a crash left owed between its turns reads as itself when another act
+  begins and ends before it is taken up again. The conformance row `FORGET_GROUPS_BY_ACT`
+  holds it: two acts each stopped before their `act_whole`, the writer's open finishing
+  both, and each group holding only its own sources. Format 23 is unreleased, so no older
+  log is read.
+- **Keys from the walk.** `scrub::plan` takes the acts to restate beside the forgotten
+  sources, and the one walk adds each act's selected records to the plan's keys, and the
+  outputs a destroyed key sealed to those recorded again. An act of removal in the lake
+  no longer forces the rebuild by itself; `removed_list` names no reason.
+- **Acts told once.** `scrub_held` reads `remove::told` once, before its first page, and
+  merges each act into the writer's as `rebuild_held` does, so a page that folds a record
+  an older act took leaves its value erased, under a kept version and under one the act
+  destroyed. A read the telling fails stops the pass before its first page, so the act is
+  still owed and the next open retries: a page never meets a `values_removed`, which a
+  rebuild's fold does, and an untold act has no `fixed` to erase by. The acts restated are
+  marked `rebuilt` with the forgotten list, and the reclaim finishes them.
+- **The way asked.** `forget::beside` reads the removal acts the lists hold owed and whole
+  at the view's head, and a forget's preflight and its held report plan with them beside
+  the set, as `finish_forgetting` does: a lake owing a removal asks the way the finish
+  takes, its keys and its pages counted.
+- **`page_events`.** `Plan::page_events` is what the fullest page folds: the events about
+  its records, `wide`, `walks`, and the outputs it records again, which only the first
+  page folds. The outputs of the restate as a whole are not one page's, so the bound is
+  not crossed by a long restate whose pages are each short, and a plan with no page names
+  none. A page over `limits.page_events` is a reason for the rebuild, and the settings
+  row says so. `RESTATE_PAGE_OVER_ITS_BOUND` holds the reason, and the unit test
+  `the_bound_counts_a_page_not_the_whole_restate` the count: two pages each at the bound,
+  whose recorded outputs together are over it. The row this record names,
+  `RESTATE_PAGE_OVER_ITS_BOUND_GOES_BESIDE`, is R5's: the road beside the writer is what
+  "goes beside" states, and R5 renames the row with it.
+- **Left as the head holds it.** An act's source keeps its used-versions output
+  (`sys:sealed`) as the head has it, where a rebuild drops a version the act destroyed: a
+  page folds part of a source's records, so re-deriving the list from that page would lose
+  the versions of the records it does not hold. No read was found that resolves a surviving
+  value to the entry, and a page that holds the whole source, where the list is rebuilt as
+  a rebuild leaves it, is R5's.
+- **Pages as turns.** This pull folds every page of a restate in the one turn the road
+  hands it, so `page_events` guards a page's size, not a write's wait. The plan's page row
+  — a page reads its positions in its own turn — and the turn table's page row are not
+  built yet; the next pull on lakelands#1728 takes them, before R5, and the issue stays
+  open for them.
+- **The kept reason stays.** A page would apply `note(old, new)` for each head it changes,
+  and a settings event replayed under a page starts a view's build: opening kept outputs
+  and view state to the scope is what 098's heads and R5 need, so a kept view over the
+  restated records is still a reason for the rebuild. `SCRUB_FALLBACK` holds it, and the
+  `note` job goes beside with R5.
+- **Rows taken on every engine:** `FORGET_GROUPS_BY_ACT`, `RESTATE_SCOPED_FOR_A_REMOVAL`,
+  `RESTATE_TELLS_EVERY_ACT`, `RESTATE_PAGE_OVER_ITS_BOUND`.
+- **The ledger.** Product: 205 lines in, 64 out; specification: 453 in, 14 out. The
+  cut is the adjacency grouping in `forget::grouped` and the removal act's fallback in
+  `scrub::plan`, each replaced by what the log now names; core-size reads product 110 330
+  of 115 000 and specification 196 672 of 202 500, the seam 107 of 110 methods.
+
 ## How it came to be
 
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
@@ -1143,6 +1207,10 @@ only when it reaches what they name.
 - R3 built by lakelands#1718: a plan, a declaration's plan and a migration's or a value
   type's report name the position they were read at, and only a write that reaches what
   they name stales them.
+- R4's first pull built by lakelands#1728, with lakelands#1725: a removal's restate is the
+  scoped pass, acts told once before the first page, `page_events` read. Three parts are
+  left: the kept reason and the row's "goes beside" half wait for R5 behind their own
+  pull, and pages as turns waits for the next pull on lakelands#1728, before R5.
 - Amended by 102 (lakelands#1639), proposed for 0.23.0: a thinning act begins
   with `values_thinned`, and a write at a key it selected is refused rather
   than reading through the act.

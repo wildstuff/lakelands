@@ -598,10 +598,12 @@ fn renamed(r: &Renamed, ty: TypeName) -> TypeName {
 }
 
 /// An act of forgetting the log holds, as the `source_forgotten` events
-/// until its `act_whole` name it: from its first, every source it forgot.
+/// that name it and its `act_whole`: from its first, every source it
+/// forgot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Act {
-    /// Its first `source_forgotten`, which its `act_whole` names.
+    /// Its first event, which its `source_forgotten` events and its
+    /// `act_whole` name.
     pub at: Position,
     pub sources: Vec<SourceId>,
     /// Whether its `act_whole` is in the log.
@@ -609,13 +611,10 @@ pub(crate) struct Act {
 }
 
 /// The acts of forgetting the log holds, in order, each with the sources
-/// it forgot, grouped by adjacency: its `source_forgotten` events lie
-/// between the previous act's `act_whole` and its own. That holds while a
-/// job runs its turns with no other act between them, and not once the
-/// act is left owed between its turns — by a crash, or by a turn that
-/// failed — and another act begins and ends before it is taken up again:
-/// it then appends past that act, and the two read as one, the colliding
-/// act's source in it and its own `act_whole` naming no act.
+/// it forgot: every `source_forgotten` names the act it belongs to by that
+/// act's first position, so an act a crash left owed between its turns
+/// reads as itself even when another act begins and ends before it is
+/// taken up again and it appends past it.
 pub(crate) fn acts(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Act>> {
     let Some(head) = view.position() else {
         return Ok(Vec::new());
@@ -656,22 +655,24 @@ pub(crate) fn acts(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Act>> {
     Ok(grouped(lake.read_these(&Vec::from_iter(at))?))
 }
 
-// INTERIM: lakelands#1725 carries an act that names itself, so that a
-// resumed act's events are not read together with a colliding act's.
+/// Group the act's events by the act each names: a `source_forgotten`
+/// under its own `act`, and its `act_whole` marks that act whole.
 fn grouped(events: Vec<Event>) -> Vec<Act> {
     let mut acts: Vec<Act> = Vec::new();
     for e in events {
         match &e.body {
-            EventBody::SourceForgotten { source, .. } => match acts.last_mut() {
-                Some(act) if !act.whole => act.sources.push(source.clone()),
-                _ => acts.push(Act {
-                    at: e.position,
-                    sources: vec![source.clone()],
-                    whole: false,
-                }),
-            },
+            EventBody::SourceForgotten { source, act, .. } => {
+                match acts.iter_mut().find(|a| a.at == *act) {
+                    Some(found) => found.sources.push(source.clone()),
+                    None => acts.push(Act {
+                        at: *act,
+                        sources: vec![source.clone()],
+                        whole: false,
+                    }),
+                }
+            }
             EventBody::ActWhole { act } => {
-                if let Some(open) = acts.last_mut().filter(|a| !a.whole && a.at == *act) {
+                if let Some(open) = acts.iter_mut().find(|a| a.at == *act) {
                     open.whole = true;
                 }
             }
@@ -791,10 +792,32 @@ pub(crate) fn alone(mut set: ForgetSetReport) -> ForgetReport {
     report
 }
 
-/// How forgetting `set` at `view`'s head would restate the projection:
-/// by the scoped refold or the rebuild, and why.
-fn way(lake: &Lake, view: &dyn ProjectionView, set: &[SourceId]) -> Result<ForgetWay> {
-    let plan = crate::lake::scrub::plan(lake, view, set, lake.limits.forget_rebuild)?;
+/// The removal acts a finish restates beside a forgetting's set: those
+/// the lists hold owed and whole at `view`'s head.
+fn beside(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Removal>> {
+    let listed = crate::remove::removed_list(view, &Staged::default())?;
+    let head = view.position();
+    let mut acts = Vec::new();
+    for act in crate::remove::acts(lake, view)? {
+        if listed.get(&act.at).is_some_and(|s| s == "owed")
+            && crate::remove::whole(lake, act.at, head)?
+        {
+            acts.push(act);
+        }
+    }
+    Ok(acts)
+}
+
+/// How forgetting `set` at `view`'s head would restate the projection,
+/// restating the acts `acts` beside it: by the scoped refold or the
+/// rebuild, and why.
+fn way(
+    lake: &Lake,
+    view: &dyn ProjectionView,
+    set: &[SourceId],
+    acts: &[crate::remove::Removal],
+) -> Result<ForgetWay> {
+    let plan = crate::lake::scrub::plan(lake, view, set, acts, lake.limits.forget_rebuild)?;
     Ok(plan.way(lake, view.position().map_or(0, |p| p.0)))
 }
 
@@ -817,7 +840,10 @@ fn preflight_of(lake: &Lake, set: &[SourceId], known: bool) -> Result<ForgetSetR
     let earlier = crate::remove::acts(lake, view.as_ref())?;
     let g = gather(lake, view.as_ref(), &ontology, set, Some(&earlier))?;
     let reports = refuse_unknown(g.taken, set, view.as_ref(), &ontology, lake, known)?;
-    let way = way(lake, view.as_ref(), set)?;
+    // The removal acts the finish would restate beside the forgotten
+    // sources, so the way asked here is the way the act takes.
+    let restating = beside(lake, view.as_ref())?;
+    let way = way(lake, view.as_ref(), set, &restating)?;
     let mut report = of_set(reports, view.as_ref(), lake, way);
     let through = lake
         .report_head(view.position())?
@@ -1099,7 +1125,7 @@ impl Forget {
         self.walked = (crate::remove::removed_list(view, &Staged::default())?)
             .into_keys()
             .collect();
-        self.way = way(lake, view, &self.set)?;
+        self.way = way(lake, view, &self.set, &beside(lake, view)?)?;
         self.report = Some(self.report_again(lake, view, &ontology)?);
         self.shape = Some(ontology);
         Ok(())
@@ -1277,6 +1303,7 @@ impl Forget {
     ) -> Result<Next> {
         let now = lake.clock(w);
         let room = room(lake);
+        let act = self.act.unwrap_or_else(|| writes::position_after(w, 0));
         let take = room.min(self.pending.len());
         let mut drafts = Vec::new();
         let mut taking = Vec::with_capacity(take);
@@ -1287,6 +1314,7 @@ impl Forget {
                 EventBody::SourceForgotten {
                     source: source.clone(),
                     keys,
+                    act,
                 },
             ));
             taking.push(source.clone());

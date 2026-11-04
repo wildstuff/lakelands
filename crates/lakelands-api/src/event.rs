@@ -265,6 +265,11 @@ pub enum EventBody {
         source: SourceId,
         /// The versions of its key the act destroys.
         keys: Vec<crate::id::KeyId>,
+        /// The position of the act this event belongs to: the act's first
+        /// event, which its `act_whole` names. An act a crash left between
+        /// its turns may append past another act, so its events are not
+        /// the run of them that sits together (099).
+        act: Position,
     },
     /// A host took back part of a source's values: each one a selected
     /// `record_ingested` of the source before this event carries reads as

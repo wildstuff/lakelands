@@ -2,8 +2,8 @@
   "about": "An ingest of `hr` after the framed append, its sealed member `email` sealed in one box (log-format §1.4): the patch leaves it out, `sealed.fields` names it, and `sealed.box` is the base64 of AES-256-GCM-SIV under `hr`'s version `1`, the vectors' key, over the canonical bytes of the object of the members, `{\"email\":\"cleo@example.org\"}`, its nonce made from the source, the type, the key and the version before. Its id is made under `lakelands:ingest:v2`, the box among its parts.",
   "after": {
     "position": 99,
-    "hash": "8c319eff32afb43c7f45ff19617b4ca367ce144ae33e36f0ba9bbdfc4d1f62ba"
+    "hash": "195b88c672af2794eee74a454a00709735a7d8ca0176e27e895b20f0b229edd3"
   },
-  "line": "{\"body\":{\"key\":\"c6\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"id\":\"c6\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"f047c2120529e11210dabfccc908b8a358918b88396d9ca4cd9f5aee1d80d243\",\"id\":\"65daa08ad76397d48cfae6fc602340ec\",\"known_at\":\"2026-10-05T09:00:57.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":100,\"prev\":\"8c319eff32afb43c7f45ff19617b4ca367ce144ae33e36f0ba9bbdfc4d1f62ba\",\"sealed\":{\"box\":\"EIsMtFzi52zkiNtFj/afRnwgRJJQq+25kPQ/tWJvUGasJWOAwHiZ4asF1UQ=\",\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"hr\",\"v\":23,\"writer\":\"service:hr\"}",
-  "hash": "f047c2120529e11210dabfccc908b8a358918b88396d9ca4cd9f5aee1d80d243"
+  "line": "{\"body\":{\"key\":\"c6\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"id\":\"c6\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d97\",\"fence\":1,\"hash\":\"471f9a73be352d5b1c54512d427b9f71251df5ac1e1545a6a8c527ac00fb9a3d\",\"id\":\"65daa08ad76397d48cfae6fc602340ec\",\"known_at\":\"2026-10-05T09:00:57.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":100,\"prev\":\"195b88c672af2794eee74a454a00709735a7d8ca0176e27e895b20f0b229edd3\",\"sealed\":{\"box\":\"EIsMtFzi52zkiNtFj/afRnwgRJJQq+25kPQ/tWJvUGasJWOAwHiZ4asF1UQ=\",\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"hr\",\"v\":23,\"writer\":\"service:hr\"}",
+  "hash": "471f9a73be352d5b1c54512d427b9f71251df5ac1e1545a6a8c527ac00fb9a3d"
 }
