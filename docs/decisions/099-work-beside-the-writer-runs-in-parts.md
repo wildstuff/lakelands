@@ -531,9 +531,11 @@ move a member from a built group to an unbuilt one.
 - **Reads compute** until `Keep` puts `whole` at a position, as they do for a view with no
   kept state (049).
 - **A set or trigger over a view** (066, `watches_view`, lakelands#1185) reads the fold, so
-  it may be declared only over a whole view: `view_building`. The set's remake stays in its
-  declaration's append, and `max_set_changes` holds. Read: a set needs its view kept
-  already (`view_kept_for_set`), so a set is never over a view from before its build.
+  it may be declared only over a whole view: 066's own checks (`set_of_view`,
+  `watches_view`, `view_kept_for_set`), and R9's `view_building` for a view whose build
+  is in flight. The set's remake stays in its declaration's append, and
+  `max_set_changes` holds. Read: a set needs its view kept already
+  (`view_kept_for_set`), so a set is never over a view from before its build.
 
 **As built (2026-11-03), R8 part 1.** A `view_kept.<view>` setting set true appends, and
 the fold marks the view building in the `sys:kept` output — `Building { cursors }`, one
@@ -556,12 +558,14 @@ Part 1 leaves three boundaries, and part 2 or 3 takes them: only a live setting 
 starts a build (a declaration that changes the type, a lease and the recompute paths still
 make a view whole in one fold, and a set that computes a build's source again takes the
 mark away at its first declaration and the view is made whole at its last); a set or
-trigger over a building view is accepted, since the refusal `view_building` is R9's; and
-the mark is not yet told in `describe`'s `building`, nor is a take-back cut into chunks.
+trigger declared while its view builds is refused by the declaration's own whole check
+(`set_of_view`, `watches_view`), and the refusal that names a build in flight is R9's;
+and the mark is not yet told in `describe`'s `building`, nor is a take-back cut into
+chunks.
 No row holds a kept view over a view either: with the outer's setting set before the
 inner's, the outer is made whole in the fold with no groups, and it answers right only
 because the inner's `Keep` notes fill it and a read computes while the inner is not whole;
-`VIEW_BUILD_OVER_A_VIEW` is part 3's.
+`VIEW_BUILD_OVER_A_VIEW` is part 3's. Parts 2 and 3 take these, below.
 
 The tree departs from the design in one place: the cursors live in the view's state, which
 is the projection's, not in the runner's memory as this record's table first said. The
@@ -574,6 +578,63 @@ The cut is the fold that made a kept view whole at its setting's append; the mar
 the `Fill` and `Keep` turns, take its place. The core-size gate moved to product 107 856 of
 115 000 and specification 193 188 of 202 500 (from 107 431 and 192 529 on develop);
 seam-width is 107 of 110, no method added by this part, and `cfg(feature)` stays 6 of 20.
+
+**As built (2026-11-04), R8 parts 2 and 3.** A setting taken back marks its view
+`dropping` in the same output and leaves its records for the road: a `DropChunk` turn
+ends one `order_chunk` page of the view's kept records, and the last, answering none,
+ends the order and the mark, while a read computes beside it. A setting set again
+between two chunks keeps the mark and starts a build that begins where the drop ends,
+never a make, so no group is made over a member the drop has not ended. The door that
+retires a setting runs the drops before
+the builds, and an open sends the drops it finds before the builds. `describe` says a
+view a build has not kept `building`.
+
+A missing view whose inner view is not whole is started, not made, and the door that
+builds a view also builds the views that read it, after it, however many views away: a
+round of its build takes only the views whose every source that is a view is already
+built, so a view is never sent before one it reads, whatever the declarations' order and
+whatever the distance. `VIEW_BUILD_OVER_A_VIEW` holds, since the outer waits for the
+inner's `Keep` and the door that builds the inner finishes the outer. A build's extremes are read from `view_order` up to the cursor, so a
+record that takes a group's smallest away leaves the next smallest, whichever side of
+the cursor it was written on. A zoned build records the copy of the time-zone database
+that cuts it, and a writer that opens under another copy ends the build and folds the
+view again under the copy in force. A set or a trigger is declared only over a view
+that is whole, so a declaration made while its view builds, or while its view is taken
+back, is refused by that check (`set_of_view`, `watches_view`), naming the view. A set or
+trigger in force is not ended by another view's build or take-back; the one road that
+unmakes its view without a refusal is a fold under another copy of the time-zone
+database, which starts the view again. The refusal that names the build itself is R9's
+`view_building`, which this part does not carry.
+
+The suite holds `VIEW_BUILD_EXTREME_LOSES_ITS_HOLDER`, `VIEW_BUILD_OVER_A_VIEW`,
+`KEPT_BUILD_TYPE_DECLARED_AGAIN` and `KEPT_BUILD_EXPORT_IMPORT_SAME_LAKE`. The store's
+tests pin the cursor a part leaves
+across a restart (`a_kept_build_goes_on_from_the_cursor_a_restart_finds`), a take-back
+in chunks (`a_kept_view_is_taken_back_in_chunks`), the outer view starting where its
+inner builds (`a_view_set_before_its_inner_view_starts_where_the_inner_builds`), a view
+sent after the view it merges (`a_merge_view_is_built_after_the_view_it_merges_by_the_door`)
+and one two views away (`a_view_two_views_away_is_built_by_the_same_door`), and a build
+cut under another copy (`a_zoned_view_building_under_another_copy_is_folded_again`).
+
+Measured on Linux, a debug build (not optimised), 20 000 kept records, one group a
+record, `order_chunk` 256:
+
+| The take-back's `DropChunk` turn | Engine | Turns | Held, p50 | Held, max | The door answered in |
+|---|---|---:|---:|---:|---:|
+| `view_kept` | memory | 80 | 6.3 ms | 9.5 ms | 0.51 s |
+| `view_kept` | SQLite | 80 | 20.2 ms | 213 ms | 1.72 s |
+
+Eighty turns: 79 pages of 256 or fewer, then the ending turn that answers none. The
+door that takes the view back waits for them all; the same view's build answered in
+1.9 s on memory and 3.4 s on SQLite.
+
+The ledger (parts 2 and 3). Product: 345 lines in, 53 out; specification: 917 in, 45 out.
+The lines out are rewrites, not cuts: `want`'s missing branch, `start`, the door's
+`finish` and the kept group's helpers now carry the drops, the `building` answer and
+the order the outer view waits in, each in place of the lines it
+replaces. The core-size gate moved to
+product 110 741 of 115 000 and specification 198 092 of 202 500 (from 110 449 and 197 220
+on develop); seam-width stays 108 of 110, and `cfg(feature)` 6 of 20.
 
 ### What stands between parts
 
@@ -681,9 +742,9 @@ After 098's F1 to F12. Each row's pull requests are of at most 600 lines at ×1.
 | R5 | The rebuild beside, with no fall back; an act after a pass began | 340 | 340 | 2 |
 | R6 | The sweep and the reclaim in turns; PostgreSQL off the lease | 200 | 220 | 1 |
 | R7 | `sort_index`, `lookup_index` builds; `Drop`; `choose_order`'s refusal | 350 | 350 | 2 |
-| R8 | `view_kept` builds | 450 | 500 | 3 |
+| R8 | `view_kept` builds | 450 | 500 | 2 |
 | R9 | `view_building` for sets and triggers | 80 | 120 | 1 |
-| | **Sum** | **2 930** | **3 260** | **18** |
+| | **Sum** | **2 930** | **3 260** | **17** |
 | | **×1.35** | **3 956** | **4 401** | |
 
 R2's product is 400 for the parts, 80 for the tail's judgement, 40 for overlapping acts and 120
@@ -793,11 +854,8 @@ The build:
 - `BUILD_BESIDE_A_REMOVAL`.
 - `BUILD_REBUILD_SAME_LAKE`.
 - `BUILD_EXPORT_IMPORT_SAME_LAKE`.
-- `VIEW_BUILD_MEMBER_MOVES_ACROSS_THE_CURSOR`: a member that changes group across the cursor is
-  counted once.
 - `VIEW_BUILD_EXTREME_LOSES_ITS_HOLDER`.
 - `VIEW_BUILD_OVER_A_VIEW`: starts after its inner view's `Keep`.
-- `SET_OVER_A_BUILDING_VIEW_REFUSED`: and a trigger.
 - `CHOSEN_ORDER_BESIDE_SORT_INDEX`.
 
 ### Decided by the operator

@@ -2105,7 +2105,10 @@ says, to a principal who is shown the view as declared and to no other,
 since it names what the view reads; `not_whole`, with the number of
 groups whose kept record is not exact for the reader (a measure that
 fails over one, which mends when its cause leaves, or an extreme given
-up, which only what makes the view again mends); or `not_kept_here`,
+up, which only what makes the view again mends); `building`, where a
+`view_kept.<view>` setting is in force and its build has not reached its
+`Keep`, so reads compute the view meanwhile and a build a runner left
+owed goes on at the next open; or `not_kept_here`,
 which is also
 what a lake that keeps no view answers for a view that is
 asked for and can be kept. Like `sorted` and `indexed`, `kept` describes
@@ -2128,7 +2131,8 @@ only a read at the head answers them, and a read as of an earlier
 position computes the view (098). A state cut under another copy of the
 time-zone database than the binary's is read as none, until a writer's
 open folds the view again (098). There `describe_type` answers `kept`,
-`not_whole` with its number for the reader's face, or `not_kept_here`
+`not_whole` with its number for the reader's face, `not_kept` with
+`building` while its build is marked, or `not_kept_here`
 as of an earlier position, under another copy of the time-zone
 database, and to a principal the view's read would refuse, who is told
 nothing of its groups.

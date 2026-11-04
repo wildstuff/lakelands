@@ -44,9 +44,8 @@ pub(crate) enum Kind {
 /// road runs, with no field left to build and every field it named to
 /// drop.
 pub(crate) fn asked(write: &Write) -> Option<(TypeName, Kind)> {
-    let (ty, key, patch) = match write {
-        Write::Upsert(ty, key, patch) => (ty, key, Some(patch)),
-        Write::Retire(ty, key) => (ty, key, None),
+    let (ty, key) = match write {
+        Write::Upsert(ty, key, _) | Write::Retire(ty, key) => (ty, key),
         _ => return None,
     };
     if ty.as_str() != lakelands_api::seam::SETTING_TYPE {
@@ -61,9 +60,11 @@ pub(crate) fn asked(write: &Write) -> Option<(TypeName, Kind)> {
     if let Some(ty) = key.as_str().strip_prefix(SERIES_INDEX_SETTING) {
         return Some((TypeName::from(ty), Kind::Series));
     }
+    // Set, the setting builds the view; written false or retired, it takes
+    // the view back and its records are cleared in parts. Both are the
+    // road's, and the door waits for whichever it asked for.
     let view = key.as_str().strip_prefix(VIEW_KEPT_SETTING)?;
-    let value = patch.and_then(|p| p.get(&FieldName::from("value")));
-    lakelands_api::seam::view_kept(value).then(|| (TypeName::from(view), Kind::Kept))
+    Some((TypeName::from(view), Kind::Kept))
 }
 
 /// Send the builds the setting of `ty` asks for, one per name its fields
@@ -72,9 +73,24 @@ pub(crate) fn asked(write: &Write) -> Option<(TypeName, Kind)> {
 /// parts after them, its `dropping` mark found at the walk.
 pub(crate) async fn finish(lake: &Arc<Lake>, ty: &TypeName, kind: Kind) -> Result<()> {
     if let Kind::Kept = kind {
+        // A take-back goes first: a view a setting asked for again between
+        // two of its chunks starts its build where the drop ends.
+        for view in dropping(lake).await? {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            road::send(lake, Box::new(Build::unmaking(view).answering(tx)));
+            match rx.await {
+                Ok(ended) => ended?,
+                Err(_) => return Err(exec::halted(false)),
+            }
+        }
         // An outer view starts after its inner view's `Keep`, so the views
-        // it reads through are built first and awaited.
-        for view in under(lake, ty).await? {
+        // `ty` reads through are built first, and then the views that read
+        // `ty`, whose settings may have come before its own.
+        for view in under(lake, ty)
+            .await?
+            .into_iter()
+            .chain(over(lake, ty).await?)
+        {
             let (tx, rx) = tokio::sync::oneshot::channel();
             road::send(lake, Box::new(Build::new(view, Kind::Kept).answering(tx)));
             match rx.await {
@@ -123,17 +139,24 @@ pub(crate) async fn finish(lake: &Arc<Lake>, ty: &TypeName, kind: Kind) -> Resul
 pub(crate) fn owed(_lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
     let declared = view.declarations()?;
     let mut owed: Vec<Box<dyn Job>> = Vec::new();
-    // The views a build is making, each after the views it reads through:
-    // the road runs one job at a time, in the order they are sent.
+    // The views a build is making and the views a take-back is clearing,
+    // each after the views it reads through: the road runs one job at a
+    // time, in the order they are sent, and a drop before the build a
+    // setting asked for again.
     let mut kept: Vec<(usize, TypeName)> = Vec::new();
+    let mut drops: Vec<(usize, TypeName)> = Vec::new();
     for d in &declared {
         let Declaration::Type(t) = &d.declaration else {
             continue;
         };
         if t.view.is_some() {
-            let building = crate::kept::state(view, &t.name)?.is_some_and(|s| s.building.is_some());
-            if building {
-                kept.push((under_in(&declared, &t.name).len(), t.name.clone()));
+            let state = crate::kept::state(view, &t.name)?;
+            let depth = under_in(&declared, &t.name).len();
+            if state.as_ref().is_some_and(|s| s.building.is_some()) {
+                kept.push((depth, t.name.clone()));
+            }
+            if state.is_some_and(|s| s.dropping) {
+                drops.push((depth, t.name.clone()));
             }
             continue;
         }
@@ -154,10 +177,16 @@ pub(crate) fn owed(_lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dy
         }
     }
     kept.sort_by_key(|(depth, _)| *depth);
-    let kept = kept
-        .into_iter()
-        .map(|(_, v)| Box::new(Build::new(v, Kind::Kept)) as Box<dyn Job>);
-    owed.extend(kept);
+    drops.sort_by_key(|(depth, _)| *depth);
+    owed.extend(
+        drops
+            .into_iter()
+            .map(|(_, v)| Box::new(Build::unmaking(v)) as Box<dyn Job>),
+    );
+    owed.extend(
+        kept.into_iter()
+            .map(|(_, v)| Box::new(Build::new(v, Kind::Kept)) as Box<dyn Job>),
+    );
     Ok(owed)
 }
 
@@ -203,11 +232,96 @@ fn push_under(
     order.push(ty.clone());
 }
 
+/// The views that read `ty` through, in the order their builds are sent:
+/// each after the views it reads, so the ones nearest `ty` first.
+async fn over(lake: &Arc<Lake>, ty: &TypeName) -> Result<Vec<TypeName>> {
+    let (lake, ty) = (lake.clone(), ty.clone());
+    exec::run(move || {
+        let view = lake.engine.view(None)?;
+        Ok(over_in(&view.declarations()?, &ty))
+    })
+    .await
+}
+
+/// [`over`]'s order, from the declarations in force.
+///
+/// A round takes the views whose every source that is a view of this lake
+/// is already in an earlier round, so a view is never sent before one it
+/// reads, however the declarations are ordered and however many hops away
+/// that view is. A view whose sources a round cannot reach is not sent at
+/// all: it cannot be kept while the others build.
+fn over_in(declared: &[Declared], ty: &TypeName) -> Vec<TypeName> {
+    let views: std::collections::BTreeSet<&TypeName> = declared
+        .iter()
+        .filter_map(|d| match &d.declaration {
+            Declaration::Type(t) => t.view.is_some().then_some(&t.name),
+            _ => None,
+        })
+        .collect();
+    let mut order = Vec::new();
+    let mut seen = std::collections::BTreeSet::from([ty.clone()]);
+    loop {
+        let next: Vec<TypeName> = (declared.iter())
+            .filter_map(|d| match &d.declaration {
+                Declaration::Type(t) if !seen.contains(&t.name) => {
+                    let sources: Vec<&TypeName> = t
+                        .view
+                        .as_deref()
+                        .into_iter()
+                        .flat_map(|v| {
+                            std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source))
+                        })
+                        .collect();
+                    let reaches = sources.iter().any(|s| seen.contains(*s));
+                    let reads_seen = sources
+                        .iter()
+                        .all(|s| !views.contains(*s) || seen.contains(*s));
+                    (reaches && reads_seen).then(|| t.name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        if next.is_empty() {
+            return order;
+        }
+        seen.extend(next.iter().cloned());
+        order.extend(next);
+    }
+}
+
+/// The views whose setting was taken back and whose records a take-back is
+/// clearing, the views each reads through first: the road sends a drop
+/// before the build a setting asked for again.
+async fn dropping(lake: &Arc<Lake>) -> Result<Vec<TypeName>> {
+    let lake = lake.clone();
+    exec::run(move || {
+        let view = lake.engine.view(None)?;
+        let declared = view.declarations()?;
+        let mut views = Vec::new();
+        for d in &declared {
+            let Declaration::Type(t) = &d.declaration else {
+                continue;
+            };
+            if t.view.is_some()
+                && crate::kept::state(view.as_ref(), &t.name)?.is_some_and(|s| s.dropping)
+            {
+                views.push((under_in(&declared, &t.name).len(), t.name.clone()));
+            }
+        }
+        views.sort_by_key(|(depth, _)| *depth);
+        Ok(views.into_iter().map(|(_, v)| v).collect())
+    })
+    .await
+}
+
 /// One setting's build: the fields marked building, filled a key range at
 /// a time, then kept.
 pub(crate) struct Build {
     ty: TypeName,
     kind: Kind,
+    /// Whether this is a take-back: the view's kept records are ended a
+    /// key range a turn, not filled and kept.
+    dropping: bool,
     /// The fields to fill, read at the walk.
     fields: Vec<FieldName>,
     /// The key the last chunk ended at.
@@ -225,10 +339,19 @@ impl Build {
         Build {
             ty,
             kind,
+            dropping: false,
             fields: Vec::new(),
             after: None,
             started: 0,
             answer: None,
+        }
+    }
+
+    /// The take-back of `view`: its kept records are cleared in chunks.
+    fn unmaking(view: TypeName) -> Build {
+        Build {
+            dropping: true,
+            ..Build::new(view, Kind::Kept)
         }
     }
 
@@ -359,16 +482,23 @@ impl Build {
         Ok(Turned::Whole)
     }
 
-    /// One part of a kept view's build: a key range of the first source
-    /// with records its cursor has not reached, folded into the view's
-    /// groups and put, then, where every source is reached, the view kept.
+    /// One part of a kept view's build or of its take-back: a key range of
+    /// the first source with records its cursor has not reached, folded
+    /// into the view's groups and put, then, where every source is
+    /// reached, the view kept; or a key range of its kept records, ended.
     /// The mark is read here, not held from the walk: a part that a runner
-    /// stopped at is gone on from the cursor the state kept.
+    /// stopped at is gone on from the cursor the state kept, and a mark a
+    /// take-back took away ends the job.
     fn turn_kept(&mut self, t: &Turn<'_>, w: &mut Writer, limit: u32) -> Result<Turned> {
         let head = w.tip.as_ref().map_or(Position::GENESIS, |(p, _)| *p);
-        // Kept whole already, or taken back between two parts.
+        // Kept whole already, taken back between two parts, or waiting for
+        // a take-back that is not finished.
         let state = crate::kept::state(t.engine.view(None)?.as_ref(), &self.ty)?;
-        if !state.is_some_and(|s| !s.whole && s.building.is_some()) {
+        let stands = state.is_some_and(|s| match self.dropping {
+            true => s.dropping,
+            false => !s.whole && s.building.is_some() && !s.dropping,
+        });
+        if !stands {
             return Ok(Turned::Whole);
         }
         let projection = t.engine.projection();
@@ -389,6 +519,31 @@ impl Build {
             settings: &w.settings,
         };
         let mut staged = Staged::default();
+        if self.dropping {
+            return match crate::kept::drop_chunk(
+                &at,
+                &mut staged,
+                &self.ty,
+                limit,
+                self.after.clone(),
+                head,
+            ) {
+                Ok(Some(last)) => {
+                    projection.commit(head)?;
+                    self.after = Some(last);
+                    Ok(Turned::More)
+                }
+                Ok(None) => {
+                    projection.commit(head)?;
+                    t.undescribe();
+                    Ok(Turned::Whole)
+                }
+                Err(e) => {
+                    projection.rollback();
+                    Err(e)
+                }
+            };
+        }
         let ready = match crate::kept::ready(&at, &staged, &self.ty) {
             Ok(ready) => ready,
             Err(e) => {
