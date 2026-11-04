@@ -2208,15 +2208,22 @@ fn head(w: &Writer) -> Position {
 /// leaves it good and only a write to the type stales it (099). Computed
 /// by its reader from what it holds, which names nothing hidden (024,
 /// extended).
-pub(crate) fn report_id(report: &MigrationReport, through: Option<Position>) -> String {
+pub(crate) fn report_id(
+    report: &MigrationReport,
+    views: &[TypeDecl],
+    through: Option<Position>,
+) -> String {
     let report = MigrationReport {
         report_id: String::new(),
         ..report.clone()
     };
-    report_named(
-        through,
-        serde_json::json!({"report": serde_json::to_value(&report).expect("a report serialises")}),
-    )
+    let mut said = serde_json::json!({"report": report});
+    // The views a migration declares again are bound by its id, as its type
+    // is by its hash: an apply that names others is not the one previewed.
+    if !views.is_empty() {
+        said["views"] = serde_json::json!(views);
+    }
+    report_named(through, said)
 }
 
 /// A report's id from what it says and the position it was read at: the

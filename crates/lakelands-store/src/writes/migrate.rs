@@ -319,6 +319,14 @@ impl Call<'_> {
         // view against it, or the view would refuse every read after.
         let mut after = probe.clone();
         after.put(Declaration::Type(m.to.clone()), 0, None);
+        // The views it declares again, each judged by [`views_over`] (again
+        // at an accept) and as its author's declaration, stand in place of
+        // those in force, so each is checked among the readers below
+        // against the lake the migration leaves (027, extended).
+        views_over(&sees, &w.ontology, m)?;
+        for v in &m.views {
+            after.put(Declaration::Type(v.clone()), 0, None);
+        }
         // The refusal of a migration that takes away a field `reader` reads:
         // one the type, or a link type of it, has before it and not after.
         let has = |t: &TypeDecl, n: &FieldName| t.has_field(n);
@@ -358,6 +366,8 @@ impl Call<'_> {
                 }))
             };
         for reader in w.ontology.types.values().map(|e| &e.decl) {
+            let named = m.views.iter().find(|v| v.name == reader.name);
+            let reader = named.unwrap_or(reader);
             let Some(v) = reader.view.as_deref() else {
                 continue;
             };
@@ -1094,7 +1104,7 @@ impl Call<'_> {
         // held from its reader tells nothing that a retired one would not.
         report.lossless &= plan.lossless;
         let listed = plan.listed();
-        report.report_id = report_id(&report, self.lake.report_head(view.position())?);
+        report.report_id = report_id(&report, &m.views, self.lake.report_head(view.position())?);
         // A record of another type whose reference to a moved key the fold
         // rewrites: decided for the sets whose filter reads that field, a
         // page of the type at a time.
@@ -1179,6 +1189,8 @@ impl Call<'_> {
         if !report.lossless {
             return Err(self.lossy(w, &m, report));
         }
+        let mut m = m;
+        let views = std::mem::take(&mut m.views);
         // Past the lake's ceiling, naming the set whose change passed it.
         let max = self.lake.limits.max_set_changes;
         if let Some((set, ..)) = members.get(max as usize) {
@@ -1225,6 +1237,16 @@ impl Call<'_> {
         // the lake under the new name, after that link type's declaration.
         for declaration in carried(&w.ontology, &m) {
             drafts.push(system_declared(&w.ontology, declaration, now)?);
+        }
+        // The views it declares again are declared after it, by its author,
+        // as `declare` declares them: one that reads as the lake holds it is
+        // kept, not declared again.
+        let views: Vec<_> = (views.into_iter().map(Declaration::Type))
+            .filter(|v| !w.ontology.in_force(v))
+            .collect();
+        if !views.is_empty() {
+            let at = (now, first + 1 + drafts.len(), Judging::Act);
+            drafts.extend(self.bundle_drafts(w, views, at)?.drafts);
         }
         let d = self.draft(
             now,
@@ -1812,4 +1834,26 @@ pub(super) fn fits(report: ValueTypeReport, named: bool) -> Result<ValueTypeRepo
         misfits,
         first,
     }))
+}
+
+/// Each view a migration declares again is a view in force over the type it
+/// migrates that stays one over it, named once; one its author is not shown
+/// is not granted (027, extended).
+pub(super) fn views_over(sees: &Sight<'_>, o: &Ontology, m: &Migration) -> Result<()> {
+    let over = |t: &TypeDecl| {
+        let v = t.view.as_deref();
+        v.is_some_and(|v| v.source == m.to.name || v.merge.iter().any(|s| s.source == m.to.name))
+    };
+    for (i, v) in m.views.iter().enumerate() {
+        let held = o.ty(&v.name).ok();
+        if held.is_some_and(|t| !sees.shows(&Declaration::Type(t.clone()))) {
+            return Err(Error::not_granted());
+        }
+        let twice = m.views[..i].iter().any(|o| o.name == v.name);
+        if !held.is_some_and(over) || !over(v) || twice {
+            let (view, ty) = (v.name.clone(), m.to.name.clone());
+            return Err(Error::invalid(Case::MigrationViewNotOver { view, ty }));
+        }
+    }
+    Ok(())
 }

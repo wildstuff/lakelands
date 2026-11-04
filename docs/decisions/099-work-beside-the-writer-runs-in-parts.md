@@ -636,6 +636,18 @@ replaces. The core-size gate moved to
 product 110 741 of 115 000 and specification 198 092 of 202 500 (from 110 449 and 197 220
 on develop); seam-width stays 108 of 110, and `cfg(feature)` 6 of 20.
 
+**As built (2026-11-04), R9.** A set or a trigger declared over a view whose build is in
+flight is refused `view_building`, naming the view, the set or the trigger, and appending
+nothing. The check sits beside `set_of_view` and `watches_view` at the declaration's
+judgement of sets and triggers over views, and comes before them: a view that builds is
+kept already, so telling the author to set `view_kept.<view>` would send it the wrong
+way. It holds for a set or trigger declared again as well, where the one in force would
+have been told `view_kept_for_set`. A view taken back (`dropping`) is not building and
+keeps the refusals it had. Once the setting's door has answered, the view is whole and
+the same declaration lands. The suite holds `VIEW_BUILDING_REFUSES_READERS`; it fails
+with `set_of_view` where the check is taken out. The ledger is in the pull request that
+carries it with lakelands#1726.
+
 ### What stands between parts
 
 | Between parts of | Act | Build |

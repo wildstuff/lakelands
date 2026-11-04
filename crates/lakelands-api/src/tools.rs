@@ -1608,6 +1608,8 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     ("relation_renames", pairs),
                     ("fill", json!({"type": "array", "items": {"type": "string"},
                         "description": "Fields of `to` whose `initial` each live record that holds no value takes; the report counts them (`filled`)."})),
+                    ("views", json!({"type": "array", "items": {"type": "object"},
+                        "description": "Views over the type, each declared again as it reads after the migration: judged with it, and declared in its append."})),
                     ("report_id", json!({"type": "string"})),
                 ]),
                 &[],
