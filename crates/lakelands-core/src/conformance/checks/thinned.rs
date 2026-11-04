@@ -8,14 +8,15 @@ use std::sync::atomic::AtomicU32;
 
 use lakelands_api::Location;
 use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode, Scan};
-use lakelands_api::event::Digest;
+use lakelands_api::event::{Digest, EventId};
 use lakelands_api::read::GroupKey;
 use lakelands_api::seam::{VIEW_KEPT_SETTING, kept_name};
 use lakelands_api::write::{Thin, ThinReport};
 
 use super::forgotten::{Fails, failing};
 use super::stranded::{HORIZON, answers, daily, stranded, tick, tick_at};
-use crate::conformance::fixture::{invalid_case, source_record, sourced};
+use crate::conformance::Lines;
+use crate::conformance::fixture::{canonical_line, invalid_case, source_record, sourced};
 use crate::conformance::prelude::*;
 use crate::export;
 
@@ -33,13 +34,19 @@ check!(
 
 check!(
     THIN_EXACT_GROUPS_ONLY = a_thinning_that_would_strand_an_inexact_group_is_refused,
-    "102 (lakelands#1747): a kept view over the type holding a group whose sum is not exact refuses the act and its preflight `kept_not_exact`, naming the view, the type and the group, and nothing is appended",
+    "102 (lakelands#1747): a kept view over the type holding a group whose sum is not exact refuses the act and its preflight `kept_not_exact`, naming the view and the type, whether or not the act would strand the group, and nothing is appended",
     given
 );
 
 check!(
     THIN_PARTS_AND_WRITES = a_killed_thinning_is_finished_by_the_writers_open,
     "102 (lakelands#1747): a thinning of 600 records appends parts of at most `part_events` keys; killed after its first part, the lake verifies, a write between the parts lands, and the writer's next open finishes the act with one `act_whole`, taking each record once and not the late one; the refusal of a write at a key a later part has not reached is S6's",
+    given
+);
+
+check!(
+    THIN_FOREIGN_WHOLE_KEEPS_IT_OWED = a_stopped_thinning_is_not_ended_by_another_acts_whole,
+    "102 (lakelands#1747): a thinning stopped after its first part, whose log's next event is another act's `act_whole`, is still owed: the writer's open finishes it, taking each key once, and the log verifies",
     given
 );
 
@@ -183,8 +190,8 @@ async fn a_thinning_that_would_strand_an_inexact_group_is_refused(
         let r = store
             .thin_values(&"tick".into(), &by("at"), preflight)
             .await;
-        let named = matches!(invalid_case(&r), Some(Case::KeptNotExact { view, ty, group })
-            if view.as_str() == "spent" && ty.as_str() == "tick" && group.as_str() == "c1");
+        let named = matches!(invalid_case(&r), Some(Case::KeptNotExact { view, ty })
+            if view.as_str() == "spent" && ty.as_str() == "tick");
         if !named {
             red.push(format!("preflight {preflight}: {r:?}"));
         }
@@ -268,6 +275,73 @@ async fn a_killed_thinning_is_finished_by_the_writers_open(store: Store, given: 
         ensure!(
             wholes == 1 && taken == 600 && found == ["late"],
             "the open finishes the act: {wholes} wholes, {taken} keys taken, `tick` finds {found:?}"
+        );
+        Ok(())
+    })
+    .await?;
+    store
+        .verify(None, None)
+        .await
+        .must("verifying the whole act")?;
+    Ok(())
+}
+
+async fn a_stopped_thinning_is_not_ended_by_another_acts_whole(store: Store, given: Given) -> Held {
+    let (store, start) = owed(store, &given).await?;
+    let lake = store.lake().clone();
+    let events = log_events(store.as_ref()).await?;
+    let taken = |e: &&Event| matches!(e.body, EventBody::LeaseTaken { .. });
+    let (Some(template), Some(last)) = (events.iter().find(taken).cloned(), events.last()) else {
+        return Err(Failure::new(
+            "the lake's log holds its writer's `lease_taken`",
+        ));
+    };
+    let known_at = last.known_at;
+    // The next event is an `act_whole` naming `start`, an event the
+    // thinning did not begin at: another act's whole, landing right after
+    // the stopped part, which must not end this act.
+    let foreign = start;
+    let line: Lines = Box::new(move |(tip, prev), fence| {
+        let event = |position: Position, prev, body| Event {
+            position,
+            id: EventId(format!("{:032x}", position.0)),
+            prev,
+            known_at,
+            fence,
+            body,
+            ..template.clone()
+        };
+        let whole = EventBody::ActWhole { act: foreign };
+        (vec![canonical_line(event(tip.next(), prev, whole))], 0)
+    });
+    let c = (given.continued)(Some(store), lake, line, OpenMode::Write, Seams::default());
+    let store = c
+        .await
+        .map_err(|e| Failure::new(format!("appending another act's whole: {e}")))?
+        .opened
+        .map_err(|e| Failure::new(format!("the writer's open: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    settles(6_000, Duration::from_millis(5), || async {
+        let after = events_after(store.as_ref(), start).await?;
+        let parts: Vec<&Event> = (after.iter())
+            .filter(|e| e.body.kind() == "values_thinned")
+            .collect();
+        let taken: usize = parts
+            .iter()
+            .map(|e| match &e.body {
+                EventBody::ValuesThinned { keys, .. } => keys.len(),
+                _ => 0,
+            })
+            .sum();
+        let wholes = after
+            .iter()
+            .filter(|e| e.body.kind() == "act_whole")
+            .count();
+        let found = keys(&l, None).await?;
+        ensure!(
+            wholes == 2 && taken == 600 && found.is_empty(),
+            "the open finishes the act another act's whole did not end: {wholes} wholes, \
+             {taken} keys taken, `tick` finds {found:?}"
         );
         Ok(())
     })

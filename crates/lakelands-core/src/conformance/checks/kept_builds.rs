@@ -1126,7 +1126,7 @@ async fn a_set_or_trigger_over_a_view_a_build_has_not_kept_is_refused(
         let (l, s, refused, readers) = (&l, store.as_ref(), refused.clone(), &readers);
         async move {
             ensure!(
-                until_appended(l, KEPT).await?,
+                until_logged(l, s, KEPT).await?,
                 "`{KEPT}` was never appended, so no build began"
             );
             for (code, name, d) in readers {

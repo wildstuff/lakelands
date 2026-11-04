@@ -7,7 +7,7 @@ use crate::conformance::prelude::*;
 
 check!(
     THIN_REFUSALS = a_thinning_refuses_in_six_named_cases,
-    "102: a thinning act refuses in six named cases, each with its own id and sentence: `thin_by`, a field of neither instants nor dates, naming the type and the field; `thinned`, a write, an ingest, a retirement or a read at a key the act took, naming the type, the key and the horizon; `stranded_at_head_only`, an earlier-position read of a stranded group, naming the type and the position; `kept_over_thinned`, a view made kept over a type whose records the act took, naming the view and the type; `kept_not_exact`, a group the act would strand that is not exact, naming the view, the type and the group; and `stranded_make`, a view made again by an event that changes what its stranded groups fold, naming the view and the type"
+    "102: a thinning act refuses in six named cases, each with its own id and sentence: `thin_by`, a field of neither instants nor dates, naming the type and the field; `thinned`, a write, an ingest, a retirement or a read at a key the act took, naming the type, the key and the horizon; `stranded_at_head_only`, an earlier-position read of a stranded group, naming the type and the position; `kept_over_thinned`, a view made kept over a type whose records the act took, naming the view and the type; `kept_not_exact`, a kept view of the type holding a group that is not exact, naming the view and the type; and `stranded_make`, a view made again by an event that changes what its stranded groups fold, naming the view and the type"
 );
 
 async fn a_thinning_refuses_in_six_named_cases(store: Store) -> Held {
@@ -53,10 +53,9 @@ async fn a_thinning_refuses_in_six_named_cases(store: Store) -> Held {
             Case::KeptNotExact {
                 view: "daily".into(),
                 ty: "tick".into(),
-                group: "m1".into(),
             },
             "kept_not_exact",
-            &["`m1`", "`tick`", "`daily`"],
+            &["`tick`", "`daily`"],
         ),
         (
             Case::StrandedMake {

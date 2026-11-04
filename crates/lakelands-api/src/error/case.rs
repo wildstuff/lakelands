@@ -1663,13 +1663,13 @@ catalog! {
             #[serde(rename = "type")]
             ty: TypeName,
         } => "`{view}` cannot be kept: records of its source `{ty}` were thinned, and its make would count the live ones alone",
-        /// A thinning that would strand a kept group that is not exact.
+        /// A thinning refused because a kept view of the type holds a
+        /// group that is not exact.
         KeptNotExact {
             view: TypeName,
             #[serde(rename = "type")]
             ty: TypeName,
-            group: RecordKey,
-        } => "the group `{group}` of `{ty}` that `{view}` keeps is not exact, and thinning would strand it: make the view exact first, or thin another way",
+        } => "`{view}`, kept over `{ty}`, holds a group that is not exact, so a thinning of `{ty}` is refused whether or not this act would strand it: make the view exact first, or thin another way",
         /// A view made again over a source whose records a thinning took,
         /// by an event that changes what its stranded groups fold.
         StrandedMake {

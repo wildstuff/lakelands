@@ -41,7 +41,8 @@ is a promise of speed.
   thinned member stay.
 - **Public types.** `EventBody::ValuesThinned { ty, by, before, keys }` and
   its kind; the selection `Thin { by, before }`; `ThinReport`;
-  `LakeStore::thin_values` and `thin_values_preflight`; the marker
+  `LakeStore::thin_values`, the same with its `preflight` at `true`; the
+  marker
   `ThinnedAct { ty, by, before, through, gone }`, which names its type
   so an act a view lists across its sources is attributed; `Found::Records`
   and `Found::Groups` gain `thinned: Vec<ThinnedAct>` and
@@ -57,7 +58,7 @@ is a promise of speed.
   and these four make 100 of 110.
 - **Refusals.** `ThinBy { ty, field }`; `Thinned { ty, key, before }`;
   `StrandedAtHeadOnly { ty, position }`; `KeptOverThinned { view, ty }`;
-  `KeptNotExact { view, ty, group }`; `StrandedMake { view, ty }`.
+  `KeptNotExact { view, ty }`; `StrandedMake { view, ty }`.
 - **No new limit.** The act reads `part_events`, `part_tail`,
   `page_events` and `order_chunk` as 099 sets them.
 
@@ -135,8 +136,9 @@ since the members it lost are not there to compute it.
   path a write takes). A rebuild folds the same mark, since the fold meets
   the record's versions in order before it meets the act.
 - **A stranded group is exact.** It was exact when it was stranded — the
-  act refuses `KeptNotExact` when a kept view has a group it would strand
-  that is not exact — and every change it can take since is
+  act refuses `KeptNotExact` when a kept view that reads the type holds a
+  group that is not exact now, whether or not the act would strand it —
+  and every change it can take since is
   the fold's: a new member arrives, a member still present leaves or
   changes. A correction to a thinned member is refused (`Thinned`), so no
   fold it holds is ever contradicted by a write; an erasure act is not a
@@ -317,8 +319,8 @@ and groups; it catches up; it takes turns; it sweeps and reclaims
   (reckoned, loaded; 099's part row).
 - **The report** says `ty`, `by`, `before`, `records`, `through` and the
   reclaim's `reclaimed`; it repeats no key, since the log's parts name
-  them. The preflight answers the same counts, the views it would strand
-  and any `KeptNotExact` it would meet.
+  them. The preflight answers the same counts and any `KeptNotExact` it
+  would meet.
 - **A write meets the act's own line, not a refold.** 099 makes a write
   read what an owed act will leave, because a removal can put an erased
   value back into the log. Thinning takes no value out of a record a
@@ -483,12 +485,17 @@ answers less as if whole or cannot be rebuilt.
   one that moved face before the act strand the earlier group and face as
   well, and the earlier read omits them rather than computing short; and a
   view over the view does the same, its refusal naming the inner view.
-- `THIN_EXACT_GROUPS_ONLY`: the act refuses a view with a not-exact group
-  it would strand, at the act's position or an earlier one.
+- `THIN_EXACT_GROUPS_ONLY`: the act refuses a kept view of the type,
+  itself or through other views, that holds a group not exact at the
+  head, whether or not the act would strand it; a group inexact only at
+  an earlier position refuses nothing.
 - `THIN_PARTS_AND_WRITES`: a write sent during the act answers within one
   turn; a write at a key a later part has not yet taken is refused
   `Thinned`; a killed writer's open finishes the act; `verify` passes
   between any two parts.
+- `THIN_FOREIGN_WHOLE_KEEPS_IT_OWED`: a thinning stopped after a part,
+  whose log's next event is another act's `act_whole`, is still owed:
+  the writer's open finishes it, taking each key once.
 - `THIN_VERIFY_EXPORT_IMPORT_REBUILD`: the log verifies, an export between
   parts imports, and a rebuild equals the projection.
 - `THIN_VIEW_KEPT_AFTER_REFUSED`: every event that would make a view over
@@ -514,9 +521,10 @@ Decided on 2026-11-02 (lakelands#1578): every recommendation below was taken.
    the act took, and a rebuild stays a fold. The rule alone — with the fold
    walking the type's events at the act's position, which saves about 20 B a
    record and adds a walk to every rebuild of the lake — was not taken.
-4. **A group the act would strand that is not exact is refused**, as above,
-   so every stranded group is exact. It is not held flagged and answered
-   less than it answered before, which the issue's done-when rules out.
+4. **A kept view's group that is not exact refuses the act**, as above —
+   conservatively, whether or not the act would strand it — so every
+   stranded group is exact. It is not held flagged and answered less than
+   it answered before, which the issue's done-when rules out.
 5. **The raise is +1 500 product and +2 000 specification**, to 108 500 and
    191 500, in `docs/budgets.md` by the rule, dated 2026-11-02.
 
@@ -892,9 +900,12 @@ its mark and changed nowhere else.
 - **Owed.** The kind is `thin::owed` in `OWED`. A log whose feed index
   holds no `values_thinned` owes nothing, and its declarations are not
   read, so a writer's open asks for them no more often than before.
-  Each act row's `through` and the event after it tell whether an act
-  is whole, without reading the log. Only an owed act reads the feed's index for
-  its first part, or the pages where an engine has no index. A resumed
+  An act is whole when an `act_whole` naming its first event follows its
+  parts: the log's parts and ends, which the feed's index finds, say
+  which acts began and did not end, and an `act_whole` another act
+  appended beside a stopped part does not end it. Only an owed act reads
+  the feed's index for its first part, or the pages where an engine has
+  no index. A resumed
   act selects again at the view before its first position, where the
   keys it already took have no state. If nothing is left, it appends an
   empty part with its `act_whole`, so the last part and the `act_whole`
@@ -907,8 +918,9 @@ its mark and changed nowhere else.
   stands at 110 of 110. S6 builds its doors, the catalog entry and the
   command on this method and adds no second one; this corrects S6's row
   of § The build plan.
-- **The preflight** answers the count and the refusals at the head. It
-  does not yet name the views the act would strand.
+- **The preflight** answers the count and the refusals at the head:
+  `ThinBy` and the conservative `KeptNotExact` above, naming the view
+  and the type and no group, whether or not the act would strand it.
 - **Not yet:** the write doors' `Thinned` refusal (S6); the reclaim, so
   `reclaimed` is absent (S7); the reads' markers (S7).
 - **lakelands#1746.** A make that carries a stranded group writes, into
@@ -923,17 +935,18 @@ its mark and changed nowhere else.
 - **The suite's rows** are `THIN_TAKES_THE_RAW_ROWS`,
   `THIN_KEPT_VIEW_ANSWERS_AS_BEFORE`, `THIN_EXACT_GROUPS_ONLY`,
   `THIN_PARTS_AND_WRITES` (the write refused `Thinned` mid-act is S6's
-  half), `THIN_VERIFY_EXPORT_IMPORT_REBUILD`, `THIN_LATE_TICK_FOLDS`
+  half), `THIN_FOREIGN_WHOLE_KEEPS_IT_OWED`,
+  `THIN_VERIFY_EXPORT_IMPORT_REBUILD`, `THIN_LATE_TICK_FOLDS`
   and lakelands#1746's `THIN_ZONED_CARRIED`. Each is green on the
   memory, SQLite and PostgreSQL engines.
-- **Measured at S5's head**: product 113 797 and specification 201 134,
-  against 113 329 and 200 659 at its base. S5 adds 468 product and 475
+- **Measured at S5's head**: product 113 773 and specification 201 232,
+  against 113 329 and 200 659 at its base. S5 adds 444 product and 573
   specification, where the plan had 180 + 30 and 240. The extra is the
-  owed act's detection (`open`, `ended`, `first`: about 100 lines), the
-  facade and its door (34), the conservative exact refusal over views
-  of views, and seven rows where the plan counted six. Nothing was cut:
+  owed act's detection (`open`, `first`: about 70 lines), the facade
+  and its door (34), the conservative exact refusal over views of
+  views, and eight rows where the plan counted six. Nothing was cut:
   the four items of § Cut first stay. The ceilings hold with room for
-  S6 and S7's planned 324 and 432 at ×1.35: 1 203 product and 1 366
+  S6 and S7's planned 324 and 432 at ×1.35: 1 227 product and 1 268
   specification are left. Seam 110 of 110; 6 of 20 `cfg(feature)`
   sites.
 

@@ -1216,6 +1216,7 @@ pub const ALL: &[Check] = &[
     thinned::THIN_KEPT_VIEW_ANSWERS_AS_BEFORE,
     thinned::THIN_EXACT_GROUPS_ONLY,
     thinned::THIN_PARTS_AND_WRITES,
+    thinned::THIN_FOREIGN_WHOLE_KEEPS_IT_OWED,
     thinned::THIN_VERIFY_EXPORT_IMPORT_REBUILD,
     thinned::THIN_LATE_TICK_FOLDS,
     thinned::THIN_ZONED_CARRIED,

@@ -20,11 +20,12 @@
 //! the rest: it strands the groups, drops the states and puts the
 //! tombstones. A selection that is empty appends nothing.
 //!
-//! **Owed.** An act whose last part has no `act_whole` after it is found
-//! at a writer's open through the type's act row, and taken up again from
-//! its first position: the selection is read there again, at the view
-//! before that position, where the keys the act already took have no
-//! state, so nothing is held between the parts but the keys still to go.
+//! **Owed.** An act whose parts no `act_whole` naming its first event
+//! ends is found at a writer's open through the type's act row, and taken
+//! up again from its first position: the selection is read there again,
+//! at the view before that position, where the keys the act already took
+//! have no state, so nothing is held between the parts but the keys still
+//! to go.
 
 use std::collections::BTreeSet;
 
@@ -33,7 +34,7 @@ use lakelands_api::error::Case;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::{FeedFilter, kept_name};
+use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Thin, ThinReport};
 use lakelands_api::{Error, Position, RecordKey, Result, Timestamp, TypeName};
 
@@ -226,9 +227,11 @@ fn selection(view: &dyn ProjectionView, ty: &TypeName, thin: &Thin) -> Result<BT
 }
 
 /// Refuse `KeptNotExact` where a kept view that reads `ty`, itself or
-/// through another view, holds a group that is not exact. Conservative: a
-/// group the act would not strand refuses it too, since which group a
-/// taken record's past versions stood in is the fold's to find.
+/// through another view, holds a group that is not exact now. The rule is
+/// conservative: an inexact group refuses the act whether or not the act
+/// would strand it, since which group a taken record's past versions
+/// stood in is the fold's to find, and a group inexact only at an earlier
+/// position refuses nothing.
 fn exact(view: &dyn ProjectionView, o: &Ontology, ty: &TypeName) -> Result<()> {
     let mut reach = BTreeSet::from([ty.clone()]);
     loop {
@@ -255,21 +258,7 @@ fn exact(view: &dyn ProjectionView, o: &Ontology, ty: &TypeName) -> Result<()> {
         if state.dropping || state.not_exact == [0, 0] {
             continue;
         }
-        let mut group = None;
-        crate::lake::walk(view, &kept_name(&name), false, |r| {
-            let folds = r.fields.get(crate::kept::FOLDS);
-            let flagged = folds
-                .and_then(|f| f.get("flagged"))
-                .and_then(|f| f.as_array());
-            if group.is_none()
-                && flagged.is_some_and(|f| f.iter().any(|b| b.as_bool() == Some(true)))
-            {
-                group = Some(r.key);
-            }
-            Ok(())
-        })?;
         return Err(Error::invalid(Case::KeptNotExact {
-            group: group.unwrap_or_else(|| RecordKey::from(name.as_str())),
             view: name,
             ty: ty.clone(),
         }));
@@ -288,25 +277,15 @@ fn open(
     let row =
         (view.thinned_acts(ty)?.into_iter()).find(|a| a.by == thin.by && a.before == thin.before);
     match row {
-        Some(row) if !ended(lake, view, row.through)? => Ok(first(lake, view, ty, thin)?),
-        _ => Ok(None),
+        Some(_) => first(lake, view, ty, thin),
+        None => Ok(None),
     }
 }
 
-/// Whether the event after an act's last part is its `act_whole`: the
-/// last part and the `act_whole` are one append.
-fn ended(lake: &Lake, view: &dyn ProjectionView, through: Position) -> Result<bool> {
-    if view.position().is_none_or(|h| h <= through) {
-        return Ok(false);
-    }
-    let after = lake.read_these(&[through.next()])?;
-    Ok(after
-        .iter()
-        .any(|e| matches!(e.body, EventBody::ActWhole { .. })))
-}
-
-/// The first part of the act on `ty` by `thin` that no `act_whole` ended:
-/// read from the log's parts and ends, which the feed's index finds.
+/// The first part of an act on `ty` by `thin` that no `act_whole` of its
+/// own ended: read from the log's parts and ends, which the feed's index
+/// finds. Only an `act_whole` naming the act's first event ends it; one
+/// another act appended beside it does not.
 fn first(
     lake: &Lake,
     view: &dyn ProjectionView,
@@ -372,9 +351,6 @@ pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn
     let mut owing: Vec<Box<dyn Job>> = Vec::new();
     for ty in ontology.types.keys() {
         for row in view.thinned_acts(ty)? {
-            if ended(lake, view, row.through)? {
-                continue;
-            }
             let thin = Thin {
                 by: row.by,
                 before: row.before,
