@@ -1316,7 +1316,7 @@ impl ProjectionStore for PgLake {
     /// `/dev/shm` may not hold: a reclaim that fits beats a fast one that
     /// fails (lakelands#1161). The engine keeps no journal and no free
     /// pages of its own to give back: the other steps do nothing.
-    fn compact(&self, how: Compact) -> Result<Reclaimed> {
+    fn compact_step(&self, how: Compact) -> Result<Reclaimed> {
         let tables: Vec<&str> = PROJECTION_TABLES.iter().copied().chain(["meta"]).collect();
         let vacuum = |db: &mut _| -> Result<Reclaimed> {
             let before = size(db, &self.target.schema, &tables)?;

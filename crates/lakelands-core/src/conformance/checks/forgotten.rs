@@ -1416,7 +1416,7 @@ impl ProjectionStore for Reclaims {
         self.fails[4].fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    fn compact(
+    fn compact_step(
         &self,
         how: lakelands_api::engine::Compact,
     ) -> lakelands_api::Result<lakelands_api::engine::Reclaimed> {
@@ -1427,7 +1427,7 @@ impl ProjectionStore for Reclaims {
         }
         match fails(&self.fails, 0) {
             true => Err(crashed()),
-            false => self.inner.projection().compact(how),
+            false => self.inner.projection().compact_step(how),
         }
     }
     fn put_thinned_act(

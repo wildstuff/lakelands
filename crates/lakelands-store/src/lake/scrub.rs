@@ -292,8 +292,8 @@ impl ProjectionStore for Scoped {
         self.inner().clear()
     }
 
-    fn compact(&self, how: Compact) -> Result<Reclaimed> {
-        self.inner().compact(how)
+    fn compact_step(&self, how: Compact) -> Result<Reclaimed> {
+        self.inner().compact_step(how)
     }
 
     fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
@@ -1273,6 +1273,15 @@ enum Then {
 
 /// The unused bases, listed on a view at `past` while the lake had
 /// rebuilt `rebuilds` times, and how many of them the turns have swept.
+///
+/// The sweep is safe only under one rule: nothing puts a state at or
+/// before `past` without bumping `lake.rebuilds`. A chunk keeps a listed
+/// base only where a state put after `past` names it, and bases are shared
+/// by block, so a write, a rebuild or a scoped pass that put a state at or
+/// before `past` over a listed base would have its base deleted under it.
+/// Every write puts its states at its own position, past the view; a
+/// rebuild and a scoped pass's open, which put states behind the head,
+/// count a rebuild, and a chunk that sees the count moved lets the list go.
 struct Swept {
     ids: Vec<u64>,
     past: Position,
@@ -1298,7 +1307,7 @@ impl Swept {
 }
 
 /// A reclaim's turns so far: the storage before the first and after the
-/// last, their time summed, and a step that failed.
+/// last, their time summed, and whether a step failed.
 #[derive(Default)]
 struct Reclaiming {
     beside: bool,
@@ -1306,26 +1315,30 @@ struct Reclaiming {
     before: Option<u64>,
     after: Option<u64>,
     ms: u64,
-    failed: Option<lakelands_api::Error>,
+    failed: bool,
 }
 
 /// What one turn of a reclaim gives back, at most: 10 MiB of free pages.
 const RECLAIM_TURN: u64 = 10 << 20;
 
 impl Reclaiming {
-    /// One step: whether free pages are left for the next.
-    fn run(&mut self, lake: &Lake, how: Compact) -> bool {
+    /// One step: whether free pages are left for the next. A step that
+    /// fails is told to the lake when it fails, beside the writer as under
+    /// it, so the reclaim is owed from then on and not from the turn after
+    /// ([`Lake::reclaimed`] writes no list, so it may run off the writer).
+    fn run(&mut self, lake: &Lake, how: Compact) -> Result<bool> {
         let began = std::time::Instant::now();
-        match lake.engine.projection().compact(how) {
+        match lake.engine.projection().compact_step(how) {
             Ok(got) => {
                 self.before = self.before.or(got.before);
                 self.after = got.after.or(self.after);
                 self.ms += super::elapsed_ms(began).max(1);
-                got.more
+                Ok(got.more)
             }
             Err(e) => {
-                self.failed = Some(e);
-                false
+                self.failed = true;
+                let _owed = lake.reclaimed(Err(e), 0)?;
+                Ok(false)
             }
         }
     }
@@ -1502,7 +1515,7 @@ impl Restate {
             Then::Sweep(listed @ None) => *listed = Some(Swept::on(lake)?),
             Then::Reclaim(r) if !r.beside => {
                 r.beside = true;
-                r.run(lake, Compact::Beside);
+                r.run(lake, Compact::Beside)?;
             }
             _ => {}
         }
@@ -1553,25 +1566,26 @@ impl Restate {
             unreachable!("a reclaim's turn");
         };
         if !std::mem::replace(&mut r.beside, true) {
-            r.run(lake, Compact::Beside);
+            r.run(lake, Compact::Beside)?;
         }
         let how = match std::mem::replace(&mut r.journal, true) {
             true => Compact::Pages(RECLAIM_TURN),
             false => Compact::Journal,
         };
-        if r.failed.is_none() && r.run(lake, how) {
+        if !r.failed && r.run(lake, how)? {
             return Ok(Stepped::More);
         }
         let r = std::mem::take(r);
-        let told = match r.failed {
-            Some(e) => Err(e),
-            None => Ok(Reclaimed {
-                before: r.before,
-                after: r.after,
-                more: false,
-            }),
+        if r.failed {
+            // Told, and owed, when the step failed.
+            return Ok(Stepped::Done(None));
+        }
+        let told = Reclaimed {
+            before: r.before,
+            after: r.after,
+            more: false,
         };
-        Ok(Stepped::Done(lake.reclaimed(told, r.ms)?.ok()))
+        Ok(Stepped::Done(lake.reclaimed(Ok(told), r.ms)?.ok()))
     }
 
     /// The first turn: every act the lists hold is told, and every key

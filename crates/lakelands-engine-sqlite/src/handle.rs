@@ -1064,7 +1064,7 @@ impl ProjectionStore for SqliteLake {
     /// left. [`Compact::Beside`] needs the
     /// writer's lock, so it does nothing. The log is not touched. `VACUUM`
     /// is one transaction: when it fails, the projection is as it was.
-    fn compact(&self, how: Compact) -> Result<Reclaimed> {
+    fn compact_step(&self, how: Compact) -> Result<Reclaimed> {
         if how == Compact::Beside {
             return Ok(Reclaimed::nothing());
         }
@@ -1081,9 +1081,15 @@ impl ProjectionStore for SqliteLake {
             // `begin` and `clear` abandon it.
             abandon(conn)?;
             let before = self.size()?;
+            let free = || -> Result<i64> {
+                (conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))).map_err(sql)
+            };
+            let was = free()?;
             match how {
                 Compact::Pages(bytes) => {
-                    let pages = (bytes / 4096).max(1);
+                    let size: i64 =
+                        (conn.query_row("PRAGMA page_size", [], |r| r.get(0))).map_err(sql)?;
+                    let pages = (bytes / u64::try_from(size).unwrap_or(1).max(1)).max(1);
                     let vacuum = format!("PRAGMA incremental_vacuum({pages})");
                     conn.execute_batch(&vacuum).map_err(sql)?;
                 }
@@ -1106,18 +1112,22 @@ impl ProjectionStore for SqliteLake {
                 }
                 _ => {}
             }
-            let free: i64 =
-                (conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))).map_err(sql)?;
+            // A file made without incremental vacuum, before it was the
+            // default or by a rebuild in place, keeps its free pages under
+            // `incremental_vacuum`: a pages step that gave none back is the
+            // last, or the act's turns would never end.
+            let left = free()?;
+            let more = left > 0 && (how == Compact::Journal || left < was);
             // The pages given back went through the journal: the last step
             // truncates it again, unless a reader holds it, so `after` is
             // the file without them.
-            if matches!(how, Compact::Pages(_)) && free == 0 {
+            if matches!(how, Compact::Pages(_)) && !more {
                 truncate_journal(conn)?;
             }
             Ok(Reclaimed {
                 before: Some(before),
                 after: Some(self.size()?),
-                more: free > 0,
+                more,
             })
         })
     }

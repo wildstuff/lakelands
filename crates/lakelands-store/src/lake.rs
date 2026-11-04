@@ -1441,7 +1441,7 @@ impl Lake {
     /// reclaim would ([`Self::reclaimed`]).
     fn reclaim(&self, how: Compact) -> Result<Result<lakelands_api::write::CompactReport>> {
         let began = std::time::Instant::now();
-        let reclaimed = self.engine.projection().compact(how);
+        let reclaimed = self.engine.projection().compact_step(how);
         self.reclaimed(reclaimed, elapsed_ms(began).max(1))
     }
 

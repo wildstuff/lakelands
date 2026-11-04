@@ -63,7 +63,7 @@ fn a_compact_after_a_clear_leaves_no_free_page_and_an_empty_journal() {
 
     let reclaimed = engine
         .projection()
-        .compact(lakelands_api::engine::Compact::Whole)
+        .compact_step(lakelands_api::engine::Compact::Whole)
         .unwrap();
     let (before, after) = (reclaimed.before.unwrap(), reclaimed.after.unwrap());
     assert_eq!(before, stored, "before is the file and its journal");
@@ -103,12 +103,12 @@ fn a_reclaim_in_steps_gives_back_every_free_page_a_bound_at_a_time() {
             .unwrap()
     };
     let p = engine.projection();
-    let journal = p.compact(Compact::Journal).unwrap();
+    let journal = p.compact_step(Compact::Journal).unwrap();
     assert!(journal.more, "the clear left free pages: {journal:?}");
     assert_eq!(len(&wal), 0, "the journal is truncated first");
     let (left, mut steps) = (free(), 0);
     // A bound of 64 pages a step.
-    while p.compact(Compact::Pages(64 * 4096)).unwrap().more {
+    while p.compact_step(Compact::Pages(64 * 4096)).unwrap().more {
         steps += 1;
         assert!(steps < 10_000, "every step gives pages back");
     }
@@ -119,10 +119,45 @@ fn a_reclaim_in_steps_gives_back_every_free_page_a_bound_at_a_time() {
     assert_eq!(free(), 0, "no free page is left in projection.db");
     assert_eq!(len(&wal), 0, "the last step truncates the journal again");
     assert_eq!(
-        p.compact(Compact::Beside).unwrap().before,
+        p.compact_step(Compact::Beside).unwrap().before,
         None,
         "nothing runs beside"
     );
+    drop(engine);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `projection.db` made without incremental vacuum, as one made before
+/// it was the default, which the engine leaves as it is: a pages step
+/// gives nothing back and says so, so an act's reclaim ends (099, R6).
+#[test]
+fn a_reclaim_in_steps_ends_on_a_file_without_incremental_vacuum() {
+    use lakelands_api::engine::Compact;
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("compact-none-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let at = Location::sqlite("none", &dir);
+    drop(SqliteOpener.open(&at, OpenMode::Create).unwrap());
+    let db = dir.join("projection.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("PRAGMA auto_vacuum = NONE; VACUUM;")
+        .unwrap();
+    drop(conn);
+    let engine = SqliteOpener.open(&at, OpenMode::Write).unwrap();
+    fold(engine.as_ref(), 2000, 1);
+    engine.projection().clear().unwrap();
+    fold(engine.as_ref(), 10, 2);
+    let p = engine.projection();
+    assert!(
+        p.compact_step(Compact::Journal).unwrap().more,
+        "the clear left free pages"
+    );
+    let mut steps = 0;
+    while p.compact_step(Compact::Pages(64 * 4096)).unwrap().more {
+        steps += 1;
+        assert!(steps < 50, "a step that gives nothing back is the last");
+    }
+    assert_eq!(steps, 0, "no step gave pages back");
     drop(engine);
     let _ = std::fs::remove_dir_all(&dir);
 }

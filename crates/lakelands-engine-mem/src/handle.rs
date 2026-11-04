@@ -326,6 +326,8 @@ impl ProjectionStore for MemoryLake {
         self.stage(match of {
             StatesOf::Record(ty, key) => Put::DroppedRecord(ty.clone(), key.clone()),
             StatesOf::Output(seam, input) => Put::DroppedOutput(seam.to_owned(), input.clone()),
+            // Memory tests every state, not only those put after `past`:
+            // it keeps every base the engines on disk keep, and more.
             StatesOf::Bases(ids, _) => Put::DroppedBases(ids.iter().map(|id| *id as i64).collect()),
         })
     }
@@ -461,7 +463,7 @@ impl ProjectionStore for MemoryLake {
 
     /// The memory engine keeps no storage to give back: it measures and
     /// reclaims nothing.
-    fn compact(&self, _: Compact) -> Result<Reclaimed> {
+    fn compact_step(&self, _: Compact) -> Result<Reclaimed> {
         self.writable()?;
         Ok(Reclaimed::nothing())
     }

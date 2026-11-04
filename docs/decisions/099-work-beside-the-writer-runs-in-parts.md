@@ -1343,18 +1343,34 @@ chunk or one step, not the whole.
   `writing()` check, runs beside the writer before the reclaim's turn; `compact`'s stays
   on the writer's connection, held to its lease. Memory reclaims nothing. On SQLite the
   last pages step truncates the journal again, so `after` is the file without them.
-  `ProjectionStore::compact` takes the step (`Compact::Whole`, `Beside`, `Journal`,
-  `Pages`) and says whether free storage is left. `reclaimed` sums the steps:
+  `ProjectionStore::compact_step` takes the step (`Compact::Whole`, `Beside`,
+  `Journal`, `Pages`) and says whether free storage is left. `reclaimed` sums the steps:
   the size before the first and after the last. `lakelands compact` keeps the whole
-  `VACUUM`.
+  `VACUUM`. A pages step says more is left only where it gave pages back: a file made
+  without incremental vacuum, before it was the default or by a rebuild in place, keeps
+  its free pages under `incremental_vacuum`, and its reclaim ends after one pages step.
+  SQLite's unit test `a_reclaim_in_steps_ends_on_a_file_without_incremental_vacuum`
+  holds it.
 - **The plan said "after a swap: nothing"; the tree reclaims after any rebuild.** The
   act does not know whether its rebuild swapped in a new file or cleared and folded in
   place, and in place leaves erased pages in the journal and on the free list. After a
   swap the turns find little to do: a journal truncated, few free pages. A rebuild still
   sweeps nothing, since it leaves no base unused. A reclaim that fails is owed, as
-  before, and `RECLAIM_OWED` holds it unchanged.
-- **The seam.** `unused_bases` is the one new method. The seam reads 110 of 110:
-  `compact` takes its step as an argument rather than adding three methods.
+  before. A step that fails is told to the lake when it fails, the step beside the
+  writer included, so the reclaim is owed from then on and not from the next turn;
+  PostgreSQL's `RECLAIM_OWED` was red until it was.
+- **The seam.** `unused_bases` is a new method, and so is `compact_step`: changing
+  `compact` to take the step broke `lakelands-api`'s public contract. `compact()` stays,
+  deprecated since 0.23.0 for one release as 056 asks, provided as
+  `compact_step(Compact::Whole)`, and `compact_step` is provided over it, so an engine
+  implements one of the two. The seam reads 111 of 110, and is raised only by
+  `docs/budgets.md`'s rule; the raise is the operator's decision, not this record's.
+- **The sweep's rule.** Nothing puts a state at or before the listing's `past`
+  without counting a rebuild: a write puts its states at its own position, and a
+  rebuild and a scoped pass's open count one. A chunk keeps a base only where a state
+  put after `past` names it, and bases are shared by block, so a state put before it
+  over a listed base would lose its base. `Swept`'s doc says so. Memory tests every
+  state instead, which keeps at least what the engines on disk keep.
 - **The rows.** `SWEEP_IN_TURNS`: with one base a chunk, a write another source sends
   while the sweep's first chunk holds the writer is answered before the act is whole.
   The sweep takes a turn for each base the forgotten source's writes left unnamed, and
@@ -1365,7 +1381,9 @@ chunk or one step, not the whole.
   `compact` still asks for it. It is red with the journal step made a whole `VACUUM`. A
   write naming a base the list holds cannot be made through a door: a base carries its
   write's `known_at`. SQLite's unit test `a_base_named_after_its_listing_stays_through_the_chunk`
-  holds that case, and memory's shared-base test holds the listing.
+  holds that case, and memory's shared-base test holds the listing. PostgreSQL's
+  `StatesOf::Bases` has no test of its own: the suite's rows run it, and the case of a
+  base named after its listing is held on SQLite only.
 - **Measured** once on SQLite, release build, file-backed: 100 000 records of one
   source, then 5 000 writes of 3 records by a second, which is forgotten while one
   caller writes a record of a third source in a loop. The scoped pass takes 58 page
@@ -1376,12 +1394,14 @@ chunk or one step, not the whole.
   page turns of 55 ms in all, and takes the projection from 570 MB to 46 MB. A second run
   agrees, its chunks 0.8 to 0.9 ms. The act's first turn held the writer for 49 s in
   the same run, reading a tail of no events: the tail is found key by key, and the act
-  reaches 15 000 keys. That is R2's tail read, not this step's, and is left open.
-- **The ledger.** Product: 452 lines in, 130 out; specification: 376 in, 19 out. Cut:
+  reaches 15 000 keys. That is R2's tail read, not this step's, and is left open:
+  lakelands#1649's first need is not met while it stands, and that issue carries it.
+- **The ledger.** Product: 495 lines in, 125 out; specification: 411 in, 19 out. Cut:
   the reclaim's steps share one runner and one step chooser, and `put_lists` lost its
-  sweep flag. Over the plan's 200 / 220 by the seam's step argument, `unused_bases` on
-  three engines and PostgreSQL's two `VACUUM`s. core-size reads product 113 651 of
-  115 000 and specification 201 016 of 202 500, the seam 110 of 110 methods.
+  sweep flag. Over the plan's 200 / 220 by the seam's step, `unused_bases` on three
+  engines, PostgreSQL's two `VACUUM`s and the deprecated `compact()` kept beside
+  `compact_step`. core-size reads product 113 699 of 115 000 and specification 201 051
+  of 202 500, the seam 111 of 110 methods, red until its raise is decided.
 
 ## How it came to be
 
@@ -1406,7 +1426,8 @@ chunk or one step, not the whole.
   their own pull, as does an act that arrives after a pass began.
 - R6 built by lakelands#1751 (lakelands#1649): the sweep of unused bases and the reclaim
   are turns of the restate. PostgreSQL's `VACUUM` runs off the writer, and the plan's
-  "nothing after a swap" became the reclaim's turns after any rebuild.
+  "nothing after a swap" became the reclaim's turns after any rebuild. Need 1 of
+  lakelands#1649 stays open there: the first turn's tail read.
 - Amended by 102 (lakelands#1639), proposed for 0.23.0: a thinning act begins
   with `values_thinned`, and a write at a key it selected is refused rather
   than reading through the act.

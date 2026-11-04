@@ -240,10 +240,10 @@ impl ProjectionStore for Failing {
     fn clear(&self) -> Result<()> {
         self.inner.projection().clear()
     }
-    fn compact(&self, how: Compact) -> Result<lakelands_api::engine::Reclaimed> {
+    fn compact_step(&self, how: Compact) -> Result<lakelands_api::engine::Reclaimed> {
         // A reclaim's other steps pass: it is counted, and fails, once.
         if matches!(how, Compact::Beside | Compact::Pages(_)) {
-            return self.inner.projection().compact(how);
+            return self.inner.projection().compact_step(how);
         }
         let (fails, done) = &self.compact;
         if fails.load(Ordering::SeqCst) > 0 {
@@ -254,7 +254,7 @@ impl ProjectionStore for Failing {
             }));
         }
         done.fetch_add(1, Ordering::SeqCst);
-        self.inner.projection().compact(how)
+        self.inner.projection().compact_step(how)
     }
     fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
         self.inner.projection().put_thinned_act(act, at)
