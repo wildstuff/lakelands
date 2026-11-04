@@ -503,6 +503,20 @@ impl Call<'_> {
             (declarations.iter()).for_each(|d| whole.put(d.clone(), 0, None));
             whole
         });
+        // A kept view with stranded groups is made again by its rule alone.
+        let stranded = crate::kept::stranded(self.lake.engine.view(None)?.as_ref(), &w.settings)?;
+        if !stranded.is_empty() {
+            let mut after = w.ontology.clone();
+            (declarations.iter()).for_each(|d| after.put(d.clone(), 0, None));
+            let stepped = (fields.iter()).map(|(t, f)| (t.clone(), Some(f.clone())));
+            let set = declarations.iter().filter_map(|d| match d {
+                Declaration::Setting(s) => Some(s.key.as_str()),
+                _ => None,
+            });
+            let set: Vec<&str> = set.collect();
+            let rule = (&stepped.collect(), &set[..]);
+            viewed::stranded_under(&stranded, (&w.ontology, &after), rule)?;
+        }
         // The types it declares, and the lake it leaves where a set holds a
         // view or a trigger watches one, whose sets it decides and whose
         // views it judges (lakelands#1185).

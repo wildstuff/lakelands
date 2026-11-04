@@ -603,7 +603,7 @@ read it, and it gives the mark two callers that must agree. Its reward is
 the rebuild's states read, which S7 measures; if that measure is too
 high, this is the shape to bring back, with the log's bytes as its price.
 
-**Recommendation, for the operator's word: shape 1, the states read on
+**Decided by the operator 2026-11-04: shape 1, the states read on
 `ProjectionStore`.** It is the only shape that answers the transaction's
 states without a forced commit and without reading the log again; it
 computes the mark once, with the code that already notes a member, from
@@ -781,13 +781,6 @@ its mark and changed nowhere else.
   `(ty, by, before)` row, so the second's `gone` replaces the first's,
   and `ThinnedAct` exposes no position to tell them apart. The decided
   shape cannot distinguish them either; this is noted, not repaired.
-- **S3 did not land in this round.** The mark it owes is every group and
-  face a taken record's versions held, and the seam held no read of a
-  key's versions: `get` answers one position. The round stopped at S2,
-  where the issue's size rule sends it. The shapes were weighed after S2
-  in § S3, which recommends one for the operator's word and sizes the S3
-  and S4 rows for it. Nothing of S3 has landed: `values_thinned` still
-  folds to its mark alone.
 - **Measured at S2's head**: product 101 668 of the 108 500 base and
   specification 186 081 of the 191 500 base; seam 102 of 110; 6 of 20
   `cfg(feature)` sites; 1 012 checks through the doors and 89 through the
@@ -797,9 +790,66 @@ its mark and changed nowhere else.
   Merging `develop` after S2 landed raised both `LAYOUT`s by one again,
   to 11 and 13, since the order's tables landed there from their own
   step; the two additions each took the number after the one they found.
+- **S3 and S4 (lakelands#1639), shape 1 as decided.** The seam's read is
+  `ProjectionStore::states`, method 109 of 110, on all three engines,
+  answering the transaction's own puts (PostgreSQL writes its buffer
+  first); the store's wrappers forward it, and a scoped refold answers a
+  record it does not hide with none, as it drops none. The fold's arm
+  reads each taken key's states 256 at a time through the part's
+  position, marks every group and face a state was a member of in each
+  kept view of its type, then drops the states, removes the key's
+  vectors and puts its tombstone. Edges the plan did not name:
+  - **A state is judged by the declarations in force at its position,**
+    read from the projection's committed ontology there; a state the
+    transaction itself put is judged by the current one. The settings a
+    view's `where` reads are the current ones.
+  - **The tombstone's and the row's position is the part's.** The fold
+    holds no marker, so a tombstone carries the position of the part that
+    took its key, and the act's row keeps its first part's; `gone` adds
+    up across the parts of one `(type, field, horizon)`.
+  - **A group left with no member on either face** — its last member
+    moved or retired before the act — keeps a record that holds its mark
+    and nothing a reader is shown, so the mark survives and counts, and
+    no read answers the group.
+  - **A view over a view** marks its own group stranded where the inner
+    record it folds is, so the outer's count includes it.
+  - **The make carries.** A make that ends a view with stranded groups
+    takes their records and their order entries into the view it makes,
+    and leaves their live members unnoted, so no member is counted twice.
+    A declaration, a migration or a setting that would make it under
+    another rule is refused `stranded_make` before it is appended. The
+    test is conservative: any change to the view's own declaration, to a
+    field the view reads as its source declares it, a step that moves
+    one, or a setting it or a view it reads names, refuses, whether or
+    not it reaches a stranded group.
+  - **Which rule marks.** A state is asked by the declarations in force
+    at its position, read once for each distinct position a thinning
+    meets (S7 measures that cost), and by the ones in force now unless
+    it was superseded before the view was last made. A fold of the log
+    commits before a thinning, so a rebuild reads those declarations
+    committed as the live fold did; a state put inside the thinning's
+    own append, where none are committed yet, is asked by the ones now. A make by a setting
+    is not told apart from one by a declaration, so a state live at the
+    last declaration is marked by the rule now even where that make did
+    not fold it: the mark may name a group the state never stood in,
+    which is then exact all the same.
+  - The suite's rows are `THIN_GROUP_STRANDED` (the fold's side; the
+    read's markers are S7's), `THIN_ERASURE_RESTATES_STRANDED_FOLDS` and
+    `THIN_STRANDED_MAKE_CARRIES`, and the engine seam's `A_KEYS_STATES`,
+    each green on the memory, SQLite and PostgreSQL engines. Each row
+    appends the act's part below the store, since the act itself is S5's.
+- **Measured at S3 and S4's head**: product 112 299 and specification
+  199 533 against 111 694 and 199 058 at its base, so S3 and S4 add
+  605 product and 475 specification (raw lines +638 −33 and +475 −0);
+  seam 109 of 110; 6 of 20 `cfg(feature)` sites; 1 080 checks through
+  the doors and 103 through the engine seam. The plan's 360 and 390 were
+  the sketch; the extra is the make's refusal at three doors, the
+  bare group's record and the view-over-view mark. Nothing was cut: the
+  four items of § Cut first stay, and the ceilings hold.
 
 ## How it came to be
 
 - lakelands#1639 — S3's shape weighed and recommended: a read of a key's
   states on the write side, beside `drop_states`; the S3 and S4 rows and
-  the plan's totals restated. No code.
+  the plan's totals restated. No code. The operator took shape 1 on
+  2026-11-04, and S3 and S4 landed together under the same issue.

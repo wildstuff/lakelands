@@ -95,6 +95,11 @@ engine_check!(
 );
 
 engine_check!(
+    A_KEYS_STATES = a_keys_states_read_in_order_within_their_bounds,
+    "102, seams §ProjectionStore: `states` reads a key's states after `after` and at or before `through`, oldest first, at most `limit`, the transaction's own puts with them, and none once they are dropped"
+);
+
+engine_check!(
     PUT_BEFORE_A_LATER_STATE = a_put_before_a_later_state_ends_where_that_state_begins,
     "seams §ProjectionStore: a state put at a position before a later state of the same thing is valid until that later state begins, which stays the latest"
 );
@@ -1294,6 +1299,50 @@ fn thinned_acts_and_tombstones_read_at_the_head(engine: &dyn LakeEngine) -> Held
          read {acts:?} and {taken:?} at the head, and {earlier:?} and {taken_earlier:?} at 1; \
          both reads must answer the acts oldest by the position each began at, and `a`'s first \
          horizon, since the marks are read at the head in every read"
+    );
+    Ok(())
+}
+
+fn a_keys_states_read_in_order_within_their_bounds(engine: &dyn LakeEngine) -> Held {
+    let (ty, key) = (TypeName::from("t"), RecordKey::from("a"));
+    for at in [1, 2, 4] {
+        fold_one(engine, at, record("t", "a", json!({"n": at}), at))?;
+    }
+    fold_one(engine, 5, record("t", "b", json!({"n": 5}), 5))?;
+    let positions =
+        |rs: Vec<StoredRecord>| -> Vec<u64> { rs.iter().map(|r| r.position.0).collect() };
+    let mut red = Vec::new();
+    fold(engine, 7, |p| {
+        p.put_record(&record("t", "a", json!({"n": 6}), 6))?;
+        let read = |after: Option<u64>, through: u64, limit: u32| {
+            let rs = p.states(&ty, &key, after.map(Position), Position(through), limit);
+            rs.map(positions)
+        };
+        for (after, through, limit, want) in [
+            (None, 7, 10, vec![1, 2, 4, 6]),
+            (None, 7, 2, vec![1, 2]),
+            (Some(2), 7, 10, vec![4, 6]),
+            (Some(1), 4, 10, vec![2, 4]),
+            (None, 3, 10, vec![1, 2]),
+        ] {
+            let got = read(after, through, limit)?;
+            if got != want {
+                red.push(format!(
+                    "after {after:?} through {through}, at most {limit}: {got:?}, not {want:?}"
+                ));
+            }
+        }
+        p.drop_states(lakelands_api::engine::StatesOf::Record(&ty, &key))?;
+        let got = read(None, 7, 10)?;
+        if !got.is_empty() {
+            red.push(format!("after the drop: {got:?}, not none"));
+        }
+        Ok(())
+    })?;
+    ensure!(
+        red.is_empty(),
+        "`a`, put at 1, 2 and 4 and in the open transaction at 6, beside `b` at 5, read: {}",
+        red.join("; ")
     );
     Ok(())
 }

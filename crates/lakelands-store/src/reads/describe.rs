@@ -231,6 +231,7 @@ impl<'a> Reader<'a> {
                 let face = usize::from(self.sight.sees_restricted());
                 let state = kept::state(self.view.as_ref(), &t.name).ok().flatten();
                 answered.read_state = true;
+                t.stranded = state.as_ref().map_or(0, |s| s.stranded[face]);
                 // A build has not reached its `Keep`: the view is computed
                 // until it does, as a view without whole records is. A
                 // state cut under another copy of the time-zone database is

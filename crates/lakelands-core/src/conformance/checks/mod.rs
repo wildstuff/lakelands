@@ -152,6 +152,7 @@ mod sorted_whole;
 mod standby;
 mod stored_form;
 mod stored_vectors;
+mod stranded;
 mod streaming;
 mod taken_lease;
 mod thin;
@@ -1206,6 +1207,9 @@ pub const ALL: &[Check] = &[
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,
     thin::THIN_REFUSALS,
+    stranded::THIN_GROUP_STRANDED,
+    stranded::THIN_ERASURE_RESTATES_STRANDED_FOLDS,
+    stranded::THIN_STRANDED_MAKE_CARRIES,
     reactive_depth::TOO_DEEP,
     read_your_writes::REACHES,
     read_your_writes::REACHES_UNLEASED,

@@ -227,7 +227,23 @@ impl ProjectionStore for Scoped {
     }
 
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
-        self.inner().drop_states(of)
+        match (self.scope(), &of) {
+            (Some(s), StatesOf::Record(ty, key)) if !s.hides(ty, key) => Ok(()),
+            _ => self.inner().drop_states(of),
+        }
+    }
+    fn states(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        after: Option<Position>,
+        through: Position,
+        limit: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        match self.scope() {
+            Some(s) if !s.hides(ty, key) => Ok(Vec::new()),
+            _ => self.inner().states(ty, key, after, through, limit),
+        }
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
@@ -285,7 +301,10 @@ impl ProjectionStore for Scoped {
     }
 
     fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
-        self.inner().put_thinned_act(act, at)
+        match self.scoped() {
+            true => Ok(()),
+            false => self.inner().put_thinned_act(act, at),
+        }
     }
 
     fn put_thinned(
@@ -295,7 +314,10 @@ impl ProjectionStore for Scoped {
         before: lakelands_api::time::Timestamp,
         at: Position,
     ) -> Result<()> {
-        self.inner().put_thinned(ty, key, before, at)
+        match self.scoped() {
+            true => Ok(()),
+            false => self.inner().put_thinned(ty, key, before, at),
+        }
     }
 }
 
@@ -688,12 +710,18 @@ fn admitted_from(
 }
 
 /// The events about the whole lake, which every page folds: the
-/// declarations and the migrations.
+/// declarations, the migrations and the thinnings, which take a page's
+/// record the fold puts again.
 fn wide_filter() -> FeedFilter {
     FeedFilter {
-        kinds: ["declared", "migrated", "value_type_migrated"]
-            .map(str::to_owned)
-            .to_vec(),
+        kinds: [
+            "declared",
+            "migrated",
+            "value_type_migrated",
+            "values_thinned",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
         ..FeedFilter::default()
     }
 }

@@ -296,6 +296,13 @@ impl Call<'_> {
         }
         let changed = (&stepped, Some(&m.to.name));
         viewed::stepped_under(&w.ontology, changed, judged.unwrap_or(self.who))?;
+        let stranded = crate::kept::stranded(view, &w.settings)?;
+        if !stranded.is_empty() {
+            let mut after = w.ontology.clone();
+            after.put(Declaration::Type(m.to.clone()), 0, None);
+            let rule = (&stepped, &[][..]);
+            viewed::stranded_under(&stranded, (&w.ontology, &after), rule)?;
+        }
         if m.to.key != before.key {
             for k in &m.to.key {
                 if !m.to.fields.iter().any(|f| &f.name == k && f.required) {
@@ -1432,6 +1439,13 @@ impl Call<'_> {
         let stepped = types.map(|t| (t.name.clone(), Some(uses(t))));
         let stepped = stepped.filter(|_| !m.renames.is_empty()).collect();
         viewed::stepped_under(&w.ontology, (&stepped, None), self.who)?;
+        let stranded = crate::kept::stranded(view, &w.settings)?;
+        if !stranded.is_empty() {
+            let mut after = w.ontology.clone();
+            after.put(Declaration::ValueType(to.clone()), 0, None);
+            let rule = (&stepped, &[][..]);
+            viewed::stranded_under(&stranded, (&w.ontology, &after), rule)?;
+        }
         // The new declaration is checked as a declaration of its own; the
         // one in force would refuse it as a tightening.
         let mut probe = w.ontology.clone();

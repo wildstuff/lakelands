@@ -329,6 +329,55 @@ impl ProjectionStore for MemoryLake {
         })
     }
 
+    fn states(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        after: Option<Position>,
+        through: Position,
+        limit: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        // The transaction's own puts, in the order they were staged, taken
+        // before `shared`, in the order `index` locks the two.
+        let mine = |p: &&Put| match p {
+            Put::Record(r) | Put::Live(r) | Put::Head(r) => (&r.ty, &r.key) == (ty, key),
+            Put::DroppedRecord(t, k) => (t, k) == (ty, key),
+            _ => false,
+        };
+        let pending: Vec<Put> = (lock(&self.pending).iter().flatten())
+            .filter(mine)
+            .cloned()
+            .collect();
+        let lake = lock(&self.shared);
+        let projection = &lake.projection;
+        let id = (ty.clone(), key.clone());
+        let mut states: Vec<StoredRecord> = (projection.records.get(&id).into_iter())
+            .flat_map(|h| h.all().map(|held| held.record(&projection.bases)))
+            .collect();
+        drop(lake);
+        for put in &pending {
+            match put {
+                Put::Record(r) | Put::Live(r) if (&r.ty, &r.key) == (ty, key) => {
+                    let i = states.partition_point(|s| s.position < r.position);
+                    match states.get_mut(i) {
+                        Some(s) if s.position == r.position => *s = r.clone(),
+                        _ => states.insert(i, r.clone()),
+                    }
+                }
+                Put::Head(r) if (&r.ty, &r.key) == (ty, key) => states = vec![r.clone()],
+                Put::DroppedRecord(t, k) if (t, k) == (ty, key) => states.clear(),
+                _ => {}
+            }
+        }
+        let within =
+            |s: &StoredRecord| after.is_none_or(|a| s.position > a) && s.position <= through;
+        Ok(states
+            .into_iter()
+            .filter(within)
+            .take(limit as usize)
+            .collect())
+    }
+
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.stage(Put::Proposal {
             proposal: proposal.clone(),

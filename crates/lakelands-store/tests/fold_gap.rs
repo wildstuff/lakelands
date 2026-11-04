@@ -188,6 +188,18 @@ impl ProjectionStore for Failing {
     fn drop_states(&self, of: lakelands_api::engine::StatesOf<'_>) -> Result<()> {
         self.inner.projection().drop_states(of)
     }
+    fn states(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        after: Option<Position>,
+        through: Position,
+        limit: u32,
+    ) -> Result<Vec<lakelands_api::record::StoredRecord>> {
+        self.inner
+            .projection()
+            .states(ty, key, after, through, limit)
+    }
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         self.inner.projection().end_head_only(name, at)
     }

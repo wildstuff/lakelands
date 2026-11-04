@@ -366,6 +366,21 @@ pub trait ProjectionStore: Send + Sync {
     /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()>;
 
+    /// The states `key` of `ty` holds whose positions lie after `after`
+    /// and at or before `through`, oldest first, at most `limit`, the
+    /// transaction's own puts included. A thinning act reads the states
+    /// it is about to drop page by page, so a kept view's group a dropped
+    /// state counted in is marked stranded rather than refolded short
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    fn states(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        after: Option<Position>,
+        through: Position,
+        limit: u32,
+    ) -> Result<Vec<StoredRecord>>;
+
     /// Store a thinning act's row: its type, the field and horizon it
     /// judged, the last position its parts had got through and how many
     /// records it has taken. `at` is the position the act began at; a row
@@ -375,8 +390,8 @@ pub trait ProjectionStore: Send + Sync {
     fn put_thinned_act(&self, act: &ThinnedAct, at: Position) -> Result<()>;
 
     /// Store a thinned record's tombstone: its key, the horizon that took
-    /// it and the position the act began at, so a correction is refused by
-    /// one seek and a read names the horizon
+    /// it and the position of the act's part that took it, so a correction
+    /// is refused by one seek and a read names the horizon
     /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
     fn put_thinned(
         &self,

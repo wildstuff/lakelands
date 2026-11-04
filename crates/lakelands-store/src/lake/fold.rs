@@ -49,7 +49,10 @@ impl Lake {
     /// The steps a `declared` left pending are flushed before the first
     /// event that reads a record ([`reads_a_record`]) and before the commit.
     /// A fold of the log then ends its transaction when the flush kept a
-    /// step: it commits through the last event folded and begins again, so
+    /// step, or before a thinning, which reads the declarations in force
+    /// where each state it takes was put, so that a rebuild finds them
+    /// committed as the live fold did: it commits through the last event
+    /// folded and begins again, so
     /// the next walk reads those records in its view and no step is stacked
     /// on another. Each commit moves the engine's `folded_through`, and
     /// what it commits is whole: every event through that position, their
@@ -107,7 +110,8 @@ impl Lake {
                 if reads_a_record(&e.body) {
                     self.decide_whole(w, view.as_ref(), &mut staged)?;
                 }
-                if flushed && of_log && !scoped {
+                let thins = i > 0 && matches!(e.body, EventBody::ValuesThinned { .. });
+                if (flushed || thins) && of_log && !scoped {
                     drop(view);
                     self.commit_at(projection, events[i - 1].position)?;
                     // What is committed stays owed, whatever fails next.
@@ -263,9 +267,10 @@ impl Lake {
         }
         // What the transaction wrote is stepped where it is kept: all are
         // taken out before any is put back, a new key may be another's old.
+        // A key a thinning took is no record to step.
         let (stepped, kept) = std::mem::take(&mut staged.records)
             .into_iter()
-            .partition::<Vec<_>, _>(|((ty, _), _)| reached.contains(ty));
+            .partition::<Vec<_>, _>(|((ty, _), r)| reached.contains(ty) && !r.is_ended());
         staged.records = kept.into_iter().collect();
         for (_, pre) in stepped {
             let post = step.apply(pre.clone())?;
@@ -354,7 +359,7 @@ impl Lake {
             let written = (staged.records)
                 .range_mut((ty.clone(), RecordKey::from(""))..)
                 .take_while(|((t, _), _)| t == ty);
-            for (_, r) in written {
+            for (_, r) in written.filter(|(_, r)| !r.is_ended()) {
                 let post = step.apply(r.clone());
                 if post != *r {
                     projection.put_record(&post)?;
@@ -433,7 +438,7 @@ impl Lake {
             let written = (staged.records)
                 .range_mut((ty.clone(), RecordKey::from(""))..)
                 .take_while(|((t, _), _)| t == ty);
-            for (_, r) in written {
+            for (_, r) in written.filter(|(_, r)| !r.is_ended()) {
                 through(r, &staged.outputs)?;
             }
         }
@@ -712,9 +717,15 @@ impl Lake {
             | EventBody::VerbCalled { .. }
             | EventBody::TriggerFired { .. }
             | EventBody::TriggerDropped { .. } => {}
-            // The act's fold — the records' states deleted, their groups
-            // stranded — lands with the act itself (102).
-            EventBody::ValuesThinned { .. } => {}
+            EventBody::ValuesThinned {
+                ty,
+                by,
+                before,
+                keys,
+            } => {
+                let act = (ty, by, *before);
+                self.thinned(w, (view, staged), act, keys, e.position)?;
+            }
             // A version is its id's row, what is erased of it gone (085).
             EventBody::RecordQuarantined { .. } => {
                 if let Some(q) = crate::quarantine::version_row(&w.ontology, e) {
@@ -1297,6 +1308,74 @@ impl Lake {
             }
         }
         Ok(false)
+    }
+
+    /// One part of a thinning act: each key's states, read before they go,
+    /// mark stranded every kept view's group they were members of, on the
+    /// face they were; then the states, the vectors and the key's place in
+    /// the append go, and its tombstone and the act's row are put. No
+    /// group is told a member left
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    fn thinned(
+        &self,
+        w: &Writer,
+        (view, staged): (&dyn ProjectionView, &mut Staged),
+        (ty, by, before): (&TypeName, &FieldName, Timestamp),
+        keys: &[RecordKey],
+        at: Position,
+    ) -> Result<()> {
+        const PAGE: u32 = 256;
+        let projection = self.store();
+        let mut then = kept::Then::new(self.engine.as_ref(), view.position());
+        let mut gone = 0;
+        for key in keys {
+            // Each state is judged knowing where the next one began, so
+            // one superseded before the view was last made is not marked
+            // by the rule that made it.
+            let (mut after, mut last) = (None, None::<StoredRecord>);
+            let held = loop {
+                let page = projection.states(ty, key, after, at, PAGE)?;
+                for r in page.iter().cloned() {
+                    if let Some(was) = last.replace(r) {
+                        let next = last.as_ref().map(|r| r.position);
+                        let cx = kept_at!(w, view, projection);
+                        kept::strand(&cx, staged, (&was, next), &mut then)?;
+                    }
+                }
+                match page.last() {
+                    Some(r) if page.len() == PAGE as usize => after = Some(r.position),
+                    _ => break last.is_some(),
+                }
+            };
+            if let Some(was) = &last {
+                let cx = kept_at!(w, view, projection);
+                kept::strand(&cx, staged, (was, None), &mut then)?;
+            }
+            projection.drop_states(StatesOf::Record(ty, key))?;
+            let ended = StoredRecord::ended(ty.clone(), key.clone(), at);
+            self.index_vectors(&w.ontology, &ended)?;
+            staged.put(ended);
+            projection.put_thinned(ty, key, before, at)?;
+            gone += u64::from(held);
+        }
+        // Each part counts on: the row holds the act's whole count.
+        let act = (ty.clone(), by.clone(), before);
+        let was = match staged.thinned.get(&act) {
+            Some(n) => *n,
+            None => (view.thinned_acts(ty)?.into_iter())
+                .find(|a| &a.by == by && a.before == before)
+                .map_or(0, |a| a.gone),
+        };
+        staged.thinned.insert(act, was + gone);
+        let (ty, by, gone) = (ty.clone(), by.clone(), was + gone);
+        let row = lakelands_api::read::ThinnedAct {
+            ty,
+            by,
+            before,
+            through: at,
+            gone,
+        };
+        projection.put_thinned_act(&row, at)
     }
 
     /// Keep the engine's vector index in step with a record's vector
