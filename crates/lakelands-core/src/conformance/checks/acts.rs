@@ -35,7 +35,7 @@ check!(
 
 check!(
     ACT_BETWEEN_PARTS_EXPORTS = an_export_between_two_parts_imports_and_its_writer_finishes_the_act,
-    "099: an export taken while an act is owed — one of its later appends failing, its first turn in the log and its parts owed — is cut before the act's whole and imports; the imported lake holds the act unwhole, and its writer, opened, finishes the act beside the open, leaving one `values_removed`, one `act_whole` and every record of the selection retired",
+    "099: an export taken while an act is owed — one of its later appends failing, its first turn in the log and its parts owed — is cut before the act's whole and imports; the imported lake holds the act unwhole, and its writer, opened, finishes the act beside the open, leaving one `values_removed`, one `act_whole`, the log retiring every record of the selection once and the whole last",
     given
 );
 
@@ -408,22 +408,26 @@ async fn an_export_between_two_parts_imports_and_its_writer_finishes_the_act(
     .await?;
     let finished = events_after(writer.as_ref(), Position::GENESIS).await?;
     let kinds: Vec<&str> = finished.iter().map(|e| e.body.kind()).collect();
-    let l = Lake::of(writer.as_ref());
-    let mut live = 0;
-    for i in 0..n {
-        let key = format!("v{i}");
-        if at(&l, "visit", key.as_str(), None).await?.is_some() {
-            live += 1;
+    // What the writer appended is read in the log: until the restate runs,
+    // a read answers the record it took (099), so the records are counted
+    // as the log retires them.
+    let mut retired: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &finished {
+        if let EventBody::RecordRetired { key, .. } = &e.body {
+            *retired.entry(key.as_str()).or_default() += 1;
         }
     }
+    let every = (0..n).all(|i| retired.get(format!("v{i}").as_str()) == Some(&1));
     ensure!(
         kinds.iter().filter(|k| **k == "values_removed").count() == 1
             && kinds.iter().filter(|k| **k == "act_whole").count() == 1
             && kinds.last() == Some(&"act_whole")
-            && live == 0,
+            && every
+            && retired.len() == n as usize,
         "the imported writer must finish the act once, appending no second `values_removed`, \
-         leave every record of the selection retired and end with the whole: it appended \
-         {kinds:?}, {live} records stay"
+         retire every record of the selection once and end with the whole: it appended \
+         {kinds:?}, retiring {} keys, each once {every}",
+        retired.len()
     );
     Ok(())
 }
