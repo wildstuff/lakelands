@@ -325,8 +325,7 @@ fn turn(t: &Turn<'_>, job: &mut dyn Job) -> Result<Turned> {
 }
 
 /// The events past `past` through `view`'s position that reach a job, in
-/// log order; none where more than `bound` of them reach it, or finding
-/// them reads more than `bound`.
+/// log order; none where finding them reads more than `bound` of them.
 /// They are found in the log index, by source for the sources and by type
 /// (and key) for the types, so a lake written elsewhere costs nothing, and
 /// read from the log at their positions. Where the index decides nothing,
@@ -344,10 +343,7 @@ pub(crate) fn read_tail(
         return Ok(Some(Vec::new()));
     };
     match found(view, reach, from, head, bound)? {
-        Found::At(at) => {
-            let read = reached(lake, reach, &at)?;
-            Ok((read.len() as u64 <= u64::from(bound)).then_some(read))
-        }
+        Found::At(at) => reached(lake, reach, &at).map(Some),
         Found::Over => Ok(None),
         Found::Unindexed => logged(lake, reach, from, head, bound),
     }
@@ -365,11 +361,11 @@ enum Found {
 }
 
 /// The positions from `from` through `head` the log index finds for
-/// `reach`: by source, and by type and key. A seek by key reads the index
-/// once a key, so where the job names more keys than the tail holds
-/// positions the tail is sought by type alone, under no bound: what it
-/// finds is fewer than the keys, and [`reached`] keeps of it what reaches
-/// the job. Either way the reads go with the tail, not with the job.
+/// `reach`: by source, and by type and key, at most `bound` of them. A
+/// seek by key reads the index once a key, so where the job names more
+/// keys than the tail holds positions the tail is sought by type alone,
+/// under the same bound, and [`reached`] keeps of it what touches the
+/// job's keys. Either way the reads go with the tail, not with the job.
 fn found(
     view: &dyn ProjectionView,
     reach: &Reach,
@@ -378,7 +374,6 @@ fn found(
     bound: u32,
 ) -> Result<Found> {
     let by_key = reach.keys.len() as u64 <= head.0.saturating_sub(from.0).saturating_add(1);
-    let bound = if by_key { bound } else { u32::MAX };
     let room = bound.saturating_add(1);
     let filter = FeedFilter {
         types: reach.types.clone(),

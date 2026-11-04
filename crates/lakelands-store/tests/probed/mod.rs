@@ -11,7 +11,8 @@
 //! out at an earlier position, and let a write land just before the
 //! engine answers a `ranked`; and it can panic in a read of a record, in
 //! a commit, before or after the engine takes it, and in the view asked
-//! for next.
+//! for next; and it can let a write land just before an `of_source`
+//! answers, and keeps the keys and the window of every `matching`.
 //! [`calls`] reads what a lake owes as the drain would.
 
 #![allow(dead_code)]
@@ -121,6 +122,12 @@ pub struct Probe {
     pub before_ranked: Mutex<Option<(usize, Write)>>,
     /// How often the engine was asked for a search's rankings.
     pub ranked: AtomicUsize,
+    /// A write to land just before the engine answers an `of_source`: the
+    /// n-th from now, counted from 1.
+    pub before_source: Mutex<Option<(usize, Write)>>,
+    /// Each `matching` asked: the keys it names, which an engine seeks
+    /// one by one, and the window it reads.
+    pub seeks: Mutex<Vec<(usize, Position, Position)>>,
     /// A reader to park inside the next `declarations`: it says so on the
     /// first and waits on the second before it reads.
     pub park: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -335,6 +342,8 @@ impl ProjectionView for ProbedView<'_> {
         through: Position,
         limit: u32,
     ) -> Result<lakelands_api::engine::Matched> {
+        let seek = (filter.keys.len(), from, through);
+        self.probe.seeks.lock().unwrap().push(seek);
         if self.probe.undecided.load(Ordering::SeqCst) {
             return Ok(lakelands_core::feed::undecided());
         }
@@ -347,6 +356,16 @@ impl ProjectionView for ProbedView<'_> {
         through: Position,
         limit: u32,
     ) -> Result<lakelands_api::engine::Matched> {
+        let mut planted = self.probe.before_source.lock().unwrap();
+        let now = planted.as_mut().is_some_and(|(n, _)| {
+            *n -= 1;
+            *n == 0
+        });
+        let write = planted.take_if(|_| now);
+        drop(planted);
+        if let Some((_, write)) = write {
+            write();
+        }
         if self.probe.undecided.load(Ordering::SeqCst) {
             return Ok(lakelands_core::feed::undecided());
         }

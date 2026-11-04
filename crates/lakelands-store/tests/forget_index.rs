@@ -515,3 +515,57 @@ async fn a_poll_decides_a_reaction_again_by_point_reads_only_after_an_act() {
         "the poll stops at {ninth}: {b:?}"
     );
 }
+
+/// The tail an act reads past its walk costs what the tail costs, not what
+/// the act reaches (099, lakelands#1649): a forgetting of 300 keys, with
+/// one write landed past the walk's view, judges that write, never asks
+/// the index for more keys than a window past the view holds positions,
+/// and asks it of such windows a bounded number of times. A seek by key
+/// reads the index once a key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tail_past_the_walk_is_sought_by_type_where_the_keys_outnumber_it() {
+    let probe = Arc::new(Probe::default());
+    let seams = Seams {
+        engines: vec![Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))],
+        keys: Some(Arc::new(Keys::default())),
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory("sought"), seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    let mut decl = person(true);
+    decl.fields.push(sourced("city", Text));
+    l.declare(decl).await.unwrap();
+    let p = |key: String| source_record("person", &key, json!({"id": key, "name": key}));
+    l.ingest("crm", (0..300).map(|i| p(format!("c{i}"))).collect())
+        .await
+        .unwrap();
+    let city = source_record("person", "c0", json!({"id": "c0", "city": "Oslo"}));
+    // `erp`'s write lands inside the walk's first read of the index, past
+    // the view the walk stands on.
+    let (runtime, writer) = (tokio::runtime::Handle::current(), store.clone());
+    let write = Box::new(move || {
+        let l = Lake::of(writer.as_ref());
+        runtime.block_on(l.ingest("erp", vec![city])).unwrap();
+    });
+    *probe.before_source.lock().unwrap() = Some((1, write));
+    let walked = store.head().await.unwrap();
+    let crm = SourceId::from("crm".to_owned());
+    let forgot = store.forget_source(&crm, None).await.unwrap();
+    assert!(probe.before_source.lock().unwrap().is_none(), "erp wrote");
+    let co_owned: u64 = forgot.co_owned.iter().map(|c| c.records).sum();
+    assert_eq!(co_owned, 1, "erp's write is judged: {forgot:?}");
+    // The windows past the walk's view: the tail, and the act's own
+    // appends after its turns; the walk reads the log from its start.
+    let seeks = probe.seeks.lock().unwrap().clone();
+    let tail: Vec<_> = seeks.iter().filter(|s| s.1 > walked).collect();
+    assert!(
+        (1..=4).contains(&tail.len()),
+        "the tail is sought a bounded number of times, not once a key: {seeks:?}"
+    );
+    assert!(
+        (tail.iter()).all(|&&(keys, from, through)| keys as u64 <= through.0 - from.0 + 1),
+        "a seek of the tail named more keys than it holds positions: {seeks:?}"
+    );
+}

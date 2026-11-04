@@ -1410,11 +1410,16 @@ tree had sought the tail by key, one `routes` query a key of the act. A forgetti
 named its type once a record, so even a search by type ran once a record.
 
 - **By type, tested by key.** `road::found` seeks by key only where the act names no
-  more keys than the tail holds positions. Otherwise it seeks by type with no bound, and
-  `reached` keeps the events that touch one of the act's keys. That finds fewer
-  positions than the act has keys. The bound is counted on what reaches the act, so a
-  busy type alone never makes the tail too long. `Forget::reach` names each type once,
-  as `Remove::reach` did already.
+  more keys than the tail holds positions. Otherwise it seeks by type, and `reached`
+  keeps the events that touch one of the act's keys. Both seeks, and the seek by
+  source, stay under the one bound. So the check under the writer reads at most
+  `part_tail` + 1 rows past P, as "From the walk's view P to the first turn" says. A
+  busy type counts against that bound like any tail: past it, the writer is let go and
+  the catch-up folds the rest off the writer. `Forget::reach` names each type once, as
+  `Remove::reach` did already.
+  `forget_index.rs`'s `a_tail_past_the_walk_is_sought_by_type_where_the_keys_outnumber_it`
+  counts the keys each `matching` past the walk's view names. It is red with the seek by
+  key forced: 300 keys asked over a window of one position.
 - **The catch-up folds a short tail too.** The catch-up folds whatever it finds, and
   stops once a read finds no more than `part_tail`. So the first turn reads only what
   was written after the catch-up's last read. The walk's judgement of every other key
@@ -1440,7 +1445,7 @@ named its type once a record, so even a search by type ran once a record.
   159 ms (0.2 ms), and its slowest write from 295 ms to 166 ms. What remains is the
   report read again over the 15 000 records the act holds. That grows with the act, not
   with the tail.
-- **The ledger.** Product +19, specification +113 net (the ledger row in the pull).
+- **The ledger.** Product +14, specification +186 net (the ledger row in the pull).
   core-size reads product 113 718 and specification 201 164.
 
 ## How it came to be
