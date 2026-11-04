@@ -911,14 +911,14 @@ engine hands them its own index.
   rows and read 1 000, answering `x0500`..`x1499`; after the pair was
   built and kept, the same page walked its window's 1 000 and read
   1 000, and answered the same keys.
-- **Size.** 1 906 lines in, 93 out: product 955 in and 59 out,
-  specification 817 in and 1 out, the record and the conformance page
+- **Size.** 1 852 lines in, 28 out: product 921 in and 25 out,
+  specification 821 in and 0 out, the record and the conformance page
   the rest. The product is 3.9 times the 230 the two steps' rows
   reckoned (130 and 100) and 1.3 times the ×2.4–2.9 band's top; the
-  review round added 34 product lines and 258 of the suite. Nothing was
-  cut. The gates read product 111 778 of 115 000 and specification
-  199 347 of 202 500 on the branch's tree after merging develop, whose
-  own lines they include, and the seam 108 of 110 methods. The
+  review rounds added 34 product lines and 262 specification lines.
+  Nothing was cut. The gates read product 112 590 of 115 000 and
+  specification 199 879 of 202 500 on the branch's tree after merging
+  develop, whose own lines they include, and the seam 108 of 110 methods. The
   alternative — a stateful cursor in `window_keys` — would have been no
   smaller and a fifth seam method.
 
