@@ -8,10 +8,15 @@
 //! is never skipped there.
 //!
 //! Every test lake gets a schema of its own, `lakelands_test_<pid>_<n>`,
-//! and the schemas a test binary made are dropped when it ends.
+//! and the schemas a test binary made are dropped when it ends. A drop that
+//! fails says what the server said, where the end-of-run check reads it
+//! (`leftovers.rs`): the test has ended by then, and nextest keeps no
+//! passing test's output, so a schema left behind would name no reason.
 
 #![allow(dead_code)]
 
+use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -73,6 +78,77 @@ pub fn location(url: &str, lake: &str, schema: &str) -> Location {
     }
 }
 
+/// Where a drop that failed is written for the end-of-run check to show.
+/// The tests share this directory with the check (they are the same
+/// crate's integration tests), and it belongs to the worktree's target, so
+/// a run reads its own records and not another's.
+fn failed_drops_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("pg-failed-drops.log")
+}
+
+/// Say a drop failed, with the schema's name and the server's message, in
+/// the line the end-of-run check prints when a schema is left behind.
+fn note_failed_drop(schema: &str, e: &postgres::Error) {
+    let line = format!("{schema}: {}\n", said(e));
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(failed_drops_path())
+        .and_then(|mut log| log.write_all(line.as_bytes()));
+}
+
+/// What the server said of a failed statement: its severity, SQLSTATE and
+/// primary message. `DETAIL` and `HINT` stay out, as they do of the
+/// engine's answers (024): they can quote a record's values.
+fn said(e: &postgres::Error) -> String {
+    match e.as_db_error() {
+        Some(db) => format!("{} {}: {}", db.severity(), db.code().code(), db.message()),
+        None => e.to_string(),
+    }
+}
+
+/// Whether a drop failed for a reason a holder ending may clear: the
+/// schema was locked, or the statement ran out of time.
+fn held_or_timed_out(e: &postgres::Error) -> bool {
+    use postgres::error::SqlState;
+    let code = e.code();
+    code == Some(&SqlState::LOCK_NOT_AVAILABLE)
+        || code == Some(&SqlState::T_R_DEADLOCK_DETECTED)
+        || code == Some(&SqlState::QUERY_CANCELED)
+}
+
+/// Drop a schema, trying once more if a lock or a timeout refused it, and
+/// saying so where the end-of-run check reads it if it still refuses.
+fn drop_and_note(client: &mut postgres::Client, schema: &str) {
+    let statement = format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE");
+    let mut outcome = client.batch_execute(&statement);
+    if matches!(&outcome, Err(e) if held_or_timed_out(e)) {
+        std::thread::sleep(Duration::from_millis(250));
+        outcome = client.batch_execute(&statement);
+    }
+    if let Err(e) = outcome {
+        note_failed_drop(schema, &e);
+    }
+}
+
+/// The drops that failed, as the tests recorded them, taken away as they
+/// are read so a run speaks of its own. Empty when every drop succeeded.
+pub fn failed_drops() -> String {
+    let Ok(record) = std::fs::read_to_string(failed_drops_path()) else {
+        return String::new();
+    };
+    let _ = std::fs::remove_file(failed_drops_path());
+    let record = record.trim_end();
+    if record.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; and {} drop(s) failed first: {record}",
+            record.lines().count()
+        )
+    }
+}
+
 /// Drop every schema this process made, when its one test is done. On a thread of its own: the
 /// synchronous client blocks on a runtime of its own, which an async test
 /// body cannot.
@@ -90,10 +166,8 @@ pub fn drop_schemas(url: &str) {
         };
         for row in rows {
             let name: String = row.get(0);
-            let scratch = scratch_of(&name);
-            let _ = client.batch_execute(&format!(
-                "DROP SCHEMA \"{name}\" CASCADE; DROP SCHEMA IF EXISTS \"{scratch}\" CASCADE"
-            ));
+            drop_and_note(&mut client, &name);
+            drop_and_note(&mut client, &scratch_of(&name));
         }
     })
     .join();
@@ -104,7 +178,7 @@ pub fn drop_schema(url: &str, schema: &str) {
     let (url, schema) = (url.to_owned(), schema.to_owned());
     let _ = std::thread::spawn(move || {
         if let Ok(mut client) = postgres::Client::connect(&url, postgres::NoTls) {
-            let _ = client.batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"));
+            drop_and_note(&mut client, &schema);
         }
     })
     .join();

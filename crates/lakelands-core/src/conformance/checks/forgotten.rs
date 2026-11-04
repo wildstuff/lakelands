@@ -16,7 +16,7 @@ use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::KeyId;
 use lakelands_api::read::Found;
 use lakelands_api::seam::DataKey;
-use lakelands_api::write::{ForgetReport, ForgetSetReport};
+use lakelands_api::write::{ForgetReport, IngestOpts};
 use lakelands_api::{LakeId, Location};
 
 use super::erasable::{Keys, again, person, read, with};
@@ -47,11 +47,14 @@ check!(
     given
 );
 
-/// A key store over [`Keys`] that fails on cue: `destroy`, or a key of
-/// `erp` once a destroy has run, as a crash would stop the act there.
+/// A key store over [`Keys`] that fails on cue: `destroy`, the nth
+/// `destroy` from here, a destroy of a key's version, or a key of `erp`
+/// once a destroy has run, as a crash would stop the act there.
 struct Faulty {
     keys: Arc<Keys>,
     destroy_fails: AtomicBool,
+    version_fails: AtomicBool,
+    destroy_at: AtomicU32,
     after_destroy_fails: AtomicBool,
     destroyed: AtomicBool,
 }
@@ -61,6 +64,8 @@ impl Faulty {
         Faulty {
             keys: keys.clone(),
             destroy_fails: AtomicBool::new(false),
+            version_fails: AtomicBool::new(false),
+            destroy_at: AtomicU32::new(0),
             after_destroy_fails: AtomicBool::new(false),
             destroyed: AtomicBool::new(false),
         }
@@ -89,6 +94,17 @@ impl KeyStore for Faulty {
         self.keys.key(lake, source, id)
     }
     fn destroy(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<()> {
+        // `destroy_at`: the nth destroy from here fails, the ones before it
+        // landing, so an act stops at the turn whose keys it would have
+        // destroyed, its `source_forgotten`s in the log and its parts owed.
+        // 0: no stop.
+        let left = self.destroy_at.load(Ordering::SeqCst);
+        if left > 0 {
+            self.destroy_at.store(left - 1, Ordering::SeqCst);
+            if left == 1 {
+                return Err(crashed());
+            }
+        }
         if self.destroy_fails.load(Ordering::SeqCst) {
             return Err(crashed());
         }
@@ -98,6 +114,31 @@ impl KeyStore for Faulty {
     }
     fn ids(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<Vec<KeyId>> {
         self.keys.ids(lake, source)
+    }
+    fn destroys_versions(&self) -> bool {
+        self.keys.destroys_versions()
+    }
+    fn destroy_version(
+        &self,
+        lake: &LakeId,
+        source: &SourceId,
+        id: &KeyId,
+    ) -> lakelands_api::Result<()> {
+        if self.version_fails.load(Ordering::SeqCst) {
+            return Err(crashed());
+        }
+        self.keys.destroy_version(lake, source, id)
+    }
+    fn create_apart(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
+        self.keys.create_apart(lake, source)
+    }
+    fn destroy_apart(
+        &self,
+        lake: &LakeId,
+        source: &SourceId,
+        id: &KeyId,
+    ) -> lakelands_api::Result<()> {
+        self.keys.destroy_apart(lake, source, id)
     }
 }
 
@@ -378,7 +419,7 @@ async fn a_forgotten_sources_values_read_as_erased_at_every_position(
 check!(
     FORGET_LEAVES_NO_WRITE_BEHIND =
         a_write_by_the_source_between_the_report_and_the_act_is_taken_in,
-    "099: `crm`'s preflight over a set is read, then `crm` writes a record before the act; the act under the report's id takes the write in, answering a report read past it, the record retired and its value erased; with `part_events` 1, so the set's `source_forgotten`s and its retirements run in later turns, the key store holds none of `crm`'s keys once its `source_forgotten` is in the log and before its `act_whole`, and an ingest from `crm` between the parts is refused, appending nothing, so nothing is sealed under a destroyed key; a set larger than one turn's room, a write by a source the act has not forgotten yet, between two of its turns, is taken in too: the record it made is retired and counted in the act's report",
+    "099: `crm`'s preflight over a set is read, then `crm` writes a record before the act; the act under the report's id takes the write in, answering a report read past it, the record retired and its value erased; with `part_events` 1, so the set's `source_forgotten`s and its retirements run in later turns, the act stopped at a later turn's keys, the key store holds none of `crm`'s keys once its `source_forgotten` is in the log and before its `act_whole`, and an ingest from `crm` between the parts is refused, appending nothing, so nothing is sealed under a destroyed key; a set larger than one turn's room, a write by a source the act has not forgotten yet, between two of its turns, is taken in too by the act's repeat: the record it made is retired and counted in the act's report",
     given
 );
 
@@ -387,9 +428,14 @@ async fn a_write_by_the_source_between_the_report_and_the_act_is_taken_in(
     given: Given,
 ) -> Held {
     let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    let faulty = Arc::new(Faulty::new(&keys));
     let mut few = limits();
     few.part_events = 1;
-    let store = (given.relimit)(store, super::erasable::with(&keys), few)
+    let seams = Seams {
+        keys: Some(faulty.clone() as Arc<dyn KeyStore>),
+        ..super::erasable::with(&keys)
+    };
+    let store = (given.relimit)(store, seams, few)
         .await
         .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
     let l = Lake::of(store.as_ref());
@@ -425,73 +471,54 @@ async fn a_write_by_the_source_between_the_report_and_the_act_is_taken_in(
         .await
         .must("crm's write after the report")?;
     let start = store.head().await.must("reading the head")?;
-    let slot: Arc<std::sync::Mutex<Option<ForgetSetReport>>> = Arc::default();
-    let seen: Arc<AtomicBool> = Arc::default();
-    let (s, answer, s2, between, keys2) = (
-        store.clone(),
-        slot.clone(),
-        store.clone(),
-        seen.clone(),
-        keys.clone(),
-    );
-    let (set2, crm2, late2) = (set.clone(), crm.clone(), late.clone());
     let id = report.report_id.clone();
-    let callers: Vec<Caller<'static, Held>> = vec![
-        Box::pin(async move {
-            let done = s
-                .forget_sources(&set2, Some(id.as_str()))
-                .await
-                .must("the act under the report's id")?;
-            *crate::lock(&answer) = Some(done);
-            Ok(())
-        }),
-        Box::pin(async move {
-            settles(6_000, Duration::from_millis(1), || async {
-                let events = events_after(s2.as_ref(), start).await?;
-                let forgot: Vec<&SourceId> = (events.iter())
-                    .filter_map(|e| match &e.body {
-                        EventBody::SourceForgotten { source, .. } => Some(source),
-                        _ => None,
-                    })
-                    .collect();
-                let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
-                ensure!(
-                    forgot.contains(&&crm2) && !forgot.contains(&&late2) && !whole,
-                    "crm's `source_forgotten`, before s48's and before `act_whole`: {forgot:?}"
-                );
-                Ok(())
-            })
-            .await?;
-            let left = keys2.ids(s2.lake(), &"crm".into()).ok().unwrap_or_default();
-            ensure!(
-                left.is_empty(),
-                "the first turn destroys crm's keys before any part runs: {left:?}"
-            );
-            let l = Lake::of(s2.as_ref());
-            let refused = l.ingest("crm", vec![p("late", "Eve")]).await;
-            ensure!(
-                refused.is_err(),
-                "crm's ingest between the act's parts is refused, so nothing is sealed under a \
-                 destroyed key; it answered {refused:?}"
-            );
-            // A source the act has not forgotten yet writes: its
-            // `source_forgotten` is still owed, so the write lands behind
-            // no destroyed key and the act must take it in.
-            let written = l.ingest(late2.as_str(), vec![p("late", "Lyn")]).await;
-            ensure!(
-                written.is_ok(),
-                "s48's write, its `source_forgotten` still owed, is taken: {written:?}"
-            );
-            between.store(true, Ordering::SeqCst);
-            Ok(())
-        }),
-    ];
-    join_all(callers).await.into_iter().collect::<Held>()?;
+    // The act stops at the turn whose keys it would destroy second: crm's
+    // `source_forgotten` is in the log, its keys destroyed, and every
+    // source after it still owed.
+    faulty.destroy_at.store(2, Ordering::SeqCst);
+    let stopped = store.forget_sources(&set, Some(id.as_str())).await;
+    let events = events_after(store.as_ref(), start).await?;
+    let forgot: Vec<&SourceId> = (events.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::SourceForgotten { source, .. } => Some(source),
+            _ => None,
+        })
+        .collect();
+    let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
     ensure!(
-        seen.load(Ordering::SeqCst),
-        "the act's parts after its `source_forgotten` were seen"
+        stopped.is_err()
+            && forgot.contains(&&crm)
+            && !forgot.contains(&&late)
+            && !whole
+            && faulty.destroy_at.load(Ordering::SeqCst) == 0,
+        "the act must stop after crm's `source_forgotten` and before s48's, its parts owed: it \
+         answered {stopped:?}, the log forgot {forgot:?}, whole {whole}"
     );
-    let done = crate::lock(&slot).take().expect("the act answered");
+    let left = keys.ids(store.lake(), &crm).ok().unwrap_or_default();
+    ensure!(
+        left.is_empty(),
+        "the first turn destroys crm's keys before any part runs: {left:?}"
+    );
+    let l = Lake::of(store.as_ref());
+    let refused = l.ingest("crm", vec![p("late", "Eve")]).await;
+    ensure!(
+        refused.is_err(),
+        "crm's ingest between the act's parts is refused, so nothing is sealed under a \
+         destroyed key; it answered {refused:?}"
+    );
+    // A source the act has not forgotten yet writes: its
+    // `source_forgotten` is still owed, so the write lands behind no
+    // destroyed key and the act must take it in.
+    let written = l.ingest(late.as_str(), vec![p("late", "Lyn")]).await;
+    ensure!(
+        written.is_ok(),
+        "s48's write, its `source_forgotten` still owed, is taken: {written:?}"
+    );
+    faulty.destroy_at.store(0, Ordering::SeqCst);
+    let done = store
+        .forget_sources(&set, Some(id.as_str()))
+        .await
+        .must("the act's repeat")?;
     let l = Lake::of(store.as_ref());
     let wrote = person_at(&l, "w10", Some(start)).await?;
     let retired = |r: &ForgetReport| r.retired.iter().map(|t| t.retired).sum::<u32>();
@@ -615,7 +642,7 @@ async fn a_forgetting_a_crash_stopped_is_finished_by_the_next_writers_open(
 
 check!(
     FORGET_GROUPS_BY_ACT = a_resumed_acts_events_stay_its_own,
-    "099: an act forgets two sources and a crash stops it after their `source_forgotten`s, before its `act_whole`; a second act forgets another source and is stopped the same way; the writer's open finishes both, and each act's events name it, so the two read apart — the first groups only its own sources and the second only its own — and every source's values read erased once both are whole (lakelands#1725)",
+    "099: an act forgets two sources and a crash stops it after their `source_forgotten`s, before its `act_whole`; a second act forgets another source and is stopped the same way; the writer's open finishes both, and each act's events name it, so the two read apart — the first groups only its own sources and the second only its own — and every source's values read erased once both are whole (lakelands#1725); so does a removal's act, stopped after its `values_removed` and the first of its parts as its version destroy fails, its parts each a turn of the writer, and a delivery written in the window between a removal's walk and its first turn, sealed apart, is taken by it: one event more than its preflight read, under the version and the key the walk did not name (lakelands#1728)",
     reopens
 );
 
@@ -691,20 +718,133 @@ async fn a_resumed_acts_events_stay_its_own(store: Store, reopen: Reopen) -> Hel
             "each act is whole, and no `act_whole` names an act the log has none of: the acts are \
              {acts:?} and the `act_whole`s {whole:?}"
         );
+        // The acts' turns beside the writer restate the projection after
+        // the appends: every source reads erased once both are done.
+        let p2 = person_at(&l, "p2", None).await?;
+        // `erp` and `crm2` alone brought `p3` and `p5`, so their acts retire
+        // them; read as of before the acts, each still holds its name erased.
+        let p3 = person_at(&l, "p3", Some(start)).await?;
+        let p5 = person_at(&l, "p5", Some(start)).await?;
+        ensure!(
+            !p2.fields.contains_key("name")
+                && !p3.fields.contains_key("name")
+                && !p5.fields.contains_key("name"),
+            "crm's, erp's and crm2's values read erased: {p2:?} {p3:?} {p5:?}"
+        );
         Ok(())
     })
     .await?;
-    // Every source of both acts reads erased once the acts are whole.
-    let p2 = person_at(&l, "p2", None).await?;
-    // `erp` and `crm2` alone brought `p3` and `p5`, so their acts retire
-    // them; read as of before the acts, each still holds its name erased.
-    let p3 = person_at(&l, "p3", Some(start)).await?;
-    let p5 = person_at(&l, "p5", Some(start)).await?;
+    // A removal's act is stopped the same way: its `values_removed` and
+    // the first of its parts in the log, its version destroy failing
+    // before its `act_whole` (099). The handle the checks read through
+    // holds the lake's writer, so it is let go before the writer's next
+    // open.
+    drop(l);
+    let l = Lake::of(store.as_ref());
+    let web: SourceId = "web".into();
+    let rows: Vec<SourceRecord> = (0..600)
+        .map(|i| {
+            let key = format!("w{i:04}");
+            source_record(
+                "person",
+                &key,
+                json!({"id": key, "name": format!("N{}", i % 5)}),
+            )
+        })
+        .collect();
+    l.ingest("web", rows).await.must("ingesting from web")?;
+    let removing = store.head().await.must("reading the head")?;
+    let every = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    faulty.version_fails.store(true, Ordering::SeqCst);
+    let stopped = store.remove_values(&web, &every, false, None).await;
+    faulty.version_fails.store(false, Ordering::SeqCst);
     ensure!(
-        !p2.fields.contains_key("name")
-            && !p3.fields.contains_key("name")
-            && !p5.fields.contains_key("name"),
-        "crm's, erp's and crm2's values read erased: {p2:?} {p3:?} {p5:?}"
+        stopped.is_err(),
+        "the removal, stopped before its `act_whole` as its version destroy failed, answers its \
+         failure; it answered {stopped:?}"
+    );
+    drop(l);
+    store = again(&reopen, store, seams(), "after the removal's stop").await?;
+    let l = Lake::of(store.as_ref());
+    settles(6_000, Duration::from_millis(1), || async {
+        let events = events_after(store.as_ref(), removing).await?;
+        let Some(begun) = (events.iter()).find_map(|e| match &e.body {
+            EventBody::ValuesRemoved { source, .. } if source.as_str() == "web" => Some(e.position),
+            _ => None,
+        }) else {
+            return Err(Failure::new(
+                "the removal's `values_removed` is in the log".to_owned(),
+            ));
+        };
+        ensure!(
+            (events.iter())
+                .any(|e| matches!(&e.body, EventBody::ActWhole { act } if *act == begun)),
+            "the open's turns finish the removal, its `act_whole` naming it: the events are \
+             {events:?}"
+        );
+        // Its parts are more than one turn's, each a turn of the writer:
+        // the records it retires read their names erased as of before it.
+        let w = person_at(&l, "w0000", Some(removing)).await?;
+        ensure!(
+            !w.fields.contains_key("name"),
+            "web's values read erased once its removal is whole: {w:?}"
+        );
+        Ok(())
+    })
+    .await?;
+    // A removal started here takes a delivery written while it walked,
+    // sealed apart: the act's tail names a key the walk's plan did not,
+    // and the restate plans again at its first turn (099).
+    let shop: SourceId = "shop".into();
+    let rows: Vec<SourceRecord> = (0..1_500)
+        .map(|i| {
+            let key = format!("s{i:04}");
+            source_record(
+                "person",
+                &key,
+                json!({"id": key, "name": format!("M{}", i % 7)}),
+            )
+        })
+        .collect();
+    l.ingest("shop", rows).await.must("ingesting from shop")?;
+    let every = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let pre = store
+        .remove_values_preflight(&shop, &every)
+        .await
+        .must("the preflight of shop")?;
+    let done: Arc<std::sync::Mutex<Option<lakelands_api::write::RemoveReport>>> = Arc::default();
+    let (s, answer, s2) = (store.clone(), done.clone(), store.clone());
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            let report = s
+                .remove_values(&shop, &every, false, None)
+                .await
+                .must("the removal of shop")?;
+            *crate::lock(&answer) = Some(report);
+            Ok(())
+        }),
+        Box::pin(async move {
+            let l = Lake::of(s2.as_ref());
+            let source: SourceId = "shop".into();
+            let opts = IngestOpts {
+                delivery: Some(lakelands_api::id::DeliveryId::from("b2")),
+                sealed_apart: true,
+                ..IngestOpts::default()
+            };
+            let record = source_record("person", "s1500", json!({"id": "s1500", "name": "Bea"}));
+            lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, opts, vec![record])
+                .await
+                .must("ingesting a delivery beside the walk")?;
+            Ok(())
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let done = crate::lock(&done).take().expect("the act answered");
+    ensure!(
+        done.events == pre.events + 1 && done.apart.len() == 1 && done.kept.is_empty(),
+        "the removal takes the delivery written while it walked, one more event than its \
+         preflight read, under the key sealed apart and the version the walk saw: the preflight \
+         {pre:?}, the act {done:?}"
     );
     Ok(())
 }
@@ -942,9 +1082,12 @@ check!(
 /// (lakelands#1309); how many of the next appends find the lease another
 /// writer took, and whether that writer gives it up at the next take of
 /// the lease (lakelands#1385); how many milliseconds each reclaim waits
-/// before it runs (lakelands#1486); and how many of the next steps of a
-/// build fail, so a build stops between its turns.
-pub type Fails = Arc<[AtomicU32; 12]>;
+/// before it runs (lakelands#1486); how many of the next steps of a
+/// build fail, so a build stops between its turns; and which of the next
+/// appends the writer means to make fails as a storage fault that keeps
+/// its lease, so the act it was appending stops between its turns and is
+/// left owed (099).
+pub type Fails = Arc<[AtomicU32; 13]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -1091,6 +1234,14 @@ impl lakelands_api::engine::LakeEngine for Reclaims {
         self.inner.tip()
     }
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> lakelands_api::Result<()> {
+        // Index 12: the nth append from here fails, the ones before it
+        // landing, and the writer keeps its lease: the act stops at the
+        // border the check armed for, owed, and the writer writes on. 0:
+        // no stop.
+        let left = &self.fails[12];
+        if left.load(Ordering::SeqCst) > 0 && left.fetch_sub(1, Ordering::SeqCst) == 1 {
+            return Err(crashed());
+        }
         if fails(&self.fails, 8) {
             self.taken_over(lease)?;
         }

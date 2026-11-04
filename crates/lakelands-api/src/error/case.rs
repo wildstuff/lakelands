@@ -1180,6 +1180,8 @@ catalog! {
         ViewCycle { chain: Names } => "its view closes a cycle, reading {chain} in turn; a view may not read itself, through other views or directly",
         /// A view's field nothing fills.
         ViewFieldUnfilled { field: FieldName } => "its field `{field}` is neither a `group_by` field nor a measure of its view, so nothing would fill it",
+        /// A set or a trigger declared over a kept view whose build is not whole.
+        ViewBuilding { #[serde(rename = "type")] ty: TypeName } => "it reads `{ty}`, a view the lake is building and has not kept whole yet, and a set or a trigger reads only a whole view: declare it again when the build has ended",
         /// A view a set holds, or a trigger watches, no longer kept.
         ViewKeptForSet { #[serde(rename = "type")] ty: TypeName } => "it reads `{ty}`, a view the lake keeps, and the view stays kept while a set holds it or a trigger watches it: withdraw it first",
         /// A change of a view's source that no write decides a set over the
@@ -1983,6 +1985,8 @@ catalog! {
         MigrationTakesRead { unnamed: bool, field: FieldName, #[serde(rename = "type")] ty: TypeName, renamed: Option<FieldName> } => "[{?unnamed}a declaration|it] reads `{field}` of `{ty}`, which the migration [renames to `{renamed}`|drops]",
         /// A migration that would make a stored type a view.
         MigrationToView { #[serde(rename = "type")] ty: TypeName } => "the migration would turn the stored type `{ty}` into a view; declare the view under another name, and the type keeps its name and its records",
+        /// A view a migration declares again that is no view over the type it migrates.
+        MigrationViewNotOver { view: TypeName, #[serde(rename = "type")] ty: TypeName } => "the migration declares `{view}` again, and only a view in force that reads `{ty}` is declared again with its migration; declare `{view}` by itself",
         /// A migration that would make a view a stored type.
         MigrationViewToStored { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is a view, and it becomes a stored type by being declared as one, never by a migration",
         /// A narrowing of a cardinality that existing links break.

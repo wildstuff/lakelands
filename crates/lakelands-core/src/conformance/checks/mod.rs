@@ -87,6 +87,7 @@ mod masking;
 mod matches;
 mod metered;
 mod migrate;
+mod migrate_views;
 mod only;
 mod only_proposals;
 mod paging;
@@ -685,6 +686,9 @@ pub const ALL: &[Check] = &[
     reads_kept::MIGRATION_NAMES_A_SHOWN_VIEW,
     reads_kept::DECLARATION_READS_ITS_TYPE,
     migrate::VIEW_SOURCE_KEPT,
+    migrate_views::MIGRATE_WITH_ITS_VIEWS,
+    migrate_views::MIGRATE_WITH_ITS_VIEWS_UNAPPLIED,
+    migrate_views::MIGRATE_WITH_ITS_VIEWS_JUDGED,
     schema::REORDERED_FIELDS,
     schema::IN_FORCE_APPENDS_NOTHING,
     schema::IN_FORCE_ANSWERED,
@@ -818,6 +822,7 @@ pub const ALL: &[Check] = &[
     scrubbed::SCRUB_CRASH,
     scrubbed::RESTATE_SCOPED_FOR_A_REMOVAL,
     scrubbed::RESTATE_TELLS_EVERY_ACT,
+    scrubbed::RESTATE_WRITES_GO_ON,
     scrubbed::RESTATE_PAGE_OVER_ITS_BOUND,
     removed::REMOVED_BEFORE,
     removed::REMOVED_DELIVERY,
@@ -1056,6 +1061,7 @@ pub const ALL: &[Check] = &[
     kept_builds::VIEW_BUILD_OVER_A_VIEW,
     kept_builds::KEPT_BUILD_TYPE_DECLARED_AGAIN,
     kept_builds::KEPT_BUILD_EXPORT_IMPORT_SAME_LAKE,
+    kept_builds::VIEW_BUILDING_REFUSES_READERS,
     series_builds::SERIES_SETTING_BUILDS,
     series_builds::SERIES_BUILD_RESUMES,
     series_builds::SERIES_TAKEN_BACK,

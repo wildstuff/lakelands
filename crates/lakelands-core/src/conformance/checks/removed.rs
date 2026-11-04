@@ -5,7 +5,7 @@
 //! hand is retired, and a record another hand also wrote keeps that
 //! hand's values.
 
-use lakelands_api::write::{ForgetReport, RemoveReport};
+use lakelands_api::write::RemoveReport;
 use lakelands_api::{DeliveryId, IngestOpts};
 
 use crate::conformance::fixture::{get_at, source_record};
@@ -77,7 +77,7 @@ check!(
 
 check!(
     ACT_ERASES_IN_ITS_FIRST_TURN = an_acts_versions_seal_nothing_and_the_source_has_a_new_one,
-    "099: a removal's erasure, and the destruction of the versions it takes whole, happen in its first turn: with `part_events` 1, so that its retirements run in later parts, the log holds its `values_removed` and the key store no longer holds the version, and a write of the source after that turn seals under a version the act left, which is the source's new one, and reads its own values; a forgetting's erasure is its first turn alone too: its keys are gone once its `source_forgotten` is in the log and before its `act_whole`, and its ingest between the parts is refused, so nothing is sealed under a destroyed key",
+    "099: a removal's erasure, and the destruction of the versions it takes whole, happen in its first turn: its appends whole in the log and only its restate owed, the log holds its `values_removed` and the key store no longer holds the version, and a write of the source while the act is owed seals under a version the act left, which is the source's new one, and reads its own values, and the act's repeat finishes its restate and answers its report; a forgetting's erasure is its first turn alone too: with its restate owed its keys are gone and its ingest is refused, so nothing is sealed under a destroyed key, and its repeat answers its report",
     given
 );
 
@@ -1726,9 +1726,20 @@ async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
     given: crate::conformance::Given,
 ) -> Held {
     let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
-    let mut few = limits();
-    few.part_events = 1;
-    let store = (given.relimit)(store, super::erasable::with(&keys), few)
+    let fails: super::forgotten::Fails = Arc::default();
+    // The restate a removal or a forgetting owes goes by the scoped
+    // refold where that is measured the shorter and by the rebuild
+    // otherwise, so the stop is armed on both first steps: the clear a
+    // rebuild begins with, and the commit a scoped page ends with.
+    // Whichever way the act goes, its first turn is in the log and its
+    // restate is owed.
+    let owe = |on: bool| {
+        let n = u32::from(on);
+        fails[1].store(n, Ordering::SeqCst);
+        fails[5].store(n, Ordering::SeqCst);
+    };
+    let wrap = super::forgotten::failing(&fails);
+    let store = (given.fault)(store, super::erasable::with(&keys), wrap)
         .await
         .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
     let l = Lake::of(store.as_ref());
@@ -1744,36 +1755,30 @@ async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
     let tracker: SourceId = "tracker".into();
     let old = super::erasable::first(&keys, store.as_ref(), "tracker")?;
     let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a far date"));
-    let slot: Arc<std::sync::Mutex<Option<RemoveReport>>> = Arc::default();
-    let (s, answer, s2) = (store.clone(), slot.clone(), store.clone());
-    let source = tracker.clone();
-    let callers: Vec<Caller<'static, Held>> = vec![
-        Box::pin(async move {
-            let done = s
-                .remove_values(&source, &all, false, None)
-                .await
-                .must("the act")?;
-            *crate::lock(&answer) = Some(done);
-            Ok(())
-        }),
-        Box::pin(async move {
-            settles(6_000, Duration::from_millis(5), || async {
-                ensure!(
-                    !acts(s2.as_ref(), start).await?.is_empty(),
-                    "the act's `values_removed`"
-                );
-                Ok(())
-            })
-            .await?;
-            let l = Lake::of(s2.as_ref());
-            l.ingest("tracker", vec![p("v9", "Zoe")])
-                .await
-                .must("ingesting after the act's first turn")?;
-            Ok(())
-        }),
-    ];
-    join_all(callers).await.into_iter().collect::<Held>()?;
+    // The act stops before its restate: its appends are whole in the log,
+    // its version destroyed, and the projection still holds what it took.
+    owe(true);
+    let stopped = store.remove_values(&tracker, &all, false, None).await;
+    let events = events_after(store.as_ref(), start).await?;
+    let removed = (events.iter())
+        .filter(|e| matches!(e.body, EventBody::ValuesRemoved { .. }))
+        .count();
+    let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+    let held = keys
+        .ids(store.lake(), &tracker)
+        .must("listing tracker's keys")?;
+    ensure!(
+        stopped.is_err() && removed == 1 && whole && held.is_empty(),
+        "the act's first turn destroys the version it takes whole, and only its restate is \
+         owed: the act answered {stopped:?}, the log's `values_removed` {removed}, its whole \
+         {whole}, the key store {held:?}"
+    );
+    // The source's write while the act is owed seals under a version the
+    // act left, the source's new one, and reads its own values.
     let l = Lake::of(store.as_ref());
+    l.ingest("tracker", vec![p("v9", "Zoe")])
+        .await
+        .must("ingesting while the act is owed")?;
     let sealed = (events_after(store.as_ref(), start).await?.into_iter())
         .filter(|e| matches!(e.body, EventBody::RecordIngested { .. }))
         .filter_map(|e| e.sealed.map(|s| s.key))
@@ -1781,20 +1786,29 @@ async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
     let held = keys
         .ids(store.lake(), &tracker)
         .must("listing tracker's keys")?;
-    let done = crate::lock(&slot).take().expect("the act answered");
     let v9 = at(&l, "person", "v9", None).await?;
     ensure!(
-        done.events == 3
-            && held.len() == 1
+        held.len() == 1
             && held[0] != old
             && sealed.as_ref() == Some(&held[0])
             && v9
                 .as_ref()
                 .is_some_and(|r| r.fields.get("name") == Some(&json!("Zoe"))),
-        "the act destroys in its first turn the version it takes whole, so the key store holds \
-         none of the old one and the source's write after that turn seals under a new one it \
-         reads: the act {done:?}, the old key {old:?}, the keys {held:?}, sealing {sealed:?}, \
-         v9 {v9:?}"
+        "the version the act took seals nothing more: the source's write while the act is owed \
+         seals under a new one the key store holds, and reads its own values: the old key \
+         {old:?}, the keys {held:?}, sealing {sealed:?}, v9 {v9:?}"
+    );
+    // The act's repeat finishes its restate, appending its events no
+    // second time, and answers its report.
+    owe(false);
+    let done = store
+        .remove_values(&tracker, &all, false, None)
+        .await
+        .must("the act's repeat")?;
+    ensure!(
+        done.events == 3,
+        "the act's repeat finishes its restate and answers the report of the three records \
+         it took whole: {done:?}"
     );
     // A forgetting's keys go in its first turn too, before its parts: a
     // reader between them finds none, and the source's ingest is refused,
@@ -1807,54 +1821,32 @@ async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
     .await
     .must("ingesting giver's records")?;
     let start = store.head().await.must("reading the head")?;
-    let slot: Arc<std::sync::Mutex<Option<ForgetReport>>> = Arc::default();
-    let (s, answer, s2, keys2) = (store.clone(), slot.clone(), store.clone(), keys.clone());
-    let source = giver.clone();
-    let callers: Vec<Caller<'static, Held>> = vec![
-        Box::pin(async move {
-            let done = s
-                .forget_source(&source, None)
-                .await
-                .must("the forgetting")?;
-            *crate::lock(&answer) = Some(done);
-            Ok(())
-        }),
-        Box::pin(async move {
-            settles(6_000, Duration::from_millis(1), || async {
-                let events = events_after(s2.as_ref(), start).await?;
-                let forgot =
-                    (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
-                let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
-                ensure!(
-                    forgot && !whole,
-                    "the forgetting's `source_forgotten`, before its `act_whole`"
-                );
-                Ok(())
-            })
-            .await?;
-            let left = keys2
-                .ids(s2.lake(), &"giver".into())
-                .ok()
-                .unwrap_or_default();
-            ensure!(
-                left.is_empty(),
-                "the forgetting destroys giver's keys in its first turn: {left:?}"
-            );
-            let l = Lake::of(s2.as_ref());
-            let refused = l.ingest("giver", vec![p("late", "Eve")]).await;
-            ensure!(
-                refused.is_err(),
-                "giver's ingest between the parts is refused, so nothing is sealed under a \
-                 destroyed key; it answered {refused:?}"
-            );
-            Ok(())
-        }),
-    ];
-    join_all(callers).await.into_iter().collect::<Held>()?;
-    let done = crate::lock(&slot).take().expect("the forgetting answered");
+    owe(true);
+    let stopped = store.forget_source(&giver, None).await;
+    let events = events_after(store.as_ref(), start).await?;
+    let forgot = (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
+    let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+    let left = keys.ids(store.lake(), &giver).ok().unwrap_or_default();
+    let refused = l.ingest("giver", vec![p("late", "Eve")]).await;
+    let retired = (events.iter())
+        .filter(|e| matches!(e.body, EventBody::RecordRetired { .. }))
+        .count();
     ensure!(
-        done.retired.iter().map(|t| t.retired).sum::<u32>() == 3,
-        "the forgetting retires the three records giver alone brought: {done:?}"
+        stopped.is_err() && forgot && whole && left.is_empty() && refused.is_err() && retired == 3,
+        "the forgetting destroys giver's keys before its restate and its first turn retires \
+         the three records giver alone brought, and the source's ingest while the act is owed \
+         is refused, so nothing is sealed under a destroyed key: {stopped:?}, forgotten \
+         {forgot}, whole {whole}, retired {retired}, keys {left:?}, ingest {refused:?}"
+    );
+    owe(false);
+    let done = store
+        .forget_source(&giver, None)
+        .await
+        .must("the forgetting's repeat")?;
+    ensure!(
+        done.reclaimed.is_some(),
+        "the forgetting's repeat finishes its restate and reclaim, appending nothing again: \
+         {done:?}"
     );
     Ok(())
 }
