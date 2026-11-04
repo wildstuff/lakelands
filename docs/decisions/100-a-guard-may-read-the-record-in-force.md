@@ -456,9 +456,10 @@ tree differed from the text above:
   `act_whole`, and then writes a tick. Its constraint's `preceding` reads null, and the
   guard's `preceding` and `in_force` fire as if the tick before it and the bound were
   erased, while a plain read of the same records still shows what the projection holds.
-  The bound is the last part the act retires, so the window is held with every earlier
-  part landed, ticks and all. After the act those records read as the restate left them,
-  and the next tick fires on the erased bound alone.
+  The bound's part is the last the act takes — the author's note keeps the record, so the
+  act erases `hi` and retires only the ticks — so the window is held with every earlier
+  part landed. After the act those records read as the restate left them, and the next
+  tick fires on the erased bound alone.
 - **The row's last clause is held, not counted.** No seam the suite reads counts a fold,
   and `rows_read` and `rows_walked` count the engine's rows rather than a restate, so
   "a record and version reads through once in a turn" rests on the view's memo and its

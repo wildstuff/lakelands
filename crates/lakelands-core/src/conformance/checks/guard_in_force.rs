@@ -5,7 +5,7 @@
 //! whose `from` is the greatest at or below its `at`, among the bounds every
 //! sight the write is judged by is answered, null where none is.
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 use super::only::holder;
 use super::quarantine::{fed, kept};
@@ -780,10 +780,6 @@ async fn a_bound_taken_back_overrules_no_firing(store: Store) -> Held {
     Ok(())
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|p| p.into_inner())
-}
-
 /// A tick of `symbol` at `hm`, `price`, fed by a source.
 fn fed_tick(key: &str, symbol: &str, hm: &str, price: f64) -> SourceRecord {
     source_record(
@@ -903,7 +899,7 @@ async fn a_guard_between_an_acts_parts_reads_through(store: Store, given: Given)
     let source = tracker.clone();
     let callers: Vec<Caller<'static, Held>> = vec![
         Box::pin(async move {
-            *lock(&r0) = Some(
+            *crate::lock(&r0) = Some(
                 s0.forget_source(&source, None)
                     .await
                     .must("the forgetting")?,
@@ -924,9 +920,9 @@ async fn a_guard_between_an_acts_parts_reads_through(store: Store, given: Given)
             })
             .await?;
             let l = Lake::of(s1.as_ref());
-            *lock(&h0) = Some(field(&l, "tick", "t0", "price").await?);
-            *lock(&b0) = Some(field(&l, "zbox", "b0", "hi").await?);
-            *lock(&f0) = Some(
+            *crate::lock(&h0) = Some(field(&l, "tick", "t0", "price").await?);
+            *crate::lock(&b0) = Some(field(&l, "zbox", "b0", "hi").await?);
+            *crate::lock(&f0) = Some(
                 l.ingest("hand", vec![fed_tick("h1", "A", "10:00", 1.0)])
                     .await,
             );
@@ -934,10 +930,26 @@ async fn a_guard_between_an_acts_parts_reads_through(store: Store, given: Given)
         }),
     ];
     join_all(callers).await.into_iter().collect::<Held>()?;
-    let done = lock(&report).take().expect("the forgetting answered");
-    let fed = lock(&fed).take().expect("a tick was fed");
-    let held = lock(&held).take().expect("the tick was read");
-    let bound = lock(&bound).take().expect("the bound was read");
+    let done = crate::lock(&report)
+        .take()
+        .expect("the forgetting answered");
+    let fed = crate::lock(&fed).take().expect("a tick was fed");
+    let held = crate::lock(&held).take().expect("the tick was read");
+    let bound = crate::lock(&bound).take().expect("the bound was read");
+    // The tick must commit inside the act: after `act_whole` the projection
+    // holds the same erased state, so a tick taken then would fire exactly
+    // as a read through the owed act does, and prove nothing.
+    let whole = events_after(store.as_ref(), start)
+        .await?
+        .into_iter()
+        .find(|e| e.body.kind() == "act_whole")
+        .map(|e| e.position);
+    let fed_end = fed.as_ref().ok().and_then(|w| w.last()).map(|w| w.position);
+    ensure!(
+        fed_end.is_some() && whole.is_some() && fed_end < whole,
+        "the tick `h1` commits before the act's `act_whole`, while the act is owed: the \
+         tick ends at {fed_end:?}, the act at {whole:?}: {fed:?}"
+    );
     let named_on = |want: &'static str| {
         let store = store.clone();
         async move {
