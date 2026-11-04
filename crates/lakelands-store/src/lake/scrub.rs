@@ -497,9 +497,14 @@ pub(crate) struct Plan {
     /// The outputs the sources sealed, dropped, and those recorded under
     /// their seams and inputs by any hand, recorded again.
     outputs: BTreeSet<(String, Digest)>,
-    /// The `output_recorded` events a page folds: those of the dropped
-    /// outputs, and those filling a field of a record restated.
+    /// The `output_recorded` events the lake held when the plan was made:
+    /// a page folds those of the dropped outputs and those filling a
+    /// field of one of its records.
     recorded: Vec<Event>,
+    /// Whether the restate reads the lake's outputs at all: a source
+    /// sealed one, a type of theirs fills a field by a function, or the
+    /// act's own turns sealed one past the walk.
+    outputs_read: bool,
     /// Why the projection is rebuilt instead, each in a sentence.
     pub(crate) why: Vec<String>,
 }
@@ -516,9 +521,43 @@ impl Plan {
         let about: usize = self.pages.iter().map(|(_, p)| p.len()).sum();
         let pages = self.pages.len().max(1) as u64;
         let wide = (self.wide.len() as u64).saturating_add(self.walks);
+        let keys = self.keys();
+        let recorded = (self.recorded.iter())
+            .filter(|e| self.folds(e, &keys, &self.outputs))
+            .count();
         (about as u64)
             .saturating_add(wide.saturating_mul(pages))
-            .saturating_add(self.recorded.len() as u64)
+            .saturating_add(recorded as u64)
+    }
+
+    /// The types the pages' records are of.
+    fn types(&self) -> BTreeSet<TypeName> {
+        (self.pages.iter())
+            .flat_map(|(keys, _)| keys.iter().map(|(ty, _)| ty.clone()))
+            .collect()
+    }
+
+    /// The records every page restates, all pages' together.
+    fn keys(&self) -> Keys {
+        (self.pages.iter())
+            .flat_map(|(keys, _)| keys.iter().cloned())
+            .collect()
+    }
+
+    /// Whether a page of `keys`, dropping `outputs`, folds `e`: an output
+    /// of one it drops, or one filling a field of one of its records.
+    fn folds(&self, e: &Event, keys: &Keys, outputs: &BTreeSet<(String, Digest)>) -> bool {
+        match &e.body {
+            EventBody::OutputRecorded {
+                seam, input, field, ..
+            } => {
+                outputs.contains(&(seam.clone(), input.clone()))
+                    || field
+                        .as_ref()
+                        .is_some_and(|(ty, key, _)| keys.contains(&(ty.clone(), key.clone())))
+            }
+            _ => false,
+        }
     }
 
     /// The events the fullest page folds: the events about its records,
@@ -556,11 +595,10 @@ impl Plan {
     /// is expected to take less than the rebuild.
     pub(crate) fn way(&self, lake: &Lake, events: u64) -> ForgetWay {
         let mut why = self.why.clone();
-        // `page_events` guards a page's size: a page over it takes the
-        // rebuild instead (099). A page is not yet a turn of the writer
-        // of its own — the pass folds every page in the one turn the road
-        // hands it — so this bounds a page, not a write's wait; the
-        // record's pages as turns are owed to the next pull.
+        // `page_events` guards a page: each page of a scoped refold is a
+        // turn of the writer of its own, so a page over it would hold the
+        // writer longer than one page may, and takes the rebuild instead
+        // (099). What it bounds is a write's wait, not only a page's size.
         if let Some(page) = self.page_events() {
             let bound = u64::from(lake.limits.page_events.max(1));
             if page > bound {
@@ -587,23 +625,41 @@ impl Plan {
     }
 }
 
-/// The positions through `head` of the events `filter` admits, by the
-/// feed index; `None` where it does not decide them all.
+/// The positions from `from` through `head` of the events `filter`
+/// admits, by the feed index; `None` where it does not decide them all.
+fn positions_from(
+    view: &dyn ProjectionView,
+    filter: &FeedFilter,
+    from: Position,
+    head: Position,
+) -> Result<Option<Vec<Position>>> {
+    let (mut from, mut all) = (from, Vec::new());
+    loop {
+        if from > head {
+            return Ok(Some(all));
+        }
+        let m = view.matching(filter, from, head, MATCHED)?;
+        all.extend(m.positions);
+        match m.through {
+            Some(t) if t < head => {
+                if t.next() <= from {
+                    return Ok(None);
+                }
+                from = t.next();
+            }
+            Some(_) => return Ok(Some(all)),
+            None => return Ok(None),
+        }
+    }
+}
+
+/// [`positions_from`] from the log's first event.
 fn positions(
     view: &dyn ProjectionView,
     filter: &FeedFilter,
     head: Position,
 ) -> Result<Option<Vec<Position>>> {
-    let (mut from, mut all) = (Position::GENESIS, Vec::new());
-    loop {
-        let m = view.matching(filter, from, head, MATCHED)?;
-        all.extend(m.positions);
-        match m.through {
-            Some(t) if t < head => from = t.next(),
-            Some(_) => return Ok(Some(all)),
-            None => return Ok(None),
-        }
-    }
+    positions_from(view, filter, Position::GENESIS, head)
 }
 
 /// The events `filter` admits, read at the positions the feed index
@@ -614,10 +670,60 @@ fn admitted(
     filter: FeedFilter,
 ) -> Result<Option<Vec<Event>>> {
     let head = view.position().unwrap_or(Position::GENESIS);
-    match positions(view, &filter, head)? {
+    admitted_from(lake, view, filter, Position::GENESIS, head)
+}
+
+/// [`admitted`] from `from` through `head`.
+fn admitted_from(
+    lake: &Lake,
+    view: &dyn ProjectionView,
+    filter: FeedFilter,
+    from: Position,
+    head: Position,
+) -> Result<Option<Vec<Event>>> {
+    match positions_from(view, &filter, from, head)? {
         Some(at) => lake.read_these(&at).map(Some),
         None => Ok(None),
     }
+}
+
+/// The events about the whole lake, which every page folds: the
+/// declarations and the migrations.
+fn wide_filter() -> FeedFilter {
+    FeedFilter {
+        kinds: ["declared", "migrated", "value_type_migrated"]
+            .map(str::to_owned)
+            .to_vec(),
+        ..FeedFilter::default()
+    }
+}
+
+/// The settings the lake holds.
+fn settings_filter() -> FeedFilter {
+    FeedFilter {
+        types: vec![TypeName::from(SETTING_TYPE)],
+        ..FeedFilter::default()
+    }
+}
+
+/// The outputs the lake recorded.
+fn outputs_filter() -> FeedFilter {
+    FeedFilter {
+        kinds: vec!["output_recorded".to_owned()],
+        ..FeedFilter::default()
+    }
+}
+
+/// The views the settings in `wide` name kept.
+fn kept_of(wide: &[Event]) -> BTreeSet<&str> {
+    (wide.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::RecordUpserted { key, .. } | EventBody::RecordIngested { key, .. } => {
+                key.as_str().strip_prefix(VIEW_KEPT_SETTING)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// How forgetting `set` and restating the acts `acts` restates the
@@ -720,53 +826,24 @@ pub(crate) fn plan(
         let why = format!("a source wrote a `{kind}` event, which only a rebuild restates");
         plan.why.push(why);
     }
-    let types: BTreeSet<TypeName> = keys.iter().map(|(ty, _)| ty.clone()).collect();
-    for ty in types.iter().filter(|ty| ty.as_str().starts_with("sys.")) {
-        plan.why
-            .push(format!("a source wrote records of `{ty}`, the store's own"));
-    }
-    // The events about the whole lake, and what of them falls back.
-    let lake_wide = FeedFilter {
-        kinds: ["declared", "migrated", "value_type_migrated"]
-            .map(str::to_owned)
-            .to_vec(),
-        ..FeedFilter::default()
-    };
-    let settings = FeedFilter {
-        types: vec![TypeName::from(SETTING_TYPE)],
-        ..FeedFilter::default()
-    };
-    let (Some(mut wide), Some(set_by)) = (
-        admitted(lake, view, lake_wide)?,
-        admitted(lake, view, settings)?,
+    // The events about the whole lake, and the settings it holds.
+    let (Some(wide), Some(set_by)) = (
+        admitted(lake, view, wide_filter())?,
+        admitted(lake, view, settings_filter())?,
     ) else {
         plan.why
             .push("the feed index does not decide the lake's events".to_owned());
         return Ok(plan);
     };
-    let kept: BTreeSet<&str> = (set_by.iter())
-        .filter_map(|e| match &e.body {
-            EventBody::RecordUpserted { key, .. } | EventBody::RecordIngested { key, .. } => {
-                key.as_str().strip_prefix(VIEW_KEPT_SETTING)
-            }
-            _ => None,
-        })
-        .collect();
-    falls_back(&mut plan.why, &types, &kept, &wide);
-    let renames = lake.renames(Some(view))?;
-    for r in &renames {
-        let touches = types.contains(&r.ty) || r.to.as_ref().is_some_and(|t| types.contains(t));
-        if r.to.is_some() && touches {
-            let ty = &r.ty;
-            plan.why.push(format!(
-                "a migration renamed `{ty}`, whose records a source wrote"
-            ));
-        }
-    }
-    plan.why.dedup();
+    let mut wide = wide;
+    wide.extend(set_by);
+    wide.sort_by_key(|e| e.position);
+    wide.dedup_by_key(|e| e.position);
+    plan.wide = wide;
     // The outputs recorded again: read only where the sources sealed one
     // or a type of theirs fills a field by a function.
-    let fills = (wide.iter()).any(|e| match &e.body {
+    let types: BTreeSet<TypeName> = keys.iter().map(|(ty, _)| ty.clone()).collect();
+    let fills = (plan.wide.iter()).any(|e| match &e.body {
         EventBody::Declared {
             declaration: Declaration::Type(t),
             ..
@@ -777,39 +854,19 @@ pub(crate) fn plan(
         }
         _ => false,
     });
-    let outputs = FeedFilter {
-        kinds: vec!["output_recorded".to_owned()],
-        ..FeedFilter::default()
-    };
     let recorded = match fills || sealed {
-        true => admitted(lake, view, outputs)?,
+        true => admitted(lake, view, outputs_filter())?,
         false => Some(Vec::new()),
     };
-    let Some(recorded) = recorded else {
+    let Some(mut recorded) = recorded else {
         plan.why
             .push("the feed index does not decide the lake's outputs".to_owned());
         return Ok(plan);
     };
-    plan.near = near(&types, &wide);
-    plan.walks = walks(view, &plan.near, &types, &wide)?;
-    wide.extend(set_by);
-    wide.sort_by_key(|e| e.position);
-    plan.wide = wide;
-    plan.recorded = (recorded.into_iter())
-        .filter(|e| match &e.body {
-            EventBody::OutputRecorded {
-                seam, input, field, ..
-            } => {
-                plan.outputs.contains(&(seam.clone(), input.clone()))
-                    || field
-                        .as_ref()
-                        .is_some_and(|(ty, key, _)| keys.contains(&(ty.clone(), key.clone())))
-            }
-            _ => false,
-        })
-        .collect();
-    let keys = Vec::from_iter(keys);
-    for page in keys.chunks(PAGE) {
+    recorded.sort_by_key(|e| e.position);
+    plan.recorded = recorded;
+    plan.outputs_read = fills || sealed;
+    for page in Vec::from_iter(keys).chunks(PAGE) {
         let filter = FeedFilter {
             types: page
                 .iter()
@@ -832,7 +889,156 @@ pub(crate) fn plan(
         };
         plan.pages.push((page.iter().cloned().collect(), at));
     }
+    plan.reconsider(lake, view)?;
     Ok(plan)
+}
+
+impl Plan {
+    /// Say what the declarations and the settings `wide` holds, and the
+    /// records these pages restate, make of the scoped refold: the
+    /// reasons it falls back, the types they read, and the records a walk
+    /// visits. A reason is pushed once.
+    fn reconsider(&mut self, lake: &Lake, view: &dyn ProjectionView) -> Result<()> {
+        let types = self.types();
+        for ty in types.iter().filter(|ty| ty.as_str().starts_with("sys.")) {
+            self.why
+                .push(format!("a source wrote records of `{ty}`, the store's own"));
+        }
+        let kept = kept_of(&self.wide);
+        falls_back(&mut self.why, &types, &kept, &self.wide);
+        let renames = lake.renames(Some(view))?;
+        for r in &renames {
+            let touches = types.contains(&r.ty) || r.to.as_ref().is_some_and(|t| types.contains(t));
+            if r.to.is_some() && touches {
+                let ty = &r.ty;
+                self.why.push(format!(
+                    "a migration renamed `{ty}`, whose records a source wrote"
+                ));
+            }
+        }
+        self.why.dedup();
+        self.near = near(&types, &self.wide);
+        self.walks = walks(view, &self.near, &types, &self.wide)?;
+        Ok(())
+    }
+
+    /// Read the lake again past `from` through `head`, in a page's turn:
+    /// the declarations, the migrations and the settings of `wide`, and
+    /// the outputs where the restate reads them, and judge the way again.
+    fn extend(
+        &mut self,
+        lake: &Lake,
+        view: &dyn ProjectionView,
+        from: Position,
+        head: Position,
+    ) -> Result<()> {
+        let (Some(wide), Some(settings)) = (
+            admitted_from(lake, view, wide_filter(), from, head)?,
+            admitted_from(lake, view, settings_filter(), from, head)?,
+        ) else {
+            self.why
+                .push("the feed index does not decide the lake's events".to_owned());
+            return Ok(());
+        };
+        self.wide.extend(wide);
+        self.wide.extend(settings);
+        self.wide.sort_by_key(|e| e.position);
+        self.wide.dedup_by_key(|e| e.position);
+        if self.outputs_read {
+            let Some(more) = admitted_from(lake, view, outputs_filter(), from, head)? else {
+                self.why
+                    .push("the feed index does not decide the lake's outputs".to_owned());
+                return Ok(());
+            };
+            self.recorded.extend(more);
+            self.recorded.sort_by_key(|e| e.position);
+            self.recorded.dedup_by_key(|e| e.position);
+        }
+        self.reconsider(lake, view)
+    }
+
+    /// Add the records `extra` names, which the act's own turns took in
+    /// past the walk, and the outputs the tail `tail` sealed, judged with
+    /// the forgotten sources `set` and the acts `acts` as the head holds
+    /// them: what the first turn of a restate adds to the walk's plan
+    /// (099). `view` is at the log's head.
+    fn absorb(
+        &mut self,
+        lake: &Lake,
+        view: &dyn ProjectionView,
+        extra: &Keys,
+        tail: &[Event],
+        set: &[SourceId],
+        acts: &[crate::remove::Removal],
+    ) -> Result<()> {
+        let known: Keys = self.keys();
+        let added: Vec<(TypeName, RecordKey)> = (extra.iter())
+            .filter(|k| !known.contains(*k))
+            .cloned()
+            .collect();
+        let head = view.position().unwrap_or(Position::GENESIS);
+        for page in added.chunks(PAGE) {
+            let filter = FeedFilter {
+                types: page
+                    .iter()
+                    .map(|(ty, _)| ty.clone())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+                keys: page
+                    .iter()
+                    .map(|(_, key)| key.clone())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+                ..FeedFilter::default()
+            };
+            let Some(at) = positions(view, &filter, head)? else {
+                self.why
+                    .push("the feed index does not decide the records' events".to_owned());
+                return Ok(());
+            };
+            self.pages.push((page.iter().cloned().collect(), at));
+        }
+        let mut reads_outputs = self.outputs_read;
+        for e in tail {
+            let Some(sealed) = e.sealed.as_ref() else {
+                continue;
+            };
+            let source = sealed.source.as_ref();
+            let forgotten = source.is_some_and(|s| set.contains(s));
+            let destroyed = source.is_some_and(|s| {
+                std::iter::once(&sealed.key)
+                    .chain(&sealed.apart)
+                    .any(|k| acts.iter().any(|a| a.destroyed(s, k)))
+            });
+            if let (true, EventBody::OutputRecorded { seam, input, .. }) =
+                (forgotten || destroyed, &e.body)
+            {
+                self.outputs.insert((seam.clone(), input.clone()));
+                reads_outputs = true;
+            }
+            if self.outputs_read && matches!(e.body, EventBody::OutputRecorded { .. }) {
+                self.recorded.push(e.clone());
+            }
+        }
+        // An output the act's own turns sealed makes the plan read the
+        // lake's outputs after all: every one recorded through the view,
+        // so the page that drops the state records it again (099).
+        if reads_outputs && !self.outputs_read {
+            let Some(all) = admitted_from(lake, view, outputs_filter(), Position::GENESIS, head)?
+            else {
+                self.why
+                    .push("the feed index does not decide the lake's outputs".to_owned());
+                return Ok(());
+            };
+            self.outputs_read = true;
+            self.recorded = all;
+        }
+        self.recorded.sort_by_key(|e| e.position);
+        self.recorded.dedup_by_key(|e| e.position);
+        self.reconsider(lake, view)
+    }
 }
 
 /// Say in `why` what of the declarations `wide` holds makes a scoped
@@ -992,32 +1198,213 @@ fn refers(d: &TypeDecl) -> impl Iterator<Item = &TypeName> {
     fields.chain(relations).chain(viewed)
 }
 
-impl Lake {
-    /// The scoped refold of `plan`, for the sources `set` forgot and the
-    /// acts `acts` restated, under the writer's lock its caller holds:
-    /// each page in one transaction, the lists saying each is rebuilt
-    /// once all are folded. One stopped between pages leaves the act
-    /// owed, and the next open, or the act's repeat, plans and folds it
-    /// again from the first page: each page is restated whole from the
-    /// log, so a page folded twice comes out as once.
-    pub(crate) fn scrub_held(
-        &self,
-        w: &mut Writer,
-        plan: &Plan,
+/// What a whole act leaves the projection: the way the plan chose, folded
+/// a page a turn of the writer (099). A page refolds its records whole
+/// from the log, reading their positions through the head of its own
+/// turn, so a write between two pages is in what the next folds, and a
+/// page folded twice comes out as once.
+pub(crate) struct Restate {
+    /// How it restates.
+    way: Way,
+    /// The sources it forgot and the acts it restated: the lists say
+    /// rebuilt when the last page is folded.
+    set: Vec<SourceId>,
+    acts: Vec<crate::remove::Removal>,
+    /// The records the act's own turns took in past the walk, and the
+    /// events of the tail, added to the plan in its first turn.
+    extra: Keys,
+    tail: Vec<Event>,
+    /// The position the plan's own events were read through, and the page
+    /// to fold next.
+    seen: Position,
+    next: usize,
+    /// Whether the first turn ran: every act told, the keys destroyed,
+    /// and the writer's state let go over the folds.
+    opened: bool,
+    /// The events the pages folded and the microseconds those folds took,
+    /// summed: the scoped rate is measured over the folds alone, not the
+    /// turns between them, in which other writers hold the road.
+    folded: u64,
+    micros: u64,
+    /// Whether the act left storage to reclaim: a call that finds nothing
+    /// owed at all restates and reclaims nothing (099).
+    reclaim: bool,
+}
+
+/// How a restate restates the projection.
+enum Way {
+    /// The scoped refold: a page a turn.
+    Scoped(Plan),
+    /// The whole projection, in one turn.
+    Rebuild,
+    /// Nothing to restate: the reclaim alone.
+    Nothing,
+}
+
+/// What one turn of a restate did.
+pub(crate) enum Stepped {
+    /// The restate has turns left.
+    More,
+    /// It is done, and the reclaim began: its report, `None` where the
+    /// reclaim failed.
+    Done(Option<lakelands_api::write::CompactReport>),
+}
+
+impl Restate {
+    /// What forgetting `set` and restating the acts `acts` leaves the
+    /// projection, by the way `plan` chooses at `view`, `rebuild` where
+    /// the host asks for the rebuild.
+    pub(crate) fn of(
+        lake: &Lake,
+        view: &dyn ProjectionView,
         set: &[SourceId],
         acts: &[crate::remove::Removal],
-    ) -> Result<()> {
-        let head = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
-        let types: BTreeSet<TypeName> = (plan.pages.iter())
-            .flat_map(|(keys, _)| keys.iter().map(|(ty, _)| ty.clone()))
-            .collect();
-        // Every act the lists hold is told before the first page, so a
-        // page refolds what an older act took as erased. A failed read
-        // stops here, the pages not begun and the act still owed: an act
-        // the fold met untold has no `fixed` to erase by, and a page
-        // never meets its `values_removed`.
-        let view = self.engine.view(None)?;
-        let listed = crate::remove::told(self, view.as_ref())?;
+        rebuild: bool,
+    ) -> Result<Restate> {
+        let plan = plan(lake, view, set, acts, rebuild)?;
+        Ok(Self::planned(lake, view, set, acts, plan))
+    }
+
+    /// [`Self::of`] with the plan a walk already made, so that a job plans
+    /// once.
+    pub(crate) fn planned(
+        lake: &Lake,
+        view: &dyn ProjectionView,
+        set: &[SourceId],
+        acts: &[crate::remove::Removal],
+        plan: Plan,
+    ) -> Restate {
+        let way = plan.way(lake, view.position().map_or(0, |p| p.0));
+        *lakelands_core::lock(&lake.way) = Some(way.clone());
+        let head = view.position().unwrap_or(Position::GENESIS);
+        let way = match way.scoped {
+            true => Way::Scoped(plan),
+            false => Way::Rebuild,
+        };
+        Restate {
+            way,
+            set: set.to_vec(),
+            acts: acts.to_vec(),
+            extra: Keys::new(),
+            tail: Vec::new(),
+            seen: head,
+            next: 0,
+            opened: false,
+            folded: 0,
+            micros: 0,
+            reclaim: true,
+        }
+    }
+
+    /// What a whole act leaves where nothing is restated: the reclaim.
+    pub(crate) fn nothing() -> Restate {
+        Restate {
+            reclaim: true,
+            ..Restate::done()
+        }
+    }
+
+    /// A repeat of an act the lists already hold done: no restate, and
+    /// nothing to reclaim.
+    pub(crate) fn done() -> Restate {
+        Restate {
+            way: Way::Nothing,
+            set: Vec::new(),
+            acts: Vec::new(),
+            extra: Keys::new(),
+            tail: Vec::new(),
+            seen: Position::GENESIS,
+            next: 0,
+            opened: false,
+            folded: 0,
+            micros: 0,
+            reclaim: false,
+        }
+    }
+
+    /// Add what the act's own turns took in past the walk: the records
+    /// `extra` names, the acts `acts` as the head holds them, and the
+    /// events of `tail`. The first turn folds these into the plan.
+    pub(crate) fn absorb(
+        &mut self,
+        extra: impl IntoIterator<Item = (TypeName, RecordKey)>,
+        acts: Vec<crate::remove::Removal>,
+        tail: &[Event],
+    ) {
+        self.extra.extend(extra);
+        if !acts.is_empty() {
+            self.acts = acts;
+        }
+        self.tail.extend(tail.iter().cloned());
+    }
+
+    /// One turn of the writer: the next page, a rebuild, or the reclaim
+    /// alone.
+    pub(crate) fn step(&mut self, lake: &Lake, w: &mut Writer) -> Result<Stepped> {
+        if !self.opened {
+            self.open(lake, w)?;
+            self.opened = true;
+        }
+        let (mut plan, page, restated, scoped) =
+            match std::mem::replace(&mut self.way, Way::Nothing) {
+                Way::Scoped(mut plan) => {
+                    let page = self.page(lake, w, &mut plan)?;
+                    (Some(plan), page, true, true)
+                }
+                Way::Rebuild => {
+                    lake.rebuild_held(w)?;
+                    (None, Page::Done, true, false)
+                }
+                Way::Nothing => (None, Page::Done, false, false),
+            };
+        let measured = match page {
+            Page::More => {
+                self.way = Way::Scoped(plan.expect("a restate with pages left has its plan"));
+                return Ok(Stepped::More);
+            }
+            Page::Rebuild => {
+                let plan = plan.as_mut().expect("a scoped restate has its plan");
+                let way = plan.way(lake, w.tip.as_ref().map_or(0, |t| t.0.0));
+                *lakelands_core::lock(&lake.way) = Some(way);
+                lake.rebuild_held(w)?;
+                // The pass ended as the rebuild: its pages' rate says
+                // nothing of what a scoped refold takes (099).
+                false
+            }
+            Page::Done => scoped,
+        };
+        if restated {
+            self.finish(lake, w, measured)?;
+        }
+        Ok(Stepped::Done(match self.reclaim {
+            true => lake.reclaim()?.ok(),
+            false => None,
+        }))
+    }
+
+    /// The first turn: every act the lists hold is told, and every key
+    /// they destroyed is destroyed, before the first page, so a page that
+    /// folds a record an older act took leaves it erased; the plan takes
+    /// in what the act's own turns took in past the walk.
+    fn open(&mut self, lake: &Lake, w: &mut Writer) -> Result<()> {
+        let view = lake.engine.view(None)?;
+        let (list, acts) = (
+            forgotten_list(view.as_ref(), &Staged::default())?,
+            crate::remove::removed_list(view.as_ref(), &Staged::default())?,
+        );
+        if list.values().chain(acts.values()).any(|s| s == "owed") {
+            for (source, _) in list.iter().filter(|(_, s)| *s == "owed") {
+                lake.keys.destroy(source)?;
+            }
+            for act in (crate::remove::acts(lake, view.as_ref())?)
+                .iter()
+                .filter(|r| acts.get(&r.at).is_some_and(|s| s == "owed"))
+            {
+                lake.keys.destroy_versions(&act.source, &act.keys)?;
+                lake.keys.destroy_apart(&act.source, &act.apart)?;
+            }
+        }
+        let listed = crate::remove::told(lake, view.as_ref())?;
         drop(view);
         for act in listed {
             match w.removals.iter_mut().find(|r| **r == act) {
@@ -1025,93 +1412,161 @@ impl Lake {
                 None => w.removals.push(act),
             }
         }
-        self.rebuilds.fetch_add(1, Ordering::SeqCst);
-        lakelands_core::lock(&self.shapes).clear();
-        self.keys.unlist();
-        let began = std::time::Instant::now();
+        if let Way::Scoped(plan) = &mut self.way {
+            let view = lake.engine.view(None)?;
+            plan.absorb(
+                lake,
+                view.as_ref(),
+                &self.extra,
+                &self.tail,
+                &self.set,
+                &self.acts,
+            )?;
+        }
+        lake.rebuilds.fetch_add(1, Ordering::SeqCst);
+        lakelands_core::lock(&lake.shapes).clear();
+        lake.keys.unlist();
+        Ok(())
+    }
+
+    /// One page of the scoped refold, in this turn.
+    fn page(&mut self, lake: &Lake, w: &mut Writer, plan: &mut Plan) -> Result<Page> {
+        let view = lake.engine.view(None)?;
+        let head = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+        if self.seen < head {
+            plan.extend(lake, view.as_ref(), self.seen.next(), head)?;
+        }
+        self.seen = head;
+        if !plan.why.is_empty() {
+            return Ok(Page::Rebuild);
+        }
+        let Some((keys, _)) = plan.pages.get(self.next) else {
+            return Ok(Page::Done);
+        };
+        let keys = keys.clone();
+        let filter = FeedFilter {
+            types: keys
+                .iter()
+                .map(|(ty, _)| ty.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            keys: keys
+                .iter()
+                .map(|(_, key)| key.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            ..FeedFilter::default()
+        };
+        let Some(at) = positions(view.as_ref(), &filter, head)? else {
+            plan.why
+                .push("the feed index does not decide the records' events".to_owned());
+            return Ok(Page::Rebuild);
+        };
+        let about = |e: &Event| {
+            lakelands_core::feed::about(&e.body).iter().any(|a| {
+                let (Some(ty), Some(key)) = (&a.ty, &a.key) else {
+                    return false;
+                };
+                keys.contains(&(ty.clone(), key.clone()))
+            })
+        };
+        let outputs = match self.next {
+            0 => plan.outputs.clone(),
+            _ => BTreeSet::new(),
+        };
+        let mut events = lake.read_these(&at)?;
+        events.retain(about);
+        events.extend(plan.wide.iter().cloned());
+        events.extend(
+            (plan.recorded.iter())
+                .filter(|e| plan.folds(e, &keys, &outputs))
+                .cloned(),
+        );
+        events.sort_by_key(|e| e.position);
+        events.dedup_by_key(|e| e.position);
+        // The bound is a write's wait: the page this turn folds, held to
+        // `limits.page_events`, or the rebuild instead (099).
+        let bound = u64::from(lake.limits.page_events.max(1));
+        let folded = (events.len() as u64).saturating_add(plan.walks);
+        if folded > bound {
+            plan.why.push(format!(
+                "a page refolds {folded} events, more than `limits.page_events` ({bound})"
+            ));
+            return Ok(Page::Rebuild);
+        }
+        drop(view);
+        let scope = Scope {
+            keys: keys.clone(),
+            types: plan.types(),
+            near: plan.near.clone(),
+            outputs,
+            head,
+            at: std::sync::atomic::AtomicU64::new(0),
+        };
+        *lakelands_core::lock(&lake.scoped.scope) = Some(Arc::new(scope));
         // Folded from the first declaration again on each page: what the
         // writer held, and the calls it owes, are as they were after.
         let (ontology, settings) = (w.ontology.clone(), w.settings.clone());
         let owed = std::mem::take(&mut w.owed);
-        let folded = (|| -> Result<()> {
-            for (i, (keys, at)) in plan.pages.iter().enumerate() {
-                let about = |e: &Event| {
-                    lakelands_core::feed::about(&e.body).iter().any(|a| {
-                        let (Some(ty), Some(key)) = (&a.ty, &a.key) else {
-                            return false;
-                        };
-                        keys.contains(&(ty.clone(), key.clone()))
-                    })
-                };
-                let outputs = match i {
-                    0 => plan.outputs.clone(),
-                    _ => BTreeSet::new(),
-                };
-                let mut events = self.read_these(at)?;
-                events.retain(about);
-                events.extend(plan.wide.iter().cloned());
-                events.extend(
-                    plan.recorded
-                        .iter()
-                        .filter(|e| match &e.body {
-                            EventBody::OutputRecorded {
-                                seam, input, field, ..
-                            } => {
-                                outputs.contains(&(seam.clone(), input.clone()))
-                                    || field.as_ref().is_some_and(|(ty, key, _)| {
-                                        keys.contains(&(ty.clone(), key.clone()))
-                                    })
-                            }
-                            _ => false,
-                        })
-                        .cloned(),
-                );
-                events.sort_by_key(|e| e.position);
-                events.dedup_by_key(|e| e.position);
-                let scope = Scope {
-                    keys: keys.clone(),
-                    types: types.clone(),
-                    near: plan.near.clone(),
-                    outputs,
-                    head,
-                    at: std::sync::atomic::AtomicU64::new(0),
-                };
-                *lakelands_core::lock(&self.scoped.scope) = Some(Arc::new(scope));
-                w.ontology = Ontology::default().named();
-                w.settings = BTreeMap::new();
-                let folded = self.fold_all(w, &events, Reads::default(), false);
-                *lakelands_core::lock(&self.scoped.scope) = None;
-                folded?;
-            }
-            Ok(())
-        })();
+        w.ontology = Ontology::default().named();
+        w.settings = BTreeMap::new();
+        let count = events.len() as u64;
+        let began = std::time::Instant::now();
+        let folded = lake.fold_all(w, &events, Reads::default(), false);
+        // The rate is the folds' own, not the turns between them.
+        self.micros = self
+            .micros
+            .saturating_add(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
+        *lakelands_core::lock(&lake.scoped.scope) = None;
         (w.ontology, w.settings, w.owed) = (ontology, settings, owed);
-        self.rebuilds.fetch_add(1, Ordering::SeqCst);
-        lakelands_core::lock(&self.shapes).clear();
-        self.keys.unlist();
+        lakelands_core::lock(&lake.shapes).clear();
+        lake.keys.unlist();
         folded?;
-        let micros = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);
-        let rate = plan.events().saturating_mul(1_000_000) / micros.max(1);
-        if plan.events() > 0 {
-            self.scoped_rate.store(rate.max(1), Ordering::SeqCst);
+        self.folded = self.folded.saturating_add(count);
+        self.next += 1;
+        Ok(match self.next < plan.pages.len() {
+            true => Page::More,
+            false => Page::Done,
+        })
+    }
+
+    /// The last turn: the rate of the refold, where the pass was the
+    /// scoped one, and the lists saying what it restated is rebuilt.
+    fn finish(&self, lake: &Lake, w: &mut Writer, measured: bool) -> Result<()> {
+        if measured && self.folded > 0 && self.micros > 0 {
+            let rate = self.folded.saturating_mul(1_000_000) / self.micros.max(1);
+            lake.scoped_rate.store(rate.max(1), Ordering::SeqCst);
         }
-        // Restated: the act waits on the reclaim alone, as after a rebuild;
-        // the bases only the dropped states named go with it, a forgotten
-        // source's or a removed write's.
-        let view = self.engine.view(None)?;
+        // Restated: the act waits on the reclaim alone, as after a
+        // rebuild; the bases only the dropped states named go with it, a
+        // forgotten source's or a removed write's.
+        let view = lake.engine.view(None)?;
         let mut list = forgotten_list(view.as_ref(), &Staged::default())?;
         let mut removed = crate::remove::removed_list(view.as_ref(), &Staged::default())?;
         drop(view);
-        for source in set {
+        for source in &self.set {
             list.insert(source.clone(), "rebuilt".to_owned());
         }
-        for act in acts {
+        for act in &self.acts {
             removed.insert(act.at, "rebuilt".to_owned());
         }
-        self.put_lists(&list, &removed, true, head)?;
-        self.publish(w);
+        let head = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+        lake.put_lists(&list, &removed, true, head)?;
+        lake.publish(w);
         Ok(())
     }
+}
+
+/// What one page's turn leaves.
+enum Page {
+    /// The restate has pages left.
+    More,
+    /// The last page is folded.
+    Done,
+    /// The page falls back: the way is the rebuild.
+    Rebuild,
 }
 
 #[cfg(test)]

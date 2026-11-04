@@ -939,6 +939,16 @@ pub(crate) struct Forget {
     report: Option<ForgetSetReport>,
     /// The last position the act wrote.
     position: Position,
+    /// The restate the walk or a rewalk planned off the writer, and the
+    /// restate under way, a page a turn (099).
+    ahead: Option<crate::lake::scrub::Restate>,
+    restate: Option<crate::lake::scrub::Restate>,
+    /// The position the restate's failure names, where it is an act's
+    /// last turn; `None` where the act appended nothing and the restate
+    /// answers its failure as itself.
+    restate_at: Option<Position>,
+    /// The tail past the walk's view, for the restate's first turn.
+    tail: Vec<Event>,
     answer: Option<tokio::sync::oneshot::Sender<Reported>>,
 }
 
@@ -970,6 +980,10 @@ pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn
             way: ForgetWay::default(),
             report: None,
             position: act.at,
+            ahead: None,
+            restate: None,
+            restate_at: None,
+            tail: Vec::new(),
             answer: None,
         }));
     }
@@ -1047,6 +1061,7 @@ impl Job for Forget {
     /// reading a record, and the keys it moved, which the first turn reads
     /// again under the writer.
     fn fold(&mut self, tail: &[Event]) -> Result<()> {
+        self.tail.extend(tail.iter().cloned());
         for e in tail {
             for about in lakelands_core::feed::about(&e.body) {
                 if let (Some(ty), Some(key)) = (about.ty, about.key) {
@@ -1125,7 +1140,13 @@ impl Forget {
         self.walked = (crate::remove::removed_list(view, &Staged::default())?)
             .into_keys()
             .collect();
-        self.way = way(lake, view, &self.set, &beside(lake, view)?)?;
+        let beside = beside(lake, view)?;
+        let plan =
+            crate::lake::scrub::plan(lake, view, &self.set, &beside, lake.limits.forget_rebuild)?;
+        self.way = plan.way(lake, view.position().map_or(0, |p| p.0));
+        self.ahead = Some(crate::lake::scrub::Restate::planned(
+            lake, view, &self.set, &beside, plan,
+        ));
         self.report = Some(self.report_again(lake, view, &ontology)?);
         self.shape = Some(ontology);
         Ok(())
@@ -1163,6 +1184,10 @@ impl Forget {
 
     fn one_turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
         let lake: &Lake = t;
+        if self.restate.is_some() {
+            let at = self.restate_at;
+            return self.restate_turn(t, w, at);
+        }
         let view = lake.engine.view(None)?;
         let logged = acts(lake, view.as_ref())?;
         // The writer's catch-up may have left the projection holding an act
@@ -1183,17 +1208,18 @@ impl Forget {
             // the head the act's appends reached (099).
             let through = view.position().unwrap_or(Position::GENESIS);
             drop(view);
-            let reclaimed = lake.finish_act(w, through)?;
+            // The act's appends ended in a turn this handle did not run:
+            // what the lists leave owed is the restate.
+            self.restating(lake, true)?;
+            self.restate_at = Some(through);
             if self.answer.is_some() {
                 let view = lake.engine.view(None)?;
                 let ontology = Ontology::at(view.as_ref())?;
                 if self.report.is_none() {
                     self.report = Some(self.report_again(lake, view.as_ref(), &ontology)?);
                 }
-                drop(view);
-                self.finish_report(lake, reclaimed);
             }
-            return Ok(Turned::Whole);
+            return self.restate_turn(t, w, Some(through));
         }
         let next = match self.act {
             None => self.begin(lake, w, view.as_ref())?,
@@ -1206,17 +1232,78 @@ impl Forget {
         match next {
             Next::More => Ok(Turned::More),
             // Nothing was appended and no act of this call is in the log:
-            // the set's sources were forgotten already. `finish_act` would
-            // wrap what is still owed in an `ActUnfinished` at a position
-            // this call never wrote; `finish_forgetting` does the work and
-            // answers its failure as itself.
+            // the set's sources were forgotten already. An `ActUnfinished`
+            // at a position this call never wrote would be wrong, so the
+            // lists at the view say what is owed and its failure answers
+            // as itself.
             Next::Nothing => {
-                let reclaimed = lake.finish_forgetting(w)?;
-                self.finish_report(lake, reclaimed);
-                Ok(Turned::Whole)
+                // A call this turn wrote nothing: the lists at the view
+                // say what is owed, and a call with nothing owed answers
+                // the reclaim alone.
+                self.restating(lake, true)?;
+                self.restate_at = None;
+                self.restate_turn(t, w, None)
             }
             Next::Whole => {
-                let reclaimed = lake.finish_act(w, self.position)?;
+                self.restating(lake, false)?;
+                self.restate_at = Some(self.position);
+                self.restate_turn(t, w, Some(self.position))
+            }
+        }
+    }
+
+    /// Hold the restate the act leaves: the plan a walk made, with the
+    /// records the act's first turn took in past the walk, or one planned
+    /// here where no walk made one; `listed` takes what the lists at the
+    /// view leave owed instead, where the act's appends ended in a turn
+    /// this handle did not run or this call wrote none.
+    fn restating(&mut self, lake: &Lake, listed: bool) -> Result<()> {
+        if self.restate.is_some() {
+            return Ok(());
+        }
+        let restate = match self.ahead.take() {
+            // The walk's plan stands: what the act's own turns took in
+            // past it is added below.
+            Some(mut ahead) if !listed => {
+                ahead.absorb(self.records.keys().cloned(), Vec::new(), &self.tail);
+                ahead
+            }
+            // The lists at the view already read past the act's appends:
+            // nothing of the walk is added.
+            _ => {
+                let view = lake.engine.view(None)?;
+                (lake.restate_owed(view.as_ref())?)
+                    .unwrap_or_else(crate::lake::scrub::Restate::done)
+            }
+        };
+        self.restate = Some(restate);
+        Ok(())
+    }
+
+    /// One turn of the restate, a page of the projection: the writer is
+    /// handed back between pages. `at` names the act's last turn where the
+    /// failure is one.
+    fn restate_turn(
+        &mut self,
+        t: &Turn<'_>,
+        w: &mut Writer,
+        at: Option<Position>,
+    ) -> Result<Turned> {
+        let lake: &Lake = t;
+        let mut restate = self
+            .restate
+            .take()
+            .expect("a restate turn holds its restate");
+        let stepped = match at {
+            Some(at) => lake.step_act(w, &mut restate, at),
+            None => restate.step(lake, w),
+        };
+        match stepped? {
+            crate::lake::scrub::Stepped::More => {
+                self.restate = Some(restate);
+                Ok(Turned::More)
+            }
+            crate::lake::scrub::Stepped::Done(reclaimed) => {
                 self.finish_report(lake, reclaimed);
                 Ok(Turned::Whole)
             }
@@ -1652,6 +1739,10 @@ pub(crate) fn act_job(
         way: ForgetWay::default(),
         report: None,
         position: Position::GENESIS,
+        ahead: None,
+        restate: None,
+        restate_at: None,
+        tail: Vec::new(),
         answer,
     }
 }

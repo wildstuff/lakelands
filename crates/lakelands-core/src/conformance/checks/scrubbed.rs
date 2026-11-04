@@ -45,6 +45,12 @@ check!(
 );
 
 check!(
+    RESTATE_WRITES_GO_ON = a_write_between_two_pages_is_answered_before_the_act_is_whole,
+    "099: a scoped restate restates a page of records in each turn of the writer; with a lake whose records take more pages than one, a write another source sends once the act's `act_whole` is in the log, its restate owed, is answered between two pages, before the act is whole, and the lake holds it after the act: the record it wrote reads whole, and the forgotten source's records read their names erased",
+    reopens
+);
+
+check!(
     RESTATE_PAGE_OVER_ITS_BOUND = a_page_over_page_events_takes_the_rebuild,
     "099: with `limits.page_events` below what a page of a migrated lake folds, `forget_preflight` and `forget_source` name the rebuild, saying the page refolds more events than the limit, and the act answers after it as a rebuild does",
     given
@@ -816,6 +822,120 @@ async fn a_scoped_pass_after_a_reopen_leaves_every_older_acts_values_erased(
         "a rebuild after the act answers the same; {} reads differ: {:?}",
         differ.len(),
         &differ[..differ.len().min(4)]
+    );
+    Ok(())
+}
+
+async fn a_write_between_two_pages_is_answered_before_the_act_is_whole(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    use super::removed::{at, erased};
+
+    /// More records than one page holds, in enough pages that several
+    /// turns follow the one the act's `source_forgotten` commits in.
+    const WRITTEN: usize = 800;
+    /// The records the lake holds beside them, so the scoped pass is the
+    /// cheaper way: a rebuild would fold all of these again.
+    const BESIDE: usize = 2_400;
+    let (_, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(people_both()).await?;
+    let row =
+        |key: &str, name: &str| source_record("person", key, json!({"id": key, "name": name}));
+    let beside = (0..BESIDE).map(|i| row(&format!("e{i:04}"), &format!("m{}", i % 10)));
+    l.ingest("erp", beside.collect())
+        .await
+        .must("ingesting from erp")?;
+    let crm = (0..WRITTEN).map(|i| row(&format!("c{i:04}"), &format!("n{}", i % 10)));
+    l.ingest("crm", crm.collect())
+        .await
+        .must("ingesting from crm")?;
+    // One of crm's records erp co-writes, so it is restated and stays.
+    let co = source_record("person", "c0000", json!({"id": "c0000", "city": "Oslo"}));
+    l.ingest("erp", vec![co]).await.must("co-writing c0000")?;
+    let start = store.head().await.must("reading the head")?;
+    let crm: SourceId = "crm".into();
+    let answered = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+    let done: Arc<std::sync::Mutex<Option<lakelands_api::write::ForgetReport>>> = Arc::default();
+    let (order, slot) = (answered.clone(), done.clone());
+    let act = {
+        let store = store.clone();
+        let crm = crm.clone();
+        async move {
+            let report = store
+                .forget_source(&crm, None)
+                .await
+                .must("forgetting crm")?;
+            *crate::lock(&slot) = Some(report);
+            crate::lock(&order).push("act");
+            Ok(())
+        }
+    };
+    let write = {
+        let store = store.clone();
+        let order = answered.clone();
+        async move {
+            // The act's appends end with `act_whole`, and the restate
+            // follows: once it is in the log the act is owed its pages,
+            // and the writer is theirs turn by turn.
+            settles(6_000, Duration::from_millis(1), || {
+                let store = &store;
+                async move {
+                    let events = events_after(store.as_ref(), start).await?;
+                    let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+                    ensure!(whole, "the act's `act_whole` is in the log");
+                    Ok(())
+                }
+            })
+            .await?;
+            let l = Lake::of(store.as_ref());
+            l.ingest(
+                "erp",
+                vec![source_record(
+                    "person",
+                    "z1",
+                    json!({"id": "z1", "name": "Zed"}),
+                )],
+            )
+            .await
+            .must("ingesting from erp between two pages")?;
+            crate::lock(&order).push("write");
+            Ok(())
+        }
+    };
+    let callers: Vec<Caller<'static, Held>> = vec![Box::pin(act), Box::pin(write)];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let order = crate::lock(&answered).clone();
+    ensure!(
+        order == ["write", "act"],
+        "a write sent between two pages must be answered before the act is whole; they \
+         answered {order:?}"
+    );
+    let report = crate::lock(&done).take().expect("the act answered");
+    ensure!(
+        report.way.scoped && report.way.why.is_empty(),
+        "the act takes the scoped refold, a page a turn, so a write waits for one page: {:?}",
+        report.way
+    );
+    let z1 = at(&l, "person", "z1", None).await?;
+    ensure!(
+        z1.as_ref()
+            .is_some_and(|r| r.fields.get("name").is_some_and(|v| v == &json!("Zed"))),
+        "the lake holds the record written between the pages, its name whole: {z1:?}"
+    );
+    let c0 = at(&l, "person", "c0000", None).await?;
+    ensure!(
+        c0.as_ref().is_some_and(
+            |r| erased(r, "name", "crm") && r.fields.get("city") == Some(&json!("Oslo"))
+        ),
+        "the act still erases crm's name on a record erp co-writes, and keeps erp's city: \
+         {c0:?}"
+    );
+    let c1 = at(&l, "person", "c0001", None).await?;
+    ensure!(
+        c1.is_none(),
+        "the act retires a record crm alone brought: {c1:?}"
     );
     Ok(())
 }
