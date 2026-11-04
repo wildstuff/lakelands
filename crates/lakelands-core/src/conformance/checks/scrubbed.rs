@@ -830,7 +830,7 @@ async fn a_write_between_two_pages_is_answered_before_the_act_is_whole(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    use super::removed::{at, erased};
+    use super::removed::{Gate, Opens, at, erased};
 
     /// More records than one page holds, in enough pages that several
     /// turns follow the one the act's `source_forgotten` commits in.
@@ -838,7 +838,14 @@ async fn a_write_between_two_pages_is_answered_before_the_act_is_whole(
     /// The records the lake holds beside them, so the scoped pass is the
     /// cheaper way: a rebuild would fold all of these again.
     const BESIDE: usize = 2_400;
-    let (_, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
+    let (keys, gate) = (Arc::new(Keys::default()), Arc::new(Gate::default()));
+    let seams = Seams {
+        meter: Some(gate.clone()),
+        ..with(&keys)
+    };
+    let what = "with a key store and a gate on its writer";
+    let store = super::erasable::again(&reopen, store, seams, what).await?;
+    let _opens = Opens(gate.clone());
     let l = Lake::of(store.as_ref());
     l.declare(people_both()).await?;
     let row =
@@ -872,23 +879,43 @@ async fn a_write_between_two_pages_is_answered_before_the_act_is_whole(
             Ok(())
         }
     };
+    // The order is the lake's, not the scheduler's: the gate holds each of
+    // the writer's turns and lets them through one at a time until the
+    // act's appends, which end with `act_whole`, are in the log and the
+    // turn held next is the act's, owed its pages; the write is sent only
+    // then, and the gate opens once it is queued behind that turn, so it
+    // is answered before the next page, which the act queues only when the
+    // turn held has ended.
+    gate.arm();
+    let steps = {
+        let (store, gate) = (store.clone(), gate.clone());
+        async move {
+            loop {
+                gate.reaches("a turn of the writer held", |g| g.holds)
+                    .await?;
+                let events = events_after(store.as_ref(), start).await?;
+                if (events.iter()).any(|e| e.body.kind() == "act_whole") {
+                    break;
+                }
+                let passed = gate.now().passed;
+                gate.let_one_through();
+                gate.reaches("the turn held let through", |g| g.passed > passed)
+                    .await?;
+            }
+            gate.watch();
+            let behind = gate
+                .reaches("the write queued behind the act's turn", |g| g.behind)
+                .await;
+            gate.open();
+            behind
+        }
+    };
     let write = {
-        let store = store.clone();
+        let (store, gate) = (store.clone(), gate.clone());
         let order = answered.clone();
         async move {
-            // The act's appends end with `act_whole`, and the restate
-            // follows: once it is in the log the act is owed its pages,
-            // and the writer is theirs turn by turn.
-            settles(6_000, Duration::from_millis(1), || {
-                let store = &store;
-                async move {
-                    let events = events_after(store.as_ref(), start).await?;
-                    let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
-                    ensure!(whole, "the act's `act_whole` is in the log");
-                    Ok(())
-                }
-            })
-            .await?;
+            gate.reaches("the act owed its pages, its turn held", |g| g.watching)
+                .await?;
             let l = Lake::of(store.as_ref());
             l.ingest(
                 "erp",
@@ -904,7 +931,7 @@ async fn a_write_between_two_pages_is_answered_before_the_act_is_whole(
             Ok(())
         }
     };
-    let callers: Vec<Caller<'static, Held>> = vec![Box::pin(act), Box::pin(write)];
+    let callers: Vec<Caller<'static, Held>> = vec![Box::pin(act), Box::pin(steps), Box::pin(write)];
     join_all(callers).await.into_iter().collect::<Held>()?;
     let order = crate::lock(&answered).clone();
     ensure!(
