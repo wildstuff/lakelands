@@ -512,6 +512,7 @@ belongs in the suite, not beside one engine:
 - `a_guard_reads_in_force_apart_from_preceding` — 100: a guard holding `in_force(box.hi, box.from <= at, box.symbol = symbol)` and `preceding(hi, box, from, at, symbol, symbol)`, whose series are spelled alike, reads each its own
 - `a_later_bound_moves_no_firing` — 100: after a firing, a rewrite of the bound it paired, a new bound and the bound's retirement set nothing off, and the feed tells the firing as it was, overruled by nothing
 - `a_bound_taken_back_overrules_no_firing` — 100 and 065: a removal of a source's values, a forget of a source and a purge of a source's bounds overrule no firing paired with a bound they take back, and the feed tells each; a removal of the source that wrote a tick overrules its firing; and of `price > in_force(…) and hand = 'a'`, a removal of the source of `hand` overrules the firing of its write while the firing of `price > in_force(…)` on that write stands
+- `a_guard_between_an_acts_parts_reads_through` — 100 and 099: with the restate held back, a guard's `in_force` and `preceding` and a constraint's `preceding` read the record an owed act has not reached as the restate will leave it, whichever parts have landed: no erased value fires a guard or passes a constraint, while the projection still holds it, and once the act is whole the record reads as the restate left it
 
 **read clock**
 

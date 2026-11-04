@@ -5,10 +5,14 @@
 //! whose `from` is the greatest at or below its `at`, among the bounds every
 //! sight the write is judged by is answered, null where none is.
 
+use std::sync::Mutex;
+
 use super::only::holder;
 use super::quarantine::{fed, kept};
-use crate::conformance::fixture::{ingest, reviewer, source_record};
+use super::removed::erased;
+use crate::conformance::fixture::{Answer, ingest, reviewer, source_record};
 use crate::conformance::prelude::*;
+use lakelands_api::write::ForgetReport;
 
 check!(
     GUARD_IN_FORCE_FIRES_ON_ITS_OWN_BOUND = a_guard_fires_on_a_tick_above_its_own_bound,
@@ -78,6 +82,12 @@ check!(
 check!(
     GUARD_IN_FORCE_BOUND_TAKEN_BACK_STANDS = a_bound_taken_back_overrules_no_firing,
     "100 and 065: a removal of a source's values, a forget of a source and a purge of a source's bounds overrule no firing paired with a bound they take back, and the feed tells each; a removal of the source that wrote a tick overrules its firing; and of `price > in_force(…) and hand = 'a'`, a removal of the source of `hand` overrules the firing of its write while the firing of `price > in_force(…)` on that write stands"
+);
+
+check!(
+    GUARD_READS_THROUGH_AN_OWED_ACT = a_guard_between_an_acts_parts_reads_through,
+    "100 and 099: with the restate held back, a guard's `in_force` and `preceding` and a constraint's `preceding` read the record an owed act has not reached as the restate will leave it, whichever parts have landed: no erased value fires a guard or passes a constraint, while the projection still holds it, and once the act is whole the record reads as the restate left it",
+    given
 );
 
 /// `in_force` of the bound's `f`, at the tick's `at`, of its symbol.
@@ -766,6 +776,223 @@ async fn a_bound_taken_back_overrules_no_firing(store: Store) -> Held {
         "a bound taken back overrules nothing, a tick's own value taken back does, and the \
          rest of a `when` is decided again: fired {got:?}, overruled {bounds_gone:?} then \
          {after:?}, told {told:?}"
+    );
+    Ok(())
+}
+
+/// A tick of `symbol` at `hm`, `price`, fed by a source.
+fn fed_tick(key: &str, symbol: &str, hm: &str, price: f64) -> SourceRecord {
+    source_record(
+        "tick",
+        key,
+        json!({"no": key, "symbol": symbol, "at": at(hm), "price": price}),
+    )
+}
+
+/// The constraint an answer breaks, if it breaks one.
+fn broke(a: &impl Answer) -> Option<String> {
+    let Some(Refusal::Constraint(said)) = reason(a) else {
+        return None;
+    };
+    match &said.case {
+        Case::ConstraintBroken { constraint, .. } => Some(constraint.to_string()),
+        _ => None,
+    }
+}
+
+/// One field of the record `ty`/`key`, as a read answers it now.
+async fn field(l: &Lake, ty: &str, key: &str, name: &str) -> Result<Option<Value>, Failure> {
+    Ok(super::removed::at(l, ty, key, None)
+        .await?
+        .and_then(|r| r.fields.get(name).cloned()))
+}
+
+async fn a_guard_between_an_acts_parts_reads_through(store: Store, given: Given) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    let mut few = limits();
+    few.part_events = 1;
+    let store = (given.relimit)(store, super::erasable::with(&keys), few)
+        .await
+        .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let (text, number, time) = (
+        json!({"kind": "text"}),
+        json!({"kind": "number"}),
+        json!({"kind": "date_time"}),
+    );
+    // The bound's type sorts last, so the act's one-record turns retire
+    // every tick before it: the guard reads it while it is owed, never
+    // after a part has taken it.
+    l.declare_json(
+        json!({"declare": "type", "name": "zbox", "key": ["no"], "fields": [
+        {"name": "no", "type": text, "authority": "source"},
+        {"name": "symbol", "type": text, "authority": "source"},
+        {"name": "from", "type": time, "authority": "source"},
+        {"name": "hi", "type": number, "authority": "source", "erasable": true},
+        {"name": "note", "type": text}]}),
+    )
+    .await?;
+    l.declare_json(
+        json!({"declare": "type", "name": "tick", "key": ["no"], "fields": [
+        {"name": "no", "type": text, "authority": "source"},
+        {"name": "symbol", "type": text, "authority": "source"},
+        {"name": "at", "type": time, "authority": "source"},
+        {"name": "price", "type": number, "authority": "source", "erasable": true}],
+        "constraints": [{"name": "rises", "holds":
+            "preceding(price, at, symbol) is null or price > preceding(price, at, symbol)"}]}),
+    )
+    .await?;
+    l.declare_json(trigger(
+        "no_bound",
+        "tick",
+        "in_force(zbox.hi, zbox.from <= at, zbox.symbol = symbol) is null",
+    ))
+    .await?;
+    l.declare_json(trigger(
+        "first",
+        "tick",
+        "preceding(price, at, symbol) is null",
+    ))
+    .await?;
+    // The source's: thirty ticks of their own symbols, the tick `A` rises
+    // from, and the bound `A` is under.
+    let mut records = Vec::new();
+    for i in 0..30 {
+        records.push(fed_tick(&format!("b{i}"), &format!("Z{i}"), "09:00", 1.0));
+    }
+    records.push(fed_tick("t0", "A", "09:00", 5.0));
+    records.push(source_record(
+        "zbox",
+        "b0",
+        json!({"no": "b0", "symbol": "A", "from": at("09:00"), "hi": 100.0}),
+    ));
+    l.ingest("tracker", records)
+        .await
+        .must("ingesting from tracker")?;
+    // An author's note keeps the bound, so its erasure is read after the act.
+    l.upsert("zbox", "b0", json!({"note": "kept"})).await?;
+    // While nothing is owed, both resolvers read the values as they are:
+    // a tick below the live bound breaks `rises`, and no guard reads null.
+    let over = l
+        .ingest("hand", vec![fed_tick("h0", "A", "09:30", 1.0)])
+        .await;
+    ensure!(
+        broke(&over).as_deref() == Some("rises"),
+        "before the act the previous tick's `price` is read as it stands, so a tick below it \
+         breaks `rises`: {over:?}"
+    );
+    let start = store.head().await.must("reading the head")?;
+    type Fed = lakelands_api::Result<Vec<lakelands_api::Committed>>;
+    let tracker: SourceId = "tracker".into();
+    let report: Arc<Mutex<Option<ForgetReport>>> = Arc::default();
+    let fed: Arc<Mutex<Option<Fed>>> = Arc::default();
+    let held: Arc<Mutex<Option<Option<Value>>>> = Arc::default();
+    let bound: Arc<Mutex<Option<Option<Value>>>> = Arc::default();
+    let (s0, s1, r0, f0, h0, b0) = (
+        store.clone(),
+        store.clone(),
+        report.clone(),
+        fed.clone(),
+        held.clone(),
+        bound.clone(),
+    );
+    let source = tracker.clone();
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            *crate::lock(&r0) = Some(
+                s0.forget_source(&source, None)
+                    .await
+                    .must("the forgetting")?,
+            );
+            Ok(())
+        }),
+        Box::pin(async move {
+            settles(6_000, Duration::from_millis(1), || async {
+                let events = events_after(s1.as_ref(), start).await?;
+                let forgot =
+                    (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
+                let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+                ensure!(
+                    forgot && !whole,
+                    "the forgetting's `source_forgotten`, before its `act_whole`"
+                );
+                Ok(())
+            })
+            .await?;
+            let l = Lake::of(s1.as_ref());
+            *crate::lock(&h0) = Some(field(&l, "tick", "t0", "price").await?);
+            *crate::lock(&b0) = Some(field(&l, "zbox", "b0", "hi").await?);
+            *crate::lock(&f0) = Some(
+                l.ingest("hand", vec![fed_tick("h1", "A", "10:00", 1.0)])
+                    .await,
+            );
+            Ok(())
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let done = crate::lock(&report)
+        .take()
+        .expect("the forgetting answered");
+    let fed = crate::lock(&fed).take().expect("a tick was fed");
+    let held = crate::lock(&held).take().expect("the tick was read");
+    let bound = crate::lock(&bound).take().expect("the bound was read");
+    // The tick must commit inside the act: after `act_whole` the projection
+    // holds the same erased state, so a tick taken then would fire exactly
+    // as a read through the owed act does, and prove nothing.
+    let whole = events_after(store.as_ref(), start)
+        .await?
+        .into_iter()
+        .find(|e| e.body.kind() == "act_whole")
+        .map(|e| e.position);
+    let fed_end = fed.as_ref().ok().and_then(|w| w.last()).map(|w| w.position);
+    ensure!(
+        fed_end.is_some() && whole.is_some() && fed_end < whole,
+        "the tick `h1` commits before the act's `act_whole`, while the act is owed: the \
+         tick ends at {fed_end:?}, the act at {whole:?}: {fed:?}"
+    );
+    let named_on = |want: &'static str| {
+        let store = store.clone();
+        async move {
+            let got: Vec<String> = (fired(store.as_ref(), start).await?)
+                .into_iter()
+                .filter(|(_, key)| key == want)
+                .map(|(name, _)| name)
+                .collect();
+            Ok::<_, Failure>(names(got))
+        }
+    };
+    let between = named_on("h1").await?;
+    ensure!(
+        fed.is_ok()
+            && done.events > 0
+            && held.is_some()
+            && bound.is_some()
+            && between == "first no_bound",
+        "between the act's turns the projection still holds `t0`'s price ({held:?}) and the \
+         bound's `hi` ({bound:?}), yet the tick `h1` is taken, its constraint `rises` reads \
+         `preceding` as null and both `first` and `no_bound` fire: {fed:?}, {between}, the \
+         act {done:?}"
+    );
+    // Once the act is whole the record reads as the restate left it: the
+    // bound is erased, so `no_bound` fires, and the tick beside it keeps
+    // its price, so `first` does not.
+    let head = store.head().await.must("reading the head")?;
+    let after_act = Lake::of(store.as_ref());
+    after_act
+        .ingest("hand", vec![fed_tick("h2", "A", "11:00", 2.0)])
+        .await
+        .must("a tick after the act")?;
+    let after: Vec<String> = (fired(store.as_ref(), head).await?)
+        .into_iter()
+        .filter(|(_, key)| key == "h2")
+        .map(|(name, _)| name)
+        .collect();
+    let gone = super::removed::at(&after_act, "zbox", "b0", None).await?;
+    ensure!(
+        names(after.clone()) == "no_bound"
+            && gone.as_ref().is_some_and(|r| erased(r, "hi", "tracker")),
+        "after the act the bound reads erased and `no_bound` fires, while `h1`'s price stands \
+         and `first` does not: {after:?}, `zbox` {gone:?}"
     );
     Ok(())
 }

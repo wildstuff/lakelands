@@ -19,6 +19,7 @@
 //! [`Writer::removals`]: crate::lake::Writer
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Scan};
 use lakelands_api::event::{Digest, Event, EventBody, EventId};
@@ -27,7 +28,9 @@ use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::{FEED_EXAMINED, FeedFilter};
 use lakelands_api::write::{Proposal, ProposalFilter};
-use lakelands_api::{Position, RecordKey, RelationName, Result, SourceId, TypeName, Value};
+use lakelands_api::{
+    Position, RecordKey, RelationName, Result, SourceId, TypeName, Value, Version,
+};
 
 use crate::lake::{Lake, Writer};
 use crate::ontology::Ontology;
@@ -60,6 +63,7 @@ impl<'a> Viewed<'a> {
             settings: &w.settings,
             plans: &w.plans,
             keys: lake.keys.as_ref(),
+            restated: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -83,6 +87,9 @@ pub(crate) struct Through<'a> {
     settings: &'a BTreeMap<String, Value>,
     plans: &'a crate::record::Plans,
     keys: &'a Keys,
+    /// What each record and version was restated to this turn, so that a
+    /// guard and a verb reading one record read it through once.
+    restated: Mutex<BTreeMap<(TypeName, RecordKey, Version), Option<StoredRecord>>>,
 }
 
 impl Through<'_> {
@@ -104,6 +111,10 @@ impl Through<'_> {
     fn restated(&self, r: &StoredRecord) -> Result<Option<StoredRecord>> {
         if !self.touches(r) {
             return Ok(Some(r.clone()));
+        }
+        let key = (r.ty.clone(), r.key.clone(), r.version);
+        if let Some(kept) = self.kept().get(&key).cloned() {
+            return Ok(kept);
         }
         let Some(head) = self.inner.position() else {
             return Ok(Some(r.clone()));
@@ -153,7 +164,16 @@ impl Through<'_> {
                 }
             }
         }
+        self.kept().insert(key, before.clone());
         Ok(before)
+    }
+
+    /// What each record and version was restated to this turn.
+    fn kept(
+        &self,
+    ) -> std::sync::MutexGuard<'_, BTreeMap<(TypeName, RecordKey, Version), Option<StoredRecord>>>
+    {
+        self.restated.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// The output an `output_recorded` carries, named where it names one
