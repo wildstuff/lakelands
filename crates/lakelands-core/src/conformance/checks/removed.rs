@@ -96,7 +96,8 @@ check!(
 check!(
     REMOVE_WRITTEN_BEFORE_JUDGED_AT_ITS_FIRST_TURN =
         a_tail_event_before_the_time_is_taken_and_one_after_is_not,
-    "099: a `WrittenBefore` act judges its tail at its first turn by the time: an event of the source written while the act walked, before the time, is taken and its record retired, while one written after the time stays with its value, whichever of the two the walk's view held, and the act answers one event"
+    "099: a `WrittenBefore` act judges its tail at its first turn by the time: an event of the source written while the act walked, before the time, is taken and its record retired, while one written after the time stays with its value, whichever of the two the walk's view held, and the act answers one event",
+    reopens
 );
 
 check!(
@@ -1960,25 +1961,155 @@ async fn a_removal_leaves_an_event_of_its_delivery_written_after_it(
     Ok(())
 }
 
-async fn a_tail_event_before_the_time_is_taken_and_one_after_is_not(store: Store) -> Held {
+/// Where [`Gate`] stands: idle, armed, holding the writer's turn, an
+/// entry queued behind the one it holds, opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum Gated {
+    #[default]
+    Idle,
+    Armed,
+    Holds,
+    Behind,
+    Open,
+}
+
+/// A meter that holds the writer's turn once. The writer tells the queue's
+/// depth on its own thread as it takes an entry, before the entry runs,
+/// and a caller tells it only as it queues one, so never 0: armed, the
+/// gate holds the first entry taken with nothing queued behind it, which
+/// has appended nothing yet, until it is opened, and notes an entry
+/// queued behind it meanwhile.
+#[derive(Default)]
+struct Gate {
+    at: std::sync::Mutex<Gated>,
+    opened: std::sync::Condvar,
+}
+
+impl Gate {
+    fn now(&self) -> Gated {
+        *crate::lock(&self.at)
+    }
+
+    fn arm(&self) {
+        *crate::lock(&self.at) = Gated::Armed;
+    }
+
+    fn open(&self) {
+        *crate::lock(&self.at) = Gated::Open;
+        self.opened.notify_all();
+    }
+
+    /// Wait, off the writer, until the gate stands at `at` or past it.
+    async fn reaches(&self, at: Gated, what: &str) -> Held {
+        settles(30_000, Duration::from_millis(2), || async {
+            ensure!(
+                self.now() >= at,
+                "{what}: the gate stands at {:?}",
+                self.now()
+            );
+            Ok(())
+        })
+        .await
+    }
+}
+
+impl lakelands_api::seam::Meter for Gate {
+    fn count(&self, _: lakelands_api::seam::Metered<'_>, _: lakelands_api::seam::Count, _: u64) {}
+    fn observe(&self, _: lakelands_api::seam::Metered<'_>, _: lakelands_api::seam::Spread, _: u64) {
+    }
+    fn level(
+        &self,
+        _: lakelands_api::seam::Metered<'_>,
+        n: lakelands_api::seam::Level,
+        depth: u64,
+    ) {
+        if n != lakelands_api::seam::Level::Queued {
+            return;
+        }
+        let mut at = crate::lock(&self.at);
+        match *at {
+            Gated::Armed if depth == 0 => {
+                *at = Gated::Holds;
+                // A check that never opens it does not hold the writer
+                // past the time any of its waits gives up.
+                let (_at, _) = self
+                    .opened
+                    .wait_timeout_while(at, Duration::from_secs(60), |g| *g < Gated::Open)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            Gated::Holds if depth > 0 => *at = Gated::Behind,
+            _ => {}
+        }
+    }
+}
+
+/// Opens the gate whichever way the check ends, so the writer it holds
+/// is let go.
+struct Opens(Arc<Gate>);
+
+impl Drop for Opens {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
+async fn a_tail_event_before_the_time_is_taken_and_one_after_is_not(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let gate = Arc::new(Gate::default());
+    let seams = Seams {
+        meter: Some(gate.clone()),
+        ..Seams::default()
+    };
+    let store = super::erasable::again(&reopen, store, seams, "with a gate on its writer").await?;
+    let _opens = Opens(gate.clone());
     let l = Lake::of(store.as_ref());
     visits(&l).await?;
     let names: Vec<String> = (0..1_200).map(|i| format!("m{i}")).collect();
     let many: Vec<(&str, u32)> = names.iter().map(|n| (n.as_str(), 10)).collect();
     tracked(&l, &many).await?;
     let tracker: SourceId = "tracker".into();
-    let far = Timestamp(micros_now() + 3_000_000);
-    let sel = Selection::WrittenBefore(far);
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a far date"));
     let pre = store
-        .remove_values_preflight(&tracker, &sel)
+        .remove_values_preflight(&tracker, &all)
         .await
         .must("the preflight")?;
+    // The time is taken now, after the preflight's walk, so that what
+    // stands between it and the early write is the act's walk alone.
+    let far = Timestamp(micros_now() + 3_000_000);
+    let sel = Selection::WrittenBefore(far);
     let slot: Arc<std::sync::Mutex<Option<RemoveReport>>> = Arc::default();
     let (s, answer, s2) = (store.clone(), slot.clone(), store.clone());
     let early = source_record("visit", "early", json!({"id": "early", "duration": 5}));
     let late = source_record("visit", "late", json!({"id": "late", "duration": 7}));
+    // The order is the lake's, not the scheduler's: the early write takes
+    // the writer's turn and is held before it appends; the act is sent
+    // only then, so its walk cannot see the write, and its first turn is
+    // queued behind it; the gate opens only once that turn waits there,
+    // so the write lands in the act's tail, before its first turn.
+    gate.arm();
+    let (g1, g2) = (gate.clone(), gate.clone());
     let callers: Vec<Caller<'static, Held>> = vec![
         Box::pin(async move {
+            let l = Lake::of(s2.as_ref());
+            l.ingest("tracker", vec![early])
+                .await
+                .must("writing the event before the time")?;
+            // The event after the time is written once the clock passed it.
+            settles(30_000, Duration::from_millis(10), || async {
+                ensure!(micros_now() > far.0, "the clock passing the time");
+                Ok(())
+            })
+            .await?;
+            l.ingest("tracker", vec![late])
+                .await
+                .must("writing the event after the time")?;
+            Ok(())
+        }),
+        Box::pin(async move {
+            g1.reaches(Gated::Holds, "the early write holding the writer's turn")
+                .await?;
             let done = s
                 .remove_values(&tracker, &sel, false, None)
                 .await
@@ -1987,15 +2118,14 @@ async fn a_tail_event_before_the_time_is_taken_and_one_after_is_not(store: Store
             Ok(())
         }),
         Box::pin(async move {
-            let l = Lake::of(s2.as_ref());
-            l.ingest("tracker", vec![early])
-                .await
-                .must("writing the event before the time")?;
-            pause(Duration::from_millis(4_000)).await;
-            l.ingest("tracker", vec![late])
-                .await
-                .must("writing the event after the time")?;
-            Ok(())
+            let behind = g2
+                .reaches(
+                    Gated::Behind,
+                    "the act's first turn queued behind the early write",
+                )
+                .await;
+            g2.open();
+            behind
         }),
     ];
     join_all(callers).await.into_iter().collect::<Held>()?;
