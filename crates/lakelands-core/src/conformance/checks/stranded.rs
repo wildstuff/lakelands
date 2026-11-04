@@ -32,9 +32,9 @@ check!(
 );
 
 /// The horizon every row's act cuts at.
-const HORIZON: &str = "2026-06-01T00:00:00Z";
+pub(super) const HORIZON: &str = "2026-06-01T00:00:00Z";
 
-/// Appends below `store` a part of a thinning of `ty` by `at` taking
+/// Appends below `store` a thinning of `ty` by `at` in one part taking
 /// `keys`, as the act's walk would, and opens the lake again with `seams`.
 async fn thin(
     (store, seams): (Store, Seams),
@@ -60,17 +60,22 @@ async fn thin(
     };
     let known_at = last.known_at;
     let line: Lines = Box::new(move |(tip, prev), fence| {
-        let position = tip.next();
-        let event = Event {
+        // The act is whole: its `act_whole` follows it, as the act's own
+        // last part writes it.
+        let act = tip.next();
+        let event = |position: Position, prev, body| Event {
             position,
             id: EventId(format!("{:032x}", position.0)),
             prev,
             known_at,
             fence,
             body,
-            ..template
+            ..template.clone()
         };
-        (vec![canonical_line(event)], 0)
+        let first = canonical_line(event(act, prev, body));
+        let whole = EventBody::ActWhole { act };
+        let last = canonical_line(event(act.next(), first.hash.clone(), whole));
+        (vec![first, last], 0)
     });
     let c = (given.continued)(Some(store), lake, line, OpenMode::Write, seams);
     let c = c
@@ -82,7 +87,7 @@ async fn thin(
 
 /// `tick`, its instants `at`, its group `m` and its value `n`, with
 /// `more` fields beside them.
-fn tick(more: &[FieldDecl]) -> TypeDecl {
+pub(super) fn tick(more: &[FieldDecl]) -> TypeDecl {
     let mut fields = vec![
         field("at", StorageKind::DateTime),
         field("m", StorageKind::Text),
@@ -93,7 +98,7 @@ fn tick(more: &[FieldDecl]) -> TypeDecl {
 }
 
 /// `daily` over `tick` by `m`: `c` its count, `t` the measure `sum`.
-fn daily(r#where: Option<&str>, sum: &str) -> TypeDecl {
+pub(super) fn daily(r#where: Option<&str>, sum: &str) -> TypeDecl {
     let fields = vec![
         field("m", StorageKind::Text),
         field("c", StorageKind::Number),
@@ -113,7 +118,7 @@ fn daily(r#where: Option<&str>, sum: &str) -> TypeDecl {
 }
 
 /// Writes `tick` `key` in group `m` holding `n`, on day `day` of January.
-async fn tick_at(l: &Lake, key: &str, m: &str, n: u64, day: u32) -> Held {
+pub(super) async fn tick_at(l: &Lake, key: &str, m: &str, n: u64, day: u32) -> Held {
     let at = format!("2026-01-{day:02}T00:00:00Z");
     l.upsert("tick", key, json!({"at": at, "m": m, "n": n}))
         .await?;
@@ -121,7 +126,7 @@ async fn tick_at(l: &Lake, key: &str, m: &str, n: u64, day: u32) -> Held {
 }
 
 /// Each group `view` answers, with its fields `fields`.
-async fn answers(l: &Lake, view: &str, fields: &[&str]) -> Result<Vec<String>, Failure> {
+pub(super) async fn answers(l: &Lake, view: &str, fields: &[&str]) -> Result<Vec<String>, Failure> {
     let rs = l.all_found(view, find_at(None)).await?;
     Ok(rs
         .iter()
@@ -136,7 +141,7 @@ async fn answers(l: &Lake, view: &str, fields: &[&str]) -> Result<Vec<String>, F
 }
 
 /// How many of `view`'s groups `describe_type` counts stranded.
-async fn stranded(l: &Lake, view: &str) -> Result<u64, Failure> {
+pub(super) async fn stranded(l: &Lake, view: &str) -> Result<u64, Failure> {
     Ok(l.describe_type(view).await?.stranded)
 }
 

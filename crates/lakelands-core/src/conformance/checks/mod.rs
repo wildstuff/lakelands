@@ -156,6 +156,7 @@ mod stranded;
 mod streaming;
 mod taken_lease;
 mod thin;
+mod thinned;
 mod trigger_firing;
 mod triggers;
 mod upgrade;
@@ -1211,6 +1212,13 @@ pub const ALL: &[Check] = &[
     stranded::THIN_GROUP_STRANDED,
     stranded::THIN_ERASURE_RESTATES_STRANDED_FOLDS,
     stranded::THIN_STRANDED_MAKE_CARRIES,
+    thinned::THIN_TAKES_THE_RAW_ROWS,
+    thinned::THIN_KEPT_VIEW_ANSWERS_AS_BEFORE,
+    thinned::THIN_EXACT_GROUPS_ONLY,
+    thinned::THIN_PARTS_AND_WRITES,
+    thinned::THIN_VERIFY_EXPORT_IMPORT_REBUILD,
+    thinned::THIN_LATE_TICK_FOLDS,
+    thinned::THIN_ZONED_CARRIED,
     reactive_depth::TOO_DEEP,
     read_your_writes::REACHES,
     read_your_writes::REACHES_UNLEASED,

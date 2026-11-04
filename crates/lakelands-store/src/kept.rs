@@ -373,6 +373,11 @@ struct Carried {
     /// Whether the group is stranded and has no member on either face.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     bare: bool,
+    /// The copy of the time-zone database a stranded group was cut under,
+    /// where a make under another copy carried it: its members are gone
+    /// to cut again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cut: Option<String>,
 }
 
 fn is_unmarked(marks: &[bool; 2]) -> bool {
@@ -397,6 +402,8 @@ struct Group {
     stored: Option<StoredRecord>,
     /// Whether it is stranded on each face: the mark stays.
     stranded: [bool; 2],
+    /// The copy it was cut under, where a make under another carried it.
+    cut: Option<String>,
 }
 
 /// One kept view while a transaction works on it.
@@ -732,6 +739,7 @@ fn group<'g>(
             folds: [open, all],
             stored,
             stranded: carried.stranded,
+            cut: carried.cut,
         };
         groups.insert(key.clone(), group);
     }
@@ -926,6 +934,7 @@ impl Work {
             alone: open.is_some() && all.is_none(),
             stranded,
             bare,
+            cut: g.cut.clone(),
         };
         let count = |n: &mut u64, was: bool, is: bool| {
             *n = (*n + u64::from(is)).saturating_sub(u64::from(was))
@@ -1195,9 +1204,14 @@ impl Views {
         // A stranded group's record and entries are carried into the make
         // that follows: its members are gone to fold again.
         let (mut keys, mut carry) = (Vec::new(), Carry::default());
+        // A zoned group keeps the name of the copy that first cut it.
         staged.each(at.view, &kept_name(view), |r| {
-            if state.stranded != [0, 0] && carried(&r).stranded != [false; 2] {
-                carry.records.push(r.clone());
+            let mut c = carried(&r);
+            if state.stranded != [0, 0] && c.stranded != [false; 2] {
+                let mut r = r.clone();
+                c.cut = c.cut.or_else(|| state.tzdb.clone());
+                r.fields.insert(FOLDS.into(), serde_json::json!(c));
+                carry.records.push(r);
             }
             keys.push(r.key);
             Ok(())
@@ -1263,6 +1277,7 @@ impl Views {
                 folds: [c.open, all],
                 stored: None,
                 stranded: c.stranded,
+                cut: c.cut,
             };
             work.carried.insert(r.key.clone());
             work.touched.insert(r.key.clone());

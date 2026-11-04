@@ -44,6 +44,7 @@ mod remove;
 mod restate;
 mod road;
 mod sealing;
+mod thin;
 #[doc(hidden)]
 pub mod writes;
 

@@ -699,6 +699,25 @@ pub trait LakeStore: Send + Sync {
         selection: &crate::write::Selection,
     ) -> Result<crate::write::RemoveReport>;
 
+    /// Thin `ty`: take out of the projection every record whose field
+    /// `thin.by` is certainly before `thin.before`, as one act in parts
+    /// beside the writer, keeping the folds of the kept views over it; or,
+    /// on a `preflight`, say what the act would take, appending nothing.
+    /// The log keeps every value it took. A crash between parts is
+    /// finished by the next writer's open
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). A
+    /// handle that is no host's, this default, answers it unbound.
+    async fn thin_values(
+        &self,
+        ty: &TypeName,
+        thin: &crate::write::Thin,
+        preflight: bool,
+    ) -> Result<crate::write::ThinReport> {
+        let _ = (ty, thin, preflight);
+        let op = "thin_values".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
+    }
+
     /// Give back the storage the projection no longer uses. It appends
     /// nothing and changes no answer, no event and no byte of an export;
     /// it prunes no history and does not seal. Only the writer's handle

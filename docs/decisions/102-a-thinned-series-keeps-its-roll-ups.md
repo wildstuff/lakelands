@@ -185,6 +185,19 @@ since the members it lost are not there to compute it.
   thinned members are gone to compute it. A host that means to change the
   rule ends the kept view first; the view then computes from the rows that
   remain and carries its `thinned`, as any computed view does.
+- **A copy of the time-zone database changed under a zoned view
+  (lakelands#1746).** A writer's open under another copy makes a zoned
+  kept view again (098). Its live groups are cut again under the new
+  copy; a stranded group is carried unchanged, its folds and its bucket
+  together, and keeps the name of the copy that first cut it, since its
+  taken members are gone to cut again. Nothing is refused: the event is a
+  writer's open, not a caller's act, and refusing it would leave a lake
+  that cannot open after an upgrade. A copy moves bucket edges only for
+  the zones and years its rules changed, so a carried group may disagree
+  with the new copy on those edges alone. A read and `describe` name the
+  copy with the reads' markers (S7). This is the brief's default, taken
+  under the standing authority on 2026-11-04 with no answer from the
+  operator; the operator may still overrule it.
 - **A view kept after the act is refused.** Every event that would make a
   view whose source records are thinned a kept view — a `view_kept.`
   setting, a declaration that declares it kept, a migration whose step
@@ -854,6 +867,75 @@ its mark and changed nowhere else.
   bare group's record, the view-over-view mark and the read of every
   rule in force over a state's span. Nothing was cut: the four items of
   § Cut first stay, and the ceilings hold.
+
+**S5 (lakelands#1747, with lakelands#1746), the act.**
+
+- **The job** is `thin.rs`, on the road as `remove.rs` and `forget.rs`
+  are. The walk selects on a view off the writer. The tail's fold notes
+  the keys of the type written past that view. The first turn judges
+  those keys again under the writer, refuses `KeptNotExact`, and
+  appends the first part. Each part names at most `part_events` keys.
+  The last part and its `act_whole` are one append.
+- **The selection.** An instant is taken when it is earlier than the
+  horizon. A date is taken when its day has ended in every zone: its
+  UTC midnight plus 36 hours is at or before the horizon. An absent or
+  null value is never taken, nor is one that does not read as its kind.
+  Retired records are taken; a field of any other kind is refused
+  `ThinBy`. The selection is held in memory as keys while the act runs,
+  as a purge holds its own.
+- **`KeptNotExact` is conservative.** The act is refused when any kept
+  view that reads the type, itself or through other views, holds a
+  group that is not exact now, whether or not the act would strand
+  that group. A group that was inexact only at an earlier position and
+  is exact now does not refuse. Which group a taken record's past
+  versions stood in is the fold's to find, not the act's.
+- **Owed.** The kind is `thin::owed` in `OWED`. A log whose feed index
+  holds no `values_thinned` owes nothing, and its declarations are not
+  read, so a writer's open asks for them no more often than before.
+  Each act row's `through` and the event after it tell whether an act
+  is whole, without reading the log. Only an owed act reads the feed's index for
+  its first part, or the pages where an engine has no index. A resumed
+  act selects again at the view before its first position, where the
+  keys it already took have no state. If nothing is left, it appends an
+  empty part with its `act_whole`, so the last part and the `act_whole`
+  stay adjacent. The tree wins over § The build plan here: the writer's
+  open already asks `OWED` (`exec.rs`, `doors.rs`), so `lake.rs`,
+  `lake/open.rs` and `lake/standby.rs` are not touched.
+- **The facade is one method,** `thin_values(ty, thin, preflight)`, not
+  two, and S5 adds it because the rows call the act through the store.
+  Its default refuses as unbound. The seam stood at 109 of 110 and now
+  stands at 110 of 110. S6 builds its doors, the catalog entry and the
+  command on this method and adds no second one; this corrects S6's row
+  of § The build plan.
+- **The preflight** answers the count and the refusals at the head. It
+  does not yet name the views the act would strand.
+- **Not yet:** the write doors' `Thinned` refusal (S6); the reclaim, so
+  `reclaimed` is absent (S7); the reads' markers (S7).
+- **lakelands#1746.** A make that carries a stranded group writes, into
+  its folds, the copy of the time-zone database the view was cut under
+  (`cut`) where the group does not already name one. A group carried
+  twice keeps the first copy. A read and `describe` show it with S7's
+  markers.
+- **S3 and S4's rows** now append their act whole, with its
+  `act_whole`. Otherwise the owed hook would rightly finish their lone
+  part at the next open. `stranded.rs`'s shared helpers are
+  `pub(super)` for S5's rows.
+- **The suite's rows** are `THIN_TAKES_THE_RAW_ROWS`,
+  `THIN_KEPT_VIEW_ANSWERS_AS_BEFORE`, `THIN_EXACT_GROUPS_ONLY`,
+  `THIN_PARTS_AND_WRITES` (the write refused `Thinned` mid-act is S6's
+  half), `THIN_VERIFY_EXPORT_IMPORT_REBUILD`, `THIN_LATE_TICK_FOLDS`
+  and lakelands#1746's `THIN_ZONED_CARRIED`. Each is green on the
+  memory, SQLite and PostgreSQL engines.
+- **Measured at S5's head**: product 113 797 and specification 201 134,
+  against 113 329 and 200 659 at its base. S5 adds 468 product and 475
+  specification, where the plan had 180 + 30 and 240. The extra is the
+  owed act's detection (`open`, `ended`, `first`: about 100 lines), the
+  facade and its door (34), the conservative exact refusal over views
+  of views, and seven rows where the plan counted six. Nothing was cut:
+  the four items of § Cut first stay. The ceilings hold with room for
+  S6 and S7's planned 324 and 432 at ×1.35: 1 203 product and 1 366
+  specification are left. Seam 110 of 110; 6 of 20 `cfg(feature)`
+  sites.
 
 ## How it came to be
 
