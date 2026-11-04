@@ -1727,6 +1727,17 @@ async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
 ) -> Held {
     let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
     let fails: super::forgotten::Fails = Arc::default();
+    // The restate a removal or a forgetting owes goes by the scoped
+    // refold where that is measured the shorter and by the rebuild
+    // otherwise, so the stop is armed on both first steps: the clear a
+    // rebuild begins with, and the commit a scoped page ends with.
+    // Whichever way the act goes, its first turn is in the log and its
+    // restate is owed.
+    let owe = |on: bool| {
+        let n = u32::from(on);
+        fails[1].store(n, Ordering::SeqCst);
+        fails[5].store(n, Ordering::SeqCst);
+    };
     let wrap = super::forgotten::failing(&fails);
     let store = (given.fault)(store, super::erasable::with(&keys), wrap)
         .await
@@ -1746,7 +1757,7 @@ async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
     let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a far date"));
     // The act stops before its restate: its appends are whole in the log,
     // its version destroyed, and the projection still holds what it took.
-    fails[5].store(1, Ordering::SeqCst);
+    owe(true);
     let stopped = store.remove_values(&tracker, &all, false, None).await;
     let events = events_after(store.as_ref(), start).await?;
     let removed = (events.iter())
@@ -1789,7 +1800,7 @@ async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
     );
     // The act's repeat finishes its restate, appending its events no
     // second time, and answers its report.
-    fails[5].store(0, Ordering::SeqCst);
+    owe(false);
     let done = store
         .remove_values(&tracker, &all, false, None)
         .await
@@ -1810,7 +1821,7 @@ async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
     .await
     .must("ingesting giver's records")?;
     let start = store.head().await.must("reading the head")?;
-    fails[5].store(1, Ordering::SeqCst);
+    owe(true);
     let stopped = store.forget_source(&giver, None).await;
     let events = events_after(store.as_ref(), start).await?;
     let forgot = (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
@@ -1827,7 +1838,7 @@ async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
          is refused, so nothing is sealed under a destroyed key: {stopped:?}, forgotten \
          {forgot}, whole {whole}, retired {retired}, keys {left:?}, ingest {refused:?}"
     );
-    fails[5].store(0, Ordering::SeqCst);
+    owe(false);
     let done = store
         .forget_source(&giver, None)
         .await
