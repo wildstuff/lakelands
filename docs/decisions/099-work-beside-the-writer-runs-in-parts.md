@@ -1363,8 +1363,9 @@ chunk or one step, not the whole.
   `compact` to take the step broke `lakelands-api`'s public contract. `compact()` stays,
   deprecated since 0.23.0 for one release as 056 asks, provided as
   `compact_step(Compact::Whole)`, and `compact_step` is provided over it, so an engine
-  implements one of the two. The seam reads 111 of 110, and is raised only by
-  `docs/budgets.md`'s rule; the raise is the operator's decision, not this record's.
+  implements one of the two. The seam reads 111 of 111: the operator raised it on
+  the board (2026-11-04) by `docs/budgets.md`'s rule 4, and `compact()`'s removal in
+  0.24.0 brings it back to 110.
 - **The sweep's rule.** Nothing puts a state at or before the listing's `past`
   without counting a rebuild: a write puts its states at its own position, and a
   rebuild and a scoped pass's open count one. A chunk keeps a base only where a state
@@ -1401,7 +1402,7 @@ chunk or one step, not the whole.
   sweep flag. Over the plan's 200 / 220 by the seam's step, `unused_bases` on three
   engines, PostgreSQL's two `VACUUM`s and the deprecated `compact()` kept beside
   `compact_step`. core-size reads product 113 699 of 115 000 and specification 201 051
-  of 202 500, the seam 111 of 110 methods, red until its raise is decided.
+  of 202 500, the seam 111 of 111 methods.
 
 ## How it came to be
 
