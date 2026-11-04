@@ -319,25 +319,12 @@ impl Call<'_> {
         // view against it, or the view would refuse every read after.
         let mut after = probe.clone();
         after.put(Declaration::Type(m.to.clone()), 0, None);
-        // The views it declares again are judged in place of those in
-        // force, as the lake it leaves holds them: each a view in force over
-        // the type, named once, and shown to its author (027, extended).
-        let over = |t: &TypeDecl| {
-            let v = t.view.as_deref();
-            v.is_some_and(|v| {
-                v.source == m.to.name || v.merge.iter().any(|s| s.source == m.to.name)
-            })
-        };
-        for (i, v) in m.views.iter().enumerate() {
-            let held = w.ontology.ty(&v.name).ok().filter(|t| over(t));
-            let twice = m.views[..i].iter().any(|o| o.name == v.name);
-            let Some(held) = held.filter(|_| v.view.is_some() && !twice) else {
-                let (view, ty) = (v.name.clone(), m.to.name.clone());
-                return Err(Error::invalid(Case::MigrationViewNotOver { view, ty }));
-            };
-            if !sees.shows(&Declaration::Type(held.clone())) {
-                return Err(Error::not_granted());
-            }
+        // The views it declares again, each judged by [`views_over`] (again
+        // at an accept) and as its author's declaration, stand in place of
+        // those in force, so each is checked among the readers below
+        // against the lake the migration leaves (027, extended).
+        views_over(&sees, &w.ontology, m)?;
+        for v in &m.views {
             after.put(Declaration::Type(v.clone()), 0, None);
         }
         // The refusal of a migration that takes away a field `reader` reads:
@@ -1251,22 +1238,15 @@ impl Call<'_> {
         for declaration in carried(&w.ontology, &m) {
             drafts.push(system_declared(&w.ontology, declaration, now)?);
         }
-        // The views it declares again are declared after it, by its author:
-        // one that reads as the lake holds it is kept, not declared again.
-        for v in views
-            .into_iter()
-            .filter(|v| w.ontology.ty(&v.name).ok() != Some(v))
-        {
-            let hash = shape::schema_hash(&v).map_err(Error::invalid)?;
-            let declaration = Declaration::Type(v);
-            let version = w.ontology.next_version(&declaration);
-            let body = EventBody::Declared {
-                declaration,
-                schema_hash: Some(hash),
-                version,
-                with_the_set: false,
-            };
-            drafts.push(self.draft(now, Origin::Authored, body));
+        // The views it declares again are declared after it, by its author,
+        // as `declare` declares them: one that reads as the lake holds it is
+        // kept, not declared again.
+        let views: Vec<_> = (views.into_iter().map(Declaration::Type))
+            .filter(|v| !w.ontology.in_force(v))
+            .collect();
+        if !views.is_empty() {
+            let at = (now, first + 1 + drafts.len(), Judging::Act);
+            drafts.extend(self.bundle_drafts(w, views, at)?.drafts);
         }
         let d = self.draft(
             now,
@@ -1854,4 +1834,26 @@ pub(super) fn fits(report: ValueTypeReport, named: bool) -> Result<ValueTypeRepo
         misfits,
         first,
     }))
+}
+
+/// Each view a migration declares again is a view in force over the type it
+/// migrates, named once; one its author is not shown is not granted (027,
+/// extended).
+pub(super) fn views_over(sees: &Sight<'_>, o: &Ontology, m: &Migration) -> Result<()> {
+    let over = |t: &TypeDecl| {
+        let v = t.view.as_deref();
+        v.is_some_and(|v| v.source == m.to.name || v.merge.iter().any(|s| s.source == m.to.name))
+    };
+    for (i, v) in m.views.iter().enumerate() {
+        let held = o.ty(&v.name).ok();
+        if held.is_some_and(|t| !sees.shows(&Declaration::Type(t.clone()))) {
+            return Err(Error::not_granted());
+        }
+        let twice = m.views[..i].iter().any(|o| o.name == v.name);
+        if !held.is_some_and(over) || v.view.is_none() || twice {
+            let (view, ty) = (v.name.clone(), m.to.name.clone());
+            return Err(Error::invalid(Case::MigrationViewNotOver { view, ty }));
+        }
+    }
+    Ok(())
 }

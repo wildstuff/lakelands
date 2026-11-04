@@ -320,6 +320,7 @@ impl Call<'_> {
             reads_stand(&sees, &before.decl, &m.to, Some(m))?;
         }
         self.reads_as_author(o, &[Declaration::Type(m.to.clone())], true)?;
+        super::migrate::views_over(&sees, o, m)?;
         initials(o, &mut m.to);
         let Some(before) = o.types.get(&m.to.name) else {
             return Ok(None);
@@ -329,6 +330,25 @@ impl Call<'_> {
         sees.known_fields(&mut known, &find);
         let (to, pairs) = (&mut m.to, &m.relation_renames);
         as_author(&sees, &before.decl, to, pairs)?;
+        // The views it declares again are judged as `declare` judges them,
+        // over the lake the migration leaves (027, extended).
+        if !m.views.is_empty() {
+            let mut after = o.clone();
+            after.put(Declaration::Type(m.to.clone()), 0, None);
+            let mut views: Vec<_> = m.views.drain(..).map(Declaration::Type).collect();
+            let judged = (self.redeclared(&after, &mut views))
+                .and_then(|()| self.check_bundle(&after, &views));
+            let at = Place::AfterMigration {
+                name: m.to.name.clone(),
+            };
+            judged.map_err(|e| e.within(at))?;
+            m.views = (views.into_iter())
+                .filter_map(|d| match d {
+                    Declaration::Type(t) => Some(t),
+                    _ => None,
+                })
+                .collect();
+        }
         Ok(Some(Authored { sent, known }))
     }
 
