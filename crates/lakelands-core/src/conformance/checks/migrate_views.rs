@@ -15,13 +15,19 @@ use crate::conformance::prelude::*;
 
 check!(
     MIGRATE_WITH_ITS_VIEWS = a_migration_lands_with_the_views_it_declares_again,
-    "027, extended (lakelands#1726): a migration that takes away a field a kept view reads lands, in one append, with the view's re-declaration named in its `views`, which no longer reads it: the view is kept and answers what it computes over the migrated records, and a view named as the lake holds it is not declared again; a view named that still reads the field is refused with the report of a migration that names none, a view not named keeps that refusal, and a view that reads another type is refused `migration_view_not_over`, each appending nothing",
+    "027, extended (lakelands#1726): a migration that takes away a field a kept view reads lands, in one append, with the view's re-declaration named in its `views`, which no longer reads it: the view is kept and answers what it computes over the migrated records, and a view named as the lake holds it is not declared again; a view named that still reads the field is refused with the report of a migration that names none, a view not named keeps that refusal, and a view that reads another type is refused `migration_view_not_over`, and an apply naming other views than its preview is refused, each appending nothing",
     given
 );
 
 check!(
     MIGRATE_WITH_ITS_VIEWS_UNAPPLIED = a_migration_with_its_views_left_unapplied_leaves_both_old,
     "027, extended (lakelands#1726): a migration with its views' re-declarations whose preflight was answered, and whose writer went before its apply, leaves the type and the view as they were: the lake opened again holds both old and the view answers as before; the apply sent then lands both",
+    given
+);
+
+check!(
+    MIGRATE_WITH_ITS_VIEWS_JUDGED = a_view_a_migration_declares_again_is_judged_as_declared,
+    "027, extended (lakelands#1726): a view a migration declares again is judged as `declare` judges it: one moved off the type it migrates is refused `migration_view_not_over`, and one that reads a field its author may not read is not granted, as its declaration by that author is, each appending nothing",
     given
 );
 
@@ -150,6 +156,16 @@ async fn a_migration_lands_with_the_views_it_declares_again(store: Store, _: Giv
         .await
         .must("the preflight")?;
     let id = id.data.report_id;
+    // The preview's id binds the views it was made with.
+    let other = l
+        .cat
+        .migrate_apply(&l.own, dropping(vec![by_meter(false)]), &id);
+    let other = other.await;
+    ensure!(
+        other.is_err(),
+        "an apply naming other views than its preview is refused: {other:?}"
+    );
+    head_unmoved(s, before, "an apply of other views").await?;
     l.cat
         .migrate_apply(&l.own, m, &id)
         .await
@@ -225,5 +241,40 @@ async fn a_migration_with_its_views_left_unapplied_leaves_both_old(
         after.0 == head.0 + 2,
         "the apply lands the migration and the view in one append: {head} to {after}"
     );
+    Ok(())
+}
+
+async fn a_view_a_migration_declares_again_is_judged_as_declared(store: Store, _: Given) -> Held {
+    use lakelands_api::principal::Access;
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    readings(&l).await?;
+    let before = s.head().await.must("the head")?;
+    // Moved to a source that is not the type, it is no view over it.
+    let mut moved = by_meter(false);
+    if let Some(v) = moved.view.as_deref_mut() {
+        v.source = "nowhere".into();
+    }
+    let said = said(&l, dropping(vec![moved])).await?;
+    ensure!(
+        said["code"] == "migration_view_not_over" && said["view"] == "by_meter",
+        "`by_meter` moved off `reading` is refused `migration_view_not_over`; it said {said}"
+    );
+    // An author who may not read `value` may not declare a view that sums it.
+    let mut masked = field_access(s, "masked", "reading", &[("value", Access::Masked)]);
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
+    let declared = l
+        .cat
+        .declare(&masked, Declaration::Type(by_meter(false)))
+        .await;
+    let migrated = (l.cat)
+        .migrate(&masked, dropping(vec![by_meter(false)]))
+        .await;
+    let granted = |r: Option<(&str, &Refusal)>| matches!(r, Some(("value", Refusal::NotGranted)));
+    ensure!(
+        granted(refused_on(&declared)) && granted(refused_on(&migrated)),
+        "a view summing `value` is not granted to one it is masked from, declared or \
+         declared again with a migration.\n  declared: {declared:?}\n  migrated: {migrated:?}"
+    );
+    head_unmoved(s, before, "each refusal").await?;
     Ok(())
 }

@@ -1104,7 +1104,7 @@ impl Call<'_> {
         // held from its reader tells nothing that a retired one would not.
         report.lossless &= plan.lossless;
         let listed = plan.listed();
-        report.report_id = report_id(&report, self.lake.report_head(view.position())?);
+        report.report_id = report_id(&report, &m.views, self.lake.report_head(view.position())?);
         // A record of another type whose reference to a moved key the fold
         // rewrites: decided for the sets whose filter reads that field, a
         // page of the type at a time.
@@ -1837,8 +1837,8 @@ pub(super) fn fits(report: ValueTypeReport, named: bool) -> Result<ValueTypeRepo
 }
 
 /// Each view a migration declares again is a view in force over the type it
-/// migrates, named once; one its author is not shown is not granted (027,
-/// extended).
+/// migrates that stays one over it, named once; one its author is not shown
+/// is not granted (027, extended).
 pub(super) fn views_over(sees: &Sight<'_>, o: &Ontology, m: &Migration) -> Result<()> {
     let over = |t: &TypeDecl| {
         let v = t.view.as_deref();
@@ -1850,7 +1850,7 @@ pub(super) fn views_over(sees: &Sight<'_>, o: &Ontology, m: &Migration) -> Resul
             return Err(Error::not_granted());
         }
         let twice = m.views[..i].iter().any(|o| o.name == v.name);
-        if !held.is_some_and(over) || v.view.is_none() || twice {
+        if !held.is_some_and(over) || !over(v) || twice {
             let (view, ty) = (v.name.clone(), m.to.name.clone());
             return Err(Error::invalid(Case::MigrationViewNotOver { view, ty }));
         }

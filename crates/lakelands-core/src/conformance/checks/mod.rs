@@ -688,6 +688,7 @@ pub const ALL: &[Check] = &[
     migrate::VIEW_SOURCE_KEPT,
     migrate_views::MIGRATE_WITH_ITS_VIEWS,
     migrate_views::MIGRATE_WITH_ITS_VIEWS_UNAPPLIED,
+    migrate_views::MIGRATE_WITH_ITS_VIEWS_JUDGED,
     schema::REORDERED_FIELDS,
     schema::IN_FORCE_APPENDS_NOTHING,
     schema::IN_FORCE_ANSWERED,

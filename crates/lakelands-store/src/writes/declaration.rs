@@ -1104,7 +1104,7 @@ impl Call<'_> {
         let described = || sight.describe(&sight.who().lake);
         sight.shown_report(was, &m, &mut report, described, |n| sight.ty(n).ok());
         sight.shown_hashes(was, &m, &mut report, &|n| w.ontology.ty(n).ok());
-        report.report_id = report_id(&report, self.lake.report_head(view.position())?);
+        report.report_id = report_id(&report, &m.views, self.lake.report_head(view.position())?);
         Ok(report)
     }
 

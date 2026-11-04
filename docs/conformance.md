@@ -999,8 +999,9 @@ belongs in the suite, not beside one engine:
 
 **migrate views**
 
-- `a_migration_lands_with_the_views_it_declares_again` — 027, extended (lakelands#1726): a migration that takes away a field a kept view reads lands, in one append, with the view's re-declaration named in its `views`, which no longer reads it: the view is kept and answers what it computes over the migrated records, and a view named as the lake holds it is not declared again; a view named that still reads the field is refused with the report of a migration that names none, a view not named keeps that refusal, and a view that reads another type is refused `migration_view_not_over`, each appending nothing
+- `a_migration_lands_with_the_views_it_declares_again` — 027, extended (lakelands#1726): a migration that takes away a field a kept view reads lands, in one append, with the view's re-declaration named in its `views`, which no longer reads it: the view is kept and answers what it computes over the migrated records, and a view named as the lake holds it is not declared again; a view named that still reads the field is refused with the report of a migration that names none, a view not named keeps that refusal, and a view that reads another type is refused `migration_view_not_over`, and an apply naming other views than its preview is refused, each appending nothing
 - `a_migration_with_its_views_left_unapplied_leaves_both_old` — 027, extended (lakelands#1726): a migration with its views' re-declarations whose preflight was answered, and whose writer went before its apply, leaves the type and the view as they were: the lake opened again holds both old and the view answers as before; the apply sent then lands both
+- `a_view_a_migration_declares_again_is_judged_as_declared` — 027, extended (lakelands#1726): a view a migration declares again is judged as `declare` judges it: one moved off the type it migrates is refused `migration_view_not_over`, and one that reads a field its author may not read is not granted, as its declaration by that author is, each appending nothing
 
 **relation renamed**
 

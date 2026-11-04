@@ -414,11 +414,12 @@ impl<'a> Reader<'a> {
         }
         // A migration's report kept before reports counted what they
         // compute again computed none, on both sides (062).
-        if let ProposedWrite::Migrate { report, .. } = &mut logged
+        if let ProposedWrite::Migrate { report, migration } = &mut logged
             && report.recomputed.is_none()
         {
             report.recomputed = Some(0);
-            report.report_id = crate::writes::report_id(report, self.id_head(at)?);
+            let views = &migration.views;
+            report.report_id = crate::writes::report_id(report, views, self.id_head(at)?);
         }
         // `more` is what the trim left out, not what the completion added.
         let mut shown = logged.clone();
@@ -684,7 +685,8 @@ impl<'a> Reader<'a> {
                 // One listing: its `to` hash is that of the `to` it lists.
                 let find = |n: &TypeName| listing.ty(n).ok();
                 judge.shown_hashes(made, migration, report, &find);
-                report.report_id = crate::writes::report_id(report, self.id_head(at)?);
+                report.report_id =
+                    crate::writes::report_id(report, &migration.views, self.id_head(at)?);
                 judge.known_migration(made, migration, &find);
                 Ok(true)
             }

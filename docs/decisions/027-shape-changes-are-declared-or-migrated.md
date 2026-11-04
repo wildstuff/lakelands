@@ -1022,14 +1022,19 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 - Marking a type `retired_by: verbs` is a change of meaning, taken by `declare` (lakelands#1148).
 - **As built (2026-11-04), lakelands#1726: a migration declares its views again.**
   `Migration` gains `views`, re-declarations of views in force over the type it
-  migrates (as its source or a merged one). The plan judges each in place of the
-  view in force, against the migrated type, so a view named that still reads a
-  field the migration takes away is refused with the report a migration that names
-  none is given, and a view not named keeps that refusal. A view named that is not
-  in force over the type, or named twice, is refused `migration_view_not_over`; one
-  the author is not shown is not granted. The apply appends one `declared` for each
-  view named that reads otherwise than the lake holds it, after the `migrated`, in
-  its append; one named as it is held is not declared again and keeps its version.
+  migrates (as its source or a merged one). Each is judged as `declare` judges a
+  declaration of it, by its author, over the lake the migration leaves: what its
+  author may not read it may not add, and it must check against the migrated
+  type. The plan then judges each in place of the view in force, so a view named
+  that still reads a field the migration takes away is refused with the report a
+  migration that names none is given, and a view not named keeps that refusal. A
+  view named that is not in force over the type, that would no longer read it, or
+  that is named twice, is refused `migration_view_not_over`; one the author is not
+  shown is not granted. The report's id binds the views named, as its schema hash
+  binds the type: an apply naming others is not the one previewed. The apply
+  declares the views named that read otherwise than the lake holds them as
+  `declare` does, after the `migrated` and in its append; one named as it is held
+  is not declared again and keeps its version.
   The logged `migrated` carries no `views`: the `declared` events carry them, so a
   feed reader sees a view's change as it sees one from `declare`. Two choices of
   shape: the field is on `Migration`, not on the doors, so a proposed migration
@@ -1040,5 +1045,9 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
   `reshapes` and is a migration. The migration's fold makes the views over the type
   again as before, in its turn; the `declared` of a changed view makes it again at
   its event, whole in one fold, as any declaration of a kept view does (record 099,
-  R8): it is not built beside the writer. Held by `MIGRATE_WITH_ITS_VIEWS` and
-  `MIGRATE_WITH_ITS_VIEWS_UNAPPLIED`.
+  R8). So a changed view is made twice in the append, and it is not built beside
+  the writer. What is left: a set over a view over the type still refuses the
+  migration (`view_source_stepped`), named views or not; withdrawing the set,
+  migrating, and declaring it again remains the way. Held by
+  `MIGRATE_WITH_ITS_VIEWS`, `MIGRATE_WITH_ITS_VIEWS_UNAPPLIED` and
+  `MIGRATE_WITH_ITS_VIEWS_JUDGED`.
