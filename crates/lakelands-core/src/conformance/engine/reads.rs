@@ -94,7 +94,12 @@ engine_check!(
 
 engine_check!(
     SERIES_IN_MERGES = an_in_of_texts_merges_their_windows_into_one_page,
-    "097 §`in`, step 10 of lakelands#1638: `sym in (…)` of 50 texts reads each text's window and merges them into a page in the order field's order, either direction, walking its page and one row a text; a window under it walks its rows and one seek a text; and every answer is one scan's over every state"
+    "097 §`in`, step 10 of lakelands#1638: `sym in (…)` of 50 texts reads each text's window and merges them into a page in the order field's order, either direction, walking its page and one row a text; a window under it walks its rows and one seek a text; a page continued through the merge reads each text on where it stopped; the same over 10 texts of uneven holdings, live-only, walks no batch more than the page lacks; and every answer is one scan's over every state"
+);
+
+engine_check!(
+    SERIES_PAIR_WITHOUT_ORDER_INDEX = a_kept_pair_is_read_without_an_index_on_its_order_field,
+    "097 §The series index, steps 9 and 10 of lakelands#1638: a type that writes only `series_index.<type>` and no `sort_index.<type>` builds and keeps its pair and reads through it — a page over its text in either direction, a page inside a window, a count and an aggregate — walking the pair's rows and no whole scan of the type"
 );
 
 engine_check!(
@@ -5610,6 +5615,21 @@ fn a_read_naming_a_series_seeks_the_pairs_window(engine: &dyn LakeEngine) -> Hel
             "{what} walked {walked} index rows and read {read} records for a page of 1 000; a \
              window with an end open asks its batch and one more, and the text's tail is above it"
         );
+        // Live-only, the default: the retired rows the merge passes are
+        // read on the way, each once, and no further batch is read whole
+        // to fill the page.
+        let (rows, whole, walked, read) = page(filter, Direction::Asc, 1_000, false, what)?;
+        ensure!(
+            rows == whole,
+            "live-only {what} answered {} records; one scan over every state answers {}",
+            rows.len(),
+            whole.len()
+        );
+        ensure!(
+            walked <= read + 8,
+            "live-only {what} walked {walked} index rows and read {read} records for a page of \
+             1 000; the retired rows among the merged rows are each read once, not a batch more"
+        );
     }
     // A text holding fewer than `FEW_HOLDERS` records: its whole holding
     // and a window inside it are walked alike.
@@ -5992,6 +6012,242 @@ fn an_in_of_texts_merges_their_windows_into_one_page(engine: &dyn LakeEngine) ->
         keys_read.len() == 7_000 && walked == 7_000 && read == 7_000,
         "a window of 7 000 over an `in` of {SERIES} texts answered {} keys, walked {walked} and \
          read {read}; the walk continues from a text's end into the next",
+        keys_read.len()
+    );
+    // Ten texts of uneven holdings, live-only, and a page continued
+    // through the merge: each text is asked its share of what the page
+    // still lacks, and the continuation picks each text up where it
+    // stopped.
+    const UNEVEN: u64 = 10;
+    let udecl = declare(json!({
+        "declare": "type", "name": "p",
+        "fields": [
+            {"name": "sym", "type": {"kind": "text"}},
+            {"name": "at", "type": {"kind": "number"}}
+        ]
+    }));
+    let Declaration::Type(ut) = &udecl else {
+        unreachable!("the check declares a type")
+    };
+    let mut ustates: Vec<StoredRecord> = Vec::new();
+    for s in 0..UNEVEN {
+        for i in 0..(300 - 20 * s) {
+            let mut r = record(
+                "p",
+                &format!("u{s:02}{i:03}"),
+                json!({"sym": format!("b{s:02}"), "at": i * UNEVEN + s}),
+                1,
+            );
+            r.retired = i % 17 == s % 5;
+            ustates.push(r);
+        }
+    }
+    let unames: Vec<String> = (0..UNEVEN).map(|s| format!("'b{s:02}'")).collect();
+    let ulisted = format!("sym in ({})", unames.join(", "));
+    fold(engine, 4, |p| {
+        p.put_declaration(&udecl, 4, None, Position(0))?;
+        ustates.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(
+        engine,
+        5,
+        record(
+            lakelands_api::seam::SETTING_TYPE,
+            "sort_index.p",
+            json!({"key": "sort_index.p", "value": ["at"]}),
+            5,
+        ),
+    )?;
+    fold_one(engine, 6, series_setting("p", json!([["sym", "at"]]), 6))?;
+    keep_pair(engine, &TypeName::from("p"), "at", "sym")?;
+    let uhead = view(engine, None)?;
+    let uty = TypeName::from("p");
+    let uscan = |dir: Direction, after: Option<After>, limit: u32| {
+        scan_with(|s| {
+            s.order_by = vec![by("at", dir)];
+            s.filter = Some(crate::expr::parse(&ulisted).expect("the check's filter parses"));
+            s.limit = limit;
+            s.after = after;
+        })
+    };
+    for dir in [Direction::Asc, Direction::Desc] {
+        let (first, walked, read) = walks_of(
+            uhead.as_ref(),
+            &uty,
+            &uscan(dir, None, 250),
+            true,
+            "the first page of an uneven `in`",
+        )?;
+        ensure!(
+            walked <= read * 2,
+            "the first page of 250 over an uneven `in` of {UNEVEN} texts, {dir:?}, walked {walked} \
+             index rows for {read} read; the merge reads no more than a batch ahead of its page"
+        );
+        let last = first.last().expect("the page asks for 250");
+        let after = After {
+            values: vec![last.fields.get(&at).cloned().unwrap_or(Value::Null)],
+            key: last.key.clone(),
+        };
+        let (second, walked, read) = walks_of(
+            uhead.as_ref(),
+            &uty,
+            &uscan(dir, Some(after), 250),
+            true,
+            "a page continued through the merge",
+        )?;
+        ensure!(
+            walked <= read * 2,
+            "a page continued through the merge, {dir:?}, walked {walked} index rows for {read} \
+             read; the merge reads no more than a batch ahead of its page"
+        );
+        let mut joined = keys(&first);
+        joined.extend(keys(&second));
+        let whole = keys(&crate::engines::scan(
+            Some(ut),
+            &ustates,
+            &uscan(dir, None, 500),
+        ));
+        ensure!(
+            joined == whole,
+            "two pages of 250 through the merge, {dir:?}, answered {} records; one scan of 500 \
+             answers {}",
+            joined.len(),
+            whole.len()
+        );
+    }
+    // A count and an aggregate under the uneven `in`: each text's window
+    // walked once.
+    let ufilter = crate::expr::parse(&format!("{ulisted} and at >= 500 and at <= 999"))
+        .expect("the check's filter parses");
+    let uwindow = core_engines::window(&ufilter, &at, &StorageKind::Number)
+        .expect("a bound on `at` opens a window");
+    let uscan = scan_with(|s| s.filter = Some(ufilter));
+    let (keys_read, _, walked, read) =
+        window_road(uhead.as_ref(), &uty, ut, &uscan, &uwindow, u64::MAX)?
+            .expect("the engine keeps the pair's window");
+    ensure!(
+        keys_read.len() == 500 && walked == 500 && read == 500,
+        "the window's road over an uneven `in` of {UNEVEN} texts answered {} keys, walked {walked} \
+         and read {read}; each text's window is walked once, 500 rows together",
+        keys_read.len()
+    );
+    Ok(())
+}
+
+fn a_kept_pair_is_read_without_an_index_on_its_order_field(engine: &dyn LakeEngine) -> Held {
+    const HELD: u64 = 400;
+    let decl = declare(json!({
+        "declare": "type", "name": "w",
+        "fields": [
+            {"name": "sym", "type": {"kind": "text"}},
+            {"name": "at", "type": {"kind": "number"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let mut states: Vec<StoredRecord> = Vec::new();
+    for i in 0..HELD {
+        // The last tenth hold no value for the order field, outside the
+        // window read below.
+        let fields = match i < 360 {
+            true => json!({"sym": "x", "at": i}),
+            false => json!({"sym": "x"}),
+        };
+        let mut r = record("w", &format!("x{i:03}"), fields, 1);
+        r.retired = i % 5 == 0;
+        states.push(r);
+    }
+    for i in 0..HELD {
+        states.push(record(
+            "w",
+            &format!("z{i:03}"),
+            json!({"sym": "z", "at": i}),
+            1,
+        ));
+    }
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    // No `sort_index.w`: the pair is the field's only index.
+    fold_one(engine, 2, series_setting("w", json!([["sym", "at"]]), 2))?;
+    keep_pair(engine, &TypeName::from("w"), "at", "sym")?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("w");
+    let at = FieldName::from("at");
+    let page = |filter: &str, dir: Direction, limit: u32, retired: bool, what: &str| {
+        let scan = scan_with(|s| {
+            s.order_by = vec![by("at", dir)];
+            s.filter = Some(crate::expr::parse(filter).expect("the check's filter parses"));
+            s.limit = limit;
+            s.retired = retired;
+        });
+        let (rows, walked, read) = walks_of(head.as_ref(), &ty, &scan, true, what)?;
+        let whole = keys(&crate::engines::scan(Some(t), &states, &scan));
+        ensure!(
+            keys(&rows) == whole,
+            "{what}, {dir:?}, answered {} records; one scan over every state answers {}",
+            rows.len(),
+            whole.len()
+        );
+        Ok::<_, Failure>((walked, read))
+    };
+    for dir in [Direction::Asc, Direction::Desc] {
+        let (walked, read) = page(
+            "sym = 'x'",
+            dir,
+            HELD as u32,
+            true,
+            "a page over a pair with no index on its order field",
+        )?;
+        ensure!(
+            walked == HELD && read == HELD,
+            "a page over a pair with no index on its order field, {dir:?}, walked {walked} and \
+             read {read}; the pair's own {HELD} rows answer it, the records without a value last"
+        );
+        let (walked, read) = page(
+            "sym = 'x' and at >= 100 and at <= 199",
+            dir,
+            100,
+            true,
+            "a window of a pair with no index on its order field",
+        )?;
+        ensure!(
+            walked == 100 && read == 100,
+            "a window of 100 of a pair with no index on its order field, {dir:?}, walked {walked} \
+             and read {read}; the pair's window answers it"
+        );
+    }
+    // Live-only: the retired rows are walked and left, each once.
+    let (walked, read) = page(
+        "sym = 'x'",
+        Direction::Asc,
+        HELD as u32,
+        false,
+        "a live-only page over a pair with no index on its order field",
+    )?;
+    ensure!(
+        walked == read && walked == HELD,
+        "a live-only page over a pair with no index on its order field walked {walked} and read \
+         {read}; the pair's {HELD} rows are walked once, the retired ones left out of the answer"
+    );
+    // A count and an aggregate: the pair's window, not a whole scan.
+    let filter = crate::expr::parse("sym = 'x' and at >= 100 and at <= 199")
+        .expect("the check's filter parses");
+    let window = core_engines::window(&filter, &at, &StorageKind::Number)
+        .expect("a bound on `at` opens a window");
+    let scan = scan_with(|s| {
+        s.filter = Some(filter);
+        s.retired = true;
+    });
+    let (keys_read, _, walked, read) =
+        window_road(head.as_ref(), &ty, t, &scan, &window, u64::MAX)?
+            .expect("the engine keeps the pair's window");
+    ensure!(
+        keys_read.len() == 100 && walked == 100 && read == 100,
+        "the window's road of a pair with no index on its order field answered {} keys, walked \
+         {walked} and read {read}; the pair's window's 100 rows answer it",
         keys_read.len()
     );
     Ok(())

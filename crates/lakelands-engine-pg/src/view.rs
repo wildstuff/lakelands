@@ -1189,11 +1189,13 @@ impl Read<'_> {
         let Some(decl) = self.type_decl(ty)? else {
             return Ok(None);
         };
-        if !self.head || !self.sorted_fields(ty, Some(&decl))?.contains(&window.field) {
+        if !self.head {
             return Ok(None);
         }
         // A series the scan names exactly seeks the pair's rows alone: each
-        // series' window under its prefix, walked one after another.
+        // series' window under its prefix, walked one after another. The
+        // pair's own index is enough; the order field needs no index of its
+        // own for the walk.
         if scan.range.is_none()
             && let Some(seek) = self.series_seek(ty, &decl, &window.field, scan)?
         {
@@ -1222,6 +1224,9 @@ impl Read<'_> {
                 },
             )?;
             return Ok(Some(batch));
+        }
+        if !self.sorted_fields(ty, Some(&decl))?.contains(&window.field) {
+            return Ok(None);
         }
         let Some(text) = self.window_text(ty, Some(&decl), scan)? else {
             return Ok(None);
@@ -1324,11 +1329,12 @@ impl Read<'_> {
         let Some(decl) = self.type_decl(ty)? else {
             return Ok(None);
         };
-        if !self.head || !self.sorted_fields(ty, Some(&decl))?.contains(&window.field) {
+        if !self.head {
             return Ok(None);
         }
         // The pair's window, and the other side, are its series' rows
-        // counted under their prefixes.
+        // counted under their prefixes; the order field needs no index of
+        // its own.
         if scan.range.is_none()
             && let Some(seek) = self.series_seek(ty, &decl, &window.field, scan)?
         {
@@ -1336,6 +1342,9 @@ impl Read<'_> {
                 self.count_rows(ty, &seek.field, bounds, cap)
             })?;
             return Ok(Some(sides));
+        }
+        if !self.sorted_fields(ty, Some(&decl))?.contains(&window.field) {
+            return Ok(None);
         }
         let Some(text) = self.window_text(ty, Some(&decl), scan)? else {
             return Ok(None);
@@ -1833,6 +1842,18 @@ impl ProjectionView for PgView<'_> {
                     Ok(rows)
                 });
             }
+            // A series the scan names exactly reads the pair's rows alone,
+            // each series' window under its prefix: the pair's own index
+            // answers the field's order, whether or not the order field has
+            // an index of its own.
+            if r.head
+                && scan.range.is_none()
+                && let Some(decl) = decl.as_ref()
+                && let Some(first) = scan.order_by.first().filter(|o| o.by == OrderBy::Value)
+                && let Some(seek) = r.series_seek(ty, decl, &first.field, scan)?
+            {
+                return r.scan_series(ty, decl, scan, &seek, first);
+            }
             let sorted = r.sorted_fields(ty, decl.as_ref())?;
             let records = match engines::by_order_index(&sorted, scan) {
                 // Ordered by a field the lake indexes, the page is read in
@@ -1841,15 +1862,6 @@ impl ProjectionView for PgView<'_> {
                 // holding it; at an earlier position, the head's index with
                 // the keys changed since, and past the ceiling the sort.
                 Some(first) => {
-                    // A series the scan names exactly reads the pair's rows
-                    // alone, each series' window under its prefix.
-                    if r.head
-                        && scan.range.is_none()
-                        && let Some(decl) = decl.as_ref()
-                        && let Some(seek) = r.series_seek(ty, decl, &first.field, scan)?
-                    {
-                        return r.scan_series(ty, decl, scan, &seek, first);
-                    }
                     let (changed, holders) = if r.head {
                         let holders = engines::Holders::of(lookup.as_ref(), |f, t, n| {
                             r.holders(ty, f, t, n)

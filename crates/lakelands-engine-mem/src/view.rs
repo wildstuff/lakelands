@@ -27,7 +27,7 @@ use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, 
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::quarantine::{QuarantineFilter, QuarantineId, Quarantined};
 use lakelands_api::query::{Edge, Walk};
-use lakelands_api::read::Direction;
+use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Proposal, ProposalFilter};
@@ -434,6 +434,19 @@ impl ProjectionView for MemView {
                     });
                 return page.unwrap_or_else(|never| match never {});
             }
+            // A series the scan names exactly reads the pair's rows alone,
+            // each series' window under its prefix: the pair's own index
+            // answers the field's order, whether or not the order field has
+            // an index of its own.
+            if head
+                && scan.range.is_none()
+                && let Some(decl) = decl
+                && let Some(first) = scan.order_by.first().filter(|o| o.by == OrderBy::Value)
+                && let Some(seek) =
+                    engines::series_seek(decl, &p.series_state(ty), &first.field, scan)
+            {
+                return scan_series(p, ty, decl, scan, &seek, first);
+            }
             // Ordered by a field the lake indexes: read in the order index's
             // order, stop when full; at an earlier position, with the keys
             // changed since, and past the ceiling, sort the type.
@@ -443,16 +456,6 @@ impl ProjectionView for MemView {
                 Vec::new()
             };
             if let Some(first) = engines::by_order_index(&sorted, scan) {
-                // A series the scan names exactly reads the pair's rows
-                // alone, each series' window under its prefix.
-                if head
-                    && scan.range.is_none()
-                    && let Some(decl) = decl
-                    && let Some(seek) =
-                        engines::series_seek(decl, &p.series_state(ty), &first.field, scan)
-                {
-                    return scan_series(p, ty, decl, scan, &seek, first);
-                }
                 let changed = match at {
                     Some(at) if Some(at) != p.folded => {
                         match p.changed(ty, at, engines::changed_ceiling(scan.limit)) {

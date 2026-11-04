@@ -1950,7 +1950,8 @@ pub fn count_walk(n: usize) {
 /// without an order value come last. Each series is read on its own and
 /// only as far ahead as the merge needs: the first ask is the batch
 /// shared among the series, plus one, and a series whose rows run out is
-/// asked again for twice its last ask
+/// asked again for twice the batch it first had, never for more than its
+/// share of what the call still lacks plus one
 /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §`in`).
 pub struct MergedRows {
     series: usize,
@@ -2011,7 +2012,12 @@ impl MergedRows {
                 if self.done[i] || !self.pending[i].is_empty() {
                     continue;
                 }
-                let ask = self.want[i].max(1);
+                // What this call still lacks, shared among the series, and
+                // one to know whether a series has more: no series is asked
+                // past that, however far its next batch would have grown.
+                let left = n.saturating_sub(out.len() as u32).saturating_add(1);
+                let share = left.div_ceil((self.series as u32).max(1)).saturating_add(1);
+                let ask = self.want[i].max(1).min(share);
                 let start = self.at[i].clone().or_else(|| from.clone());
                 let at = start.as_ref().map(|(k, r)| (k.as_slice(), r.as_str()));
                 let rows = read(i, at, ask)?;
@@ -2020,7 +2026,7 @@ impl MergedRows {
                     self.at[i] = Some((k.clone(), r.key.to_string()));
                 }
                 self.pending[i].extend(rows);
-                self.want[i] = ask.saturating_mul(2).min(2048);
+                self.want[i] = self.want[i].saturating_mul(2).min(2048);
             }
             let least = (0..self.series)
                 .filter(|i| !self.pending[*i].is_empty())
