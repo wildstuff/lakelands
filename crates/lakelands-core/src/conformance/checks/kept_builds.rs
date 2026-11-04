@@ -20,7 +20,7 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::read::{Find, Found};
 use lakelands_api::seam::SETTING_TYPE;
 
-use super::builds::{First, chunked, rows, until_appended, until_first};
+use super::builds::{First, chunked, rows, until_appended, until_first, until_logged};
 use super::export::Scratch;
 use crate::conformance::fixture::source_record;
 use crate::conformance::prelude::*;
@@ -1053,7 +1053,7 @@ async fn a_copy_taken_beside_a_kept_build_imports_kept(store: Store, given: Give
         let dir = dir.clone();
         async move {
             ensure!(
-                until_appended(l, KEPT).await?,
+                until_logged(l, s, KEPT).await?,
                 "`{KEPT}` was never appended, so no build began"
             );
             crate::export::write(s, &dir)
