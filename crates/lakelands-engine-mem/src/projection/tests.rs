@@ -315,12 +315,17 @@ fn a_base_is_a_row_where_a_write_shares_it_and_goes_once_no_state_names_it() {
     let dropped = |keys: std::ops::Range<usize>| -> Vec<Put> {
         let mut puts: Vec<_> =
             (keys.map(|i| Put::DroppedRecord(ty.clone(), format!("crm1.{i}").into()))).collect();
-        puts.push(Put::DroppedBases);
+        puts.push(Put::DroppedBases(vec![1]));
         puts
     };
+    assert!(p.unused_bases().is_empty(), "no base is unused");
     p.commit(dropped(0..SHARED - 1), Position(3)).unwrap();
     assert_eq!(p.bases.0.len(), 1, "a base a state names stays");
-    p.commit(dropped(SHARED - 1..SHARED), Position(3)).unwrap();
+    let mut last = dropped(SHARED - 1..SHARED);
+    let sweep = last.pop().unwrap();
+    p.commit(last, Position(3)).unwrap();
+    assert_eq!(p.unused_bases(), vec![1], "listed once no state names it");
+    p.commit(vec![sweep], Position(3)).unwrap();
     assert!(p.bases.0.is_empty(), "a base no state names goes");
     assert_eq!(read(&p).len(), SHARED, "the inline ones read theirs");
 }

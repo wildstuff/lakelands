@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering}
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{
-    CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView, StatesOf,
+    CanonicalEvent, Compact, LakeEngine, Lease, OpenMode, ProjectionView, Reclaimed, StatesOf,
 };
 use lakelands_api::error::{Detail, Flaw, Part, Seam, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION, SegmentDigest};
@@ -1435,21 +1435,32 @@ impl Lake {
         Ok(())
     }
 
-    /// Give back the storage the projection no longer uses, under the
-    /// writer's lock its caller holds: the last step of an act and a
-    /// manual compact alike. The engine's answer is the inner result. One
-    /// that fails while an act waits on it is owed, its cause kept for
-    /// [`Self::reclaim_owed`]; one that runs owes nothing, each act whose
-    /// rebuild waited on it is done, and its time is kept ([`TIMED`]). The
-    /// outer error is the lists' own read or write failing.
-    fn reclaim(&self) -> Result<Result<lakelands_api::write::CompactReport>> {
+    /// Give back the storage the projection no longer uses, as much as
+    /// `how` asks, under the writer's lock its caller holds: an
+    /// operator's compact asks for all of it, and tells it as an act's
+    /// reclaim would ([`Self::reclaimed`]).
+    fn reclaim(&self, how: Compact) -> Result<Result<lakelands_api::write::CompactReport>> {
+        let began = std::time::Instant::now();
+        let reclaimed = self.engine.projection().compact(how);
+        self.reclaimed(reclaimed, elapsed_ms(began).max(1))
+    }
+
+    /// Tell what a reclaim gave back, the last step of an act and a
+    /// manual compact alike, its turns `ms` long, summed. The engine's
+    /// answer is the inner result. One that fails while an act waits on it
+    /// is owed, its cause kept for [`Self::reclaim_owed`]; one that runs
+    /// owes nothing, each act whose rebuild waited on it is done, and its
+    /// time is kept ([`TIMED`]) where it took any. The outer error is the
+    /// lists' own read or write failing.
+    pub(crate) fn reclaimed(
+        &self,
+        reclaimed: Result<Reclaimed>,
+        ms: u64,
+    ) -> Result<Result<lakelands_api::write::CompactReport>> {
         let (mut list, mut acts) = self.acts_listed()?;
         let waiting = list.values().chain(acts.values()).any(|s| s == "rebuilt");
-        let began = std::time::Instant::now();
-        let reclaimed = self.engine.projection().compact();
-        if reclaimed.is_ok() {
-            self.reclaim_ms
-                .store(elapsed_ms(began).max(1), Ordering::SeqCst);
+        if reclaimed.is_ok() && ms > 0 {
+            self.reclaim_ms.store(ms, Ordering::SeqCst);
         }
         // A compact that fails with no act waiting owes nothing.
         if waiting || reclaimed.is_ok() {
@@ -1493,7 +1504,7 @@ impl Lake {
                     *state = "done".to_owned();
                 }
             }
-            self.put_lists(&list, &acts, false, head)?;
+            self.put_lists(&list, &acts, head)?;
         }
         // An estimate's input: one not kept fails nothing.
         let _ = self.keep_timed(head);
@@ -1522,22 +1533,17 @@ impl Lake {
 
     /// Put the forgotten sources and the acts of removal, each with its
     /// state, at `head` in a transaction of their own: a list that is
-    /// empty is left as it is. After a scoped refold (`swept`), the bases
-    /// no state names any more go in the same transaction.
+    /// empty is left as it is.
     pub(crate) fn put_lists(
         &self,
         list: &BTreeMap<SourceId, String>,
         acts: &BTreeMap<Position, String>,
-        swept: bool,
         head: Position,
     ) -> Result<()> {
         let projection = self.engine.projection();
         let at = crate::sealing::forgotten_at();
         projection.begin()?;
         let written = (|| {
-            if swept {
-                projection.drop_states(StatesOf::Bases)?;
-            }
             if !list.is_empty() {
                 let list = serde_json::to_value(list).expect("a list serialises");
                 projection.put_output(crate::sealing::FORGOTTEN, &at, &list, head)?;

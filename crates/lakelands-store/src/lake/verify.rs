@@ -277,7 +277,7 @@ impl Turn<'_> {
         if w.lease.is_none() {
             return Err(read_only());
         }
-        self.reclaim()?
+        self.reclaim(lakelands_api::engine::Compact::Whole)?
     }
 
     /// Give the lease up. The handle reads on; it no longer writes.

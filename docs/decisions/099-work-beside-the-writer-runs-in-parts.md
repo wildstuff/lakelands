@@ -1322,6 +1322,67 @@ a page a turn of the writer, as a part of an act is.
   product 111 301 of 115 000 and specification 197 920 of 202 500, the seam 108 of 110
   methods.
 
+**R6's sweep and reclaim in turns (lakelands#1751).** After a scoped pass, the sweep of
+unused bases and the reclaim are turns of the same restate, so a write waits for one
+chunk or one step, not the whole.
+
+- **The sweep is listed beside the writer.** `put_lists` no longer drops bases. The pass
+  ends, and before the next turn the road's new `Job::aside` lists the bases no state
+  names on a view (`ProjectionView::unused_bases`), keeping that view's position. Each
+  following turn deletes `limits.order_chunk` of them (`StatesOf::Bases(ids, past)`), in
+  its own transaction, and a base still goes only if no state put after `past` names it.
+  SQLite and PostgreSQL find those states by type and position, a loose index scan over
+  `(ty, since)`, so a chunk's test reads the lake's tail and not every state. An open
+  that finishes an act lists under the writer, since no turn went before it.
+- **A rebuild drops the list.** The lake counts its rebuilds, and a scoped pass's open
+  counts too. A chunk that finds the count moved since the listing leaves the rest for
+  the next sweep: both put states before the view the list was read on.
+- **The reclaim's turns.** On SQLite, one turn truncates the journal, then each turn
+  gives back at most 10 MiB of free pages (`incremental_vacuum`) until none are left.
+  On PostgreSQL a plain `VACUUM`, on a reading connection with no lease and no
+  `writing()` check, runs beside the writer before the reclaim's turn; `compact`'s stays
+  on the writer's connection, held to its lease. Memory reclaims nothing. On SQLite the
+  last pages step truncates the journal again, so `after` is the file without them.
+  `ProjectionStore::compact` takes the step (`Compact::Whole`, `Beside`, `Journal`,
+  `Pages`) and says whether free storage is left. `reclaimed` sums the steps:
+  the size before the first and after the last. `lakelands compact` keeps the whole
+  `VACUUM`.
+- **The plan said "after a swap: nothing"; the tree reclaims after any rebuild.** The
+  act does not know whether its rebuild swapped in a new file or cleared and folded in
+  place, and in place leaves erased pages in the journal and on the free list. After a
+  swap the turns find little to do: a journal truncated, few free pages. A rebuild still
+  sweeps nothing, since it leaves no base unused. A reclaim that fails is owed, as
+  before, and `RECLAIM_OWED` holds it unchanged.
+- **The seam.** `unused_bases` is the one new method. The seam reads 110 of 110:
+  `compact` takes its step as an argument rather than adding three methods.
+- **The rows.** `SWEEP_IN_TURNS`: with one base a chunk, a write another source sends
+  while the sweep's first chunk holds the writer is answered before the act is whole.
+  The sweep takes a turn for each base the forgotten source's writes left unnamed, and
+  every record reads its provenance as a rebuild reads it. It is red with the sweep in
+  one turn, and red with every base listed as unused, where SQLite refuses the next
+  write over a base it cannot read. `RECLAIM_IN_TURNS`: a scoped forgetting asks the
+  engine for no whole compaction, says what came back, and owes nothing, while
+  `compact` still asks for it. It is red with the journal step made a whole `VACUUM`. A
+  write naming a base the list holds cannot be made through a door: a base carries its
+  write's `known_at`. SQLite's unit test `a_base_named_after_its_listing_stays_through_the_chunk`
+  holds that case, and memory's shared-base test holds the listing.
+- **Measured** once on SQLite, release build, file-backed: 100 000 records of one
+  source, then 5 000 writes of 3 records by a second, which is forgotten while one
+  caller writes a record of a third source in a loop. The scoped pass takes 58 page
+  turns of at most 54 ms. The sweep lists 5 000 unused bases and deletes them in 5
+  turns of 1 000, each 1.0 to 1.3 ms under the writer; the 5 writes sent during the
+  sweep were answered in 10.5 to 11.1 ms, against a median of 9.7 ms over the act, so
+  each waited one chunk at most. The reclaim takes a journal turn of 65 ms and then 268
+  page turns of 55 ms in all, and takes the projection from 570 MB to 46 MB. A second run
+  agrees, its chunks 0.8 to 0.9 ms. The act's first turn held the writer for 49 s in
+  the same run, reading a tail of no events: the tail is found key by key, and the act
+  reaches 15 000 keys. That is R2's tail read, not this step's, and is left open.
+- **The ledger.** Product: 452 lines in, 130 out; specification: 376 in, 19 out. Cut:
+  the reclaim's steps share one runner and one step chooser, and `put_lists` lost its
+  sweep flag. Over the plan's 200 / 220 by the seam's step argument, `unused_bases` on
+  three engines and PostgreSQL's two `VACUUM`s. core-size reads product 113 651 of
+  115 000 and specification 201 016 of 202 500, the seam 110 of 110 methods.
+
 ## How it came to be
 
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
@@ -1343,6 +1404,9 @@ a page a turn of the writer, as a part of an act is.
   `page_events` bounds a write's wait.
 - Two parts of the row are left: the kept reason and "goes beside" wait for R5 behind
   their own pull, as does an act that arrives after a pass began.
+- R6 built by lakelands#1751 (lakelands#1649): the sweep of unused bases and the reclaim
+  are turns of the restate. PostgreSQL's `VACUUM` runs off the writer, and the plan's
+  "nothing after a swap" became the reclaim's turns after any rebuild.
 - Amended by 102 (lakelands#1639), proposed for 0.23.0: a thinning act begins
   with `values_thinned`, and a write at a key it selected is refused rather
   than reading through the act.

@@ -1106,6 +1106,10 @@ impl Job for Forget {
         Ok(())
     }
 
+    fn aside(&mut self, lake: &Lake) -> Result<()> {
+        self.restate.as_mut().map_or(Ok(()), |r| r.aside(lake))
+    }
+
     fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
         self.one_turn(t, w)
     }

@@ -733,6 +733,10 @@ impl ProjectionView for MemView {
         }))
     }
 
+    fn unused_bases(&self) -> Result<Vec<u64>> {
+        Ok(self.read(|p, _| p.unused_bases()))
+    }
+
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
         Ok(self.read(|p, at| {
             p.outputs

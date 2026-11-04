@@ -437,12 +437,13 @@ pub trait ProjectionStore: Send + Sync {
     /// [`OpenMode::Rebuild`] whatever layout made it is read from here on.
     fn clear(&self) -> Result<()>;
 
-    /// Give the storage the projection no longer uses back, and change
-    /// nothing a view answers: no state, kept history included, no
-    /// applied id, no recorded output. Called outside a transaction, under
-    /// the writer's lock. A compact that fails leaves every answer as it
-    /// was (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
-    fn compact(&self) -> Result<Reclaimed>;
+    /// Give the storage the projection no longer uses back, as much as
+    /// `how` asks, and change nothing a view answers: no state, kept
+    /// history included, no applied id, no recorded output. Called outside
+    /// a transaction, under the writer's lock but for [`Compact::Beside`].
+    /// A compact that fails leaves every answer as it was
+    /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
+    fn compact(&self, how: Compact) -> Result<Reclaimed>;
 
     /// One step of keeping an order index the lake chose beside the log
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`). Called
@@ -485,10 +486,25 @@ pub enum StatesOf<'a> {
     Record(&'a TypeName, &'a RecordKey),
     /// A seam's output for one input.
     Output(&'a str, &'a Digest),
-    /// The bases no record's state names any more: those only the states
-    /// a scoped refold, an act of removal or a later state of a record
-    /// replaced named.
-    Bases,
+    /// Of these bases, which no record's state named at a view at the
+    /// position ([`ProjectionView::unused_bases`]), those no state put
+    /// after it names: a sweep's chunk
+    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    Bases(&'a [u64], Position),
+}
+
+/// How much of its storage a [`ProjectionStore::compact`] gives back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compact {
+    /// All of it, at once: the operator's compact, for a window of its own.
+    Whole,
+    /// What can be given back beside reads and writes, without the
+    /// writer's lock; nothing on an engine whose reclaim needs it.
+    Beside,
+    /// The write-ahead journal truncated, where the engine keeps one.
+    Journal,
+    /// At most this many bytes of free pages.
+    Pages(u64),
 }
 
 /// A step of building or dropping an order index the lake chose.
@@ -629,6 +645,9 @@ pub struct Reclaimed {
     pub before: Option<u64>,
     /// The projection's storage after.
     pub after: Option<u64>,
+    /// Whether free pages are left for a [`Compact::Pages`] to give back.
+    #[serde(default)]
+    pub more: bool,
 }
 
 impl Reclaimed {
@@ -1084,6 +1103,13 @@ pub trait ProjectionView {
     /// A seam's recorded output for this input, if recorded, with the
     /// position it was recorded at.
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>>;
+
+    /// The ids of the bases no record's state names, ascending: what a
+    /// sweep deletes in chunks ([`StatesOf::Bases`]). An engine that keeps
+    /// no base apart lists none.
+    fn unused_bases(&self) -> Result<Vec<u64>> {
+        Ok(Vec::new())
+    }
 
     /// The positions from `from` through `through` whose events `filter`
     /// admits, by what [`ProjectionStore::mark_applied`] kept of them, in

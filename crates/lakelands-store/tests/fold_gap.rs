@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use lakelands_api::engine::{
-    CanonicalEvent, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    Ranked, Rankings, VectorIndex,
+    CanonicalEvent, Compact, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore,
+    ProjectionView, Ranked, Rankings, VectorIndex,
 };
 use lakelands_api::error::{Flaw, Part, Situation};
 use lakelands_api::event::{Digest, EventBody, SegmentDigest};
@@ -240,7 +240,11 @@ impl ProjectionStore for Failing {
     fn clear(&self) -> Result<()> {
         self.inner.projection().clear()
     }
-    fn compact(&self) -> Result<lakelands_api::engine::Reclaimed> {
+    fn compact(&self, how: Compact) -> Result<lakelands_api::engine::Reclaimed> {
+        // A reclaim's other steps pass: it is counted, and fails, once.
+        if matches!(how, Compact::Beside | Compact::Pages(_)) {
+            return self.inner.projection().compact(how);
+        }
         let (fails, done) = &self.compact;
         if fails.load(Ordering::SeqCst) > 0 {
             fails.fetch_sub(1, Ordering::SeqCst);
@@ -250,7 +254,7 @@ impl ProjectionStore for Failing {
             }));
         }
         done.fetch_add(1, Ordering::SeqCst);
-        self.inner.projection().compact()
+        self.inner.projection().compact(how)
     }
     fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
         self.inner.projection().put_thinned_act(act, at)

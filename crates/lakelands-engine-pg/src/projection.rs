@@ -2395,8 +2395,9 @@ pub(crate) struct Buffer {
     dropped: BTreeSet<(String, String)>,
     /// The outputs whose every state goes, by seam and input, likewise.
     dropped_outputs: BTreeSet<(String, String)>,
-    /// Whether the bases no state names go, once every put is written.
-    dropped_bases: bool,
+    /// The sweep's chunk: the bases of its ids that no state put after its
+    /// position names go, once every put is written.
+    dropped_bases: Option<(Vec<i64>, i64)>,
     /// The vector index's last put (`Some`) or remove of each field of a
     /// key whose state it holds, by type, key and field: made when it is
     /// written where the rows its last state leaves differ.
@@ -2431,8 +2432,9 @@ impl Buffer {
                 + self.orders_ended.len(),
             self.proposals.len() + self.quarantined.len() + self.outputs.len(),
         );
-        let dropped =
-            self.dropped.len() + self.dropped_outputs.len() + usize::from(self.dropped_bases);
+        let dropped = self.dropped.len()
+            + self.dropped_outputs.len()
+            + usize::from(self.dropped_bases.is_some());
         records
             + states
             + self.members.len()
@@ -2480,9 +2482,11 @@ impl Buffer {
         (self.dropped_outputs).insert((seam.to_owned(), input.to_owned()));
     }
 
-    /// The bases no state names go, once the buffer's puts are written.
-    pub(crate) fn drop_bases(&mut self) {
-        self.dropped_bases = true;
+    /// The bases of `ids` no state put after `past` names go, once the
+    /// buffer's puts are written.
+    pub(crate) fn drop_bases(&mut self, ids: &[u64], past: Position) {
+        let ids = ids.iter().map(|id| *id as i64).collect();
+        self.dropped_bases = Some((ids, past.0 as i64));
     }
 
     /// The state of `ty`'s `key` the buffer puts last, if any.
@@ -3067,15 +3071,21 @@ impl Buffer {
                 &[&at, &kinds, &tys, &keys, &sources],
             )?;
         }
-        if self.dropped_bases {
+        if let Some((ids, past)) = &self.dropped_bases {
+            // The states past the view, each type's first found by its
+            // index, so a chunk reads the tail and not the lake.
+            let records = names.t("records");
             db.execute(
                 &format!(
-                    "DELETE FROM {} b WHERE NOT EXISTS \
-                     (SELECT 1 FROM {} r WHERE r.state::jsonb -> 'base' = to_jsonb(b.id))",
+                    "WITH RECURSIVE t(ty) AS (SELECT min(ty) FROM {records} UNION ALL \
+                     SELECT (SELECT min(ty) FROM {records} WHERE ty > t.ty) FROM t \
+                     WHERE t.ty IS NOT NULL) \
+                     DELETE FROM {} b WHERE b.id = ANY($1::int8[]) AND NOT EXISTS \
+                     (SELECT 1 FROM {records} r WHERE r.ty IN (SELECT ty FROM t) \
+                     AND r.since > $2 AND r.state::jsonb -> 'base' = to_jsonb(b.id))",
                     names.t("bases"),
-                    names.t("records")
                 ),
-                &[],
+                &[ids, past],
             )?;
         }
         if !self.thinned_acts.is_empty() {

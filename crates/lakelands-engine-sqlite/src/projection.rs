@@ -2284,13 +2284,33 @@ pub(crate) fn text_counts(
     rows.and_then(Iterator::collect).map_err(sql)
 }
 
-/// Delete the bases no record's state names.
-pub(crate) fn drop_bases(conn: &Connection) -> Result<()> {
+/// The ids of the bases no record's state names, ascending.
+pub(crate) fn unused_bases(conn: &Connection) -> Result<Vec<u64>> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT id FROM bases WHERE id NOT IN (SELECT json_extract(state, '$.base') \
+             FROM records WHERE json_type(state, '$.base') = 'integer') ORDER BY id",
+        )
+        .map_err(sql)?;
+    let rows = stmt.query_map([], |r| r.get::<_, i64>(0).map(|id| id as u64));
+    rows.and_then(Iterator::collect).map_err(sql)
+}
+
+/// Delete the bases of `ids` that no state put after `past` names. The
+/// states past it are found by type and position, each type's first
+/// found by its index, so a chunk reads the tail and not the lake.
+pub(crate) fn drop_bases(conn: &Connection, ids: &[u64], past: Position) -> Result<()> {
     run(
         conn,
-        "DELETE FROM bases WHERE id NOT IN (SELECT json_extract(state, '$.base') \
-         FROM records WHERE json_type(state, '$.base') = 'integer')",
-        [],
+        "WITH RECURSIVE t(ty) AS (SELECT min(ty) FROM records UNION ALL \
+         SELECT (SELECT min(ty) FROM records WHERE ty > t.ty) FROM t WHERE t.ty IS NOT NULL) \
+         DELETE FROM bases WHERE id IN (SELECT value FROM json_each(?1)) \
+         AND id NOT IN (SELECT json_extract(state, '$.base') FROM records \
+         WHERE ty IN (SELECT ty FROM t) AND since > ?2 AND json_type(state, '$.base') = 'integer')",
+        params![
+            serde_json::to_string(ids).expect("ids serialise"),
+            past.0 as i64
+        ],
     )
 }
 

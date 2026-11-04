@@ -61,7 +61,10 @@ fn a_compact_after_a_clear_leaves_no_free_page_and_an_empty_journal() {
     assert!(free() > 0, "the clear left free pages to give back");
     let stored = len(&db) + len(&wal);
 
-    let reclaimed = engine.projection().compact().unwrap();
+    let reclaimed = engine
+        .projection()
+        .compact(lakelands_api::engine::Compact::Whole)
+        .unwrap();
     let (before, after) = (reclaimed.before.unwrap(), reclaimed.after.unwrap());
     assert_eq!(before, stored, "before is the file and its journal");
     assert_eq!(free(), 0, "no free page is left in projection.db");
@@ -72,6 +75,53 @@ fn a_compact_after_a_clear_leaves_no_free_page_and_an_empty_journal() {
         engine.projection().folded_through().unwrap(),
         Some(Position(2)),
         "the projection still reflects the log as far as it did"
+    );
+    drop(engine);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An act's reclaim in steps: the journal truncated, then free pages a
+/// bounded number at a time, each step saying whether any are left, and
+/// the last leaving none and an empty journal (099, R6).
+#[test]
+fn a_reclaim_in_steps_gives_back_every_free_page_a_bound_at_a_time() {
+    use lakelands_api::engine::Compact;
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("compact-steps-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let engine = SqliteOpener
+        .open(&Location::sqlite("steps", &dir), OpenMode::Create)
+        .unwrap();
+    fold(engine.as_ref(), 2000, 1);
+    engine.projection().clear().unwrap();
+    fold(engine.as_ref(), 10, 2);
+    let (db, wal) = (dir.join("projection.db"), dir.join("projection.db-wal"));
+    let free = || -> i64 {
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap()
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .unwrap()
+    };
+    let p = engine.projection();
+    let journal = p.compact(Compact::Journal).unwrap();
+    assert!(journal.more, "the clear left free pages: {journal:?}");
+    assert_eq!(len(&wal), 0, "the journal is truncated first");
+    let (left, mut steps) = (free(), 0);
+    // A bound of 64 pages a step.
+    while p.compact(Compact::Pages(64 * 4096)).unwrap().more {
+        steps += 1;
+        assert!(steps < 10_000, "every step gives pages back");
+    }
+    assert!(
+        left > 64 && steps >= 1,
+        "{left} free pages took {steps} steps and the last"
+    );
+    assert_eq!(free(), 0, "no free page is left in projection.db");
+    assert_eq!(len(&wal), 0, "the last step truncates the journal again");
+    assert_eq!(
+        p.compact(Compact::Beside).unwrap().before,
+        None,
+        "nothing runs beside"
     );
     drop(engine);
     let _ = std::fs::remove_dir_all(&dir);

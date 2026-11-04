@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use fs4::{FileExt, TryLockError};
 use lakelands_api::engine::{
-    Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, Look, OpenMode, ProjectionStore,
-    ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
+    Applied, CanonicalEvent, Choose, Compact, Declared, LakeEngine, Lease, Look, OpenMode,
+    ProjectionStore, ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
 };
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, SegmentDigest};
@@ -896,9 +896,9 @@ impl ProjectionStore for SqliteLake {
             StatesOf::Record(ty, key) => projection::drop_record(conn, ty, key),
             StatesOf::Output(seam, input) => projection::drop_output(conn, seam, &input.0),
             // A row the write kept may go: its later states count afresh.
-            StatesOf::Bases => {
+            StatesOf::Bases(ids, past) => {
                 t.sharing = engines::Sharing::default();
-                projection::drop_bases(conn)
+                projection::drop_bases(conn, ids, past)
             }
         })
     }
@@ -1055,40 +1055,69 @@ impl ProjectionStore for SqliteLake {
         })
     }
 
-    /// Truncates the write-ahead journal, rewrites `projection.db` without
-    /// its free pages (`VACUUM`), and truncates the journal again. The log
-    /// is not touched. `VACUUM` is one transaction: when it fails, the
-    /// projection is as it was.
-    fn compact(&self) -> Result<Reclaimed> {
+    /// [`Compact::Whole`] truncates the write-ahead journal, rewrites
+    /// `projection.db` without its free pages (`VACUUM`), and truncates the
+    /// journal again. [`Compact::Journal`] truncates the journal alone, and
+    /// [`Compact::Pages`] gives back at most its bytes of free pages
+    /// (`incremental_vacuum`, which the file's `auto_vacuum` allows), the
+    /// journal truncated after the last; each says whether free pages are
+    /// left. [`Compact::Beside`] needs the
+    /// writer's lock, so it does nothing. The log is not touched. `VACUUM`
+    /// is one transaction: when it fails, the projection is as it was.
+    fn compact(&self, how: Compact) -> Result<Reclaimed> {
+        if how == Compact::Beside {
+            return Ok(Reclaimed::nothing());
+        }
         let transaction = lock(&self.transaction);
         if transaction.is_some() {
             return Err(Error::invalid(Case::CompactInTransaction));
         }
+        let busy = || {
+            let lake = self.lake.to_string();
+            Error::unavailable(Situation::Busy { lake })
+        };
         self.write(|conn| {
             // A transaction a failed commit left open is abandoned, as
             // `begin` and `clear` abandon it.
             abandon(conn)?;
             let before = self.size()?;
-            if !truncate_journal(conn)? {
-                let lake = self.lake.to_string();
-                return Err(Error::unavailable(Situation::Busy { lake }));
+            match how {
+                Compact::Pages(bytes) => {
+                    let pages = (bytes / 4096).max(1);
+                    let vacuum = format!("PRAGMA incremental_vacuum({pages})");
+                    conn.execute_batch(&vacuum).map_err(sql)?;
+                }
+                _ if !truncate_journal(conn)? => return Err(busy()),
+                Compact::Whole => {
+                    conn.execute_batch("VACUUM").map_err(|e| {
+                        let detail = Detail::scrubbed(crate::told(&e));
+                        let lake = self.lake.to_string();
+                        Error::unavailable(Situation::CompactFailed { lake, detail })
+                    })?;
+                    // The rewrite is committed. A reader that holds a
+                    // snapshot now keeps the journal from being truncated,
+                    // and the journal still holds the pages the rewrite
+                    // freed: the compact answers busy, so what is owed of it
+                    // (058) stays owed, and the next one truncates. No
+                    // answer has changed.
+                    if !truncate_journal(conn)? {
+                        return Err(busy());
+                    }
+                }
+                _ => {}
             }
-            conn.execute_batch("VACUUM").map_err(|e| {
-                let (lake, detail) = (self.lake.to_string(), Detail::scrubbed(crate::told(&e)));
-                Error::unavailable(Situation::CompactFailed { lake, detail })
-            })?;
-            // The rewrite is committed. A reader that holds a snapshot now
-            // keeps the journal from being truncated, and the journal still
-            // holds the pages the rewrite freed: the compact answers busy,
-            // so what is owed of it (058) stays owed, and the next one
-            // truncates. No answer has changed.
-            if !truncate_journal(conn)? {
-                let lake = self.lake.to_string();
-                return Err(Error::unavailable(Situation::Busy { lake }));
+            let free: i64 =
+                (conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))).map_err(sql)?;
+            // The pages given back went through the journal: the last step
+            // truncates it again, unless a reader holds it, so `after` is
+            // the file without them.
+            if matches!(how, Compact::Pages(_)) && free == 0 {
+                truncate_journal(conn)?;
             }
             Ok(Reclaimed {
                 before: Some(before),
                 after: Some(self.size()?),
+                more: free > 0,
             })
         })
     }

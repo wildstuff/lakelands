@@ -72,6 +72,13 @@ pub(crate) trait Job: Send + 'static {
     /// One turn, under the writer: bounded, and leaving the lake whole.
     fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned>;
 
+    /// Off the writer, before each turn after the first: what the next
+    /// turn needs that a view or a lock beside the writer gives.
+    fn aside(&mut self, lake: &Lake) -> Result<()> {
+        let _ = lake;
+        Ok(())
+    }
+
     /// The job ended, whole or not: where its caller waits, it is answered
     /// here. A caller who went away stops nothing.
     fn end(&mut self, ended: Result<()>) {
@@ -228,6 +235,8 @@ async fn run(weak: &Weak<Lake>, job: &Held) -> Result<()> {
         }
         loop {
             let (lake, j) = (held(weak)?, job.clone());
+            let aside = (lake.clone(), job.clone());
+            exec::run(move || lock(&aside.1).aside(&aside.0)).await?;
             let turned = exec::write(&lake, move |t| turn(t, lock(&j).as_mut())).await?;
             drop(lake);
             if turned == Turned::Whole {

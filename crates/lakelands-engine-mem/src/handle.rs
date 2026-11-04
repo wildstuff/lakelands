@@ -10,8 +10,9 @@
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
-    Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, TextCounts, VectorIndex,
+    Applied, CanonicalEvent, Choose, Compact, Declared, LakeEngine, Lease, OpenMode,
+    ProjectionStore, ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, TextCounts,
+    VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
@@ -325,7 +326,7 @@ impl ProjectionStore for MemoryLake {
         self.stage(match of {
             StatesOf::Record(ty, key) => Put::DroppedRecord(ty.clone(), key.clone()),
             StatesOf::Output(seam, input) => Put::DroppedOutput(seam.to_owned(), input.clone()),
-            StatesOf::Bases => Put::DroppedBases,
+            StatesOf::Bases(ids, _) => Put::DroppedBases(ids.iter().map(|id| *id as i64).collect()),
         })
     }
 
@@ -460,7 +461,7 @@ impl ProjectionStore for MemoryLake {
 
     /// The memory engine keeps no storage to give back: it measures and
     /// reclaims nothing.
-    fn compact(&self) -> Result<Reclaimed> {
+    fn compact(&self, _: Compact) -> Result<Reclaimed> {
         self.writable()?;
         Ok(Reclaimed::nothing())
     }

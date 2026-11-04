@@ -1918,6 +1918,10 @@ impl ProjectionView for SqliteView<'_> {
         })
     }
 
+    fn unused_bases(&self) -> Result<Vec<u64>> {
+        self.read(Vec::new(), |r| projection::unused_bases(r.conn))
+    }
+
     fn matching(
         &self,
         filter: &FeedFilter,
