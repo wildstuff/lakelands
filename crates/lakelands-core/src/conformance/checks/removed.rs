@@ -1961,52 +1961,73 @@ async fn a_removal_leaves_an_event_of_its_delivery_written_after_it(
     Ok(())
 }
 
-/// Where [`Gate`] stands: idle, armed, holding the writer's turn, an
-/// entry queued behind the one it holds, opened.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-enum Gated {
-    #[default]
-    Idle,
-    Armed,
-    Holds,
-    Behind,
-    Open,
+/// Where a [`Gate`] stands.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Gated {
+    /// Whether it holds every entry taken with nothing queued behind it.
+    armed: bool,
+    /// Whether it holds nothing any more.
+    open: bool,
+    /// Whether it holds an entry now.
+    pub(super) holds: bool,
+    /// How many held entries it was told to let through, and has not.
+    let_through: u32,
+    /// How many held entries went on.
+    pub(super) passed: u64,
+    /// Whether the check sends the entry it waits to see queued.
+    pub(super) watching: bool,
+    /// Whether an entry was queued behind the one held, once watched for.
+    pub(super) behind: bool,
 }
 
-/// A meter that holds the writer's turn once. The writer tells the queue's
+/// A meter that holds the writer's turn. The writer tells the queue's
 /// depth on its own thread as it takes an entry, before the entry runs,
 /// and a caller tells it only as it queues one, so never 0: armed, the
-/// gate holds the first entry taken with nothing queued behind it, which
-/// has appended nothing yet, until it is opened, and notes an entry
-/// queued behind it meanwhile.
+/// gate holds each entry taken with nothing queued behind it, which has
+/// done nothing yet, until it is let through or the gate is opened, and,
+/// once the check watches, notes an entry queued behind the one it holds.
+/// The order of the writer's turns is then the check's, not the
+/// scheduler's.
 #[derive(Default)]
-struct Gate {
+pub(super) struct Gate {
     at: std::sync::Mutex<Gated>,
-    opened: std::sync::Condvar,
+    moved: std::sync::Condvar,
 }
 
 impl Gate {
-    fn now(&self) -> Gated {
+    pub(super) fn now(&self) -> Gated {
         *crate::lock(&self.at)
     }
 
-    fn arm(&self) {
-        *crate::lock(&self.at) = Gated::Armed;
+    fn set(&self, how: impl FnOnce(&mut Gated)) {
+        how(&mut crate::lock(&self.at));
+        self.moved.notify_all();
     }
 
-    fn open(&self) {
-        *crate::lock(&self.at) = Gated::Open;
-        self.opened.notify_all();
+    pub(super) fn arm(&self) {
+        self.set(|g| g.armed = true);
     }
 
-    /// Wait, off the writer, until the gate stands at `at` or past it.
-    async fn reaches(&self, at: Gated, what: &str) -> Held {
+    pub(super) fn open(&self) {
+        self.set(|g| g.open = true);
+    }
+
+    /// Let the entry held go on, and hold the next.
+    pub(super) fn let_one_through(&self) {
+        self.set(|g| g.let_through += 1);
+    }
+
+    /// Note, from now on, an entry queued behind the one held: the check
+    /// sends it next.
+    pub(super) fn watch(&self) {
+        self.set(|g| g.watching = true);
+    }
+
+    /// Wait, off the writer, until `stands` holds of the gate.
+    pub(super) async fn reaches(&self, what: &str, stands: impl Fn(&Gated) -> bool) -> Held {
         settles(30_000, Duration::from_millis(2), || async {
-            ensure!(
-                self.now() >= at,
-                "{what}: the gate stands at {:?}",
-                self.now()
-            );
+            let now = self.now();
+            ensure!(stands(&now), "{what}: the gate stands at {now:?}");
             Ok(())
         })
         .await
@@ -2027,25 +2048,30 @@ impl lakelands_api::seam::Meter for Gate {
             return;
         }
         let mut at = crate::lock(&self.at);
-        match *at {
-            Gated::Armed if depth == 0 => {
-                *at = Gated::Holds;
-                // A check that never opens it does not hold the writer
-                // past the time any of its waits gives up.
-                let (_at, _) = self
-                    .opened
-                    .wait_timeout_while(at, Duration::from_secs(60), |g| *g < Gated::Open)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-            Gated::Holds if depth > 0 => *at = Gated::Behind,
-            _ => {}
+        if at.holds && at.watching && depth > 0 {
+            at.behind = true;
         }
+        if !at.armed || at.open || depth > 0 {
+            return;
+        }
+        at.holds = true;
+        // A check that never lets it go does not hold the writer past the
+        // time any of its waits gives up.
+        let (mut at, _) = self
+            .moved
+            .wait_timeout_while(at, Duration::from_secs(60), |g| {
+                !g.open && g.let_through == 0
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        at.let_through = at.let_through.saturating_sub(1);
+        at.holds = false;
+        at.passed += 1;
     }
 }
 
 /// Opens the gate whichever way the check ends, so the writer it holds
 /// is let go.
-struct Opens(Arc<Gate>);
+pub(super) struct Opens(pub(super) Arc<Gate>);
 
 impl Drop for Opens {
     fn drop(&mut self) {
@@ -2108,8 +2134,9 @@ async fn a_tail_event_before_the_time_is_taken_and_one_after_is_not(
             Ok(())
         }),
         Box::pin(async move {
-            g1.reaches(Gated::Holds, "the early write holding the writer's turn")
+            g1.reaches("the early write holding the writer's turn", |g| g.holds)
                 .await?;
+            g1.watch();
             let done = s
                 .remove_values(&tracker, &sel, false, None)
                 .await
@@ -2119,10 +2146,9 @@ async fn a_tail_event_before_the_time_is_taken_and_one_after_is_not(
         }),
         Box::pin(async move {
             let behind = g2
-                .reaches(
-                    Gated::Behind,
-                    "the act's first turn queued behind the early write",
-                )
+                .reaches("the act's first turn queued behind the early write", |g| {
+                    g.behind
+                })
                 .await;
             g2.open();
             behind

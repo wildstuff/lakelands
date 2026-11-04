@@ -7,7 +7,9 @@
 //! The rows run through the doors on the memory engine, behind the wrapper
 //! (`probed`) that counts how often a view is asked for the declarations
 //! in force, which a build asks once, and for the lake's renames. Each
-//! count is taken after the write it follows, so it counts reads alone.
+//! count is taken after the write it follows, so it counts reads alone,
+//! and after the look a writer's open sends beside the writer has asked
+//! too ([`writer`]).
 
 mod probed;
 
@@ -34,11 +36,35 @@ fn opener(probe: &Arc<Probe>) -> Arc<dyn EngineOpener> {
     Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))
 }
 
+/// A writer's handle on `name` through `opener`, once its open's look at
+/// what the road owes has asked for the declarations in force. The open
+/// asks twice before it answers; the look runs beside the writer, sent
+/// as the open answers and never waited for, and asks once more, so a
+/// count taken before it lands would count it as a read's build. It is
+/// waited for, bounded, then counted exactly.
+async fn writer(
+    opener: &Arc<dyn EngineOpener>,
+    probe: &Probe,
+    name: &str,
+    mode: OpenMode,
+) -> Arc<dyn LakeStore> {
+    let asked = builds(probe) + 3;
+    let store = open(opener, name, mode).await;
+    for _ in 0..10_000 {
+        if builds(probe) >= asked {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert_eq!(builds(probe), asked, "a writer's open and its look");
+    store
+}
+
 /// A new lake on the probed memory engine, with `t`: its text `a` and its
 /// number `n`.
 async fn lake(name: &str) -> (Arc<dyn LakeStore>, Arc<Probe>) {
     let probe = Arc::new(Probe::default());
-    let store = open(&opener(&probe), name, OpenMode::Create).await;
+    let store = writer(&opener(&probe), &probe, name, OpenMode::Create).await;
     let l = Lake::of(store.as_ref());
     l.declare(type_of("t", &[("a", Text), ("n", Number)]))
         .await
@@ -449,7 +475,8 @@ async fn a_handle_opened_on_a_declared_lake_reads_behind_its_head_with_its_shape
         let up = l.upsert("t", &key, json!({"a": "x", "n": 9}));
         up.await.unwrap().position()
     };
-    let (mut written, first) = (Vec::new(), open(&opener, "opened", OpenMode::Create).await);
+    let first = writer(&opener, &probe, "opened", OpenMode::Create).await;
+    let mut written = Vec::new();
     let l = Lake::of(first.as_ref());
     l.declare(t()).await.unwrap();
     l.set("floor", json!(5)).await.unwrap();
@@ -460,7 +487,7 @@ async fn a_handle_opened_on_a_declared_lake_reads_behind_its_head_with_its_shape
     }
     first.close().await.unwrap();
     drop(l);
-    let store = open(&opener, "opened", OpenMode::Write).await;
+    let store = writer(&opener, &probe, "opened", OpenMode::Write).await;
     let l = Lake::of(store.as_ref());
     l.declare(t()).await.unwrap();
     for k in 9..17 {
