@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::{
     After, Declared, KeyRange, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan,
-    TextCounts,
+    SeriesPair, TextCounts,
 };
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
@@ -80,6 +80,11 @@ engine_check!(
 engine_check!(
     CHOSEN_LEFT_BEHIND = reopening a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view,
     "041 and lakelands#1131: a writer that keeps no chosen field (a binary before them) folds past a chosen field's rows and moves every `sorted.<type>` mark all the same; a page ordered by the field then answers what one scan over every state answers, read-only, after commits and a step of choosing through the handle that chose (its lease taken back with no open) and after a writer's open, and `chosen` names none, and the open drops the choice, so a later commit does not make the rows it left read again, and the lake chooses again; and so after such a writer's rebuild through the same position, which empties the order index and keeps every mark, the lake choosing again after a writer's open"
+);
+
+engine_check!(
+    SERIES_STARTED = a_series_pair_counts_its_starts_and_a_take_back_keeps_the_count,
+    "097 §The series index and lakelands#1638: `series` names a type's pairs and counts the starts of them: none before a start; a start of a pair it does not hold names the pair building and counts one; a second start of a pair in hand, its fills and its keep count nothing; a take-back that clears its rows in chunks leaves no pair and keeps the count; and a pair started again after the take-back counts a new start, so a build that read the count before the take-back is told to fill its field from the first key"
 );
 
 engine_check!(
@@ -3539,6 +3544,125 @@ fn a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view(
             "{when}, a writer's open must leave the lake choosing again; `chosen` names {chosen:?}"
         );
     }
+    Ok(())
+}
+
+fn a_series_pair_counts_its_starts_and_a_take_back_keeps_the_count(
+    engine: &dyn LakeEngine,
+) -> Held {
+    use lakelands_api::engine::{Choose, SeriesState};
+    let decl = declare(json!({
+        "declare": "type", "name": "s",
+        "fields": [
+            {"name": "n", "type": {"kind": "number"}},
+            {"name": "s", "type": {"kind": "text"}}
+        ]
+    }));
+    let states: Vec<StoredRecord> = (0..5)
+        .map(|i| record("s", &format!("k{i}"), json!({"n": i, "s": "a"}), 1))
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    let ty = TypeName::from("s");
+    let pair = SeriesPair {
+        series: FieldName::from("s"),
+        order: FieldName::from("n"),
+    };
+    let field = FieldName::from(lakelands_api::seam::series_field("n", "s"));
+    let step = |s: Choose| {
+        engine
+            .projection()
+            .choose_order(&ty, &s)
+            .must("a step of building a series pair")
+    };
+    let state = || -> Result<SeriesState, Failure> {
+        view(engine, None)?
+            .series(&ty)
+            .must("reading the series state")
+    };
+    let held = state()?;
+    ensure!(
+        held == SeriesState::default(),
+        "before a start, `series` must name no pair and count none; it answers {held:?}"
+    );
+    step(Choose::Start(field.clone()))?;
+    let held = state()?;
+    ensure!(
+        held.kept.is_empty() && held.building == [pair.clone()] && held.started == 1,
+        "a start must put the pair in hand and count it once; `series` answers {held:?}"
+    );
+    step(Choose::Start(field.clone()))?;
+    let held = state()?;
+    ensure!(
+        held.building == [pair.clone()] && held.started == 1,
+        "a second start of a pair already in hand must count nothing; `series` answers \
+         {held:?}"
+    );
+    let last = step(Choose::Fill {
+        field: field.clone(),
+        after: None,
+        limit: 2,
+    })?;
+    ensure!(
+        last == Some(RecordKey::from("k1")),
+        "the first fill of two records must end at k1; it ended at {last:?}"
+    );
+    let last = step(Choose::Fill {
+        field: field.clone(),
+        after: last,
+        limit: 2,
+    })?;
+    ensure!(
+        last == Some(RecordKey::from("k3")),
+        "the second fill of two records must end at k3; it ended at {last:?}"
+    );
+    let after = last;
+    let last = step(Choose::Fill {
+        field: field.clone(),
+        after,
+        limit: 2,
+    })?;
+    ensure!(
+        last.is_none(),
+        "the fill after k3 holds one record of two, and must answer none; it answered {last:?}"
+    );
+    let held = state()?;
+    ensure!(
+        held.building == [pair.clone()] && held.started == 1,
+        "fills must count nothing; `series` answers {held:?}"
+    );
+    step(Choose::Keep(field.clone()))?;
+    let held = state()?;
+    ensure!(
+        held.kept == [pair.clone()] && held.building.is_empty() && held.started == 1,
+        "a keep must make the pair kept and count nothing; `series` answers {held:?}"
+    );
+    let mut after = None;
+    loop {
+        let last = step(Choose::DropChunk {
+            field: field.clone(),
+            after: after.clone(),
+            limit: 2,
+        })?;
+        match last {
+            Some(last) => after = Some(last),
+            None => break,
+        }
+    }
+    let held = state()?;
+    ensure!(
+        held.kept.is_empty() && held.building.is_empty() && held.started == 1,
+        "a take-back must leave no pair and keep its count; `series` answers {held:?}"
+    );
+    step(Choose::Start(field))?;
+    let held = state()?;
+    ensure!(
+        held.kept.is_empty() && held.building == [pair] && held.started == 2,
+        "a pair started again after a take-back must count a new start, so a build that read \
+         the count before the take-back fills from the first key; `series` answers {held:?}"
+    );
     Ok(())
 }
 

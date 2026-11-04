@@ -26,7 +26,7 @@ Keeps an order index within each series, so a read of one series' window seeks s
 - **Takes:** a list of pairs of the type's fields, the series field first, as [["symbol", "at"]]: its series field is text, reference, number or decimal, its order field text, number, decimal, boolean, date-time, date or reference.
 - **Default:** `null`.
 - **Per type:** one value per type, and none for the lake.
-- **Cost:** each pair indexed costs a write a median 8.9 µs on SQLite at 100 000 records, 16.2 → 28.2 µs (measured), and an order field's 11 % on PostgreSQL; a fold fills a named pair whole, 0.46–1.03 s at 100 000 records, naming one beside the writer leaves it building, and taking it back clears its rows in parts.
+- **Cost:** each pair indexed costs a write a median 8.9 µs on SQLite at 100 000 records, 16.2 → 28.2 µs (measured), and an order field's 11 % on PostgreSQL; naming one fills it beside the writer, a chunk of `order_chunk` records a turn, and taking it back clears its rows whole in that write.
 
 ### `vector_index.<type>`
 

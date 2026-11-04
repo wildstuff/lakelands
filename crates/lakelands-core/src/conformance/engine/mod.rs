@@ -224,6 +224,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::SORTED_PAGE,
     reads::CHOSEN_ORDER,
     reads::CHOSEN_LEFT_BEHIND,
+    reads::SERIES_STARTED,
     reads::SORTED_PAGE_PINNED,
     reads::FILTER_AS_EVALUATOR,
     reads::EQUAL_IS_IDENTITY,

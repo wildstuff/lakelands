@@ -44,7 +44,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use lakelands_api::describe::{Kept, LakeDescription, NotKept, TypeDescription};
+use lakelands_api::describe::{
+    Kept, LakeDescription, NotKept, SeriesTold, SeriesToldState, TypeDescription,
+};
 use lakelands_api::engine::{
     After, Declared, KeyRange, ProjectionView, Ranked, Rankings, Scan, WindowBatch,
 };

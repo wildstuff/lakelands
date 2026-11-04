@@ -1009,6 +1009,7 @@ fn a_series_field_is_listed_from_both_its_kept_and_its_building_pairs() {
     let state = SeriesState {
         kept: vec![pair("series", "at")],
         building: vec![pair("series", "flag")],
+        started: 0,
     };
     assert_eq!(
         series_fields(&state),

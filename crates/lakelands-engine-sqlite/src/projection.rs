@@ -886,10 +886,15 @@ fn choose_series(
     conn.execute_batch("BEGIN IMMEDIATE").map_err(sql)?;
     let done = (|| {
         let mut state = series_state(conn, ty)?;
+        // A build fills and keeps a pair only while it is `building`: a
+        // setting put back beside the writer takes the pair back, whole, in
+        // that write, and the part in hand must not fill it again.
+        let building = state.building.contains(&pair);
         match step {
             Choose::Start(_) => {
                 if !state.kept.contains(&pair) && !state.building.contains(&pair) {
                     state.building.push(pair.clone());
+                    state.started += 1;
                 }
                 set_series(conn, ty, &state)?;
                 Ok(None)
@@ -898,13 +903,18 @@ fn choose_series(
                 field,
                 after,
                 limit,
-            } => fill_chosen(conn, ty, field, after.as_ref(), *limit),
+            } => match building {
+                true => fill_chosen(conn, ty, field, after.as_ref(), *limit),
+                false => Ok(None),
+            },
             Choose::Keep(_) => {
-                state.building.retain(|p| p != &pair);
-                if !state.kept.contains(&pair) {
-                    state.kept.push(pair.clone());
+                if building {
+                    state.building.retain(|p| p != &pair);
+                    if !state.kept.contains(&pair) {
+                        state.kept.push(pair.clone());
+                    }
+                    set_series(conn, ty, &state)?;
                 }
-                set_series(conn, ty, &state)?;
                 Ok(None)
             }
             // A pair taken back: its rows go whole in one step, or a chunk
@@ -1833,10 +1843,15 @@ fn mark_series(conn: &Connection, ty: &TypeName) -> Result<()> {
     }
     state.kept.retain(|p| named.contains(p));
     state.building.retain(|p| named.contains(p));
+    let mut started = false;
     for pair in named {
         if !state.kept.contains(&pair) && !state.building.contains(&pair) {
             state.building.push(pair);
+            started = true;
         }
+    }
+    if started {
+        state.started += 1;
     }
     set_series(conn, ty, &state)
 }
@@ -1846,6 +1861,11 @@ fn mark_series(conn: &Connection, ty: &TypeName) -> Result<()> {
 /// makes a pair whole at its event rather than marking it for a build. A
 /// setting taken back leaves no pair and drops their rows.
 fn rebuild_series(conn: &Connection, ty: &TypeName) -> Result<()> {
+    // A fold from the log makes the pairs whole, so a build may go on from
+    // its cursor; the count goes on rather than back, so a build never
+    // reads a number again for a pair whose rows a take-back beside the
+    // writer has since cleared.
+    let started = series_state(conn, ty)?.started;
     run(
         conn,
         "DELETE FROM sort_index WHERE ty = ?1 AND instr(field, char(31)) > 0",
@@ -1864,6 +1884,7 @@ fn rebuild_series(conn: &Connection, ty: &TypeName) -> Result<()> {
     let state = SeriesState {
         kept: pairs,
         building: Vec::new(),
+        started,
     };
     set_series(conn, ty, &state)?;
     let fields = engines::series_fields(&state);

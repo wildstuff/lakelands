@@ -18,8 +18,8 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
-    Chosen, Declared, HolderBatch, Matched, ProjectionView, Scan, WindowAt, WindowBatch,
-    WindowSides,
+    Chosen, Declared, HolderBatch, Matched, ProjectionView, Scan, SeriesState, WindowAt,
+    WindowBatch, WindowSides,
 };
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
@@ -105,6 +105,10 @@ impl ProjectionView for MemView {
 
     fn chosen(&self, ty: &TypeName) -> Result<Chosen> {
         Ok(self.read(|p, _| p.chosen(ty)))
+    }
+
+    fn series(&self, ty: &TypeName) -> Result<SeriesState> {
+        Ok(self.read(|p, _| p.series_state(ty)))
     }
 
     fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {

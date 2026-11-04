@@ -12,7 +12,9 @@
 use std::sync::Arc;
 
 use lakelands_api::engine::{Choose, Declared, Look, ProjectionView};
-use lakelands_api::seam::{LOOKUP_INDEX_SETTING, SORT_INDEX_SETTING, VIEW_KEPT_SETTING};
+use lakelands_api::seam::{
+    LOOKUP_INDEX_SETTING, SERIES_INDEX_SETTING, SORT_INDEX_SETTING, VIEW_KEPT_SETTING,
+};
 use lakelands_api::write::Declaration;
 use lakelands_api::{FieldName, Position, RecordKey, Result, TypeName};
 use lakelands_core::engines;
@@ -31,6 +33,10 @@ pub(crate) enum Kind {
     Looked,
     /// `view_kept.<view>`: the view's kept records.
     Kept,
+    /// `series_index.<type>`: the series pairs' rows
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §How a
+    /// lake with records gets it).
+    Series,
 }
 
 /// The type and index a record write asks to have built, when it puts a
@@ -51,6 +57,9 @@ pub(crate) fn asked(write: &Write) -> Option<(TypeName, Kind)> {
     }
     if let Some(ty) = key.as_str().strip_prefix(LOOKUP_INDEX_SETTING) {
         return Some((TypeName::from(ty), Kind::Looked));
+    }
+    if let Some(ty) = key.as_str().strip_prefix(SERIES_INDEX_SETTING) {
+        return Some((TypeName::from(ty), Kind::Series));
     }
     let view = key.as_str().strip_prefix(VIEW_KEPT_SETTING)?;
     let value = patch.and_then(|p| p.get(&FieldName::from("value")));
@@ -74,6 +83,18 @@ pub(crate) async fn finish(lake: &Arc<Lake>, ty: &TypeName, kind: Kind) -> Resul
             }
         }
         return Ok(());
+    }
+    if let Kind::Series = kind {
+        // A pair is the host's, and a type's own: no kept name holds one.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        road::send(
+            lake,
+            Box::new(Build::new(ty.clone(), Kind::Series).answering(tx)),
+        );
+        return match rx.await {
+            Ok(ended) => ended,
+            Err(_) => Err(exec::halted(false)),
+        };
     }
     for name in engines::ordered_names(ty) {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -115,6 +136,9 @@ pub(crate) fn owed(_lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dy
                 kept.push((under_in(&declared, &t.name).len(), t.name.clone()));
             }
             continue;
+        }
+        if !view.series(&t.name)?.building.is_empty() {
+            owed.push(Box::new(Build::new(t.name.clone(), Kind::Series)));
         }
         for name in engines::ordered_names(&t.name) {
             let chosen = view.chosen(&name)?;
@@ -188,6 +212,10 @@ pub(crate) struct Build {
     fields: Vec<FieldName>,
     /// The key the last chunk ended at.
     after: Option<RecordKey>,
+    /// How many times the type's series pairs had been started at the
+    /// walk: a turn that reads a greater number fills from the first key
+    /// again, since a pair taken back and set again is a new pair.
+    started: u64,
     /// Where the door that asked waits, if one did.
     answer: Option<tokio::sync::oneshot::Sender<Result<()>>>,
 }
@@ -199,6 +227,7 @@ impl Build {
             kind,
             fields: Vec::new(),
             after: None,
+            started: 0,
             answer: None,
         }
     }
@@ -220,10 +249,24 @@ impl Job for Build {
         if let Kind::Kept = self.kind {
             return Ok(());
         }
-        let chosen = view.chosen(&self.ty)?;
         self.fields = match self.kind {
-            Kind::Sorted => chosen.setting_building,
-            Kind::Looked => chosen.looked_building,
+            Kind::Sorted => view.chosen(&self.ty)?.setting_building,
+            Kind::Looked => view.chosen(&self.ty)?.looked_building,
+            // Only the pairs a build is filling: a pair already kept is
+            // never filled again, and a pair taken back between two turns
+            // is not filled at all.
+            Kind::Series => {
+                let state = view.series(&self.ty)?;
+                self.started = state.started;
+                (state.building.iter())
+                    .map(|p| {
+                        FieldName::from(lakelands_api::seam::series_field(
+                            p.order.as_str(),
+                            p.series.as_str(),
+                        ))
+                    })
+                    .collect()
+            }
             Kind::Kept => Vec::new(),
         };
         Ok(())
@@ -236,6 +279,22 @@ impl Job for Build {
     fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
         let limit = t.limits.order_chunk.max(1);
         match self.kind {
+            // A pair's rows are an order index's, kept under a derived
+            // name: the same `Fill` and `Keep` turns build them. A pair
+            // taken back and set again between two turns is a new pair,
+            // and its cursor is none again: the rows the take-back
+            // cleared lie before the key in hand.
+            Kind::Series => {
+                let started = {
+                    let view = t.engine.view(None)?;
+                    view.series(&self.ty)?.started
+                };
+                if started != self.started {
+                    self.started = started;
+                    self.after = None;
+                }
+                self.turn_sorted(t, limit)
+            }
             Kind::Sorted => self.turn_sorted(t, limit),
             Kind::Looked => self.turn_looked(t, limit),
             Kind::Kept => self.turn_kept(t, w, limit),

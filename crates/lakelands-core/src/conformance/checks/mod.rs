@@ -137,6 +137,7 @@ mod search_axes;
 mod search_fields;
 mod search_text_weights;
 mod seen_before;
+mod series_builds;
 mod set_declared;
 mod set_migrated;
 mod set_names;
@@ -1046,6 +1047,12 @@ pub const ALL: &[Check] = &[
     kept_builds::KEPT_BUILD_SETTING_TAKEN_BACK,
     kept_builds::KEPT_BUILD_SETTING_SET_AGAIN,
     kept_builds::KEPT_BUILD_REBUILD_SAME_LAKE,
+    series_builds::SERIES_SETTING_BUILDS,
+    series_builds::SERIES_BUILD_RESUMES,
+    series_builds::SERIES_TAKEN_BACK,
+    series_builds::SERIES_REBUILD_SAME_ROWS,
+    series_builds::SERIES_BUILD_REGAINED,
+    series_builds::SERIES_TOLD,
     rerank::RERANK_REORDERS_THE_WINDOW,
     rerank::RERANK_ONE_WINDOW,
     rerank::RERANK_ONE_WINDOW_ONLY,
