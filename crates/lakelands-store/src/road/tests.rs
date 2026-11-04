@@ -1546,10 +1546,10 @@ async fn a_runner_stopped_between_turns_is_finished_by_the_next_open() {
     }
 }
 
-/// The writes after a job's view reach its first turn, under the writer,
-/// before anything else it does; a write about a type it does not reach
-/// does not. Past one turn's read (`limits.part_tail`) they are folded
-/// off the writer first, and the first turn reads only what came after.
+/// The writes after a job's view reach it before its first turn does
+/// anything else; a write about a type it does not reach does not. They
+/// are folded off the writer, in pieces of one turn's read
+/// (`limits.part_tail`), and the first turn reads only what came after.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_tail_past_the_view_reaches_the_first_turn() {
     for on in engines() {
@@ -1585,16 +1585,11 @@ async fn the_tail_past_the_view_reaches_the_first_turn() {
             let keys: Vec<String> = (0..notes).map(|i| format!("n{i}")).collect();
             // Off the writer in pieces of one turn's read, then the first
             // turn's own read, which is empty.
-            let want = if notes as u32 > bound {
-                let mut pieces: Vec<Vec<String>> = keys
-                    .chunks(bound as usize)
-                    .map(<[String]>::to_vec)
-                    .collect();
-                pieces.push(Vec::new());
-                pieces
-            } else {
-                vec![keys]
-            };
+            let mut want: Vec<Vec<String>> = keys
+                .chunks(bound as usize)
+                .map(<[String]>::to_vec)
+                .collect();
+            want.push(Vec::new());
             assert_eq!(
                 folds, want,
                 "{on:?}: {notes} notes past the view, {bound} a turn"

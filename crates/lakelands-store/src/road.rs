@@ -2,8 +2,8 @@
 //! (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
 //!
 //! An act or a build is a *job*: a walk on a view, off the writer; a
-//! catch-up, off the writer, while the log past that view is longer than
-//! one turn may read; then turns, each one entry of the writer's queue
+//! catch-up, off the writer, which folds the log past that view until a
+//! read finds no more of it than one turn may read; then turns, each one entry of the writer's queue
 //! ([`exec::write`]) held to a limit, each leaving the lake whole. The
 //! first turn reads the tail past the view under the writer and hands it
 //! to the job before it does anything else, so what the walk judged is
@@ -261,9 +261,10 @@ async fn walk(weak: &Weak<Lake>, job: &Held) -> Result<Option<Position>> {
     .await
 }
 
-/// Off the writer, fold the tail past `past` into the job while it is
-/// longer than `bound`, in pieces of `bound` events: the position the job
-/// stands at then. A lake written faster than the job catches up stops it
+/// Off the writer, fold the tail past `past` into the job in pieces of
+/// `bound` events, until a read finds no more than `bound` of it: the
+/// position the job stands at then, so that its first turn reads only
+/// what was written since. A lake written faster than the job catches up stops it
 /// after [`TRIES`] rounds, and its first turn finds the tail too long.
 async fn catch_up(
     weak: &Weak<Lake>,
@@ -282,25 +283,30 @@ async fn catch_up(
             };
             let fold = |read: &[Event]| lock(&j).fold(read);
             let piece = usize::try_from(bound).unwrap_or(usize::MAX);
-            match found(view.as_ref(), &reach, from, head, u32::MAX)? {
-                Found::At(at) if at.len() <= piece => return Ok(None),
+            // A short tail is folded here too, and the first turn reads
+            // only what was written after this read.
+            let long = match found(view.as_ref(), &reach, from, head, u32::MAX)? {
                 Found::At(at) => {
                     for at in at.chunks(piece) {
                         fold(&reached(&lake, &reach, at)?)?;
                     }
+                    at.len() > piece
                 }
                 Found::Over => return Ok(None),
-                Found::Unindexed => {
-                    if logged(&lake, &reach, from, head, bound)?.is_some() {
-                        return Ok(None);
-                    }
-                    folded_logged(&lake, &reach, from, head, piece, fold)?;
-                }
-            }
-            Ok(Some(view.position()))
+                Found::Unindexed => match logged(&lake, &reach, from, head, bound)? {
+                    Some(read) => fold(&read).map(|()| false)?,
+                    None => folded_logged(&lake, &reach, from, head, piece, fold).map(|()| true)?,
+                },
+            };
+            Ok(Some((view.position(), long)))
         });
         match moved.await? {
-            Some(at) => past = at,
+            Some((at, long)) => {
+                past = at;
+                if !long {
+                    break;
+                }
+            }
             None => break,
         }
     }
@@ -319,7 +325,8 @@ fn turn(t: &Turn<'_>, job: &mut dyn Job) -> Result<Turned> {
 }
 
 /// The events past `past` through `view`'s position that reach a job, in
-/// log order; none where finding them reads more than `bound` of them.
+/// log order; none where more than `bound` of them reach it, or finding
+/// them reads more than `bound`.
 /// They are found in the log index, by source for the sources and by type
 /// (and key) for the types, so a lake written elsewhere costs nothing, and
 /// read from the log at their positions. Where the index decides nothing,
@@ -337,7 +344,10 @@ pub(crate) fn read_tail(
         return Ok(Some(Vec::new()));
     };
     match found(view, reach, from, head, bound)? {
-        Found::At(at) => reached(lake, reach, &at).map(Some),
+        Found::At(at) => {
+            let read = reached(lake, reach, &at)?;
+            Ok((read.len() as u64 <= u64::from(bound)).then_some(read))
+        }
         Found::Over => Ok(None),
         Found::Unindexed => logged(lake, reach, from, head, bound),
     }
@@ -355,7 +365,11 @@ enum Found {
 }
 
 /// The positions from `from` through `head` the log index finds for
-/// `reach`: by source, and by type and key.
+/// `reach`: by source, and by type and key. A seek by key reads the index
+/// once a key, so where the job names more keys than the tail holds
+/// positions the tail is sought by type alone, under no bound: what it
+/// finds is fewer than the keys, and [`reached`] keeps of it what reaches
+/// the job. Either way the reads go with the tail, not with the job.
 fn found(
     view: &dyn ProjectionView,
     reach: &Reach,
@@ -363,10 +377,15 @@ fn found(
     head: Position,
     bound: u32,
 ) -> Result<Found> {
+    let by_key = reach.keys.len() as u64 <= head.0.saturating_sub(from.0).saturating_add(1);
+    let bound = if by_key { bound } else { u32::MAX };
     let room = bound.saturating_add(1);
     let filter = FeedFilter {
         types: reach.types.clone(),
-        keys: reach.keys.iter().cloned().collect(),
+        keys: match by_key {
+            true => reach.keys.iter().cloned().collect(),
+            false => Vec::new(),
+        },
         ..FeedFilter::default()
     };
     let mut at = BTreeSet::new();

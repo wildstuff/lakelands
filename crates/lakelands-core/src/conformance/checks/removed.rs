@@ -2012,6 +2012,17 @@ impl Gate {
         self.set(|g| g.open = true);
     }
 
+    /// Arm the gate again, as it stood before it was first armed and
+    /// opened: a check holds a second act's turns with it.
+    pub(super) fn rearm(&self) {
+        self.set(|g| {
+            *g = Gated {
+                armed: true,
+                ..Gated::default()
+            }
+        });
+    }
+
     /// Let the entry held go on, and hold the next.
     pub(super) fn let_one_through(&self) {
         self.set(|g| g.let_through += 1);
