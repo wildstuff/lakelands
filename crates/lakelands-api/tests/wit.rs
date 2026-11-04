@@ -1984,7 +1984,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         checks.push(("selection", case_names(&all, None)));
     }
 
-    fn kept(k: &Kept) -> [NotKept; 5] {
+    fn kept(k: &Kept) -> [NotKept; 6] {
         match k {
             Kept::Kept | Kept::Computed { .. } => {}
         }
@@ -1995,11 +1995,15 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             NotKept::NotWhole { not_exact },
             NotKept::NotKeptHere,
             NotKept::OnlySome,
+            NotKept::Building,
         ];
         for why in &all {
             match why {
                 NotKept::NotAsked | NotKept::CannotBeKept { .. } => {}
-                NotKept::NotWhole { .. } | NotKept::NotKeptHere | NotKept::OnlySome => {}
+                NotKept::NotWhole { .. }
+                | NotKept::NotKeptHere
+                | NotKept::OnlySome
+                | NotKept::Building => {}
             }
         }
         all
