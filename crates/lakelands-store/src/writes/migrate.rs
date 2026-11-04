@@ -319,6 +319,27 @@ impl Call<'_> {
         // view against it, or the view would refuse every read after.
         let mut after = probe.clone();
         after.put(Declaration::Type(m.to.clone()), 0, None);
+        // The views it declares again are judged in place of those in
+        // force, as the lake it leaves holds them: each a view in force over
+        // the type, named once, and shown to its author (027, extended).
+        let over = |t: &TypeDecl| {
+            let v = t.view.as_deref();
+            v.is_some_and(|v| {
+                v.source == m.to.name || v.merge.iter().any(|s| s.source == m.to.name)
+            })
+        };
+        for (i, v) in m.views.iter().enumerate() {
+            let held = w.ontology.ty(&v.name).ok().filter(|t| over(t));
+            let twice = m.views[..i].iter().any(|o| o.name == v.name);
+            let Some(held) = held.filter(|_| v.view.is_some() && !twice) else {
+                let (view, ty) = (v.name.clone(), m.to.name.clone());
+                return Err(Error::invalid(Case::MigrationViewNotOver { view, ty }));
+            };
+            if !sees.shows(&Declaration::Type(held.clone())) {
+                return Err(Error::not_granted());
+            }
+            after.put(Declaration::Type(v.clone()), 0, None);
+        }
         // The refusal of a migration that takes away a field `reader` reads:
         // one the type, or a link type of it, has before it and not after.
         let has = |t: &TypeDecl, n: &FieldName| t.has_field(n);
@@ -358,6 +379,8 @@ impl Call<'_> {
                 }))
             };
         for reader in w.ontology.types.values().map(|e| &e.decl) {
+            let named = m.views.iter().find(|v| v.name == reader.name);
+            let reader = named.unwrap_or(reader);
             let Some(v) = reader.view.as_deref() else {
                 continue;
             };
@@ -1179,6 +1202,8 @@ impl Call<'_> {
         if !report.lossless {
             return Err(self.lossy(w, &m, report));
         }
+        let mut m = m;
+        let views = std::mem::take(&mut m.views);
         // Past the lake's ceiling, naming the set whose change passed it.
         let max = self.lake.limits.max_set_changes;
         if let Some((set, ..)) = members.get(max as usize) {
@@ -1225,6 +1250,23 @@ impl Call<'_> {
         // the lake under the new name, after that link type's declaration.
         for declaration in carried(&w.ontology, &m) {
             drafts.push(system_declared(&w.ontology, declaration, now)?);
+        }
+        // The views it declares again are declared after it, by its author:
+        // one that reads as the lake holds it is kept, not declared again.
+        for v in views
+            .into_iter()
+            .filter(|v| w.ontology.ty(&v.name).ok() != Some(v))
+        {
+            let hash = shape::schema_hash(&v).map_err(Error::invalid)?;
+            let declaration = Declaration::Type(v);
+            let version = w.ontology.next_version(&declaration);
+            let body = EventBody::Declared {
+                declaration,
+                schema_hash: Some(hash),
+                version,
+                with_the_set: false,
+            };
+            drafts.push(self.draft(now, Origin::Authored, body));
         }
         let d = self.draft(
             now,

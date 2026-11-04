@@ -97,6 +97,12 @@ check!(
     given
 );
 
+check!(
+    VIEW_BUILDING_REFUSES_READERS = a_set_or_trigger_over_a_view_a_build_has_not_kept_is_refused,
+    "099, R9: a set of a kept view, and a trigger on it, declared while the view's build is not whole are refused `view_building`, naming the view and the set or the trigger, and append nothing; once the setting's door has answered, both land",
+    given
+);
+
 /// The view over `row`, counting its records, summing and bounding `n`, by
 /// `s`.
 async fn by_s(l: &Lake) -> Result<(), Failure> {
@@ -1097,4 +1103,77 @@ async fn a_copy_taken_beside_a_kept_build_imports_kept(store: Store, given: Give
         late.fields.get("c")
     );
     Ok(())
+}
+
+async fn a_set_or_trigger_over_a_view_a_build_has_not_kept_is_refused(
+    store: Store,
+    given: Given,
+) -> Held {
+    let size = u64::from(given.large_lake.clamp(200, 400));
+    let store = chunked(&given, store).await?;
+    let l = rows(store.as_ref(), size).await?;
+    by_s(&l).await?;
+    let readers = [
+        (
+            "object_set",
+            "busy",
+            json!({"of": "by_s", "where": "c > 0"}),
+        ),
+        ("trigger", "grew", json!({"on": "by_s"})),
+    ];
+    let refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let declarer = {
+        let (l, s, refused, readers) = (&l, store.as_ref(), refused.clone(), &readers);
+        async move {
+            ensure!(
+                until_appended(l, KEPT).await?,
+                "`{KEPT}` was never appended, so no build began"
+            );
+            for (code, name, d) in readers {
+                let before = s.head().await.must("the head")?;
+                let d = declaration(code, name, d);
+                let r = l.cat.declare(&l.own, d).await;
+                if r.is_ok() {
+                    // It landed: the build was whole by then.
+                    ensure!(
+                        is_kept(&keeping(l, "by_s").await?),
+                        "the {code} over `by_s` landed while its build was not whole"
+                    );
+                    continue;
+                }
+                let at = json!([{"code": code, "name": name}]);
+                let want = json!({"code": "view_building", "type": "by_s", "at": at});
+                refused_like(&format!("the {code} over a view in its build"), r, &want)?;
+                head_unmoved(s, before, &format!("the {code}")).await?;
+                refused.store(true, Ordering::SeqCst);
+            }
+            Ok::<_, Failure>(())
+        }
+    };
+    let setter = async {
+        l.set(KEPT, json!(true)).await?;
+        Ok::<_, Failure>(())
+    };
+    let out = join_all(vec![Box::pin(setter), Box::pin(declarer)]).await;
+    out[0].as_ref().map_err(|e| Failure::new(format!("{e}")))?;
+    out[1].as_ref().map_err(|e| Failure::new(format!("{e}")))?;
+    ensure!(
+        refused.load(Ordering::SeqCst),
+        "the build was whole before a declaration was sent beside it, so nothing was refused"
+    );
+    for (code, name, d) in &readers {
+        l.cat
+            .declare(&l.own, declaration(code, name, d))
+            .await
+            .must(name)?;
+    }
+    Ok(())
+}
+
+/// The declaration of the `code` named `name`, with `fields`.
+fn declaration(code: &str, name: &str, fields: &Value) -> Declaration {
+    let mut d = fields.clone();
+    d["declare"] = json!(code);
+    d["name"] = json!(name);
+    serde_json::from_value(d).expect("a declaration")
 }

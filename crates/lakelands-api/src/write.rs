@@ -1100,6 +1100,13 @@ pub struct Migration {
     /// (`docs/decisions/050-a-field-declares-its-initial-value.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fill: Vec<FieldName>,
+    /// Views over the type, each declared again as it stands after the
+    /// migration: judged against the migrated type in its plan in place of
+    /// the view in force, and declared in the migration's append; one that
+    /// reads as the lake holds it is kept, not declared again
+    /// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<TypeDecl>,
 }
 
 impl Migration {
@@ -1111,6 +1118,7 @@ impl Migration {
             renames,
             relation_renames,
             fill,
+            views: Vec::new(),
         }
     }
 

@@ -1020,3 +1020,25 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 - A trigger, a verb, an object set or a function is withdrawn by a declaration (lakelands#1219).
 - Extended: a type is withdrawn once it holds no live record and nothing in force names it, its link types with it; it was refused `withdrawn_kind` (lakelands#1292).
 - Marking a type `retired_by: verbs` is a change of meaning, taken by `declare` (lakelands#1148).
+- **As built (2026-11-04), lakelands#1726: a migration declares its views again.**
+  `Migration` gains `views`, re-declarations of views in force over the type it
+  migrates (as its source or a merged one). The plan judges each in place of the
+  view in force, against the migrated type, so a view named that still reads a
+  field the migration takes away is refused with the report a migration that names
+  none is given, and a view not named keeps that refusal. A view named that is not
+  in force over the type, or named twice, is refused `migration_view_not_over`; one
+  the author is not shown is not granted. The apply appends one `declared` for each
+  view named that reads otherwise than the lake holds it, after the `migrated`, in
+  its append; one named as it is held is not declared again and keeps its version.
+  The logged `migrated` carries no `views`: the `declared` events carry them, so a
+  feed reader sees a view's change as it sees one from `declare`. Two choices of
+  shape: the field is on `Migration`, not on the doors, so a proposed migration
+  takes it as `migrate` does; and kept or not, any view over the type may be named,
+  since the refusal it lifts is the same. A declaration takes no such field: a
+  `declare` that changes the type without a reshape already lands with the views
+  sent beside it in its set, in one append, and one that reshapes is refused
+  `reshapes` and is a migration. The migration's fold makes the views over the type
+  again as before, in its turn; the `declared` of a changed view makes it again at
+  its event, whole in one fold, as any declaration of a kept view does (record 099,
+  R8): it is not built beside the writer. Held by `MIGRATE_WITH_ITS_VIEWS` and
+  `MIGRATE_WITH_ITS_VIEWS_UNAPPLIED`.

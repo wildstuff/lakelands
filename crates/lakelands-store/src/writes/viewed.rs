@@ -465,6 +465,7 @@ impl Call<'_> {
         // A trigger on a view the lake would not keep could never fire.
         for r in &all {
             let Reader::Trigger(t) = r else { continue };
+            building(&at, &staged, r, sees.shows(&r.declaration()))?;
             if !kept::whole(&at, &staged, &t.on)? {
                 let ty = t.on.clone();
                 // One that watched it before is told the keep stays.
@@ -483,6 +484,7 @@ impl Call<'_> {
         let asked = stamped.iter().filter_map(|k| viewed.asked.get(*k));
         let asked: BTreeSet<&TypeName> = asked.flatten().collect();
         for s in &sets {
+            building(&at, &staged, &Reader::Set(s), shown(s))?;
             if !kept::whole(&at, &staged, &s.of)? {
                 let ty = s.of.clone();
                 let r = Reader::Set(s);
@@ -597,5 +599,17 @@ pub(crate) fn stepped_under(
         (true, _) => Ok(()),
         (false, Some(ty)) => Err(Error::invalid(Case::NoLongerDeclarable { ty: ty.clone() })),
         (false, None) => Err(Error::not_granted()),
+    }
+}
+
+/// A set or a trigger over a view a build has not kept whole yet is
+/// refused `view_building`, naming the view: it reads the fold, which the
+/// build has not finished (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`, R9).
+fn building(at: &At<'_>, staged: &Staged, r: &Reader<'_>, shown: bool) -> Result<()> {
+    let ty = r.view();
+    match kept::building(at, staged, ty)? {
+        false => Ok(()),
+        true if shown => Err(r.refusal(Case::ViewBuilding { ty: ty.clone() })),
+        true => Err(Error::not_granted()),
     }
 }
