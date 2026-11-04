@@ -342,12 +342,17 @@ impl Gathered {
         (source, selection): (&SourceId, &Selection),
         (at, earlier): (Position, &[Removal]),
     ) -> Result<Gathered> {
-        // `known_at` never falls.
+        // `known_at` never falls. The cut is searched through the view's
+        // mark, not the published head: a write folded past that head but
+        // inside the view's window is this gather's to judge, or the tail
+        // past the view would never read it (099).
         let before = match selection {
-            Selection::WrittenBefore(t) => Some(match lake.position_at(Timestamp(t.0 - 1))? {
-                Some(p) => p.next(),
-                None => Position::GENESIS,
-            }),
+            Selection::WrittenBefore(t) => Some(
+                match lake.position_through(Timestamp(t.0 - 1), view.position())? {
+                    Some(p) => p.next(),
+                    None => Position::GENESIS,
+                },
+            ),
             Selection::Delivery(_) | Selection::Deliveries(_) | Selection::SeenBefore(_) => None,
         };
         let mut g = Gathered {
@@ -977,6 +982,11 @@ pub(crate) struct Remove {
     /// The last position the act wrote.
     position: Position,
     own: BTreeSet<Position>,
+    /// The restate the walk planned off the writer, where the act's last
+    /// turn finds it; `None` where a turn built one instead.
+    ahead: Option<crate::lake::scrub::Restate>,
+    /// The restate under way, a page a turn (099).
+    restate: Option<crate::lake::scrub::Restate>,
     answer: Option<tokio::sync::oneshot::Sender<Reported>>,
 }
 
@@ -1013,6 +1023,8 @@ pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn
             apart: act.apart.clone(),
             position: act.at,
             own: BTreeSet::new(),
+            ahead: None,
+            restate: None,
             answer: None,
         }));
     }
@@ -1033,21 +1045,25 @@ pub(crate) fn settle_owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<
         pending |= state != "done" && (state == "rebuilt" || whole(lake, *at, head)?);
     }
     Ok(match pending {
-        true => vec![Box::new(Settle)],
+        true => vec![Box::new(Settle { restate: None })],
         false => Vec::new(),
     })
 }
 
 /// The job that finishes what a log left owed: the restate and the
 /// reclaim, once the act is whole.
-struct Settle;
+struct Settle {
+    /// The restate the walk planned, a page a turn.
+    restate: Option<crate::lake::scrub::Restate>,
+}
 
 impl Job for Settle {
     fn reach(&self) -> Reach {
         Reach::default()
     }
 
-    fn walk(&mut self, _lake: &Lake, _view: &dyn ProjectionView) -> Result<()> {
+    fn walk(&mut self, lake: &Lake, view: &dyn ProjectionView) -> Result<()> {
+        self.restate = lake.restate_owed(view)?;
         Ok(())
     }
 
@@ -1057,8 +1073,27 @@ impl Job for Settle {
 
     fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
         let lake: &Lake = t;
-        lake.finish_forgetting(w)?;
-        Ok(Turned::Whole)
+        let mut restate = match self.restate.take() {
+            Some(restate) => restate,
+            // A turn between the walk and this one left a restate owed:
+            // plan it here, and take it a page a turn like any (099).
+            None => {
+                let view = lake.engine.view(None)?;
+                let owed = lake.restate_owed(view.as_ref())?;
+                drop(view);
+                match owed {
+                    Some(restate) => restate,
+                    None => return Ok(Turned::Whole),
+                }
+            }
+        };
+        match restate.step(lake, w)? {
+            crate::lake::scrub::Stepped::More => {
+                self.restate = Some(restate);
+                Ok(Turned::More)
+            }
+            crate::lake::scrub::Stepped::Done(_) => Ok(Turned::Whole),
+        }
     }
 }
 
@@ -1171,6 +1206,9 @@ impl Job for Remove {
         self.report = Some(report);
         self.judged = judged;
         self.gathered = Some(g);
+        // The restate the act leaves, planned here off the writer with
+        // the act as this walk judges it (099).
+        self.ahead = Some(lake.restate_for_act(view, &self.removal())?);
         Ok(())
     }
 
@@ -1243,6 +1281,13 @@ impl Remove {
     /// its retirements, or its restate.
     fn one_turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
         let lake: &Lake = t;
+        // A turn of the restate the act left: one page of the projection,
+        // the writer handed back between pages (099).
+        if self.restate.is_some() {
+            // The act's appends reached the last position it wrote; a
+            // page after them reports a failure through that.
+            return self.restate_turn(t, w, self.position);
+        }
         let view = lake.engine.view(None)?;
         // The writer's catch-up may have left the projection holding an act
         // the walk off it did not see: take that act up before beginning
@@ -1262,39 +1307,8 @@ impl Remove {
             // the head the act's appends reached.
             let through = view.position().unwrap_or(Position::GENESIS);
             drop(view);
-            let reclaimed = lake.finish_act(w, through)?;
-            let mut report = self.report.take().unwrap_or_else(|| RemoveReport {
-                source: self.source.clone(),
-                selection: self.selection.clone(),
-                before: None,
-                events: 0,
-                undelivered: 0,
-                unseen: 0,
-                types: Vec::new(),
-                fields: Vec::new(),
-                retired: Vec::new(),
-                kept: Vec::new(),
-                recomputed: Vec::new(),
-                views: Vec::new(),
-                breaches: Vec::new(),
-                references: Vec::new(),
-                keys: self.keys.clone(),
-                apart: self.apart.clone(),
-                unshredded: 0,
-                log_events: 0,
-                expected_ms: 0,
-                reclaim_untimed: lake.untimed(),
-                position: self.position,
-                reclaimed: None,
-                reclaim_owed: lake.reclaim_owed(),
-                report_id: String::new(),
-                quarantined: Vec::new(),
-            });
-            report.reclaimed = reclaimed;
-            report.reclaim_owed = lake.reclaim_owed();
-            report.position = report.position.max(self.position);
-            self.report = Some(report);
-            return Ok(Turned::Whole);
+            self.restating(t)?;
+            return self.restate_turn(t, w, through);
         }
         let next = match self.act {
             None => self.begin(lake, w, view.as_ref())?,
@@ -1307,15 +1321,113 @@ impl Remove {
             Next::Nothing => Ok(Turned::Whole),
             Next::More => Ok(Turned::More),
             Next::Whole => {
-                let reclaimed = lake.finish_act(w, self.position)?;
-                let mut report = self.report.take().expect("an act's part has its report");
-                report.reclaimed = reclaimed;
-                report.reclaim_owed = lake.reclaim_owed();
-                report.position = report.position.max(self.position);
-                self.report = Some(report);
+                self.restating(t)?;
+                // The act is in the log through the last position it
+                // wrote, this turn's own appends.
+                self.restate_turn(t, w, self.position)
+            }
+        }
+    }
+
+    /// Hold the restate the act leaves: the plan its walk made, with the
+    /// records its first turn took in past the walk, or one planned here
+    /// where the walk's is gone.
+    fn restating(&mut self, lake: &Lake) -> Result<()> {
+        if self.restate.is_some() {
+            return Ok(());
+        }
+        let act = self.removal();
+        let (mut restate, acts) = match self.ahead.take() {
+            // The walk's plan stands where its gather is the act's: what
+            // the first turn took in past it is added below.
+            Some(ahead) if self.gathered.is_some() => (ahead, vec![act]),
+            // An act the walk did not see, taken up by a turn: planned
+            // here from the lists, which hold the act as the log does.
+            _ => {
+                let view = lake.engine.view(None)?;
+                let restate = (lake.restate_owed(view.as_ref())?)
+                    .unwrap_or_else(crate::lake::scrub::Restate::done);
+                (restate, Vec::new())
+            }
+        };
+        let reached = (self.gathered.iter()).flat_map(|g| g.reached.iter().cloned());
+        restate.absorb(reached, acts, &self.tail);
+        self.restate = Some(restate);
+        Ok(())
+    }
+
+    /// The act as the walk judged it, for the restate's plan: what the
+    /// source's events before it select, and the keys it destroys.
+    fn removal(&self) -> Removal {
+        let (at, before) = match &self.gathered {
+            Some(g) => (g.at, g.before),
+            None => (self.act.unwrap_or(self.position), None),
+        };
+        Removal {
+            at,
+            source: self.source.clone(),
+            selection: self.selection.clone(),
+            before,
+            keys: self.keys.clone(),
+            apart: self.apart.clone(),
+            fixed: Fixed::default(),
+        }
+    }
+
+    /// One turn of the restate, a page of the projection: the writer is
+    /// handed back between pages. A failure says the act is done in the
+    /// log and names the turn that could not finish it.
+    fn restate_turn(&mut self, t: &Turn<'_>, w: &mut Writer, at: Position) -> Result<Turned> {
+        let lake: &Lake = t;
+        let mut restate = self
+            .restate
+            .take()
+            .expect("a restate turn holds its restate");
+        match lake.step_act(w, &mut restate, at)? {
+            crate::lake::scrub::Stepped::More => {
+                self.restate = Some(restate);
+                Ok(Turned::More)
+            }
+            crate::lake::scrub::Stepped::Done(reclaimed) => {
+                self.answered(lake, reclaimed);
                 Ok(Turned::Whole)
             }
         }
+    }
+
+    /// The report as the restate and the reclaim leave it.
+    fn answered(&mut self, lake: &Lake, reclaimed: Option<lakelands_api::write::CompactReport>) {
+        let mut report = self.report.take().unwrap_or_else(|| RemoveReport {
+            source: self.source.clone(),
+            selection: self.selection.clone(),
+            before: None,
+            events: 0,
+            undelivered: 0,
+            unseen: 0,
+            types: Vec::new(),
+            fields: Vec::new(),
+            retired: Vec::new(),
+            kept: Vec::new(),
+            recomputed: Vec::new(),
+            views: Vec::new(),
+            breaches: Vec::new(),
+            references: Vec::new(),
+            keys: self.keys.clone(),
+            apart: self.apart.clone(),
+            unshredded: 0,
+            log_events: 0,
+            expected_ms: 0,
+            reclaim_untimed: lake.untimed(),
+            position: self.position,
+            reclaimed: None,
+            reclaim_owed: lake.reclaim_owed(),
+            report_id: String::new(),
+            quarantined: Vec::new(),
+        });
+        report.reclaimed = reclaimed;
+        report.reclaim_owed = lake.reclaim_owed();
+        report.position = report.position.max(self.position);
+        self.report = Some(report);
     }
 
     /// The act's first turn: the tail folded into the selection, the keys
@@ -1365,21 +1477,29 @@ impl Remove {
             )?);
             self.keys = keys;
             self.apart = apart;
+            // The walk's plan was made with the walk's act: an act of the
+            // source since it is another plan, and the restate plans again
+            // at this turn (099).
+            self.ahead = None;
         }
-        let tail = std::mem::take(&mut self.tail);
         let moved = std::mem::take(&mut self.moved);
         if let Some(g) = self.gathered.as_mut() {
             g.at = at;
             // `known_at` never falls, so a time's cut moves forward over the
-            // tail the first turn reads and never back (099).
+            // tail the first turn reads and never back (099). It is the
+            // writer's view that bounds it: the tail was read through that
+            // view, and what stands between it and a head not yet published
+            // is nothing this act may leave out.
             if let Selection::WrittenBefore(t) = &g.selection {
                 let t = *t;
-                g.before = Some(match lake.position_at(Timestamp(t.0 - 1))? {
-                    Some(p) => p.next(),
-                    None => Position::GENESIS,
-                });
+                g.before = Some(
+                    match lake.position_through(Timestamp(t.0 - 1), view.position())? {
+                        Some(p) => p.next(),
+                        None => Position::GENESIS,
+                    },
+                );
             }
-            for e in &tail {
+            for e in &self.tail {
                 g.event(&w.ontology, e);
             }
         }
@@ -1411,6 +1531,13 @@ impl Remove {
             if self.shredded && report.unshredded > 0 {
                 let (source, count) = (self.source.clone(), report.unshredded);
                 return Err(Error::invalid(Case::RemoveNotShredded { source, count }));
+            }
+            // A tail that moves the versions the act destroys moves the
+            // records and outputs a scoped plan must fold: the walk's plan
+            // is not this act's, and the restate plans again at this turn
+            // (099).
+            if keys != self.keys || apart != self.apart {
+                self.ahead = None;
             }
             self.keys = keys;
             self.apart = apart;
@@ -1581,6 +1708,8 @@ pub(crate) fn start(
         apart: Vec::new(),
         position: Position::GENESIS,
         own: BTreeSet::new(),
+        ahead: None,
+        restate: None,
         answer,
     };
     crate::road::send(lake, Box::new(job));

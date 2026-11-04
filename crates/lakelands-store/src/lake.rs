@@ -1277,90 +1277,103 @@ impl Lake {
         &self,
         w: &mut Writer,
     ) -> Result<Option<lakelands_api::write::CompactReport>> {
-        let (list, acts) = self.acts_listed()?;
+        let view = self.engine.view(None)?;
+        let Some(mut restate) = self.restate_owed(view.as_ref())? else {
+            return Ok(None);
+        };
+        drop(view);
+        // The caller holds the writer for all of it: a pass inside one
+        // turn, as the operator's rebuild and an import run it.
+        loop {
+            if let scrub::Stepped::Done(reclaimed) = restate.step(self, w)? {
+                return Ok(reclaimed);
+            }
+        }
+    }
+
+    /// What the lists at `view` leave owed of a restate, planned there:
+    /// the sources forgotten and the acts of removal whole, or the
+    /// reclaim alone where only appends a crashed act still owes are
+    /// left. `None` where nothing is owed.
+    pub(crate) fn restate_owed(&self, view: &dyn ProjectionView) -> Result<Option<scrub::Restate>> {
+        let (list, acts) = (
+            forgotten_list(view, &Staged::default())?,
+            crate::remove::removed_list(view, &Staged::default())?,
+        );
         if list.values().chain(acts.values()).all(|s| s == "done") {
             return Ok(None);
         }
-        let head = self.head();
-        let view = self.engine.view(None)?;
+        let head = view.position();
         // Whether a source's forgetting is whole in the log: its
         // `source_forgotten` and its `act_whole`. A source the list holds
         // with no act at all is one an older log forgot in one append.
         let mut whole = BTreeMap::new();
-        for act in crate::forget::acts(self, view.as_ref())? {
+        for act in crate::forget::acts(self, view)? {
             for source in act.sources {
                 whole.insert(source, act.whole);
             }
         }
         let is_whole = |source: &SourceId| whole.get(source).copied().unwrap_or(true);
-        let mut restate = false;
-        let mut scrub: Vec<SourceId> = Vec::new();
+        // An act whose `act_whole` is not in the log still owes appends:
+        // its restate is the road's last turn, not this.
+        let scrub: Vec<SourceId> = (list.iter())
+            .filter(|(_, s)| *s == "owed")
+            .filter(|(source, _)| is_whole(source))
+            .map(|(source, _)| source.clone())
+            .collect();
+        let owed = |r: &crate::remove::Removal| acts.get(&r.at).is_some_and(|s| s == "owed");
         let mut restating: Vec<crate::remove::Removal> = Vec::new();
-        if list.values().chain(acts.values()).any(|s| s == "owed") {
-            for (source, _) in list.iter().filter(|(_, s)| *s == "owed") {
-                self.keys.destroy(source)?;
-                // An act whose `act_whole` is not in the log still owes
-                // appends: its restate is the road's last turn, not this.
-                if is_whole(source) {
-                    restate = true;
-                    scrub.push(source.clone());
-                }
+        for act in (crate::remove::acts(self, view)?)
+            .iter()
+            .filter(|r| owed(r))
+        {
+            if crate::remove::whole(self, act.at, head)? {
+                restating.push(act.clone());
             }
-            let owed = |r: &crate::remove::Removal| acts.get(&r.at).is_some_and(|s| s == "owed");
-            for act in crate::remove::acts(self, view.as_ref())?
-                .iter()
-                .filter(|r| owed(r))
-            {
-                self.keys.destroy_versions(&act.source, &act.keys)?;
-                self.keys.destroy_apart(&act.source, &act.apart)?;
-                if crate::remove::whole(self, act.at, Some(head))? {
-                    restate = true;
-                    restating.push(act.clone());
-                }
-            }
-            if restate {
-                // The records the owed sources wrote and the acts restate
-                // are refolded alone where nothing else reads them, and
-                // the projection rebuilt otherwise: either restates it as
-                // the log now reads.
-                let plan = scrub::plan(
-                    self,
-                    view.as_ref(),
-                    &scrub,
-                    &restating,
-                    self.limits.forget_rebuild,
-                )?;
-                let events = view.position().map_or(0, |p| p.0);
-                let way = plan.way(self, events);
-                drop(view);
-                match way.scoped {
-                    true => self.scrub_held(w, &plan, &scrub, &restating)?,
-                    false => self.rebuild_held(w)?,
-                }
-                *lakelands_core::lock(&self.way) = Some(way);
-            } else {
-                drop(view);
-            }
-        } else {
-            drop(view);
         }
-        Ok(self.reclaim()?.ok())
+        // The records the owed sources wrote and the acts restate are
+        // refolded alone where nothing else reads them, and the
+        // projection rebuilt otherwise: either restates it as the log now
+        // reads.
+        Ok(Some(match scrub.is_empty() && restating.is_empty() {
+            true => scrub::Restate::nothing(),
+            false => {
+                scrub::Restate::of(self, view, &scrub, &restating, self.limits.forget_rebuild)?
+            }
+        }))
     }
 
-    /// [`Self::finish_forgetting`] after an act appended through `at`: a
+    /// [`scrub::Restate::step`] after an act appended through `at`: a
     /// failure says the act is done in the log, and how what is left of
     /// it is finished (lakelands#1485).
-    pub(crate) fn finish_act(
+    pub(crate) fn step_act(
         &self,
         w: &mut Writer,
+        restate: &mut scrub::Restate,
         at: Position,
-    ) -> Result<Option<lakelands_api::write::CompactReport>> {
-        (self.finish_forgetting(w)).map_err(|cause| {
+    ) -> Result<scrub::Stepped> {
+        restate.step(self, w).map_err(|cause| {
             Error::unavailable(Situation::ActUnfinished {
                 at,
                 cause: Box::new(cause),
             })
         })
+    }
+
+    /// The restate a whole removal owes at `view`, planned in the act's
+    /// walk with `act` as the walk judged it.
+    pub(crate) fn restate_for_act(
+        &self,
+        view: &dyn ProjectionView,
+        act: &crate::remove::Removal,
+    ) -> Result<scrub::Restate> {
+        scrub::Restate::of(
+            self,
+            view,
+            &[],
+            std::slice::from_ref(act),
+            self.limits.forget_rebuild,
+        )
     }
 
     /// The forgotten sources and the acts of removal the projection
