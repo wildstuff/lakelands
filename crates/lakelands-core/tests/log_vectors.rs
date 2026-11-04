@@ -701,7 +701,7 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         }
         "source_forgotten" => matches!(
             &event.body,
-            B::SourceForgotten { source, keys }
+            B::SourceForgotten { source, keys, .. }
                 if source == "crm" && keys.len() == 1 && keys[0].as_str() == "1"
         ),
         "verb_authority" => matches!(declared, Some(D::Type(t))

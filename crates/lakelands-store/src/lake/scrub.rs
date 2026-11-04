@@ -1,8 +1,10 @@
 //! The scoped refold of a forgetting
-//! (`docs/decisions/058-a-source-may-be-forgotten.md`): in place of a
-//! rebuild, only the records the forgotten sources wrote are restated,
-//! each from its own events and the events about the whole lake, through
-//! the fold a rebuild runs.
+//! (`docs/decisions/058-a-source-may-be-forgotten.md`) and of the records
+//! an act of removal selects (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`):
+//! in place of a rebuild, only those records are restated, each from its
+//! own events and the events about the whole lake, through the fold a
+//! rebuild runs. Every act the lists hold is told before the first page,
+//! so a page that folds a record an older act took leaves it erased.
 //!
 //! A page of those records is one transaction: their states, history
 //! included, are dropped where it begins ([`ProjectionStore::drop_states`]),
@@ -21,10 +23,11 @@
 //! What the fold puts of a record beyond its states reaches further: a
 //! kept view's groups, a set's members, the vector index, another type's
 //! computed field reading it through a reference, however many steps
-//! away. Where the records hold any of those, or the lake holds an act of
-//! removal, the projection is rebuilt instead, and [`Plan::why`] says why.
-//! Nor does the refold touch the vector index: the records it restates
-//! keep no vectors, and every other record's are those the head holds.
+//! away. Where the records hold any of those, or a page folds more events
+//! than `limits.page_events`, the projection is rebuilt instead, and
+//! [`Plan::why`] says why. Nor does the refold touch the vector index: the
+//! records it restates keep no vectors, and every other record's are those
+//! the head holds.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -473,10 +476,10 @@ impl ProjectionView for ScopedView<'_> {
     }
 }
 
-/// How forgetting a set of sources restates the projection: the records
-/// and outputs a scoped refold restates, a page at a time with the
-/// positions of the events about each page, or why the projection is
-/// rebuilt instead.
+/// How forgetting a set of sources and restating the acts of removal
+/// given restates the projection: the records and outputs a scoped refold
+/// restates, a page at a time with the positions of the events about each
+/// page, or why the projection is rebuilt instead.
 #[derive(Default)]
 pub(crate) struct Plan {
     /// Each page's records, with the positions of the events about any
@@ -518,11 +521,54 @@ impl Plan {
             .saturating_add(self.recorded.len() as u64)
     }
 
+    /// The events the fullest page folds: the events about its records,
+    /// the lake's own and the records they walk, and the outputs it
+    /// records again, which only the first page folds. `None` where
+    /// there is no page to fold.
+    fn page_events(&self) -> Option<u64> {
+        let fixed = (self.wide.len() as u64).saturating_add(self.walks);
+        let none = BTreeSet::new();
+        let mut most = None;
+        for (i, (keys, at)) in self.pages.iter().enumerate() {
+            let outputs = match i {
+                0 => &self.outputs,
+                _ => &none,
+            };
+            let recorded = (self.recorded.iter())
+                .filter(|e| {
+                    matches!(&e.body, EventBody::OutputRecorded { seam, input, field, .. }
+                        if outputs.contains(&(seam.clone(), input.clone()))
+                            || field
+                                .as_ref()
+                                .is_some_and(|(ty, key, _)| keys.contains(&(ty.clone(), key.clone()))))
+                })
+                .count() as u64;
+            let page = (at.len() as u64)
+                .saturating_add(fixed)
+                .saturating_add(recorded);
+            most = Some(most.map_or(page, |m: u64| m.max(page)));
+        }
+        most
+    }
+
     /// Which way the act goes and what each is expected to take, the log
     /// `events` long: the scoped refold where nothing falls back and it
     /// is expected to take less than the rebuild.
     pub(crate) fn way(&self, lake: &Lake, events: u64) -> ForgetWay {
         let mut why = self.why.clone();
+        // `page_events` guards a page's size: a page over it takes the
+        // rebuild instead (099). A page is not yet a turn of the writer
+        // of its own — the pass folds every page in the one turn the road
+        // hands it — so this bounds a page, not a write's wait; the
+        // record's pages as turns are owed to the next pull.
+        if let Some(page) = self.page_events() {
+            let bound = u64::from(lake.limits.page_events.max(1));
+            if page > bound {
+                why.push(format!(
+                    "a page refolds {page} events, more than `limits.page_events` ({bound})"
+                ));
+            }
+        }
         let (scoped_ms, rebuild_ms) = (lake.scoped_ms(self.events()), lake.expected_ms(events));
         if why.is_empty() && scoped_ms > rebuild_ms {
             why.push(format!(
@@ -574,12 +620,13 @@ fn admitted(
     }
 }
 
-/// How forgetting `set` restates the projection at `view`'s head: the
-/// rebuild where `rebuild` asks for it.
+/// How forgetting `set` and restating the acts `acts` restates the
+/// projection at `view`'s head: the rebuild where `rebuild` asks for it.
 pub(crate) fn plan(
     lake: &Lake,
     view: &dyn ProjectionView,
     set: &[SourceId],
+    acts: &[crate::remove::Removal],
     rebuild: bool,
 ) -> Result<Plan> {
     let mut plan = Plan::default();
@@ -587,27 +634,56 @@ pub(crate) fn plan(
         plan.why
             .push("the host asks for the rebuild (`limits.forget_rebuild`)".to_owned());
     }
-    if !crate::remove::removed_list(view, &Staged::default())?.is_empty() {
-        plan.why
-            .push("the lake holds an act of removal, which a rebuild is told".to_owned());
-    }
     let Some(head) = view.position() else {
         return Ok(plan);
     };
-    // What the sources wrote and sealed, from the feed index.
+    // What the sources wrote and sealed, from the feed index, and the
+    // records an act of removal selects, which its walk visits too: each
+    // source's events are read once.
     let (mut keys, mut kinds, mut sealed_any) = (BTreeSet::new(), BTreeSet::new(), false);
     for source in set {
         let used = crate::sealing::used_by(source);
         plan.outputs.insert((crate::sealing::USED.to_owned(), used));
     }
-    crate::forget::each_of(lake, view, set, |i, e| {
-        if indexed(e).as_ref() != Some(&set[i]) {
+    let forgotten: BTreeSet<&SourceId> = set.iter().collect();
+    let mut sources: Vec<SourceId> = set.to_vec();
+    for act in acts {
+        if !sources.contains(&act.source) {
+            sources.push(act.source.clone());
+        }
+    }
+    crate::forget::each_of(lake, view, &sources, |i, e| {
+        let source = &sources[i];
+        if indexed(e).as_ref() != Some(source) {
             return;
         }
         let sealed = e
             .sealed
             .as_ref()
-            .filter(|s| s.source.as_ref() == Some(&set[i]));
+            .filter(|s| s.source.as_ref() == Some(source));
+        // The records a removal takes: those of the events its selection
+        // picks. An output it sealed under a key the act destroyed is
+        // dropped and recorded again, as a forgotten source's is.
+        for act in acts.iter().filter(|a| &a.source == source) {
+            if act.selects(e)
+                && let EventBody::RecordIngested { ty, key, .. }
+                | EventBody::RecordQuarantined { ty, key, .. } = &e.body
+            {
+                keys.insert((ty.clone(), key.clone()));
+            }
+        }
+        if let (EventBody::OutputRecorded { seam, input, .. }, Some(sealed)) = (&e.body, sealed) {
+            let destroyed = std::iter::once(&sealed.key)
+                .chain(&sealed.apart)
+                .any(|k| acts.iter().any(|a| a.destroyed(source, k)));
+            if destroyed {
+                sealed_any = true;
+                plan.outputs.insert((seam.clone(), input.clone()));
+            }
+        }
+        if !forgotten.contains(source) {
+            return;
+        }
         match &e.body {
             EventBody::RecordUpserted { ty, key, .. }
             | EventBody::RecordIngested { ty, key, .. }
@@ -917,18 +993,38 @@ fn refers(d: &TypeDecl) -> impl Iterator<Item = &TypeName> {
 }
 
 impl Lake {
-    /// The scoped refold of `plan`, for the sources `set` forgot, under
-    /// the writer's lock its caller holds: each page in one transaction,
-    /// the list of forgotten sources saying each is rebuilt once all are
-    /// folded. One stopped between pages leaves the act owed, and the
-    /// next open, or the act's repeat, plans and folds it again from the
-    /// first page: each page is restated whole from the log, so a page
-    /// folded twice comes out as once.
-    pub(crate) fn scrub_held(&self, w: &mut Writer, plan: &Plan, set: &[SourceId]) -> Result<()> {
+    /// The scoped refold of `plan`, for the sources `set` forgot and the
+    /// acts `acts` restated, under the writer's lock its caller holds:
+    /// each page in one transaction, the lists saying each is rebuilt
+    /// once all are folded. One stopped between pages leaves the act
+    /// owed, and the next open, or the act's repeat, plans and folds it
+    /// again from the first page: each page is restated whole from the
+    /// log, so a page folded twice comes out as once.
+    pub(crate) fn scrub_held(
+        &self,
+        w: &mut Writer,
+        plan: &Plan,
+        set: &[SourceId],
+        acts: &[crate::remove::Removal],
+    ) -> Result<()> {
         let head = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
         let types: BTreeSet<TypeName> = (plan.pages.iter())
             .flat_map(|(keys, _)| keys.iter().map(|(ty, _)| ty.clone()))
             .collect();
+        // Every act the lists hold is told before the first page, so a
+        // page refolds what an older act took as erased. A failed read
+        // stops here, the pages not begun and the act still owed: an act
+        // the fold met untold has no `fixed` to erase by, and a page
+        // never meets its `values_removed`.
+        let view = self.engine.view(None)?;
+        let listed = crate::remove::told(self, view.as_ref())?;
+        drop(view);
+        for act in listed {
+            match w.removals.iter_mut().find(|r| **r == act) {
+                Some(met) => *met = act,
+                None => w.removals.push(act),
+            }
+        }
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
         self.keys.unlist();
@@ -1004,11 +1100,15 @@ impl Lake {
         // source's or a removed write's.
         let view = self.engine.view(None)?;
         let mut list = forgotten_list(view.as_ref(), &Staged::default())?;
+        let mut removed = crate::remove::removed_list(view.as_ref(), &Staged::default())?;
         drop(view);
         for source in set {
             list.insert(source.clone(), "rebuilt".to_owned());
         }
-        self.put_lists(&list, &BTreeMap::new(), true, head)?;
+        for act in acts {
+            removed.insert(act.at, "rebuilt".to_owned());
+        }
+        self.put_lists(&list, &removed, true, head)?;
         self.publish(w);
         Ok(())
     }

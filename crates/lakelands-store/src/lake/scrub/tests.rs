@@ -14,7 +14,7 @@ use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::order_name;
 use serde_json::json;
 
-use super::{Scope, Scoped};
+use super::{Plan, Scope, Scoped};
 
 /// A record of `ty` at `key` at `at`, with `fields`.
 fn record(ty: &str, key: &str, fields: serde_json::Value, at: u64) -> StoredRecord {
@@ -86,4 +86,53 @@ fn a_scoped_refold_writes_no_order_entries() {
         kept.is_none(),
         "the scope wrote `z`, a record its page does not restate: {kept:?}"
     );
+}
+
+/// A recorded output filling the field `f` of `t`'s record `key`, at
+/// `at`.
+fn recorded(at: u64, key: &str) -> lakelands_api::event::Event {
+    use lakelands_api::event::{Digest, EventBody};
+    let body = EventBody::OutputRecorded {
+        seam: "s".to_owned(),
+        input: Digest::zero(),
+        output: None,
+        output_at: None,
+        field: Some((TypeName::from("t"), RecordKey::from(key), "f".into())),
+    };
+    let draft = crate::log::Draft::system(lakelands_api::Timestamp(5), body);
+    crate::log::seal(&"l".into(), Position(at), &Digest::zero(), 1, draft).0
+}
+
+/// The bound counts the fullest page's events, not every recorded output
+/// the restate replays: a restate of two pages, each under the bound, is
+/// scoped although its recorded outputs together are over it (099).
+#[test]
+fn the_bound_counts_a_page_not_the_whole_restate() {
+    let keys = |ks: &[&str]| {
+        (ks.iter())
+            .map(|k| (TypeName::from("t"), RecordKey::from(*k)))
+            .collect::<super::Keys>()
+    };
+    let at = |from: u64| (from..from + 3).map(Position).collect::<Vec<_>>();
+    let plan = Plan {
+        pages: vec![
+            (keys(&["a", "b", "c"]), at(1)),
+            (keys(&["d", "e", "f"]), at(4)),
+        ],
+        wide: vec![recorded(9, "z")],
+        recorded: vec![
+            recorded(10, "a"),
+            recorded(11, "b"),
+            recorded(12, "d"),
+            recorded(13, "e"),
+        ],
+        ..Plan::default()
+    };
+    // Each page folds three events about its records, the lake's own and
+    // the two recorded outputs filling its fields.
+    assert_eq!(plan.page_events(), Some(6));
+    // The whole restate folds twelve; summing every recorded output on
+    // one page would say eight.
+    assert_eq!(plan.events(), 12);
+    assert_eq!(Plan::default().page_events(), None);
 }

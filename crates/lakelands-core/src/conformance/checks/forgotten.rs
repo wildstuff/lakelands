@@ -345,7 +345,7 @@ async fn a_forgotten_sources_values_read_as_erased_at_every_position(
     let forgot = forgettings(store.as_ref(), at).await?;
     let named = forgot.iter().map(|e| &e.body).collect::<Vec<_>>();
     ensure!(
-        matches!(named.as_slice(), [EventBody::SourceForgotten { source, keys }] if source == "crm" && keys == &vec![k.clone()]),
+        matches!(named.as_slice(), [EventBody::SourceForgotten { source, keys, .. }] if source == "crm" && keys == &vec![k.clone()]),
         "one `source_forgotten` names crm and its key `{k}`; the log holds {named:?}"
     );
     ends_whole(store.as_ref(), at).await?;
@@ -610,6 +610,102 @@ async fn a_forgetting_a_crash_stopped_is_finished_by_the_next_writers_open(
             "an open after the finished act appends nothing but its lease: {moved:?}"
         );
     }
+    Ok(())
+}
+
+check!(
+    FORGET_GROUPS_BY_ACT = a_resumed_acts_events_stay_its_own,
+    "099: an act forgets two sources and a crash stops it after their `source_forgotten`s, before its `act_whole`; a second act forgets another source and is stopped the same way; the writer's open finishes both, and each act's events name it, so the two read apart — the first groups only its own sources and the second only its own — and every source's values read erased once both are whole (lakelands#1725)",
+    reopens
+);
+
+async fn a_resumed_acts_events_stay_its_own(store: Store, reopen: Reopen) -> Held {
+    let keys = Arc::new(Keys::default());
+    let faulty = Arc::new(Faulty::new(&keys));
+    let seams = || Seams {
+        keys: Some(faulty.clone() as Arc<dyn KeyStore>),
+        backings: crate::conformance::backing::backings(),
+        ..Seams::default()
+    };
+    let mut store = again(&reopen, store, seams(), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    lake(&l).await?;
+    people(store.as_ref(), &l).await?;
+    let eve = source_record("person", "p5", json!({"id": "p5", "name": "Eve"}));
+    l.ingest("crm2", vec![eve])
+        .await
+        .must("ingesting from crm2")?;
+    let start = store.head().await.must("reading the head")?;
+    // Two acts, each stopped after its `source_forgotten`s, before its
+    // `act_whole`: the key store fails the destroy the act makes next.
+    let first: Vec<SourceId> = vec!["crm".into(), "erp".into()];
+    let crm2: SourceId = "crm2".into();
+    for (set, why) in [
+        (first.clone(), "the first act"),
+        (vec![crm2.clone()], "the second act"),
+    ] {
+        faulty.destroy_fails.store(true, Ordering::SeqCst);
+        let stopped = match set.as_slice() {
+            [one] => store.forget_source(one, None).await.map(|_| ()),
+            many => store.forget_sources(many, None).await.map(|_| ()),
+        };
+        faulty.destroy_fails.store(false, Ordering::SeqCst);
+        ensure!(
+            stopped.is_err(),
+            "{why}, stopped before its `act_whole`, answers its failure; it answered {stopped:?}"
+        );
+    }
+    store = again(&reopen, store, seams(), "after both stops").await?;
+    // The open finishes each act in its turns beside the writer; what it
+    // leaves is waited for, bounded, rather than read at its answer.
+    settles(6_000, Duration::from_millis(1), || async {
+        let events = events_after(store.as_ref(), start).await?;
+        let mut acts: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+        let mut whole = BTreeSet::new();
+        for e in &events {
+            match &e.body {
+                EventBody::SourceForgotten { source, act, .. } => {
+                    acts.entry(act.0).or_default().insert(source.to_string());
+                }
+                EventBody::ActWhole { act } => {
+                    whole.insert(act.0);
+                }
+                _ => {}
+            }
+        }
+        ensure!(
+            acts.len() == 2,
+            "the two acts' `source_forgotten`s name two acts: {acts:?}; the events are {events:?}"
+        );
+        let mut got: Vec<String> = (acts.values())
+            .map(|sources| sources.iter().cloned().collect::<Vec<_>>().join(","))
+            .collect();
+        got.sort();
+        ensure!(
+            got == ["crm,erp", "crm2"],
+            "each act groups only its own sources: {got:?}; the events are {events:?}"
+        );
+        let named: BTreeSet<u64> = acts.keys().copied().collect();
+        ensure!(
+            whole == named,
+            "each act is whole, and no `act_whole` names an act the log has none of: the acts are \
+             {acts:?} and the `act_whole`s {whole:?}"
+        );
+        Ok(())
+    })
+    .await?;
+    // Every source of both acts reads erased once the acts are whole.
+    let p2 = person_at(&l, "p2", None).await?;
+    // `erp` and `crm2` alone brought `p3` and `p5`, so their acts retire
+    // them; read as of before the acts, each still holds its name erased.
+    let p3 = person_at(&l, "p3", Some(start)).await?;
+    let p5 = person_at(&l, "p5", Some(start)).await?;
+    ensure!(
+        !p2.fields.contains_key("name")
+            && !p3.fields.contains_key("name")
+            && !p5.fields.contains_key("name"),
+        "crm's, erp's and crm2's values read erased: {p2:?} {p3:?} {p5:?}"
+    );
     Ok(())
 }
 

@@ -1295,6 +1295,7 @@ impl Lake {
         let is_whole = |source: &SourceId| whole.get(source).copied().unwrap_or(true);
         let mut restate = false;
         let mut scrub: Vec<SourceId> = Vec::new();
+        let mut restating: Vec<crate::remove::Removal> = Vec::new();
         if list.values().chain(acts.values()).any(|s| s == "owed") {
             for (source, _) in list.iter().filter(|(_, s)| *s == "owed") {
                 self.keys.destroy(source)?;
@@ -1314,19 +1315,26 @@ impl Lake {
                 self.keys.destroy_apart(&act.source, &act.apart)?;
                 if crate::remove::whole(self, act.at, Some(head))? {
                     restate = true;
+                    restating.push(act.clone());
                 }
             }
             if restate {
-                // The records the owed sources wrote are refolded alone
-                // where nothing else reads them, and the projection
-                // rebuilt otherwise: either restates it as the log now
-                // reads.
-                let plan = scrub::plan(self, view.as_ref(), &scrub, self.limits.forget_rebuild)?;
+                // The records the owed sources wrote and the acts restate
+                // are refolded alone where nothing else reads them, and
+                // the projection rebuilt otherwise: either restates it as
+                // the log now reads.
+                let plan = scrub::plan(
+                    self,
+                    view.as_ref(),
+                    &scrub,
+                    &restating,
+                    self.limits.forget_rebuild,
+                )?;
                 let events = view.position().map_or(0, |p| p.0);
                 let way = plan.way(self, events);
                 drop(view);
                 match way.scoped {
-                    true => self.scrub_held(w, &plan, &scrub)?,
+                    true => self.scrub_held(w, &plan, &scrub, &restating)?,
                     false => self.rebuild_held(w)?,
                 }
                 *lakelands_core::lock(&self.way) = Some(way);

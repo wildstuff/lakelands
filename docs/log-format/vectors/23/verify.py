@@ -508,9 +508,10 @@ SHOWS = {
     "constraints": shows("a declared type with a constraint that admits at ingest and one that reads `previous`")(
         lambda e: [c.get("at_ingest", "refuse") for c in declaration(e).get("constraints", [])] == ["admit", "refuse"]
         and "previous(" in declaration(e)["constraints"][1]["holds"]),
-    "source_forgotten": shows("a `source_forgotten` naming the source and the versions of its key")(
+    "source_forgotten": shows("a `source_forgotten` naming the source, the versions of its key and the act it belongs to")(
         lambda e: e["body"]["kind"] == "source_forgotten" and e["body"].get("source") == "crm"
-        and e["body"].get("keys") == ["1"] and "sealed" not in e),
+        and e["body"].get("keys") == ["1"] and e["body"].get("act") == e["position"]
+        and "sealed" not in e),
     "verb_authority": shows("a declared type with a field only its verbs write, `authority: verb`")(
         lambda e: any(f.get("authority") == "verb" for f in declaration(e).get("fields", []))),
     "admits": shows("a declared type with an authored field that admits a named source")(
