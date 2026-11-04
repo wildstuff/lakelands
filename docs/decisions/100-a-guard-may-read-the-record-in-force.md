@@ -465,6 +465,32 @@ tree differed from the text above:
   "a record and version reads through once in a turn" rests on the view's memo and its
   review, not on a count.
 
+### As built: G5 (lakelands#1640)
+
+G5 landed on its own, after G4. Where the tree differed from the text above:
+
+- **The count reads the process, not the thread.** A store runs its reads on a
+  blocking pool, so `rows_read` on the checking thread counts none of them (it read 0).
+  `GUARD_IN_FORCE_READS_ONE_PARTITION` counts with `rows_read_in_process`, as the
+  streaming check does, so it counts what a check running beside it reads too.
+- **The row is `GUARD_IN_FORCE_READS_ONE_PARTITION` alone, with the series row inside
+  it.** One trigger reading `hi` and `lo` of a symbol of 40 bounds, in a type of 121, is
+  handed at most 41 rows, and a symbol of one bound is handed that one. With
+  `series_index.box` on `symbol` and `from` the same writes are handed at most two rows.
+  The type is three times its partition, not a hundred, and the rows for a matched field
+  looked up (057) and for a writer with no grant on `T` are the older checks' (the second
+  is `GUARD_IN_FORCE_WITHOUT_A_GRANT`, which does not count). Two triggers read twice, as
+  the text says, so the row declares one.
+- **The series road took `Scan`'s `equal` as it took a `where`.** The resolver needed no
+  change, and no engine read road moved. The memory engine answers the series row today.
+- **The figures.** `tick_bench` has an `in_force` cell, `--triggers in_force` with
+  `--bounds` bounds a symbol; `docs/hosting.md` gives K = 4 at 100 000 records on SQLite
+  (1 453 writes a second against 1 682 with no trigger, and 936 with `preceding`). The
+  K table above stays reckoned: the cell measures one K, with no order index.
+- **`tick_bench` turns the door's request rates off.** At more than 1 000 writes a
+  second the principal's rate bound refused the callers' phase, which the first
+  machine it ran on did not reach.
+
 ### Decided by the operator
 
 Decided on 2026-11-01 (lakelands#1578): every recommendation below was taken.

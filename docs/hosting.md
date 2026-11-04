@@ -2006,8 +2006,8 @@ unless the outcome names the guard as fired.
 
 Not measured: PostgreSQL (the slot's cluster is PostgreSQL 16; the engine needs 18, and
 `serve` refuses 16), 10 000 000 records on either engine (a three-roll-up cell at
-113 to 180 records a second would take 15 to 24 hours), and the `in_force` trigger
-cell (lakelands#1640). The issue stays open for these.
+113 to 180 records a second would take 15 to 24 hours). The `in_force` trigger cell
+(below) is measured on SQLite only. The issue stays open for these.
 
 What the numbers say, on SQLite at 1 000 000 records:
 
@@ -2061,6 +2061,34 @@ SQLite, 1 000 000 records:
 |   reads (largest series, 71847 ticks) | raw hour 5174 rows 1122.4 ms | raw day 71847 rows 1312.5 ms | roll-up hour 60 rows 4.9 ms | roll-up day 1 rows 0.2 ms |
 | sqlite | 3 | preceding | 1000000 | 446 | 199.7 | 163 | 11600.1 | 389 | 7623 | 5723 | 1.5 / 1.8 |
 |   reads (largest series, 71847 ticks) | raw hour 5175 rows 1114.4 ms | raw day 71848 rows 1313.9 ms | roll-up hour 60 rows 4.9 ms | roll-up day 1 rows 0.2 ms |
+
+### A trigger that pairs a record in force
+
+`--triggers in_force` declares a type `bound` (keyed by `symbol` and `from`, with `hi`)
+and the trigger `price > in_force(bound.hi, bound.from <= at, bound.symbol = symbol)`,
+with `--bounds` bounds a symbol (4 here) written before the feed. Every write reads
+its symbol's partition once, so the cell is K = 4. SQLite, 100 000 records, no roll-up,
+on an AMD Ryzen 9 9950X with 14 cores and 94 GB, one run each, the load not recorded
+(the run's `uptime` gave none) nor the bytes (no `sqlite3` shell):
+
+| trigger | callers: writes/s | p99 ms | ingest: records/s | p99 ms a call of 1000 |
+|---|---:|---:|---:|---:|
+| none | 1 682 | 22.0 | 7 706 | 197.3 |
+| `preceding`, constant bound | 936 | 51.9 | 2 162 | 658.4 |
+| `in_force`, K = 4 | 1 453 | 22.8 | 4 324 | 421.6 |
+
+The guard fires on a tick far above its bound (the run stops unless the outcome names
+it). The other figures of the cost of a partition, which the cell does not measure, are
+reckoned in `docs/decisions/100-a-guard-may-read-the-record-in-force.md`: a read costs
+5 to 7 µs a record of the partition with no order index, about 1 µs with `sort_index`
+up to 4 096, and one seek with `series_index` on the series field and the order field,
+for which a read of the partition's size is not paid (the conformance row hands the
+engine at most two rows for a symbol of 40 bounds). A host with partitions of
+hundreds of bounds, or a feed of many writes a second, declares `sort_index` or
+`series_index` on `bound` first.
+
+A writer with no read on `bound` fires nothing and is told nothing: its guard reads
+null, reads no row of the type, and the write goes through.
 
 ## Building declarations in Rust
 

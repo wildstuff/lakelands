@@ -87,6 +87,11 @@ check!(
     given
 );
 
+check!(
+    GUARD_IN_FORCE_READS_ONE_PARTITION = a_guard_reads_its_partition_once,
+    "100: `price > in_force(box.hi, …) or price < in_force(box.lo, …)` is handed no more rows than the 40 bounds of its tick's symbol and one, though the type holds 121, and a symbol of one bound is handed that one; with `series_index.box` on `symbol` and `from`, both are handed at most two rows however many bounds the symbol has"
+);
+
 /// `in_force` of the bound's `f`, at the tick's `at`, of its symbol.
 fn paired(f: &str) -> String {
     format!("in_force(box.{f}, box.from <= at, box.symbol = symbol)")
@@ -957,6 +962,60 @@ async fn a_guard_between_an_acts_parts_reads_through(store: Store, given: Given)
             && gone.as_ref().is_some_and(|r| erased(r, "hi", "tracker")),
         "after the act the bound reads erased and `no_bound` fires, while `h1`'s price stands \
          and `first` does not: {after:?}, `zbox` {gone:?}"
+    );
+    Ok(())
+}
+
+/// The rows the engine hands the rulebook for the tick `key` of `symbol`
+/// written at 12:00, and the triggers it fires. The process's count: a
+/// store reads on a pool of its own, off the checking thread.
+async fn handed(
+    s: &dyn LakeStore,
+    l: &Lake,
+    key: &str,
+    symbol: &str,
+) -> Result<(u64, String), Failure> {
+    let before = crate::engines::rows_read_in_process();
+    let fired = fires(s, l, &l.own, key, tick(symbol, "12:00", 15.0, "a")).await?;
+    Ok((crate::engines::rows_read_in_process() - before, fired))
+}
+
+async fn a_guard_reads_its_partition_once(store: Store) -> Held {
+    let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
+    let both = format!("{} or price < {}", above(), paired("lo"));
+    declared(&l, &[("two", &both)]).await?;
+    for (i, symbol) in ["A", "B", "C", "D"].iter().enumerate() {
+        let n = if *symbol == "D" { 1 } else { 40 };
+        for j in 0..n {
+            let from = format!("{:02}:{:02}", 1 + j / 4, 15 * (j % 4));
+            let mut b = bound(symbol, &from, 10.0 + j as f64, "a");
+            b["lo"] = json!(1);
+            l.upsert("box", &format!("B{i}{j:02}"), b).await?;
+        }
+    }
+    // A symbol of 40 bounds among 121: the two calls read its partition,
+    // not the type, and once. One of a single bound reads that bound.
+    let (a, d) = (
+        handed(s, &l, "T1", "A").await?,
+        handed(s, &l, "T2", "D").await?,
+    );
+    ensure!(
+        (1..=41).contains(&a.0) && a.1.is_empty() && d.0 == 1 && d.1 == "two",
+        "a tick of a symbol of 40 bounds, read for `hi` and `lo`, is handed at most 41 rows \
+         of the type's 121, and one of a symbol of one bound is handed that one: {a:?}, {d:?}"
+    );
+    // A series road walks the one series the tick is in, whatever its size.
+    l.set("series_index.box", json!([["symbol", "from"]]))
+        .await?;
+    handed(s, &l, "T3", "B").await?;
+    let (a, d) = (
+        handed(s, &l, "T4", "A").await?,
+        handed(s, &l, "T5", "D").await?,
+    );
+    ensure!(
+        a.0 <= 2 && d.0 <= 2 && d.1 == "two",
+        "under `series_index.box` on `symbol` and `from`, a tick of a symbol of 40 bounds is \
+         handed at most 2 rows, and one of a symbol of one bound too: {a:?}, {d:?}"
     );
     Ok(())
 }
