@@ -720,3 +720,50 @@ fn a_scoped_refold_walks_only_what_its_records_read() {
         names(&["country", "person", "town"])
     );
 }
+
+/// A removal's restate is the scoped pass where nothing else reads the
+/// records it takes: its way names the scoped refold, with no reason
+/// beside it, so the keys its walk gathered are all its pages fold (099).
+#[tokio::test]
+async fn a_removals_restate_is_scoped() {
+    use lakelands_api::LakeStore;
+    use lakelands_api::write::Selection;
+
+    let (lake, cat, owner) = owned("scoped-removal");
+    let t = declaration(
+        json!({"declare": "type", "name": "t", "key": ["id"], "fields": [
+        {"name": "id", "type": {"kind": "text"}, "authority": "source"},
+        {"name": "a", "type": {"kind": "text"}, "authority": "source"}]}),
+    );
+    cat.declare(&owner, t).await.unwrap();
+    let crm = SourceId::from("crm");
+    let record = |key: &str| lakelands_api::SourceRecord {
+        source: None,
+        upstream: None,
+        ty: "t".into(),
+        key: key.into(),
+        fields: serde_json::from_value(json!({"id": key, "a": "x"})).unwrap(),
+        seen_at: None,
+        delivery: None,
+        resubmits: None,
+        line: None,
+    };
+    let records = (0..20).map(|i| record(&format!("k{i}"))).collect();
+    let fed = lakelands_api::ingest_all(cat.as_ref(), &owner, &crm, records);
+    fed.await.expect("the records are written");
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let door = crate::doors::Store {
+        lake: lake.clone(),
+        owns: false,
+    };
+    let done = door.remove_values(&crm, &all, false, None).await;
+    assert_eq!(done.expect("the removal runs").events, 20);
+    let way = lake
+        .forget_way()
+        .expect("the removal restated the projection");
+    assert!(
+        way.scoped && way.why.is_empty() && way.records == 20,
+        "the removal restated its twenty records by the scoped refold, with no reason for the \
+         rebuild: {way:?}"
+    );
+}
