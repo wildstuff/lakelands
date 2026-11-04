@@ -34,14 +34,14 @@
 //!   vectors ([`lakelands_api::query::cosine`]). Best first, ties by key.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 
 use sha2::{Digest as _, Sha256};
 
 pub use lakelands_api::engine::Window;
 use lakelands_api::engine::{
     After, CanonicalEvent, Choose, Chosen, KeyRange, Rankings, Scan, SeriesPair, SeriesState,
-    TextCounts, TextStats, WindowSides,
+    TextCounts, TextStats, WindowAt, WindowBatch, WindowSides,
 };
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
@@ -795,6 +795,209 @@ pub fn series_decoded(text: Option<String>) -> SeriesState {
 /// fields a read takes skip them.
 pub fn is_series_field(f: &FieldName) -> bool {
     lakelands_api::seam::is_series_field(f.as_str())
+}
+
+/// The series a read seeks in one kept pair's index: the pair's derived
+/// field and the first eight bytes of each named series text's token, once
+/// each (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// series index). A scan that names a series exactly on the pair's series
+/// field, by `=` or `in`, seeks the pair; one that does not, or names a
+/// text the index keeps no token for, takes the road without it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeriesSeek {
+    /// The pair's derived field, which its rows are kept under:
+    /// `<order>\u{1F}<series>`.
+    pub field: FieldName,
+    /// The prefix of each named series' rows in the scan's order: the
+    /// token's SHA-256, its first eight bytes.
+    pub series: Vec<Vec<u8>>,
+}
+
+impl SeriesSeek {
+    /// One series' rows inside a read's window: its prefix, then the
+    /// window's bounds; or, under no window, the whole of them, ending
+    /// below the `0xFF` tail, which sorts above every value and is read
+    /// after the window.
+    pub fn bounds(&self, series: usize, window: Option<&Window>) -> Window {
+        let prefix = &self.series[series];
+        let (lo, hi) = match window {
+            Some(w) => (prefixed(prefix, &w.lo), prefixed(prefix, &w.hi)),
+            None => {
+                let mut hi = prefix.clone();
+                hi.push(0xFE);
+                (prefix.clone(), hi)
+            }
+        };
+        Window {
+            field: self.field.clone(),
+            lo,
+            hi,
+        }
+    }
+
+    /// The key of one series' records without an order value: its prefix,
+    /// then `0xFF`, above every rank.
+    pub fn tail(&self, series: usize) -> Vec<u8> {
+        let mut key = self.series[series].clone();
+        key.push(0xFF);
+        key
+    }
+
+    /// Every row of one series, the tail included: the pair's whole
+    /// holding of it.
+    pub fn holders(&self, series: usize) -> Window {
+        let prefix = &self.series[series];
+        let mut hi = prefix.clone();
+        hi.push(0xFF);
+        Window {
+            field: self.field.clone(),
+            lo: prefix.clone(),
+            hi,
+        }
+    }
+
+    /// The prefix of the series whose rows hold `key`, when one does.
+    pub fn series_of(&self, key: &[u8]) -> Option<usize> {
+        self.series.iter().position(|p| key.starts_with(p))
+    }
+}
+
+/// `prefix` then `key`: how the pair's index holds a series row's sort
+/// key, the series' eight bytes ahead of its order value's key.
+pub fn prefixed(prefix: &[u8], key: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(prefix.len() + key.len());
+    out.extend_from_slice(prefix);
+    out.extend_from_slice(key);
+    out
+}
+
+/// The seek a scan makes in a pair for a read of `field`: the first kept
+/// pair whose order field is `field` and whose series field the scan names
+/// exactly ([`exact_series`]), each text hashed to the eight bytes its
+/// rows carry. `None`: no such pair, no exact text, or a text the index
+/// keeps no token for; the read takes the road without a pair.
+pub fn series_seek(
+    decl: &TypeDecl,
+    state: &SeriesState,
+    field: &FieldName,
+    scan: &Scan,
+) -> Option<SeriesSeek> {
+    for pair in &state.kept {
+        if pair.order != *field {
+            continue;
+        }
+        let kind = field_kind(decl, &pair.series).copied();
+        let Some(tokens) = exact_series(scan, &pair.series, kind) else {
+            continue;
+        };
+        let mut series: Vec<Vec<u8>> = Vec::new();
+        for token in tokens {
+            let prefix = Sha256::digest(token.as_bytes())[..8].to_vec();
+            if !series.contains(&prefix) {
+                series.push(prefix);
+            }
+        }
+        return Some(SeriesSeek {
+            field: FieldName::from(lakelands_api::seam::series_field(
+                pair.order.as_str(),
+                pair.series.as_str(),
+            )),
+            series,
+        });
+    }
+    None
+}
+
+/// The exact texts a scan names in `field`, the pair's series field: the
+/// values of `equal_any`'s tuples when all of them begin there, else
+/// `equal`'s, else the filter's `=` or `in` on it, as [`lookup_token`] and
+/// [`literal_token`] write them. `None` where the scan names no text
+/// there, or names one the pair's rows cannot carry alone, so a read must
+/// not narrow to the texts it can name.
+fn exact_series(scan: &Scan, field: &FieldName, kind: Option<StorageKind>) -> Option<Vec<String>> {
+    let first = |t: &[(FieldName, Value)]| {
+        let (f, v) = t.first()?;
+        (f == field).then(|| lookup_token(v, kind))?
+    };
+    if !scan.equal_any.is_empty()
+        && let Some(tokens) = scan
+            .equal_any
+            .iter()
+            .map(|t| first(t))
+            .collect::<Option<Vec<_>>>()
+    {
+        return Some(tokens);
+    }
+    if let Some((_, v)) = scan.equal.iter().find(|(f, _)| f == field) {
+        return lookup_token(v, kind).map(|t| vec![t]);
+    }
+    let filter = scan.filter.as_ref()?;
+    let (mut eq, mut ins, mut blocked) = (None, Vec::new(), false);
+    eq_in_terms(filter, field, &mut eq, &mut ins, &mut blocked);
+    if blocked {
+        return None;
+    }
+    if let Some(lit) = eq {
+        return literal_token(lit, kind).map(|t| vec![t]);
+    }
+    if ins.is_empty() {
+        return None;
+    }
+    ins.into_iter()
+        .map(|lit| literal_token(lit, kind))
+        .collect()
+}
+
+/// The `=` and `in` terms of a filter on one field, its `and` terms only:
+/// the last `=`'s literal and every `in`'s, with `blocked` set where an
+/// `in` holds a value that is no literal.
+fn eq_in_terms<'e>(
+    filter: &'e Expr,
+    field: &FieldName,
+    eq: &mut Option<&'e Literal>,
+    ins: &mut Vec<&'e Literal>,
+    blocked: &mut bool,
+) {
+    match filter {
+        Expr::And { args } => args
+            .iter()
+            .for_each(|a| eq_in_terms(a, field, eq, ins, blocked)),
+        Expr::Cmp {
+            cmp: CmpOp::Eq,
+            lhs,
+            rhs,
+        } => {
+            let (path, lit) = match (lhs.as_ref(), rhs.as_ref()) {
+                (Expr::Path { path }, Expr::Lit { value }) => (path, value),
+                (Expr::Lit { value }, Expr::Path { path }) => (path, value),
+                _ => return,
+            };
+            let [f] = path.as_slice() else {
+                return;
+            };
+            if f == field {
+                *eq = Some(lit);
+            }
+        }
+        Expr::In { arg, list } => {
+            let Expr::Path { path } = arg.as_ref() else {
+                return;
+            };
+            let [f] = path.as_slice() else {
+                return;
+            };
+            if f != field {
+                return;
+            }
+            for e in list {
+                match e {
+                    Expr::Lit { value } => ins.push(value),
+                    _ => *blocked = true,
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The types whose exact-text index a declaration can move: those
@@ -1739,6 +1942,225 @@ pub fn count_walks(on: bool) {
 pub fn count_walk(n: usize) {
     ROWS_WALKED.with(|c| c.set(c.get() + n as u64));
     ROWS_WALKED_IN_PROCESS.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The rows of one pair's several series, merged into the one stream a
+/// page reads: sort key in the field's direction, then record key; asked
+/// by key (`by_key`), the record key alone, which is how the records
+/// without an order value come last. Each series is read on its own and
+/// only as far ahead as the merge needs: the first ask is the batch
+/// shared among the series, plus one, and a series whose rows run out is
+/// asked again for twice its last ask
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §`in`).
+pub struct MergedRows {
+    series: usize,
+    dir: Direction,
+    by_key: bool,
+    /// Where each series' next read starts, after the last row it was
+    /// handed.
+    at: Vec<Option<(Vec<u8>, String)>>,
+    /// Whether each series has no row past its last read.
+    done: Vec<bool>,
+    /// The rows read and not yet merged, each in its series' order.
+    pending: Vec<VecDeque<(Vec<u8>, StoredRecord)>>,
+    /// How many rows each series is asked for next.
+    want: Vec<u32>,
+    /// The position last handed on, which the next call continues from.
+    served: Option<(Vec<u8>, String)>,
+    started: bool,
+}
+
+impl MergedRows {
+    /// A merge over `series` streams in `dir`, of the value's sort key and
+    /// the record key, or of the record key alone where `by_key`.
+    pub fn new(series: usize, dir: Direction, by_key: bool) -> Self {
+        Self {
+            series,
+            dir,
+            by_key,
+            at: vec![None; series],
+            done: vec![false; series],
+            pending: (0..series).map(|_| VecDeque::new()).collect(),
+            want: vec![0; series],
+            served: None,
+            started: false,
+        }
+    }
+
+    /// The next at most `n` rows after `from`, `read(series, from, n)`
+    /// answering one series' rows after `from`, its value key stripped of
+    /// the series' prefix.
+    pub fn next<E>(
+        &mut self,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+        mut read: impl FnMut(
+            usize,
+            Option<(&[u8], &str)>,
+            u32,
+        ) -> Result<Vec<(Vec<u8>, StoredRecord)>, E>,
+    ) -> Result<Vec<(Vec<u8>, StoredRecord)>, E> {
+        let from = from.map(|(k, r)| (k.to_vec(), r.to_owned()));
+        if !self.started || from != self.served {
+            self.reset(n);
+            self.started = true;
+        }
+        let mut out = Vec::new();
+        while (out.len() as u32) < n {
+            for i in 0..self.series {
+                if self.done[i] || !self.pending[i].is_empty() {
+                    continue;
+                }
+                let ask = self.want[i].max(1);
+                let start = self.at[i].clone().or_else(|| from.clone());
+                let at = start.as_ref().map(|(k, r)| (k.as_slice(), r.as_str()));
+                let rows = read(i, at, ask)?;
+                self.done[i] = (rows.len() as u32) < ask;
+                if let Some((k, r)) = rows.last() {
+                    self.at[i] = Some((k.clone(), r.key.to_string()));
+                }
+                self.pending[i].extend(rows);
+                self.want[i] = ask.saturating_mul(2).min(2048);
+            }
+            let least = (0..self.series)
+                .filter(|i| !self.pending[*i].is_empty())
+                .min_by(|a, b| {
+                    let (a, b) = (self.pending[*a].front(), self.pending[*b].front());
+                    match (a, b) {
+                        (Some(a), Some(b)) => self.order(a, b),
+                        _ => Ordering::Equal,
+                    }
+                });
+            let Some(i) = least else {
+                break;
+            };
+            if let Some(row) = self.pending[i].pop_front() {
+                out.push(row);
+            }
+        }
+        self.served = out.last().map(|(k, r)| (k.clone(), r.key.to_string()));
+        Ok(out)
+    }
+
+    /// Forgets every series' read, so that the next fill starts from
+    /// `n`'s batch.
+    fn reset(&mut self, n: u32) {
+        self.pending.iter_mut().for_each(VecDeque::clear);
+        self.done.fill(false);
+        self.at.fill_with(|| None);
+        let base = (n / self.series.max(1) as u32).saturating_add(1);
+        self.want.fill(base.max(1));
+        self.served = None;
+    }
+
+    /// The rulebook's order between two rows: the sort key in `dir`, then
+    /// the record key; by key, the record key alone.
+    fn order(&self, a: &(Vec<u8>, StoredRecord), b: &(Vec<u8>, StoredRecord)) -> Ordering {
+        let values = if self.by_key {
+            Ordering::Equal
+        } else if self.dir == Direction::Desc {
+            b.0.cmp(&a.0)
+        } else {
+            a.0.cmp(&b.0)
+        };
+        values.then_with(|| a.1.key.cmp(&b.1.key))
+    }
+}
+
+/// The keys of a pair's rows inside `window`, at most `n`, after `after`:
+/// the series walked one after another, from the one `after` stopped in,
+/// `read(series, from, n)` answering one series' index rows after `from`.
+/// A window's keys are read as a set — a count and an aggregate sort them
+/// themselves, and a page in key order sorts them — so the series' order
+/// inside the batch is no part of the answer, and the walk pays one seek a
+/// series (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §`in`).
+pub fn series_window_keys<E>(
+    seek: &SeriesSeek,
+    window: &Window,
+    after: Option<&WindowAt>,
+    n: u32,
+    mut read: impl FnMut(
+        usize,
+        &Window,
+        Option<(&[u8], &str)>,
+        u32,
+    ) -> Result<Vec<(Vec<u8>, RecordKey)>, E>,
+) -> Result<WindowBatch, E> {
+    let (first, mut from) = match after {
+        Some(a) => match seek.series_of(&a.sort_key) {
+            Some(i) => (i, Some((a.sort_key.clone(), a.key.to_string()))),
+            None => (0, None),
+        },
+        None => (0, None),
+    };
+    let mut keys = Vec::new();
+    let mut last = after.cloned();
+    let mut done = true;
+    for i in first..seek.series.len() {
+        if keys.len() as u32 >= n {
+            done = false;
+            break;
+        }
+        let want = n - keys.len() as u32;
+        let at = from.as_ref().map(|(k, r)| (k.as_slice(), r.as_str()));
+        let rows = read(i, &seek.bounds(i, Some(window)), at, want)?;
+        let full = rows.len() as u32 == want;
+        for (sort_key, key) in rows {
+            last = Some(WindowAt {
+                sort_key,
+                key: key.clone(),
+            });
+            keys.push(key);
+        }
+        from = None;
+        if full {
+            done = false;
+            break;
+        }
+    }
+    Ok(WindowBatch {
+        keys,
+        after: last,
+        done,
+    })
+}
+
+/// The two sides of a pair's window: `inside`, its rows counted a bound
+/// `l + 1`, and `other`, the pair's whole holding of the named series
+/// counted a bound four times `inside`, the series one after another and
+/// every series' tail included. `count(series, window)` counts one
+/// series' rows in a window.
+pub fn series_window_sides<E>(
+    seek: &SeriesSeek,
+    window: &Window,
+    l: u64,
+    mut count: impl FnMut(usize, &Window, u64) -> Result<u64, E>,
+) -> Result<WindowSides, E> {
+    let mut inside = 0;
+    for i in 0..seek.series.len() {
+        let left = l.saturating_add(1).saturating_sub(inside);
+        if left == 0 {
+            break;
+        }
+        inside += count(i, &seek.bounds(i, Some(window)), left)?.min(left);
+    }
+    let whole = inside <= l;
+    let cap = inside.saturating_mul(WINDOW_RATIO);
+    let mut other = 0;
+    for i in 0..seek.series.len() {
+        let left = cap.saturating_sub(other);
+        if left == 0 {
+            break;
+        }
+        other += count(i, &seek.holders(i), left)?.min(left);
+    }
+    count_walk((inside + other) as usize);
+    Ok(WindowSides {
+        inside,
+        whole,
+        other,
+    })
 }
 
 /// The records the edge walks on this thread were handed to find a

@@ -31,7 +31,7 @@ use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, 
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::quarantine::{QuarantineFilter, QuarantineState, Quarantined};
 use lakelands_api::query::{Edge, Walk};
-use lakelands_api::read::{Direction, Order, ThinnedAct};
+use lakelands_api::read::{Direction, Order, OrderBy, ThinnedAct};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{FeedFilter, is_kept_name};
 use lakelands_api::time::Timestamp;
@@ -934,6 +934,128 @@ impl Read<'_> {
         Ok(())
     }
 
+    /// The kept pair a scan of `field` seeks, with the series it names
+    /// exactly ([`engines::series_seek`]); `None` without one, where the
+    /// read takes the road without a pair.
+    fn series_seek(
+        &mut self,
+        ty: &TypeName,
+        decl: &TypeDecl,
+        field: &FieldName,
+        scan: &Scan,
+    ) -> Result<Option<engines::SeriesSeek>> {
+        Ok(engines::series_seek(
+            decl,
+            &projection::series_of(self.db, self.names, ty)?,
+            field,
+            scan,
+        ))
+    }
+
+    /// At most `n` index rows of `field` inside `window` after `from`, in
+    /// key order: the sides' count, and no record read.
+    fn count_rows(
+        &mut self,
+        ty: &TypeName,
+        field: &FieldName,
+        window: &engines::Window,
+        cap: u64,
+    ) -> Result<u64> {
+        let bound = i64::try_from(cap).unwrap_or(i64::MAX);
+        let q = format!(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM {} \
+             WHERE ty = $1 AND field = $2 AND sort_key >= $3 \
+             AND sort_key <= $4 LIMIT $5) x",
+            self.names.t("sort_index"),
+        );
+        let args: [&(dyn ToSql + Sync); 5] = [
+            &ty.as_str(),
+            &field.as_str(),
+            &window.lo,
+            &window.hi,
+            &bound,
+        ];
+        self.counted(&q, &args)
+    }
+
+    /// A page of a pair's rows in the field's order: each named series'
+    /// rows read under its prefix and merged, the records without an order
+    /// value read after them in key order
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+    /// series index, §`in`).
+    fn scan_series(
+        &mut self,
+        ty: &TypeName,
+        decl: &TypeDecl,
+        scan: &Scan,
+        seek: &engines::SeriesSeek,
+        first: &Order,
+    ) -> Result<Vec<StoredRecord>> {
+        let order = Order {
+            field: seek.field.clone(),
+            by: OrderBy::Value,
+            dir: first.dir,
+        };
+        let window = engines::field_kind(decl, &first.field)
+            .zip(scan.filter.as_ref())
+            .and_then(|(kind, filter)| engines::window(filter, &first.field, kind));
+        let me = std::cell::RefCell::new(self);
+        let mut merged = engines::MergedRows::new(seek.series.len(), first.dir, false);
+        let sorted = |from: Option<(&[u8], &str)>, n: u32| {
+            merged.next(from, n, |i: usize, from: Option<(&[u8], &str)>, n: u32| {
+                let at =
+                    from.map(|(k, key)| (engines::prefixed(&seek.series[i], k), key.to_owned()));
+                let at = at.as_ref().map(|(k, key)| (k.as_slice(), key.as_str()));
+                let bounds = seek.bounds(i, window.as_ref());
+                let rows = me.borrow_mut().sorted_after(
+                    ty,
+                    &order,
+                    &engines::Holders::All,
+                    Some(&bounds),
+                    at,
+                    n,
+                )?;
+                Ok::<Vec<(Vec<u8>, StoredRecord)>, lakelands_api::error::Error>(
+                    rows.into_iter()
+                        .map(|(k, r)| (k[8..].to_vec(), r))
+                        .collect(),
+                )
+            })
+        };
+        let mut tails = engines::MergedRows::new(seek.series.len(), Direction::Asc, true);
+        let missing = |after: Option<&str>, n: u32| match window {
+            Some(_) => Ok::<_, lakelands_api::error::Error>(Vec::new()),
+            None => {
+                let rows = tails.next(
+                    after.map(|a| (&[][..], a)),
+                    n,
+                    |i: usize, from: Option<(&[u8], &str)>, n: u32| {
+                        let tail = seek.tail(i);
+                        let bounds = engines::Window {
+                            field: seek.field.clone(),
+                            lo: tail.clone(),
+                            hi: tail.clone(),
+                        };
+                        let at = from.map(|(_, key)| (tail.as_slice(), key));
+                        let rows = me.borrow_mut().sorted_after(
+                            ty,
+                            &order,
+                            &engines::Holders::All,
+                            Some(&bounds),
+                            at,
+                            n,
+                        )?;
+                        Ok::<Vec<(Vec<u8>, StoredRecord)>, lakelands_api::error::Error>(
+                            rows.into_iter().map(|(_, r)| (Vec::new(), r)).collect(),
+                        )
+                    },
+                )?;
+                Ok(rows.into_iter().map(|(_, r)| r).collect())
+            }
+        };
+        engines::scan_in_field_order(Some(decl), scan, sorted, missing)
+    }
+
     /// At most `n` of the head records holding the text `holders` names, in
     /// the order index's order for `order`, as [`Read::sorted_after`]
     /// answers them, and by it for a page's first
@@ -1070,6 +1192,37 @@ impl Read<'_> {
         if !self.head || !self.sorted_fields(ty, Some(&decl))?.contains(&window.field) {
             return Ok(None);
         }
+        // A series the scan names exactly seeks the pair's rows alone: each
+        // series' window under its prefix, walked one after another.
+        if scan.range.is_none()
+            && let Some(seek) = self.series_seek(ty, &decl, &window.field, scan)?
+        {
+            let order = Order {
+                field: seek.field.clone(),
+                by: OrderBy::Value,
+                dir: Direction::Asc,
+            };
+            let batch = engines::series_window_keys(
+                &seek,
+                window,
+                after,
+                n,
+                |_i: usize, bounds: &engines::Window, from: Option<(&[u8], &str)>, n: u32| {
+                    let rows = self.sorted_after(
+                        ty,
+                        &order,
+                        &engines::Holders::All,
+                        Some(bounds),
+                        from,
+                        n,
+                    )?;
+                    Ok::<Vec<(Vec<u8>, RecordKey)>, lakelands_api::error::Error>(
+                        rows.into_iter().map(|(k, r)| (k, r.key)).collect(),
+                    )
+                },
+            )?;
+            return Ok(Some(batch));
+        }
         let Some(text) = self.window_text(ty, Some(&decl), scan)? else {
             return Ok(None);
         };
@@ -1174,10 +1327,19 @@ impl Read<'_> {
         if !self.head || !self.sorted_fields(ty, Some(&decl))?.contains(&window.field) {
             return Ok(None);
         }
+        // The pair's window, and the other side, are its series' rows
+        // counted under their prefixes.
+        if scan.range.is_none()
+            && let Some(seek) = self.series_seek(ty, &decl, &window.field, scan)?
+        {
+            let sides = engines::series_window_sides(&seek, window, l, |_, bounds, cap| {
+                self.count_rows(ty, &seek.field, bounds, cap)
+            })?;
+            return Ok(Some(sides));
+        }
         let Some(text) = self.window_text(ty, Some(&decl), scan)? else {
             return Ok(None);
         };
-        let bound = i64::try_from(l.saturating_add(1)).unwrap_or(i64::MAX);
         let (ty_name, field) = (ty.as_str().to_string(), window.field.as_str().to_string());
         let sorts = self.names.t("sort_index");
         let text_index = self.names.t("text_index");
@@ -1186,13 +1348,7 @@ impl Read<'_> {
         // for each of them and the probe only says which to read. A count
         // of the text's holders inside would price the road by its answer,
         // and take it where it walks the whole type.
-        let q = format!(
-            "SELECT COUNT(*) FROM (SELECT 1 FROM {sorts} \
-             WHERE ty = $1 AND field = $2 AND sort_key >= $3 \
-             AND sort_key <= $4 LIMIT $5) x"
-        );
-        let args: [&(dyn ToSql + Sync); 5] = [&ty_name, &field, &window.lo, &window.hi, &bound];
-        let inside = self.counted(&q, &args)?;
+        let inside = self.count_rows(ty, &window.field, window, l.saturating_add(1))?;
         let whole = inside <= l;
         let cap = i64::try_from(inside.saturating_mul(engines::WINDOW_RATIO)).unwrap_or(i64::MAX);
         let other = match &text {
@@ -1685,6 +1841,15 @@ impl ProjectionView for PgView<'_> {
                 // holding it; at an earlier position, the head's index with
                 // the keys changed since, and past the ceiling the sort.
                 Some(first) => {
+                    // A series the scan names exactly reads the pair's rows
+                    // alone, each series' window under its prefix.
+                    if r.head
+                        && scan.range.is_none()
+                        && let Some(decl) = decl.as_ref()
+                        && let Some(seek) = r.series_seek(ty, decl, &first.field, scan)?
+                    {
+                        return r.scan_series(ty, decl, scan, &seek, first);
+                    }
                     let (changed, holders) = if r.head {
                         let holders = engines::Holders::of(lookup.as_ref(), |f, t, n| {
                             r.holders(ty, f, t, n)

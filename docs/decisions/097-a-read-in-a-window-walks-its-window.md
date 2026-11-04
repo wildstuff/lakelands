@@ -355,9 +355,9 @@ fields, at the head only, as `chosen` is. A taken-back pair leaves the list.
 - `NUMBER_LOOKUP_READS_ITS_HOLDERS`: `=`, `equal`, `equal_any`, `in`. As built in steps 5 and 6: 60 000 records, 600 of them holding the asked number, read by about 600 rows on every engine; a put moving one holder off it and a drop of another take both out of the set and the put into the other's.
 - `NUMBER_LOOKUP_ONE_TOKEN`: `= 7`, `= 7.00`, `= '7'` find one set, `-0` and `0` are one, and a value that reads as no number keeps no row and is found by its own text on the old road. As built: a decimal field, a 40-digit text held in it and found by `=`, and an `in` with such a value taking the old road.
 - `NUMBER_OUTSIDE_THE_SETTING`: reads as today. As built: before the setting, during it, and after it is retired, the same answers.
-- `SERIES_READS_ITS_WINDOW`: every road, a series under and over `FEW_HOLDERS`, by a text and by a number.
-- `SERIES_NO_VALUE_LAST`: records with no value come last in a page, ascending and descending, from the series alone.
-- `SERIES_IN_MERGES`: `in` over 50 series walks about the rows read plus a seek a series.
+- `SERIES_READS_ITS_WINDOW`: every road, a series under and over `FEW_HOLDERS`, by a text and by a number. As built in steps 9 and 10: 600 000 records over 5 000 texts, one holding a tenth; an aggregate, a count and a page of 1 000 walk and read 1 000, either direction, open bounds walking one more, a text of 600 walking and reading its window, a window of 1 100 chosen beside its holding, and a number series sought by its token.
+- `SERIES_NO_VALUE_LAST`: records with no value come last in a page, ascending and descending, from the series alone. As built in steps 9 and 10: the page walks the text's whole holding, the records without a value among them and after them, with a day bound on an instant field and a text holding five beside it.
+- `SERIES_IN_MERGES`: `in` over 50 series walks about the rows read plus a seek a series. As built in step 10: a page of 1 000 over 50 texts of 200 walks 1 050 and reads 1 000; a window of 500 walks and reads 500; a window of 7 000 walks and reads 7 000 across texts.
 - `SERIES_SETTING_BUILDS`: before `Keep` the old road, after it the new, one answer. As built in step 8: a build beside reads, the pair told `building` then `kept`, every answer unchanged.
 - `SERIES_BUILD_RESUMES`: a restart mid-build finishes with no read and no further write. As built in step 8.
 - `SERIES_KEPT_BY_THE_HOST`: the switch off, `order_max_fields` reached, a `sweep` and a `sort_index` setting over a built pair leave it kept and read.
@@ -827,6 +827,83 @@ the next open. The reads that take a pair are steps 9 and 10.
   that holds the count. Nothing was cut. The gates read product 109 416
   of 115 000 and specification 195 844 of 202 500, and the seam 108 of
   110 methods.
+
+### As built: steps 9 and 10 (lakelands#1638)
+
+Steps 9 and 10 read a kept pair: one text exactly named, and `in` over
+several. The odds are parts of the read road in `engines.rs`, and each
+engine hands them its own index.
+
+- **Which pair, and when.** `series_seek` answers a pair of the type
+  whose order field is the field the read orders by or bounds, and whose
+  series field the scan names exactly: by `equal_any`, by `equal`, or by
+  the filter's `=`, and by an `in`, one text each. A number or decimal
+  series field is named by its token, as the build keys it, so `= 7`,
+  `= 7.00` and `= '7'` seek one pair. A narrowing that cannot be written
+  as a token (a value of another rank, a function, a non-literal in the
+  `in`) answers no seek, and the read takes the road it took before, so
+  a pair never narrows a read to less than it admits. Only `kept` pairs
+  are read; a pair still `building` is no read's, as step 8 recorded.
+- **The walk.** `series_window_keys` answers a window's keys, a count's
+  or an aggregate's, the texts one after another under their prefixes,
+  one seek a text: a batch's keys are a set — the callers sort or count
+  them — so the texts need no common order, and the continuation is the
+  last row itself, its sort key the full prefixed key, so the walk picks
+  up in the text it stopped in. `series_window_sides` counts the window
+  under the prefixes and the texts' whole holdings under theirs, adding
+  both at once; the choice is unchanged.
+- **The page.** `MergedRows` is the one stream of a page ordered by the
+  field: each text's rows read under its prefix, merged by sort key then
+  record key in the field's direction, and each text asked the batch
+  shared among the texts plus one, doubling only where it runs out, so
+  a page of one text walks its page and one row, and 50 texts walk their
+  page and 50 rows. The records without a value in the field keep their
+  pair row above every rank and are read after the merge in key order;
+  a window on the field excludes them, as the rulebook does. Each engine
+  answers `sorted_after` under the pair's prefix and the pair's window,
+  and the page itself is `scan_in_field_order`, so every row is still
+  admitted by the rulebook: a retired record is walked and left, and a
+  record of another text under a hash collision is left too.
+- **The walks counted.** All three engines count index rows walked
+  already (`engines::count_walk`): a range of `sort_index` adds what it
+  hands, and a pair's range is one, so the counts above are the reads'
+  own. Nothing was added for an engine that had none.
+- **Conformance.** Three engine-seam rows in `engine/reads.rs`, run on
+  every engine. `SERIES_READS_ITS_WINDOW`: 600 000 records over 5 000
+  texts, one holding a tenth; a page under `sym = 'x' and at >= lo and
+  at <= hi` of 1 000 rows walks 1 000 index rows and reads 1 000, in
+  either direction and with a bound open (the open one walks its page
+  and the batch's one more), and leaves a retired record out of the
+  answer without leaving it out of the walk; a text under `FEW_HOLDERS`
+  walks and reads its 600, whole and in a window of 100; a count and an
+  aggregate walk and read the window's 1 000, where the text's 60 000
+  is neither; a window of 1 100 is chosen beside the holding, the choice
+  walking 1 100 and four times them (5 500) and reading no record, and
+  the walk then reading its 1 100 across two batches; a number series is
+  sought by its token. `SERIES_NO_VALUE_LAST`: a page over a text in
+  either direction walks the text's whole holding, the records without
+  a value among them and after it, and answers one scan's, with a day
+  bound on an instant field at either end and at the day's midnight.
+  `SERIES_IN_MERGES`: 50 texts of 200 records each; a page of 1 000
+  walks 1 050 and reads 1 000; a window of 500 under the `in` walks and
+  reads 500; a window of 7 000 walks and reads 7 000, continuing from a
+  text's end into the next.
+- **By hand.** SQLite, an isolated lake of 20 000 records with 400
+  texts, one of them holding 2 000: before the pair, a page under
+  `sym = 'x' and at >= 500 and at <= 1499` walked the text's 2 000 index
+  rows and read 1 000, answering `x0500`..`x1499`; after the pair was
+  built and kept, the same page walked its window's 1 000 and read
+  1 000, and answered the same keys.
+- **Size.** 1 520 lines in, 20 out, against the 230 the two steps' rows
+  reckoned (130 and 100, run over ×2.4–2.9: 550 to 670). Product 882 in
+  and 20 out, net 862 — the merge and its continuation, five engine
+  methods across three engines, and the check at the done-when's full
+  scale; specification 559 in, the three rows. The product is 1.3 times
+  the band's top; the alternative — a stateful cursor in `window_keys` —
+  would have been no smaller and a fifth seam method. Nothing was cut.
+  The gates read product 111 452 of 115 000 and specification 198 218 of
+  202 500, up from 110 590 and 197 659 at the branch's base, and the
+  seam 108 of 110 methods.
 
 ### What the operator decided
 

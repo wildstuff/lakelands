@@ -83,6 +83,21 @@ engine_check!(
 );
 
 engine_check!(
+    SERIES_READS_ITS_WINDOW = a_read_naming_a_series_seeks_the_pairs_window,
+    "097 §The series index and §`in`, steps 9 and 10 of lakelands#1638: of 600 000 records over 5 000 texts, one text holding a tenth, a page in the order field's order under `sym = '…' and at >= lo and at <= hi` walks the window's index rows and reads its records — 1 000 of each under a window of 1 000 — in either direction, with a bound open on one side, retired records read or left and a text holding fewer than `FEW_HOLDERS` records, a window of the pair's 60 000 chosen beside its holding, a count and an aggregate walking and reading the window, and a series field of a number; every answer is one scan's over every state"
+);
+
+engine_check!(
+    SERIES_NO_VALUE_LAST = a_series_read_puts_its_records_without_a_value_last,
+    "097 §The series index, step 9 of lakelands#1638: a page over a pair in either direction answers the records holding a value in the order field in the order index's order and those holding none after them by key, a day bound on an instant field and a bound open on one side among the filters, and every answer is one scan's over every state"
+);
+
+engine_check!(
+    SERIES_IN_MERGES = an_in_of_texts_merges_their_windows_into_one_page,
+    "097 §`in`, step 10 of lakelands#1638: `sym in (…)` of 50 texts reads each text's window and merges them into a page in the order field's order, either direction, walking its page and one row a text; a window under it walks its rows and one seek a text; and every answer is one scan's over every state"
+);
+
+engine_check!(
     SERIES_STARTED = a_series_pair_counts_its_starts_and_a_take_back_keeps_the_count,
     "097 §The series index and lakelands#1638: `series` names a type's pairs and counts the starts of them: none before a start; a start of a pair it does not hold names the pair building and counts one; a second start of a pair in hand, its fills and its keep count nothing; a take-back that clears its rows in chunks leaves no pair and keeps the count; and a pair started again after the take-back counts a new start, so a build that read the count before the take-back is told to fill its field from the first key"
 );
@@ -5437,6 +5452,547 @@ fn a_number_field_outside_the_setting_reads_as_today(engine: &dyn LakeEngine) ->
         before == during && during == after,
         "the number field's reads answered {before:?} before the setting, {during:?} while it \
          was set and {after:?} after its retirement"
+    );
+    Ok(())
+}
+
+/// The `series_index.<ty>` setting naming `pairs`, each a series field
+/// and an order field, as folded at `at`.
+fn series_setting(ty: &str, pairs: Value, at: u64) -> StoredRecord {
+    let key = format!("series_index.{ty}");
+    record(
+        lakelands_api::seam::SETTING_TYPE,
+        &key,
+        json!({"key": key, "value": pairs}),
+        at,
+    )
+}
+
+/// Build `ty`'s pair `order`/`series` and keep it: a `Start`, every
+/// `Fill` the engine answers, and the `Keep`. A projection folded from a
+/// log that holds the setting already keeps the pair whole, so its steps
+/// answer no fill and change nothing.
+fn keep_pair(engine: &dyn LakeEngine, ty: &TypeName, order: &str, series: &str) -> Held {
+    use lakelands_api::engine::Choose;
+    let field = FieldName::from(lakelands_api::seam::series_field(order, series));
+    let step = |s: Choose| {
+        engine
+            .projection()
+            .choose_order(ty, &s)
+            .must("a step of building a series pair")
+    };
+    step(Choose::Start(field.clone()))?;
+    let mut after = None;
+    while let Some(last) = step(Choose::Fill {
+        field: field.clone(),
+        after,
+        limit: 4_096,
+    })? {
+        after = Some(last);
+    }
+    step(Choose::Keep(field))?;
+    Ok(())
+}
+
+fn a_read_naming_a_series_seeks_the_pairs_window(engine: &dyn LakeEngine) -> Held {
+    const N: u64 = 600_000;
+    const BIG: u64 = 60_000;
+    const SMALL: u64 = 600;
+    const TEXTS: u64 = 5_000;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [
+            {"name": "sym", "type": {"kind": "text"}},
+            {"name": "at", "type": {"kind": "number"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let mut states: Vec<StoredRecord> = Vec::new();
+    for i in 0..BIG {
+        let mut r = record("t", &format!("x{i:05}"), json!({"sym": "x", "at": i}), 1);
+        r.retired = i % 7 == 0;
+        states.push(r);
+    }
+    for i in 0..SMALL {
+        states.push(record(
+            "t",
+            &format!("m{i:04}"),
+            json!({"sym": "small", "at": i}),
+            1,
+        ));
+    }
+    for i in 0..(N - BIG - SMALL) {
+        let sym = format!("s{:03}", i % (TEXTS - 2));
+        let fields = match i % 13 == 0 {
+            true => json!({"sym": sym}),
+            false => json!({"sym": sym, "at": 10_000 + i}),
+        };
+        let mut r = record("t", &format!("r{i:05}"), fields, 1);
+        r.retired = i % 11 == 0;
+        states.push(r);
+    }
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(engine, 2, sort_setting(json!(["at"]), 2))?;
+    fold_one(engine, 3, series_setting("t", json!([["sym", "at"]]), 3))?;
+    keep_pair(engine, &TypeName::from("t"), "at", "sym")?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("t");
+    let at = FieldName::from("at");
+    // A page ordered by `at` under `filter`: the records it answered, one
+    // scan over every state's, and the index rows and records it walked
+    // and read.
+    let page = |filter: &str, dir: Direction, limit: u32, retired: bool, what: &str| {
+        let scan = scan_with(|s| {
+            s.order_by = vec![by("at", dir)];
+            s.filter = Some(crate::expr::parse(filter).expect("the check's filter parses"));
+            s.limit = limit;
+            s.retired = retired;
+        });
+        let (rows, walked, read) = walks_of(head.as_ref(), &ty, &scan, true, what)?;
+        let whole = keys(&crate::engines::scan(Some(t), &states, &scan));
+        Ok::<_, Failure>((keys(&rows), whole, walked, read))
+    };
+    let covered = "sym = 'x' and at >= 1000 and at <= 1999";
+    for dir in [Direction::Asc, Direction::Desc] {
+        let (rows, whole, walked, read) =
+            page(covered, dir, 1_000, true, "a page over a series' window")?;
+        ensure!(
+            rows == whole,
+            "a page over `x`'s window, {dir:?}, answered {} records; one scan over every state \
+             answers {}",
+            rows.len(),
+            whole.len()
+        );
+        ensure!(
+            walked == 1_000 && read == 1_000,
+            "a page of `x`'s 1 000-row window, {dir:?}, walked {walked} index rows and read \
+             {read} records; it must walk and read the window, not the series' {BIG}"
+        );
+    }
+    let live = (1_000..2_000).filter(|i| i % 7 != 0).count();
+    let (rows, whole, walked, read) = page(
+        covered,
+        Direction::Asc,
+        1_000,
+        false,
+        "a page over retired records",
+    )?;
+    ensure!(
+        rows == whole && rows.len() == live,
+        "a page of `x`'s window without retired records answered {} records; one scan over \
+         every state answers {}, and {live} of the window are live",
+        rows.len(),
+        whole.len()
+    );
+    ensure!(
+        walked == 1_000 && read == 1_000,
+        "the same window with retired records left walked {walked} and read {read}; the walk is \
+         the window either way"
+    );
+    for (filter, what) in [
+        ("sym = 'x' and at >= 3000", "a window open above"),
+        ("sym = 'x' and at <= 2999", "a window open below"),
+    ] {
+        let (rows, whole, walked, read) = page(filter, Direction::Asc, 1_000, true, what)?;
+        ensure!(
+            rows == whole,
+            "{what} answered {} records; one scan over every state answers {}",
+            rows.len(),
+            whole.len()
+        );
+        ensure!(
+            read == 1_000 && walked == read + 1,
+            "{what} walked {walked} index rows and read {read} records for a page of 1 000; a \
+             window with an end open asks its batch and one more, and the text's tail is above it"
+        );
+    }
+    // A text holding fewer than `FEW_HOLDERS` records: its whole holding
+    // and a window inside it are walked alike.
+    let (rows, whole, walked, read) = page(
+        "sym = 'small'",
+        Direction::Asc,
+        SMALL as u32,
+        true,
+        "a page over a small text",
+    )?;
+    ensure!(
+        rows == whole && rows.len() as u64 == SMALL,
+        "a page over `small`'s {SMALL} records answered {} records; one scan over every state \
+         answers {}",
+        rows.len(),
+        whole.len()
+    );
+    ensure!(
+        walked == SMALL && read == SMALL,
+        "a page over `small`'s {SMALL} records walked {walked} and read {read}; it must walk and \
+         read the text's holding"
+    );
+    let (rows, whole, walked, read) = page(
+        "sym = 'small' and at >= 200 and at <= 299",
+        Direction::Asc,
+        100,
+        true,
+        "a page over a small text's window",
+    )?;
+    ensure!(
+        rows == whole && walked == 100 && read == 100,
+        "a page of `small`'s 100-row window answered {} records for a scan's {}, walked {walked} \
+         and read {read}; it must walk and read its window",
+        rows.len(),
+        whole.len()
+    );
+    // The count and the aggregate: the window's keys walked and its
+    // records read, the text's 6 000 neither.
+    let filter = crate::expr::parse(covered).expect("the check's filter parses");
+    let window = core_engines::window(&filter, &at, &StorageKind::Number)
+        .expect("a bound on `at` opens a window");
+    let scan = scan_with(|s| {
+        s.filter = Some(filter);
+        s.retired = true;
+    });
+    let (keys_read, records, walked, read) =
+        window_road(head.as_ref(), &ty, t, &scan, &window, u64::MAX)?
+            .expect("the engine keeps the pair's window");
+    let mut got = keys(&records);
+    got.sort();
+    let mut want = keys(&crate::engines::scan(Some(t), &states, &scan));
+    want.sort();
+    ensure!(
+        got == want && keys_read.len() == 1_000 && walked == 1_000 && read == 1_000,
+        "the window's road over a count or an aggregate walked {walked} index rows and read \
+         {read} of {} records for {} keys; it must walk and read the window's 1 000",
+        records.len(),
+        keys_read.len()
+    );
+    // A window of the pair's 6 000 that is no short batch: the choice
+    // counts its row and four times its holding, and takes it.
+    let wide = crate::expr::parse("sym = 'x' and at >= 1000 and at <= 2099")
+        .expect("the check's filter parses");
+    let wide_window = core_engines::window(&wide, &at, &StorageKind::Number)
+        .expect("a bound on `at` opens a window");
+    let wide_scan = scan_with(|s| s.filter = Some(wide));
+    let before = (core_engines::rows_walked(), core_engines::rows_read());
+    let taken = core_engines::takes_window(u64::MAX, |l| {
+        head.window_sides(&ty, &wide_window, &wide_scan, l)
+    })
+    .must("the pair's two sides")?;
+    let walked = core_engines::rows_walked() - before.0;
+    let read = core_engines::rows_read() - before.1;
+    ensure!(
+        taken == Some(true),
+        "a window of 1 100 of `x`'s {BIG} must take the window's road; the sides answered \
+         {taken:?}"
+    );
+    ensure!(
+        walked == 5_500 && read == 0,
+        "the choice walked {walked} index rows and read {read}; the window's 1 100 and four \
+         times them of the holding are 5 500, and a count reads no record"
+    );
+    let (keys_read, records, walked, read) =
+        window_road(head.as_ref(), &ty, t, &wide_scan, &wide_window, u64::MAX)?
+            .expect("the engine keeps the pair's window");
+    let mut got = keys(&records);
+    got.sort();
+    let mut want = keys(&crate::engines::scan(Some(t), &states, &wide_scan));
+    want.sort();
+    ensure!(
+        got == want && keys_read.len() == 1_100 && walked == 1_100 && read == 1_100,
+        "the window's road over 1 100 keys answered {} keys and {} records, walked {walked} and \
+         read {read}; a window longer than a batch must walk its rows once, the retired ones \
+         left out of the answer",
+        keys_read.len(),
+        records.len()
+    );
+    // A series field of a number: the value's token, `7` and `7.00` one.
+    let ndecl = declare(json!({
+        "declare": "type", "name": "v",
+        "fields": [
+            {"name": "sym", "type": {"kind": "number"}},
+            {"name": "at", "type": {"kind": "number"}}
+        ]
+    }));
+    let Declaration::Type(nt) = &ndecl else {
+        unreachable!("the check declares a type")
+    };
+    let nstates: Vec<StoredRecord> = (0..600_u64)
+        .map(|i| {
+            let sym = match i < 300 {
+                true => json!(7),
+                false => json!(i),
+            };
+            record("v", &format!("n{i:04}"), json!({"sym": sym, "at": i}), 4)
+        })
+        .collect();
+    fold(engine, 4, |p| {
+        p.put_declaration(&ndecl, 4, None, Position(0))?;
+        nstates.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(
+        engine,
+        5,
+        record(
+            lakelands_api::seam::SETTING_TYPE,
+            "sort_index.v",
+            json!({"key": "sort_index.v", "value": ["at"]}),
+            5,
+        ),
+    )?;
+    fold_one(engine, 6, series_setting("v", json!([["sym", "at"]]), 6))?;
+    keep_pair(engine, &TypeName::from("v"), "at", "sym")?;
+    let nhead = view(engine, None)?;
+    let nty = TypeName::from("v");
+    let nscan = scan_with(|s| {
+        s.order_by = vec![by("at", Direction::Asc)];
+        s.filter = Some(crate::expr::parse("sym = 7 and at >= 100 and at <= 199").expect("parses"));
+        s.limit = 100;
+    });
+    let (rows, walked, read) = walks_of(
+        nhead.as_ref(),
+        &nty,
+        &nscan,
+        true,
+        "a page over a number series",
+    )?;
+    let whole = keys(&crate::engines::scan(Some(nt), &nstates, &nscan));
+    ensure!(
+        keys(&rows) == whole && walked == 100 && read == 100,
+        "a page over a number series answered {} records for a scan's {}, walked {walked} and \
+         read {read}; the number's token seeks its pair in its window's 100 rows",
+        rows.len(),
+        whole.len()
+    );
+    Ok(())
+}
+
+fn a_series_read_puts_its_records_without_a_value_last(engine: &dyn LakeEngine) -> Held {
+    let decl = declare(json!({
+        "declare": "type", "name": "u",
+        "fields": [
+            {"name": "sym", "type": {"kind": "text"}},
+            {"name": "seen", "type": {"kind": "date_time"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let mut states: Vec<StoredRecord> = Vec::new();
+    for i in 0..40_u64 {
+        let day = format!("2026-01-{:02}T12:00:00Z", i % 28 + 1);
+        let fields = match i % 5 {
+            0 => json!({"sym": "a"}),
+            _ => json!({"sym": "a", "seen": day}),
+        };
+        let mut r = record("u", &format!("k{i:02}"), fields, 1);
+        r.retired = i % 13 == 6;
+        states.push(r);
+    }
+    // A record at the bound day's midnight, at the window's lower end.
+    states.push(record(
+        "u",
+        "kmid",
+        json!({"sym": "a", "seen": "2026-01-02T00:00:00Z"}),
+        1,
+    ));
+    for i in 0..5 {
+        states.push(record(
+            "u",
+            &format!("b{i}"),
+            json!({"sym": "b", "seen": format!("2026-02-0{}T09:00:00Z", i + 1)}),
+            1,
+        ));
+    }
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(
+        engine,
+        2,
+        record(
+            lakelands_api::seam::SETTING_TYPE,
+            "sort_index.u",
+            json!({"key": "sort_index.u", "value": ["seen"]}),
+            2,
+        ),
+    )?;
+    fold_one(engine, 3, series_setting("u", json!([["sym", "seen"]]), 3))?;
+    keep_pair(engine, &TypeName::from("u"), "seen", "sym")?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("u");
+    let whole_series = |filter: &str, dir: Direction, retired: bool, what: &str| {
+        let scan = scan_with(|s| {
+            s.order_by = vec![by("seen", dir)];
+            s.filter = Some(crate::expr::parse(filter).expect("the check's filter parses"));
+            s.limit = 100;
+            s.retired = retired;
+        });
+        let (rows, walked, read) = walks_of(head.as_ref(), &ty, &scan, true, what)?;
+        let whole = keys(&crate::engines::scan(Some(t), &states, &scan));
+        ensure!(
+            keys(&rows) == whole,
+            "{what}, {dir:?}, answered {:?}; one scan over every state answers {whole:?}",
+            keys(&rows)
+        );
+        ensure!(
+            walked == read,
+            "{what}, {dir:?}, walked {walked} index rows and read {read} records; a page of a \
+             text's whole holding reads what it walks, its records without a value among them"
+        );
+        Ok::<_, Failure>((whole.len(), walked))
+    };
+    let held = states
+        .iter()
+        .filter(|r| r.fields.get(&FieldName::from("sym")) == Some(&json!("a")))
+        .count() as u64;
+    for dir in [Direction::Asc, Direction::Desc] {
+        for retired in [false, true] {
+            let (n, walked) = whole_series(
+                "sym = 'a'",
+                dir,
+                retired,
+                "a page over a text, records without a value among them",
+            )?;
+            ensure!(
+                walked == held && (n as u64) <= held,
+                "a page over `a`, {dir:?}, retired {retired}, walked {walked} index rows for {n} \
+                 records; the walk is the text's {held} records, those without a value among \
+                 them, whatever the flag leaves out of the answer"
+            );
+        }
+    }
+    // A day bound on an instant field, either end, and the day's midnight.
+    for filter in [
+        "sym = 'a' and seen >= '2026-01-02'",
+        "sym = 'a' and seen <= '2026-01-01'",
+        "sym = 'a' and seen = '2026-01-02T00:00:00Z'",
+    ] {
+        for dir in [Direction::Asc, Direction::Desc] {
+            whole_series(filter, dir, true, "a page under a day bound on an instant")?;
+        }
+    }
+    Ok(())
+}
+
+fn an_in_of_texts_merges_their_windows_into_one_page(engine: &dyn LakeEngine) -> Held {
+    const SERIES: u64 = 50;
+    const EACH: u64 = 200;
+    let decl = declare(json!({
+        "declare": "type", "name": "q",
+        "fields": [
+            {"name": "sym", "type": {"kind": "text"}},
+            {"name": "at", "type": {"kind": "number"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let names: Vec<String> = (0..SERIES).map(|s| format!("'a{s:02}'")).collect();
+    let listed = format!("sym in ({})", names.join(", "));
+    let mut states: Vec<StoredRecord> = Vec::new();
+    for i in 0..EACH {
+        for s in 0..SERIES {
+            states.push(record(
+                "q",
+                &format!("k{s:02}{i:03}"),
+                json!({"sym": format!("a{s:02}"), "at": i * SERIES + s}),
+                1,
+            ));
+        }
+    }
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(
+        engine,
+        2,
+        record(
+            lakelands_api::seam::SETTING_TYPE,
+            "sort_index.q",
+            json!({"key": "sort_index.q", "value": ["at"]}),
+            2,
+        ),
+    )?;
+    fold_one(engine, 3, series_setting("q", json!([["sym", "at"]]), 3))?;
+    keep_pair(engine, &TypeName::from("q"), "at", "sym")?;
+    let head = view(engine, None)?;
+    let ty = TypeName::from("q");
+    let at = FieldName::from("at");
+    let page = |filter: &str, dir: Direction, limit: u32, what: &str| {
+        let scan = scan_with(|s| {
+            s.order_by = vec![by("at", dir)];
+            s.filter = Some(crate::expr::parse(filter).expect("the check's filter parses"));
+            s.limit = limit;
+        });
+        let (rows, walked, read) = walks_of(head.as_ref(), &ty, &scan, true, what)?;
+        let whole = keys(&crate::engines::scan(Some(t), &states, &scan));
+        ensure!(
+            keys(&rows) == whole,
+            "{what}, {dir:?}, answered {} records; one scan over every state answers {}",
+            rows.len(),
+            whole.len()
+        );
+        Ok::<_, Failure>((walked, read))
+    };
+    for dir in [Direction::Asc, Direction::Desc] {
+        let (walked, read) = page(&listed, dir, 1_000, "a page over an `in` of 50 texts")?;
+        ensure!(
+            walked == 1_050 && read == 1_000,
+            "a page of 1 000 over an `in` of {SERIES} texts, {dir:?}, walked {walked} and read \
+             {read}; it must walk its page and one row a text"
+        );
+    }
+    let windowed = format!("{listed} and at >= 500 and at <= 999");
+    let (walked, read) = page(
+        &windowed,
+        Direction::Asc,
+        500,
+        "a page over the `in`'s windows",
+    )?;
+    ensure!(
+        walked == 500 && read == 500,
+        "a page over the `in`'s windows walked {walked} and read {read} for 500 records; each \
+         text's window is walked once"
+    );
+    // The count and the aggregate under the `in`: each text's window
+    // walked and its records read.
+    let filter = crate::expr::parse(&windowed).expect("the check's filter parses");
+    let window = core_engines::window(&filter, &at, &StorageKind::Number)
+        .expect("a bound on `at` opens a window");
+    let scan = scan_with(|s| s.filter = Some(filter));
+    let (keys_read, records, walked, read) =
+        window_road(head.as_ref(), &ty, t, &scan, &window, u64::MAX)?
+            .expect("the engine keeps the pair's window");
+    let mut got = keys(&records);
+    got.sort();
+    let mut want = keys(&crate::engines::scan(Some(t), &states, &scan));
+    want.sort();
+    ensure!(
+        got == want && keys_read.len() == 500 && walked == 500 && read == 500,
+        "the window's road over an `in` of {SERIES} texts walked {walked} index rows and read \
+         {read} of {} records for {} keys; each text's window is walked once",
+        records.len(),
+        keys_read.len()
+    );
+    // A window longer than a batch, walked a text after another.
+    let long =
+        crate::expr::parse(&format!("{listed} and at >= 3000")).expect("the check's filter parses");
+    let long_window = core_engines::window(&long, &at, &StorageKind::Number)
+        .expect("a bound on `at` opens a window");
+    let long_scan = scan_with(|s| s.filter = Some(long));
+    let (keys_read, _, walked, read) =
+        window_road(head.as_ref(), &ty, t, &long_scan, &long_window, u64::MAX)?
+            .expect("the engine keeps the pair's window");
+    ensure!(
+        keys_read.len() == 7_000 && walked == 7_000 && read == 7_000,
+        "a window of 7 000 over an `in` of {SERIES} texts answered {} keys, walked {walked} and \
+         read {read}; the walk continues from a text's end into the next",
+        keys_read.len()
     );
     Ok(())
 }
