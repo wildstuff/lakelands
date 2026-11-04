@@ -8,16 +8,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use std::ops::Bound::{Excluded, Included, Unbounded};
+use std::rc::Rc;
 
 use lakelands_api::canonical::hex;
-use lakelands_api::engine::{LakeEngine, ProjectionStore, ProjectionView};
+use lakelands_api::engine::{Declared, ProjectionStore, ProjectionView};
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::{Condition, Expr, zone};
 use lakelands_api::ontology::{Measure, TypeDecl, ViewDecl};
 use lakelands_api::record::{StoredRecord, Value};
-use lakelands_api::seam::{VIEW_KEPT_SETTING as SETTING, kept_name, order_name};
+use lakelands_api::seam::{SETTING_TYPE, VIEW_KEPT_SETTING as SETTING, kept_name, order_name};
 use lakelands_api::write::{Declaration, ObjectSetDecl};
 use lakelands_api::{FieldName, Position, RecordKey, Result, Timestamp, TypeName};
+use lakelands_core::engines::declaration_key;
 use lakelands_core::expr::aggregate::{Entry, Folds, Grouping, Keeping, KeptFolds, Row, key_value};
 use lakelands_core::expr::{self, Place};
 use serde::{Deserialize, Serialize};
@@ -1042,57 +1044,27 @@ impl Views {
         self.views.values().flat_map(reads).collect()
     }
 
-    /// [`strand`]: a view whose declaration, or a source's, came after
-    /// `r` is asked by the one in force at `r`, for the reads at earlier
-    /// positions, and by the one in force now unless `r` was superseded
-    /// before that declaration: the make it made folded every state live
-    /// then, by its rule. A make by a setting is not told apart, so a state
-    /// live at the declaration is marked by the rule now, which may mark
-    /// a group it never folded into: a stranded group is exact all the
-    /// same.
+    /// [`strand`]: `r` is asked by every rule in force over `[r, next)`
+    /// ([`Past::marks`]): each make in that span folded it by its own.
     fn strand(
         &mut self,
         at: &At<'_>,
         staged: &Staged,
         (r, next): (&StoredRecord, Option<Position>),
-        then: &mut Then<'_>,
+        past: &mut Past,
     ) -> Result<()> {
         if !self.noted.contains(&r.ty) {
             self.load(at, staged, Some(&r.ty), None)?;
             self.noted.insert(r.ty.clone());
         }
-        for (view, i) in self.readers(&r.ty) {
+        for (view, _) in self.readers(&r.ty) {
+            let marks = past.marks(at, &view, r, next)?;
             let Work {
                 kept,
                 groups,
                 touched,
                 ..
             } = self.views.get_mut(&view).expect("a reader is a kept view");
-            let since = |t: &TypeName| at.ontology.types.get(t).map(|e| e.since);
-            let read = std::iter::once(&view).chain(kept.sources.iter().map(|s| &s.ty));
-            let made = read.filter_map(since).max();
-            let later = made.is_some_and(|m| m > r.position);
-            // Uncommitted where it was put, inside this append: asked now.
-            let unseen = later && !then.sees(r.position);
-            let then = match later {
-                true => then.at(r.position)?,
-                false => None,
-            };
-            let was = then.and_then(|o| Kept::of(o, o.ty(&view).ok()?));
-            let was = was.as_ref().and_then(|was| {
-                let j = was.sources.iter().position(|s| s.ty == r.ty)?;
-                Some((was, j))
-            });
-            let now = !later || unseen || next.is_none_or(|n| made.is_none_or(|m| n > m));
-            let rules = [was, now.then_some((&*kept, i))];
-            let mut marks = Vec::new();
-            for (by, j) in rules.into_iter().flatten() {
-                for face in 0..2 {
-                    if let Some(m) = at.member(by, &by.sources[j], r, face) {
-                        marks.push((face, m));
-                    }
-                }
-            }
             for (face, m) in marks {
                 let cx = (at, staged);
                 let g = group((&mut *groups, &mut *touched), kept, cx, &m.group, &m.by)?;
@@ -1471,52 +1443,171 @@ pub(crate) fn strand(
     at: &At<'_>,
     staged: &mut Staged,
     r: (&StoredRecord, Option<Position>),
-    then: &mut Then<'_>,
+    past: &mut Past,
 ) -> Result<()> {
     if asking(at.settings).next().is_none() && staged.kept.idle() {
         return Ok(());
     }
     let mut views = std::mem::take(&mut staged.kept);
-    let stranded = views.strand(at, staged, r, then);
+    let stranded = views.strand(at, staged, r, past);
     staged.kept = views;
     stranded
 }
 
-/// The declarations in force where a thinned state was put, read from the
-/// projection at that position, the last one held: a group is marked by
-/// the view as it was declared then. A position past `through`, which the
-/// projection has not committed, is answered by those in force now.
-pub(crate) struct Then<'a> {
-    engine: &'a dyn LakeEngine,
-    through: Option<Position>,
-    held: Option<(Position, Option<Ontology>)>,
+/// What a part of a thinning reads of the past to ask each state it takes
+/// by every rule in force while it was its record's: each declaration's
+/// states from the earliest position asked on — those in force now, those
+/// the transaction replaced, those the projection holds replaced, read as
+/// a read at a past position reads them — and the states of each setting a
+/// view's rule names. An ontology is built once for each position a
+/// declaration changed, a view's rule once for each of those.
+pub(crate) struct Past {
+    declared: Vec<Declared>,
+    from: Option<Position>,
+    through: Position,
+    built: BTreeMap<Position, Rc<Ontology>>,
+    kept: BTreeMap<(Position, TypeName), Option<Rc<Kept>>>,
+    settings: BTreeMap<String, Rc<Vec<StoredRecord>>>,
 }
 
-impl<'a> Then<'a> {
-    pub(crate) fn new(engine: &'a dyn LakeEngine, through: Option<Position>) -> Then<'a> {
-        let held = None;
-        Then {
-            engine,
+impl Past {
+    /// The past of a part at `through`, over `now` and what `staged` replaced.
+    pub(crate) fn new(now: &Ontology, staged: &Staged, through: Position) -> Past {
+        let mut declared = now.declared_and_withdrawn();
+        declared.extend(staged.replaced.iter().flatten().cloned());
+        Past {
+            declared,
+            from: None,
             through,
-            held,
+            built: BTreeMap::new(),
+            kept: BTreeMap::new(),
+            settings: BTreeMap::new(),
         }
     }
 
-    /// Whether the projection has committed `p`, so that [`Then::at`]
-    /// answers it.
-    fn sees(&self, p: Position) -> bool {
-        self.through.is_some_and(|t| p <= t)
+    /// Reads the declarations replaced since `p`, once for each stretch.
+    fn back_to(&mut self, at: &At<'_>, p: Position) -> Result<()> {
+        if let Some(to) = self.from.or(at.view.position())
+            && p < to
+        {
+            self.declared
+                .extend(at.view.replaced(p, to)?.into_iter().flatten());
+            self.from = Some(p);
+        }
+        Ok(())
     }
 
-    fn at(&mut self, p: Position) -> Result<Option<&Ontology>> {
-        if !self.sees(p) {
-            return Ok(None);
+    /// `view`'s rule as the declarations in force at `p` declare it.
+    fn kept(&mut self, view: &TypeName, p: Position) -> Option<Rc<Kept>> {
+        let since = self.declared.iter().map(|d| d.since);
+        let epoch = since.filter(|s| *s <= p).max().unwrap_or(Position::GENESIS);
+        if let Some(k) = self.kept.get(&(epoch, view.clone())) {
+            return k.clone();
         }
-        if self.held.as_ref().is_none_or(|(q, _)| *q != p) {
-            let o = Ontology::at(self.engine.view(Some(p))?.as_ref())?;
-            self.held = Some((p, Some(o)));
+        let o = self.built.entry(epoch).or_insert_with(|| {
+            let mut by: BTreeMap<String, &Declared> = BTreeMap::new();
+            for d in self.declared.iter().filter(|d| d.since <= epoch) {
+                let k = declaration_key(&d.declaration);
+                if by.get(&k).is_none_or(|e| e.since < d.since) {
+                    by.insert(k, d);
+                }
+            }
+            Rc::new(Ontology::from_declared(&Vec::from_iter(
+                by.into_values().cloned(),
+            )))
+        });
+        let k = o.ty(view).ok().and_then(|d| Kept::of(o, d)).map(Rc::new);
+        self.kept.insert((epoch, view.clone()), k.clone());
+        k
+    }
+
+    /// The states of the setting `name` through the part, read once.
+    fn setting(&mut self, at: &At<'_>, name: &str) -> Result<Rc<Vec<StoredRecord>>> {
+        if let Some(s) = self.settings.get(name) {
+            return Ok(s.clone());
         }
-        Ok(self.held.as_ref().and_then(|(_, o)| o.as_ref()))
+        let (ty, key) = (TypeName::from(SETTING_TYPE), RecordKey::from(name));
+        let (mut all, mut after) = (Vec::new(), None);
+        while let Some(p) = at.projection {
+            let page = p.states(&ty, &key, after, self.through, 256)?;
+            let full = page.len() == 256;
+            after = page.last().map(|r| r.position);
+            all.extend(page);
+            if !full {
+                break;
+            }
+        }
+        let all = Rc::new(all);
+        self.settings.insert(name.to_owned(), all.clone());
+        Ok(all)
+    }
+
+    /// Each group and face `r` was a member of in `view` from its position
+    /// up to `next`: by each declaration in force over that span that
+    /// declares `view` or `r`'s type, or is of another kind, and by each
+    /// value of a setting that rule names, while a setting kept the view.
+    fn marks(
+        &mut self,
+        at: &At<'_>,
+        view: &TypeName,
+        r: &StoredRecord,
+        next: Option<Position>,
+    ) -> Result<Vec<(usize, Member)>> {
+        let within = |p: Position| p > r.position && next.is_none_or(|n| p < n);
+        self.back_to(at, r.position)?;
+        let moves = |d: &Declared| match &d.declaration {
+            Declaration::Type(t) => &t.name == view || t.name == r.ty,
+            _ => true,
+        };
+        let mut cuts = Vec::from_iter(
+            (self.declared.iter())
+                .filter(|d| moves(d) && within(d.since))
+                .map(|d| d.since),
+        );
+        cuts.push(r.position);
+        cuts.sort();
+        cuts.dedup();
+        let named = format!("{SETTING}{view}");
+        let on = self.setting(at, &named)?;
+        let mut marks = Vec::new();
+        for (k, &c) in cuts.iter().enumerate() {
+            let end = cuts.get(k + 1).copied().or(next);
+            let Some(kept) = self.kept(view, c) else {
+                continue;
+            };
+            let Some(j) = kept.sources.iter().position(|s| s.ty == r.ty) else {
+                continue;
+            };
+            let mut held = vec![(named.clone(), on.clone())];
+            for n in &kept.settings {
+                held.push((n.clone(), self.setting(at, n)?));
+            }
+            let set = held.iter().flat_map(|(_, s)| s.iter().map(|s| s.position));
+            let mut points = Vec::from_iter(set.filter(|p| *p > c && end.is_none_or(|e| *p < e)));
+            points.push(c);
+            points.sort();
+            points.dedup();
+            for q in points {
+                let mut settings = at.settings.clone();
+                for (n, states) in &held {
+                    let s = states.iter().take_while(|s| s.position <= q).last();
+                    let fields = s.filter(|s| !s.retired).map(|s| &s.fields);
+                    lakelands_api::settings::hold(&mut settings, n, fields);
+                }
+                if !lakelands_api::seam::view_kept(settings.get(&named)) {
+                    continue;
+                }
+                let then = At {
+                    settings: &settings,
+                    ..*at
+                };
+                for face in 0..2 {
+                    let m = then.member(&kept, &kept.sources[j], r, face);
+                    marks.extend(m.map(|m| (face, m)));
+                }
+            }
+        }
+        Ok(marks)
     }
 }
 

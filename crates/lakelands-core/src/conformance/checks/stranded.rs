@@ -11,10 +11,11 @@ use crate::conformance::fixture::{canonical_line, source_record, try_upsert};
 use crate::conformance::prelude::*;
 use lakelands_api::ontology::FieldType;
 use lakelands_api::seam::{SETTING_TYPE, VIEW_KEPT_SETTING};
+use lakelands_api::write::{DeclarationKind, Withdrawal};
 
 check!(
     THIN_GROUP_STRANDED = a_group_a_taken_record_held_is_stranded_and_answers_as_before,
-    "102 (lakelands#1639): after a thinning takes `t1`, which stood in group `a`, `t4`, which stood in `b` and moved to `c`, and `t5`, which stood in `d` and retired, `t6`, written while `daily`'s `where` passed it by and standing in `e` once `daily` was made again without one, and `t7`, which stood in `h` under that `where` and in `g` before the make, the kept `daily` answers `a`, `c`, `e` and `g` as before the act, `b`, `d` and `h` no more, and `describe_type` counts seven stranded groups; `find` of the type omits the taken keys; a rebuild answers the same",
+    "102 (lakelands#1639): a thinning takes `t1`; `t4`, which moved from `b` to `c`; `t5`, retired; `t6` to `t9`, each of whose states stood in groups under a `where` of `daily`, or a value of the `floor` it names, in force from the state up to the next; and `t10`, whose first state was put while `daily` stood withdrawn. The kept `daily` then answers every group it answered before as before, and `describe_type` counts twelve stranded groups, one for each group a taken state stood in. `find` of the type omits the taken keys, and a rebuild answers the same",
     given
 );
 
@@ -26,7 +27,7 @@ check!(
 
 check!(
     THIN_STRANDED_MAKE_CARRIES = a_view_made_again_carries_its_stranded_groups,
-    "102 (lakelands#1639): a declaration of the source that makes the kept `daily` again carries its stranded group `a` and counts none of its members twice, and a later member folds in; redeclaring `daily` with another measure, migrating a field it reads, and setting `floor`, which its `where` names, are each refused `stranded_make` naming `daily`",
+    "102 (lakelands#1639): a declaration of the source that makes the kept `daily` again carries its stranded group `a`, whose taken `t1` held its maximum, and counts none of its members twice. A later member folds in, and when it retires the maximum falls back to `t1`'s carried 9. Redeclaring `daily` with another measure, migrating a field it reads, and setting `floor`, which its `where` names, are each refused `stranded_make` naming `daily`",
     given
 );
 
@@ -166,17 +167,41 @@ async fn a_group_a_taken_record_held_is_stranded_and_answers_as_before(
     given: Given,
 ) -> Held {
     let l = Lake::of(store.as_ref());
-    // `t6` is written while `daily` passes `n` over 9 only; made again
-    // with no `where`, it stands in `e` by the rule now only. `t7` stood
-    // in `h` by the rule then, and in `g` from before the make.
+    // Each of `t6` to `t9` stood in a group only under a rule in force
+    // after its state was put: `daily` made again with another `where`,
+    // or `floor` set to another value; `t8`'s `i` and `t9`'s `k` until its
+    // next state only. `t10`'s first state stood in none.
     l.declare(tick(&[])).await?;
+    l.set("floor", json!(0)).await?;
     l.declare(daily(Some("n > 9"), "sum(n)")).await?;
     l.set(&format!("{VIEW_KEPT_SETTING}daily"), json!(true))
         .await?;
-    tick_at(&l, "t6", "e", 1, 6).await?;
-    tick_at(&l, "t7", "h", 20, 7).await?;
-    tick_at(&l, "t7", "g", 1, 7).await?;
-    l.declare(daily(None, "sum(n)")).await?;
+    for (key, m, n) in [
+        ("t6", "e", 1),
+        ("t7", "h", 20),
+        ("t7", "g", 1),
+        ("t8", "i", 1),
+    ] {
+        tick_at(&l, key, m, n, 6).await?;
+    }
+    l.declare(daily(Some("n > setting('floor')"), "sum(n)"))
+        .await?;
+    tick_at(&l, "t8", "j", 50, 8).await?;
+    tick_at(&l, "t9", "k", 0, 9).await?;
+    l.set("floor", json!(-1)).await?;
+    tick_at(&l, "t9", "l", 7, 9).await?;
+    l.set("floor", json!(0)).await?;
+    // `t10`'s `x` stood in no group: `daily` was withdrawn while it was
+    // `t10`'s state.
+    let withdrawn = Declaration::Withdraw(Withdrawal {
+        kind: DeclarationKind::Type,
+        name: "daily".into(),
+    });
+    l.declare_as(withdrawn, "withdrawing `daily`").await?;
+    tick_at(&l, "t10", "x", 30, 10).await?;
+    tick_at(&l, "t10", "y", 30, 10).await?;
+    l.declare(daily(Some("n > setting('floor')"), "sum(n)"))
+        .await?;
     for (key, m, n, day) in [("t1", "a", 1, 1), ("t2", "a", 2, 2), ("t3", "c", 5, 3)] {
         tick_at(&l, key, m, n, day).await?;
     }
@@ -184,12 +209,14 @@ async fn a_group_a_taken_record_held_is_stranded_and_answers_as_before(
     tick_at(&l, "t4", "c", 3, 4).await?;
     tick_at(&l, "t5", "d", 4, 5).await?;
     l.retire("tick", "t5").await?;
+    // A source declared again makes `daily` once more, after them all.
+    l.declare(tick(&[field("note", StorageKind::Text)])).await?;
     let was = answers(&l, "daily", &["c", "t"]).await?;
     let store = thin(
         (store, Seams::default()),
         &given,
         "tick",
-        &["t1", "t4", "t5", "t6", "t7"],
+        &["t1", "t4", "t5", "t6", "t7", "t8", "t9", "t10"],
     )
     .await?;
     let l = Lake::of(store.as_ref());
@@ -203,9 +230,9 @@ async fn a_group_a_taken_record_held_is_stranded_and_answers_as_before(
             red.push(format!("{when} `daily` answers {now:?}, before it {was:?}"));
         }
         let n = stranded(&l, "daily").await?;
-        if n != 7 {
+        if n != 12 {
             red.push(format!(
-                "{when} `describe_type` counts {n} stranded groups, not 7"
+                "{when} `describe_type` counts {n} stranded groups, not 12"
             ));
         }
         let found = l.all_found("tick", find_at(None)).await?;
@@ -299,11 +326,11 @@ async fn a_view_made_again_carries_its_stranded_groups(store: Store, given: Give
     let l = Lake::of(store.as_ref());
     l.declare(tick(&[])).await?;
     l.set("floor", json!(0)).await?;
-    l.declare(daily(Some("n > setting('floor')"), "sum(n)"))
+    l.declare(daily(Some("n > setting('floor')"), "max(n)"))
         .await?;
     l.set(&format!("{VIEW_KEPT_SETTING}daily"), json!(true))
         .await?;
-    for (key, m, n, day) in [("t1", "a", 1, 1), ("t2", "a", 2, 2), ("t3", "b", 4, 3)] {
+    for (key, m, n, day) in [("t1", "a", 9, 1), ("t2", "a", 2, 2), ("t3", "b", 4, 3)] {
         tick_at(&l, key, m, n, day).await?;
     }
     let store = thin((store, Seams::default()), &given, "tick", &["t1"]).await?;
@@ -313,24 +340,22 @@ async fn a_view_made_again_carries_its_stranded_groups(store: Store, given: Give
     held(
         &l,
         kept,
-        (&["a 2/3", "b 1/4"], 1),
+        (&["a 2/9", "b 1/4"], 1),
         "after the act",
         &mut red,
     )
     .await?;
     // A field the view reads nothing of: the make carries `a`'s record.
     l.declare(tick(&[field("note", StorageKind::Text)])).await?;
-    held(&l, kept, (&["a 2/3", "b 1/4"], 1), "made again", &mut red).await?;
-    tick_at(&l, "t6", "a", 10, 6).await?;
-    held(
-        &l,
-        kept,
-        (&["a 3/13", "b 1/4"], 1),
-        "a later member folded in",
-        &mut red,
-    )
-    .await?;
-    let measure = daily(Some("n > setting('floor')"), "max(n)");
+    held(&l, kept, (&["a 2/9", "b 1/4"], 1), "made again", &mut red).await?;
+    tick_at(&l, "t6", "a", 20, 6).await?;
+    let after = (&["a 3/20", "b 1/4"][..], 1);
+    held(&l, kept, after, "a later member folded in", &mut red).await?;
+    // Its maximum falls back to the taken holder's entry, carried.
+    l.retire("tick", "t6").await?;
+    let back = (&["a 2/9", "b 1/4"][..], 1);
+    held(&l, kept, back, "the later member retired", &mut red).await?;
+    let measure = daily(Some("n > setting('floor')"), "sum(n)");
     let measure = l.cat.declare(&l.own, Declaration::Type(measure)).await;
     let mut moved = tick(&[field("note", StorageKind::Text)]);
     if let Some(f) = moved.fields.iter_mut().find(|f| f.name.as_str() == "n") {
@@ -338,7 +363,7 @@ async fn a_view_made_again_carries_its_stranded_groups(store: Store, given: Give
     }
     let floor = json!({"key": "floor", "value": 1});
     let refused = [
-        ("redeclaring `daily` with `max(n)`", measure.map(|_| ())),
+        ("redeclaring `daily` with `sum(n)`", measure.map(|_| ())),
         (
             "migrating `tick`'s `n` to decimals",
             migrated(&l, moved).await,
@@ -364,7 +389,7 @@ async fn a_view_made_again_carries_its_stranded_groups(store: Store, given: Give
     held(
         &l,
         kept,
-        (&["a 3/13", "b 1/4"], 1),
+        (&["a 2/9", "b 1/4"], 1),
         "after the refusals",
         &mut red,
     )

@@ -49,10 +49,7 @@ impl Lake {
     /// The steps a `declared` left pending are flushed before the first
     /// event that reads a record ([`reads_a_record`]) and before the commit.
     /// A fold of the log then ends its transaction when the flush kept a
-    /// step, or before a thinning, which reads the declarations in force
-    /// where each state it takes was put, so that a rebuild finds them
-    /// committed as the live fold did: it commits through the last event
-    /// folded and begins again, so
+    /// step: it commits through the last event folded and begins again, so
     /// the next walk reads those records in its view and no step is stacked
     /// on another. Each commit moves the engine's `folded_through`, and
     /// what it commits is whole: every event through that position, their
@@ -87,9 +84,13 @@ impl Lake {
             .any(|e| matches!(e.body, EventBody::Migrated { .. }));
         let mut kept = carries.then(|| w.owed.clone());
         let mut ciphers = crate::sealing::Ciphers::default();
+        // A thinning asks its states by the declarations this transaction
+        // replaced, which no view of the projection holds yet.
+        let thins = (events.iter()).any(|e| matches!(e.body, EventBody::ValuesThinned { .. }));
         let mut staged = Staged {
             reads,
             keys: Some(self.keys.clone()),
+            replaced: thins.then(Vec::new),
             ..Staged::default()
         };
         let result = (|| {
@@ -110,8 +111,7 @@ impl Lake {
                 if reads_a_record(&e.body) {
                     self.decide_whole(w, view.as_ref(), &mut staged)?;
                 }
-                let thins = i > 0 && matches!(e.body, EventBody::ValuesThinned { .. });
-                if (flushed || thins) && of_log && !scoped {
+                if flushed && of_log && !scoped {
                     drop(view);
                     self.commit_at(projection, events[i - 1].position)?;
                     // What is committed stays owed, whatever fails next.
@@ -124,6 +124,7 @@ impl Lake {
                     staged = Staged {
                         with_the_set: std::mem::take(&mut staged.with_the_set),
                         keys: Some(self.keys.clone()),
+                        replaced: thins.then(Vec::new),
                         ..Staged::default()
                     };
                     view = self.scoped.view(self.engine.view(None)?);
@@ -864,6 +865,7 @@ impl Lake {
                         staged.member(projection, &name, &of, &key, false, e.position)?;
                     }
                 }
+                replacing(w, staged, declaration);
                 w.ontology.put_at(
                     declaration.clone(),
                     *version,
@@ -900,6 +902,7 @@ impl Lake {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
                 let decl = Declaration::Type(migration.to.clone());
                 let again = computing_changed(&before, &migration.to);
+                replacing(w, staged, &decl);
                 w.ontology.put_at(
                     decl.clone(),
                     *version,
@@ -958,6 +961,7 @@ impl Lake {
                     return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
                 let decl = Declaration::ValueType(declaration.clone());
+                replacing(w, staged, &decl);
                 w.ontology.put_at(decl.clone(), *version, None, e.position);
                 projection.put_declaration(&decl, *version, None, e.position)?;
                 let step = Values::new(&w.ontology, e.position, &declaration.name, renames);
@@ -1326,12 +1330,11 @@ impl Lake {
     ) -> Result<()> {
         const PAGE: u32 = 256;
         let projection = self.store();
-        let mut then = kept::Then::new(self.engine.as_ref(), view.position());
+        let mut past = kept::Past::new(&w.ontology, staged, at);
         let mut gone = 0;
         for key in keys {
-            // Each state is judged knowing where the next one began, so
-            // one superseded before the view was last made is not marked
-            // by the rule that made it.
+            // Each state is asked by the rules in force until the next
+            // one began.
             let (mut after, mut last) = (None, None::<StoredRecord>);
             let held = loop {
                 let page = projection.states(ty, key, after, at, PAGE)?;
@@ -1339,7 +1342,7 @@ impl Lake {
                     if let Some(was) = last.replace(r) {
                         let next = last.as_ref().map(|r| r.position);
                         let cx = kept_at!(w, view, projection);
-                        kept::strand(&cx, staged, (&was, next), &mut then)?;
+                        kept::strand(&cx, staged, (&was, next), &mut past)?;
                     }
                 }
                 match page.last() {
@@ -1349,7 +1352,7 @@ impl Lake {
             };
             if let Some(was) = &last {
                 let cx = kept_at!(w, view, projection);
-                kept::strand(&cx, staged, (was, None), &mut then)?;
+                kept::strand(&cx, staged, (was, None), &mut past)?;
             }
             projection.drop_states(StatesOf::Record(ty, key))?;
             let ended = StoredRecord::ended(ty.clone(), key.clone(), at);
@@ -2202,5 +2205,12 @@ impl Migrated {
     pub(super) fn moved<'a>(&'a self, ty: &TypeName, key: &'a RecordKey) -> &'a RecordKey {
         let to = self.moves.get(ty).and_then(|m| m.get(key));
         to.unwrap_or(key)
+    }
+}
+
+/// Keep the state `d` replaces where a thinning follows in the transaction.
+fn replacing(w: &Writer, staged: &mut Staged, d: &Declaration) {
+    if let Some(replaced) = staged.replaced.as_mut() {
+        replaced.extend(w.ontology.replaced_by(d));
     }
 }

@@ -96,7 +96,7 @@ engine_check!(
 
 engine_check!(
     A_KEYS_STATES = a_keys_states_read_in_order_within_their_bounds,
-    "102, seams §ProjectionStore: `states` reads a key's states after `after` and at or before `through`, oldest first, at most `limit`, the transaction's own puts with them, and none once they are dropped"
+    "102, seams §ProjectionStore: `states` reads a key's states after `after` and at or before `through`, oldest first, at most `limit`, the transaction's own puts with them — one before a later state in its order, one at a state's position in its place — and none once they are dropped"
 );
 
 engine_check!(
@@ -1313,17 +1313,27 @@ fn a_keys_states_read_in_order_within_their_bounds(engine: &dyn LakeEngine) -> H
         |rs: Vec<StoredRecord>| -> Vec<u64> { rs.iter().map(|r| r.position.0).collect() };
     let mut red = Vec::new();
     fold(engine, 7, |p| {
-        p.put_record(&record("t", "a", json!({"n": 6}), 6))?;
+        // One after the latest, one before a later state, one in its place.
+        for (n, at) in [(6, 6), (3, 3), (40, 4)] {
+            p.put_record(&record("t", "a", json!({ "n": n }), at))?;
+        }
         let read = |after: Option<u64>, through: u64, limit: u32| {
             let rs = p.states(&ty, &key, after.map(Position), Position(through), limit);
             rs.map(positions)
         };
+        let fourth = p.states(&ty, &key, Some(Position(3)), Position(4), 1)?;
+        let n = fourth.first().and_then(|r| r.fields.get("n").cloned());
+        if n != Some(json!(40)) {
+            red.push(format!(
+                "the state at 4 holds `n` {n:?}, not the 40 put in its place"
+            ));
+        }
         for (after, through, limit, want) in [
-            (None, 7, 10, vec![1, 2, 4, 6]),
+            (None, 7, 10, vec![1, 2, 3, 4, 6]),
             (None, 7, 2, vec![1, 2]),
-            (Some(2), 7, 10, vec![4, 6]),
-            (Some(1), 4, 10, vec![2, 4]),
-            (None, 3, 10, vec![1, 2]),
+            (Some(2), 7, 10, vec![3, 4, 6]),
+            (Some(1), 4, 10, vec![2, 3, 4]),
+            (None, 3, 10, vec![1, 2, 3]),
         ] {
             let got = read(after, through, limit)?;
             if got != want {
@@ -1341,7 +1351,7 @@ fn a_keys_states_read_in_order_within_their_bounds(engine: &dyn LakeEngine) -> H
     })?;
     ensure!(
         red.is_empty(),
-        "`a`, put at 1, 2 and 4 and in the open transaction at 6, beside `b` at 5, read: {}",
+        "`a`, put at 1, 2 and 4 and in the open transaction at 6, 3 and 4 again, beside `b` at 5, read: {}",
         red.join("; ")
     );
     Ok(())

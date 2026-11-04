@@ -2227,6 +2227,10 @@ pub struct Staged {
     /// The records each thinning act has taken, its parts in this append
     /// counted on (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
     pub(crate) thinned: BTreeMap<(TypeName, FieldName, Timestamp), u64>,
+    /// Where a thinning follows in the transaction, each declaration's
+    /// state a later one replaced in it, which the thinning asks the
+    /// states it takes by ([`crate::kept::Past`]).
+    pub(crate) replaced: Option<Vec<lakelands_api::engine::Declared>>,
 }
 
 impl Staged {

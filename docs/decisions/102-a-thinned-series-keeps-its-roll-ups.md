@@ -511,9 +511,9 @@ Decided on 2026-11-02 (lakelands#1578): every recommendation below was taken.
 
 The mark S3 owes is every group and face a taken key's versions held. S2
 landed none of it, and the operator's five decisions above do not say how
-the fold finds them. This section weighs the shapes against the tree and
-recommends one **for the operator's word**: it is not yet a rule of this
-record, and the plan's rows below are sized for it.
+the fold finds them. This section weighs the shapes against the tree;
+the operator took shape 1 (below), which is a rule of this record, and
+the plan's rows below are sized for it.
 
 **Measured** at `582e075c` (develop after S2 and the kept view's parts):
 the seam stands at 108 of 110 methods — `ProjectionStore` 22,
@@ -799,10 +799,6 @@ its mark and changed nowhere else.
   position, marks every group and face a state was a member of in each
   kept view of its type, then drops the states, removes the key's
   vectors and puts its tombstone. Edges the plan did not name:
-  - **A state is judged by the declarations in force at its position,**
-    read from the projection's committed ontology there; a state the
-    transaction itself put is judged by the current one. The settings a
-    view's `where` reads are the current ones.
   - **The tombstone's and the row's position is the part's.** The fold
     holds no marker, so a tombstone carries the position of the part that
     took its key, and the act's row keeps its first part's; `gone` adds
@@ -812,7 +808,8 @@ its mark and changed nowhere else.
     and nothing a reader is shown, so the mark survives and counts, and
     no read answers the group.
   - **A view over a view** marks its own group stranded where the inner
-    record it folds is, so the outer's count includes it.
+    record it folds is, so the outer's count includes it. No row holds
+    it yet; `THIN_AS_OF_SAYS_UNANSWERABLE`, S7's, takes it at the latest.
   - **The make carries.** A make that ends a view with stranded groups
     takes their records and their order entries into the view it makes,
     and leaves their live members unnoted, so no member is counted twice.
@@ -822,30 +819,41 @@ its mark and changed nowhere else.
     field the view reads as its source declares it, a step that moves
     one, or a setting it or a view it reads names, refuses, whether or
     not it reaches a stranded group.
-  - **Which rule marks.** A state is asked by the declarations in force
-    at its position, read once for each distinct position a thinning
-    meets (S7 measures that cost), and by the ones in force now unless
-    it was superseded before the view was last made. A fold of the log
-    commits before a thinning, so a rebuild reads those declarations
-    committed as the live fold did; a state put inside the thinning's
-    own append, where none are committed yet, is asked by the ones now. A make by a setting
-    is not told apart from one by a declaration, so a state live at the
-    last declaration is marked by the rule now even where that make did
-    not fold it: the mark may name a group the state never stood in,
-    which is then exact all the same.
+  - **Every rule in force over a state's span marks.** A state is asked
+    by each rule in force from its position up to where the record's next
+    state began, or the act for its last: each declaration in force there
+    that declares the view or the taken type, or is of another kind, and
+    each value of a setting that rule names, while a setting kept the
+    view. Each such change made the view again, and the make folded the
+    state by it. The declarations are read as a read at a past position
+    reads them: those in force now, each withdrawal still in force among
+    them, those the projection holds replaced, and those the transaction
+    itself replaced, which the fold keeps where a thinning follows in it.
+    So the live fold and a rebuild read the same rules, and nothing
+    commits early. One mark is conservative: a setting that turns a view
+    kept starts a build in parts, and a state its record moved past
+    before the build reached it is still marked at that setting's
+    position. The live fold and a rebuild mark it alike. The settings are read through
+    `states` on `sys.setting`, once a part. An ontology is built once
+    for each position a declaration changed, and a view's rule once for
+    each of those; S7 measures that cost.
+  - **The make holds the carried entries in memory**, one for each
+    taken member and extreme of every stranded group, while it makes the
+    view; S7 measures that too.
   - The suite's rows are `THIN_GROUP_STRANDED` (the fold's side; the
     read's markers are S7's), `THIN_ERASURE_RESTATES_STRANDED_FOLDS` and
     `THIN_STRANDED_MAKE_CARRIES`, and the engine seam's `A_KEYS_STATES`,
     each green on the memory, SQLite and PostgreSQL engines. Each row
     appends the act's part below the store, since the act itself is S5's.
-- **Measured at S3 and S4's head**: product 112 299 and specification
-  199 533 against 111 694 and 199 058 at its base, so S3 and S4 add
-  605 product and 475 specification (raw lines +638 −33 and +475 −0);
+- **Measured at S3 and S4's head**: product 112 433 and specification
+  199 568 against 111 694 and 199 058 at its base, so S3 and S4 add
+  739 product and 510 specification (raw lines +778 −39 and +510 −0);
   seam 109 of 110; 6 of 20 `cfg(feature)` sites; 1 080 checks through
   the doors and 103 through the engine seam. The plan's 360 and 390 were
   the sketch; the extra is the make's refusal at three doors, the
-  bare group's record and the view-over-view mark. Nothing was cut: the
-  four items of § Cut first stay, and the ceilings hold.
+  bare group's record, the view-over-view mark and the read of every
+  rule in force over a state's span. Nothing was cut: the four items of
+  § Cut first stay, and the ceilings hold.
 
 ## How it came to be
 
