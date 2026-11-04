@@ -401,6 +401,7 @@ pub const ALL: &[Check] = &[
     guard_in_force::GUARD_IN_FORCE_LATER_WRITE_MOVES_NO_FIRING,
     guard_in_force::GUARD_IN_FORCE_BOUND_TAKEN_BACK_STANDS,
     guard_in_force::GUARD_READS_THROUGH_AN_OWED_ACT,
+    guard_in_force::GUARD_IN_FORCE_READS_ONE_PARTITION,
     read_clock::READ_CLOCK,
     read_clock::TODAY_RULES_OUT,
     before_declared::BEFORE_DECLARED,

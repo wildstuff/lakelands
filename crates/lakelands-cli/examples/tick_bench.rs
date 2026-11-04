@@ -6,8 +6,8 @@
 //! cargo build --release -p lakelands-cli --bin lakelands --example tick_bench
 //! target/release/examples/tick_bench --lakelands target/release/lakelands \
 //!     [--pg-url <url> --pg-plain] [--records <n>] [--singles <n>] [--series <n>] \
-//!     [--callers <n>] [--batch <n>] [--rollups 0,1,3] [--triggers none,preceding] \
-//!     [--reads <n>] --scratch <dir>
+//!     [--callers <n>] [--batch <n>] [--rollups 0,1,3] [--triggers none,preceding,in_force] \
+//!     [--bounds <n>] [--reads <n>] --scratch <dir>
 //! ```
 //!
 //! One cell is one fresh lake served by one `serve --mcp` process. The
@@ -21,7 +21,11 @@
 //! ticks grouped by `[symbol, date_bucket(at, …)]` with `count`, `sum`,
 //! `min`, `max`, `first` and `last`: `--rollups 1` keeps the hour,
 //! `3` the minute, the hour and the day. A trigger `preceding` is judged
-//! on every write: its bound is a constant, so it never fires.
+//! on every write: its bound is a constant, so it never fires. A trigger `in_force` is
+//! judged on every write too, against the bound of the tick's symbol in force at
+//! its `at`: each symbol has `--bounds` bounds, written before the feed, and the
+//! guard pairs by the symbol and the `from` order, so each write reads one
+//! partition of that size (`docs/decisions/100-a-guard-may-read-the-record-in-force.md`).
 //!
 //! A row prints per cell: writes a second and the p99 of a write for the
 //! callers' phase, records a second and the p99 of a call for the
@@ -144,7 +148,10 @@ fn prepare(bin: &Path, root: &Path, pg: Option<(&str, bool)>) -> Option<String> 
         api_keys: vec!["k-writer".into()],
     }])
     .unwrap();
-    config["server"] = json!({"bind": "127.0.0.1:0"});
+    // The bench is the caller: the door's rates of 1000 a second would
+    // bound a lake faster than the machine this was first run on.
+    config["server"] = json!({"bind": "127.0.0.1:0",
+        "bounds": {"connection_rate": "off", "principal_rate": "off"}});
     std::fs::write(&file, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
     schema_out
 }
@@ -285,6 +292,15 @@ fn declarations(rollups: usize, trigger: &str) -> Vec<Value> {
     if trigger == "preceding" {
         out.push(json!({"declare": "trigger", "name": "tick_guard", "on": "tick",
             "when": "preceding(price, at, symbol) is not null and price > preceding(price, at, symbol) + 1000000"}));
+    }
+    if trigger == "in_force" {
+        let field = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}, "required": true, "admits": ["feed"]});
+        out.push(json!({"declare": "type", "name": "bound", "key": ["symbol", "from"],
+            "fields": [field("symbol", "text"), field("from", "date_time"), field("hi", "decimal")]}));
+        out.push(
+            json!({"declare": "trigger", "name": "tick_guard", "on": "tick",
+            "when": "price > in_force(bound.hi, bound.from <= at, bound.symbol = symbol)"}),
+        );
     }
     out
 }
@@ -580,9 +596,36 @@ async fn cell(
             .expect("kept");
         }
     }
+    if trigger == "in_force" {
+        // Every symbol's bounds, hourly from before the feed; the highest
+        // is far above any price of the feed.
+        let bounds: Vec<SourceRecord> = (0..a.series)
+            .flat_map(|rank| {
+                (0..a.bounds).map(move |k| {
+                    let symbol = format!("S{rank:04}");
+                    let from = instant(BASE_MS - (a.bounds - k) as u64 * 3_600_000);
+                    let fields = json!({"symbol": symbol, "from": from, "hi": "1000000.00"});
+                    let key = format!("{symbol}:{}", from.replace(':', "%3A"));
+                    serde_json::from_value(json!({"type": "bound", "key": key, "fields": fields}))
+                        .unwrap()
+                })
+            })
+            .collect();
+        for chunk in bounds.chunks(a.batch) {
+            lakelands_api::catalog::ingest_all_with(
+                &*cat,
+                &writer(),
+                &"feed".into(),
+                IngestOpts::default(),
+                chunk.to_vec(),
+            )
+            .await
+            .expect("the bounds are ingested");
+        }
+    }
     let feed = Arc::new(Feed::new(a.series));
     let c = load(&remote, &feed, records, a.singles, a.callers, a.batch).await;
-    if trigger == "preceding" {
+    if trigger != "none" {
         // The guard is judged: a tick far above the series' last price
         // fires it, and the outcome names it.
         let at = instant(BASE_MS + records * STEP_MS + 1_000);
@@ -688,6 +731,7 @@ struct Args {
     singles: u64,
     callers: usize,
     batch: usize,
+    bounds: usize,
     reads: usize,
 }
 
@@ -701,6 +745,7 @@ async fn main() {
         singles: 20_000,
         callers: 16,
         batch: 1_000,
+        bounds: 4,
         reads: 5,
     };
     let (mut rollups, mut triggers) = (
@@ -719,6 +764,7 @@ async fn main() {
             "--series" => a.series = v().parse().unwrap(),
             "--callers" => a.callers = v().parse().unwrap(),
             "--batch" => a.batch = v().parse().unwrap(),
+            "--bounds" => a.bounds = v().parse().unwrap(),
             "--reads" => a.reads = v().parse().unwrap(),
             "--rollups" => rollups = v().split(',').map(|c| c.parse().unwrap()).collect(),
             "--triggers" => triggers = v().split(',').map(str::to_owned).collect(),
