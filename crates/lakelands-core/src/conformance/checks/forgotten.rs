@@ -1099,12 +1099,8 @@ impl lakelands_api::engine::LakeEngine for Reclaims {
         // border the check armed for, owed, and the writer writes on. 0:
         // no stop.
         let left = &self.fails[12];
-        let n = left.load(Ordering::SeqCst);
-        if n > 0 {
-            left.store(n - 1, Ordering::SeqCst);
-            if n == 1 {
-                return Err(crashed());
-            }
+        if left.load(Ordering::SeqCst) > 0 && left.fetch_sub(1, Ordering::SeqCst) == 1 {
+            return Err(crashed());
         }
         if fails(&self.fails, 8) {
             self.taken_over(lease)?;

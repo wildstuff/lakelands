@@ -83,7 +83,7 @@ check!(
 
 check!(
     GUARD_READS_THROUGH_AN_OWED_ACT = a_guard_between_an_acts_parts_reads_through,
-    "100 and 099: with the restate held back, a guard's `in_force` and `preceding` and a constraint's `preceding` read the record an owed act has not reached as the restate will leave it, whichever parts have landed: no erased value fires a guard or passes a constraint, while the projection still holds it, and once the act is whole the record reads as the restate left it",
+    "100 and 099: with the restate held back, a guard's `in_force` and `preceding` and a constraint's `preceding` read the record an owed act has not reached as the restate will leave it, its parts owed behind its `source_forgotten`: no erased value fires a guard or passes a constraint, while the projection still holds it, and once the act is whole the record reads as the restate left it",
     given
 );
 
@@ -914,7 +914,7 @@ async fn a_guard_between_an_acts_parts_reads_through(store: Store, given: Given)
     };
     let between = named_on("h1").await?;
     ensure!(
-        fed.is_ok() && between == "first no_bound",
+        fed.is_ok() && held.is_some() && bound.is_some() && between == "first no_bound",
         "between the act's turns the projection still holds `t0`'s price ({held:?}) and the \
          bound's `hi` ({bound:?}), yet the tick `h1` is taken, its constraint `rises` reads \
          `preceding` as null and both `first` and `no_bound` fire: {fed:?}, {between}"
