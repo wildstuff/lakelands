@@ -16,7 +16,7 @@ use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::KeyId;
 use lakelands_api::read::Found;
 use lakelands_api::seam::DataKey;
-use lakelands_api::write::{ForgetReport, ForgetSetReport};
+use lakelands_api::write::{ForgetReport, ForgetSetReport, IngestOpts};
 use lakelands_api::{LakeId, Location};
 
 use super::erasable::{Keys, again, person, read, with};
@@ -52,6 +52,7 @@ check!(
 struct Faulty {
     keys: Arc<Keys>,
     destroy_fails: AtomicBool,
+    version_fails: AtomicBool,
     after_destroy_fails: AtomicBool,
     destroyed: AtomicBool,
 }
@@ -61,6 +62,7 @@ impl Faulty {
         Faulty {
             keys: keys.clone(),
             destroy_fails: AtomicBool::new(false),
+            version_fails: AtomicBool::new(false),
             after_destroy_fails: AtomicBool::new(false),
             destroyed: AtomicBool::new(false),
         }
@@ -98,6 +100,31 @@ impl KeyStore for Faulty {
     }
     fn ids(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<Vec<KeyId>> {
         self.keys.ids(lake, source)
+    }
+    fn destroys_versions(&self) -> bool {
+        self.keys.destroys_versions()
+    }
+    fn destroy_version(
+        &self,
+        lake: &LakeId,
+        source: &SourceId,
+        id: &KeyId,
+    ) -> lakelands_api::Result<()> {
+        if self.version_fails.load(Ordering::SeqCst) {
+            return Err(crashed());
+        }
+        self.keys.destroy_version(lake, source, id)
+    }
+    fn create_apart(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
+        self.keys.create_apart(lake, source)
+    }
+    fn destroy_apart(
+        &self,
+        lake: &LakeId,
+        source: &SourceId,
+        id: &KeyId,
+    ) -> lakelands_api::Result<()> {
+        self.keys.destroy_apart(lake, source, id)
     }
 }
 
@@ -615,7 +642,7 @@ async fn a_forgetting_a_crash_stopped_is_finished_by_the_next_writers_open(
 
 check!(
     FORGET_GROUPS_BY_ACT = a_resumed_acts_events_stay_its_own,
-    "099: an act forgets two sources and a crash stops it after their `source_forgotten`s, before its `act_whole`; a second act forgets another source and is stopped the same way; the writer's open finishes both, and each act's events name it, so the two read apart — the first groups only its own sources and the second only its own — and every source's values read erased once both are whole (lakelands#1725)",
+    "099: an act forgets two sources and a crash stops it after their `source_forgotten`s, before its `act_whole`; a second act forgets another source and is stopped the same way; the writer's open finishes both, and each act's events name it, so the two read apart — the first groups only its own sources and the second only its own — and every source's values read erased once both are whole (lakelands#1725); so does a removal's act, stopped after its `values_removed` and the first of its parts as its version destroy fails, its parts each a turn of the writer, and a delivery written in the window between a removal's walk and its first turn, sealed apart, is taken by it: one event more than its preflight read, under the version and the key the walk did not name (lakelands#1728)",
     reopens
 );
 
@@ -691,20 +718,133 @@ async fn a_resumed_acts_events_stay_its_own(store: Store, reopen: Reopen) -> Hel
             "each act is whole, and no `act_whole` names an act the log has none of: the acts are \
              {acts:?} and the `act_whole`s {whole:?}"
         );
+        // The acts' turns beside the writer restate the projection after
+        // the appends: every source reads erased once both are done.
+        let p2 = person_at(&l, "p2", None).await?;
+        // `erp` and `crm2` alone brought `p3` and `p5`, so their acts retire
+        // them; read as of before the acts, each still holds its name erased.
+        let p3 = person_at(&l, "p3", Some(start)).await?;
+        let p5 = person_at(&l, "p5", Some(start)).await?;
+        ensure!(
+            !p2.fields.contains_key("name")
+                && !p3.fields.contains_key("name")
+                && !p5.fields.contains_key("name"),
+            "crm's, erp's and crm2's values read erased: {p2:?} {p3:?} {p5:?}"
+        );
         Ok(())
     })
     .await?;
-    // Every source of both acts reads erased once the acts are whole.
-    let p2 = person_at(&l, "p2", None).await?;
-    // `erp` and `crm2` alone brought `p3` and `p5`, so their acts retire
-    // them; read as of before the acts, each still holds its name erased.
-    let p3 = person_at(&l, "p3", Some(start)).await?;
-    let p5 = person_at(&l, "p5", Some(start)).await?;
+    // A removal's act is stopped the same way: its `values_removed` and
+    // the first of its parts in the log, its version destroy failing
+    // before its `act_whole` (099). The handle the checks read through
+    // holds the lake's writer, so it is let go before the writer's next
+    // open.
+    drop(l);
+    let l = Lake::of(store.as_ref());
+    let web: SourceId = "web".into();
+    let rows: Vec<SourceRecord> = (0..600)
+        .map(|i| {
+            let key = format!("w{i:04}");
+            source_record(
+                "person",
+                &key,
+                json!({"id": key, "name": format!("N{}", i % 5)}),
+            )
+        })
+        .collect();
+    l.ingest("web", rows).await.must("ingesting from web")?;
+    let removing = store.head().await.must("reading the head")?;
+    let every = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    faulty.version_fails.store(true, Ordering::SeqCst);
+    let stopped = store.remove_values(&web, &every, false, None).await;
+    faulty.version_fails.store(false, Ordering::SeqCst);
     ensure!(
-        !p2.fields.contains_key("name")
-            && !p3.fields.contains_key("name")
-            && !p5.fields.contains_key("name"),
-        "crm's, erp's and crm2's values read erased: {p2:?} {p3:?} {p5:?}"
+        stopped.is_err(),
+        "the removal, stopped before its `act_whole` as its version destroy failed, answers its \
+         failure; it answered {stopped:?}"
+    );
+    drop(l);
+    store = again(&reopen, store, seams(), "after the removal's stop").await?;
+    let l = Lake::of(store.as_ref());
+    settles(6_000, Duration::from_millis(1), || async {
+        let events = events_after(store.as_ref(), removing).await?;
+        let Some(begun) = (events.iter()).find_map(|e| match &e.body {
+            EventBody::ValuesRemoved { source, .. } if source.as_str() == "web" => Some(e.position),
+            _ => None,
+        }) else {
+            return Err(Failure::new(
+                "the removal's `values_removed` is in the log".to_owned(),
+            ));
+        };
+        ensure!(
+            (events.iter())
+                .any(|e| matches!(&e.body, EventBody::ActWhole { act } if *act == begun)),
+            "the open's turns finish the removal, its `act_whole` naming it: the events are \
+             {events:?}"
+        );
+        // Its parts are more than one turn's, each a turn of the writer:
+        // the records it retires read their names erased as of before it.
+        let w = person_at(&l, "w0000", Some(removing)).await?;
+        ensure!(
+            !w.fields.contains_key("name"),
+            "web's values read erased once its removal is whole: {w:?}"
+        );
+        Ok(())
+    })
+    .await?;
+    // A removal started here takes a delivery written while it walked,
+    // sealed apart: the act's tail names a key the walk's plan did not,
+    // and the restate plans again at its first turn (099).
+    let shop: SourceId = "shop".into();
+    let rows: Vec<SourceRecord> = (0..1_500)
+        .map(|i| {
+            let key = format!("s{i:04}");
+            source_record(
+                "person",
+                &key,
+                json!({"id": key, "name": format!("M{}", i % 7)}),
+            )
+        })
+        .collect();
+    l.ingest("shop", rows).await.must("ingesting from shop")?;
+    let every = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let pre = store
+        .remove_values_preflight(&shop, &every)
+        .await
+        .must("the preflight of shop")?;
+    let done: Arc<std::sync::Mutex<Option<lakelands_api::write::RemoveReport>>> = Arc::default();
+    let (s, answer, s2) = (store.clone(), done.clone(), store.clone());
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            let report = s
+                .remove_values(&shop, &every, false, None)
+                .await
+                .must("the removal of shop")?;
+            *crate::lock(&answer) = Some(report);
+            Ok(())
+        }),
+        Box::pin(async move {
+            let l = Lake::of(s2.as_ref());
+            let source: SourceId = "shop".into();
+            let opts = IngestOpts {
+                delivery: Some(lakelands_api::id::DeliveryId::from("b2")),
+                sealed_apart: true,
+                ..IngestOpts::default()
+            };
+            let record = source_record("person", "s1500", json!({"id": "s1500", "name": "Bea"}));
+            lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, opts, vec![record])
+                .await
+                .must("ingesting a delivery beside the walk")?;
+            Ok(())
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let done = crate::lock(&done).take().expect("the act answered");
+    ensure!(
+        done.events == pre.events + 1 && done.apart.len() == 1 && done.kept.is_empty(),
+        "the removal takes the delivery written while it walked, one more event than its \
+         preflight read, under the key sealed apart and the version the walk saw: the preflight \
+         {pre:?}, the act {done:?}"
     );
     Ok(())
 }

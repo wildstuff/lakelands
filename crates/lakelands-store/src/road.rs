@@ -199,6 +199,15 @@ async fn run(weak: &Weak<Lake>, job: &Held) -> Result<()> {
         past = catch_up(weak, job, past, tail).await?;
         let (lake, j) = (held(weak)?, job.clone());
         let first = exec::write(&lake, move |t| {
+            // The tail is read under the writer caught up, not under the
+            // view as it stood: a fold that stopped short leaves the
+            // projection at its last commit, and a view taken before the
+            // catch-up would read the tail past a position the log has
+            // already passed (099).
+            let mut w = t.for_write()?;
+            if w.lease.is_none() {
+                return Err(read_only());
+            }
             let view = t.engine.view(None)?;
             let reach = lock(&j).reach();
             let Some(read) = read_tail(t.lake(), view.as_ref(), &reach, past, tail)? else {
@@ -207,7 +216,7 @@ async fn run(weak: &Weak<Lake>, job: &Held) -> Result<()> {
             drop(view);
             let mut job = lock(&j);
             job.fold(&read)?;
-            turn(t, job.as_mut()).map(Some)
+            job.turn(t, &mut w).map(Some)
         });
         let first = first.await?;
         // Between turns the runner holds its lake only weakly.

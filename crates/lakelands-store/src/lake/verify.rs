@@ -97,7 +97,21 @@ impl Lake {
     /// search, reading one event per probe: `known_at` never decreases
     /// along the log (`docs/log-format.md` §1.3).
     pub fn position_at(&self, t: Timestamp) -> Result<Option<Position>> {
-        let head = self.head();
+        self.position_through(t, Some(self.head()))
+    }
+
+    /// [`Self::position_at`] through what the caller has seen folded: the
+    /// search stops at `through`, not at the published head, so a head a
+    /// turn has not published yet never answers short of an event the
+    /// caller's view already holds.
+    pub(crate) fn position_through(
+        &self,
+        t: Timestamp,
+        through: Option<Position>,
+    ) -> Result<Option<Position>> {
+        let Some(head) = through else {
+            return Ok(None);
+        };
         let known_at = |p: u64| -> Result<Timestamp> {
             self.read_events(Position(p), 1)?
                 .first()
