@@ -5626,9 +5626,10 @@ fn a_read_naming_a_series_seeks_the_pairs_window(engine: &dyn LakeEngine) -> Hel
             whole.len()
         );
         ensure!(
-            walked <= read + 8,
+            walked <= rows.len() as u64 + 1_000,
             "live-only {what} walked {walked} index rows and read {read} records for a page of \
-             1 000; the retired rows among the merged rows are each read once, not a batch more"
+             1 000; the walk may pass the page once for the retired rows it turns away, not a \
+             batch more"
         );
     }
     // A text holding fewer than `FEW_HOLDERS` records: its whole holding
@@ -6071,7 +6072,7 @@ fn an_in_of_texts_merges_their_windows_into_one_page(engine: &dyn LakeEngine) ->
         })
     };
     for dir in [Direction::Asc, Direction::Desc] {
-        let (first, walked, read) = walks_of(
+        let (first, walked, _read) = walks_of(
             uhead.as_ref(),
             &uty,
             &uscan(dir, None, 250),
@@ -6079,16 +6080,18 @@ fn an_in_of_texts_merges_their_windows_into_one_page(engine: &dyn LakeEngine) ->
             "the first page of an uneven `in`",
         )?;
         ensure!(
-            walked <= read * 2,
+            walked <= first.len() as u64 + 250,
             "the first page of 250 over an uneven `in` of {UNEVEN} texts, {dir:?}, walked {walked} \
-             index rows for {read} read; the merge reads no more than a batch ahead of its page"
+             index rows for a page of {}; the merge reads the texts' shared batch and what the \
+             page still lacks, not twice the page",
+            first.len()
         );
         let last = first.last().expect("the page asks for 250");
         let after = After {
             values: vec![last.fields.get(&at).cloned().unwrap_or(Value::Null)],
             key: last.key.clone(),
         };
-        let (second, walked, read) = walks_of(
+        let (second, walked, _read) = walks_of(
             uhead.as_ref(),
             &uty,
             &uscan(dir, Some(after), 250),
@@ -6096,9 +6099,11 @@ fn an_in_of_texts_merges_their_windows_into_one_page(engine: &dyn LakeEngine) ->
             "a page continued through the merge",
         )?;
         ensure!(
-            walked <= read * 2,
-            "a page continued through the merge, {dir:?}, walked {walked} index rows for {read} \
-             read; the merge reads no more than a batch ahead of its page"
+            walked <= second.len() as u64 + 250,
+            "a page continued through the merge, {dir:?}, walked {walked} index rows for a page \
+             of {}; the merge reads the texts' shared batch and what the page still lacks, not \
+             twice the page",
+            second.len()
         );
         let mut joined = keys(&first);
         joined.extend(keys(&second));

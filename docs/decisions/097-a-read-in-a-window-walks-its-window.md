@@ -881,8 +881,9 @@ engine hands them its own index.
   either direction and with a bound open (the open one walks its page
   and the batch's one more), and leaves a retired record out of the
   answer without leaving it out of the walk; the same page live-only
-  walks what it reads and no batch more, each retired row read once on
-  the way; a text under `FEW_HOLDERS` walks and reads its 600, whole and
+  walks its page and at most one page more, for the retired rows it
+  turns away, each read once on the way; a text under `FEW_HOLDERS`
+  walks and reads its 600, whole and
   in a window of 100; a count and an aggregate walk and read the
   window's 1 000, where the text's 60 000 is neither; a window of 1 100
   is chosen beside the holding, the choice walking the window's 1 100
@@ -897,8 +898,8 @@ engine hands them its own index.
   `in` walks and reads 500; a window of 7 000 walks and reads 7 000,
   continuing from a text's end into the next; and 10 texts of uneven
   holdings, live-only, a page and its continuation through the merge,
-  either direction, answer one scan's and walk no more than a batch
-  ahead of their page. `SERIES_PAIR_WITHOUT_ORDER_INDEX`: a type that
+  either direction, answer one scan's and walk no more than their page
+  again beyond what they answer. `SERIES_PAIR_WITHOUT_ORDER_INDEX`: a type that
   writes only `series_index.<type>` and no `sort_index.<type>` — a page
   over its text in either direction walks and reads the text's holding,
   a window of 100 walks and reads 100, live-only reads each retired row
@@ -990,4 +991,8 @@ has. The issues' numbers lean on a count, so the count comes first.
   is taken whatever the order field's own index, a text is never asked past its
   share of what the page still lacks plus one, and the suite holds a pair
   alone, a live-only open-bound page, uneven texts and a continued page.
+  A further review asked for bounds tighter than the refill's own growth:
+  the live-only page and the uneven merge now bound the walk by what their
+  page answers plus one page. With the old refill planted, both fail; with
+  the share in place they pass.
 - Amended by 098 and 099 (lakelands#1652), proposed for 0.23.0.
