@@ -27,7 +27,7 @@ use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, 
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::quarantine::{QuarantineFilter, QuarantineId, Quarantined};
 use lakelands_api::query::{Edge, Walk};
-use lakelands_api::read::Direction;
+use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Proposal, ProposalFilter};
@@ -92,6 +92,71 @@ fn stands(proj: &Projection, at: Option<Position>, ident: &str) -> Option<TypeNa
         Declaration::ObjectSet(s) => Some(s.of.clone()),
         _ => None,
     }
+}
+
+/// A page of a pair's rows in the field's order: each named series' rows
+/// read under its prefix and merged, the records without an order value
+/// read after them in key order
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// series index, §`in`).
+fn scan_series(
+    p: &Projection,
+    ty: &TypeName,
+    decl: &TypeDecl,
+    scan: &Scan,
+    seek: &engines::SeriesSeek,
+    first: &lakelands_api::read::Order,
+) -> Vec<StoredRecord> {
+    let window = engines::field_kind(decl, &first.field)
+        .zip(scan.filter.as_ref())
+        .and_then(|(kind, filter)| engines::window(filter, &first.field, kind));
+    let record = |key: &RecordKey| p.record_of(ty, key, p.folded);
+    let mut merged = engines::MergedRows::new(seek.series.len(), first.dir, false);
+    let sorted = |from: Option<(&[u8], &str)>, n: u32| {
+        merged.next(from, n, |i: usize, from: Option<(&[u8], &str)>, n: u32| {
+            let at = from.map(|(k, key)| (engines::prefixed(&seek.series[i], k), key.to_owned()));
+            let at = at.as_ref().map(|(k, key)| (k.as_slice(), key.as_str()));
+            let bounds = seek.bounds(i, window.as_ref());
+            let rows = p.sorted_after(ty, &seek.field, first.dir, Some(&bounds), None, at, n);
+            engines::count_walk(rows.len());
+            Ok::<Vec<(Vec<u8>, StoredRecord)>, std::convert::Infallible>(
+                rows.into_iter()
+                    .filter_map(|(k, key)| Some((k[8..].to_vec(), record(&key)?)))
+                    .collect(),
+            )
+        })
+    };
+    let mut tails = engines::MergedRows::new(seek.series.len(), Direction::Asc, true);
+    let missing = |after: Option<&str>, n: u32| match window {
+        Some(_) => Ok::<_, std::convert::Infallible>(Vec::new()),
+        None => {
+            let rows = tails.next(
+                after.map(|a| (&[][..], a)),
+                n,
+                |i: usize, from: Option<(&[u8], &str)>, n: u32| {
+                    let tail = seek.tail(i);
+                    let bounds = engines::Window {
+                        field: seek.field.clone(),
+                        lo: tail.clone(),
+                        hi: tail.clone(),
+                    };
+                    let at = from.map(|(_, key)| (tail.as_slice(), key));
+                    let rows =
+                        p.sorted_after(ty, &seek.field, Direction::Asc, Some(&bounds), None, at, n);
+                    engines::count_walk(rows.len());
+                    Ok::<Vec<(Vec<u8>, StoredRecord)>, std::convert::Infallible>(
+                        rows.into_iter()
+                            .filter_map(|(_, key)| Some((Vec::new(), record(&key)?)))
+                            .collect(),
+                    )
+                },
+            )?;
+            Ok(rows.into_iter().map(|(_, r)| r).collect())
+        }
+    };
+    let page: std::result::Result<_, std::convert::Infallible> =
+        engines::scan_in_field_order(Some(decl), scan, sorted, missing);
+    page.unwrap_or_else(|never| match never {})
 }
 
 impl ProjectionView for MemView {
@@ -165,7 +230,39 @@ impl ProjectionView for MemView {
         n: u32,
     ) -> Result<Option<WindowBatch>> {
         Ok(self.read(|p, _| {
-            if !Self::window_holds(p.type_at(ty, self.at), scan) {
+            let decl = p.type_at(ty, self.at);
+            // A series the scan names exactly seeks the pair's rows alone:
+            // each series' window under its prefix, walked one after
+            // another.
+            if self.at == p.folded
+                && scan.range.is_none()
+                && let Some(decl) = decl
+                && let Some(seek) =
+                    engines::series_seek(decl, &p.series_state(ty), &window.field, scan)
+            {
+                let batch = engines::series_window_keys(
+                    &seek,
+                    window,
+                    after,
+                    n,
+                    |_i: usize, bounds: &engines::Window, from: Option<(&[u8], &str)>, n: u32| {
+                        let rows = p.sorted_after(
+                            ty,
+                            &seek.field,
+                            Direction::Asc,
+                            Some(bounds),
+                            None,
+                            from,
+                            n,
+                        );
+                        engines::count_walk(rows.len());
+                        Ok::<_, std::convert::Infallible>(rows)
+                    },
+                )
+                .unwrap_or_else(|never| match never {});
+                return Some(batch);
+            }
+            if !Self::window_holds(decl, scan) {
                 return None;
             }
             let rows = self.window_rows(p, ty, window, after, n)?;
@@ -191,7 +288,37 @@ impl ProjectionView for MemView {
         l: u64,
     ) -> Result<Option<WindowSides>> {
         Ok(self.read(|p, _| {
-            if !Self::window_holds(p.type_at(ty, self.at), scan) {
+            let decl = p.type_at(ty, self.at);
+            // A series the scan names exactly: the window's rows and the
+            // pair's whole holding of it, counted under its prefix.
+            if self.at == p.folded
+                && scan.range.is_none()
+                && let Some(decl) = decl
+                && let Some(seek) =
+                    engines::series_seek(decl, &p.series_state(ty), &window.field, scan)
+            {
+                let sides = engines::series_window_sides(
+                    &seek,
+                    window,
+                    l,
+                    |_i: usize, bounds: &engines::Window, cap: u64| {
+                        let n = u32::try_from(cap).unwrap_or(u32::MAX);
+                        let rows = p.sorted_after(
+                            ty,
+                            &seek.field,
+                            Direction::Asc,
+                            Some(bounds),
+                            None,
+                            None,
+                            n,
+                        );
+                        Ok::<_, std::convert::Infallible>(rows.len() as u64)
+                    },
+                )
+                .unwrap_or_else(|never| match never {});
+                return Some(sides);
+            }
+            if !Self::window_holds(decl, scan) {
                 return None;
             }
             let ask = u32::try_from(l.saturating_add(1)).unwrap_or(u32::MAX);
@@ -306,6 +433,19 @@ impl ProjectionView for MemView {
                         Ok(rows)
                     });
                 return page.unwrap_or_else(|never| match never {});
+            }
+            // A series the scan names exactly reads the pair's rows alone,
+            // each series' window under its prefix: the pair's own index
+            // answers the field's order, whether or not the order field has
+            // an index of its own.
+            if head
+                && scan.range.is_none()
+                && let Some(decl) = decl
+                && let Some(first) = scan.order_by.first().filter(|o| o.by == OrderBy::Value)
+                && let Some(seek) =
+                    engines::series_seek(decl, &p.series_state(ty), &first.field, scan)
+            {
+                return scan_series(p, ty, decl, scan, &seek, first);
             }
             // Ordered by a field the lake indexes: read in the order index's
             // order, stop when full; at an earlier position, with the keys
