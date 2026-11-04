@@ -73,6 +73,11 @@ impl<T> History<T> {
     pub(crate) fn latest(&self) -> Option<&T> {
         self.0.last().map(|(_, t)| t)
     }
+
+    /// Every state put, oldest first.
+    pub(crate) fn all(&self) -> impl Iterator<Item = &T> {
+        self.0.iter().map(|(_, t)| t)
+    }
 }
 
 /// A record as the projection keeps it: in the state form the other

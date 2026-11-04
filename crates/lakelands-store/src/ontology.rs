@@ -54,9 +54,9 @@ pub struct Ontology {
     /// A host's own settings, by key (063, extended).
     pub settings: BTreeMap<String, Entry<SettingDecl>>,
     /// Each declaration withdrawn and not declared again, by its identity
-    /// ([`declaration_key`]): the version and the position of its
-    /// withdrawal, which a later declaration of the name continues.
-    withdrawn: BTreeMap<String, (u32, Position)>,
+    /// ([`declaration_key`]): its withdrawal as stored, whose version a
+    /// later declaration of the name continues.
+    withdrawn: BTreeMap<String, Declared>,
     /// Each type's `depends_on` lists as they were declared, field by
     /// field: the completed lists are made again from them.
     listed: BTreeMap<TypeName, Vec<Vec<FieldName>>>,
@@ -312,8 +312,15 @@ impl Ontology {
             Declaration::Setting(t) => put(&mut self.settings, t.key.clone(), t, v, h, s),
             Declaration::Withdraw(t) => {
                 self.take_out(t.kind, &t.name);
-                let key = declaration_key(&Declaration::Withdraw(t));
-                self.withdrawn.insert(key, (v, s));
+                let declaration = Declaration::Withdraw(t);
+                let key = declaration_key(&declaration);
+                let held = Declared {
+                    declaration,
+                    version: v,
+                    schema_hash: h,
+                    since: s,
+                };
+                self.withdrawn.insert(key, held);
             }
             _ => {}
         }
@@ -493,7 +500,7 @@ impl Ontology {
             Declaration::Withdraw(w) => {
                 let held = self.held_named(w.kind, &w.name);
                 let held = held.and_then(|h| self.entry_of(&h));
-                held.or_else(|| self.withdrawn.get(&declaration_key(d)).copied())
+                held.or_else(|| self.withdrawn_of(d))
             }
             _ => None,
         }
@@ -531,7 +538,7 @@ impl Ontology {
 
     /// The version a declaration of this name and kind would take next.
     pub fn next_version(&self, declaration: &Declaration) -> u32 {
-        let withdrawn = || self.withdrawn.get(&declaration_key(declaration)).copied();
+        let withdrawn = || self.withdrawn_of(declaration);
         let held = self.entry_of(declaration).or_else(withdrawn);
         held.map_or(1, |(v, _)| v + 1)
     }
@@ -574,6 +581,28 @@ impl Ontology {
         each(&self.object_sets, Declaration::ObjectSet, &mut out);
         each(&self.settings, Declaration::Setting, &mut out);
         out
+    }
+
+    /// Every declaration with each withdrawal still in force: the states a
+    /// read at a past position finds now.
+    pub fn declared_and_withdrawn(&self) -> Vec<Declared> {
+        let mut all = self.declared();
+        all.extend(self.withdrawn.values().cloned());
+        all
+    }
+
+    /// The state in force that the declaration `d` replaces, a withdrawal's
+    /// included.
+    pub fn replaced_by(&self, d: &Declaration) -> Option<Declared> {
+        let key = declaration_key(d);
+        let mut all = self.declared_and_withdrawn().into_iter();
+        all.find(|e| declaration_key(&e.declaration) == key)
+    }
+
+    /// The version and position of `d`'s withdrawal, while it is in force.
+    fn withdrawn_of(&self, d: &Declaration) -> Option<(u32, Position)> {
+        let w = self.withdrawn.get(&declaration_key(d));
+        w.map(|w| (w.version, w.since))
     }
 }
 

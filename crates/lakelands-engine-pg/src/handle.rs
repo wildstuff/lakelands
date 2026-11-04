@@ -1204,6 +1204,28 @@ impl ProjectionStore for PgLake {
         })
     }
 
+    fn states(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        after: Option<Position>,
+        through: Position,
+        limit: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        let writing = self.writing()?;
+        let mut transaction = lock(&self.transaction);
+        let mut db = self.projecting(writing)?;
+        // The transaction's own puts are read too: its buffer goes first.
+        if let Some(t) = transaction.as_mut().filter(|t| t.buffer.len() > 0) {
+            let page = std::mem::take(&mut t.buffer);
+            let (types, asked, touched) = (&mut t.types, &mut t.asked, &mut t.touched);
+            t.put += page.write(&mut db, &self.names, types, asked, touched, t.put)?;
+        }
+        let after = after.map_or(-1, |p| p.0 as i64);
+        let span = (after, through.0 as i64);
+        projection::key_states(&mut db, &self.names, (ty, key), span, i64::from(limit))
+    }
+
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         let state = serde_json::to_string(proposal).expect("a proposal serialises");
         self.stage(at, |b| b.proposal(proposal.id.as_str(), at, state))

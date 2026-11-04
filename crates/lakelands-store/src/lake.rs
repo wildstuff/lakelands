@@ -2188,7 +2188,7 @@ impl crate::writes::Written for Staged {
 pub struct Staged {
     /// The records this transaction wrote, each under the key and in the
     /// state it has now: ended only where the fold ended a kept view's
-    /// record, which `each` leaves out.
+    /// record or a thinning took one, which `each` leaves out.
     pub(crate) records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
     /// The steps this transaction folded and kept, in the order of their
     /// events.
@@ -2224,6 +2224,13 @@ pub struct Staged {
     /// What the write path's run of the hooks overwrote, where it keeps
     /// that ([`crate::kept::Undo`]).
     pub(crate) undo: Option<crate::kept::Undo>,
+    /// The records each thinning act has taken, its parts in this append
+    /// counted on (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    pub(crate) thinned: BTreeMap<(TypeName, FieldName, Timestamp), u64>,
+    /// Where a thinning follows in the transaction, each declaration's
+    /// state a later one replaced in it, which the thinning asks the
+    /// states it takes by ([`crate::kept::Past`]).
+    pub(crate) replaced: Option<Vec<lakelands_api::engine::Declared>>,
 }
 
 impl Staged {

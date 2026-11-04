@@ -14,6 +14,7 @@ lakelands-api	trait_method_added	trait method ProjectionStore::put_order
 lakelands-api	trait_method_added	trait method ProjectionStore::put_quarantined
 lakelands-api	trait_method_added	trait method ProjectionStore::put_thinned
 lakelands-api	trait_method_added	trait method ProjectionStore::put_thinned_act
+lakelands-api	trait_method_added	trait method ProjectionStore::states
 lakelands-api	trait_method_added	trait method ProjectionView::order
 lakelands-api	trait_method_added	trait method ProjectionView::order_page
 lakelands-api	trait_method_added	trait method ProjectionView::quarantined

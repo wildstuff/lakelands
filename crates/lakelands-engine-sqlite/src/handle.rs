@@ -903,6 +903,26 @@ impl ProjectionStore for SqliteLake {
         })
     }
 
+    fn states(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        after: Option<Position>,
+        through: Position,
+        limit: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        let after = after.map_or(-1, |p| p.0 as i64);
+        self.write(|conn| {
+            projection::records(
+                conn,
+                "SELECT r.ty, k.key, r.since, r.state FROM keys k CROSS JOIN records r \
+                 ON r.ty = k.ty AND r.id = k.id WHERE k.ty = ?1 AND k.key = ?2 \
+                 AND r.since > ?3 AND r.since <= ?4 ORDER BY r.since LIMIT ?5",
+                params![ty.as_str(), key.as_str(), after, through.0 as i64, limit],
+            )
+        })
+    }
+
     fn put_thinned_act(&self, act: &ThinnedAct, at: Position) -> Result<()> {
         self.stage(at, |conn, _| {
             projection::run(

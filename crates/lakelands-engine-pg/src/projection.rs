@@ -1950,6 +1950,26 @@ pub(crate) fn head_records_after(
     )
 }
 
+/// The states of one record after `after` and at or before `through`,
+/// oldest first, at most `limit`.
+pub(crate) fn key_states(
+    db: &mut Db,
+    names: &Names,
+    (ty, key): (&TypeName, &RecordKey),
+    (after, through): (i64, i64),
+    limit: i64,
+) -> Result<Vec<StoredRecord>> {
+    db.records(
+        names,
+        &format!(
+            "SELECT {RECORD} FROM {} r WHERE r.ty = $1 AND r.key = $2 AND r.since > $3 \
+             AND r.since <= $4 ORDER BY r.since LIMIT $5",
+            names.t("records")
+        ),
+        &[&ty.as_str(), &key.as_str(), &after, &through, &limit],
+    )
+}
+
 /// The latest state of one record.
 pub(crate) fn head_record(
     db: &mut Db,

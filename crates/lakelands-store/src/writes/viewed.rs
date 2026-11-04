@@ -191,6 +191,13 @@ impl Decide<'_> {
             None => Box::new(Viewed::of(self.ontology)),
         };
         let setting = after.ty.as_str() == SETTING_TYPE;
+        // A setting a kept view with stranded groups names would make it
+        // again by another rule.
+        if setting {
+            let stranded = kept::stranded(self.at.view(), self.at.settings)?;
+            let rule = (&Stepped::new(), &[after.key.as_str()][..]);
+            stranded_under(&stranded, (self.ontology, self.ontology), rule)?;
+        }
         let moves = v.reads.contains(&after.ty) || setting && v.named.contains(after.key.as_str());
         let decided = match moves {
             true => self.viewed_by(&mut v, change, (before, after), out),
@@ -600,6 +607,57 @@ pub(crate) fn stepped_under(
         (false, Some(ty)) => Err(Error::invalid(Case::NoLongerDeclarable { ty: ty.clone() })),
         (false, None) => Err(Error::not_granted()),
     }
+}
+
+/// Refuses `stranded_make` an event that makes again one of the kept views
+/// `stranded`, each holding a stranded group, under another rule than
+/// `before` keeps it by: its own computation or the kinds it lands in
+/// declared otherwise in `after`, a field its sources read declared
+/// otherwise or moved by `stepped`, or a setting it names `written`. Its
+/// make carries each stranded group's record, which the members a
+/// thinning took are gone to compute again; a view `after` keeps no more
+/// is ended, not made
+/// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+pub(crate) fn stranded_under(
+    stranded: &[TypeName],
+    (before, after): (&Ontology, &Ontology),
+    (stepped, written): (&Stepped, &[&str]),
+) -> Result<()> {
+    let field =
+        |o: &Ontology, t: &TypeName, f: &FieldName| o.ty(t).ok().and_then(|d| d.field(f)).cloned();
+    let moved = |(t, read): &(TypeName, BTreeSet<FieldName>)| {
+        let moves =
+            |m: &Option<BTreeSet<FieldName>>| m.as_ref().is_none_or(|m| !m.is_disjoint(read));
+        stepped.get(t).is_some_and(moves)
+            || read
+                .iter()
+                .any(|f| field(before, t, f) != field(after, t, f))
+    };
+    for view in stranded {
+        let rule = |o: &Ontology| {
+            let d = o.ty(view).ok().filter(|d| kept::keeps(o, d))?;
+            Some((d.view.clone(), d.fields.clone()))
+        };
+        let (Some(was), Some(is)) = (rule(before), rule(after)) else {
+            continue;
+        };
+        let reads = sources_read(before, view);
+        let viewed = std::iter::once(view).chain(reads.iter().map(|(t, _)| t));
+        let mut named = viewed.filter_map(|t| before.ty(t).ok());
+        let named = named.any(|d| {
+            kept::settings_read(before, d)
+                .iter()
+                .any(|k| written.contains(&k.as_str()))
+        });
+        let source = reads.iter().find(|r| moved(r)).map(|(t, _)| t.clone());
+        if source.is_some() || named || was != is {
+            let ty = source.or_else(|| Some(was.0?.source.clone()));
+            let ty = ty.unwrap_or_else(|| view.clone());
+            let view = view.clone();
+            return Err(Error::invalid(Case::StrandedMake { view, ty }));
+        }
+    }
+    Ok(())
 }
 
 /// A set or a trigger over a view a build has not kept whole yet is

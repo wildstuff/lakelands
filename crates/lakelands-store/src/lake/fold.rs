@@ -84,9 +84,13 @@ impl Lake {
             .any(|e| matches!(e.body, EventBody::Migrated { .. }));
         let mut kept = carries.then(|| w.owed.clone());
         let mut ciphers = crate::sealing::Ciphers::default();
+        // A thinning asks its states by the declarations this transaction
+        // replaced, which no view of the projection holds yet.
+        let thins = (events.iter()).any(|e| matches!(e.body, EventBody::ValuesThinned { .. }));
         let mut staged = Staged {
             reads,
             keys: Some(self.keys.clone()),
+            replaced: thins.then(Vec::new),
             ..Staged::default()
         };
         let result = (|| {
@@ -120,6 +124,7 @@ impl Lake {
                     staged = Staged {
                         with_the_set: std::mem::take(&mut staged.with_the_set),
                         keys: Some(self.keys.clone()),
+                        replaced: thins.then(Vec::new),
                         ..Staged::default()
                     };
                     view = self.scoped.view(self.engine.view(None)?);
@@ -263,9 +268,10 @@ impl Lake {
         }
         // What the transaction wrote is stepped where it is kept: all are
         // taken out before any is put back, a new key may be another's old.
+        // A key a thinning took is no record to step.
         let (stepped, kept) = std::mem::take(&mut staged.records)
             .into_iter()
-            .partition::<Vec<_>, _>(|((ty, _), _)| reached.contains(ty));
+            .partition::<Vec<_>, _>(|((ty, _), r)| reached.contains(ty) && !r.is_ended());
         staged.records = kept.into_iter().collect();
         for (_, pre) in stepped {
             let post = step.apply(pre.clone())?;
@@ -354,7 +360,7 @@ impl Lake {
             let written = (staged.records)
                 .range_mut((ty.clone(), RecordKey::from(""))..)
                 .take_while(|((t, _), _)| t == ty);
-            for (_, r) in written {
+            for (_, r) in written.filter(|(_, r)| !r.is_ended()) {
                 let post = step.apply(r.clone());
                 if post != *r {
                     projection.put_record(&post)?;
@@ -433,7 +439,7 @@ impl Lake {
             let written = (staged.records)
                 .range_mut((ty.clone(), RecordKey::from(""))..)
                 .take_while(|((t, _), _)| t == ty);
-            for (_, r) in written {
+            for (_, r) in written.filter(|(_, r)| !r.is_ended()) {
                 through(r, &staged.outputs)?;
             }
         }
@@ -712,9 +718,15 @@ impl Lake {
             | EventBody::VerbCalled { .. }
             | EventBody::TriggerFired { .. }
             | EventBody::TriggerDropped { .. } => {}
-            // The act's fold — the records' states deleted, their groups
-            // stranded — lands with the act itself (102).
-            EventBody::ValuesThinned { .. } => {}
+            EventBody::ValuesThinned {
+                ty,
+                by,
+                before,
+                keys,
+            } => {
+                let act = (ty, by, *before);
+                self.thinned(w, (view, staged), act, keys, e.position)?;
+            }
             // A version is its id's row, what is erased of it gone (085).
             EventBody::RecordQuarantined { .. } => {
                 if let Some(q) = crate::quarantine::version_row(&w.ontology, e) {
@@ -853,6 +865,7 @@ impl Lake {
                         staged.member(projection, &name, &of, &key, false, e.position)?;
                     }
                 }
+                replacing(w, staged, declaration);
                 w.ontology.put_at(
                     declaration.clone(),
                     *version,
@@ -889,6 +902,7 @@ impl Lake {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
                 let decl = Declaration::Type(migration.to.clone());
                 let again = computing_changed(&before, &migration.to);
+                replacing(w, staged, &decl);
                 w.ontology.put_at(
                     decl.clone(),
                     *version,
@@ -947,6 +961,7 @@ impl Lake {
                     return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
                 let decl = Declaration::ValueType(declaration.clone());
+                replacing(w, staged, &decl);
                 w.ontology.put_at(decl.clone(), *version, None, e.position);
                 projection.put_declaration(&decl, *version, None, e.position)?;
                 let step = Values::new(&w.ontology, e.position, &declaration.name, renames);
@@ -1297,6 +1312,73 @@ impl Lake {
             }
         }
         Ok(false)
+    }
+
+    /// One part of a thinning act: each key's states, read before they go,
+    /// mark stranded every kept view's group they were members of, on the
+    /// face they were; then the states, the vectors and the key's place in
+    /// the append go, and its tombstone and the act's row are put. No
+    /// group is told a member left
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    fn thinned(
+        &self,
+        w: &Writer,
+        (view, staged): (&dyn ProjectionView, &mut Staged),
+        (ty, by, before): (&TypeName, &FieldName, Timestamp),
+        keys: &[RecordKey],
+        at: Position,
+    ) -> Result<()> {
+        const PAGE: u32 = 256;
+        let projection = self.store();
+        let mut past = kept::Past::new(&w.ontology, staged, at);
+        let mut gone = 0;
+        for key in keys {
+            // Each state is asked by the rules in force until the next
+            // one began.
+            let (mut after, mut last) = (None, None::<StoredRecord>);
+            let held = loop {
+                let page = projection.states(ty, key, after, at, PAGE)?;
+                for r in page.iter().cloned() {
+                    if let Some(was) = last.replace(r) {
+                        let next = last.as_ref().map(|r| r.position);
+                        let cx = kept_at!(w, view, projection);
+                        kept::strand(&cx, staged, (&was, next), &mut past)?;
+                    }
+                }
+                match page.last() {
+                    Some(r) if page.len() == PAGE as usize => after = Some(r.position),
+                    _ => break last.is_some(),
+                }
+            };
+            if let Some(was) = &last {
+                let cx = kept_at!(w, view, projection);
+                kept::strand(&cx, staged, (was, None), &mut past)?;
+            }
+            projection.drop_states(StatesOf::Record(ty, key))?;
+            let ended = StoredRecord::ended(ty.clone(), key.clone(), at);
+            self.index_vectors(&w.ontology, &ended)?;
+            staged.put(ended);
+            projection.put_thinned(ty, key, before, at)?;
+            gone += u64::from(held);
+        }
+        // Each part counts on: the row holds the act's whole count.
+        let act = (ty.clone(), by.clone(), before);
+        let was = match staged.thinned.get(&act) {
+            Some(n) => *n,
+            None => (view.thinned_acts(ty)?.into_iter())
+                .find(|a| &a.by == by && a.before == before)
+                .map_or(0, |a| a.gone),
+        };
+        staged.thinned.insert(act, was + gone);
+        let (ty, by, gone) = (ty.clone(), by.clone(), was + gone);
+        let row = lakelands_api::read::ThinnedAct {
+            ty,
+            by,
+            before,
+            through: at,
+            gone,
+        };
+        projection.put_thinned_act(&row, at)
     }
 
     /// Keep the engine's vector index in step with a record's vector
@@ -2123,5 +2205,12 @@ impl Migrated {
     pub(super) fn moved<'a>(&'a self, ty: &TypeName, key: &'a RecordKey) -> &'a RecordKey {
         let to = self.moves.get(ty).and_then(|m| m.get(key));
         to.unwrap_or(key)
+    }
+}
+
+/// Keep the state `d` replaces where a thinning follows in the transaction.
+fn replacing(w: &Writer, staged: &mut Staged, d: &Declaration) {
+    if let Some(replaced) = staged.replaced.as_mut() {
+        replaced.extend(w.ontology.replaced_by(d));
     }
 }
