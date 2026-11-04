@@ -21,7 +21,7 @@ use lakelands_api::read::{Find, Found};
 use lakelands_api::seam::SETTING_TYPE;
 
 use super::export::Scratch;
-use crate::conformance::fixture::{order, source_record};
+use crate::conformance::fixture::{get_at, order, source_record};
 use crate::conformance::prelude::*;
 
 check!(
@@ -205,11 +205,35 @@ pub(super) async fn until_building_within(
     Ok(false)
 }
 
-/// Wait, up to a while, for a setting's record to be in the log: the
-/// door has appended it and the build is owed.
+/// Wait, up to a while, for a read to see a setting's record: the fold
+/// has applied it and the build is owed.
 pub(super) async fn until_appended(l: &Lake, key: &str) -> Result<bool, Failure> {
     for _ in 0..2_000 {
         if l.read(SETTING_TYPE, key).await.is_ok() {
+            return Ok(true);
+        }
+        pause(Duration::from_millis(1)).await;
+    }
+    Ok(false)
+}
+
+/// Wait, up to a while, for a setting's record to be in the log and the
+/// head to name it: a read may be answered from a fold the head does not
+/// name yet, and a copy taken at the head must hold the setting a read
+/// already sees.
+pub(super) async fn until_logged(
+    l: &Lake,
+    store: &dyn LakeStore,
+    key: &str,
+) -> Result<bool, Failure> {
+    for _ in 0..2_000 {
+        let reply = l
+            .cat
+            .get(&l.own, &TypeName::from(SETTING_TYPE), get_at(key, None))
+            .await;
+        if let Ok(reply) = reply
+            && store.head().await.must("reading the head")? >= reply.position
+        {
             return Ok(true);
         }
         pause(Duration::from_millis(1)).await;
@@ -996,7 +1020,7 @@ async fn a_copy_taken_beside_the_build_imports_whole(store: Store, given: Given)
         let dir = dir.clone();
         async move {
             ensure!(
-                until_appended(l, "sort_index.row").await?,
+                until_logged(l, s, "sort_index.row").await?,
                 "`sort_index.row` was never appended, so no build began"
             );
             crate::export::write(s, &dir)

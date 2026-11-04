@@ -2183,8 +2183,8 @@ pub struct Thin {
     pub before: Timestamp,
 }
 
-/// What `LakeStore::thin_values` took, or what
-/// `LakeStore::thin_values_preflight` says it would
+/// What `LakeStore::thin_values` took, or what it says it would with
+/// `preflight` at `true`
 /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). It
 /// repeats no key: the log's parts name them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

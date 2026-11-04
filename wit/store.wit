@@ -15,6 +15,7 @@ interface store {
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
         compact-report, vector-coverage, forget-report, forget-set-report, selection, remove-report,
+        thin, thin-report,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
         feed-filter, feed-batch, version,
@@ -103,6 +104,12 @@ interface store {
         /// What `remove-values` would do, appending nothing, with the time
         /// it is expected to hold the writer's lock.
         remove-values-preflight: func(source: source-id, selection: selection) -> result<remove-report, error>;
+        /// Thin a type: take out of the projection every record whose field
+        /// `thin.by` is certainly before `thin.before`, as one act in parts
+        /// beside the writer, keeping the folds of the kept views over it;
+        /// the log keeps every value it took. With `preflight`, say what
+        /// the act would take, appending nothing.
+        thin-values: func(%type: type-name, thin: thin, preflight: bool) -> result<thin-report, error>;
         /// Give back the storage the projection no longer uses; appends
         /// nothing and changes no answer.
         compact: func() -> result<compact-report, error>;

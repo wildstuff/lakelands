@@ -2596,6 +2596,21 @@ The suite's `purge` checks hold the sentences about what a purge retires
 and refuses on every engine; the lines `lakelands purge` prints are held
 by the CLI's tests.
 
+`LakeStore::thin_values(ty, thin, preflight)` takes a type's records
+whose field `thin.by` is certainly before `thin.before` out of the
+projection, as one act in parts beside the writer
+(`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`): every
+group a taken record's versions held is stranded on the kept views that
+read it, its row is replaced by a tombstone, and the log keeps every
+value, so a rebuild folds the same answers. A field of neither instants
+nor dates is refused `ThinBy`, and a kept view of the type holding a
+group that is not exact now `KeptNotExact`. With `preflight` at `true` it answers the
+same report, appending nothing; an act a writer's open finds owed is
+finished before it answers. The write doors' refusal of a taken key is
+S6's; the reclaim is S7's, so `reclaimed` is absent. The suite's
+thinning checks hold the act, its parts, the kept view's answers, the
+refused groups and an export between parts on every engine.
+
 `LakeStore::compact()` gives back the storage the projection no longer
 uses, when the host chooses
 (`docs/decisions/040-maintenance-never-changes-an-answer.md`). It runs

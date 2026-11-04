@@ -1503,6 +1503,21 @@ impl LakeStore for Store {
         exec::run(move || crate::remove::preflight(&lake, &source, &selection)).await
     }
 
+    async fn thin_values(
+        &self,
+        ty: &TypeName,
+        thin: &lakelands_api::write::Thin,
+        preflight: bool,
+    ) -> Result<lakelands_api::write::ThinReport> {
+        let (lake, ty, thin) = (self.lake.clone(), ty.clone(), thin.clone());
+        if preflight {
+            return exec::run(move || crate::thin::preflight(&lake, &ty, &thin)).await;
+        }
+        let (answer, waiting) = tokio::sync::oneshot::channel();
+        crate::thin::start(&self.lake, ty, thin, answer);
+        waiting.await.unwrap_or_else(|_| Err(exec::halted(true)))
+    }
+
     async fn position_at(&self, known_at: Timestamp) -> Result<Option<Position>> {
         let lake = self.lake.clone();
         exec::run(move || lake.position_at(known_at)).await

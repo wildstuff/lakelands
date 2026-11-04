@@ -111,6 +111,7 @@ const KINDS: &[Owes] = &[
     crate::forget::owed,
     crate::remove::settle_owed,
     crate::build::owed,
+    crate::thin::owed,
     owes,
 ];
 

@@ -2030,9 +2030,9 @@ interface types {
         before: timestamp,
     }
 
-    /// What `thin_values` took, or what `thin_values_preflight` says it
-    /// would: the type, the field, the horizon, the records taken, the
-    /// last position the act had got through, and the act's reclaim. It
+    /// What `thin_values` took, or what it says it would with `preflight`:
+    /// the type, the field, the horizon, the records taken, the last
+    /// position the act had got through, and the act's reclaim. It
     /// repeats no key: the log's parts name them.
     record thin-report {
         %type: type-name,

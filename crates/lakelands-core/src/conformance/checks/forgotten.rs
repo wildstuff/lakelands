@@ -1510,12 +1510,16 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
         "a rebuild whose reclaim fails answers, still owing it: {rebuilt:?}, tried {tried}"
     );
     // The next writer opens though the reclaim fails again: the open
-    // answers and the road beside it tries the reclaim.
-    fails[0].store(1, Ordering::SeqCst);
+    // answers and the road beside it tries the reclaim. Every reclaim
+    // from here fails until the test lets one run, so that however many
+    // times the road tries the owed one, none that runs clears what a
+    // failed attempt left owed.
+    const ARMED: u32 = 1_000_000;
+    fails[0].store(ARMED, Ordering::SeqCst);
     store = fault(store, "while its reclaim fails").await?;
     settles(6_000, Duration::from_millis(10), || async {
         ensure!(
-            fails[0].load(Ordering::SeqCst) == 0,
+            fails[0].load(Ordering::SeqCst) < ARMED,
             "the road beside the writer's open has not tried the owed reclaim"
         );
         Ok(())
@@ -1527,6 +1531,8 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
         "the owed reclaim, tried beside the open and failing, still owes, saying why: owing \
          {owed:?}"
     );
+    // Let the reclaim run: the next open's attempts all land.
+    fails[0].store(0, Ordering::SeqCst);
     let l = Lake::of(store.as_ref());
     erased(&l, None).await?;
     l.upsert("person", "p2", json!({"note": "written"})).await?;
