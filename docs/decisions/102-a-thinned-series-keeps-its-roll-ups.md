@@ -401,19 +401,20 @@ are. They land after 098's F12 and 099's R2 to R6, on the road R1 built
 |---|---|---|---:|---:|
 | S1 | The kind, the public types, the refusals | `event.rs`, `read.rs`, `record.rs`, `write.rs`, `error/case.rs`, `api/tests/wit.rs` | 160 | 180 |
 | S2 | The two tables on SQLite and PostgreSQL, the memory engine's maps, `LAYOUT`, the format's page | the engines' `projection.rs`, `conformance/engine/projection.rs`, `docs/log-format.md` | 100 | 120 |
-| S3 | The stranded mark, the counter, the fold's arm | `kept.rs`, `lake/fold.rs` | 120 | 180 |
-| S4 | The make of a view with stranded groups, the order entries, the checks | `kept.rs`, `lake/fold.rs`, `conformance/checks/stranded.rs` | 100 | 160 |
+| S3 | The stranded mark, the counter, the fold's arm, the read of a key's states | `engine.rs`, the engines' `handle.rs` and `projection.rs`, `kept.rs`, `lake/fold.rs`, `lake/scrub.rs`, `conformance/engine/projection.rs`, `conformance/checks/forgotten.rs`, `store/tests/probed/mod.rs`, `store/tests/fold_gap.rs`, `docs/seams.md`, `scripts/release/surface-accepted` | 260 | 230 |
+| S4 | As before: the make of a view with stranded groups, the order entries, the checks | `kept.rs`, `lake/fold.rs`, `conformance/checks/stranded.rs` | 100 | 160 |
 | S5 | The act: the walk, the first turn, the parts, the tail's judgement, `OWED` | `thin.rs` (new), `lake.rs`, `lake/open.rs`, `lake/standby.rs`, `conformance/checks/thinned.rs` | 180 | 240 |
 | S6 | The refusals at the write doors, the store facade, the catalog and the command | `writes.rs`, `ingest.rs`, `doors.rs`, `api/catalog.rs`, `api/tests/wit.rs`, `cli/commands.rs` | 120 | 150 |
 | S7 | The reads' markers at the head and at an earlier position, the reclaim, the measured bytes | `reads.rs`, `lake/described.rs`, `doors.rs`, the engines' `view.rs`, `docs/hosting.md`, the suite's rows | 120 | 170 |
-| | **Sum** | | **900** | **1 200** |
-| | **×1.35** | | **1 215** | **1 620** |
+| | **Sum** | | **1 040** | **1 250** |
+| | **×1.35** | | **1 404** | **1 688** |
 
 **The raise.** By `docs/budgets.md`'s rule, a round's reserve is sized from
 the count measured on the pull request that records it and the estimate
 of the round's tasks, rounded up to the next 500. At ×1.35 the plan is
-1 215 product and 1 620 specification; rounded up, the raise is **+1 500
-product and +2 000 specification**, taking the ceilings from **107 000 to
+now 1 404 product and 1 688 specification; rounded up to the next 500,
+that is the **+1 500 product and +2 000 specification** the operator
+took, so the raise stands unopened: the ceilings move from **107 000 to
 108 500** and from **189 500 to 191 500**. The epic's 102 500 and 187 000
 were reckoned before 098's and 099's reserve raised the ceilings on
 2026-11-01; the tree's 107 000 and 189 500 are what this raise lands on.
@@ -505,6 +506,152 @@ Decided on 2026-11-02 (lakelands#1578): every recommendation below was taken.
    less than it answered before, which the issue's done-when rules out.
 5. **The raise is +1 500 product and +2 000 specification**, to 108 500 and
    191 500, in `docs/budgets.md` by the rule, dated 2026-11-02.
+
+### S3: how the fold finds the groups
+
+The mark S3 owes is every group and face a taken key's versions held. S2
+landed none of it, and the operator's five decisions above do not say how
+the fold finds them. This section weighs the shapes against the tree and
+recommends one **for the operator's word**: it is not yet a rule of this
+record, and the plan's rows below are sized for it.
+
+**Measured** at `582e075c` (develop after S2 and the kept view's parts):
+the seam stands at 108 of 110 methods — `ProjectionStore` 22,
+`ProjectionView` 27 — and the core at 110 882 product of 115 000 and
+198 531 specification of 202 500. **Read** there: every engine keeps every
+state a key ever held — SQLite's `records` rows under its `keys` id,
+PostgreSQL's under `(ty, key, since)`, the memory engine's `History` for
+each id — and no seam read answers more than one state.
+`ProjectionView::get` takes the state at a position, and `matching`
+answers positions of events, not states. The fold's `view` is a committed
+snapshot on every engine: the disk engines read it through a separate
+reader connection or a read-only snapshot, and the memory engine holds the
+transaction's puts until `commit`. `Staged.records` keeps one state for a
+key, the latest in the append. A part that folds in the same transaction
+as a version's put — a horizon a second old, a log page of 1 024 events
+that holds both — cannot answer that version from the view. A correct
+shape sees the transaction's states, or the log names the mark.
+
+| Shape | What it reads, and where | Per taken key | Seam | Lines (×1.35) |
+|---|---|---|---:|---:|
+| 1. A states read | a page of the key's states at or before the part's position; the write side's transaction on SQLite and PostgreSQL, the memory engine's pending puts and history | one seek and one row for each version | 109 | 260 / 230 (351 / 311) |
+| 2. A replay | the key's events, from the log, folded again | one index page and one log read for each version, its erasures and sealing applied, the key's migrations found | 108 only with a commit before each part, or 109 | 320 / 260 (432 / 351) |
+| 3. The parts name the groups | the same states, read by the act's turn; the fold reads the event | the act's read once; the log carries the groups | 109 | 340 / 280 across S1, S3 and S5 (459 / 378) |
+
+**1 — a states read of a key.** One method answers a page of a key's
+states at or before `through`, oldest first, after the last position it
+handed back; the fold loops, and for each state asks every kept view
+reading the type for its member, by `kept::member`'s own rule, and marks
+the group on the face it stood. It is the read this record's first shape
+names, with one correction the tree forces: it belongs on
+`ProjectionStore`, beside `drop_states`, not on `ProjectionView`. The
+view is a committed snapshot, and a part folding in the transaction that
+holds a version's put cannot see it there. The write side answers the
+transaction: SQLite and PostgreSQL query the open connection, and the
+memory engine reads its pending puts over the history. A `ProjectionView`
+read would need a commit before each part — `fold_all` commits inside a
+page only when a flush kept a step — and a year at a part of 500 keys is
+63 000 parts (reckoned), 126 000 for the issue's two years. The read
+costs one seek and one row for each version: a tick's state is 619 B of
+the 698 B its projection holds (098), so a year of 31.5M taken ticks
+reads 31.5M rows, about 19.5 GB (reckoned) — the rows the part's
+`drop_states` then deletes and, in a rebuild, the rows the fold itself
+has just put. The log is not read again. The mark uses the view's
+declaration at each version's position, which the projection keeps, so a
+view made again between a version and the act still has the earlier
+group marked and an earlier read finds it; that is one declarations read
+for each distinct position, not one for each version. S3 owes it, and it
+adds no read of a record.
+
+**2 — a replay of the key's events.** The fold asks the feed's index for
+the key's positions (`matching`, `About { ty, key }`) and reads those
+events from the log, then folds them again. A record's event is a patch
+over the state before it, and the state it makes carries the fields the
+fold derived at its position, so the replay is a second fold of the key's
+history, from its first state, under the declarations and settings of
+each position. It is unsound in three places the tree names. `matching`
+is a `ProjectionView` read, so the index does not hold an event marked
+earlier in the same transaction, and the replay needs the commit shape 1
+avoids or a write-side index read — it does not avoid the seam. `about`
+names the type alone for `Migrated` and `ValueTypeMigrated`
+(`core/src/feed.rs`), so a type's events that moved a record's fields or
+its key are not in the key's positions; the replay must walk the type's
+events from the key's first position, which is the walk the operator's
+decision 3 refused. An erasure restates the stored states (065), and
+`forget_source` destroys the keys a seal was made with (`sealing.rs`), so
+a replay either re-applies 065's redaction or answers a value the live
+fold erased, and it cannot unseal what the forgetting destroyed. Its cost
+is one index page and one log read for each version, the event's whole
+bytes decoded, and the record's fold run again; a rebuild re-reads events
+its pages have already passed. It is the only shape that could leave the
+seam at 108, and it is neither sound nor cheap.
+
+**3 — the parts name the groups.** The act's first turn and every part
+compute the groups under the writer — the same states read as shape 1,
+called by the act rather than the fold — and the part's event carries
+each key's groups and faces; the fold reads them off the event and marks.
+A rebuild then reads no states. What it costs: the read is still owed
+(the act is under the writer and must see the versions), so the seam
+still makes 109; S1's kind gains a body field, and its WIT mirror, its
+refusals' row and `docs/log-format.md` reopen; S5's turn and parts
+compute and carry the groups; and the log grows by them — a part of 500
+ticks inside one hour holds one or two groups on two faces, tens of
+bytes, while a part whose keys each held a group of their own holds 500,
+about 20 KB (reckoned). It also writes kept-view naming — `sys:kept.<view>`
+and the group key — into the log, where a rebuild of another binary must
+read it, and it gives the mark two callers that must agree. Its reward is
+the rebuild's states read, which S7 measures; if that measure is too
+high, this is the shape to bring back, with the log's bytes as its price.
+
+**Recommendation, for the operator's word: shape 1, the states read on
+`ProjectionStore`.** It is the only shape that answers the transaction's
+states without a forced commit and without reading the log again; it
+computes the mark once, with the code that already notes a member, from
+the states the part deletes; it keeps the log as the operator decided it
+(the part names the keys, and the fold derives the mark); and it makes
+the live fold and a rebuild read the same rows and the same rule. It
+spends the plan's only new seam method — S5, S6 and S7's rows name none —
+and the seam keeps one spare, 109 of 110. The read is named `states`;
+`docs/seams.md` gains its row and the `put_record` row's "neither reads
+the key's other states" is narrowed to the reads of a record, not the
+act's; `scripts/release/surface-accepted` gains `ProjectionStore::states`
+for the next release (056).
+
+**What `verify`, a rebuild, an export and an import must do.** `verify`
+reads the log and is unchanged by every shape: the parts are events, the
+chain is the appender's, and nothing here reads a state. A rebuild folds
+the parts; at each, shape 1 reads the states from the projection the fold
+is making — the write side's transaction, or the last commit — marks, and
+deletes them, so it leaves the rows and the mark the live append left.
+Shape 2's rebuild re-reads events its pages have passed; shape 3's reads
+the marks off the parts and no states. An export is the log, unchanged,
+and the parts travel as events; the marks are not in it, as the kept
+records are not. An import's writer finishes an owed act (099) and reads
+the states it has put exactly as a rebuild does; shape 1 answers the
+import's own transaction, so a part imported beside its versions is
+marked the same. The suite's `THIN_VERIFY_EXPORT_IMPORT_REBUILD` holds it.
+
+**What it means for S4 to S7.** S4 is unchanged: the make carries the
+stranded groups' records off the view it ends, which are kept-name
+records read through `get` and `scan`, and adds no seam method; its row
+stays 100 and 160. S5 is unchanged in shape: the act selects its keys and
+appends its parts, and the mark is the fold's; its preflight's counts are
+unchanged. S6 is unchanged: the write doors refuse by the tombstone. S7
+is unchanged: it reads the markers and the kept state through the reads
+that exist, and its act timing and `docs/hosting.md` measure now include
+the fold's states read, which is the act's own cost. Shape 3 would move
+the group computation into S5 and reopen S1; shape 2 would put the replay
+into S3 and leave S4 to S7 as they are.
+
+**The plan's rows.** S3 now carries the read, the mark and the fold's
+arm; S4 stays as it was. At `582e075c` the room is 4 118 product and
+3 969 specification (measured); the plan's remaining steps, S3 to S7, are
+780 product and 950 specification raw, 1 053 and 1 283 at ×1.35, and fit.
+
+| Step | What | Files | Product | Spec. |
+|---|---|---|---:|---:|
+| S3 | The stranded mark, the counter, the fold's arm, the read of a key's states | `engine.rs`, the engines' `handle.rs` and `projection.rs`, `kept.rs`, `lake/fold.rs`, `lake/scrub.rs`, `conformance/engine/projection.rs`, `conformance/checks/forgotten.rs`, `store/tests/probed/mod.rs`, `store/tests/fold_gap.rs`, `docs/seams.md`, `scripts/release/surface-accepted` | 260 | 230 |
+| S4 | As before: the make of a view with stranded groups, the order entries, the checks | `kept.rs`, `lake/fold.rs`, `conformance/checks/stranded.rs` | 100 | 160 |
 
 ## Why
 
@@ -635,15 +782,12 @@ its mark and changed nowhere else.
   and `ThinnedAct` exposes no position to tell them apart. The decided
   shape cannot distinguish them either; this is noted, not repaired.
 - **S3 did not land in this round.** The mark it owes is every group and
-  face a taken record's versions held, and the seam holds no read of a
-  key's versions: `get` answers one position. A rebuild meets those
-  versions in order and could track them, but a fold that reaches the act
-  in a later session has long passed them, and the two must agree; the
-  alternatives are a read of a key's states or a replay of its events
-  from the log, and this record decides neither. The first shape is a
-  fifth `ProjectionView` read of a key's states between its `made` and a
-  position, which is another public-surface break. The round stopped at
-  S2, where the issue's size rule sends it.
+  face a taken record's versions held, and the seam held no read of a
+  key's versions: `get` answers one position. The round stopped at S2,
+  where the issue's size rule sends it. The shapes were weighed after S2
+  in § S3, which recommends one for the operator's word and sizes the S3
+  and S4 rows for it. Nothing of S3 has landed: `values_thinned` still
+  folds to its mark alone.
 - **Measured at S2's head**: product 101 668 of the 108 500 base and
   specification 186 081 of the 191 500 base; seam 102 of 110; 6 of 20
   `cfg(feature)` sites; 1 012 checks through the doors and 89 through the
@@ -653,3 +797,9 @@ its mark and changed nowhere else.
   Merging `develop` after S2 landed raised both `LAYOUT`s by one again,
   to 11 and 13, since the order's tables landed there from their own
   step; the two additions each took the number after the one they found.
+
+## How it came to be
+
+- lakelands#1639 — S3's shape weighed and recommended: a read of a key's
+  states on the write side, beside `drop_states`; the S3 and S4 rows and
+  the plan's totals restated. No code.
