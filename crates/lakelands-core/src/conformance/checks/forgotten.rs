@@ -1086,8 +1086,9 @@ check!(
 /// build fail, so a build stops between its turns; and which of the next
 /// appends the writer means to make fails as a storage fault that keeps
 /// its lease, so the act it was appending stops between its turns and is
-/// left owed (099).
-pub type Fails = Arc<[AtomicU32; 13]>;
+/// left owed (099); and how many whole compactions, a full `VACUUM`
+/// where the engine has one, the projection was asked for.
+pub type Fails = Arc<[AtomicU32; 14]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -1415,12 +1416,18 @@ impl ProjectionStore for Reclaims {
         self.fails[4].fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    fn compact(&self) -> lakelands_api::Result<lakelands_api::engine::Reclaimed> {
+    fn compact_step(
+        &self,
+        how: lakelands_api::engine::Compact,
+    ) -> lakelands_api::Result<lakelands_api::engine::Reclaimed> {
         let waits = self.fails[10].load(Ordering::SeqCst);
         std::thread::sleep(std::time::Duration::from_millis(u64::from(waits)));
+        if how == lakelands_api::engine::Compact::Whole {
+            self.fails[13].fetch_add(1, Ordering::SeqCst);
+        }
         match fails(&self.fails, 0) {
             true => Err(crashed()),
-            false => self.inner.projection().compact(),
+            false => self.inner.projection().compact_step(how),
         }
     }
     fn put_thinned_act(

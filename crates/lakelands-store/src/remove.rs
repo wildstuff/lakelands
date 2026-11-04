@@ -1071,6 +1071,10 @@ impl Job for Settle {
         Ok(())
     }
 
+    fn aside(&mut self, lake: &Lake) -> Result<()> {
+        self.restate.as_mut().map_or(Ok(()), |r| r.aside(lake))
+    }
+
     fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
         let lake: &Lake = t;
         let mut restate = match self.restate.take() {
@@ -1224,6 +1228,10 @@ impl Job for Remove {
             self.tail.push(e.clone());
         }
         Ok(())
+    }
+
+    fn aside(&mut self, lake: &Lake) -> Result<()> {
+        self.restate.as_mut().map_or(Ok(()), |r| r.aside(lake))
     }
 
     fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {

@@ -2291,6 +2291,19 @@ impl ProjectionView for PgView<'_> {
         })
     }
 
+    fn unused_bases(&self) -> Result<Vec<u64>> {
+        self.single(Vec::new(), |r| {
+            let sql = format!(
+                "SELECT b.id FROM {} b WHERE NOT EXISTS (SELECT 1 FROM {} r \
+                 WHERE r.state::jsonb -> 'base' = to_jsonb(b.id)) ORDER BY b.id",
+                r.names.t("bases"),
+                r.names.t("records")
+            );
+            let rows = r.db.query(&sql, &[])?;
+            Ok(rows.iter().map(|row| row.get::<_, i64>(0) as u64).collect())
+        })
+    }
+
     fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<ThinnedAct>> {
         // Read at the head in every read, oldest first by the position
         // each act began at.

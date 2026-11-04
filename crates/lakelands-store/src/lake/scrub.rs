@@ -35,8 +35,8 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
-    Applied, Choose, Chosen, Declared, LakeEngine, Matched, ProjectionStore, ProjectionView,
-    Reclaimed, Scan, StatesOf,
+    Applied, Choose, Chosen, Compact, Declared, LakeEngine, Matched, ProjectionStore,
+    ProjectionView, Reclaimed, Scan, StatesOf,
 };
 use lakelands_api::event::{Digest, Event, EventBody, EventId};
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
@@ -292,8 +292,8 @@ impl ProjectionStore for Scoped {
         self.inner().clear()
     }
 
-    fn compact(&self) -> Result<Reclaimed> {
-        self.inner().compact()
+    fn compact_step(&self, how: Compact) -> Result<Reclaimed> {
+        self.inner().compact_step(how)
     }
 
     fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
@@ -1257,6 +1257,91 @@ pub(crate) struct Restate {
     /// Whether the act left storage to reclaim: a call that finds nothing
     /// owed at all restates and reclaims nothing (099).
     reclaim: bool,
+    /// What follows the restate's own turns, each in turns of its own.
+    then: Then,
+}
+
+/// What a restate does after its own turns (099).
+enum Then {
+    /// Its own turns: the pages, or the rebuild.
+    Restate,
+    /// The sweep of the bases a scoped pass left unused, once listed.
+    Sweep(Option<Swept>),
+    /// The reclaim.
+    Reclaim(Reclaiming),
+}
+
+/// The unused bases, listed on a view at `past` while the lake had
+/// rebuilt `rebuilds` times, and how many of them the turns have swept.
+///
+/// The sweep is safe only under one rule: nothing puts a state at or
+/// before `past` without bumping `lake.rebuilds`. A chunk keeps a listed
+/// base only where a state put after `past` names it, and bases are shared
+/// by block, so a write, a rebuild or a scoped pass that put a state at or
+/// before `past` over a listed base would have its base deleted under it.
+/// Every write puts its states at its own position, past the view; a
+/// rebuild and a scoped pass's open, which put states behind the head,
+/// count a rebuild, and a chunk that sees the count moved lets the list go.
+struct Swept {
+    ids: Vec<u64>,
+    past: Position,
+    rebuilds: u64,
+    next: usize,
+}
+
+impl Swept {
+    /// The bases no state names, on a view: the rebuilds are counted
+    /// first, so a rebuild that runs beside the listing is seen.
+    fn on(lake: &Lake) -> Result<Swept> {
+        let rebuilds = lake.rebuilds.load(Ordering::SeqCst);
+        let view = lake.engine.view(None)?;
+        let (ids, past) = (view.unused_bases()?, view.position());
+        let past = past.unwrap_or(Position::GENESIS);
+        Ok(Swept {
+            ids,
+            past,
+            rebuilds,
+            next: 0,
+        })
+    }
+}
+
+/// A reclaim's turns so far: the storage before the first and after the
+/// last, their time summed, and whether a step failed.
+#[derive(Default)]
+struct Reclaiming {
+    beside: bool,
+    journal: bool,
+    before: Option<u64>,
+    after: Option<u64>,
+    ms: u64,
+    failed: bool,
+}
+
+/// What one turn of a reclaim gives back, at most: 10 MiB of free pages.
+const RECLAIM_TURN: u64 = 10 << 20;
+
+impl Reclaiming {
+    /// One step: whether free pages are left for the next. A step that
+    /// fails is told to the lake when it fails, beside the writer as under
+    /// it, so the reclaim is owed from then on and not from the turn after
+    /// ([`Lake::reclaimed`] writes no list, so it may run off the writer).
+    fn run(&mut self, lake: &Lake, how: Compact) -> Result<bool> {
+        let began = std::time::Instant::now();
+        match lake.engine.projection().compact_step(how) {
+            Ok(got) => {
+                self.before = self.before.or(got.before);
+                self.after = got.after.or(self.after);
+                self.ms += super::elapsed_ms(began).max(1);
+                Ok(got.more)
+            }
+            Err(e) => {
+                self.failed = true;
+                let _owed = lake.reclaimed(Err(e), 0)?;
+                Ok(false)
+            }
+        }
+    }
 }
 
 /// How a restate restates the projection.
@@ -1321,6 +1406,7 @@ impl Restate {
             folded: 0,
             micros: 0,
             reclaim: true,
+            then: Then::Restate,
         }
     }
 
@@ -1347,6 +1433,7 @@ impl Restate {
             folded: 0,
             micros: 0,
             reclaim: false,
+            then: Then::Restate,
         }
     }
 
@@ -1369,6 +1456,11 @@ impl Restate {
     /// One turn of the writer: the next page, a rebuild, or the reclaim
     /// alone.
     pub(crate) fn step(&mut self, lake: &Lake, w: &mut Writer) -> Result<Stepped> {
+        match self.then {
+            Then::Sweep(_) => return self.sweep(lake, w),
+            Then::Reclaim(_) => return self.reclaim(lake),
+            Then::Restate => {}
+        }
         if !self.opened {
             self.open(lake, w)?;
             self.opened = true;
@@ -1404,10 +1496,96 @@ impl Restate {
         if restated {
             self.finish(lake, w, measured)?;
         }
-        Ok(Stepped::Done(match self.reclaim {
-            true => lake.reclaim()?.ok(),
-            false => None,
-        }))
+        // A rebuild leaves no base unused, so only the scoped pass sweeps;
+        // the reclaim's turns follow either, since a rebuild in place, which
+        // the act does not tell from a swap, leaves erased pages free and in
+        // the journal, and after a swap they find little to do (099).
+        self.then = match (self.reclaim, restated && measured) {
+            (false, _) => return Ok(Stepped::Done(None)),
+            (true, true) => Then::Sweep(None),
+            (true, false) => Then::Reclaim(Reclaiming::default()),
+        };
+        Ok(Stepped::More)
+    }
+
+    /// Off the writer, before a turn: the sweep's list, on a view, and the
+    /// reclaim an engine runs beside reads and writes.
+    pub(crate) fn aside(&mut self, lake: &Lake) -> Result<()> {
+        match &mut self.then {
+            Then::Sweep(listed @ None) => *listed = Some(Swept::on(lake)?),
+            Then::Reclaim(r) if !r.beside => {
+                r.beside = true;
+                r.run(lake, Compact::Beside)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// One chunk of the sweep, of `order_chunk` bases, each tested against
+    /// the states put after the view it was listed on: a write in between
+    /// that names one keeps it. A rebuild or a scoped pass since put states
+    /// before that view, so the list is let go, its bases left for the next
+    /// sweep. A base holds provenance and no value, so no erasure waits on
+    /// it.
+    fn sweep(&mut self, lake: &Lake, w: &mut Writer) -> Result<Stepped> {
+        let Then::Sweep(listed) = &mut self.then else {
+            unreachable!("a sweep's turn");
+        };
+        // Listed under the writer only where no turn went before: an open
+        // that finishes an act.
+        let s = match listed {
+            Some(s) => s,
+            None => listed.insert(Swept::on(lake)?),
+        };
+        let chunk = usize::try_from(lake.limits.order_chunk.max(1)).unwrap_or(usize::MAX);
+        let ids = &s.ids[s.next.min(s.ids.len())..];
+        let ids = &ids[..chunk.min(ids.len())];
+        if ids.is_empty() || lake.rebuilds.load(Ordering::SeqCst) != s.rebuilds {
+            self.then = Then::Reclaim(Reclaiming::default());
+            return Ok(Stepped::More);
+        }
+        let head = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+        let projection = lake.engine.projection();
+        projection.begin()?;
+        let swept = (projection.drop_states(StatesOf::Bases(ids, s.past)))
+            .and_then(|()| projection.commit(head));
+        if swept.is_err() {
+            projection.rollback();
+        }
+        swept?;
+        s.next += ids.len();
+        Ok(Stepped::More)
+    }
+
+    /// One turn of the reclaim: the journal truncated first, then at most
+    /// [`RECLAIM_TURN`] of free pages a turn, and the last turn tells what
+    /// came back. A step that fails ends it, owed.
+    fn reclaim(&mut self, lake: &Lake) -> Result<Stepped> {
+        let Then::Reclaim(r) = &mut self.then else {
+            unreachable!("a reclaim's turn");
+        };
+        if !std::mem::replace(&mut r.beside, true) {
+            r.run(lake, Compact::Beside)?;
+        }
+        let how = match std::mem::replace(&mut r.journal, true) {
+            true => Compact::Pages(RECLAIM_TURN),
+            false => Compact::Journal,
+        };
+        if !r.failed && r.run(lake, how)? {
+            return Ok(Stepped::More);
+        }
+        let r = std::mem::take(r);
+        if r.failed {
+            // Told, and owed, when the step failed.
+            return Ok(Stepped::Done(None));
+        }
+        let told = Reclaimed {
+            before: r.before,
+            after: r.after,
+            more: false,
+        };
+        Ok(Stepped::Done(lake.reclaimed(Ok(told), r.ms)?.ok()))
     }
 
     /// The first turn: every act the lists hold is told, and every key
@@ -1567,9 +1745,8 @@ impl Restate {
             let rate = self.folded.saturating_mul(1_000_000) / self.micros.max(1);
             lake.scoped_rate.store(rate.max(1), Ordering::SeqCst);
         }
-        // Restated: the act waits on the reclaim alone, as after a
-        // rebuild; the bases only the dropped states named go with it, a
-        // forgotten source's or a removed write's.
+        // Restated: the act waits on the sweep and the reclaim alone, as
+        // after a rebuild on the reclaim.
         let view = lake.engine.view(None)?;
         let mut list = forgotten_list(view.as_ref(), &Staged::default())?;
         let mut removed = crate::remove::removed_list(view.as_ref(), &Staged::default())?;
@@ -1581,7 +1758,7 @@ impl Restate {
             removed.insert(act.at, "rebuilt".to_owned());
         }
         let head = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
-        lake.put_lists(&list, &removed, true, head)?;
+        lake.put_lists(&list, &removed, head)?;
         lake.publish(w);
         Ok(())
     }

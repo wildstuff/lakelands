@@ -36,8 +36,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{
-    Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, Look, OpenMode, ProjectionStore,
-    ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
+    Applied, CanonicalEvent, Choose, Compact, Declared, LakeEngine, Lease, Look, OpenMode,
+    ProjectionStore, ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
@@ -1200,7 +1200,7 @@ impl ProjectionStore for PgLake {
         self.stage(Position::GENESIS, |b| match of {
             StatesOf::Record(ty, key) => b.drop_record(ty.as_str(), key.as_str()),
             StatesOf::Output(seam, input) => b.drop_output(seam, input.0.as_str()),
-            StatesOf::Bases => b.drop_bases(),
+            StatesOf::Bases(ids, past) => b.drop_bases(ids, past),
         })
     }
 
@@ -1303,38 +1303,51 @@ impl ProjectionStore for PgLake {
         db.transaction("BEGIN", |db| db.batch(&cleared))
     }
 
-    /// `VACUUM (ANALYZE)` over the projection's tables and its `meta`,
-    /// outside a transaction; never `VACUUM FULL`, which would lock every
-    /// reader out while it rewrote. Readers go on reading. A `VACUUM` that
-    /// fails cannot be rolled back, but it changes no row a view reads at
-    /// any point. The log's tables are not touched. It runs without
-    /// parallel workers, which ask the server for shared memory of
-    /// `maintenance_work_mem`'s size that a container's `/dev/shm` may not
-    /// hold: a reclaim that fits beats a fast one that fails
-    /// (lakelands#1161).
-    fn compact(&self) -> Result<Reclaimed> {
-        let writing = self.writing()?;
-        let transaction = lock(&self.transaction);
-        if transaction.is_some() {
-            return Err(Error::invalid(Case::CompactInTransaction));
-        }
+    /// `VACUUM (ANALYZE)` over the projection's tables and its `meta`. It
+    /// takes `SHARE UPDATE EXCLUSIVE`, so reads and writes go on beside it.
+    /// [`Compact::Beside`], an act's step, runs it on a reader's connection
+    /// and needs no lease (099); [`Compact::Whole`], `compact`'s, runs on
+    /// the writer's, held to its lease and refused inside a transaction.
+    /// Never `VACUUM FULL`, which would lock every reader out while it
+    /// rewrote. A `VACUUM` that fails cannot be rolled back, but it changes
+    /// no row a view reads at any point. The log's tables are not touched.
+    /// It runs without parallel workers, which ask the server for shared
+    /// memory of `maintenance_work_mem`'s size that a container's
+    /// `/dev/shm` may not hold: a reclaim that fits beats a fast one that
+    /// fails (lakelands#1161). The engine keeps no journal and no free
+    /// pages of its own to give back: the other steps do nothing.
+    fn compact_step(&self, how: Compact) -> Result<Reclaimed> {
         let tables: Vec<&str> = PROJECTION_TABLES.iter().copied().chain(["meta"]).collect();
-        let mut db = self.projecting(writing)?;
-        // A transaction a failed commit left open is abandoned, as `clear`
-        // abandons it: `VACUUM` cannot run inside one.
-        let _ = db.batch("ROLLBACK");
-        let before = size(&mut db, &self.target.schema, &tables)?;
-        let mut listed: Vec<String> = tables.iter().map(|t| self.names.t(t)).collect();
-        listed.extend(vector_index::readable(&mut db, &self.names)?);
-        db.batch(&format!(
-            "VACUUM (ANALYZE, PARALLEL 0) {}",
-            listed.join(", ")
-        ))?;
-        let after = size(&mut db, &self.target.schema, &tables)?;
-        Ok(Reclaimed {
-            before: Some(before),
-            after: Some(after),
-        })
+        let vacuum = |db: &mut _| -> Result<Reclaimed> {
+            let before = size(db, &self.target.schema, &tables)?;
+            let mut listed: Vec<String> = tables.iter().map(|t| self.names.t(t)).collect();
+            listed.extend(vector_index::readable(db, &self.names)?);
+            db.batch(&format!(
+                "VACUUM (ANALYZE, PARALLEL 0) {}",
+                listed.join(", ")
+            ))?;
+            Ok(Reclaimed {
+                before: Some(before),
+                after: Some(size(db, &self.target.schema, &tables)?),
+                more: false,
+            })
+        };
+        match how {
+            Compact::Journal | Compact::Pages(_) => Ok(Reclaimed::nothing()),
+            Compact::Beside => self.reading(vacuum),
+            Compact::Whole => {
+                let writing = self.writing()?;
+                let transaction = lock(&self.transaction);
+                if transaction.is_some() {
+                    return Err(Error::invalid(Case::CompactInTransaction));
+                }
+                let mut db = self.projecting(writing)?;
+                // A transaction a failed commit left open is abandoned, as
+                // `clear` abandons it: `VACUUM` cannot run inside one.
+                let _ = db.batch("ROLLBACK");
+                vacuum(&mut db)
+            }
+        }
     }
 
     /// One step of a chosen order index, in a transaction of its own

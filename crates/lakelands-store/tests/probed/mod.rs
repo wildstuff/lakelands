@@ -637,8 +637,8 @@ impl ProjectionStore for Probed {
         self.probe.orders.lock().unwrap().clear();
         self.inner.projection().clear()
     }
-    fn compact(&self) -> Result<Reclaimed> {
-        self.inner.projection().compact()
+    fn compact_step(&self, how: lakelands_api::engine::Compact) -> Result<Reclaimed> {
+        self.inner.projection().compact_step(how)
     }
     fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
         self.inner.projection().put_thinned_act(act, at)

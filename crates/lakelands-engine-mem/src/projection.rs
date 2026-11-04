@@ -181,8 +181,8 @@ pub(crate) enum Put {
     },
     /// Every entry of a view's order ended at once.
     OrdersEnded { name: TypeName },
-    /// The bases no record's state names.
-    DroppedBases,
+    /// Of these bases, those no record's state names.
+    DroppedBases(Vec<i64>),
     /// A proposal's state from `at`.
     Proposal { proposal: Proposal, at: Position },
     /// A quarantined record's state from `at`.
@@ -228,7 +228,7 @@ impl Put {
             Put::Record(r) | Put::Live(r) | Put::Head(r) => r.position,
             Put::Applied(a) => a.at,
             Put::Order { .. } | Put::OrdersEnded { .. } => Position::GENESIS,
-            Put::DroppedRecord(..) | Put::DroppedOutput(..) | Put::DroppedBases => {
+            Put::DroppedRecord(..) | Put::DroppedOutput(..) | Put::DroppedBases(_) => {
                 Position::GENESIS
             }
             Put::Membership { at, .. }
@@ -360,6 +360,19 @@ fn chosen_field(step: &Choose) -> Option<&FieldName> {
 }
 
 impl Projection {
+    /// The ids of the bases a record's state names.
+    fn named_bases(&self) -> BTreeSet<i64> {
+        let states = self.records.values().flat_map(|h| &h.0);
+        states.filter_map(|(_, held)| held.base).collect()
+    }
+
+    /// The ids of the bases no record's state names, ascending.
+    pub(crate) fn unused_bases(&self) -> Vec<u64> {
+        let named = self.named_bases();
+        let ids = self.bases.0.keys().filter(|id| !named.contains(id));
+        ids.map(|id| *id as u64).collect()
+    }
+
     /// Applies one transaction's puts and records that the projection now
     /// reflects the log through `through`. Checked first, applied whole:
     /// a commit behind the projection, or a put valid only after
@@ -1397,12 +1410,11 @@ impl Projection {
                     .retain(|(_, ty, key), _| (ty, key) != (&id.0, &id.1));
             }
             Put::DroppedOutput(seam, input) => drop(self.outputs.remove(&(seam, input))),
-            Put::DroppedBases => {
-                let states = self.records.values().flat_map(|h| &h.0);
-                let named: BTreeSet<i64> = states.filter_map(|(_, held)| held.base).collect();
+            Put::DroppedBases(chunk) => {
+                let named = self.named_bases();
                 let Bases(by_id, ids, _) = &mut self.bases;
                 by_id.retain(|id, b| {
-                    let kept = named.contains(id);
+                    let kept = named.contains(id) || !chunk.contains(id);
                     if !kept {
                         ids.remove(b);
                     }

@@ -826,6 +826,8 @@ pub const ALL: &[Check] = &[
     scrubbed::RESTATE_TELLS_EVERY_ACT,
     scrubbed::RESTATE_WRITES_GO_ON,
     scrubbed::RESTATE_PAGE_OVER_ITS_BOUND,
+    scrubbed::SWEEP_IN_TURNS,
+    scrubbed::RECLAIM_IN_TURNS,
     removed::REMOVED_BEFORE,
     removed::REMOVED_DELIVERY,
     removed::REMOVED_SET,

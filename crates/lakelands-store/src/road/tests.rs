@@ -1193,11 +1193,17 @@ async fn a_quarantined_record_a_part_closed_stays_counted_in_the_acts_report() {
             )
             .await
             .expect("another hand writes the record");
-        let j = job.clone();
-        let last = exec::write(&lake, move |t| super::turn(t, lock(&j).as_mut()))
-            .await
-            .expect("the act's second turn");
-        assert_eq!(last, Turned::Whole, "{on:?}: the act is whole");
+        // The restate's sweep and reclaim are turns of their own after it.
+        for turn in 2.. {
+            assert!(turn < 16, "{on:?}: the act is whole within its turns");
+            let j = job.clone();
+            let next = exec::write(&lake, move |t| super::turn(t, lock(&j).as_mut()))
+                .await
+                .expect("the act's next turn");
+            if next == Turned::Whole {
+                break;
+            }
+        }
         lock(&job).end(Ok(()));
         let done = ended
             .await

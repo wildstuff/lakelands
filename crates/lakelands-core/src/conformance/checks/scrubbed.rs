@@ -56,6 +56,18 @@ check!(
     given
 );
 
+check!(
+    SWEEP_IN_TURNS = a_write_during_the_sweep_keeps_every_base_a_record_names,
+    "099, R6 (lakelands#1649): after a scoped restate, the bases no state names go in turns of `limits.order_chunk`, listed beside the writer and each chunk tested against the states put after the listing; with one base a turn, a write another source sends while the sweep's first chunk holds the writer is answered before the act is whole, and the sweep takes a turn for each base the forgotten source's writes left named by no state; after the act every record, the write's among them, reads its fields and their provenance as a rebuild reads them",
+    given
+);
+
+check!(
+    RECLAIM_IN_TURNS = an_act_reclaims_in_turns_and_says_what_came_back,
+    "099, R6 (lakelands#1649): an act's reclaim asks the engine for no whole compaction, a full `VACUUM` where it has one: a scoped forgetting answers what came back in `reclaimed`, its storage before and after measured together or neither, and owes nothing, and the lake answers as a rebuild does; `compact` still asks for the whole compaction",
+    given
+);
+
 /// The harness's lake, or a failure naming `what` it opened.
 fn opened(what: &str) -> impl Fn(Error) -> Failure + '_ {
     move |e| Failure::new(format!("the harness opened no {what}: {e}"))
@@ -1006,6 +1018,231 @@ async fn a_page_over_page_events_takes_the_rebuild(store: Store, given: Given) -
         "the act answers after the rebuild as a rebuild does; {} reads differ: {:?}",
         differ.len(),
         &differ[..differ.len().min(4)]
+    );
+    Ok(())
+}
+
+async fn a_write_during_the_sweep_keeps_every_base_a_record_names(
+    store: Store,
+    given: Given,
+) -> Held {
+    use super::removed::{Gate, Opens};
+
+    /// How many times `crm` writes `erp`'s records again, each write of
+    /// more records than a write needs to keep its base once. Forgotten,
+    /// `crm`'s name goes and its states share `erp`'s block, so each of
+    /// `crm`'s bases is left named by no state, for the sweep.
+    const AGAIN: usize = 4;
+    let (keys, gate) = (Arc::new(Keys::default()), Arc::new(Gate::default()));
+    let seams = Seams {
+        meter: Some(gate.clone()),
+        ..with(&keys)
+    };
+    let one = Limits {
+        order_chunk: 1,
+        ..limits()
+    };
+    let store = (given.relimit)(store, seams, one)
+        .await
+        .map_err(opened("lake"))?;
+    let _opens = Opens(gate.clone());
+    let l = Lake::of(store.as_ref());
+    l.declare(people_both()).await?;
+    let row = |key: String, v: Value| {
+        let mut v = v;
+        v["id"] = json!(key);
+        source_record("person", &key, v)
+    };
+    let erp = (0..3).map(|i| row(format!("e{i}"), json!({"city": "Oslo"})));
+    l.ingest("erp", erp.collect())
+        .await
+        .must("ingesting from erp")?;
+    for again in 0..AGAIN {
+        let crm = (0..3).map(|i| row(format!("e{i}"), json!({"name": format!("Bob{again}")})));
+        l.ingest("crm", crm.collect())
+            .await
+            .must("ingesting from crm")?;
+    }
+    let start = store.head().await.must("reading the head")?;
+    let crm: SourceId = "crm".into();
+    let answered = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+    let done: Arc<std::sync::Mutex<Option<lakelands_api::write::ForgetReport>>> = Arc::default();
+    let (order, slot) = (answered.clone(), done.clone());
+    let act = {
+        let store = store.clone();
+        async move {
+            let report = store
+                .forget_source(&crm, None)
+                .await
+                .must("forgetting crm")?;
+            *crate::lock(&slot) = Some(report);
+            crate::lock(&order).push("act");
+            Ok(())
+        }
+    };
+    // The gate lets the writer's turns through one at a time: those up to
+    // the act's `act_whole`, then the act's page, whose records fit one;
+    // the turn held next is the sweep's first chunk, and the write is sent
+    // then. Every turn after it is let through and counted until the act
+    // answers.
+    gate.arm();
+    let turns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let steps = {
+        let (store, gate, done, turns) = (store.clone(), gate.clone(), done.clone(), turns.clone());
+        async move {
+            let through = |gate: Arc<Gate>| async move {
+                let passed = gate.now().passed;
+                gate.let_one_through();
+                gate.reaches("the turn held let through", |g| g.passed > passed)
+                    .await
+            };
+            loop {
+                gate.reaches("a turn of the writer held", |g| g.holds)
+                    .await?;
+                let events = events_after(store.as_ref(), start).await?;
+                if (events.iter()).any(|e| e.body.kind() == "act_whole") {
+                    break;
+                }
+                through(gate.clone()).await?;
+            }
+            through(gate.clone()).await?;
+            gate.reaches("the sweep's first chunk held", |g| g.holds)
+                .await?;
+            gate.watch();
+            gate.reaches("the write queued behind the sweep's turn", |g| g.behind)
+                .await?;
+            loop {
+                settles(30_000, Duration::from_millis(2), || async {
+                    let answered = crate::lock(&done).is_some();
+                    ensure!(
+                        answered || gate.now().holds,
+                        "the act neither answered nor held a turn"
+                    );
+                    Ok(())
+                })
+                .await?;
+                if crate::lock(&done).is_some() {
+                    break;
+                }
+                through(gate.clone()).await?;
+                turns.fetch_add(1, Ordering::SeqCst);
+            }
+            gate.open();
+            Ok(())
+        }
+    };
+    let write = {
+        let (store, gate) = (store.clone(), gate.clone());
+        let order = answered.clone();
+        async move {
+            gate.reaches("the sweep's first chunk held", |g| g.watching)
+                .await?;
+            let l = Lake::of(store.as_ref());
+            let written = vec![
+                source_record("person", "e0", json!({"id": "e0", "name": "Eve"})),
+                source_record("person", "z0", json!({"id": "z0", "name": "Zed"})),
+                source_record("person", "z1", json!({"id": "z1", "name": "Zoe"})),
+            ];
+            l.ingest("erp", written)
+                .await
+                .must("ingesting from erp during the sweep")?;
+            crate::lock(&order).push("write");
+            Ok(())
+        }
+    };
+    let callers: Vec<Caller<'static, Held>> = vec![Box::pin(act), Box::pin(steps), Box::pin(write)];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let order = crate::lock(&answered).clone();
+    ensure!(
+        order == ["write", "act"],
+        "a write sent during the sweep must be answered before the act is whole; they \
+         answered {order:?}"
+    );
+    let report = crate::lock(&done).take().expect("the act answered");
+    ensure!(
+        report.way.scoped && report.reclaim_owed.is_none(),
+        "the act takes the scoped refold and owes no reclaim: {report:?}"
+    );
+    // The write's own turn is among those counted after the first chunk.
+    let turns = turns.load(Ordering::SeqCst);
+    ensure!(
+        turns > AGAIN,
+        "with one base a chunk, the sweep takes a turn for each of the {AGAIN} bases crm's \
+         writes left unnamed; after its first chunk the writer took {turns} turns, the \
+         write's among them"
+    );
+    let read = ["e0", "e1", "e2", "z0", "z1"];
+    let got = reads(store.as_ref(), &read, &[None]).await?;
+    store.rebuild().await.must("rebuilding")?;
+    let want = reads(store.as_ref(), &read, &[None]).await?;
+    let differ = apart(&got, &want);
+    ensure!(
+        differ.is_empty(),
+        "after the sweep every record reads its provenance as a rebuild reads it; {} reads \
+         differ: {:?}",
+        differ.len(),
+        &differ[..differ.len().min(4)]
+    );
+    Ok(())
+}
+
+async fn an_act_reclaims_in_turns_and_says_what_came_back(store: Store, given: Given) -> Held {
+    let keys = Arc::new(Keys::default());
+    let fails: Fails = Arc::default();
+    let store = (given.fault)(store, with(&keys), failing(&fails))
+        .await
+        .map_err(opened("lake with a counted projection"))?;
+    let l = Lake::of(store.as_ref());
+    l.declare(people_both()).await?;
+    let row =
+        |key: String, name: &str| source_record("person", &key, json!({"id": key, "name": name}));
+    let erp = (0..40).map(|i| row(format!("e{i:02}"), "Ada"));
+    l.ingest("erp", erp.collect())
+        .await
+        .must("ingesting from erp")?;
+    let crm = (0..40).map(|i| row(format!("c{i:02}"), "Bob"));
+    l.ingest("crm", crm.collect())
+        .await
+        .must("ingesting from crm")?;
+    let co = source_record("person", "c00", json!({"id": "c00", "city": "Oslo"}));
+    l.ingest("erp", vec![co]).await.must("co-writing c00")?;
+    let crm: SourceId = "crm".into();
+    let report = store
+        .forget_source(&crm, None)
+        .await
+        .must("forgetting crm")?;
+    let whole = fails[13].load(Ordering::SeqCst);
+    ensure!(
+        report.way.scoped && whole == 0,
+        "a scoped forgetting asks the engine for no whole compaction; it took {:?} and asked \
+         {whole} times",
+        report.way
+    );
+    let told = report.reclaimed.as_ref();
+    ensure!(
+        told.is_some_and(|r| r.before.is_some() == r.after.is_some())
+            && report.reclaim_owed.is_none(),
+        "the act says what its reclaim gave back, before and after measured together or \
+         neither, and owes nothing: {:?}, owed {:?}",
+        report.reclaimed,
+        report.reclaim_owed
+    );
+    let read = ["e00", "e01", "c00", "c01"];
+    let got = reads(store.as_ref(), &read, &[None]).await?;
+    store.rebuild().await.must("rebuilding")?;
+    let want = reads(store.as_ref(), &read, &[None]).await?;
+    let differ = apart(&got, &want);
+    ensure!(
+        differ.is_empty(),
+        "the act answers as a rebuild does; {} reads differ: {:?}",
+        differ.len(),
+        &differ[..differ.len().min(4)]
+    );
+    store.compact().await.must("compacting")?;
+    let whole = fails[13].load(Ordering::SeqCst);
+    ensure!(
+        whole >= 1,
+        "`compact` asks the engine for the whole compaction; it asked {whole} times"
     );
     Ok(())
 }
