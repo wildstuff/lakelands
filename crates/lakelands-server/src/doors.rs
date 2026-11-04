@@ -844,6 +844,8 @@ pub(crate) async fn run(
                 #[serde(default)]
                 fill: Vec<lakelands_api::FieldName>,
                 #[serde(default)]
+                views: Vec<TypeDecl>,
+                #[serde(default)]
                 report_id: Option<String>,
             }
             let m: M = args(label, &a)?;
@@ -860,6 +862,7 @@ pub(crate) async fn run(
                         renames: renames.map(|(a, b)| (a.into(), b.into())).collect(),
                         relation_renames: m.relation_renames,
                         fill: m.fill,
+                        views: m.views,
                         ..Migration::to(to)
                     };
                     match m.report_id {
@@ -873,6 +876,10 @@ pub(crate) async fn run(
                     }
                     if let Some(field) = m.fill.first().cloned() {
                         return Err(wrong("fill", Case::FillUnknown { field }));
+                    }
+                    if let Some(v) = m.views.first() {
+                        let (view, ty) = (v.name.clone(), vt.name.as_str().into());
+                        return Err(wrong("views", Case::MigrationViewNotOver { view, ty }));
                     }
                     let vm = ValueTypeMigration {
                         to: vt,

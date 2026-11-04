@@ -624,6 +624,10 @@
    "field": "f"
   },
   {
+   "code": "view_building",
+   "type": "t"
+  },
+  {
    "code": "view_kept_for_set",
    "type": "t"
   },
@@ -2131,6 +2135,11 @@
   {
    "code": "migration_to_view",
    "type": "t"
+  },
+  {
+   "code": "migration_view_not_over",
+   "type": "t",
+   "view": "t"
   },
   {
    "code": "migration_view_to_stored",

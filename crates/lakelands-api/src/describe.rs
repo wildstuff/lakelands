@@ -514,6 +514,10 @@ pub enum NotKept {
         /// fold, which mends when its cause leaves.
         not_exact: u64,
     },
+    /// Its records are being built: a `view_kept.<view>` setting is in
+    /// force, and the build has not reached its `Keep`, so reads compute
+    /// it. A build a runner left owed goes on at the next open.
+    Building,
     /// Its records are not kept at this position, or by this lake.
     NotKeptHere,
     /// Its reader is admitted only some records of the view, or of a type
