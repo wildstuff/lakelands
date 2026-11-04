@@ -939,14 +939,14 @@ its mark and changed nowhere else.
   `THIN_VERIFY_EXPORT_IMPORT_REBUILD`, `THIN_LATE_TICK_FOLDS`
   and lakelands#1746's `THIN_ZONED_CARRIED`. Each is green on the
   memory, SQLite and PostgreSQL engines.
-- **Measured at S5's head**: product 113 773 and specification 201 232,
-  against 113 329 and 200 659 at its base. S5 adds 444 product and 573
+- **Measured at S5's head**: product 113 773 and specification 201 238,
+  against 113 329 and 200 659 at its base. S5 adds 444 product and 579
   specification, where the plan had 180 + 30 and 240. The extra is the
   owed act's detection (`open`, `first`: about 70 lines), the facade
   and its door (34), the conservative exact refusal over views of
   views, and eight rows where the plan counted six. Nothing was cut:
   the four items of § Cut first stay. The ceilings hold with room for
-  S6 and S7's planned 324 and 432 at ×1.35: 1 227 product and 1 268
+  S6 and S7's planned 324 and 432 at ×1.35: 1 227 product and 1 262
   specification are left. Seam 110 of 110; 6 of 20 `cfg(feature)`
   sites.
 
