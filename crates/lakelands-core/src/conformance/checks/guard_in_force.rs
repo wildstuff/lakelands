@@ -5,14 +5,11 @@
 //! whose `from` is the greatest at or below its `at`, among the bounds every
 //! sight the write is judged by is answered, null where none is.
 
-use std::sync::Mutex;
-
 use super::only::holder;
 use super::quarantine::{fed, kept};
 use super::removed::erased;
 use crate::conformance::fixture::{Answer, ingest, reviewer, source_record};
 use crate::conformance::prelude::*;
-use lakelands_api::write::ForgetReport;
 
 check!(
     GUARD_IN_FORCE_FIRES_ON_ITS_OWN_BOUND = a_guard_fires_on_a_tick_above_its_own_bound,
@@ -809,9 +806,9 @@ async fn field(l: &Lake, ty: &str, key: &str, name: &str) -> Result<Option<Value
 
 async fn a_guard_between_an_acts_parts_reads_through(store: Store, given: Given) -> Held {
     let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
-    let mut few = limits();
-    few.part_events = 1;
-    let store = (given.relimit)(store, super::erasable::with(&keys), few)
+    let fails: super::forgotten::Fails = Arc::default();
+    let wrap = super::forgotten::failing(&fails);
+    let store = (given.fault)(store, super::erasable::with(&keys), wrap)
         .await
         .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
     let l = Lake::of(store.as_ref());
@@ -820,9 +817,6 @@ async fn a_guard_between_an_acts_parts_reads_through(store: Store, given: Given)
         json!({"kind": "number"}),
         json!({"kind": "date_time"}),
     );
-    // The bound's type sorts last, so the act's one-record turns retire
-    // every tick before it: the guard reads it while it is owed, never
-    // after a part has taken it.
     l.declare_json(
         json!({"declare": "type", "name": "zbox", "key": ["no"], "fields": [
         {"name": "no", "type": text, "authority": "source"},
@@ -882,73 +876,30 @@ async fn a_guard_between_an_acts_parts_reads_through(store: Store, given: Given)
          breaks `rises`: {over:?}"
     );
     let start = store.head().await.must("reading the head")?;
-    type Fed = lakelands_api::Result<Vec<lakelands_api::Committed>>;
     let tracker: SourceId = "tracker".into();
-    let report: Arc<Mutex<Option<ForgetReport>>> = Arc::default();
-    let fed: Arc<Mutex<Option<Fed>>> = Arc::default();
-    let held: Arc<Mutex<Option<Option<Value>>>> = Arc::default();
-    let bound: Arc<Mutex<Option<Option<Value>>>> = Arc::default();
-    let (s0, s1, r0, f0, h0, b0) = (
-        store.clone(),
-        store.clone(),
-        report.clone(),
-        fed.clone(),
-        held.clone(),
-        bound.clone(),
+    // The act stops between its first append and its parts: its
+    // `source_forgotten` is in the log, its keys destroyed, its parts
+    // owed, and the projection still holds every record it retires.
+    fails[12].store(2, Ordering::SeqCst);
+    let stopped = store.forget_source(&tracker, None).await;
+    let events = events_after(store.as_ref(), start).await?;
+    let forgot = (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
+    let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+    ensure!(
+        stopped.is_err() && forgot && !whole && fails[12].load(Ordering::SeqCst) == 0,
+        "the forgetting's `source_forgotten` is in the log and its parts are owed: the act \
+         answered {stopped:?}, forgotten {forgot}, whole {whole}"
     );
-    let source = tracker.clone();
-    let callers: Vec<Caller<'static, Held>> = vec![
-        Box::pin(async move {
-            *crate::lock(&r0) = Some(
-                s0.forget_source(&source, None)
-                    .await
-                    .must("the forgetting")?,
-            );
-            Ok(())
-        }),
-        Box::pin(async move {
-            settles(6_000, Duration::from_millis(1), || async {
-                let events = events_after(s1.as_ref(), start).await?;
-                let forgot =
-                    (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
-                let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
-                ensure!(
-                    forgot && !whole,
-                    "the forgetting's `source_forgotten`, before its `act_whole`"
-                );
-                Ok(())
-            })
-            .await?;
-            let l = Lake::of(s1.as_ref());
-            *crate::lock(&h0) = Some(field(&l, "tick", "t0", "price").await?);
-            *crate::lock(&b0) = Some(field(&l, "zbox", "b0", "hi").await?);
-            *crate::lock(&f0) = Some(
-                l.ingest("hand", vec![fed_tick("h1", "A", "10:00", 1.0)])
-                    .await,
-            );
-            Ok(())
-        }),
-    ];
-    join_all(callers).await.into_iter().collect::<Held>()?;
-    let done = crate::lock(&report)
-        .take()
-        .expect("the forgetting answered");
-    let fed = crate::lock(&fed).take().expect("a tick was fed");
-    let held = crate::lock(&held).take().expect("the tick was read");
-    let bound = crate::lock(&bound).take().expect("the bound was read");
-    // The tick must commit inside the act: after `act_whole` the projection
-    // holds the same erased state, so a tick taken then would fire exactly
-    // as a read through the owed act does, and prove nothing.
-    let whole = events_after(store.as_ref(), start)
-        .await?
-        .into_iter()
-        .find(|e| e.body.kind() == "act_whole")
-        .map(|e| e.position);
+    let l = Lake::of(store.as_ref());
+    let held = field(&l, "tick", "t0", "price").await?;
+    let bound = field(&l, "zbox", "b0", "hi").await?;
+    let fed = l
+        .ingest("hand", vec![fed_tick("h1", "A", "10:00", 1.0)])
+        .await;
     let fed_end = fed.as_ref().ok().and_then(|w| w.last()).map(|w| w.position);
     ensure!(
-        fed_end.is_some() && whole.is_some() && fed_end < whole,
-        "the tick `h1` commits before the act's `act_whole`, while the act is owed: the \
-         tick ends at {fed_end:?}, the act at {whole:?}: {fed:?}"
+        fed_end.is_some(),
+        "the tick `h1` is taken while the act is owed: {fed:?}"
     );
     let named_on = |want: &'static str| {
         let store = store.clone();
@@ -963,15 +914,28 @@ async fn a_guard_between_an_acts_parts_reads_through(store: Store, given: Given)
     };
     let between = named_on("h1").await?;
     ensure!(
-        fed.is_ok()
-            && done.events > 0
-            && held.is_some()
-            && bound.is_some()
-            && between == "first no_bound",
+        fed.is_ok() && between == "first no_bound",
         "between the act's turns the projection still holds `t0`'s price ({held:?}) and the \
          bound's `hi` ({bound:?}), yet the tick `h1` is taken, its constraint `rises` reads \
-         `preceding` as null and both `first` and `no_bound` fire: {fed:?}, {between}, the \
-         act {done:?}"
+         `preceding` as null and both `first` and `no_bound` fire: {fed:?}, {between}"
+    );
+    // The act's repeat appends its parts and `act_whole`, then restates.
+    fails[12].store(0, Ordering::SeqCst);
+    let done = store
+        .forget_source(&tracker, None)
+        .await
+        .must("the forgetting's repeat")?;
+    // The tick landed inside the act: `act_whole` comes after it, and the
+    // projection held what it retires when the guard read it.
+    let whole = events_after(store.as_ref(), start)
+        .await?
+        .into_iter()
+        .find(|e| e.body.kind() == "act_whole")
+        .map(|e| e.position);
+    ensure!(
+        done.events > 0 && fed_end.is_some() && whole.is_some() && fed_end < whole,
+        "the tick `h1` commits before the act's `act_whole`, while the act is owed: the \
+         tick ends at {fed_end:?}, the act at {whole:?}: {done:?}"
     );
     // Once the act is whole the record reads as the restate left it: the
     // bound is erased, so `no_bound` fires, and the tick beside it keeps

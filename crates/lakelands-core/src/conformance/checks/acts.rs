@@ -13,15 +13,13 @@
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use lakelands_api::catalog::Verification;
-use lakelands_api::seam::FeedBatch;
-use lakelands_api::write::{Change, ChangeTo, ForgetReport, RemoveReport, ValueTypeMigration};
+use lakelands_api::write::{Change, ChangeTo, RemoveReport, ValueTypeMigration};
 
 use super::only::de;
 use super::removed::{acts, at, erased};
 use crate::conformance::fixture::source_record;
 use crate::conformance::prelude::*;
-use crate::export::{self, Manifest};
+use crate::export;
 
 check!(
     ACT_WALKS_OFF_THE_WRITER = a_write_sent_during_an_acts_walk_answers_before_its_first_turn,
@@ -31,19 +29,19 @@ check!(
 
 check!(
     ACT_BETWEEN_PARTS_VERIFIES = a_verify_between_two_parts_passes,
-    "099: with `part_events` 1, a verify while the act is owed, after its first turn and before its `act_whole`, passes through the position the log stood at, and the act ends with its whole after it",
+    "099: with one of the act's later appends failing, its first turn in the log — its `values_removed` and the destruction of the versions it took — and its parts owed, a verify passes through the position the log stood at, and the act's repeat ends it with its `act_whole` after that position",
     given
 );
 
 check!(
     ACT_BETWEEN_PARTS_EXPORTS = an_export_between_two_parts_imports_and_its_writer_finishes_the_act,
-    "099: an export taken while an act is owed, its cut between two parts, imports; the imported lake holds the act unwhole, and its writer, opened, finishes the act beside the open, leaving one `values_removed`, one `act_whole` and every record of the selection retired",
+    "099: an export taken while an act is owed — one of its later appends failing, its first turn in the log and its parts owed — is cut before the act's whole and imports; the imported lake holds the act unwhole, and its writer, opened, finishes the act beside the open, leaving one `values_removed`, one `act_whole` and every record of the selection retired",
     given
 );
 
 check!(
     POLL_STOPS_BEFORE_AN_OWED_ACT = a_poll_stops_before_a_reaction_the_projection_cannot_decide,
-    "099: while a removal is owed, its restate not yet run, a poll stops before the first reaction the projection cannot decide yet, even one written before the act: the batch ends at the trigger's firing and delivers nothing past it; once the act is whole and restated, the poll from there delivers the firing and names it overruled",
+    "099: while a removal is owed — one of its later appends failing, its first turn in the log and its parts owed — a poll stops before the first reaction the projection cannot decide yet, even one written before the act: the batch ends at the trigger's firing and delivers nothing past it; once the act's repeat is whole and restated, the poll from there delivers the firing and names it overruled",
     given
 );
 
@@ -278,69 +276,55 @@ async fn a_write_sent_during_an_acts_walk_answers_before_its_first_turn(
 }
 
 async fn a_verify_between_two_parts_passes(store: Store, given: Given) -> Held {
-    let mut few = limits();
-    few.part_events = 1;
-    let store = (given.relimit)(store, Seams::default(), few)
+    let fails: super::forgotten::Fails = Arc::default();
+    let wrap = super::forgotten::failing(&fails);
+    let store = (given.fault)(store, Seams::default(), wrap)
         .await
         .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
     let l = Lake::of(store.as_ref());
     visits(&l).await?;
-    let n = 200u32;
+    // More records than a turn's room, so the act appends in parts.
+    let n = 600u32;
     let records: Vec<(String, u32)> = (0..n).map(|i| (format!("v{i}"), i)).collect();
     let records: Vec<(&str, u32)> = records.iter().map(|(k, d)| (k.as_str(), *d)).collect();
     tracked(&l, &records).await?;
     let start = store.head().await.must("reading the head")?;
     let all = Selection::WrittenBefore(far());
     let tracker: SourceId = "tracker".into();
-    let slot: Arc<Mutex<Option<RemoveReport>>> = Arc::default();
-    let seen: Arc<Mutex<Option<(Verification, bool)>>> = Arc::default();
-    let (s, answer, s2, read) = (store.clone(), slot.clone(), store.clone(), seen.clone());
-    let callers: Vec<Caller<'static, Held>> = vec![
-        Box::pin(async move {
-            let done = s
-                .remove_values(&tracker, &all, false, None)
-                .await
-                .must("the act")?;
-            *lock(&answer) = Some(done);
-            Ok(())
-        }),
-        Box::pin(async move {
-            settles(6_000, Duration::from_millis(1), || async {
-                ensure!(
-                    !acts(s2.as_ref(), start).await?.is_empty(),
-                    "the act's first turn"
-                );
-                ensure!(
-                    first_of(&events_after(s2.as_ref(), start).await?, "act_whole").is_none(),
-                    "the act is still owed"
-                );
-                Ok(())
-            })
-            .await?;
-            let verified = s2
-                .verify(None, None)
-                .await
-                .must("a verify between two parts")?;
-            let whole = first_of(&events_after(s2.as_ref(), start).await?, "act_whole");
-            *lock(&read) = Some((verified, whole.is_some()));
-            Ok(())
-        }),
-    ];
-    join_all(callers).await.into_iter().collect::<Held>()?;
-    let done = lock(&slot).take().expect("the act answered");
-    let (verified, whole_then) = lock(&seen).take().expect("the verify ran");
+    // The act stops at its second append: its first turn is in the log,
+    // its versions destroyed and its parts owed.
+    fails[12].store(2, Ordering::SeqCst);
+    let stopped = store.remove_values(&tracker, &all, false, None).await;
     let after = events_after(store.as_ref(), start).await?;
     let removed = first_of(&after, "values_removed").expect("the act's first turn");
+    ensure!(
+        stopped.is_err()
+            && first_of(&after, "act_whole").is_none()
+            && fails[12].load(Ordering::SeqCst) == 0,
+        "the act must stop between its first turn and its parts: it answered {stopped:?}, its \
+         `values_removed` at {removed}, the log {:?}",
+        after.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
+    );
+    let verified = store
+        .verify(None, None)
+        .await
+        .must("a verify between two parts")?;
+    ensure!(
+        verified.through >= removed,
+        "a verify made between the act's first turn and its whole must pass through the log at \
+         its position: the verify said {verified:?}, the act's first event at {removed}"
+    );
+    fails[12].store(0, Ordering::SeqCst);
+    let done = store
+        .remove_values(&tracker, &all, false, None)
+        .await
+        .must("the act's repeat")?;
+    let after = events_after(store.as_ref(), start).await?;
     let whole = first_of(&after, "act_whole").expect("the act's whole");
     ensure!(
-        !whole_then
-            && verified.through >= removed
-            && whole > verified.through
-            && done.events == u64::from(n),
-        "a verify made between the act's first turn and its whole must pass through the log at \
-         its position and leave the act to end after it: the verify said {verified:?}, the act \
-         was whole then: {whole_then}, its first event at {removed}, its whole at {whole}, the \
-         act {done:?}"
+        whole > verified.through && done.events == u64::from(n),
+        "the act's repeat must end it after the verify passed through: the verify said \
+         {verified:?}, the act's whole at {whole}, the act {done:?}"
     );
     Ok(())
 }
@@ -351,56 +335,43 @@ async fn an_export_between_two_parts_imports_and_its_writer_finishes_the_act(
 ) -> Held {
     let scratch = super::export::Scratch::new(given.scratch.clone());
     let dir = scratch.dir("between-parts");
-    let mut few = limits();
-    few.part_events = 1;
-    let store = (given.relimit)(store, Seams::default(), few)
+    let fails: super::forgotten::Fails = Arc::default();
+    let wrap = super::forgotten::failing(&fails);
+    let store = (given.fault)(store, Seams::default(), wrap)
         .await
         .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
     let l = Lake::of(store.as_ref());
     visits(&l).await?;
-    let n = 120u32;
+    // More records than a turn's room, so the act appends in parts.
+    let n = 600u32;
     let records: Vec<(String, u32)> = (0..n).map(|i| (format!("v{i}"), i)).collect();
     let records: Vec<(&str, u32)> = records.iter().map(|(k, d)| (k.as_str(), *d)).collect();
     tracked(&l, &records).await?;
     let start = store.head().await.must("reading the head")?;
     let all = Selection::WrittenBefore(far());
     let tracker: SourceId = "tracker".into();
-    let slot: Arc<Mutex<Option<RemoveReport>>> = Arc::default();
-    let taken: Arc<Mutex<Option<Manifest>>> = Arc::default();
-    let (s, answer, s2, exported) = (store.clone(), slot.clone(), store.clone(), taken.clone());
-    let writing = dir.clone();
-    let callers: Vec<Caller<'static, Held>> = vec![
-        Box::pin(async move {
-            let done = s
-                .remove_values(&tracker, &all, false, None)
-                .await
-                .must("the act")?;
-            *lock(&answer) = Some(done);
-            Ok(())
-        }),
-        Box::pin(async move {
-            settles(6_000, Duration::from_millis(1), || async {
-                ensure!(
-                    !acts(s2.as_ref(), start).await?.is_empty(),
-                    "the act's first turn"
-                );
-                ensure!(
-                    first_of(&events_after(s2.as_ref(), start).await?, "act_whole").is_none(),
-                    "the act is still owed"
-                );
-                Ok(())
-            })
-            .await?;
-            let manifest = export::write(s2.as_ref(), &writing)
-                .await
-                .must("an export between two parts")?;
-            *lock(&exported) = Some(manifest);
-            Ok(())
-        }),
-    ];
-    join_all(callers).await.into_iter().collect::<Held>()?;
-    let done = lock(&slot).take().expect("the act answered");
-    let manifest = lock(&taken).take().expect("the export ran");
+    // The act stops at its second append: its first turn is in the log
+    // and its parts owed.
+    fails[12].store(2, Ordering::SeqCst);
+    let stopped = store.remove_values(&tracker, &all, false, None).await;
+    let after = events_after(store.as_ref(), start).await?;
+    ensure!(
+        stopped.is_err()
+            && first_of(&after, "values_removed").is_some()
+            && first_of(&after, "act_whole").is_none()
+            && fails[12].load(Ordering::SeqCst) == 0,
+        "the act must stop between its first turn and its parts: it answered {stopped:?}, the \
+         log {:?}",
+        after.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
+    );
+    let manifest = export::write(store.as_ref(), &dir)
+        .await
+        .must("an export between two parts")?;
+    fails[12].store(0, Ordering::SeqCst);
+    let done = store
+        .remove_values(&tracker, &all, false, None)
+        .await
+        .must("the act's repeat")?;
     let after = events_after(store.as_ref(), start).await?;
     let whole = first_of(&after, "act_whole").expect("the act's whole");
     ensure!(
@@ -461,14 +432,15 @@ async fn a_poll_stops_before_a_reaction_the_projection_cannot_decide(
     store: Store,
     given: Given,
 ) -> Held {
-    let mut few = limits();
-    few.part_events = 1;
-    let store = (given.relimit)(store, Seams::default(), few)
+    let fails: super::forgotten::Fails = Arc::default();
+    let wrap = super::forgotten::failing(&fails);
+    let store = (given.fault)(store, Seams::default(), wrap)
         .await
         .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
     let l = Lake::of(store.as_ref());
     visits(&l).await?;
-    let n = 60u32;
+    // More records than a turn's room, so the act appends in parts.
+    let n = 600u32;
     let records: Vec<(String, u32)> = (0..n).map(|i| (format!("v{i}"), i + 1)).collect();
     let records: Vec<(&str, u32)> = records.iter().map(|(k, d)| (k.as_str(), *d)).collect();
     tracked(&l, &records).await?;
@@ -484,43 +456,25 @@ async fn a_poll_stops_before_a_reaction_the_projection_cannot_decide(
     let start = store.head().await.must("reading the head")?;
     let all = Selection::WrittenBefore(far());
     let tracker: SourceId = "tracker".into();
-    let slot: Arc<Mutex<Option<RemoveReport>>> = Arc::default();
-    let seen: Arc<Mutex<Option<FeedBatch>>> = Arc::default();
-    let (s, answer, s2, read) = (store.clone(), slot.clone(), store.clone(), seen.clone());
-    let callers: Vec<Caller<'static, Held>> = vec![
-        Box::pin(async move {
-            let done = s
-                .remove_values(&tracker, &all, false, None)
-                .await
-                .must("the act")?;
-            *lock(&answer) = Some(done);
-            Ok(())
-        }),
-        Box::pin(async move {
-            settles(6_000, Duration::from_millis(1), || async {
-                ensure!(
-                    !acts(s2.as_ref(), start).await?.is_empty(),
-                    "the act's first turn"
-                );
-                ensure!(
-                    first_of(&events_after(s2.as_ref(), start).await?, "act_whole").is_none(),
-                    "the act is still owed"
-                );
-                Ok(())
-            })
-            .await?;
-            let batch = s2
-                .feed()
-                .poll(Position::GENESIS, &FeedFilter::default(), u32::MAX)
-                .await
-                .must("a poll while the act is owed")?;
-            *lock(&read) = Some(batch);
-            Ok(())
-        }),
-    ];
-    join_all(callers).await.into_iter().collect::<Held>()?;
-    let done = lock(&slot).take().expect("the act answered");
-    let owed = lock(&seen).take().expect("the poll ran");
+    // The act stops at its second append: its first turn is in the log
+    // and its parts owed.
+    fails[12].store(2, Ordering::SeqCst);
+    let stopped = store.remove_values(&tracker, &all, false, None).await;
+    let after = events_after(store.as_ref(), start).await?;
+    ensure!(
+        stopped.is_err()
+            && first_of(&after, "values_removed").is_some()
+            && first_of(&after, "act_whole").is_none()
+            && fails[12].load(Ordering::SeqCst) == 0,
+        "the act must stop between its first turn and its parts: it answered {stopped:?}, the \
+         log {:?}",
+        after.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
+    );
+    let owed = store
+        .feed()
+        .poll(Position::GENESIS, &FeedFilter::default(), u32::MAX)
+        .await
+        .must("a poll while the act is owed")?;
     ensure!(
         owed.events.iter().all(|e| e.position < fired)
             && owed.next == fired
@@ -534,6 +488,11 @@ async fn a_poll_stops_before_a_reaction_the_projection_cannot_decide(
             .collect::<Vec<_>>(),
         owed.overruled
     );
+    fails[12].store(0, Ordering::SeqCst);
+    let done = store
+        .remove_values(&tracker, &all, false, None)
+        .await
+        .must("the act's repeat")?;
     // Once the act is whole and restated, the poll from where it stopped
     // delivers the firing and names it overruled.
     let then = store
@@ -1010,9 +969,9 @@ async fn a_write_between_an_acts_parts_reads_through_to_the_restate(
     given: Given,
 ) -> Held {
     let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
-    let mut few = limits();
-    few.part_events = 1;
-    let store = (given.relimit)(store, super::erasable::with(&keys), few)
+    let fails: super::forgotten::Fails = Arc::default();
+    let wrap = super::forgotten::failing(&fails);
+    let store = (given.fault)(store, super::erasable::with(&keys), wrap)
         .await
         .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
     let l = Lake::of(store.as_ref());
@@ -1040,7 +999,8 @@ async fn a_write_between_an_acts_parts_reads_through_to_the_restate(
                 {"field": "copied", "value": "name"}]}),
     )
     .await?;
-    let n = 40u32;
+    // More records than a turn's room, so the act appends in parts.
+    let n = 600u32;
     let records: Vec<SourceRecord> = (0..n)
         .map(|i| {
             let k = format!("p{i}");
@@ -1055,63 +1015,39 @@ async fn a_write_between_an_acts_parts_reads_through_to_the_restate(
     let start = store.head().await.must("reading the head")?;
     let all = Selection::WrittenBefore(far());
     let tracker: SourceId = "tracker".into();
-    let slot: Arc<Mutex<Option<RemoveReport>>> = Arc::default();
-    let written: Arc<Mutex<Option<Outcome>>> = Arc::default();
-    let before: Arc<Mutex<Option<lakelands_api::Record>>> = Arc::default();
-    let (s, answer, s2, made, seen) = (
-        store.clone(),
-        slot.clone(),
-        store.clone(),
-        written.clone(),
-        before.clone(),
+    // The act stops at its second append: its first turn is in the log,
+    // its versions destroyed and its parts owed.
+    fails[12].store(2, Ordering::SeqCst);
+    let stopped = store.remove_values(&tracker, &all, false, None).await;
+    let after = events_after(store.as_ref(), start).await?;
+    ensure!(
+        stopped.is_err()
+            && first_of(&after, "values_removed").is_some()
+            && first_of(&after, "act_whole").is_none()
+            && fails[12].load(Ordering::SeqCst) == 0,
+        "the act must stop between its first turn and its parts: it answered {stopped:?}, the \
+         log {:?}",
+        after.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
     );
-    let callers: Vec<Caller<'static, Held>> = vec![
-        Box::pin(async move {
-            let done = s
-                .remove_values(&tracker, &all, false, None)
-                .await
-                .must("the act")?;
-            *lock(&answer) = Some(done);
-            Ok(())
-        }),
-        Box::pin(async move {
-            settles(6_000, Duration::from_millis(1), || async {
-                ensure!(
-                    !acts(s2.as_ref(), start).await?.is_empty(),
-                    "the act's first turn"
-                );
-                ensure!(
-                    first_of(&events_after(s2.as_ref(), start).await?, "act_whole").is_none(),
-                    "the act is still owed"
-                );
-                Ok(())
-            })
-            .await?;
-            let l = Lake::of(s2.as_ref());
-            let shown = at(&l, "person", "p0", None)
-                .await?
-                .ok_or_else(|| Failure::new("`p0` before the act's whole"))?;
-            *lock(&seen) = Some(shown);
-            let called = l
-                .cat
-                .call(
-                    &l.own,
-                    &"copy".into(),
-                    Some(&RecordKey::from("p0")),
-                    patch(json!({})),
-                    WriteOpts::default(),
-                )
-                .await
-                .must("a verb on `p0` while the act is owed")?;
-            *lock(&made) = Some(called);
-            Ok(())
-        }),
-    ];
-    join_all(callers).await.into_iter().collect::<Held>()?;
-    let done = lock(&slot).take().expect("the act answered");
-    let called = lock(&written).take().expect("the verb ran");
-    let shown = lock(&before).take().expect("`p0` was read");
-    let l = Lake::of(store.as_ref());
+    let shown = at(&l, "person", "p0", None)
+        .await?
+        .ok_or_else(|| Failure::new("`p0` before the act's whole"))?;
+    let called = l
+        .cat
+        .call(
+            &l.own,
+            &"copy".into(),
+            Some(&RecordKey::from("p0")),
+            patch(json!({})),
+            WriteOpts::default(),
+        )
+        .await
+        .must("a verb on `p0` while the act is owed")?;
+    fails[12].store(0, Ordering::SeqCst);
+    let done = store
+        .remove_values(&tracker, &all, false, None)
+        .await
+        .must("the act's repeat")?;
     let after = at(&l, "person", "p0", None)
         .await?
         .ok_or_else(|| Failure::new("`p0` after the act"))?;
@@ -1148,52 +1084,36 @@ async fn a_write_between_an_acts_parts_reads_through_to_the_restate(
         .must("ingesting from giver")?;
     l.upsert("person", "q0", json!({"note": "kept"})).await?;
     let start = store.head().await.must("reading the head")?;
-    let slot: Arc<Mutex<Option<ForgetReport>>> = Arc::default();
-    let written: Arc<Mutex<Option<Outcome>>> = Arc::default();
-    let (s, answer, s2, made) = (store.clone(), slot.clone(), store.clone(), written.clone());
     let source = giver.clone();
-    let callers: Vec<Caller<'static, Held>> = vec![
-        Box::pin(async move {
-            let done = s
-                .forget_source(&source, None)
-                .await
-                .must("the forgetting")?;
-            *lock(&answer) = Some(done);
-            Ok(())
-        }),
-        Box::pin(async move {
-            settles(6_000, Duration::from_millis(1), || async {
-                let events = events_after(s2.as_ref(), start).await?;
-                let forgot =
-                    (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
-                let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
-                ensure!(
-                    forgot && !whole,
-                    "the forgetting's `source_forgotten`, before its `act_whole`"
-                );
-                Ok(())
-            })
-            .await?;
-            let l = Lake::of(s2.as_ref());
-            let called = l
-                .cat
-                .call(
-                    &l.own,
-                    &"copy".into(),
-                    Some(&RecordKey::from("q0")),
-                    patch(json!({})),
-                    WriteOpts::default(),
-                )
-                .await
-                .must("a verb on `q0` while the forgetting is owed")?;
-            *lock(&made) = Some(called);
-            Ok(())
-        }),
-    ];
-    join_all(callers).await.into_iter().collect::<Held>()?;
-    let done = lock(&slot).take().expect("the forgetting answered");
-    let called = lock(&written).take().expect("the verb ran");
-    let l = Lake::of(store.as_ref());
+    // The act stops at its second append: its `source_forgotten` is in the
+    // log, its keys destroyed and its parts owed.
+    fails[12].store(2, Ordering::SeqCst);
+    let stopped = store.forget_source(&source, None).await;
+    let events = events_after(store.as_ref(), start).await?;
+    let forgot = (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
+    let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+    ensure!(
+        stopped.is_err() && forgot && !whole && fails[12].load(Ordering::SeqCst) == 0,
+        "the forgetting must stop between its `source_forgotten` and its `act_whole`: it \
+         answered {stopped:?}, the log {:?}",
+        events.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
+    );
+    let called = l
+        .cat
+        .call(
+            &l.own,
+            &"copy".into(),
+            Some(&RecordKey::from("q0")),
+            patch(json!({})),
+            WriteOpts::default(),
+        )
+        .await
+        .must("a verb on `q0` while the forgetting is owed")?;
+    fails[12].store(0, Ordering::SeqCst);
+    let done = store
+        .forget_source(&source, None)
+        .await
+        .must("the forgetting's repeat")?;
     let after = at(&l, "person", "q0", None)
         .await?
         .ok_or_else(|| Failure::new("`q0` after the forgetting"))?;

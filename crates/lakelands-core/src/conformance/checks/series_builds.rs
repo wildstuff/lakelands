@@ -15,9 +15,8 @@
 use lakelands_api::describe::SeriesToldState;
 use lakelands_api::engine::OpenMode;
 use lakelands_api::seam::SETTING_TYPE;
-use std::sync::atomic::AtomicBool;
 
-use super::builds::{First, answers, chunked, rows, until_first};
+use super::builds::{answers, chunked, rows};
 use super::forgotten::{Fails, failing};
 use crate::conformance::fixture::reviewer;
 use crate::conformance::fixture::{doors, owner, type_of};
@@ -25,19 +24,19 @@ use crate::conformance::prelude::*;
 
 check!(
     SERIES_SETTING_BUILDS = a_series_setting_fills_its_pair_beside_writes_and_keeps_it,
-    "097, step 8: a `series_index.<type>` setting on a type with records builds its pair in parts of `limits` beside the writer, and its door answers when the pair is whole: `describe` tells the pair `building` meanwhile and `kept` once the door answered, and every page and `where` beside the build answers what it answered before it",
+    "097, step 8: a `series_index.<type>` setting on a type with more records than `limits.order_chunk` builds its pair a key range a turn beside the writer, and its door answers when the pair is whole: with its build's first step failing, the pair is left `building`, owed in the mark, and the door answers the failure; `describe` tells it `building` while it is owed and `kept` once the setting is written again and the door answered; every page and `where` beside the build answers what it answered before it",
     given
 );
 
 check!(
     SERIES_BUILD_RESUMES = a_series_build_stopped_between_turns_is_finished_by_the_next_open,
-    "097, step 8: a series pair whose build a writer left between two of its turns is owed in the projection's mark, and the next open finishes it with no read and no further write: the reopened lake answers at once as before, the pair is told `kept` without a setting written to it, and every read answers as before",
+    "097, step 8: a series pair whose build stopped at its first step is owed in the projection's mark, and the next open finishes it with no read and no further write: the reopened lake answers at once as before, the pair is told `kept` without a setting written to it, and every read answers as before",
     given
 );
 
 check!(
     SERIES_TAKEN_BACK = a_series_setting_taken_back_leaves_no_pair_and_no_answer_moved,
-    "097, step 8: a `series_index.<type>` setting taken back during its build and again after it is whole ends clean: `describe` names the pair no longer, every read taken beside the take-back answers what it answered before the setting, and every read after it does too",
+    "097, step 8: a `series_index.<type>` setting taken back while its build is owed — its first step failed, the pair `building` — and again after it is whole ends clean: `describe` names the pair no longer, every read taken beside the take-back answers what it answered before the setting, and every read after it does too",
     given
 );
 
@@ -56,7 +55,7 @@ check!(
 
 check!(
     SERIES_TOLD = describe_tells_a_series_pair_to_a_holder_of_schema_reading_both_fields,
-    "097, step 8: `describe` tells a `series_index.<type>` pair, its series field and its order field, with the state `building` then `kept`, to a holder of `schema` who reads both fields, at the head only; a reader without `schema`, and one who reads only one of the two fields, is told no pair",
+    "097, step 8: `describe` tells a `series_index.<type>` pair, its series field and its order field, with the state `building` while its build's first step is owed and `kept` once the setting's door answers, to a holder of `schema` who reads both fields, at the head only; a reader without `schema`, and one who reads only one of the two fields, is told no pair",
     given
 );
 
@@ -95,69 +94,60 @@ async fn until_told(l: &Lake, who: &Principal, want: SeriesToldState) -> Result<
     Ok(false)
 }
 
-/// What `describe` was told, briefly: how many answers, the first and the
-/// last of them.
-fn said(seen: &[Vec<(String, String, SeriesToldState)>]) -> String {
-    format!(
-        "{} describes; the first {:?}, the last {:?}",
-        seen.len(),
-        seen.first(),
-        seen.last()
-    )
-}
-
 /// The setting's value: the pair `s` as its series, `n` as its order.
 fn setting() -> Value {
     json!([["s", "n"]])
+}
+
+/// How many records a check that takes the build beside it ingests: more
+/// than a turn's key range at the lake's default `order_chunk`, so the
+/// build has parts, within the bounds every engine's harness gives a
+/// large lake.
+fn other_records(given: &Given) -> u64 {
+    u64::from(given.large_lake.clamp(1_001, 2_000))
 }
 
 async fn a_series_setting_fills_its_pair_beside_writes_and_keeps_it(
     store: Store,
     given: Given,
 ) -> Held {
-    let size = u64::from(given.large_lake.clamp(200, 400));
-    let store = chunked(&given, store).await?;
+    // More records than a turn's range, so the build has parts.
+    let size = other_records(&given);
+    let fails: Fails = Arc::default();
+    let store = (given.fault)(store, Seams::default(), failing(&fails))
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?;
     let l = rows(store.as_ref(), size).await?;
     let before = answers(&l, size).await?;
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let reader = {
-        let seen = seen.clone();
-        let l = &l;
-        async move {
-            ensure!(
-                until_told(l, &l.own, SeriesToldState::Building).await?,
-                "`describe` never told the pair `building`, so no build began"
-            );
-            for _ in 0..20 {
-                let got = answers(l, size).await?;
-                seen.lock().expect("the answers").push(got);
-                pause(Duration::from_millis(1)).await;
-            }
-            Ok::<_, Failure>(())
-        }
-    };
-    let setter = {
-        let l = &l;
-        async move {
-            l.set("series_index.row", setting()).await?;
-            Ok::<_, Failure>(())
-        }
-    };
-    let out = join_all(vec![Box::pin(setter), Box::pin(reader)]).await;
-    out[0]
-        .as_ref()
-        .map_err(|e| Failure::new(format!("the setting: {e}")))?;
-    out[1]
-        .as_ref()
-        .map_err(|e| Failure::new(format!("a read: {e}")))?;
-    let during = seen.lock().expect("the answers").clone();
-    for (i, got) in during.iter().enumerate() {
+    // The build's first step fails: the pair is left building, owed in the
+    // mark, a state a read can be taken beside without racing the build to
+    // its end.
+    fails[11].store(1, Ordering::SeqCst);
+    let set = l.set("series_index.row", setting()).await;
+    ensure!(
+        set.is_err() && fails[11].load(Ordering::SeqCst) == 0,
+        "the setting's write must answer the failure of its build's first step: it answered \
+         {set:?}"
+    );
+    ensure!(
+        pair(&l, &l.own).await? == Some(SeriesToldState::Building),
+        "a build stopped at its first step leaves its pair building, owed in the \
+         mark; `describe` told {:?}",
+        pair(&l, &l.own).await?
+    );
+    for i in 0..20 {
+        let got = answers(&l, size).await?;
         ensure!(
-            *got == before,
+            got == before,
             "read {i} beside the build of the pair answered differently from the lake before \
              the setting.\n  before: {before:?}\n  beside: {got:?}"
         );
     }
+    // The setting written again sends the part it left owed, and its door
+    // answers when the pair is whole.
+    l.set("series_index.row", setting())
+        .await
+        .map_err(|e| Failure::new(format!("the setting's door, the pair whole: {e}")))?;
     ensure!(
         pair(&l, &l.own).await? == Some(SeriesToldState::Kept),
         "the setting's door answers when its pair is whole, and `describe` must then tell it \
@@ -177,33 +167,30 @@ async fn a_series_build_stopped_between_turns_is_finished_by_the_next_open(
     store: Store,
     given: Given,
 ) -> Held {
-    let size = u64::from(given.large_lake.clamp(400, 800));
-    let store = chunked(&given, store).await?;
+    let size = other_records(&given);
+    let fails: Fails = Arc::default();
+    let store = (given.fault)(store, Seams::default(), failing(&fails))
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?;
     let l = rows(store.as_ref(), size).await?;
     let before = answers(&l, size).await?;
     let lake = store.lake().clone();
     // The setting's door appends its record, its fold marks the pair
-    // building and sends the build; the caller then goes, as a process
-    // that ended between two of the build's turns.
-    {
-        let l = &l;
-        let made = l.set("series_index.row", setting());
-        let done = async {
-            ensure!(
-                until_told(l, &l.own, SeriesToldState::Building).await?,
-                "`describe` never told the pair `building`, so no build began"
-            );
-            Ok::<_, Failure>(())
-        };
-        match until_first(made, done).await {
-            First::Done(seen) => seen?,
-            First::Made(_) => {
-                return Err(Failure::new(
-                    "the pair was whole before the lake was let go, so nothing was owed",
-                ));
-            }
-        }
-    }
+    // building and sends the build; its first step fails, and the caller
+    // goes, as a process that ended before the build's first turn.
+    fails[11].store(1, Ordering::SeqCst);
+    let set = l.set("series_index.row", setting()).await;
+    ensure!(
+        set.is_err() && fails[11].load(Ordering::SeqCst) == 0,
+        "the setting's write must answer the failure of its build's first step: it answered \
+         {set:?}"
+    );
+    ensure!(
+        pair(&l, &l.own).await? == Some(SeriesToldState::Building),
+        "the pair the build's failed step left is building, owed in the mark; \
+         `describe` told {:?}",
+        pair(&l, &l.own).await?
+    );
     drop(l);
     drop(store);
     // The next open of the same lake, a new writer: it finds the build
@@ -239,61 +226,37 @@ async fn a_series_setting_taken_back_leaves_no_pair_and_no_answer_moved(
     store: Store,
     given: Given,
 ) -> Held {
-    let size = u64::from(given.large_lake.clamp(400, 800));
-    let store = chunked(&given, store).await?;
+    let size = other_records(&given);
+    let fails: Fails = Arc::default();
+    let store = (given.fault)(store, Seams::default(), failing(&fails))
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?;
     let l = rows(store.as_ref(), size).await?;
     let before = answers(&l, size).await?;
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let reader = {
-        let seen = seen.clone();
-        let l = &l;
-        async move {
-            ensure!(
-                until_told(l, &l.own, SeriesToldState::Building).await?,
-                "`describe` never told the pair `building`, so no build began"
-            );
-            for _ in 0..40 {
-                let got = answers(l, size).await?;
-                seen.lock().expect("the answers").push(got);
-                pause(Duration::from_millis(1)).await;
-            }
-            Ok::<_, Failure>(())
-        }
-    };
-    let setter = {
-        let l = &l;
-        async move {
-            l.set("series_index.row", setting()).await?;
-            Ok::<_, Failure>(())
-        }
-    };
+    // The build's first step fails: the pair is left building, owed in the
+    // mark, and the take-back lands there.
+    fails[11].store(1, Ordering::SeqCst);
+    let set = l.set("series_index.row", setting()).await;
+    ensure!(
+        set.is_err() && fails[11].load(Ordering::SeqCst) == 0,
+        "the setting's write must answer the failure of its build's first step: it answered \
+         {set:?}"
+    );
+    ensure!(
+        pair(&l, &l.own).await? == Some(SeriesToldState::Building),
+        "a build stopped at its first step leaves its pair building, owed in the \
+         mark; `describe` told {:?}",
+        pair(&l, &l.own).await?
+    );
     // Taken back between two of the build's turns: the write that retires
     // the setting lands while the pair is building.
-    let taker = {
-        let l = &l;
-        async move {
-            ensure!(
-                until_told(l, &l.own, SeriesToldState::Building).await?,
-                "`describe` never told the pair `building`, so no build began"
-            );
-            l.retire(SETTING_TYPE, "series_index.row").await?;
-            Ok::<_, Failure>(())
-        }
-    };
-    let out = join_all(vec![Box::pin(setter), Box::pin(taker), Box::pin(reader)]).await;
-    out[0]
-        .as_ref()
-        .map_err(|e| Failure::new(format!("the setting: {e}")))?;
-    out[1]
-        .as_ref()
-        .map_err(|e| Failure::new(format!("the take-back: {e}")))?;
-    out[2]
-        .as_ref()
-        .map_err(|e| Failure::new(format!("a read: {e}")))?;
-    let during = seen.lock().expect("the answers").clone();
-    for (i, got) in during.iter().enumerate() {
+    l.retire(SETTING_TYPE, "series_index.row")
+        .await
+        .map_err(|e| Failure::new(format!("the take-back while the pair is building: {e}")))?;
+    for i in 0..40 {
+        let got = answers(&l, size).await?;
         ensure!(
-            *got == before,
+            got == before,
             "read {i} beside the build taken back answered differently from the lake before \
              the setting.\n  before: {before:?}\n  beside: {got:?}"
         );
@@ -374,8 +337,11 @@ async fn describe_tells_a_series_pair_to_a_holder_of_schema_reading_both_fields(
     store: Store,
     given: Given,
 ) -> Held {
-    let size = u64::from(given.large_lake.clamp(200, 400));
-    let store = chunked(&given, store).await?;
+    let size = other_records(&given);
+    let fails: Fails = Arc::default();
+    let store = (given.fault)(store, Seams::default(), failing(&fails))
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?;
     let l = rows(store.as_ref(), size).await?;
     let schema = reviewer(store.as_ref(), true);
     let plain = reviewer(store.as_ref(), false);
@@ -399,74 +365,23 @@ async fn describe_tells_a_series_pair_to_a_holder_of_schema_reading_both_fields(
         );
         principal(store.as_ref(), PrincipalKind::Agent, "half", grants)
     };
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    // The setting's door answers when the pair is whole, so the reader
-    // follows the pair until that answer and reads it once more then,
-    // rather than counting polls against a build that may outlast them.
-    let done = Arc::new(AtomicBool::new(false));
-    let reader = {
-        let seen = seen.clone();
-        let done = done.clone();
-        let schema = schema.clone();
-        let l = &l;
-        async move {
-            ensure!(
-                until_told(l, &schema, SeriesToldState::Building).await?,
-                "`describe` never told the pair `building` to a holder of `schema`"
-            );
-            for _ in 0..40 {
-                let told = told(l, &schema).await?;
-                seen.lock().expect("the pair").push(told);
-                pause(Duration::from_millis(1)).await;
-            }
-            // The build may outlast the reads beside it: wait for the
-            // setting's door, which answers only when the pair is whole,
-            // reading nothing meanwhile so the build is not held back by
-            // a reader, then read the pair once more.
-            let deadline = std::time::Instant::now() + Duration::from_secs(300);
-            while !done.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
-                pause(Duration::from_millis(10)).await;
-            }
-            let told = told(l, &schema).await?;
-            seen.lock().expect("the pair").push(told);
-            Ok::<_, Failure>(())
-        }
-    };
-    let at = Arc::new(std::sync::Mutex::new(None));
-    let setter = {
-        let l = &l;
-        let at = at.clone();
-        let done = done.clone();
-        async move {
-            let out = l.set("series_index.row", setting()).await;
-            done.store(true, Ordering::SeqCst);
-            let out = out?;
-            at.lock().expect("the setting").replace(out.position());
-            Ok::<_, Failure>(())
-        }
-    };
-    let out = join_all(vec![Box::pin(setter), Box::pin(reader)]).await;
-    out[0]
-        .as_ref()
-        .map_err(|e| Failure::new(format!("the setting: {e}")))?;
-    out[1]
-        .as_ref()
-        .map_err(|e| Failure::new(format!("a `describe`: {e}")))?;
-    let during = seen.lock().expect("the pair").clone();
+    // The build's first step fails: the pair is left building, owed in the
+    // mark, a state `describe` can be read at without racing the build to
+    // its end.
+    fails[11].store(1, Ordering::SeqCst);
+    let set = l.set("series_index.row", setting()).await;
     ensure!(
-        during
-            .iter()
-            .any(|t| t == &[("s".into(), "n".into(), SeriesToldState::Building)]),
-        "a holder of `schema` who reads both fields is told the pair `building` while it is \
-         filled; {}",
-        said(&during)
+        set.is_err() && fails[11].load(Ordering::SeqCst) == 0,
+        "the setting's write must answer the failure of its build's first step: it answered \
+         {set:?}"
     );
+    let building = vec![("s".to_string(), "n".to_string(), SeriesToldState::Building)];
+    let at = store.head().await.must("reading the head")?;
     ensure!(
-        during
-            .iter()
-            .any(|t| t == &[("s".into(), "n".into(), SeriesToldState::Kept)]),
-        "and `kept` once it is whole; {}",
-        said(&during)
+        told(&l, &schema).await? == building,
+        "a holder of `schema` who reads both fields is told the pair `building` while its \
+         build's first step is owed; it was told {:?}",
+        told(&l, &schema).await?
     );
     ensure!(
         told(&l, &plain).await?.is_empty(),
@@ -479,19 +394,37 @@ async fn describe_tells_a_series_pair_to_a_holder_of_schema_reading_both_fields(
          told {:?}",
         told(&l, &half).await?
     );
+    // The setting written again sends the part it left owed, and its door
+    // answers when the pair is whole.
+    l.set("series_index.row", setting())
+        .await
+        .map_err(|e| Failure::new(format!("the setting's door, the pair whole: {e}")))?;
+    let kept = vec![("s".to_string(), "n".to_string(), SeriesToldState::Kept)];
+    ensure!(
+        told(&l, &schema).await? == kept,
+        "and `kept` once the setting's door answered; it was told {:?}",
+        told(&l, &schema).await?
+    );
+    ensure!(
+        told(&l, &plain).await?.is_empty(),
+        "a reader without `schema` is told no pair built; it was told {:?}",
+        told(&l, &plain).await?
+    );
+    ensure!(
+        told(&l, &half).await?.is_empty(),
+        "a holder of `schema` who reads only one of the pair's fields is told no pair built; \
+         it was told {:?}",
+        told(&l, &half).await?
+    );
     // At the head only: a read pinned to an `as_of` — here the setting's
     // own write's predecessor — is told no pair.
-    let since = at
-        .lock()
-        .expect("the setting")
-        .expect("the setting's position");
     let then = l
         .cat
         .describe_type(
             &schema,
             &TypeName::from("row"),
             ReadAt {
-                as_of: Some(Position(since.0.saturating_sub(1))),
+                as_of: Some(Position(at.0.saturating_sub(1))),
                 valid_at: None,
                 clock: None,
             },
@@ -502,7 +435,7 @@ async fn describe_tells_a_series_pair_to_a_holder_of_schema_reading_both_fields(
     ensure!(
         then.series.is_empty(),
         "a read as of {} tells no pair; it was told {:?}",
-        since.0.saturating_sub(1),
+        at.0.saturating_sub(1),
         then.series
     );
     Ok(())
