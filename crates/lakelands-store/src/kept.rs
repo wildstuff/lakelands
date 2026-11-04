@@ -96,6 +96,11 @@ pub(crate) struct State {
     /// `Keep`, as it does for a view no fold keeps ([`State::whole`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub building: Option<Building>,
+    /// The view's setting was taken back: its kept records stay until the
+    /// chunks that clear them, a key range a turn, and no read looks at
+    /// them meanwhile. A setting set again cancels what is left.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dropping: bool,
     /// The groups that are not exact, on the open face and on the whole
     /// one: a measure that fails, a sum outside what is exact, a member
     /// that does not fold.
@@ -1052,9 +1057,10 @@ impl Views {
         }
         self.views.remove(view);
         // A view a build has started holds the groups it has reached: they
-        // end with the build's mark, as a whole view's do.
+        // end with the build's mark, as a whole view's do, and so do the
+        // records a take-back has not cleared yet.
         let state = at.state(staged, view)?;
-        if !state.whole && state.building.is_none() {
+        if !state.whole && state.building.is_none() && !state.dropping {
             return Ok(());
         }
         let mut keys = Vec::new();
@@ -1142,20 +1148,27 @@ impl Views {
     /// Whatever is to be kept now and is not is made, `start` except: the
     /// view a live setting starts building is marked, and a read computes
     /// it until the build's `Keep`. Whatever is kept and is not to be is
-    /// ended, innermost first.
+    /// ended, innermost first; where the event is a live setting's
+    /// take-back (`take_back`), in parts, the mark `dropping` saying so.
     fn want(
         &mut self,
         at: &At<'_>,
         staged: &mut Staged,
         position: Position,
         start: Option<&TypeName>,
+        take_back: bool,
     ) -> Result<()> {
         loop {
             let unwanted = (self.views.keys())
                 .find(|v| self.wanted(at, staged, v).is_none())
                 .cloned();
             if let Some(view) = unwanted {
-                self.unmake(at, staged, &view, position)?;
+                let state = at.state(staged, &view)?;
+                let in_parts = take_back && (state.whole || state.building.is_some());
+                match in_parts {
+                    true => self.mark_dropping(at, staged, &view, position)?,
+                    false => self.unmake(at, staged, &view, position)?,
+                }
                 continue;
             }
             let missing = asking(at.settings).map(TypeName::from);
@@ -1163,16 +1176,46 @@ impl Views {
             let Some(kept) = missing.find_map(|v| self.wanted(at, staged, &v)) else {
                 return Ok(());
             };
+            // The views the build waits for are started, not made: a view
+            // over a view whose inner view is not whole waits for its
+            // inner's `Keep`, and a view its take-back has not finished
+            // waits for the drop to end.
+            let name = &kept.decl.name;
+            let waits = at.state(staged, name)?.dropping || !ready(at, staged, name)?;
             match start {
-                Some(view) if view == &kept.decl.name => self.start(at, staged, kept, position)?,
+                Some(view) if view == name => self.start(at, staged, kept, position)?,
+                _ if waits => self.start(at, staged, kept, position)?,
                 _ => self.make(at, staged, kept, position)?,
             }
         }
     }
 
+    /// Mark `view` as taken back in parts: its records stay until the
+    /// chunks that end them, and no read looks at them meanwhile. The views
+    /// that read it follow it in the same event: what is not in `views` is
+    /// not wanted, and the loop of [`Views::want`] comes to them.
+    fn mark_dropping(
+        &mut self,
+        at: &At<'_>,
+        staged: &mut Staged,
+        view: &TypeName,
+        position: Position,
+    ) -> Result<()> {
+        self.views.remove(view);
+        let state = State {
+            dropping: true,
+            ..State::default()
+        };
+        at.put_state(staged, view, &state, position)
+    }
+
     /// Start `view`'s build: the state records a cursor for each of its
     /// sources, none reached, and a read computes the view until the
-    /// build's [`keep`]. Nothing of a source is walked in the fold.
+    /// build's [`keep`]. Nothing of a source is walked in the fold. A
+    /// setting set again between two chunks of a take-back keeps its
+    /// `dropping` mark: the drop ends first. The copy of the time-zone
+    /// database in force is recorded, as [`Views::make`] records it, so
+    /// that a writer that opens under another one starts the build again.
     fn start(
         &mut self,
         at: &At<'_>,
@@ -1181,11 +1224,14 @@ impl Views {
         position: Position,
     ) -> Result<()> {
         let view = kept.decl.name.clone();
+        let was = at.state(staged, &view)?;
         let building = Building {
             cursors: vec![None; kept.sources.len()],
         };
         let state = State {
             building: Some(building),
+            dropping: was.dropping,
+            tzdb: kept.zoned.then(|| zone::copy().to_owned()),
             ..State::default()
         };
         self.insert(kept, state);
@@ -1244,6 +1290,10 @@ struct Moves<'a> {
     /// The view a live `view_kept` setting starts a build of, where the
     /// event writes one: made whole in one fold otherwise.
     start: Option<TypeName>,
+    /// Whether the event is a live `view_kept` setting's take-back: what
+    /// the setting no longer asks for is cleared in parts, marked
+    /// `dropping`, rather than ended in one fold.
+    take_back: bool,
 }
 
 /// The end of one event's fold: the views it makes or ends are made or
@@ -1298,6 +1348,13 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event, whole: bool) -
     let start = (!whole)
         .then(|| started(setting.as_deref(), at.settings))
         .flatten();
+    // A live `view_kept.` setting that no longer asks for its view is a
+    // take-back: the view's records go in parts, as a field's rows do. A
+    // fold from the log ends them at the event.
+    let take_back = !whole
+        && setting.as_deref().is_some_and(|k| {
+            k.strip_prefix(SETTING).is_some() && !lakelands_api::seam::view_kept(at.settings.get(k))
+        });
     let mut views = std::mem::take(&mut staged.kept);
     let moves = Moves {
         any,
@@ -1305,6 +1362,7 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event, whole: bool) -
         setting: setting.as_deref(),
         leased,
         start,
+        take_back,
     };
     let settled = views.settle(at, staged, moves, e.position);
     staged.kept = views;
@@ -1328,6 +1386,7 @@ impl Views {
             setting,
             leased,
             start,
+            take_back,
         } = moves;
         // A setting's write and a declaration may move any view: all are
         // read in. A record's write moves the views that read its type,
@@ -1357,7 +1416,7 @@ impl Views {
             self.unmake(at, staged, view, position)?;
         }
         if setting.is_some() || !declared.is_empty() || leased {
-            self.want(at, staged, position, start.as_ref())?;
+            self.want(at, staged, position, start.as_ref(), take_back)?;
         }
         self.flush(at, staged, position)
     }
@@ -1373,8 +1432,8 @@ pub(crate) fn made(at: &At<'_>, staged: &mut Staged, position: Position) -> Resu
         return Ok(());
     }
     let mut views = std::mem::take(&mut staged.kept);
-    let made =
-        (views.load(at, staged, None, None)).and_then(|()| views.want(at, staged, position, None));
+    let made = (views.load(at, staged, None, None))
+        .and_then(|()| views.want(at, staged, position, None, false));
     staged.kept = views;
     made
 }
@@ -1383,9 +1442,10 @@ pub(crate) fn made(at: &At<'_>, staged: &mut Staged, position: Position) -> Resu
 /// first source with records past its cursor, in key order, and the state
 /// records the cursor the part reached. `Some` the key it reached; `None`
 /// where this part folded nothing — every source is reached, and the build
-/// is [`keep`]'s, or the view is not building, or an inner view it reads
-/// is not whole. A caller keeps the view only after its own checks that it
-/// builds and that every inner view is whole ([`ready`]).
+/// is [`keep`]'s, or the view is not building, or its take-back has not
+/// finished. A caller keeps the view only after its own checks that it
+/// builds and that every inner view it reads is whole ([`ready`]), and
+/// while no take-back of it runs.
 ///
 /// A group's folds are its record's, so a part reads the groups it moves
 /// from the projection and puts them back as it goes: what is folded is
@@ -1403,26 +1463,19 @@ pub(crate) fn fill(
     let Some(work) = views.views.get_mut(view) else {
         return Ok(None);
     };
-    let Some(building) = work.state.building.clone() else {
+    // A take-back's chunks go first: a build set again waits for them.
+    let Some(building) = work.state.building.clone().filter(|_| !work.state.dropping) else {
         return Ok(None);
     };
     let mut filled = None;
     for i in 0..work.kept.sources.len() {
-        let (ty, inner) = {
+        let ty = {
             let src = &work.kept.sources[i];
-            let ty = match src.view {
+            match src.view {
                 true => kept_name(&src.ty),
                 false => src.ty.clone(),
-            };
-            (ty, src.view.then(|| src.ty.clone()))
+            }
         };
-        // A view over a view starts after its inner view's `Keep`: what is
-        // not whole is not folded, and this part folds nothing.
-        if let Some(inner) = inner
-            && !at.state(staged, &inner)?.whole
-        {
-            return Ok(None);
-        }
         let cursor = building.cursors.get(i).cloned().flatten();
         let after = cursor.map(|key| lakelands_api::engine::After {
             values: Vec::new(),
@@ -1462,6 +1515,68 @@ pub(crate) fn fill(
         at.put_state(staged, view, &state, position)?;
     }
     Ok(filled)
+}
+
+/// Fold the next part of `view`'s take-back: `limit` of its kept records,
+/// ended, in key order past `after`. `Some` the key the part ended at;
+/// `None` where nothing is left: the view's order entries end and the mark
+/// goes, leaving a build's mark where a setting asked for the view again
+/// between two chunks. No read looks at a view the mark holds, so a
+/// part-cleared view is never read.
+pub(crate) fn drop_chunk(
+    at: &At<'_>,
+    staged: &mut Staged,
+    view: &TypeName,
+    limit: u32,
+    after: Option<RecordKey>,
+    position: Position,
+) -> Result<Option<RecordKey>> {
+    let state = at.state(staged, view)?;
+    if !state.dropping {
+        return Ok(None);
+    }
+    let scan = lakelands_api::engine::Scan {
+        limit,
+        restricted: true,
+        after: after.map(|key| lakelands_api::engine::After {
+            values: Vec::new(),
+            key,
+        }),
+        ..Default::default()
+    };
+    let rows = at.view.scan(&kept_name(view), &scan)?;
+    let Some(last) = rows.last().map(|r| r.key.clone()) else {
+        // The last chunk: the entries end as a whole, whatever their
+        // number, and the mark goes.
+        let name = order_name(view);
+        at.end_order(&name)?;
+        let ended = Orders {
+            ended: true,
+            ..Orders::default()
+        };
+        let was = staged.orders.insert(name.clone(), ended);
+        if let Some(undo) = &mut staged.undo {
+            undo.0.push(Undone::Orders(name, was));
+        }
+        let state = State {
+            building: state.building,
+            // A build a setting set again started before the drop ended
+            // keeps the copy it was cut under; the `Keep` records the
+            // one the rest of it is cut under.
+            tzdb: state.tzdb,
+            ..State::default()
+        };
+        return at.put_state(staged, view, &state, position).map(|()| None);
+    };
+    // Ended in the transaction's own view, so that a part that ends here
+    // is not read by the next one, and in the projection, so that it is
+    // gone when the part commits.
+    for r in &rows {
+        let ended = StoredRecord::ended(kept_name(view), r.key.clone(), position);
+        at.put(&ended)?;
+        staged.put(ended);
+    }
+    Ok(Some(last))
 }
 
 /// Whether every source of `view` that is itself a view is whole.
@@ -1544,12 +1659,16 @@ pub(crate) fn step(
     let mut views = std::mem::take(&mut staged.kept);
     views.moved = Some(Moved::new());
     let any = write.is_none() || setting.is_some();
+    let take_back = setting.as_deref().is_some_and(|k| {
+        k.strip_prefix(SETTING).is_some() && !lakelands_api::seam::view_kept(at.settings.get(k))
+    });
     let moves = Moves {
         any,
         declared,
         setting: setting.as_deref(),
         leased: false,
         start: started(setting.as_deref(), at.settings),
+        take_back,
     };
     let settled = views.settle(at, staged, moves, position);
     let moved = views.moved.take().unwrap_or_default();

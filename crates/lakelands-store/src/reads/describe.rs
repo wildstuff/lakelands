@@ -229,14 +229,28 @@ impl<'a> Reader<'a> {
                 && self.probe_view(view, false).is_ok()
             {
                 let face = usize::from(self.sight.sees_restricted());
+                let state = kept::state(self.view.as_ref(), &t.name).ok().flatten();
                 answered.read_state = true;
-                t.lifecycle.kept = Some(match self.kept_read(&t.name, view, face) {
-                    Ok(Some((_, 0))) => Kept::Kept,
-                    Ok(Some((_, not_exact))) => Kept::Computed {
-                        why: NotKept::NotWhole { not_exact },
-                    },
-                    _ => open,
-                });
+                // A build has not reached its `Keep`: the view is computed
+                // until it does, as a view without whole records is. A
+                // state cut under another copy of the time-zone database is
+                // read as none, its build as no build.
+                if state
+                    .as_ref()
+                    .is_some_and(|s| !s.whole && s.building.is_some() && !s.cut_elsewhere())
+                {
+                    t.lifecycle.kept = Some(Kept::Computed {
+                        why: NotKept::Building,
+                    });
+                } else {
+                    t.lifecycle.kept = Some(match self.kept_read(&t.name, view, face) {
+                        Ok(Some((_, 0))) => Kept::Kept,
+                        Ok(Some((_, not_exact))) => Kept::Computed {
+                            why: NotKept::NotWhole { not_exact },
+                        },
+                        _ => open,
+                    });
+                }
             }
             // An index is named where the view is kept, or asked to be and
             // can be, as `kept` tells this reader (lakelands#748).

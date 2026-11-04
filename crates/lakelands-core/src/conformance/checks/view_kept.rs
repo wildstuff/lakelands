@@ -1283,6 +1283,7 @@ async fn says(l: &Lake, view: &str, want: &str) -> Held {
             NotKept::NotWhole { .. } => "not whole",
             NotKept::NotKeptHere => "not kept here",
             NotKept::OnlySome => "only some",
+            NotKept::Building => "building",
         },
         None => "nothing",
     };
