@@ -153,6 +153,16 @@ impl Decide<'_> {
     /// the judged principal.
     pub(crate) fn target(&self, decl: &TypeDecl, key: &RecordKey) -> Result<Target> {
         let (view, pending, sees) = (self.at.view(), &self.pending, &self.at.sight);
+        // A key a thinning took holds no state to correct, compare or
+        // retire: its tombstone names the horizon that took it, and the
+        // log keeps what it held (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+        if let Some(before) = view.thinned_at(&decl.name, key)? {
+            return Err(Error::invalid(Case::Thinned {
+                ty: decl.name.clone(),
+                key: key.clone(),
+                before,
+            }));
+        }
         let before = pending.record(view, &decl.name, key)?;
         let mine = match &before {
             Some(b) => sees.answers(&decl.name, b) && ends(view, pending, sees, decl, &b.fields)?,
@@ -770,6 +780,7 @@ impl Decide<'_> {
         if after.ty.as_str() == SETTING_TYPE {
             let value = after.fields.get("value");
             super::kept_dated((o, self.at.settings), after.key.as_str(), value, &shown)?;
+            super::kept_over_thinned((view, o, self.at.settings), after.key.as_str(), value)?;
         }
         // A reference the record computes is judged as a written one, from
         // the record as planned (032). Its key is computed from fields its

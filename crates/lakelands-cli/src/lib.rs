@@ -440,6 +440,28 @@ fn command() -> Command {
                         .arg(Arg::new("report").long("report").value_name("ID").help("Take back, only under the id of a preflight of this removal at its position")),
                 ),
         )
+        .subcommand(
+            Command::new("thin")
+                .about("Take a series' rows before a horizon out of the projection as one act in parts, keeping the folds of the kept views over it; the log keeps every value it took")
+                .arg(
+                    Arg::new("type")
+                        .long("type")
+                        .value_name("TYPE")
+                        .required(true)
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("The type whose records are thinned"),
+                )
+                .arg(
+                    Arg::new("before")
+                        .long("before")
+                        .value_name("RFC3339")
+                        .required(true)
+                        .value_parser(|s: &str| lakelands_api::Timestamp::parse(s).map_err(|e| e.to_string()))
+                        .help("Take every record whose --by field is certainly before this instant: RFC 3339, or a date at midnight UTC"),
+                )
+                .arg(Arg::new("by").long("by").value_name("FIELD").default_value("at").help("The field of instants or dates the horizon is judged on"))
+                .arg(Arg::new("act").long("act").action(ArgAction::SetTrue).help("Take them, appending the act; without it, say what it would take, appending nothing")),
+        )
         .subcommand(Command::new("rebuild").about("Rebuild the lake's projection from the log beside it, and put it in the old one's place"))
         .subcommand(
             Command::new("build-ahead")
@@ -935,6 +957,17 @@ async fn dispatch(
             let (shredded, report) = (of.get_flag("require-shredded"), text(of, "report"));
             let act = (shredded, report.as_deref().map(Some));
             commands::values_remove(out, &store, (&source, &selection), act).await
+        }
+        "thin" => {
+            let (ty, by) = (
+                text(sub, "type").unwrap_or_default(),
+                text(sub, "by").unwrap_or_default(),
+            );
+            let before = *sub
+                .get_one::<lakelands_api::Timestamp>("before")
+                .expect("--before is required");
+            let act = sub.get_flag("act");
+            commands::thin(out, &store, (&ty, &by), (before, act)).await
         }
         "rebuild" => commands::rebuild(out, &store).await,
         "compact" => commands::compact(out, &store).await,

@@ -1222,6 +1222,8 @@ pub const ALL: &[Check] = &[
     thinned::THIN_VERIFY_EXPORT_IMPORT_REBUILD,
     thinned::THIN_LATE_TICK_FOLDS,
     thinned::THIN_ZONED_CARRIED,
+    thinned::THIN_CORRECTION_REFUSED,
+    thinned::THIN_VIEW_KEPT_AFTER_REFUSED,
     reactive_depth::TOO_DEEP,
     read_your_writes::REACHES,
     read_your_writes::REACHES_UNLEASED,

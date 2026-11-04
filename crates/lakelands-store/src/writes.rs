@@ -1884,6 +1884,101 @@ fn kept_dated(
     ))
 }
 
+/// A `view_kept.<view>` setting written on, for a view no fold has made
+/// whole that reads a type a thinning took records of, is refused
+/// `KeptOverThinned`: its make would note the live rows alone and be
+/// exact in name and short in fact. A view over a view with stranded
+/// groups is not refused, since its members are the inner view's
+/// records, which are present at the head
+/// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+fn kept_over_thinned(
+    (view, o, settings): (&dyn ProjectionView, &Ontology, &BTreeMap<String, Value>),
+    key: &str,
+    value: Option<&Value>,
+) -> Result<()> {
+    use lakelands_api::seam::{VIEW_KEPT_SETTING, view_kept};
+    let Some(name) = key.strip_prefix(VIEW_KEPT_SETTING) else {
+        return Ok(());
+    };
+    // Only an event that makes the view kept: one its setting did not
+    // already ask it.
+    if !view_kept(value) || view_kept(settings.get(key)) {
+        return Ok(());
+    }
+    let Ok(decl) = o.ty(&TypeName::from(name)) else {
+        return Ok(());
+    };
+    match made_over_thinned(view, decl)? {
+        Some(ty) => {
+            let said = Said::from(Case::KeptOverThinned {
+                view: decl.name.clone(),
+                ty,
+            })
+            .within(Place::Setting {
+                key: key.to_owned(),
+            });
+            Err(Error::invalid(said))
+        }
+        None => Ok(()),
+    }
+}
+
+/// A declaration or a migration's step that declares a view a
+/// `view_kept.` setting asks for, where no fold has made the view whole
+/// and a thinning took records of one of its direct sources, is refused
+/// `KeptOverThinned`: the make would note the live rows alone. A view
+/// already kept whole is made again by the event carrying what its
+/// thinning stranded, as `stranded_make` judges, and a view over a view
+/// with stranded groups is not refused
+/// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+fn declared_over_thinned(
+    view: &dyn ProjectionView,
+    settings: &BTreeMap<String, Value>,
+    declarations: &[Declaration],
+) -> Result<()> {
+    for d in declarations {
+        let Declaration::Type(t) = d else {
+            continue;
+        };
+        if t.view.is_none() {
+            continue;
+        }
+        let asked = format!("{}{}", lakelands_api::seam::VIEW_KEPT_SETTING, t.name);
+        if !lakelands_api::seam::view_kept(settings.get(&asked)) {
+            continue;
+        }
+        if let Some(ty) = made_over_thinned(view, t)? {
+            let said = Said::from(Case::KeptOverThinned {
+                view: t.name.clone(),
+                ty,
+            })
+            .within(d.place());
+            return Err(Error::invalid(said));
+        }
+    }
+    Ok(())
+}
+
+/// The direct source of the view `decl` that a thinning took records of,
+/// where no fold has made the view whole: the event that would make it
+/// kept would note the live rows alone. None for a type that is no view,
+/// a view already kept whole, or one whose sources hold no thinning.
+fn made_over_thinned(view: &dyn ProjectionView, decl: &TypeDecl) -> Result<Option<TypeName>> {
+    let Some(v) = decl.view.as_deref() else {
+        return Ok(None);
+    };
+    if crate::kept::state(view, &decl.name)?.is_some_and(|s| s.whole && !s.dropping) {
+        return Ok(None);
+    }
+    let sources = std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source));
+    for source in sources {
+        if !view.thinned_acts(source)?.is_empty() {
+            return Ok(Some(source.clone()));
+        }
+    }
+    Ok(None)
+}
+
 /// A declaration of a set decided at the write, or of a view the lake
 /// keeps, that reads without a date a key holding periods is refused,
 /// naming it and the key (090).
