@@ -1021,12 +1021,12 @@ its mark and changed nowhere else.
   width is S5's and lakelands#1751's. The merged tree reads 112 because
   lakelands#1751 raised the budget to 111 for `compact_step` before
   lakelands#1750's `thin_values` merged, and that collision is older
-  than this step; it is recorded in lakelands#1755. On the operator's
-  instruction of 2026-11-05, this pull request raises the ceiling
-  111 → 112 with its row in `docs/budgets.md`, so the gate is green at
-  the base and here; lakelands#1752 removes the deprecated `compact()`
-  and brings the width and the ceiling back to 111. 6 of 20
-  `cfg(feature)` sites.
+  than this step; it is recorded in lakelands#1755. The operator's
+  decisions of 2026-11-04 under the round raise of 2026-11-03, recorded
+  there, take the ceiling 111 → 112 with its row in `docs/budgets.md`,
+  so the gate is green at the base and here; lakelands#1752 removes the
+  deprecated `compact()` and brings the width and the ceiling back to
+  111. 6 of 20 `cfg(feature)` sites.
 
 ## How it came to be
 
