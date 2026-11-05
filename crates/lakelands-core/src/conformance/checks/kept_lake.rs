@@ -26,8 +26,8 @@ async fn the_lake_of_format_23_is_read_as_it_answered(_store: Store, given: Give
     Ok(())
 }
 
-fn no<T: std::fmt::Debug>(e: T) -> Failure {
-    Failure::new(format!("reading the lake: {e:?}"))
+fn no<T: std::fmt::Display>(e: T) -> Failure {
+    Failure::new(format!("reading the lake: {e}"))
 }
 
 /// Where, `then`, the lake answers otherwise than `answers` keeps, part by part: with `log`, its head and every event's position and kind too (an import appends nothing, a writer's open its `lease_taken`), and always a record a type name, a key, its fields and its stranded mark, a stranded group's `cut` held as a copy named, not which copy it is.
