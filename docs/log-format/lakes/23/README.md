@@ -31,8 +31,7 @@ Its scenario (positions 0 to 25):
 - part of `crm` is taken back: `p1` is retired, `p2` keeps `web`'s value
   with `crm`'s erased, and the one key version `crm` held is destroyed.
 
-**The forms format 23 holds and 22 does not**, and where this lake holds
-them:
+**The forms this lake holds that format 22 does not**, and where:
 
 | Form | Held |
 |---|---|
@@ -43,6 +42,17 @@ them:
 | an act of thinning (`values_thinned`, `act_whole`) keeping the folds of the kept views (102) | positions 20 and 21 |
 | a stranded group's kept record, marked `sys:stranded`, and its `cut` (102, lakelands#1746) | `daily`'s group |
 | an act taking part of a source back (`values_removed`, the retirements, `act_whole`), a key version destroyed (065) | positions 23 to 25 |
+
+**A purge is not held, and cannot be here.** No source this lake wrote can
+be purged at its last position: `feed`'s three ticks are thinned away,
+`crm`'s records are removed and its one key version destroyed, and `web`'s
+one live value is `p2`'s name on a record `crm` made, which refuses a purge
+of `web` co-owned (039). A purge that retires nothing appends nothing, so no
+`source_purged` was written; holding one would take a further delivery whose
+records a purge then retires. The retirement and `act_whole` a purge writes
+are held by the removal and the thinning (positions 20 to 25), and
+`source_purged` is held by the purge checks on every engine against lakes
+they make, not against this stored log.
 
 `keys/kept23.keys.json` is the file keyring's file that sealed the
 values: `crm` holds no version, its one destroyed by the removal, and
