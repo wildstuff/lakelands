@@ -1105,12 +1105,12 @@ its mark and changed nowhere else.
 - **A record that moved face is tested (lakelands#1759).** S7's row had
   none, since no fixture moved a record's restriction cheaply. It now
   writes `t9` in group `g`, restricts it before the act, and reads as of
-  the position before that: a reader of each face leaves `g` out and
-  counts it, though the group computes there with `t9` and its late
-  `t10`, so the earlier face's group is stranded and the earlier read
-  omits it rather than answering it short. The omission reads the head's
-  marks on the reader's own face, so it held by construction; the row
-  holds it now.
+  the position before that: before the act the group stood with `t9`
+  and `t10`, after it a computation there finds only `t10`, and the
+  head's mark on the reader's own face makes the read omit `g` instead
+  of answering it short. So the earlier face's group is stranded, and a
+  reader of each face leaves it out and counts it. The omission held by
+  construction; the row holds it now.
 - **Not done, and why.** The cost of reading `thinned` on every `find`,
   a per-source read of the acts, and of the walk over a view's kept
   records, is not measured. An
@@ -1131,8 +1131,9 @@ its mark and changed nowhere else.
   leaves `e` out and its `get` is refused. A record `t9` whose
   restriction moved it off the open face before the act strands `g` on
   both faces: as of the position before the move, a reader of each face
-  leaves `g` out and its `get` is refused, though the group computes
-  there with `t9` and its late member `t10`. A `get` of a stranded group
+  leaves `g` out and its `get` is refused; the group stood with `t9`
+  and `t10` before the act, and after it a computation there finds only
+  `t10`, the member the act spares. A `get` of a stranded group
   is refused naming `daily`, of `rolled` and `held` too, a key no group
   held answers `NotFound`, and `t1` is refused `Thinned`. `THIN_ZONED_CARRIED` now also asks
   a read's `cut` and `describe`'s. Each was run red with its marker

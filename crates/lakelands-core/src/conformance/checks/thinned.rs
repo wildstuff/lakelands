@@ -91,7 +91,7 @@ check!(
 
 check!(
     THIN_AS_OF_SAYS_UNANSWERABLE = a_read_before_the_act_says_what_it_cannot_answer,
-    "102 (lakelands#1749, lakelands#1759): after the act, `daily`'s page at the head, and a kept view `held` over it, name the act and their stranded groups say so; as of the position before it, `daily` and a computed view `rolled` over it answer `d`, the group the act did not strand, and count the six `describe` counts stranded, `held` the four its own marks hold; a record that moved from `e` to `f` before the act strands both, and as of when it was in `e` `daily` leaves `e` out; a record whose restriction moved it off the open face before the act strands its group on both faces, and as of the position before the move a reader of each face leaves it out although it computes there with the group's late member, and its `get` is refused; a `get` of a stranded group is refused `stranded_at_head_only` naming `daily`, of `rolled` and `held` too, a key no group held is `not_found`, and `t1` as of then is refused `thinned`; a holder admitted to `d` alone is answered `d` with no stranded count and a `get` of `a` `not_found`; `describe` of `tick` names the act",
+    "102 (lakelands#1749, lakelands#1759): after the act, `daily`'s page at the head, and a kept view `held` over it, name the act and their stranded groups say so; as of the position before it, `daily` and a computed view `rolled` over it answer `d`, the group the act did not strand, and count the six `describe` counts stranded, `held` the four its own marks hold; a record that moved from `e` to `f` before the act strands both, and as of when it was in `e` `daily` leaves `e` out; a record whose restriction moved it off the open face before the act strands its group on both faces, and as of the position before the move a reader of each face leaves it out although a computation there finds only the member the act spares, and its `get` is refused; a `get` of a stranded group is refused `stranded_at_head_only` naming `daily`, of `rolled` and `held` too, a key no group held is `not_found`, and `t1` as of then is refused `thinned`; a holder admitted to `d` alone is answered `d` with no stranded count and a `get` of `a` `not_found`; `describe` of `tick` names the act",
     given
 );
 
@@ -869,9 +869,9 @@ async fn a_read_before_the_act_says_what_it_cannot_answer(store: Store, _given: 
     let late = json!({"at": "2026-07-01T00:00:00Z", "m": "d", "n": 3});
     l.upsert("tick", "t7", late).await?;
     tick_at(&l, "t8", "e", 6, 5).await?;
-    // `g` holds `t10`, which no instant spares the act, and `t9`, whose
-    // restriction moves it off the open face before the act: before that
-    // move the group stood whole on both faces.
+    // `g` holds `t10`, which has no instant, so the act spares it, and
+    // `t9`, whose restriction moves it off the open face before the act:
+    // before that move the group stood whole on both faces.
     l.upsert("tick", "t10", json!({"m": "g", "n": 9})).await?;
     tick_at(&l, "t9", "g", 8, 6).await?;
     let early = store.head().await.must("reading the head")?;
