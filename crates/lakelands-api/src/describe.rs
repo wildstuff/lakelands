@@ -166,6 +166,10 @@ pub struct TypeDescription {
     /// answer at the head alone.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub stranded: u64,
+    /// The copies of the time-zone database that cut a stranded group
+    /// a make carried, for a zoned kept view.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cut: Vec<String>,
 }
 
 fn is_zero(n: &u64) -> bool {

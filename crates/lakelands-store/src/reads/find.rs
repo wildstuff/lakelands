@@ -2,6 +2,7 @@
 //! and one record by key.
 
 use super::*;
+use lakelands_api::seam::kept_name;
 
 impl<'a> Reader<'a> {
     /// `find`.
@@ -170,8 +171,8 @@ impl<'a> Reader<'a> {
                         values: values.collect(),
                         stranded: false,
                     }],
-                    thinned: Vec::new(),
-                    stranded: None,
+                    thinned: self.thinned(&decl)?,
+                    stranded: self.stranded(ty),
                 });
             }
             return self.aggregated(&decl, filter.as_ref(), a);
@@ -264,8 +265,8 @@ impl<'a> Reader<'a> {
             next_cursor,
             total,
             retired,
-            thinned: Vec::new(),
-            stranded: None,
+            thinned: self.thinned(&decl)?,
+            stranded: self.stranded(ty),
         })
     }
 
@@ -464,8 +465,8 @@ impl<'a> Reader<'a> {
         }
         Ok(Found::Groups {
             rows: groups,
-            thinned: Vec::new(),
-            stranded: None,
+            thinned: self.thinned(decl)?,
+            stranded: self.stranded(&decl.name),
         })
     }
 
@@ -483,18 +484,123 @@ impl<'a> Reader<'a> {
             self.kept_by_key(ty, kept, std::slice::from_ref(&get.key))?
                 .pop()
         } else if decl.view.is_some() {
-            self.records(&decl, None)?
-                .into_iter()
-                .find(|r| r.key == get.key)
+            let found = (self.records(&decl, None)?.into_iter()).find(|r| r.key == get.key);
+            // A group the view left out is refused, naming the innermost
+            // view that left one out; a view that left none out itself
+            // but read through one that did cannot say a key is not there.
+            let omitted = self.omitted.borrow();
+            let own = omitted.iter().find(|(v, _)| v == ty);
+            let left = (own.is_none_or(|(_, keys)| keys.contains(&get.key)))
+                .then(|| omitted.first().map(|(ty, _)| ty.clone()))
+                .flatten();
+            drop(omitted);
+            if let (None, Some(ty)) = (&found, left) {
+                let position = self.position;
+                return Err(Error::invalid(Case::StrandedAtHeadOnly { ty, position }));
+            }
+            found
         } else {
             let held = self.at_read(ty, self.view.get(ty, &get.key)?.into_iter().collect())?;
             let ends = self.admitted_ends(&decl, &held)?;
             let mut held = held.into_iter().zip(ends);
-            held.find(|(r, ends)| *ends && self.live(&decl, r))
-                .map(|(r, _)| r)
+            let found = held.find(|(r, ends)| *ends && self.live(&decl, r));
+            // A key a thinning took is refused, naming its horizon (102).
+            if found.is_none()
+                && let Some(before) = self.view.thinned_at(ty, &get.key)?
+            {
+                let (ty, key) = (ty.clone(), get.key.clone());
+                return Err(Error::invalid(Case::Thinned { ty, key, before }));
+            }
+            found.map(|(r, _)| r)
         };
         stored
             .and_then(|r| self.sight.visible(&decl, &r, get.with_meta))
             .ok_or_else(missing)
+    }
+}
+
+/// What a read says of the records a thinning took
+/// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md` §A read
+/// says what it can no longer answer). The acts and the stranded marks
+/// are read at the head, whatever the read's position, and never as a
+/// value.
+impl Reader<'_> {
+    /// The acts that thinned `decl`'s type, or a view's sources through
+    /// every view between, oldest first.
+    pub(super) fn thinned(&self, decl: &TypeDecl) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        let (mut acts, mut seen, mut next) = (Vec::new(), BTreeSet::new(), vec![decl.name.clone()]);
+        while let Some(ty) = next.pop() {
+            let o = &self.shape.ontology;
+            match o.ty(&ty).ok().and_then(|d| d.view.as_deref()) {
+                _ if !seen.insert(ty.clone()) => {}
+                Some(v) => next.extend(
+                    (v.merge.iter().map(|m| &m.source))
+                        .chain([&v.source])
+                        .cloned(),
+                ),
+                None => acts.extend(self.view.thinned_acts(&ty)?),
+            }
+        }
+        acts.sort_by_key(|a| a.through);
+        Ok(acts)
+    }
+
+    /// The groups of the kept view `view` stranded at the head on this
+    /// reader's face, each with the copy of the time-zone database a make
+    /// carried it under, where one did. None unless a source was thinned.
+    pub(super) fn stranded_marks(
+        &self,
+        view: &TypeName,
+    ) -> Result<BTreeMap<RecordKey, Option<String>>> {
+        let mut marks = BTreeMap::new();
+        let decl = self.named_type(view)?;
+        if self.thinned(decl)?.is_empty() {
+            return Ok(marks);
+        }
+        let head = self.lake.engine.view(None)?;
+        if kept::state(head.as_ref(), view)?.is_none_or(|s| s.stranded == [0, 0]) {
+            return Ok(marks);
+        }
+        let (face, kept) = (usize::from(self.sight.sees_restricted()), kept_name(view));
+        // A holder is told only of the groups its pairs admit (051).
+        let admit = self.sight.admit(view);
+        crate::lake::walk(head.as_ref(), &kept, false, |r| {
+            // A stranded group may be bare, so its pairs are held on the
+            // kept record's group fields, not on what a page would show.
+            if let Some(cut) = kept::mark(&r, face)
+                && admit.holds(&r.fields)
+            {
+                marks.insert(r.key, cut);
+            }
+            Ok(())
+        })?;
+        Ok(marks)
+    }
+
+    /// `records`, a computation of `view`, without the groups stranded at
+    /// the head: their members are gone, so a computation answers them
+    /// short, and a stranded group answers at the head alone. Which were
+    /// left out is kept for the page and for `get`.
+    pub(super) fn unstranded(
+        &self,
+        view: &TypeName,
+        mut records: Vec<StoredRecord>,
+    ) -> Result<Vec<StoredRecord>> {
+        let marks = self.stranded_marks(view)?;
+        if !marks.is_empty() {
+            records.retain(|r| !marks.contains_key(&r.key));
+            let keys = marks.into_keys().collect();
+            self.omitted.borrow_mut().push((view.clone(), keys));
+        }
+        Ok(records)
+    }
+
+    /// The page's `stranded`: the groups of `ty` a computation left out,
+    /// or else those of the views it read through.
+    fn stranded(&self, ty: &TypeName) -> Option<u64> {
+        let omitted = self.omitted.borrow();
+        let count = |(_, keys): &(TypeName, BTreeSet<RecordKey>)| keys.len() as u64;
+        let own = omitted.iter().find(|(v, _)| v == ty).map(count);
+        own.or_else(|| omitted.iter().map(count).reduce(|a, b| a + b))
     }
 }

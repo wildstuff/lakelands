@@ -662,6 +662,26 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   PostgreSQL, `VACUUM` skips, with a warning, a table the connecting role
   does not own, and the compact reclaims nothing there; connect as the
   role that owns the lake's schema.
+  A series that outgrows its use is thinned: `LakeStore::thin_values`
+  (`lakelands thin --type <t> --by <field> --before <instant>`, `--act`
+  to take them) takes every record of the type whose field is certainly
+  before the horizon out of the projection, in parts beside the writer,
+  and the kept views over it answer as before
+  (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). The log
+  keeps every value; a thinned key is refused to writes and reads, a
+  view's group that held one answers at the head alone, marked
+  `stranded` (with `cut`, the time-zone copy that cut it, for a zoned
+  group), and a read at an earlier position omits it and counts it in
+  the page's `stranded`. The act ends with the compact's reclaim, and its
+  report names the projection's bytes before and after it. Measured on
+  SQLite (`crates/lakelands-engine-sqlite/tests/thin_bytes.rs`, a 14-CPU
+  Ryzen 9 9950X VM, one run): of 4 000 records with a 200-byte note,
+  3 000 before the horizon, the file compacted first, the preflight took
+  57 ms and the act 628 ms; the file went from 2 568 192 to 1 413 120
+  bytes, some 385 bytes a thinned record. The act keeps
+  a tombstone a key, 25 bytes of key and horizon each here (75 000 for
+  the 3 000), beside the log's part naming the key. PostgreSQL's
+  `VACUUM` runs off the lease and was not measured here.
   After a bulk load into PostgreSQL the engine analyses its tables
   itself, once every 5 000 records a writer puts or order index rows a
   `sort_index.<type>` setting rebuilds, so the planner knows their size;

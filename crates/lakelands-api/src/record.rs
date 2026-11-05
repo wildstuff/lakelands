@@ -95,6 +95,11 @@ pub struct Record {
     /// stranded: the group answers its kept record, and at the head alone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stranded: bool,
+    /// For a stranded group a make carried under another copy of the
+    /// time-zone database: the copy that cut it, whose members are gone
+    /// to cut again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut: Option<String>,
     /// Per-field provenance, filled when the read asked `with: meta`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub meta: BTreeMap<FieldName, FieldMeta>,

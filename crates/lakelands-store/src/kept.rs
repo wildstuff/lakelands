@@ -177,6 +177,27 @@ pub(crate) fn shown(mut r: StoredRecord, view: &TypeName, whole: bool) -> Option
     Some(r)
 }
 
+/// [`shown`] to a reader: a stranded group's record says so on the
+/// reader's face, and names the copy of the time-zone database that cut
+/// it where a make carried it under another (lakelands#1746).
+pub(crate) fn told(r: StoredRecord, view: &TypeName, whole: bool) -> Option<StoredRecord> {
+    let mark = mark(&r, usize::from(whole));
+    let mut r = shown(r, view, whole)?;
+    if let Some(cut) = mark {
+        let marked = cut.map_or(Value::Bool(true), Value::String);
+        r.fields
+            .insert(lakelands_api::seam::STRANDED.into(), marked);
+    }
+    Some(r)
+}
+
+/// Whether the kept record `r` is stranded on `face`, and if so the copy
+/// of the time-zone database a make carried it under, where one did.
+pub(crate) fn mark(r: &StoredRecord, face: usize) -> Option<Option<String>> {
+    let c = carried(r);
+    c.stranded[face].then_some(c.cut)
+}
+
 /// One source of a kept view as the fold reads it: its own or a merged
 /// one, with its `where`, its grouping and the calls its measures make.
 struct Src {
