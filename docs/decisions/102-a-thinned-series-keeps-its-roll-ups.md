@@ -1017,13 +1017,15 @@ its mark and changed nowhere else.
   which feeds 600 records and lets the stopped act take 500 before it
   writes. Nothing was cut: the four items of § Cut first stay. The
   ceilings hold with room for S7's planned 162 and 230 at ×1.35: 572
-  product and 507 specification are left. S6 adds no seam method, so the
-  seam is where S5 left it, 110 of 110; the gate reads 112 of 111 at
-  this branch's base because lakelands#1751 raised the budget to 111 for
-  `compact_step` before lakelands#1750's `thin_values` merged, and the
-  merged tree carries both. That collision is older than this step and
-  is recorded in lakelands#1755 rather than repaired here; a raise of
-  the budget belongs to its own change, with the reason recorded. 6 of 20
+  product and 507 specification are left. S6 adds no seam method: the
+  width is S5's and lakelands#1751's. The merged tree reads 112 because
+  lakelands#1751 raised the budget to 111 for `compact_step` before
+  lakelands#1750's `thin_values` merged, and that collision is older
+  than this step; it is recorded in lakelands#1755. On the operator's
+  instruction of 2026-11-05, this pull request raises the ceiling
+  111 → 112 with its row in `docs/budgets.md`, so the gate is green at
+  the base and here; lakelands#1752 removes the deprecated `compact()`
+  and brings the width and the ceiling back to 111. 6 of 20
   `cfg(feature)` sites.
 
 ## How it came to be
