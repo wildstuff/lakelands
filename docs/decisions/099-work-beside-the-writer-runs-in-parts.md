@@ -1453,6 +1453,46 @@ named its type once a record, so even a search by type ran once a record.
 - **The ledger.** Product +14, specification +186 net (the ledger row in the pull).
   core-size reads product 113 718 and specification 201 164.
 
+**As built (2026-11-05), the report and the closes carried from the walk
+(lakelands#1756).** A removal's first turn no longer reads its report and closes over the
+whole act. The walk already makes them, with the keys and the records the act retires;
+the first turn carries them where nothing since reaches what they state, and reads again
+only what the writer alone states.
+
+- **What stands.** `Remove::stands` answers whether the walk's report and closes are
+  still this act's: the tail holds no event of the source (only such an event moves the
+  selection's tally of events, undelivered and unseen), the keys the tail moved judge as
+  the walk judged them, the declarations are the walk's (`Ontology::same`, which compares
+  the declarations and not the writer's tool names), the source is forgotten or not as
+  the walk found it, the cut of a `WrittenBefore` has not moved, and no record the tail
+  moved where a declaration can name another record's (`relating`: a link type, or a
+  relation with a `via`). Where it holds, the report keeps the walk's counts and its
+  `before`, and only the log's head, the expected time and the reclaim owed are read from
+  the writer. Where it does not, `closes` and `report_of` run again over the act.
+- **The keys and the retirements.** `begin` carries the walk's keys too where the tail
+  holds no event of the source: a tally the tail did not move and a key store the act
+  alone writes stand as the walk read them. The retirements are taken once, at the turn
+  that judged them, and `parts::part` maintains them, dropping each record it takes and
+  reading it again at its live version, so no turn rebuilds the act's map.
+- **The act's whole.** `whole_from` reads the act's `act_whole` from the last position
+  this handle wrote, not from the act's first event: the whole is the act's last event,
+  so a turn that has written one need not read the act again.
+- **Measured** on the memory engine, release, 200 000 records of `crm` in 200
+  deliveries, a removal of 199 of them, while one caller writes a record of `web` in a
+  loop. Before, at 199 000 records, `report_of` held the writer for 693 ms and the first
+  turn for 1.27 s. After, the report and the closes read under the writer take 0 ms; the
+  act's 400 turns hold it for 49 ms at the first, then a median of 12 ms over the 397
+  between it and the last two, and at most 22 ms over every one of those. The two last
+  turns are the restate's projection rebuild (14.5 s) and the reclaim (2.1 s), the R4/R5
+  turns, unchanged here. On SQLite the first turn holds it for 123 ms, and the 397 after
+  it for 64 ms at the median and 110 ms at the slowest. On both, the first turn's
+  remainder is `Remove::reach` cloning the act's 199 000 keys under the writer (33 ms
+  cumulative on the memory engine, 37 ms on SQLite), which is `road.rs`'s limb of
+  lakelands#1649 and not this change, and the first part's append (13 ms and 82 ms).
+- **The ledger.** Product +155, specification unchanged: the carry runs on the removals
+  the suite already walks, whose tails hold no event of the source. core-size reads
+  product 114 784 and specification 202 462.
+
 ## How it came to be
 
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
@@ -1468,6 +1508,8 @@ named its type once a record, so even a search by type ran once a record.
 - R3 built by lakelands#1718: a plan, a declaration's plan and a migration's or a value
   type's report name the position they were read at, and only a write that reaches what
   they name stales them.
+- R4's report and closes carried from the walk built by lakelands#1756 (lakelands#1649):
+  a removal's first turn re-judges only the tail's keys under the writer.
 - R4's first pull built by lakelands#1728, with lakelands#1725: a removal's restate is the
   scoped pass, acts told once before the first page, `page_events` read. Its second pull,
   on the same issue, built pages as turns: a page is a turn of the writer, and
