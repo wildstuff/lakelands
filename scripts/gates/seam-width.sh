@@ -21,7 +21,7 @@
 # them.
 . "$(dirname "$0")/lib.sh"
 
-BUDGET=112
+BUDGET=111
 ENGINE=crates/lakelands-api/src/engine.rs
 [ -f "$ENGINE" ] || die "$ENGINE is missing"
 mapfile -t engine_traits < <(sed -n 's/^[[:space:]]*pub trait \([A-Za-z_][A-Za-z0-9_]*\).*/\1/p' "$ENGINE")

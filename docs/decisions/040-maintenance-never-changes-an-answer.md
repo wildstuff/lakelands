@@ -92,7 +92,7 @@ feed and the export are compared byte for byte, on every engine.
   `age` and `purge_source`, with no MCP tool and no REST route. A
   `lakelands-client` answers it as unbound, naming it.
 - **Not hidden inside another call.** The engine's part is
-  `ProjectionStore::compact`, a method of its own; the seam grows by it
+  `ProjectionStore::compact_step`, a method of its own; the seam grows by it
   and by `LakeStore::compact`. No existing engine call means "maintain
   storage", and each candidate would carry it badly:
   - in `seal_segment`, every `checkpoint` would pay for a `VACUUM`, and
