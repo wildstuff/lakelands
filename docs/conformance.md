@@ -1499,6 +1499,10 @@ belongs in the suite, not beside one engine:
 - `a_copy_taken_beside_a_kept_build_imports_kept` — 099, R8: a lake exported while a kept view builds carries the setting alone, since none of the build is appended, and imported it is kept at its first open: the view answers as the lake it came from, and a record written to the copy after it is in its group
 - `a_set_or_trigger_over_a_view_a_build_has_not_kept_is_refused` — 099, R9: a set of a kept view, and a trigger on it, declared while the view's build is not whole are refused `view_building`, naming the view and the set or the trigger, and append nothing; once the setting's door has answered, both land
 
+**kept lake**
+
+- `the_lake_of_format_23_is_read_as_it_answered` — 054: the lake v0.23.0 made through its doors (`docs/log-format/lakes/23/`), in format 23, imported on this engine with the file keyring's file it ships, keeps its log, verifies, and answers as `answers.json` keeps the answers: every live record of each type it names with its fields and its stranded mark, the group `daily` kept past a thinning with its roll-up standing and the copy of the time-zone database that cut it, and a person a removal left holding a source's value with another's erased, with its provenance; and it answers so again rebuilt
+
 **series builds**
 
 - `a_series_setting_fills_its_pair_beside_writes_and_keeps_it` — 097, step 8: a `series_index.<type>` setting on a type with more records than `limits.order_chunk` builds its pair a key range a turn beside the writer, and its door answers when the pair is whole: with its build's first step failing, the pair is left `building`, owed in the mark, and the door answers the failure; `describe` tells it `building` while it is owed and `kept` once the setting is written again and the door answered; every page and `where` beside the build answers what it answered before it

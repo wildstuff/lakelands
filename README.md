@@ -163,31 +163,42 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.22.0`.** Lakelands `0.22.0` is the `lakelands` CLI, its
+> **Status: `0.23.0`.** Lakelands `0.23.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (983 checks through the doors and 87 through the
-> engine seam), with 93 decision records and the event log at format
-> version 22, installable from the release. Its budgets: see
+> conformance suite (1097 checks through the doors and 107 through the
+> engine seam), with 101 decision records and the event log at format
+> version 23, installable from the release. Its budgets: see
 > `docs/budgets.md` for the ceilings and the ratchet bases.
-> Beside what `0.21.0` held (the numbers are issues), reading is judged
-> apart from writing (lakelands#1569, lakelands#1571), a grant may admit
-> a set of values and refuse set reads over what it narrows
-> (lakelands#1588, lakelands#1590, lakelands#1608), a write may name its
-> occasion (lakelands#1584), a vector search may bring the text the lake
-> embeds and a hybrid one falls back to its text (lakelands#1566,
-> lakelands#1567), the feed names where each append ends
-> (lakelands#1540), a host may quarantine a record it refused
-> (lakelands#1596), a constraint and a trigger read the record before
-> theirs and a constraint the write's clock (lakelands#1552,
-> lakelands#1556, lakelands#1604), `first` and `last` answer by another
-> field's order and a kept view keeps extremes by a bucket of time under
-> any fixed group (lakelands#1603, lakelands#1605, lakelands#1614), a
-> field computed at the read pairs a record with another type's record
-> in force (lakelands#1606), and the HTTP door is bounded by default
-> (lakelands#1523). A writer's open upgrades a lake of format 14 to 21
-> to 22 by appending, and rebuilds no projection for it; the lake of
-> format 22 is kept beside those of the releases before.
+> Beside what `0.22.0` held (the numbers are issues), a host keeps
+> series in a lake: a read of a window of one series walks its window
+> and `rows_read` says so (lakelands#1633, lakelands#1635,
+> lakelands#1638), a view groups by a bucket of time, in a named zone or
+> not, with no field added to the source type, and a read of a kept view
+> narrows by its group key (lakelands#1634, lakelands#1636,
+> lakelands#1667), a trigger's guard reads the value in force from a
+> record of its own, so a threshold changes by a write (lakelands#1640),
+> and a series is thinned past a horizon while its kept roll-ups stay
+> and answer as before (lakelands#1639). Removal, forget, purge, a
+> setting's field taken back and the builds of a sort index, a lookup
+> index, a view and a series' pair run in parts beside the writer, one
+> turn at a time, and a read answers as before until a build is whole
+> (lakelands#1649, lakelands#1651, lakelands#1690, lakelands#1721).
+> A lake keeps its calendar in one named zone (`today()` and aging read
+> it, lakelands#1665), a grant holding an unknown key does not start, a
+> misspelt field is told and a repeated key refused (lakelands#1627,
+> lakelands#1658), `describe`'s stated position is true (lakelands#1632),
+> a delivery in two calls keeps its quarantine ids apart
+> (lakelands#1609), `Lakelands-Append` names the last position sent
+> (lakelands#1616), and the PostgreSQL engine's pooler and mutual-TLS
+> refusals are proved against live servers in CI (lakelands#1629). The
+> tick workload's table is in `docs/hosting.md` (lakelands#1637).
+> **0.23.0 begins a new log format.** It reads and writes format 23 and
+> nothing else: a lake of any other format is refused, nothing is
+> translated, and profiles are made anew; `lakelands upgrade` is gone
+> (lakelands#1664). The lake 0.23.0 made through its doors is kept,
+> never edited, under `docs/log-format/lakes/23/`, and every later
+> release reads it.
 
 ## Try it
 
@@ -311,7 +322,11 @@ The walk's page lists every call and the answer it must give.
 format, per-field provenance, positions on every answer, the engine
 contract and the seams. Each later release built on them; what it adds
 is in its notes on the releases page, and what comes next is on the
-milestones. `0.22.0` built what the status block above lists. `0.21.1` fixed
+milestones. `0.23.0` built what the status block above lists. `0.22.0`
+built reading judged apart from writing, a grant over a set of values, a
+write's occasion, a vector search's text, the feed's end, quarantine,
+`preceding` in a constraint or a trigger, `first` and `last`, extremes
+and `in_force`, and a bounded HTTP door. `0.21.1` fixed
 lakelands#1572 and added `defer_computed_fields` (lakelands#1576).
 `0.21.0` built quarantine, the principal a write was made for, dated
 settings, an edge per key of an array field, openCypher writes and

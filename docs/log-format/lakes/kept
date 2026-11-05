@@ -1,3 +1,4 @@
 # The lakes a release of each format made through its doors, from format
 # 23 on, which every later release reads, each never edited:
 # <format>[-<name>] <SHA-256 over "<path in the directory> <blob id>" lines, in byte order>
+23 6f9d456b3c7e43d8466c6511b5a3e758be47749c558758be0946baa8bbcae98c
