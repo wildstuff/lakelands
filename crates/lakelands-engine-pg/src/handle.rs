@@ -607,9 +607,10 @@ fn read_on<'p, R>(
 enum Shape {
     /// No schema, or one holding no table.
     Empty,
-    /// A lake's tables, or those of a later release's lake: tables this
+    /// A lake's tables, or those of another release's lake: tables this
     /// build does not know beside a `meta` it reads, whose log is in a
-    /// format after this release's. The open refuses its format.
+    /// format this release does not read, older or later. The open refuses
+    /// its format.
     Lake,
 }
 
@@ -643,7 +644,7 @@ fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
         .get(0);
     let lease_table = tables.iter().any(|t| t == "lease");
     let read = columns == if lease_table { 6 } else { 3 };
-    let mut later = || {
+    let mut written = || {
         let newest = format!(
             "SELECT bytes FROM {}.log ORDER BY position DESC LIMIT 1",
             Target::quote(schema)
@@ -654,9 +655,16 @@ fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
         let line = (bytes.as_deref().and_then(first))
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
         line.and_then(|l| l["v"].as_u64())
-            .is_some_and(|v| v > u64::from(lakelands_api::event::LOG_FORMAT_VERSION))
     };
-    if !meta || (!foreign.is_empty() && !(read && later())) {
+    // Whenever `meta` and the log are readable as a lake's, the log's
+    // format decides what the tables are: a release this one does not read
+    // — before it as well as after — wrote tables it does not know, and
+    // the open refuses the format rather than the tables
+    // (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+    // Only a schema whose `meta` or log cannot be read as a lake's is
+    // refused for its shape.
+    let foreign_elsewhere = written().is_some_and(|v| !lakelands_core::log::reads_format(v));
+    if !meta || (!foreign.is_empty() && !(read && foreign_elsewhere)) {
         let tables = (!foreign.is_empty()).then(|| foreign.into_iter().collect());
         let schema = schema.to_owned();
         return Err(Error::invalid(Case::SchemaNotALake { schema, tables }));
