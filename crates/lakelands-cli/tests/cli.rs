@@ -2520,7 +2520,7 @@ fn as_release_of_format_22(dir: &str) {
 /// damage: `restore`, `restore --check` and `import` each refuse it as a
 /// format, naming it and the way back, and nothing is written.
 #[test]
-fn an_archive_of_an_older_log_format_is_refused_as_a_format_by_every_door() {
+fn an_archive_of_an_older_log_format_is_refused_as_a_format_by_verify_restore_and_import() {
     let from = Shell::on("older-format-from", Backend::Store);
     from.lake();
     let dir = from.root.join("backup").display().to_string();

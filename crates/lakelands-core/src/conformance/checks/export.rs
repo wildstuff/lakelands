@@ -1482,35 +1482,29 @@ async fn a_lake_is_written_in_one_format_and_another_is_refused_whole(
         let verified = export::verify(&dir);
         let imported = (given.import)(dir, lake.clone(), None, import_seams()).await;
         let imported = refused(imported, "an export holding an event of another format")?;
-        // An event of another format at position 0 makes the whole archive
-        // another release's, refused as the open of that lake refuses it; a
-        // format where the chain has already run, or a `lake_created` that
-        // contradicts its own line, is damage and is named as such.
-        let as_format = match (&want, last) {
-            (Flaw::FormatOther { v, reads }, false) => Some((*v, *reads)),
-            _ => None,
+        // An archive is refused as the open of the same events refuses it:
+        // another release's data is `log_format`, and the two ends
+        // contradicting each other is damage named as the open names it. A
+        // first line whose `v` alone is changed still carries a
+        // `lake_created` saying `reads`, so the open calls that
+        // `CreatedInAnother` and the archive is that damage, not
+        // `log_format`; a `lake_created` that contradicts its own line, or
+        // a format where the chain has already run, is damage too.
+        let want = match (&want, last) {
+            (Flaw::FormatOther { .. }, false) => Flaw::CreatedInAnother {
+                format: reads.into(),
+                reads: reads.into(),
+            },
+            _ => want,
         };
         for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
-            match as_format {
-                Some((v, r)) => ensure!(
-                    matches!(e.as_ref().and_then(Error::situation),
-                        Some(Situation::LogFormat { lake: l, found, reads: r_known, oldest })
-                            if l == lake.as_str() && *found == v && *r_known == r
-                                && *oldest == Some(u64::from(
-                                    lakelands_api::event::OLDEST_LOG_FORMAT))),
-                    "{door} of an export whose first event is {what} is refused as \
-                     `log_format`, naming the lake, {v} and the one format this release reads, \
-                     {r}; it answered {e:?}"
-                ),
-                None => ensure!(
-                    e.as_ref().and_then(damaged) == Some(&want)
-                        && matches!(e.as_ref().and_then(Error::situation),
-                            Some(Situation::Damaged { position: Some(p), .. }) if *p == at),
-                    "{door} of an export whose event at {at} is {what} is refused at that \
-                     position as {want:?}, which names the format and the one this release \
-                     reads; it answered {e:?}"
-                ),
-            }
+            ensure!(
+                e.as_ref().and_then(damaged) == Some(&want)
+                    && matches!(e.as_ref().and_then(Error::situation),
+                        Some(Situation::Damaged { position: Some(p), .. }) if *p == at),
+                "{door} of an export whose event at {at} is {what} is refused at that position as \
+                 {want:?}, which is what the open of the same events answers; it answered {e:?}"
+            );
         }
     }
     Ok(())
@@ -1757,7 +1751,7 @@ async fn a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_re
 check!(
     OLDER_ARCHIVE_REFUSED =
         an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_written,
-    "098 and the log format §6: a backup or an export of another release's format is the operator's data, not damage. Its verification — the check `restore <dir> --check` runs — and its import — what `restore <dir>` and `import <dir>` run — are refused as `log_format`, naming its lake, 22 and the one format this release reads and writes; the target lake is not looked at, so an import into a lake that holds events answers `log_format` and not its non-empty precondition, and the lake's head is where it was",
+    "098 and the log format §6: a backup or an export of another release's format is the operator's data, not damage. An archive whose two ends contradict each other — a first line whose own `lake_created` says a format other than its `v`, or a last line older than the first — is damage, refused as the open of the same events refuses it. Its verification — the check `restore <dir> --check` runs — and its import — what `restore <dir>` and `import <dir>` run — are refused as `log_format`, naming its lake, 22 and the one format this release reads and writes; the target lake is not looked at, so an import into a lake that holds events answers `log_format` and not its non-empty precondition, and the lake's head is where it was",
     given
 );
 
@@ -1815,7 +1809,13 @@ async fn an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_wri
     // the archive is refused first, as it must be.
     let head = store.head().await.must("reading the head")?;
     let e = refused(
-        (given.import)(from, lake.clone(), Some(store.clone()), import_seams()).await,
+        (given.import)(
+            from.clone(),
+            lake.clone(),
+            Some(store.clone()),
+            import_seams(),
+        )
+        .await,
         "an archive of format 22 into a lake that holds events",
     )?;
     ensure!(
@@ -1830,6 +1830,95 @@ async fn an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_wri
         "the head of the lake an import of an archive of format {OLDER} was refused into is \
          where it was, {head}; it is now {after}"
     );
+    // And an archive whose two ends contradict each other is not another
+    // release's data but damage, refused as the open of the same events
+    // refuses it. Two contradictions no release writes: a first line
+    // saying `22` whose own `lake_created` says `reads` (one release
+    // wrote the line and its body at once), and a first line newer than
+    // the last (a release appends only onto a lake whose first event it
+    // reads).
+    let events = log_events(store.as_ref()).await?;
+    let newest = reads + 1;
+    let before_oldest = lakelands_api::event::OLDEST_LOG_FORMAT - 9;
+    type Change = Box<dyn Fn(&mut [lakelands_api::event::Event]) + Send>;
+    let changes: Vec<(&str, Change)> = vec![
+        (
+            "a first line whose `v` is not its own `lake_created`'s `format`",
+            Box::new(move |events: &mut [_]| events[0].v = OLDER),
+        ),
+        (
+            "a first line newer than the last",
+            Box::new(move |events: &mut [_]| {
+                events[0].v = newest;
+                if let EventBody::LakeCreated { format } = &mut events[0].body {
+                    *format = newest;
+                }
+                let last = events.len() - 1;
+                events[last].v = before_oldest;
+            }),
+        ),
+    ];
+    for (n, (what, change)) in changes.into_iter().enumerate() {
+        let mut changed = events.clone();
+        change(&mut changed);
+        let mut prev = None;
+        let lines: Vec<_> = changed
+            .into_iter()
+            .map(|mut event| {
+                if let Some(prev) = prev.take() {
+                    event.prev = prev;
+                }
+                let line = crate::conformance::fixture::canonical_line(event);
+                prev = Some(line.hash.clone());
+                line
+            })
+            .collect();
+        let bytes: Vec<Vec<u8>> = lines.iter().map(|e| e.bytes.clone()).collect();
+        // The same events laid as a lake of their own: the open's answer.
+        let twin: lakelands_api::LakeId = format!("{}_contradiction{n}", store.lake()).into();
+        let c = (given.continued)(
+            None,
+            twin,
+            Box::new(move |_, _| (lines, 0)),
+            lakelands_api::engine::OpenMode::Read,
+            Seams::default(),
+        )
+        .await
+        .map_err(|e| Failure::new(format!("laying a contradictory lake below the store: {e}")))?;
+        let open = c.opened.err();
+        ensure!(
+            matches!(
+                open.as_ref().and_then(Error::situation),
+                Some(Situation::Damaged { .. })
+            ),
+            "{what}, laid as a lake, is not damage at its open: {open:?}"
+        );
+        // The same events as an archive, and the two doors an operator
+        // uses, refused as that open refuses them.
+        let dir = scratch.dir(&format!("contradiction{n}"));
+        fs::create_dir_all(dir.join("log"))
+            .map_err(|e| Failure::new(format!("making {}: {e}", dir.display())))?;
+        for name in files(&from)? {
+            fs::copy(from.join(&name), dir.join(&name))
+                .map_err(|e| Failure::new(format!("copying {name}: {e}")))?;
+        }
+        rewrite(&dir, &file, &bytes)?;
+        let verified = export::verify(&dir).err();
+        let target: lakelands_api::LakeId = format!("{}_backup{n}", store.lake()).into();
+        let imported = refused(
+            (given.import)(dir, target, None, import_seams()).await,
+            what,
+        )?;
+        let open_said = open.as_ref().and_then(Error::situation);
+        for (door, e) in [("verify", verified), ("an import", Some(imported))] {
+            let said = e.as_ref().and_then(Error::situation);
+            ensure!(
+                said == open_said,
+                "{what}: {door} of the archive answers {said:?} where the open of the same \
+                 events answers {open_said:?}"
+            );
+        }
+    }
     Ok(())
 }
 

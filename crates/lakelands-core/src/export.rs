@@ -44,8 +44,8 @@ use std::path::{Path, PathBuf};
 
 use lakelands_api::catalog::Verification;
 use lakelands_api::engine::CanonicalEvent;
-use lakelands_api::error::{Case, Detail, Doing, Flaw, Part, Situation};
-use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
+use lakelands_api::error::{Case, Detail, Doing, Flaw, Part};
+use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION};
 use lakelands_api::seam::{ChangeFeed, FeedFilter};
 use lakelands_api::{Error, LakeId, LakeStore, Position, Refusal, Result};
 use serde::{Deserialize, Serialize};
@@ -659,6 +659,44 @@ pub fn segment_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// The first and the last event line of a segment file, read as JSON
+/// alone, and how many event lines it holds: a line that is a frame is
+/// not an event, and no member of a frame is added to its events, as the
+/// open reads a line of a format it does not run.
+fn segment_ends(path: &Path) -> Option<(serde_json::Value, serde_json::Value, u64)> {
+    let file = File::open(path).ok()?;
+    let mut first = None;
+    let mut last = None;
+    let mut events = 0_u64;
+    for line in BufReader::new(file).lines() {
+        let value: serde_json::Value = serde_json::from_str(&line.ok()?).ok()?;
+        if crate::log::is_frame(&value) {
+            continue;
+        }
+        events += 1;
+        first.get_or_insert(value.clone());
+        last = Some(value);
+    }
+    Some((first?, last?, events))
+}
+
+/// An export's two ends as the judgement over a lake's ends reads them:
+/// the first event line of its first segment, the last event line of its
+/// last, and the position that last stands at, from the segment's name
+/// and its events. `None` where a line cannot be read or a name cannot be
+/// parsed; the flaw the verifier already holds is then damage.
+fn ends_of(dir: &Path) -> Option<(serde_json::Value, serde_json::Value, Position)> {
+    let files = segment_files(dir).ok()?;
+    let (first, _, _) = segment_ends(files.first()?)?;
+    let (_, tip, events) = segment_ends(files.last()?)?;
+    let start = first_of(files.last()?)?;
+    Some((
+        first,
+        tip,
+        Position(start.checked_add(events.checked_sub(1)?)?),
+    ))
+}
+
 /// Verify an export from its segment files alone, a line at a time: the
 /// chain from position 0 through the last line, and its hash.
 pub fn verify(dir: &Path) -> Result<Verification> {
@@ -698,22 +736,28 @@ pub fn verify(dir: &Path) -> Result<Verification> {
                 }
                 Err(crate::log::Fault::Flaw(flaw)) => {
                     // An archive whose first event is written in a format
-                    // this release does not read is another release's
-                    // data, not damage: it is refused as the open of that
-                    // lake refuses it, naming the lake, its format and the
-                    // one this release reads and writes. A line of another
-                    // format where the chain has already passed an event is
-                    // damage, and says so.
+                    // this release does not read is judged as the open of
+                    // that lake judges it, over the archive's two ends and
+                    // by the same judgement (`crate::log::one_format`): a
+                    // lake that is another release's is refused as
+                    // `log_format`, naming the lake, its format and the
+                    // one this release reads and writes, and two ends
+                    // that contradict each other are damage, named where
+                    // the open names it. A line of another format where
+                    // the chain has already passed an event is damage,
+                    // and says so.
                     if chain.next == Position::GENESIS
-                        && let Flaw::FormatOther { v, reads } = &flaw
+                        && matches!(flaw, Flaw::FormatOther { .. })
                         && let Some(lake) = lake_of(dir)
+                        && let Some((first, tip, tip_at)) = ends_of(dir)
+                        && let Err(judged) = crate::log::one_format(
+                            &lake,
+                            (Position::GENESIS, tip_at),
+                            Some(&first),
+                            Some(&tip),
+                        )
                     {
-                        return Err(Error::unavailable(Situation::LogFormat {
-                            lake,
-                            found: *v,
-                            reads: *reads,
-                            oldest: Some(OLDEST_LOG_FORMAT.into()),
-                        }));
+                        return Err(judged);
                     }
                     return damaged(chain.next, flaw);
                 }

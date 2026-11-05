@@ -1423,7 +1423,10 @@ pub async fn import(
         .map_err(|e| {
             // An archive of another release's log format is the operator's
             // data, not damage: the way back is a release that reads it,
-            // and it is said here, not as damage.
+            // and it is said here, not as damage. The intercept also
+            // answers the import target's own format, which the store
+            // judges before the archive is read; the advice is right for
+            // both.
             if let Some(lakelands_api::error::Situation::LogFormat { found, .. }) = e.situation() {
                 let said = e.to_string();
                 let todo = if restoring {
