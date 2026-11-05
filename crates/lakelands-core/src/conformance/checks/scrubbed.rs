@@ -1022,6 +1022,112 @@ async fn a_page_over_page_events_takes_the_rebuild(store: Store, given: Given) -
     Ok(())
 }
 
+check!(
+    TAIL_JUDGED_BY_ITS_KEYS = a_write_beside_the_walk_is_judged_at_the_first_turn,
+    "099 (lakelands#1649): an act's first turn reads, under the writer, only the tail its catch-up left, sought by type where the act names more keys than the tail holds positions, and judges again the records it touched: `erp` writes the city of one of 40 records `crm` alone brought, held at the writer while a removal of every `crm` write walks and let go once the act's first turn queues behind it, and the removal keeps that record with `erp`'s city and retires the other 39; the same write on one of `web`'s 40 records beside a forgetting of `web` leaves the record co-owned, with `erp`'s city and `web`'s name erased, and retires the other 39",
+    given
+);
+
+/// The records `crm` and `web` each bring alone before the act.
+const BROUGHT: u32 = 40;
+
+async fn a_write_beside_the_walk_is_judged_at_the_first_turn(store: Store, given: Given) -> Held {
+    use super::removed::{Gate, Opens, at, erased};
+    let (keys, gate) = (Arc::new(Keys::default()), Arc::new(Gate::default()));
+    let seams = Seams {
+        meter: Some(gate.clone()),
+        ..with(&keys)
+    };
+    let store = (given.relimit)(store, seams, limits())
+        .await
+        .map_err(opened("lake"))?;
+    let _opens = Opens(gate.clone());
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    for source in ["crm", "web"] {
+        let rows = (0..BROUGHT).map(|i| {
+            let key = format!("{source}{i}");
+            source_record("person", &key, json!({"id": key, "name": "Ann"}))
+        });
+        l.ingest(source, rows.collect())
+            .await
+            .must("ingesting the act's records")?;
+    }
+    let s = store.clone();
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a far date"));
+    let removed = beside_the_walk(&store, &gate, "crm0", async move {
+        (s.remove_values(&"crm".into(), &all, false, None).await).must("removing crm's writes")
+    });
+    let removed = removed.await?;
+    let s = store.clone();
+    let forgot = beside_the_walk(&store, &gate, "web0", async move {
+        (s.forget_source(&"web".into(), None).await).must("forgetting web")
+    });
+    let forgot = forgot.await?;
+    let retired =
+        |r: &[lakelands_api::write::TypeRetired]| r.iter().map(|t| t.retired).sum::<u32>();
+    let records =
+        |r: &[lakelands_api::write::ForgetRecords]| r.iter().map(|t| t.records).sum::<u64>();
+    let (crm0, web0) = (
+        at(&l, "person", "crm0", None).await?,
+        at(&l, "person", "web0", None).await?,
+    );
+    let city = |r: &Option<Record>| r.as_ref().and_then(|r| r.fields.get("city").cloned());
+    ensure!(
+        retired(&removed.retired) == BROUGHT - 1
+            && records(&removed.kept) == 1
+            && retired(&forgot.retired) == BROUGHT - 1
+            && records(&forgot.co_owned) == 1
+            && city(&crm0) == Some(json!("Oslo"))
+            && city(&web0) == Some(json!("Oslo"))
+            && web0.as_ref().is_some_and(|r| erased(r, "name", "web")),
+        "a write beside the walk on a record the act's source alone brought is judged at the \
+         first turn, its record kept: the removal {removed:?}, the forgetting {forgot:?}, \
+         crm0 {crm0:?}, web0 {web0:?}"
+    );
+    Ok(())
+}
+
+/// `erp`'s write of `key`'s city, held at the writer before `act` is
+/// sent, so the act's walk cannot see it, and let go once the act's first
+/// turn queues behind it: the write lands in the act's tail, past its
+/// walk and its catch-up, before its first turn.
+async fn beside_the_walk<T: Send + 'static>(
+    store: &Store,
+    gate: &Arc<super::removed::Gate>,
+    key: &'static str,
+    act: impl std::future::Future<Output = Result<T, Failure>> + Send + 'static,
+) -> Result<T, Failure> {
+    let answer: Arc<std::sync::Mutex<Option<T>>> = Arc::default();
+    gate.rearm();
+    let (g1, g2, s, slot) = (gate.clone(), gate.clone(), store.clone(), answer.clone());
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            let row = source_record("person", key, json!({"id": key, "city": "Oslo"}));
+            let l = Lake::of(s.as_ref());
+            l.ingest("erp", vec![row]).await.must("erp's write")?;
+            Ok(())
+        }),
+        Box::pin(async move {
+            g1.reaches("erp's write holding the writer's turn", |g| g.holds)
+                .await?;
+            g1.watch();
+            *crate::lock(&slot) = Some(act.await?);
+            Ok(())
+        }),
+        Box::pin(async move {
+            let behind = (g2.reaches("the act's first turn queued behind erp's write", |g| {
+                g.behind
+            }))
+            .await;
+            g2.open();
+            behind
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    Ok(crate::lock(&answer).take().expect("the act answered"))
+}
+
 async fn a_write_during_the_sweep_keeps_every_base_a_record_names(
     store: Store,
     given: Given,

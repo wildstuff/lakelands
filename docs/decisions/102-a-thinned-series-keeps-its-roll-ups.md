@@ -1022,8 +1022,8 @@ its mark and changed nowhere else.
   The merged tree reads 112 because lakelands#1751 raised the budget to
   111 for `compact_step` before lakelands#1750's `thin_values` merged,
   and that collision is older than this step; it is recorded in
-  lakelands#1755. The operator's decisions of 2026-11-04 under the
-  round raise of 2026-11-03, recorded on lakelands#1578, take the
+  lakelands#1755. The operator's decision of 2026-11-05 on the board
+  (lakelands#1755, issuecomment-6649922428), by rule 4, takes the
   ceiling 111 → 112 with its row in `docs/budgets.md`, so the gate is
   green at the base and here; lakelands#1752 removes the deprecated
   `compact()` and brings the width and the ceiling back to 111. 6 of
