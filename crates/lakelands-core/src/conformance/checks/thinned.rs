@@ -91,7 +91,7 @@ check!(
 
 check!(
     THIN_AS_OF_SAYS_UNANSWERABLE = a_read_before_the_act_says_what_it_cannot_answer,
-    "102 (lakelands#1749): after the act, `daily`'s page at the head, and a kept view `held` over it, name the act and their stranded groups say so; as of the position before it, `daily` and a computed view `rolled` over it answer `d`, the group the act did not strand, and count the five `describe` counts stranded, `held` the three its own marks hold; a record that moved from `e` to `f` before the act strands both, and as of when it was in `e` `daily` leaves `e` out; a `get` of a stranded group is refused `stranded_at_head_only` naming `daily`, of `rolled` and `held` too, a key no group held is `not_found`, and `t1` as of then is refused `thinned`; `describe` of `tick` names the act",
+    "102 (lakelands#1749): after the act, `daily`'s page at the head, and a kept view `held` over it, name the act and their stranded groups say so; as of the position before it, `daily` and a computed view `rolled` over it answer `d`, the group the act did not strand, and count the five `describe` counts stranded, `held` the three its own marks hold; a record that moved from `e` to `f` before the act strands both, and as of when it was in `e` `daily` leaves `e` out; a `get` of a stranded group is refused `stranded_at_head_only` naming `daily`, of `rolled` and `held` too, a key no group held is `not_found`, and `t1` as of then is refused `thinned`; a holder admitted to `d` alone is answered `d` with no stranded count and a `get` of `a` `not_found`; `describe` of `tick` names the act",
     given
 );
 
@@ -910,6 +910,38 @@ async fn a_read_before_the_act_says_what_it_cannot_answer(store: Store, _given: 
         if !said {
             red.push(format!("`{ty}` `{key}` as of {at:?} answers {got:?}"));
         }
+    }
+    // A holder of `d` alone is told of no group its pairs do not admit.
+    let grants = serde_json::from_value(
+        json!({"default": "read", "types": {"daily": {"only": {"m": "d"}}}}),
+    )
+    .map_err(|e| Failure::new(format!("reading the grants: {e}")))?;
+    let who = principal(store.as_ref(), PrincipalKind::Agent, "holder", grants);
+    let t = TypeName::from("daily");
+    let got = l.cat.get(&who, &t, get_at("a", Some(before))).await;
+    if !matches!(got, Err(Error::NotFound { .. })) {
+        red.push(format!(
+            "a holder's `daily` `a` as of {before:?} answers {got:?}"
+        ));
+    }
+    match l
+        .cat
+        .find(&who, &t, find_at(Some(before)))
+        .await
+        .must("a holder's find")?
+        .data
+    {
+        Found::Records {
+            rows,
+            stranded: None,
+            ..
+        } if rows
+            .iter()
+            .map(|r| (r.key.as_str(), r.stranded))
+            .eq([("d", false)]) => {}
+        page => red.push(format!(
+            "a holder's `daily` as of {before:?} answers {page:?}"
+        )),
     }
     let (acts, groups) = (
         l.describe_type("tick").await?.thinned,

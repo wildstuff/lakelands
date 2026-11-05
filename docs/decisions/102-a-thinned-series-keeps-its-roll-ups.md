@@ -1047,8 +1047,17 @@ its mark and changed nowhere else.
   carried group that names none, so a zoned view's stranded groups all
   name one. A group cut under the binary's copy shows it too, and a live
   group names none.
+- **`cut` is a public change, accepted.** Neither `Record` nor
+  `TypeDescription` is `#[non_exhaustive]`, and the WIT `record` and
+  `type-description` of `lakelands:data` gain the field while the
+  package still says 0.22.0, which is already tagged. The operator
+  accepted the change for 0.23.0 on 2026-11-05, relayed by the fleet
+  leader. The release-notes line and the WIT version bump to 0.23.0 are
+  owed by the release's closing PR, not this one.
 - **An earlier position, or a reader that computes, leaves out the
-  head's stranded groups.** A computed read of a view whose source a
+  head's stranded groups.** Only the marks of groups the reader's
+  pairs admit are read (051), so a holder is neither refused nor
+  counted for a group outside them. A computed read of a view whose source a
   thinning took reads the view's marks at the head (the reader's face),
   removes those groups from what it computed, and records which it
   left out. The page's `stranded` is that view's own count or, for a
@@ -1094,8 +1103,8 @@ its mark and changed nowhere else.
   record that moved face before the act; S7's row has none, since no
   fixture moves a record's restriction cheaply. The omission reads the
   head's marks on the reader's own face, so it holds by construction,
-  untested at an earlier position; the leader drops it from the row or
-  files it. The cost of reading `thinned` on every `find`, a per-source
+  untested at an earlier position. lakelands#1759 owns that part of the
+  row. The cost of reading `thinned` on every `find`, a per-source
   read of the acts, and of the walk over a view's kept records, is not
   measured. An
   aggregate's `Group::stranded` stays false: an aggregate over a

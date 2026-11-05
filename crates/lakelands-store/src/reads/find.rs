@@ -562,8 +562,16 @@ impl Reader<'_> {
             return Ok(marks);
         }
         let (face, kept) = (usize::from(self.sight.sees_restricted()), kept_name(view));
+        // A holder is told only of the groups its pairs admit (051).
+        let admit = self.sight.admit(view);
         crate::lake::walk(head.as_ref(), &kept, false, |r| {
-            marks.extend(kept::mark(&r, face).map(|cut| (r.key, cut)));
+            // A stranded group may be bare, so its pairs are held on the
+            // kept record's group fields, not on what a page would show.
+            if let Some(cut) = kept::mark(&r, face)
+                && admit.holds(&r.fields)
+            {
+                marks.insert(r.key, cut);
+            }
             Ok(())
         })?;
         Ok(marks)
