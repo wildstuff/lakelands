@@ -39,6 +39,7 @@ use lakelands_api::write::{Thin, ThinReport};
 use lakelands_api::{Error, Position, RecordKey, Result, Timestamp, TypeName};
 
 use crate::exec::Turn;
+use crate::lake::scrub::{Restate, Stepped};
 use crate::lake::{Lake, Writer};
 use crate::log::Draft;
 use crate::ontology::Ontology;
@@ -62,6 +63,10 @@ struct Thinning {
     act: Option<Position>,
     records: u64,
     through: Position,
+    /// The reclaim that follows the last part, a step a turn, and what it
+    /// gave back.
+    reclaim: Option<Restate>,
+    reclaimed: Option<lakelands_api::write::CompactReport>,
     answer: Option<tokio::sync::oneshot::Sender<Result<ThinReport>>>,
 }
 
@@ -102,6 +107,16 @@ impl Job for Thinning {
 
     fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
         let lake = t;
+        if let Some(restate) = &mut self.reclaim {
+            let at = self.act.unwrap_or(Position::GENESIS);
+            return Ok(match lake.step_act(w, restate, at)? {
+                Stepped::More => Turned::More,
+                Stepped::Done(reclaimed) => {
+                    self.reclaimed = reclaimed;
+                    Turned::Whole
+                }
+            });
+        }
         let view = lake.engine.view(None)?;
         let begins = self.act.is_none();
         if begins {
@@ -153,10 +168,20 @@ impl Job for Thinning {
         }
         if whole {
             lake.thinning_whole(&self.ty, &self.thin.by, self.thin.before);
+            // The states it dropped are given back as a whole removal's
+            // are, in the reclaim's own turns (099).
+            self.reclaim = Some(Restate::nothing());
         }
         self.through = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
         self.act = Some(act);
-        Ok(if whole { Turned::Whole } else { Turned::More })
+        Ok(Turned::More)
+    }
+
+    fn aside(&mut self, lake: &Lake) -> Result<()> {
+        match &mut self.reclaim {
+            Some(restate) => restate.aside(lake),
+            None => Ok(()),
+        }
     }
 
     fn end(&mut self, ended: Result<()>) {
@@ -176,6 +201,8 @@ impl Thinning {
             act,
             records: 0,
             through: Position::GENESIS,
+            reclaim: None,
+            reclaimed: None,
             answer: None,
         }
     }
@@ -187,7 +214,7 @@ impl Thinning {
             before: self.thin.before,
             records: self.records,
             through: self.through,
-            reclaimed: None,
+            reclaimed: self.reclaimed.clone(),
         }
     }
 }

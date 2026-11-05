@@ -1252,6 +1252,7 @@ impl Sight<'_> {
             fields,
             thinned: Vec::new(),
             stranded: 0,
+            cut: Vec::new(),
             series: Vec::new(),
         })
     }

@@ -269,9 +269,8 @@ impl Sight<'_> {
             Some(a) => *a,
             None => field_access(who, decl, f),
         };
-        let mut fields = BTreeMap::new();
-        let mut masked = Vec::new();
-        let mut meta = BTreeMap::new();
+        let (mut fields, mut masked, mut meta) = (BTreeMap::new(), Vec::new(), BTreeMap::new());
+        let held = stored.fields.get(lakelands_api::seam::STRANDED);
         for f in &decl.fields {
             let Some(value) = stored.fields.get(&f.name).filter(|v| !v.is_null()) else {
                 // A computed field whose function failed holds no value; its
@@ -311,7 +310,8 @@ impl Sight<'_> {
             fields,
             masked,
             meta,
-            stranded: false,
+            stranded: held.is_some(),
+            cut: held.and_then(Value::as_str).map(str::to_owned),
         })
     }
 }

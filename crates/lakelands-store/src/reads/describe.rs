@@ -116,6 +116,8 @@ impl<'a> Reader<'a> {
             answered.whole.push(Vec::new());
             return;
         };
+        // The acts that thinned it or its sources, read at the head (102).
+        t.thinned = self.thinned(decl).unwrap_or_default();
         let seen = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
         let settings = &self.shape.settings;
         // A view's order index is its kept records'.
@@ -232,6 +234,13 @@ impl<'a> Reader<'a> {
                 let state = kept::state(self.view.as_ref(), &t.name).ok().flatten();
                 answered.read_state = true;
                 t.stranded = state.as_ref().map_or(0, |s| s.stranded[face]);
+                let marks = self.stranded_marks(&t.name).unwrap_or_default();
+                let marks = marks.into_values();
+                t.cut = marks
+                    .flatten()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
                 // A build has not reached its `Keep`: the view is computed
                 // until it does, as a view without whole records is. A
                 // state cut under another copy of the time-zone database is
@@ -892,7 +901,9 @@ impl<'a> Reader<'a> {
                 };
                 (self.each_kept(&decl.name, kept, filter, COUNT_PAGE, each)).map(|()| all)
             }
-            Ok(None) => self.computed_view(decl, v, filter),
+            Ok(None) => {
+                (self.computed_view(decl, v, filter)).and_then(|r| self.unstranded(&decl.name, r))
+            }
             Err(e) => Err(e),
         };
         self.computing.borrow_mut().pop();
@@ -920,7 +931,7 @@ impl<'a> Reader<'a> {
     ) -> Result<()> {
         let admit = self.sight.admit(&stored.name);
         let range = self.narrowed(&stored, filter);
-        self.each_stored(&stored, None, range, page, &mut |r| match kept::shown(
+        self.each_stored(&stored, None, range, page, &mut |r| match kept::told(
             r.clone(),
             view,
             whole,
@@ -948,7 +959,7 @@ impl<'a> Reader<'a> {
         let live = held
             .into_iter()
             .filter(|r| self.live_by(&stored, &admit, r));
-        let shown = live.filter_map(|r| kept::shown(r, view, whole));
+        let shown = live.filter_map(|r| kept::told(r, view, whole));
         Ok(shown.filter(|r| admit.holds(&r.fields)).collect())
     }
 
@@ -1047,7 +1058,7 @@ impl<'a> Reader<'a> {
         };
         let rows = self.view.scan(&stored.name, &scan)?;
         let admitted = |w: &StoredRecord| admit.holds(&w.fields);
-        let face = |r: StoredRecord| (r.clone(), kept::shown(r, view, true).filter(admitted));
+        let face = |r: StoredRecord| (r.clone(), kept::told(r, view, true).filter(admitted));
         Ok(rows.into_iter().map(face).collect())
     }
 
@@ -1071,7 +1082,7 @@ impl<'a> Reader<'a> {
         let Some(differ) = differ else {
             let rows = self.page(stored, filter, order, after, want)?;
             return Ok((rows.into_iter())
-                .filter_map(|r| kept::shown(r, view, false))
+                .filter_map(|r| kept::told(r, view, false))
                 .collect());
         };
         let path = vec![FieldName::from(kept::DIFFERS)];
@@ -1094,7 +1105,7 @@ impl<'a> Reader<'a> {
                     .is_none_or(|a| Self::compare(order, &at(r), a).is_gt())
         };
         let mut rows: Vec<StoredRecord> = (rows.into_iter())
-            .filter_map(|r| kept::shown(r, view, true))
+            .filter_map(|r| kept::told(r, view, true))
             .chain(differ.iter().filter(later).cloned())
             .collect();
         rows.sort_by(|a, b| Self::compare(order, &at(a), &at(b)));

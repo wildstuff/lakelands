@@ -1028,6 +1028,98 @@ its mark and changed nowhere else.
   deprecated `compact()` and brings the width and the ceiling back to
   111. 6 of 20 `cfg(feature)` sites.
 
+**S7 (lakelands#1749), the reads' markers and the reclaim.**
+
+- **The marks travel on the stored record.** `kept::told` is
+  `kept::shown` for a reader: where the kept record's folds mark it
+  stranded on the reader's face, it adds the reserved field
+  `sys:stranded`, the copy that cut it or `true`. The view never
+  declares that field and no read answers it as one: `rights::visible`
+  takes it off as `Record::stranded` and `Record::cut`. Every read of
+  kept records goes through `told`. The fold keeps `shown`, so nothing
+  of the mark is folded.
+- **lakelands#1746 is closed here.** `Record` and `TypeDescription`
+  gain `cut`: on a record, the copy of the time-zone database a stranded
+  group was carried under; on a description, every copy the view's
+  stranded groups name, sorted and once each. Both are absent when
+  empty, in Rust and in WIT. S5 writes the view's own copy into a
+  carried group that names none, so a zoned view's stranded groups all
+  name one. A group cut under the binary's copy shows it too, and a live
+  group names none.
+- **An earlier position, or a reader that computes, leaves out the
+  head's stranded groups.** A computed read of a view whose source a
+  thinning took reads the view's marks at the head (the reader's face),
+  removes those groups from what it computed, and records how many it
+  left out. The page's `stranded` is that view's own count or, for a
+  view over views, the sum of the inner views'. It is the head's count
+  of stranded groups, the one `describe` answers, not only those the
+  computation would have found: a group a retired record alone held is
+  counted though it computes to nothing. A `get` of a computed view
+  that finds nothing after anything was left out is refused
+  `StrandedAtHeadOnly`, naming the innermost view that left one out and
+  the position. That is conservative: a key that no group ever held is
+  refused too, since a computation that left a group out cannot say a
+  key is not there. A `get` of a raw key that finds nothing and has a
+  tombstone is refused `Thinned` with its horizon, at every position.
+- **The acts are on every page.** `find`'s records, its count and its
+  aggregates carry `thinned`, the acts on the type or, for a view, on
+  its sources through every view between, sorted by `through`; and
+  `describe` carries the same.
+- **The reclaim ends the act.** After the last part's `act_whole` the
+  act steps a reclaim-only restate (`Restate::nothing`) beside the
+  writer, as the compact does, and its report's `reclaimed` names the
+  projection's bytes before and after. The command prints them.
+- **Measured** (`crates/lakelands-engine-sqlite/tests/thin_bytes.rs`,
+  `THIN_BYTES_RETURNED`, one run on a 14-CPU VM): 4 000 records with a
+  200-byte note, 3 000 before the horizon. The preflight took 56 ms and
+  the act 642 ms. The file went from 1 921 024 to about 1 430 000 bytes,
+  about 160 bytes a thinned record, and the journal's 82 MB of writes not yet
+  checkpointed was truncated as any compact truncates it.
+  The tombstones are 75 000 bytes of key and horizon, 25 a key. That is
+  less than § What it gives back reckoned (the larger part of 698 B),
+  because this record has none of 098's indexes, routes and states:
+  `docs/hosting.md` states the measure, not the reckoning.
+- **The tree wins over § The build plan's files.** The read side is
+  `reads/find.rs`, `reads/describe.rs`, `reads.rs` and `kept.rs`; the
+  marker crosses `api/record.rs`, `api/describe.rs`, `api/seam.rs`,
+  `wit/types.wit` and `core/rights.rs`; the reclaim is `thin.rs`.
+  `lake/described.rs`, `doors.rs` and the engines' `view.rs` are not
+  touched, since the engines already answer the tombstones and the
+  acts (S5).
+- **Not done, and why.** The row of § Conformance rows also asks for a
+  record that moved group, and one that moved face, before the act; S7's
+  row has neither. The head's marks already strand the earlier group
+  (S3's `THIN_GROUP_STRANDED`), and the omission reads those marks on the
+  reader's own face, so both hold by construction, untested at an
+  earlier position. An
+  aggregate's `Group::stranded` stays false: an aggregate over a
+  computed view leaves the stranded groups out and counts them in
+  `stranded`, which is what § A read says asks. A computed view that
+  is not kept, over a thinned raw type, answers what remains and
+  carries `thinned`; it has no marks, so its `stranded` is absent. The
+  marks are read by walking the view's kept records once a read, and
+  only when a source was thinned and the head counts a stranded group.
+- **The suite's rows.** `THIN_AS_OF_SAYS_UNANSWERABLE`: at the head
+  `daily`'s stranded groups say so and the page names the act; as of
+  the position before it, `daily` and a computed `rolled` over it
+  answer only `d`, the group no act touched, and count three stranded.
+  A `get` of a stranded group is refused naming `daily`, of `rolled`
+  too, and `t1` is refused `Thinned`. `THIN_ZONED_CARRIED` now also asks
+  a read's `cut` and `describe`'s. Each was run red with its marker
+  planted out and green with it restored. Both are green on the memory
+  engine; CI runs SQLite and PostgreSQL.
+- **Measured at S7's head**: product 114 599 and specification
+  202 193, against 114 428 and 201 993 at its base. S7 adds 194
+  product lines in and 23 out, net 171, and 202 specification in and 2
+  out, net 200, where the plan had 120 and 170. The product's extra is
+  the marker crossing the contract (about 30 lines in the API, the WIT
+  and rights) and the reclaim (27). The specification's is the SQLite
+  measure (106 lines) beside the two rows. Nothing was cut from § Cut
+  first; two of `find.rs`'s helpers were written shorter. 401 product
+  and 307 specification lines are left under the ceilings. Seam 112 of
+  112, unchanged: S7 adds no facade or engine-trait method. 6 of 20
+  `cfg(feature)` sites.
+
 ## How it came to be
 
 - lakelands#1639 — S3's shape weighed and recommended: a read of a key's

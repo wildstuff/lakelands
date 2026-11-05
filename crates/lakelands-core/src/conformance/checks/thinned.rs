@@ -19,7 +19,7 @@ use lakelands_api::write::{DeclarationKind, Thin, ThinReport, Withdrawal};
 use super::forgotten::{Fails, failing};
 use super::stranded::{HORIZON, answers, daily, stranded, tick, tick_at};
 use crate::conformance::Lines;
-use crate::conformance::fixture::{canonical_line, invalid_case, source_record, sourced};
+use crate::conformance::fixture::{canonical_line, get_at, invalid_case, source_record, sourced};
 use crate::conformance::prelude::*;
 use crate::export;
 
@@ -67,7 +67,7 @@ check!(
 
 check!(
     THIN_ZONED_CARRIED = a_zoned_views_stranded_groups_keep_the_copy_that_cut_them,
-    "102 (lakelands#1746): a kept view grouped by a day of Europe/Berlin, two of whose groups a thinning stranded, is marked below the store as cut under the copy `2000a`; the writer's open makes it again, and it answers as before: the stranded groups carry their folds and name `2000a` as the copy that cut them, and the live group is cut again under the binary's copy",
+    "102 (lakelands#1746): a kept view grouped by a day of Europe/Berlin, two of whose groups a thinning stranded, is marked below the store as cut under the copy `2000a`; the writer's open makes it again, and it answers as before: the stranded groups carry their folds and name `2000a` as the copy that cut them, and the live group is cut again under the binary's copy; a read of the view and `describe` name `2000a` (lakelands#1749)",
     given
 );
 
@@ -86,6 +86,12 @@ check!(
 check!(
     THIN_OWED_ACT_REFUSES_A_LATER_KEY = a_write_at_a_key_a_later_part_has_not_reached_is_refused,
     "102 (lakelands#1748): a thinning of 600 records stopped after its first part refuses an ingest at a key the act's selection at its first position holds and no part has reached, at the first and the last of those, and a retirement of one, each naming the type, the key and the horizon, and appends nothing; a key the selection does not hold lands, and the writer's open finishes the act, taking each of the 600 once and finding the late key alone",
+    given
+);
+
+check!(
+    THIN_AS_OF_SAYS_UNANSWERABLE = a_read_before_the_act_says_what_it_cannot_answer,
+    "102 (lakelands#1749): after the act, `daily`'s page at the head names the act and its stranded groups say so; as of the position before it, `daily` and a view `rolled` over it answer `d`, the group the act did not strand, and count the three `describe` counts stranded, and a `get` of a stranded group is refused `stranded_at_head_only` naming `daily`, of `rolled` too, while `t1` as of then is refused `thinned`; `describe` of `tick` names the act",
     given
 );
 
@@ -472,6 +478,14 @@ async fn a_zoned_views_stranded_groups_keep_the_copy_that_cut_them(
     let now = answers(&l, "daily", &["c", "t"]).await?;
     let groups = stranded(&l, "daily").await?;
     let (cut, copy) = lock(&marks.seen).clone();
+    let read: Vec<_> = (l.all_found("daily", find_at(None)).await?.into_iter())
+        .map(|r| r.cut)
+        .collect();
+    let told = l.describe_type("daily").await?.cut;
+    ensure!(
+        read == cut && told == ["2000a"],
+        "a read of `daily` names the copies {read:?}, `describe` {told:?}, not {cut:?}"
+    );
     ensure!(
         now == was
             && groups == 2
@@ -818,6 +832,83 @@ async fn a_write_at_a_key_a_later_part_has_not_reached_is_refused(
         .verify(None, None)
         .await
         .must("verifying the whole act")?;
+    Ok(())
+}
+
+/// The page `find` answers for `ty` as of `at`, its rows' keys with
+/// their stranded mark, and its acts and stranded count.
+async fn page(l: &Lake, ty: &str, at: Option<Position>) -> Result<String, Failure> {
+    let found = l.cat.find(&l.own, &TypeName::from(ty), find_at(at)).await;
+    match found.must(&format!("finding `{ty}` as of {at:?}"))?.data {
+        Found::Records {
+            rows,
+            thinned,
+            stranded,
+            ..
+        } => {
+            let rows: Vec<_> = rows.iter().map(|r| (r.key.as_str(), r.stranded)).collect();
+            let acts: Vec<_> = thinned.iter().map(|a| (a.ty.as_str(), a.gone)).collect();
+            Ok(format!("{rows:?} {acts:?} {stranded:?}"))
+        }
+        groups => Err(Failure::new(format!("`{ty}` answers {groups:?}"))),
+    }
+}
+
+async fn a_read_before_the_act_says_what_it_cannot_answer(store: Store, _given: Given) -> Held {
+    let l = Lake::of(store.as_ref());
+    ticks(&l).await?;
+    l.declare(over("daily", "rolled", "t")).await?;
+    let late = json!({"at": "2026-07-01T00:00:00Z", "m": "d", "n": 3});
+    l.upsert("tick", "t7", late).await?;
+    let before = store.head().await.must("reading the head")?;
+    thinned(&store, false).await?;
+    let mut red = Vec::new();
+    for (ty, at, want) in [
+        (
+            "daily",
+            None,
+            r#"[("a", true), ("b", true), ("d", false)] [("tick", 4)] None"#,
+        ),
+        (
+            "daily",
+            Some(before),
+            r#"[("d", false)] [("tick", 4)] Some(3)"#,
+        ),
+        (
+            "rolled",
+            Some(before),
+            r#"[("d", false)] [("tick", 4)] Some(3)"#,
+        ),
+    ] {
+        let now = page(&l, ty, at).await?;
+        if now != want {
+            red.push(format!("`{ty}` as of {at:?} answers {now}, not {want}"));
+        }
+    }
+    for (ty, key) in [("daily", "a"), ("rolled", "a"), ("tick", "t1")] {
+        let (t, at) = (TypeName::from(ty), get_at(key, Some(before)));
+        let got = l.cat.get(&l.own, &t, at).await;
+        let said = match invalid_case(&got) {
+            Some(Case::StrandedAtHeadOnly { ty: v, position }) => {
+                ty != "tick" && v.as_str() == "daily" && *position == before
+            }
+            Some(Case::Thinned { ty: t, key: k, .. }) => t.as_str() == ty && k.as_str() == key,
+            _ => false,
+        };
+        if !said {
+            red.push(format!("`{ty}` `{key}` as of {before:?} answers {got:?}"));
+        }
+    }
+    let (acts, groups) = (
+        l.describe_type("tick").await?.thinned,
+        stranded(&l, "daily").await?,
+    );
+    if acts.len() != 1 || groups != 3 {
+        red.push(format!(
+            "`tick` is thinned by {acts:?}, `daily` strands {groups}"
+        ));
+    }
+    ensure!(red.is_empty(), "a read before the act: {}", red.join("; "));
     Ok(())
 }
 

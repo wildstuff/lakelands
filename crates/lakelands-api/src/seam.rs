@@ -731,6 +731,11 @@ fn weighed(value: Option<&Value>, member: &str) -> BTreeMap<String, f64> {
 /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
 pub const KEY_PERIOD_SETTING: &str = "key_period";
 
+/// The field a kept record is shown with when its group is stranded: the
+/// copy of the time-zone database that cut it, or `true`. Never declared,
+/// so never answered as a field.
+pub const STRANDED: &str = "sys:stranded";
+
 /// The key prefix of the setting that asks for a view's records to be
 /// kept as its sources are written: the setting `view_kept.<type>`, which
 /// holds when its value is `true`.

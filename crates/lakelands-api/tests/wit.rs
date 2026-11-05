@@ -457,6 +457,7 @@ fn record() -> Record {
         fields: [("f".into(), json!(1))].into(),
         masked: vec!["g".into()],
         stranded: true,
+        cut: Some("2024a".into()),
         meta: [("f".into(), field_meta())].into(),
     }
 }
@@ -702,6 +703,7 @@ fn type_description() -> TypeDescription {
     TypeDescription {
         thinned: vec![thinned_act()],
         stranded: 1,
+        cut: vec!["2024a".into()],
         constraints: vec![constraint_decl()],
         value_types: vec![ValueTypeDecl {
             name: "money".into(),

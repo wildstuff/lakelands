@@ -702,6 +702,9 @@ interface types {
         /// Whether this is a kept view's record for a group a thinning
         /// stranded: the group answers it at the head alone.
         stranded: bool,
+        /// For a stranded group a make carried under another copy of the
+        /// time-zone database: the copy that cut it.
+        cut: option<string>,
         meta: list<field-meta-entry>,
     }
 
@@ -1501,6 +1504,9 @@ interface types {
         thinned: list<thinned-act>,
         /// How many of the type's or the view's groups are stranded.
         stranded: u64,
+        /// The copies of the time-zone database that cut a stranded group
+        /// a make carried.
+        cut: list<string>,
     }
 
     record verb-description {

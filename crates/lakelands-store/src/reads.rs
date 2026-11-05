@@ -122,6 +122,9 @@ pub struct Reader<'a> {
     bound: RefCell<BTreeMap<TypeName, Bound>>,
     /// The views being computed, outermost first.
     computing: RefCell<Vec<TypeName>>,
+    /// The views whose computation omitted their stranded groups, with
+    /// how many, innermost first (102).
+    omitted: RefCell<Vec<(TypeName, u64)>>,
     /// What [`Self::kept_read`] answered for each view and face, so that a
     /// view many views read is asked once a read (lakelands#942).
     kept_reads: RefCell<BTreeMap<(TypeName, usize), Option<KeptRead>>>,
@@ -731,6 +734,7 @@ impl<'a> Reader<'a> {
             computed: RefCell::default(),
             bound: RefCell::default(),
             computing: RefCell::default(),
+            omitted: RefCell::default(),
             kept_reads: RefCell::default(),
             probed: RefCell::default(),
             computes_known: RefCell::default(),
