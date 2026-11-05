@@ -80,6 +80,15 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
+# Dev and test builds keep line tables, not full debug info: a backtrace
+# still names file and line, and the target directory is less than half the
+# size. Measured on a 14-core Linux machine (2026-11-05): a cold build 123 s
+# -> 98 s, an edit in lakelands-store to its tests 40 s -> 27 s, the target
+# directory 25 GB -> 11 GB. A debugger session that needs variables builds
+# with CARGO_PROFILE_DEV_DEBUG=full.
+[profile.dev]
+debug = "line-tables-only"
+
 # A PostgreSQL connection authenticates with SCRAM, thousands of rounds of
 # HMAC-SHA-256; unoptimised, each connection the pg engine's tests open
 # takes over 100 ms. Only these crates are optimised in dev builds.

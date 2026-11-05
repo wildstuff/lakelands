@@ -14,6 +14,28 @@ importing the shape of the platform the organs come from.
 3. `CLAUDE.local.md` if present (gitignored): where the source organs
    are read from, and background material that must never be cited.
 
+## Finding your way
+
+Every turn re-reads the whole session, so a lookup that takes one call
+instead of five is the cheapest work there is.
+
+- `scripts/map.sh` names every crate with its size and what it is for;
+  `scripts/map.sh <crate|dir>` (`store`, `core/src/conformance`) lists
+  its source files with their lines and the first line of their module
+  doc. A file of more than a few hundred lines is read by range, never
+  whole.
+- `fleet-where NAME` (fleet machines) gives the line of a definition, or
+  the line range of a doc section titled NAME; `fleet-where --uses NAME`
+  the files that use it. Elsewhere, `git grep -n`.
+- The big docs (`conformance.md` is generated; `seams.md`, `refusals.md`,
+  `hosting.md`, `budgets.md` and some decision records run past 100 KB):
+  `grep -n '^#' FILE` for the outline, then `sed -n 'A,Bp' FILE`. The
+  decision records' file names are their index: `ls docs/decisions`.
+- Test the narrowest lane that can fail first: `cargo nextest run -p
+  <crate>`, then `scripts/conformance.sh mem` for a behaviour of the
+  contract; the other engines and the whole workspace after that
+  (`CONTRIBUTING.md` § Building and testing).
+
 ## The rules the gates enforce
 
 - **Vocabulary.** `tribe`, `WILD_`, `chief`, `elder`, `ROOT_TRIBE` do

@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, Frame};
-use lakelands_api::error::{Case, Detail, Error, Flaw, Result};
+use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Result, Situation};
 use lakelands_api::event::{
     Digest, Event, EventBody, EventId, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
 };
@@ -346,6 +346,71 @@ const NESTED: [&str; 2] = ["body", "sealed"];
 /// The format a line or an event says, 0 where it says none.
 fn format_of(line: &Value) -> u64 {
     line.get("v").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// Whether a lake, or an archive of it, is written in a format this
+/// release reads, judged over its two ends before either is opened; a
+/// lake this release does not read is refused by both numbers: it is
+/// another release's, not a damaged one, and it is not opened.
+///
+/// Three numbers are judged, and the first this release does not read is
+/// named: the first event's `v`, the format its `lake_created` says, and
+/// the last event's `v`, each where it carries one. Two ends that
+/// contradict each other in a way no release writes are damage, named at
+/// the event that carries the contradiction: a `lake_created` whose own
+/// line says a `v` other than the `format` it says (one release wrote the
+/// line and its body at once), and a last event older than the first (a
+/// release appends only onto a lake whose first event it reads). An end
+/// that is no value at all, or no JSON, is left to the caller, which says
+/// what is wrong with it.
+///
+/// The store calls this with the two events its engine keeps beside the
+/// log, and [`crate::export::verify`] with an archive's first and last
+/// event lines, so an archive is refused as the open of the same lake
+/// refuses it, damage and all.
+pub fn one_format(
+    lake: &str,
+    at: (Position, Position),
+    first: Option<&Value>,
+    tip: Option<&Value>,
+) -> Result<()> {
+    // Every line holds its `v`; a `lake_created` may leave members to its
+    // frame, which the caller restores where it reads one.
+    let number = |v: &Value| v.get("v").and_then(Value::as_u64);
+    let made = |f: &&Value| f.pointer("/body/kind") == Some(&"lake_created".into());
+    let created = first.filter(made).and_then(|f| f.pointer("/body/format"));
+    let reads = u64::from(LOG_FORMAT_VERSION);
+    if let (Some(line), Some(format)) = (first.and_then(number), created.and_then(Value::as_u64))
+        && line != format
+    {
+        return Err(crate::damaged(
+            Part::Log,
+            Some(at.0),
+            Flaw::CreatedInAnother { format, reads },
+        ));
+    }
+    if let (Some(line), Some(last)) = (first.and_then(number), tip.and_then(number))
+        && last < line
+    {
+        return Err(crate::damaged(
+            Part::Log,
+            Some(at.1),
+            Flaw::FormatOther { v: last, reads },
+        ));
+    }
+    let said = [
+        first.map(format_of),
+        created.map(|f| f.as_u64().unwrap_or(0)),
+        tip.map(format_of),
+    ];
+    let unread = said.into_iter().flatten().find(|v| !reads_format(*v));
+    let Some(found) = unread else { return Ok(()) };
+    Err(Error::unavailable(Situation::LogFormat {
+        lake: lake.to_owned(),
+        found,
+        reads: LOG_FORMAT_VERSION.into(),
+        oldest: Some(OLDEST_LOG_FORMAT.into()),
+    }))
 }
 
 /// Whether a line, read, is a frame line: an event holds neither `events`

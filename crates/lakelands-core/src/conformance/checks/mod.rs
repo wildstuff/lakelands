@@ -997,6 +997,7 @@ pub const ALL: &[Check] = &[
     export::BACKUP_DAMAGED,
     export::ONE_FORMAT,
     export::OLDER_FORMAT_REFUSED,
+    export::OLDER_ARCHIVE_REFUSED,
     export::ANOTHER_RELEASES,
     export::PROJECTION_AHEAD,
     export::VERIFY_THROUGH,

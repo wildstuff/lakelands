@@ -557,8 +557,9 @@ fn command() -> Command {
             Command::new("restore")
                 .about("Make the backup's lake from its directory, in the root's empty lake of that name; --check only verifies it")
                 .after_help(
-                    "Exit status of --check: 0 the backup holds; 1 it is damaged; 2 the command line \
-                     was not understood; 3 it could not be checked.",
+                    "Exit status of --check: 0 the backup holds; 1 it is damaged or written in a \
+                     log format this release does not read; 2 the command line was not \
+                     understood; 3 it could not be checked.",
                 )
                 .arg(
                     Arg::new("dir")
@@ -1000,7 +1001,9 @@ async fn dispatch(
 
 /// Run `restore --check`: the backup's chain verified as an import would,
 /// nothing opened or written. Its exit status is `verify`'s: 0 the backup
-/// holds, 1 it is damaged, 3 it could not be checked.
+/// holds, 1 it is damaged or written in a log format this release does not
+/// read (a whole archive of another release, which is not damaged), 3 it
+/// could not be checked.
 fn restore_check(sub: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
     use lakelands_api::error::Situation;
     let dir = PathBuf::from(sub.get_one::<String>("dir").map_or("", String::as_str));
@@ -1020,6 +1023,22 @@ fn restore_check(sub: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write) -> 
                 v.hash.0
             ),
         ),
+        Err(Error::Unavailable { situation })
+            if matches!(*situation, Situation::LogFormat { .. }) =>
+        {
+            let Situation::LogFormat { found, .. } = *situation else {
+                unreachable!("the arm matches `log_format`")
+            };
+            (
+                1,
+                format!(
+                    "the backup in {}: {}\n  what to do: restore it with a release that reads \
+                     log format {found}; it is not damaged",
+                    dir.display(),
+                    situation
+                ),
+            )
+        }
         Err(Error::Unavailable { situation })
             if matches!(*situation, Situation::Damaged { .. }) =>
         {
