@@ -1522,6 +1522,15 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
             fails[0].load(Ordering::SeqCst) < ARMED,
             "the road beside the writer's open has not tried the owed reclaim"
         );
+        // A reclaim counts its attempt before it fails and tells the lake
+        // after: the road on `pg` reads the acts' lists in between, so the
+        // counter moving is not yet the lake owing the cause.
+        ensure!(
+            store.reclaim_owed().is_some(),
+            "the owed reclaim, tried beside the open and failing, still owes, saying why: \
+             owing {:?}",
+            store.reclaim_owed()
+        );
         Ok(())
     })
     .await?;

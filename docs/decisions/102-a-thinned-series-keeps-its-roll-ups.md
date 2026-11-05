@@ -1004,29 +1004,30 @@ its mark and changed nowhere else.
   first position, and a key it does not hold landing). Each was run red
   with its refusal planted out and green with it restored, and all three
   are green on the memory engine; CI runs SQLite and PostgreSQL.
-- **Measured at S6's head**: product 114 428 and specification 201 993,
+- **Measured at S6's head**: product 114 428 and specification 202 002,
   against 114 143 and 201 630 at its base. S6 adds 294 product lines in
-  and 9 out, and 365 specification in and 2 out, where the plan had
-  120 and 150. The product is over by 165 and the specification by 213.
+  and 9 out, and 374 specification in and 2 out, where the plan had
+  120 and 150. The product is over by 165 and the specification by 222.
   The product's extra is the owed act's selection at the write doors
   (the lake's owed set, `thin::owing`'s split from `owed`, and
   `owed_takes`, about 120 lines) and the catalog door with its `catalog`
   WIT function and the generator's `thin` tool (about 130, the server's
   dispatch beside them). The specification's is the second row,
-  which stages four separate lakes to reach each door, and the third,
-  which feeds 600 records and lets the stopped act take 500 before it
-  writes. Nothing was cut: the four items of § Cut first stay. The
-  ceilings hold with room for S7's planned 162 and 230 at ×1.35: 572
-  product and 507 specification are left. S6 adds no seam method: the
-  width is S5's and lakelands#1751's. The merged tree reads 112 because
-  lakelands#1751 raised the budget to 111 for `compact_step` before
-  lakelands#1750's `thin_values` merged, and that collision is older
-  than this step; it is recorded in lakelands#1755. The operator's
-  decisions of 2026-11-04 under the round raise of 2026-11-03, recorded
-  there, take the ceiling 111 → 112 with its row in `docs/budgets.md`,
-  so the gate is green at the base and here; lakelands#1752 removes the
-  deprecated `compact()` and brings the width and the ceiling back to
-  111. 6 of 20 `cfg(feature)` sites.
+  which stages four separate lakes to reach each door; the third, which
+  feeds 600 records and lets the stopped act take 500 before it writes;
+  and the reclaim row's wait on the cause. Nothing was cut: the
+  four items of § Cut first stay. The ceilings hold with room for S7's
+  planned 162 and 230 at ×1.35: 572 product and 498 specification are
+  left. S6 adds no seam method: the width is S5's and lakelands#1751's.
+  The merged tree reads 112 because lakelands#1751 raised the budget to
+  111 for `compact_step` before lakelands#1750's `thin_values` merged,
+  and that collision is older than this step; it is recorded in
+  lakelands#1755. The operator's decisions of 2026-11-04 under the
+  round raise of 2026-11-03, recorded on lakelands#1578, take the
+  ceiling 111 → 112 with its row in `docs/budgets.md`, so the gate is
+  green at the base and here; lakelands#1752 removes the deprecated
+  `compact()` and brings the width and the ceiling back to 111. 6 of
+  20 `cfg(feature)` sites.
 
 **S7 (lakelands#1749), the reads' markers and the reclaim.**
 
