@@ -695,7 +695,7 @@ pub(super) fn rehashed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<V
 /// the next line's `prev` made right and `lake_created` saying the same
 /// format, so the whole file is one release's and only its log format is
 /// another's.
-fn as_format(dir: &Path, file: &str, older: u32) -> Result<(), Failure> {
+fn as_format(dir: &Path, file: &str, older: u32) -> Result<Vec<Vec<u8>>, Failure> {
     let mut prev = Value::Null;
     let mut lines = Vec::new();
     for line in lines_of(dir, file)? {
@@ -713,7 +713,43 @@ fn as_format(dir: &Path, file: &str, older: u32) -> Result<(), Failure> {
         prev = event["hash"].clone();
         lines.push(line);
     }
-    rewrite(dir, file, &lines)
+    rewrite(dir, file, &lines)?;
+    Ok(lines)
+}
+
+/// `lines` with all but the first laid in one block after it (log-format
+/// §1.5), as the writer stores an append of two events or more: the first
+/// event on its line, the rest of the file's events in a block whose
+/// hashes and `prev` are as `as_format` made them.
+fn as_block(dir: &Path, file: &str, lines: &[Vec<u8>]) -> Held {
+    let mut events: Vec<lakelands_api::engine::CanonicalEvent> = lines
+        .iter()
+        .skip(1)
+        .map(|line| {
+            let event: Value = serde_json::from_slice(line)
+                .map_err(|e| Failure::new(format!("an exported line is not JSON: {e}")))?;
+            Ok(export::stored_of(&event))
+        })
+        .collect::<Result<_, Failure>>()?;
+    crate::log::frame_append(&mut events);
+    let frame = events
+        .first()
+        .and_then(|event| event.frame.clone())
+        .ok_or_else(|| {
+            Failure::new(format!(
+                "{} events are not stored as a block; the archive holds no block to lay",
+                events.len()
+            ))
+        })?;
+    let first = lines
+        .first()
+        .ok_or_else(|| Failure::new(format!("{file} holds no event to lay")))?;
+    let mut bytes = first.clone();
+    bytes.push(b'\n');
+    bytes.extend_from_slice(&frame.bytes);
+    bytes.push(b'\n');
+    fs::write(dir.join(file), bytes)
+        .map_err(|e| Failure::new(format!("laying the block of {file}: {e}")))
 }
 
 async fn a_damaged_export_is_refused_naming_the_position(store: Store, scratch: PathBuf) -> Held {
@@ -1751,7 +1787,7 @@ async fn a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_re
 check!(
     OLDER_ARCHIVE_REFUSED =
         an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_written,
-    "098 and the log format §6: a backup or an export of another release's format is the operator's data, not damage. An archive whose two ends contradict each other — a first line whose own `lake_created` says a format other than its `v`, or a last line older than the first — is damage, refused as the open of the same events refuses it. Its verification — the check `restore <dir> --check` runs — and its import — what `restore <dir>` and `import <dir>` run — are refused as `log_format`, naming its lake, 22 and the one format this release reads and writes; the target lake is not looked at, so an import into a lake that holds events answers `log_format` and not its non-empty precondition, and the lake's head is where it was",
+    "098 and the log format §6: a backup or an export of another release's format is the operator's data, not damage. An archive whose two ends contradict each other — a first line whose own `lake_created` says a format other than its `v`, or a last line older than the first — is damage, refused as the open of the same events refuses it. Its verification — the check `restore <dir> --check` runs — and its import — what `restore <dir>` and `import <dir>` run — are refused as `log_format`, naming its lake, 22 and the one format this release reads and writes; the target lake is not looked at, so an import into a lake that holds events answers `log_format` and not its non-empty precondition, and the lake's head is where it was. An archive of that format whose appends are stored as blocks — any append of two events or more — is refused the same way, its ends read from the events its line and its block restore to rather than from its bytes as lines",
     given
 );
 
@@ -1765,6 +1801,9 @@ async fn an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_wri
     let l = Lake::of(store.as_ref());
     l.declare(type_of("note", &[("body", Text)])).await?;
     l.upsert("note", "n1", json!({"body": "x"})).await?;
+    // A third event, so the archive below can hold an append of two
+    // events or more, which the writer stores as a block (§1.5).
+    l.upsert("note", "n2", json!({"body": "y"})).await?;
     let lake = store.lake().clone();
     let from = scratch.dir("from");
     write(store.as_ref(), &from).await?;
@@ -1829,6 +1868,61 @@ async fn an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_wri
         after == head,
         "the head of the lake an import of an archive of format {OLDER} was refused into is \
          where it was, {head}; it is now {after}"
+    );
+    // And however its appends are stored: an append of two events or more
+    // is a block (log-format §1.5), whose events are not lines, and the
+    // archive is judged by the events its two ends restore to. An archive
+    // of the same format written this way is the same format refusal, not
+    // damage read off the bytes of a block as if they were lines.
+    let blocked_from = scratch.dir("blocked");
+    write(store.as_ref(), &blocked_from).await?;
+    let blocked_file = match files(&blocked_from)?.as_slice() {
+        [one] => one.clone(),
+        more => {
+            return Err(Failure::new(format!(
+                "a small lake's export is one file: {more:?}"
+            )));
+        }
+    };
+    let blocked = as_format(&blocked_from, &blocked_file, OLDER)?;
+    as_block(&blocked_from, &blocked_file, &blocked)?;
+    let bytes = read(&blocked_from, &blocked_file)?;
+    let mut input = bytes.as_slice();
+    let mut units = Vec::new();
+    while let Some(unit) = crate::log::read_unit(&mut input).map_err(|f| {
+        Failure::new(format!(
+            "reading a unit of the block-bearing archive: {f:?}"
+        ))
+    })? {
+        units.push(unit);
+    }
+    ensure!(
+        matches!(
+            units.as_slice(),
+            [crate::log::Unit::Line(_), crate::log::Unit::Block(block, v, ..)]
+                if block.last() == head && *v == u64::from(OLDER)
+        ),
+        "the block-bearing archive is a whole line and a block of format {OLDER} ending at \
+         {head}; it is {units:?}"
+    );
+    let e = export::verify(&blocked_from)
+        .err()
+        .ok_or_else(|| Failure::new("an export of another format verified".to_owned()))?;
+    ensure!(
+        as_older(&e),
+        "the verification of an archive of format {OLDER} whose appends are blocks is refused \
+         as `log_format`, not as damage at position 0: its two ends are the events its line \
+         and its block restore to; it answered {e:?}"
+    );
+    let fresh: lakelands_api::LakeId = format!("{}_{OLDER}_blocked", lake).into();
+    let e = refused(
+        (given.import)(blocked_from.clone(), fresh, None, import_seams()).await,
+        "a block-bearing archive of format 22 into a lake that holds nothing",
+    )?;
+    ensure!(
+        as_older(&e),
+        "an import of an archive of format {OLDER} whose appends are blocks is refused as \
+         `log_format`; it answered {e:?}"
     );
     // And an archive whose two ends contradict each other is not another
     // release's data but damage, refused as the open of the same events

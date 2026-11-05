@@ -227,7 +227,7 @@ impl Segment {
 
 /// The event at the engine seam an event's canonical value is, as the
 /// store hands it to the writer's form.
-fn stored_of(event: &Value) -> CanonicalEvent {
+pub(crate) fn stored_of(event: &Value) -> CanonicalEvent {
     let text = |name: &str| event[name].as_str().unwrap_or_default().to_owned();
     CanonicalEvent {
         position: Position(event["position"].as_u64().unwrap_or_default()),
@@ -659,42 +659,79 @@ pub fn segment_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// The first and the last event line of a segment file, read as JSON
-/// alone, and how many event lines it holds: a line that is a frame is
-/// not an event, and no member of a frame is added to its events, as the
-/// open reads a line of a format it does not run.
-fn segment_ends(path: &Path) -> Option<(serde_json::Value, serde_json::Value, u64)> {
+/// The first and the last event of a segment file, restored from the line
+/// or the block each stands on (log-format §1.2, §1.5): an append of two
+/// events or more is stored as a block, whose events are not lines, and
+/// an archive of another format may hold them as this release's writer
+/// holds its own. The last is returned with the position it stands at.
+/// `None` where the file does not restore whole or holds no event; the
+/// flaw the verifier already holds is then damage.
+fn segment_ends(path: &Path) -> Option<(serde_json::Value, serde_json::Value, Position)> {
     let file = File::open(path).ok()?;
+    let mut units = BufReader::new(file);
     let mut first = None;
     let mut last = None;
-    let mut events = 0_u64;
-    for line in BufReader::new(file).lines() {
-        let value: serde_json::Value = serde_json::from_str(&line.ok()?).ok()?;
-        if crate::log::is_frame(&value) {
-            continue;
+    loop {
+        match crate::log::read_unit(&mut units) {
+            Ok(Some(crate::log::Unit::Line(line))) => {
+                let event: serde_json::Value = serde_json::from_slice(&line).ok()?;
+                // A frame's own line holds no event: the lines it covers
+                // follow and each keeps its own `v` and `position`.
+                if crate::log::is_frame(&event) {
+                    continue;
+                }
+                let at = Position(event.get("position")?.as_u64()?);
+                first.get_or_insert(event.clone());
+                last = Some((event, at));
+            }
+            Ok(Some(crate::log::Unit::Block(block, _, line, stored))) => {
+                let events = block_events(&line, &stored, block.events)?;
+                let tip = events.last()?;
+                let at = Position(tip.get("position")?.as_u64()?);
+                first.get_or_insert(events.first()?.clone());
+                last = Some((tip.clone(), at));
+            }
+            Ok(None) => break,
+            Err(_) => return None,
         }
-        events += 1;
-        first.get_or_insert(value.clone());
-        last = Some(value);
     }
-    Some((first?, last?, events))
+    let (tip, at) = last?;
+    Some((first?, tip, at))
+}
+
+/// The events a block holds, restored from the block's own bytes — its
+/// first line and its stored bytes, read by a reader that starts at it,
+/// with nothing before it to check against — so that a block is read by
+/// what it says and not by the chain around it. `None` unless every event
+/// it says it holds restores; the flaw the verifier already holds is then
+/// damage.
+fn block_events(line: &[u8], stored: &[u8], events: u64) -> Option<Vec<serde_json::Value>> {
+    let mut bytes = line.to_vec();
+    bytes.push(b'\n');
+    bytes.extend_from_slice(stored);
+    bytes.push(b'\n');
+    let mut restoring = crate::log::Restoring::new(&bytes[..], false);
+    let mut out = Vec::new();
+    loop {
+        match restoring.next_event() {
+            Ok(Some(restored)) => out.push(restored.event),
+            Ok(None) => break,
+            Err(_) => return None,
+        }
+    }
+    (out.len() as u64 == events).then_some(out)
 }
 
 /// An export's two ends as the judgement over a lake's ends reads them:
-/// the first event line of its first segment, the last event line of its
-/// last, and the position that last stands at, from the segment's name
-/// and its events. `None` where a line cannot be read or a name cannot be
-/// parsed; the flaw the verifier already holds is then damage.
+/// the first event of its first segment, the last event of its last, each
+/// restored from its line or its block, and the position that last stands
+/// at. `None` where a segment does not restore whole; the flaw the
+/// verifier already holds is then damage.
 fn ends_of(dir: &Path) -> Option<(serde_json::Value, serde_json::Value, Position)> {
     let files = segment_files(dir).ok()?;
     let (first, _, _) = segment_ends(files.first()?)?;
-    let (_, tip, events) = segment_ends(files.last()?)?;
-    let start = first_of(files.last()?)?;
-    Some((
-        first,
-        tip,
-        Position(start.checked_add(events.checked_sub(1)?)?),
-    ))
+    let (_, tip, tip_at) = segment_ends(files.last()?)?;
+    Some((first, tip, tip_at))
 }
 
 /// Verify an export from its segment files alone, a line at a time: the
