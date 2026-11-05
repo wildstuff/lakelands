@@ -1846,7 +1846,8 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
     PostgreSQL. A host for whom the default is too much lowers the bound
     or turns the switch off. A build writes in chunks, and a write sent meanwhile waited at
     most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records,
-    in chunks of 10 000; a host's own setting builds the same way (below).
+    in chunks of 10 000 (the size measured then; the default is
+    `limits.order_chunk`, 1 000); a host's own setting builds the same way (below).
   - **A binary before 0.17.0 writing or rebuilding the lake** (it reads
     it: the format and the layout are the same) leaves the chosen
     fields' rows behind. No read takes them from then on, and the next
@@ -1854,8 +1855,10 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
     writer that took its lease back without an open keeps chosen fields
     no read takes until it opens the lake again.
   - **A host's own `sort_index.<type>` always wins.** Written, it takes
-    the lake's choice for the type away and the lake chooses nothing
-    there; retired, it hands the type back. A host that knows its orders
+    the lake's choice for the fields it names away; the setting and the
+    lake share the type's rows field by field, so the lake still chooses
+    the type's other fields (`CHOSEN_ORDER_BESIDE_SORT_INDEX`);
+    retired, it hands those fields back. A host that knows its orders
     names them, and may write the setting while the lake takes writes:
     the build runs in parts beside the writer, a part of
     `limits.order_chunk` records each its own turn in the queue, and no
@@ -1999,7 +2002,9 @@ a call). A roll-up is a kept view grouped by `[symbol, date_bucket(at, …)]` wi
 `count`, `sum`, `min`, `max`, `first` and `last`: one roll-up is the hour, three are
 the minute, the hour and the day, each grouped by a derived `date_bucket` field of the
 tick type. The trigger's guard reads `preceding(price, at, symbol)` against a constant
-bound and never fires; it is judged on every write. Bytes are per record: the log's
+bound and never fires, and the `in_force` cells' guard reads the bound in force
+for the tick's symbol instead and never fires either. It is judged on every
+write. Bytes are per record: the log's
 files, the projection's tables, and the projection's indexes (`dbstat`). Reads are of
 the largest series, the median of five, raw (`where symbol and at >= …`, paged by 1 000)
 and from the finest roll-up (last hour) and the hour roll-up (last day).
@@ -2009,12 +2014,19 @@ memory, a virtual block disk (the guest reports it as rotational; it sits on sha
 host storage), Linux. It was shared with other builds, a model server and
 other benchmark runs, so the one-minute load average was 2 to 24 (the last column
 of the driver's row, start and end of a cell; it misses peaks inside a cell). PostgreSQL 18 ran in a
-container on the same machine, reached over TCP without TLS. Every cell is one
-run, not a median, built from `tick_bench` at `origin/develop` `e586661bd`, a
-release build. Run to run, the same cell spread by up to 46% in writes a second
-and up to 49% in ingest (the three-roll-up SQLite cell with no trigger ran
-twice: 298 and 339 writes a second, 326 and 486 records a second; the table has
-the second, whose bytes could be read). Treat a difference under that as none.
+container on the same machine, reached over TCP without TLS. Most cells ran
+once, not a median; the two-run ones are said so beside them. The driver is
+`tick_bench` on this branch at `fc0da1b1` (unchanged since `3c6d7c75`, the
+commit that added it), the release build that ran; `origin/develop`'s copy of
+the driver has neither `--series-index` nor `--build`, and it reads the load
+average from macOS's `load averages:`, so it reads NaN on Linux. Run to run,
+the same cell spread by up to 46% in writes a second and up to 58% in ingest
+(the three-roll-up SQLite cell with no trigger ran twice: 298 and 339 writes a
+second, 326 and 486 records a second, the second 49% more in ingest, and the
+table has the second, whose bytes could be read; the series pair below ran each
+setting twice, 401 and 587 writes a second without and 1 638 and 2 586 records
+a second with, 46% and 58% again). Treat a difference under 58%, the wider of
+the two measures, as none.
 Reads of the day come from the day roll-up with three roll-ups and from the hour
 roll-up with one. With a guard, the run first writes one tick far above its
 series' last price and stops unless the outcome names the guard as fired. The
@@ -2072,13 +2084,15 @@ What the numbers say:
 - **A trigger's guard costs a write, and PostgreSQL pays far more than SQLite.**
   Against no trigger at 1 000 000 records with no roll-up: `preceding` takes ingest from 4 297 to 1 268
   records a second (−70%) and single writes from 1 156 to 793 on SQLite, and
-  from 2 958 to 152 (−95%) and 712 to 197 (−72%) on PostgreSQL. `in_force`
-  with four bounds a symbol takes ingest to 3 058 (−29%) and singles
-  within the spread (1 127) on SQLite, and to 582 (−80%) and 318 (−55%) on
-  PostgreSQL. With one roll-up the guards cost less (`in_force` −9% ingest, −6%
-  singles on SQLite); with three they are within the spread, the fold being
+  from 2 958 to 152 (−95%) and 712 to 197 (−72%) on PostgreSQL; SQLite's
+  singles (793 against 1 156) are within the spread. `in_force` with four
+  bounds a symbol takes ingest to 582 (−80%) and singles to 318 (−55%, within
+  the spread) on PostgreSQL; on SQLite its ingest (3 058, −29%) and singles
+  (1 127) are both within the spread. With one roll-up the guards' cost is
+  within the spread too (`in_force` −9% ingest, −6% singles on SQLite); with
+  three they are not separable from it, the fold being
   the whole write. At 10 000 000 records with no roll-up, SQLite's `preceding` takes ingest from
-  3 930 to 564 (−86%) and `in_force` to 1 944 (−51%), and the single writes of
+  3 930 to 564 (−86%) and `in_force` to 1 944 (−51%, within the spread), and the single writes of
   `preceding` (1 091) were not slower than none (909), at a load of 2 for the
   first and up to 24 for the last cell of `in_force`; these are single runs at
   a varying load, so a guard price that grows with the series (a symbol of 716 000 ticks
@@ -2107,8 +2121,8 @@ and the trigger `price > in_force(bound.hi, bound.from <= at, bound.symbol = sym
 with `--bounds` bounds a symbol (4 here) written before the feed. Every write reads
 its symbol's partition once, so the cell is K = 4. What it adds to a write is in the
 table above, against no trigger and against `preceding` with a constant bound: on
-SQLite with no roll-up ingest falls 29% and single writes stay within the spread; on
-PostgreSQL ingest falls 80% and single writes 55%. The guard fires on a tick far above
+SQLite with no roll-up both ingest (29% lower) and single writes stay within the
+spread; on PostgreSQL ingest falls 80%, outside it, and single writes 55%, inside it. The guard fires on a tick far above
 its bound (the run stops unless the outcome names it). The other figures of the cost of a
 partition, which the cell does not measure, are
 reckoned in `docs/decisions/100-a-guard-may-read-the-record-in-force.md`: a read costs
@@ -2142,8 +2156,9 @@ pair's cost to a write on PostgreSQL is not separable from the spread at this
 load: the means are 494 and 537 writes a second and 2 311 and 2 112 records a second,
 that is +9% in writes and −9% in ingest with the setting, the wrong sign for a cost in one of them. What is measured is the space: 109
 bytes of projection and 336 of index more a record (+445 bytes, +25% of the
-1 784 a record kept without), and the reads, which got 3 to 4 times shorter (an hour of the
-largest series 531 and 452 ms without, 175 and 109 with). `docs/settings.md` reckons 11% for an order field on PostgreSQL; this run could not tell
+1 784 a record kept without), and the reads: an hour of the largest series fell from
+531 and 452 ms to 175 and 109 (3 to 4 times), and its day from 5 862 and 3 828 ms
+to 2 517 and 1 573 (2.3 to 2.4 times). `docs/settings.md` reckons 11% for an order field on PostgreSQL; this run could not tell
 the pair from none, nor from that.
 
 ## What a build costs the writes beside it
@@ -2153,7 +2168,7 @@ holds records builds in parts beside the writer (`docs/decisions/099-work-beside
 R7 to R9): a part is `limits.order_chunk` records (1 000 by default), each part its own
 turn in the writer's queue, so **a write waits for the part in front of it, and for the
 writes queued ahead of it, and for no more than that**. The bound is therefore the cost of
-one part plus the queue, not the type's size. Measured with `tick_bench --build`:
+one part plus the queue, not the length of the whole build. Measured with `tick_bench --build`:
 the tick type and its hour view are filled with N ticks, and then each setting is
 written, one after the other, while 16 callers keep upserting ticks; the build's wall time runs
 until `describe_type` no longer says `building`, and each write's wait is its call's time (so
@@ -2190,10 +2205,11 @@ No write was refused. What this says:
   1 000 records, so the part alone is far below these: the wait is mostly the
   queue of 15 other callers behind the build's turns; on PostgreSQL's kept build the
   part's own cost adds to it.
-- **Stated bound.** At 16 callers, a write waits at most about 3 s on SQLite at 10 000 000
-  records for either build, and up to 7 s (`sort_index`) or 27 s (`view_kept`) on PostgreSQL;
+- **Stated bound.** At 16 callers, the longest wait measured was about 3 s on SQLite at 10 000 000
+  records for either build, and 7 s (`sort_index`) or 27 s (`view_kept`) on PostgreSQL;
   its p99 stays under 1 s except the PostgreSQL kept build (1.9 s at 1 000 000, 6.9 s at 10 000 000).
-  The build walls (50 s to 1 210 s on SQLite, 92 s to 7 657 s on PostgreSQL) include the
+  The build walls, of the builds that ended (50 s to 1 210 s on SQLite, 92 s to 7 657 s on
+  PostgreSQL), include the
   16 callers taking most of the writer; they are not the time a build would take alone, and
   no run of the earlier path, the whole build in one append, was made at these sizes, so
   nothing here compares the two.

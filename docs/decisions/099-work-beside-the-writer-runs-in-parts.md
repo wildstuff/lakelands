@@ -436,6 +436,11 @@ Measured today under the writer, contended: general 300k, `lookup_index` 2.59 s,
   because a setting's write and a chosen build could not share the rows. They share one
   road now, field by field: a field the host has set is the host's setting, and a chosen
   one goes when the setting comes.
+- **097's cost row for `lookup_index` is superseded.** "What the settings cost" in 097
+  reckoned a number named in
+  `lookup_index` as one pass in the setting's transaction, holding the writer, about
+  0.85 s on SQLite and 2.4 s on PostgreSQL at 100 000 records. R7 fills it in parts
+  beside the writer instead, as `sort_index`'s, so that row no longer holds.
 
 **As built (2026-11-02).** The `sort_index` and `lookup_index` builds take the road. A
 setting's event written at a door is folded with `whole` false, and the projection records
