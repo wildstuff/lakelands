@@ -1489,12 +1489,15 @@ only what the writer alone states.
   remainder is `Remove::reach` cloning the act's 199 000 keys under the writer (33 ms
   cumulative on the memory engine, 37 ms on SQLite), which is `road.rs`'s limb of
   lakelands#1649 and not this change, and the first part's append (13 ms and 82 ms).
-- **The ledger.** Product +155, specification unchanged: the carry runs on the removals
-  the suite already walks, whose tails hold no event of the source. core-size reads
-  product 114 784 and specification 202 462 at this change's head. Merged with develop's
-  change to the PostgreSQL engine's open (2026-11-05), the tree reads product 114 792 of
-  115 000 and specification 202 522 of 202 500: its test adds 60 specification lines, 22
-  over the base, and no row.
+- **The ledger.** Product +155, specification −35: the carry runs on the removals the
+  suite already walks, whose tails hold no event of the source, and the 35 lines are a
+  cut, not a test of this change. core-size reads product 114 792 of 115 000 and
+  specification 202 487 of 202 500 at this change's head. Merged with develop's change to
+  the PostgreSQL engine's open (2026-11-05) the tree read specification 202 522 of
+  202 500, 22 over: its test added 60 lines. With no row to write for another lane's
+  lines, the duplication was cut instead — the PostgreSQL format test's two
+  release-direction tests judged one refusal twice, and are now one test that walks both
+  directions, every assertion kept.
 
 ## How it came to be
 

@@ -119,129 +119,94 @@ fn the_ends_of_a_log_are_read_and_its_schema_is_left_as_it_was() {
     let _ = std::fs::remove_dir_all(&export);
 }
 
+/// The same from both sides. A lake a later release left — its tip in
+/// that release's format, its projection without a layout mark (that
+/// release made none), and a table it made that this build does not know
+/// — is refused for its format in every mode, and not for its layout. A
+/// lake a release before this one left, its log in the format before
+/// this release's and a table it wrote that this build does not know
+/// (lakelands#1764), is refused by its format too, not as a schema that
+/// is not a lake's. An import onto either is answered from the same
+/// question, and changes no row of it.
 #[test]
-fn a_lake_a_later_release_left_is_refused_for_its_format_and_not_touched() {
-    let Some(url) = common::url_or_skip("a lake of a later release") else {
+fn a_lake_of_another_release_is_refused_for_its_format_and_not_touched() {
+    let Some(url) = common::url_or_skip("a lake of another release") else {
         return;
     };
     let reads = LOG_FORMAT_VERSION;
     let on = tokio::runtime::Runtime::new().unwrap();
-    let (location, schema, export) = made(&url, &on);
-    // Its writer's last event, in the format after this release's.
-    let engine = PgOpener.open(&location, OpenMode::Write).unwrap();
-    let lease = engine.take_lease("a later release").unwrap();
-    let (at, prev) = engine.tip().unwrap().unwrap();
-    let (fence, holder) = (lease.fence, "a later release".into());
-    let taken = Draft::system(
-        Timestamp(i64::MAX / 2),
-        EventBody::LeaseTaken { fence, holder },
-    );
-    let (_, stored) = seal(&location.lake, at.next(), &prev, fence, taken);
-    let mut event: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-    event["v"] = json!(reads + 1);
-    event.as_object_mut().unwrap().remove("hash");
-    let hash = canonical::sha256_hex(&event);
-    event["hash"] = json!(hash);
-    let line = CanonicalEvent {
-        hash: Digest(hash),
-        bytes: canonical::to_vec(&event),
-        ..stored
-    };
-    engine.append(&lease, &[line]).unwrap();
-    engine.release_lease(&lease).unwrap();
-    drop(engine);
-    // Its projection carries no layout mark: that release made none.
-    let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    let unmark = format!("DELETE FROM \"{schema}\".meta WHERE k = 'layout'");
-    assert_eq!(db.execute(&unmark, &[]).unwrap(), 1);
-    // And a table of its own, which this build does not know: the format
-    // is what the refusal names, not the table.
-    db.batch_execute(&format!("CREATE TABLE \"{schema}\".later_table (x int)"))
-        .unwrap();
-    drop(db);
-    let before = held(&url, &schema);
-    let another = |e: &lakelands_api::Error| {
-        matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads: r, .. })
-            if *lake == schema && *found == u64::from(reads + 1) && *r == u64::from(reads))
-    };
-    for mode in [
-        OpenMode::Read,
-        OpenMode::Write,
-        OpenMode::Create,
-        OpenMode::Rebuild,
-    ] {
-        let opened = on.block_on(lakelands_store::open(location.clone(), seams(), mode));
-        let Err(e) = opened else {
-            panic!("a lake of a later release opened for {mode:?}");
+    for (later, found) in [(true, reads + 1), (false, reads - 1)] {
+        let (location, schema, export) = made(&url, &on);
+        let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        if later {
+            // Its writer's last event, in the format after this release's.
+            let engine = PgOpener.open(&location, OpenMode::Write).unwrap();
+            let lease = engine.take_lease("a later release").unwrap();
+            let (at, prev) = engine.tip().unwrap().unwrap();
+            let (fence, holder) = (lease.fence, "a later release".into());
+            let taken = Draft::system(
+                Timestamp(i64::MAX / 2),
+                EventBody::LeaseTaken { fence, holder },
+            );
+            let (_, stored) = seal(&location.lake, at.next(), &prev, fence, taken);
+            let mut event: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
+            event["v"] = json!(found);
+            event.as_object_mut().unwrap().remove("hash");
+            let hash = canonical::sha256_hex(&event);
+            event["hash"] = json!(hash);
+            let line = CanonicalEvent {
+                hash: Digest(hash),
+                bytes: canonical::to_vec(&event),
+                ..stored
+            };
+            engine.append(&lease, &[line]).unwrap();
+            engine.release_lease(&lease).unwrap();
+            drop(engine);
+            // Its projection carries no layout mark: that release made none.
+            let unmark = format!("DELETE FROM \"{schema}\".meta WHERE k = 'layout'");
+            assert_eq!(db.execute(&unmark, &[]).unwrap(), 1);
+        } else {
+            // Its writer's log and its format taken back one release:
+            // every line's `v` and the `lake_created` body's `format`,
+            // as that release wrote them.
+            let older = format!(
+                "UPDATE \"{schema}\".log SET bytes = convert_to(replace(replace(convert_from(bytes, 'UTF8'), \
+                 '\"v\":{reads}', '\"v\":{found}'), '\"format\":{reads}', '\"format\":{found}'), 'UTF8')"
+            );
+            db.batch_execute(&older).unwrap();
+        }
+        // And a table of its own, which this build does not know: the
+        // format is what the refusal names, not the table.
+        db.batch_execute(&format!("CREATE TABLE \"{schema}\".own (x int)"))
+            .unwrap();
+        drop(db);
+        let before = held(&url, &schema);
+        let another = |e: &lakelands_api::Error| {
+            matches!(e.situation(), Some(Situation::LogFormat { lake, found: f, reads: r, .. })
+                if *lake == schema && *f == u64::from(found) && *r == u64::from(reads))
         };
-        assert!(another(&e), "{mode:?}: {e:?}");
-        assert_eq!(held(&url, &schema), before, "{mode:?} changed the schema");
+        for mode in [
+            OpenMode::Read,
+            OpenMode::Write,
+            OpenMode::Create,
+            OpenMode::Rebuild,
+        ] {
+            let opened = on.block_on(lakelands_store::open(location.clone(), seams(), mode));
+            let Err(e) = opened else {
+                panic!("a lake of another release opened for {mode:?}");
+            };
+            assert!(another(&e), "{mode:?}: {e:?}");
+            assert_eq!(held(&url, &schema), before, "{mode:?} changed the schema");
+        }
+        let e = on.block_on(lakelands_store::import(
+            location.clone(),
+            seams(),
+            export.clone(),
+        ));
+        let e = e.expect_err("an import onto a lake of another release was taken");
+        assert!(another(&e), "an import: {e:?}");
+        assert_eq!(held(&url, &schema), before, "an import changed the schema");
+        common::drop_schema(&url, &schema);
+        let _ = std::fs::remove_dir_all(&export);
     }
-    let e = on.block_on(lakelands_store::import(
-        location.clone(),
-        seams(),
-        export.clone(),
-    ));
-    let e = e.expect_err("an import onto a lake of a later release was taken");
-    assert!(another(&e), "an import: {e:?}");
-    assert_eq!(held(&url, &schema), before, "an import changed the schema");
-    common::drop_schema(&url, &schema);
-    let _ = std::fs::remove_dir_all(&export);
-}
-
-/// The same from the other side, as lakelands#1764 found it: a lake a
-/// release before this one left, its log in the format before this
-/// release's and a table that release wrote and this build does not
-/// (`frames`), is refused by its format, not as a schema that is not a
-/// lake's, and nothing of it is touched.
-#[test]
-fn a_lake_an_earlier_release_left_is_refused_for_its_format_and_not_touched() {
-    let Some(url) = common::url_or_skip("a lake of an earlier release") else {
-        return;
-    };
-    let reads = LOG_FORMAT_VERSION;
-    let on = tokio::runtime::Runtime::new().unwrap();
-    let (location, schema, export) = made(&url, &on);
-    // Its writer's log, and its format, taken back one release: every
-    // line's `v` and the `lake_created` body's `format`, as that release
-    // wrote them; and a table of its own, which this build does not know.
-    let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    let older = format!(
-        "UPDATE \"{schema}\".log SET bytes = convert_to(replace(replace(convert_from(bytes, 'UTF8'), \
-         '\"v\":{reads}', '\"v\":{}'), '\"format\":{reads}', '\"format\":{}'), 'UTF8')",
-        reads - 1,
-        reads - 1,
-    );
-    db.batch_execute(&older).unwrap();
-    db.batch_execute(&format!("CREATE TABLE \"{schema}\".frames (x int)"))
-        .unwrap();
-    drop(db);
-    let before = held(&url, &schema);
-    let earlier = |e: &lakelands_api::Error| {
-        matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads: r, .. })
-            if *lake == schema && *found == u64::from(reads - 1) && *r == u64::from(reads))
-    };
-    for mode in [
-        OpenMode::Read,
-        OpenMode::Write,
-        OpenMode::Create,
-        OpenMode::Rebuild,
-    ] {
-        let opened = on.block_on(lakelands_store::open(location.clone(), seams(), mode));
-        let Err(e) = opened else {
-            panic!("a lake of an earlier release opened for {mode:?}");
-        };
-        assert!(earlier(&e), "{mode:?}: {e:?}");
-        assert_eq!(held(&url, &schema), before, "{mode:?} changed the schema");
-    }
-    let e = on.block_on(lakelands_store::import(
-        location.clone(),
-        seams(),
-        export.clone(),
-    ));
-    let e = e.expect_err("an import onto a lake of an earlier release was taken");
-    assert!(earlier(&e), "an import: {e:?}");
-    assert_eq!(held(&url, &schema), before, "an import changed the schema");
-    common::drop_schema(&url, &schema);
-    let _ = std::fs::remove_dir_all(&export);
 }
