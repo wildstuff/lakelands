@@ -7,7 +7,7 @@
 //! target/release/examples/tick_bench --lakelands target/release/lakelands \
 //!     [--pg-url <url> --pg-plain] [--records <n>] [--singles <n>] [--series <n>] \
 //!     [--callers <n>] [--batch <n>] [--rollups 0,1,3] [--triggers none,preceding,in_force] \
-//!     [--bounds <n>] [--reads <n>] --scratch <dir>
+//!     [--bounds <n>] [--reads <n>] [--series-index] [--build sort,lookup,kept] --scratch <dir>
 //! ```
 //!
 //! One cell is one fresh lake served by one `serve --mcp` process. The
@@ -37,6 +37,16 @@
 //! a SQLite lake are read after the server has stopped; PostgreSQL's need
 //! `--pg-plain`. The last column is the machine's one-minute load average
 //! at the cell's start and end, own work included. Every knob is an argument.
+//!
+//! `--series-index` writes `series_index.tick = [["symbol", "at"]]` beside
+//! the order index, before the feed, and says so in the row's engine.
+//!
+//! `--build sort,lookup,kept` runs no cell: it fills a lake of the tick type and
+//! its hour view with `--records` ticks and no setting, then writes
+//! `sort_index.tick`, `lookup_index.tick` (on `price`) and `view_kept.tick_h1` one after the
+//! other while `--callers` callers keep upserting. A row per build: the wall time
+//! until `describe` no longer says `building`, and the p50, p99 and p100 of the
+//! writes beside it, against 20 s of writes with no build.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -219,7 +229,11 @@ fn load_average() -> f64 {
     let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
     text.ok()
         .and_then(|t| {
-            let tail = t.rsplit("load averages:").next()?.to_owned();
+            // "load averages:" on macOS, "load average:" on Linux.
+            let tail = t
+                .rsplit("load average")
+                .next()?
+                .trim_start_matches(['s', ':']);
             tail.trim().split([' ', ',']).next()?.parse().ok()
         })
         .unwrap_or(f64::NAN)
@@ -518,22 +532,11 @@ fn sizes_pg(url: &str, schema: &str) -> Option<(u64, u64, u64)> {
     Some((log, proj, index))
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn cell(
-    bin: &Path,
-    scratch: &Path,
-    pg: Option<(&str, bool)>,
-    rollups: usize,
-    trigger: &str,
-    records: u64,
-    a: &Args,
-) {
-    let root = scratch.join(format!("root-{}-{rollups}-{trigger}", std::process::id()));
-    let load_before = load_average();
-    let schema = prepare(bin, &root, pg);
+/// One `serve --mcp` process over the root, and a client on its port.
+async fn serve(bin: &Path, root: &Path) -> (tokio::process::Child, Arc<RemoteLake>) {
     let mut child = Command::new(bin)
         .arg("--root")
-        .arg(&root)
+        .arg(root)
         .args(["--as", "writer", "serve", "--mcp"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -552,6 +555,8 @@ async fn cell(
             break x.trim_end_matches('/').to_owned();
         }
     };
+    // Keep reading its log, so a write to a closed pipe never stops it.
+    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
     let remote = Arc::new(
         RemoteLake::connect(RemoteConfig {
             url: format!("http://{addr}/"),
@@ -559,12 +564,29 @@ async fn cell(
             keys: BTreeMap::from([("writer".to_owned(), ApiKey::from("k-writer"))]),
             feed_key: None,
             ca_file: None,
-            timeout_secs: 600,
+            timeout_secs: 86_400,
             max_answer_bytes: lakelands_client::DEFAULT_MAX_ANSWER_BYTES,
             limits: Limits::default(),
         })
         .unwrap(),
     );
+    (child, remote)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cell(
+    bin: &Path,
+    scratch: &Path,
+    pg: Option<(&str, bool)>,
+    rollups: usize,
+    trigger: &str,
+    records: u64,
+    a: &Args,
+) {
+    let root = scratch.join(format!("root-{}-{rollups}-{trigger}", std::process::id()));
+    let load_before = load_average();
+    let schema = prepare(bin, &root, pg);
+    let (mut child, remote) = serve(bin, &root).await;
     let cat = remote.catalog(WriteContext::default());
     for d in declarations(rollups, trigger) {
         let decl: Declaration = serde_json::from_value(d.clone()).unwrap();
@@ -579,6 +601,20 @@ async fn cell(
             )
             .await
             .expect("an order index on `at`");
+            if a.series_index {
+                cat.upsert(
+                    &writer(),
+                    &lakelands_api::seam::SETTING_TYPE.into(),
+                    &"series_index.tick".into(),
+                    serde_json::from_value(
+                        json!({"key": "series_index.tick", "value": [["symbol", "at"]]}),
+                    )
+                    .unwrap(),
+                    WriteOpts::default(),
+                )
+                .await
+                .expect("a series index on `symbol` and `at`");
+            }
         }
         if let Some(name) = d["name"]
             .as_str()
@@ -700,9 +736,17 @@ async fn cell(
             (per(l), per(p), per(i))
         });
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
-    println!(
-        "| {} | {rollups} | {trigger} | {records} | {:.0} | {:.1} | {:.0} | {:.1} | {log} | {proj} | {index} | {load_before:.1} / {:.1} |",
+    let engine = format!(
+        "{}{}",
         if pg.is_some() { "postgres" } else { "sqlite" },
+        if a.series_index {
+            " + series_index"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "| {engine} | {rollups} | {trigger} | {records} | {:.0} | {:.1} | {:.0} | {:.1} | {log} | {proj} | {index} | {load_before:.1} / {:.1} |",
         c.singles.0,
         ms(c.singles.2),
         c.ingest.0,
@@ -714,6 +758,11 @@ async fn cell(
         c.largest,
         reads.join(" | ")
     );
+    drop_lake(pg, schema, &root);
+}
+
+/// The lake's PostgreSQL schema and its root, gone.
+fn drop_lake(pg: Option<(&str, bool)>, schema: Option<String>, root: &Path) {
     if let Some((url, _)) = pg
         && let Some(s) = schema
     {
@@ -723,7 +772,182 @@ async fn cell(
             }
         });
     }
-    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Callers keep upserting ticks while `during` runs; what each write took.
+async fn beside<F: std::future::Future>(
+    remote: &Arc<RemoteLake>,
+    feed: &Arc<Feed>,
+    callers: usize,
+    during: F,
+) -> (F::Output, Vec<Duration>, usize) {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut running = Vec::new();
+    for _ in 0..callers {
+        let (remote, feed, stop) = (remote.clone(), feed.clone(), stop.clone());
+        running.push(tokio::spawn(async move {
+            let cat = remote.catalog(WriteContext::default());
+            let (mut took, mut refused) = (Vec::new(), 0);
+            while !stop.load(Ordering::Relaxed) {
+                let (k, fields) = feed.tick();
+                let patch = serde_json::from_value(fields).unwrap();
+                let at = Instant::now();
+                let done = cat
+                    .upsert(
+                        &writer(),
+                        &"tick".into(),
+                        &k.into(),
+                        patch,
+                        WriteOpts::default(),
+                    )
+                    .await;
+                took.push(at.elapsed());
+                if let Err(e) = done {
+                    refused += 1;
+                    eprintln!("a write beside was refused: {e}");
+                }
+            }
+            (took, refused)
+        }));
+    }
+    let out = during.await;
+    stop.store(true, Ordering::Relaxed);
+    let (mut took, mut refused) = (Vec::new(), 0);
+    for r in running {
+        let (t, n) = r.await.unwrap();
+        took.extend(t);
+        refused += n;
+    }
+    (out, took, refused)
+}
+
+/// The setting that builds, the type it is on, and whether the build is
+/// still going, as `describe_type` tells it.
+async fn building(cat: &Arc<dyn lakelands_api::Catalog>, which: &str) -> bool {
+    let (ty, kept) = if which == "kept" {
+        ("tick_h1", true)
+    } else {
+        ("tick", false)
+    };
+    let d = cat
+        .describe_type(&writer(), &ty.into(), Default::default())
+        .await
+        .expect("describes")
+        .data;
+    if kept {
+        matches!(
+            d.lifecycle.kept,
+            Some(lakelands_api::describe::Kept::Computed {
+                why: lakelands_api::describe::NotKept::Building
+            })
+        )
+    } else {
+        !d.lifecycle.building.is_empty()
+    }
+}
+
+/// What a setting's build costs the writes beside it. One lake: the tick
+/// type and the hour view are declared with no setting and filled with
+/// `records` ticks by ingest; then, one after the other, each of `which`
+/// is written while `--callers` callers keep upserting ticks. A row prints
+/// per build: the wall time until `describe` no longer says `building`,
+/// and what the writes beside it waited, set against writes with no build.
+async fn builds(
+    bin: &Path,
+    scratch: &Path,
+    pg: Option<(&str, bool)>,
+    which: &[String],
+    records: u64,
+    a: &Args,
+) {
+    let root = scratch.join(format!("root-{}-build", std::process::id()));
+    let schema = prepare(bin, &root, pg);
+    let (mut child, remote) = serve(bin, &root).await;
+    let cat = remote.catalog(WriteContext::default());
+    for d in declarations(1, "none") {
+        let decl: Declaration = serde_json::from_value(d).unwrap();
+        cat.declare(&writer(), decl).await.expect("declared");
+    }
+    let feed = Arc::new(Feed::new(a.series));
+    let filled = Instant::now();
+    load(&remote, &feed, records, 0, a.callers, a.batch).await;
+    eprintln!(
+        "filled {records} in {:.0} s",
+        filled.elapsed().as_secs_f64()
+    );
+    let ms = |d: Duration| d.as_secs_f64() * 1e3;
+    let engine = if pg.is_some() { "postgres" } else { "sqlite" };
+    let row = |what: &str, wall: String, set: String, took: &mut Vec<Duration>, refused: usize| {
+        let secs = took.iter().map(Duration::as_secs_f64).sum::<f64>() / a.callers as f64;
+        format!(
+            "| {engine} | {what} | {records} | {} | {wall} | {set} | {} | {:.0} | {:.1} | {:.1} | {:.1} | {refused} |",
+            a.callers,
+            took.len(),
+            took.len() as f64 / secs.max(1e-9),
+            ms(quantile(took, 0.5)),
+            ms(quantile(took, 0.99)),
+            ms(quantile(took, 1.0)),
+        )
+    };
+    println!(
+        "| engine | build | records | callers | build wall s | setting's write returned s | writes beside | writes/s beside | p50 ms | p99 ms | p100 ms | refused |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|");
+    let load_before = load_average();
+    let ((), mut quiet, refused) = beside(&remote, &feed, a.callers, async {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+    })
+    .await;
+    println!(
+        "{}",
+        row("none (20 s)", "-".into(), "-".into(), &mut quiet, refused)
+    );
+    for w in which {
+        let (key, value) = match w.as_str() {
+            "sort" => ("sort_index.tick", json!(["at"])),
+            "lookup" => ("lookup_index.tick", json!(["price"])),
+            "kept" => ("view_kept.tick_h1", json!(true)),
+            other => panic!("--build names sort, lookup or kept, not {other}"),
+        };
+        let began = Instant::now();
+        let ((returned, wall), mut took, refused) = beside(&remote, &feed, a.callers, async {
+            cat.upsert(
+                &writer(),
+                &lakelands_api::seam::SETTING_TYPE.into(),
+                &key.into(),
+                serde_json::from_value(json!({"key": key, "value": value})).unwrap(),
+                WriteOpts::default(),
+            )
+            .await
+            .expect("the setting is written");
+            let returned = began.elapsed();
+            while building(&cat, w).await {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            (returned, began.elapsed())
+        })
+        .await;
+        println!(
+            "{}",
+            row(
+                key,
+                format!("{:.1}", wall.as_secs_f64()),
+                format!("{:.1}", returned.as_secs_f64()),
+                &mut took,
+                refused
+            )
+        );
+    }
+    println!(
+        "load 1 min, start / end: {load_before:.1} / {:.1}",
+        load_average()
+    );
+    drop(cat);
+    drop(remote);
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    drop_lake(pg, schema, &root);
 }
 
 struct Args {
@@ -733,12 +957,14 @@ struct Args {
     batch: usize,
     bounds: usize,
     reads: usize,
+    series_index: bool,
 }
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let mut args = std::env::args().skip(1);
     let (mut bin, mut scratch, mut pg_url, mut plain) = (None, None, None, false);
+    let mut build: Option<Vec<String>> = None;
     let mut records = vec![100_000u64];
     let mut a = Args {
         series: 5_000,
@@ -747,6 +973,7 @@ async fn main() {
         batch: 1_000,
         bounds: 4,
         reads: 5,
+        series_index: false,
     };
     let (mut rollups, mut triggers) = (
         vec![0usize, 1, 3],
@@ -766,6 +993,8 @@ async fn main() {
             "--batch" => a.batch = v().parse().unwrap(),
             "--bounds" => a.bounds = v().parse().unwrap(),
             "--reads" => a.reads = v().parse().unwrap(),
+            "--series-index" => a.series_index = true,
+            "--build" => build = Some(v().split(',').map(str::to_owned).collect()),
             "--rollups" => rollups = v().split(',').map(|c| c.parse().unwrap()).collect(),
             "--triggers" => triggers = v().split(',').map(str::to_owned).collect(),
             other => panic!("unknown argument {other}"),
@@ -773,6 +1002,20 @@ async fn main() {
     }
     let bin = bin.expect("--lakelands");
     let scratch = scratch.expect("--scratch");
+    if let Some(which) = &build {
+        for &n in &records {
+            builds(
+                &bin,
+                &scratch,
+                pg_url.as_deref().map(|u| (u, plain)),
+                which,
+                n,
+                &a,
+            )
+            .await;
+        }
+        return;
+    }
     println!(
         "| engine | roll-ups | trigger | records | callers: writes/s | p99 ms | ingest: records/s | p99 ms a call of {} | log B/rec | projection B/rec | index B/rec | load 1 min, start / end |",
         a.batch
