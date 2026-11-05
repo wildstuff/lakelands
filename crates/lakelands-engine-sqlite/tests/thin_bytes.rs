@@ -5,8 +5,8 @@
 //! returns to the file are this engine's own measure, held only here.
 //! `tick`, 4 000 records with a note of 200 bytes, three in four before
 //! the horizon, is thinned: the act's report names the projection's bytes
-//! before and after its reclaim, the file and its journal are smaller
-//! than they were, and it keeps a tombstone a key. The test prints what it
+//! before and after its reclaim, the file, compacted before the act, is
+//! smaller than it was, and it keeps a tombstone a key. The test prints what it
 //! measured, the sizes and the times `docs/hosting.md` states, for a run
 //! by hand:
 //! `cargo test -p lakelands-engine-sqlite --test thin_bytes -- --nocapture`.
@@ -57,9 +57,11 @@ async fn a_thinning_gives_its_bytes_back_to_the_file() {
         let fields = json!({"at": format!("{at}T00:00:{:02}Z", i % 60), "note": note});
         l.upsert("tick", &format!("t{i:04}"), fields).await.unwrap();
     }
+    // The baseline is a compacted file, so the journal the writes left
+    // behind is not counted as a thinning's gain.
+    store.compact().await.unwrap();
     let (db, wal) = (dir.join("projection.db"), dir.join("projection.db-wal"));
     let (file, journal) = (len(&db), len(&wal));
-    let stored = file + journal;
     let (ty, thin) = (
         TypeName::from("tick"),
         Thin {
@@ -73,7 +75,7 @@ async fn a_thinning_gives_its_bytes_back_to_the_file() {
     let clock = Instant::now();
     let report = store.thin_values(&ty, &thin, false).await.unwrap();
     let took = clock.elapsed();
-    let left = len(&db) + len(&wal);
+    let (left, kept) = (len(&db), len(&wal));
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
     let tombs: (i64, i64) = rusqlite::Connection::open_with_flags(&db, flags)
         .unwrap()
@@ -87,9 +89,12 @@ async fn a_thinning_gives_its_bytes_back_to_the_file() {
     let (before, after) = (reclaimed.before.unwrap(), reclaimed.after.unwrap());
     println!(
         "thin_bytes: {} records taken; preflight {asked:?}, act {took:?}; \
-         file {file} and journal {journal} bytes before, {left} after; reclaim {before} -> {after}; \
-         {} tombstones of {} bytes",
-        report.records, tombs.0, tombs.1
+         compacted file {file} (journal {journal}) bytes before, {left} (journal {kept}) after, \
+         {} a record; reclaim {before} -> {after}; {} tombstones of {} bytes",
+        report.records,
+        file.saturating_sub(left) / 3000,
+        tombs.0,
+        tombs.1
     );
     assert_eq!(tombs.0, 3000, "a tombstone a key");
     assert_eq!((preflight.records, report.records), (3000, 3000));
@@ -97,10 +102,7 @@ async fn a_thinning_gives_its_bytes_back_to_the_file() {
         after < before,
         "the reclaim gives bytes back: {reclaimed:?}"
     );
-    assert!(
-        left < stored,
-        "the file and its journal shrink: {stored} -> {left}"
-    );
+    assert!(left < file, "the compacted file shrinks: {file} -> {left}");
     drop((l, store));
     let _ = std::fs::remove_dir_all(&dir);
 }

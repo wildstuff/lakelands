@@ -123,8 +123,8 @@ pub struct Reader<'a> {
     /// The views being computed, outermost first.
     computing: RefCell<Vec<TypeName>>,
     /// The views whose computation omitted their stranded groups, with
-    /// how many, innermost first (102).
-    omitted: RefCell<Vec<(TypeName, u64)>>,
+    /// their keys, innermost first (102).
+    omitted: RefCell<Vec<(TypeName, BTreeSet<RecordKey>)>>,
     /// What [`Self::kept_read`] answered for each view and face, so that a
     /// view many views read is asked once a read (lakelands#942).
     kept_reads: RefCell<BTreeMap<(TypeName, usize), Option<KeptRead>>>,

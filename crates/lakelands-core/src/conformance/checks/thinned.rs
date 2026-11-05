@@ -91,7 +91,7 @@ check!(
 
 check!(
     THIN_AS_OF_SAYS_UNANSWERABLE = a_read_before_the_act_says_what_it_cannot_answer,
-    "102 (lakelands#1749): after the act, `daily`'s page at the head names the act and its stranded groups say so; as of the position before it, `daily` and a view `rolled` over it answer `d`, the group the act did not strand, and count the three `describe` counts stranded, and a `get` of a stranded group is refused `stranded_at_head_only` naming `daily`, of `rolled` too, while `t1` as of then is refused `thinned`; `describe` of `tick` names the act",
+    "102 (lakelands#1749): after the act, `daily`'s page at the head, and a kept view `held` over it, name the act and their stranded groups say so; as of the position before it, `daily` and a computed view `rolled` over it answer `d`, the group the act did not strand, and count the five `describe` counts stranded, `held` the three its own marks hold; a record that moved from `e` to `f` before the act strands both, and as of when it was in `e` `daily` leaves `e` out; a `get` of a stranded group is refused `stranded_at_head_only` naming `daily`, of `rolled` and `held` too, a key no group held is `not_found`, and `t1` as of then is refused `thinned`; `describe` of `tick` names the act",
     given
 );
 
@@ -858,52 +858,64 @@ async fn a_read_before_the_act_says_what_it_cannot_answer(store: Store, _given: 
     let l = Lake::of(store.as_ref());
     ticks(&l).await?;
     l.declare(over("daily", "rolled", "t")).await?;
+    l.declare(over("daily", "held", "t")).await?;
+    l.set(&format!("{VIEW_KEPT_SETTING}held"), json!(true))
+        .await?;
     let late = json!({"at": "2026-07-01T00:00:00Z", "m": "d", "n": 3});
     l.upsert("tick", "t7", late).await?;
+    tick_at(&l, "t8", "e", 6, 5).await?;
+    let early = store.head().await.must("reading the head")?;
+    tick_at(&l, "t8", "f", 6, 5).await?;
     let before = store.head().await.must("reading the head")?;
     thinned(&store, false).await?;
     let mut red = Vec::new();
-    for (ty, at, want) in [
-        (
-            "daily",
-            None,
-            r#"[("a", true), ("b", true), ("d", false)] [("tick", 4)] None"#,
-        ),
-        (
-            "daily",
-            Some(before),
-            r#"[("d", false)] [("tick", 4)] Some(3)"#,
-        ),
-        (
-            "rolled",
-            Some(before),
-            r#"[("d", false)] [("tick", 4)] Some(3)"#,
-        ),
+    let (head, d) = (
+        "[(\"a\", true), (\"b\", true), (\"d\", false), (\"f\", true)]",
+        "[(\"d\", false)]",
+    );
+    for (ty, at, rows, strands) in [
+        ("daily", None, head, None),
+        ("held", None, head, None),
+        ("daily", Some(early), d, Some(5)),
+        ("daily", Some(before), d, Some(5)),
+        ("rolled", Some(before), d, Some(5)),
+        ("held", Some(before), d, Some(3)),
     ] {
-        let now = page(&l, ty, at).await?;
+        let (now, want) = (
+            page(&l, ty, at).await?,
+            format!("{rows} [(\"tick\", 5)] {strands:?}"),
+        );
         if now != want {
             red.push(format!("`{ty}` as of {at:?} answers {now}, not {want}"));
         }
     }
-    for (ty, key) in [("daily", "a"), ("rolled", "a"), ("tick", "t1")] {
-        let (t, at) = (TypeName::from(ty), get_at(key, Some(before)));
-        let got = l.cat.get(&l.own, &t, at).await;
-        let said = match invalid_case(&got) {
-            Some(Case::StrandedAtHeadOnly { ty: v, position }) => {
-                ty != "tick" && v.as_str() == "daily" && *position == before
+    for (ty, key, at) in [
+        ("daily", "a", before),
+        ("daily", "e", early),
+        ("rolled", "a", before),
+        ("held", "a", before),
+        ("daily", "zzz", before),
+        ("tick", "t1", before),
+    ] {
+        let (t, asked) = (TypeName::from(ty), get_at(key, Some(at)));
+        let got = l.cat.get(&l.own, &t, asked).await;
+        let said = match (key, invalid_case(&got)) {
+            ("zzz", _) => matches!(got, Err(Error::NotFound { .. })),
+            (_, Some(Case::StrandedAtHeadOnly { ty: v, position })) => {
+                v.as_str() == "daily" && *position == at
             }
-            Some(Case::Thinned { ty: t, key: k, .. }) => t.as_str() == ty && k.as_str() == key,
+            (_, Some(Case::Thinned { ty: t, key: k, .. })) => t.as_str() == ty && k.as_str() == key,
             _ => false,
         };
         if !said {
-            red.push(format!("`{ty}` `{key}` as of {before:?} answers {got:?}"));
+            red.push(format!("`{ty}` `{key}` as of {at:?} answers {got:?}"));
         }
     }
     let (acts, groups) = (
         l.describe_type("tick").await?.thinned,
         stranded(&l, "daily").await?,
     );
-    if acts.len() != 1 || groups != 3 {
+    if acts.len() != 1 || groups != 5 {
         red.push(format!(
             "`tick` is thinned by {acts:?}, `daily` strands {groups}"
         ));

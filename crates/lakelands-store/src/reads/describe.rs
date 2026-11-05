@@ -11,7 +11,7 @@ impl<'a> Reader<'a> {
         let mut lake = self.sight.describe(&self.lake.id);
         let mut answered = Answered::default();
         for t in &mut lake.types {
-            self.name_sorted(t, &mut answered);
+            self.name_sorted(t, &mut answered)?;
         }
         self.renamed_since(asked, &mut lake.types)?;
         // Whether the host binds a verb's executor is the binding now, at
@@ -67,7 +67,7 @@ impl<'a> Reader<'a> {
         let missing = Missing::Type { name: ty.clone() };
         let mut t = (self.sight.describe_type(ty)).ok_or(Error::NotFound { missing })?;
         let mut answered = Answered::default();
-        self.name_sorted(&mut t, &mut answered);
+        self.name_sorted(&mut t, &mut answered)?;
         self.renamed_since(asked, std::slice::from_mut(&mut t))?;
         answered.tell(self.lake, &mut t, self.now);
         Ok((t, answered))
@@ -111,13 +111,13 @@ impl<'a> Reader<'a> {
     /// whether it is kept, as its `view_kept.<type>` setting asks. The
     /// fields told the pages sorted whole by go to `answered`, which tells
     /// those pages at the answer.
-    fn name_sorted(&self, t: &mut TypeDescription, answered: &mut Answered) {
+    fn name_sorted(&self, t: &mut TypeDescription, answered: &mut Answered) -> Result<()> {
         let Ok(decl) = self.shape.ontology.ty(&t.name) else {
             answered.whole.push(Vec::new());
-            return;
+            return Ok(());
         };
         // The acts that thinned it or its sources, read at the head (102).
-        t.thinned = self.thinned(decl).unwrap_or_default();
+        t.thinned = self.thinned(decl)?;
         let seen = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
         let settings = &self.shape.settings;
         // A view's order index is its kept records'.
@@ -234,7 +234,7 @@ impl<'a> Reader<'a> {
                 let state = kept::state(self.view.as_ref(), &t.name).ok().flatten();
                 answered.read_state = true;
                 t.stranded = state.as_ref().map_or(0, |s| s.stranded[face]);
-                let marks = self.stranded_marks(&t.name).unwrap_or_default();
+                let marks = self.stranded_marks(&t.name)?;
                 let marks = marks.into_values();
                 t.cut = marks
                     .flatten()
@@ -272,6 +272,7 @@ impl<'a> Reader<'a> {
                 t.lifecycle.sorted.clear();
             }
         }
+        Ok(())
     }
 
     /// Whether a read's condition holds over `r`, with its provenance

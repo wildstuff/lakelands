@@ -676,10 +676,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   report names the projection's bytes before and after it. Measured on
   SQLite (`crates/lakelands-engine-sqlite/tests/thin_bytes.rs`, a 14-CPU
   Ryzen 9 9950X VM, one run): of 4 000 records with a 200-byte note,
-  3 000 before the horizon, the preflight took 56 ms and the act 642 ms;
-  the file went from 1 921 024 to about 1 430 000 bytes, some 160 bytes
-  a thinned record, and the journal, 82 MB of writes not yet
-  checkpointed, was truncated as any compact truncates it. The act keeps
+  3 000 before the horizon, the file compacted first, the preflight took
+  57 ms and the act 628 ms; the file went from 2 568 192 to 1 413 120
+  bytes, some 385 bytes a thinned record. The act keeps
   a tombstone a key, 25 bytes of key and horizon each here (75 000 for
   the 3 000), beside the log's part naming the key. PostgreSQL's
   `VACUUM` runs off the lease and was not measured here.

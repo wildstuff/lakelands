@@ -485,9 +485,15 @@ impl<'a> Reader<'a> {
                 .pop()
         } else if decl.view.is_some() {
             let found = (self.records(&decl, None)?.into_iter()).find(|r| r.key == get.key);
-            // A computation that left a stranded group out cannot say the
-            // group is not there: the view it was left out of is named.
-            let left = self.omitted.borrow().first().map(|(ty, _)| ty.clone());
+            // A group the view left out is refused, naming the innermost
+            // view that left one out; a view that left none out itself
+            // but read through one that did cannot say a key is not there.
+            let omitted = self.omitted.borrow();
+            let own = omitted.iter().find(|(v, _)| v == ty);
+            let left = (own.is_none_or(|(_, keys)| keys.contains(&get.key)))
+                .then(|| omitted.first().map(|(ty, _)| ty.clone()))
+                .flatten();
+            drop(omitted);
             if let (None, Some(ty)) = (&found, left) {
                 let position = self.position;
                 return Err(Error::invalid(Case::StrandedAtHeadOnly { ty, position }));
@@ -565,8 +571,8 @@ impl Reader<'_> {
 
     /// `records`, a computation of `view`, without the groups stranded at
     /// the head: their members are gone, so a computation answers them
-    /// short, and a stranded group answers at the head alone. How many
-    /// were left out is kept for the page.
+    /// short, and a stranded group answers at the head alone. Which were
+    /// left out is kept for the page and for `get`.
     pub(super) fn unstranded(
         &self,
         view: &TypeName,
@@ -574,10 +580,9 @@ impl Reader<'_> {
     ) -> Result<Vec<StoredRecord>> {
         let marks = self.stranded_marks(view)?;
         if !marks.is_empty() {
-            self.omitted
-                .borrow_mut()
-                .push((view.clone(), marks.len() as u64));
             records.retain(|r| !marks.contains_key(&r.key));
+            let keys = marks.into_keys().collect();
+            self.omitted.borrow_mut().push((view.clone(), keys));
         }
         Ok(records)
     }
@@ -586,7 +591,8 @@ impl Reader<'_> {
     /// or else those of the views it read through.
     fn stranded(&self, ty: &TypeName) -> Option<u64> {
         let omitted = self.omitted.borrow();
-        let own = omitted.iter().find(|(v, _)| v == ty).map(|(_, n)| *n);
-        own.or_else(|| omitted.iter().map(|(_, n)| *n).reduce(|a, b| a + b))
+        let count = |(_, keys): &(TypeName, BTreeSet<RecordKey>)| keys.len() as u64;
+        let own = omitted.iter().find(|(v, _)| v == ty).map(count);
+        own.or_else(|| omitted.iter().map(count).reduce(|a, b| a + b))
     }
 }

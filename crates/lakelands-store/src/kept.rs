@@ -173,7 +173,6 @@ pub(crate) fn shown(mut r: StoredRecord, view: &TypeName, whole: bool) -> Option
     if let Some(fields) = face.and_then(|f| serde_json::from_value(f.clone()).ok()) {
         r.fields = fields;
     }
-
     (r.ty, r.restricted) = (view.clone(), false);
     Some(r)
 }
