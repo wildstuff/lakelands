@@ -26,7 +26,7 @@ use crate::conformance::prelude::*;
 
 check!(
     BUILD_READ_ANSWERS_AS_BEFORE = a_setting_that_builds_in_parts_changes_no_answer_either_kind,
-    "099, R7: a `sort_index.<type>` and a `lookup_index.<type>` setting on a type with records build in parts of `limits`, each a turn beside the writer; a page ordered by the field and a `where` on a looked-up text answer during the build, and after it, exactly what they answered before it",
+    "099, R7: a `sort_index.<type>` and a `lookup_index.<type>` setting on a type with records build in parts of `limits`, each a turn beside the writer; a page ordered by the field and a `where` on a looked-up text and on a looked-up number answer during the build, and after it, exactly what they answered before it",
     given
 );
 
@@ -144,13 +144,13 @@ async fn keys(l: &Lake, find: Find) -> Result<Vec<String>, Failure> {
 }
 
 /// The answers the checks compare: the first and a deep page ordered by
-/// `n`, and every record whose `s` is `value`.
+/// `n`, every record whose `s` is `value`, and every record whose `n` is `3`.
 pub(super) async fn answers(l: &Lake, size: u64) -> Result<Vec<Vec<String>>, Failure> {
-    let deep = size.saturating_sub(50);
     Ok(vec![
         page(l, "n", 50, 0).await?,
-        page(l, "n", 50, deep).await?,
+        page(l, "n", 50, size.saturating_sub(50)).await?,
         keys(l, find_where("s = 's3'")).await?,
+        keys(l, find_where("n = 3")).await?,
     ])
 }
 
@@ -281,7 +281,7 @@ async fn a_setting_that_builds_in_parts_changes_no_answer_either_kind(
     // marked building by the setting's fold, and filled a record a turn.
     for (key, value) in [
         ("sort_index.row", json!(["n"])),
-        ("lookup_index.row", json!(["s"])),
+        ("lookup_index.row", json!(["s", "n"])),
     ] {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let reader = {
