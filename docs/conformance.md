@@ -1501,7 +1501,7 @@ belongs in the suite, not beside one engine:
 
 **kept lake**
 
-- `the_lake_of_format_23_is_read_as_it_answered` — 054: the lake v0.23.0 made through its doors (`docs/log-format/lakes/23/`), in format 23, imported on this engine with the file keyring's file it ships, keeps its log, verifies, and answers as `answers.json` keeps the answers: every live record of each type it names with its fields and its stranded mark, the group `daily` kept past a thinning with its roll-up standing and the copy of the time-zone database that cut it, and a person a removal left holding a source's value with another's erased, with its provenance; and it answers so again rebuilt
+- `the_lake_of_format_23_is_read_as_it_answered` — 054: the lake v0.23.0 made through its doors (`docs/log-format/lakes/23/`), in format 23, imported on this engine with the file keyring's file it ships, keeps its log, verifies, and answers as `answers.json` keeps the answers: its head and the position and kind of every event, every live record of each type it names with its fields and its stranded mark, the group `daily` kept past a thinning with its roll-up standing and its record naming a copy of the time-zone database as the one that cut it, and a person a removal left holding a source's value with another's erased, with its provenance; and a writer that opens it and rebuilds its log answers its records so again
 
 **series builds**
 

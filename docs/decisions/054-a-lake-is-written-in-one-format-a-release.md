@@ -228,26 +228,19 @@ own.
   verifiers refuse any other change.
 - **There is no downgrade.** A backup taken before the upgrade is the
   way back.
-- **The proof on a lake the release before wrote**:
+- **The proof on a lake the release before wrote**: through 0.22.0,
   `docs/log-format/lakes/14/`, a small lake v0.13.1 made through its
-  doors, with what that release answered of it, is imported, upgraded
-  and read the same on every engine. `docs/log-format/lakes/15/`, the
-  lake v0.14.0 made, is held the same way from that release on, read in
-  its own format until a later one upgrades it, as 0.15.0 does;
-  `docs/log-format/lakes/16/`, the lake v0.15.0 made, from that release
-  on, `docs/log-format/lakes/17/`, the lake v0.16.0 made, from that one
-  on, `docs/log-format/lakes/18/`, the lake v0.17.0 made, from that one on,
-  `docs/log-format/lakes/19/`, the lake v0.18.0 made, from that one on,
-  `docs/log-format/lakes/20/`, the lake v0.20.0 made, from that one on,
-  `docs/log-format/lakes/21/`, the lake v0.21.0 made, from that one on,
-  and `docs/log-format/lakes/22/`, the lake v0.22.0 made, from that one
-  on. The vectors of each older format are imported and upgraded on
-  every engine too. `docs/log-format/lakes/23/`, the lake v0.23.0 made,
-  is kept from that release on and read in its own format on every
+  doors, with what that release answered of it, and the lakes 15 to 22,
+  each made by the release of its format, were imported, upgraded and
+  read the same on every engine, and the vectors of each older format
+  were imported and upgraded on every engine too. 0.23.0 is the release
+  at which the operator's green field ends that path: the formats 14 to
+  22 are history that no binary of this tree reads, neither their lakes
+  nor their vectors are in the tree, and `scripts/gates/vectors-kept.sh`
+  holds from format 23 on. `docs/log-format/lakes/23/`, the lake v0.23.0
+  made, is kept from that release on and read in its own format on every
   engine, and every later release reads it, record 098 keeping every
-  format from 23 on. 0.23.0 is the release at which the operator's green
-  field ends the path of upgrading: the formats 14 to 22 above are
-  history that no binary of this tree reads.
+  format from 23 on.
 
 At 100 000 events a step that changes no fold costs one append, and
 about 5 µs an event at each later read of an older event; one that

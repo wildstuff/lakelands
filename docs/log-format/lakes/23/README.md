@@ -53,8 +53,10 @@ live record of each type it names with its fields and its stranded mark
 (`tick` has none, the thinning took them; two bounds; the view's stranded
 group with its roll-up; `p2`), the group's `cut` naming the copy of the
 time-zone database that first cut it, `p2` with its provenance and `crm`'s
-value read as erased, the position and kind of every event, and the
-reports the thinning and the removal answered.
+value read as erased, the head, and the position and kind of every event.
+It keeps, too, the reports the thinning and the removal answered: those
+are what the acts said at the time, and an import cannot be asked them
+again, so they are not held here.
 
 The copy named is the one this release's binary is built with (`2026e`,
 the jiff database's). A later release under another copy folds the view
@@ -63,8 +65,11 @@ that first cut it. The check therefore holds that a stranded group's
 record names a copy, not which copy it is.
 
 `kept_lake::LAKE_23_READ` imports the lake on every engine with that key
-file, verifies it, and holds the answers `answers.json` keeps at the head
-and again rebuilt. `answers.json` holds a record as its type, its key, its
-fields and its stranded mark, and whether a copy of the time-zone database
-cut it. The directory is never edited: a later release that answers
-otherwise says so in its own row, not here.
+file, verifies it, and holds the answers `answers.json` keeps: the head and
+every event's position and kind as imported, and every record as imported
+and again after a writer opens the lake — which appends its `lease_taken`,
+a position `answers.json` does not keep — and rebuilds it. `answers.json`
+holds a record as its type, its key, its fields and its stranded mark, and
+whether a copy of the time-zone database cut it. The directory is never
+edited: a later release that answers otherwise says so in its own row, not
+here.
