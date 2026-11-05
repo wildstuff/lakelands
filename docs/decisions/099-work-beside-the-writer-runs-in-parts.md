@@ -1404,6 +1404,50 @@ chunk or one step, not the whole.
   `compact_step`. core-size reads product 113 699 of 115 000 and specification 201 051
   of 202 500, the seam 111 of 111 methods.
 
+**As built (2026-11-04), the first turn's tail read (lakelands#1649).** The first turn
+now costs what the tail costs, as "From the walk's view P to the first turn" planned. The
+tree had sought the tail by key, one `routes` query a key of the act. A forgetting also
+named its type once a record, so even a search by type ran once a record.
+
+- **By type, tested by key.** `road::found` seeks by key only where the act names no
+  more keys than the tail holds positions. Otherwise it seeks by type, and `reached`
+  keeps the events that touch one of the act's keys. Both seeks, and the seek by
+  source, stay under the one bound. So the check under the writer reads at most
+  `part_tail` + 1 rows past P, as "From the walk's view P to the first turn" says. A
+  busy type counts against that bound like any tail: past it, the writer is let go and
+  the catch-up folds the rest off the writer. `Forget::reach` names each type once, as
+  `Remove::reach` did already.
+  `forget_index.rs`'s `a_tail_past_the_walk_is_sought_by_type_where_the_keys_outnumber_it`
+  counts the keys each `matching` past the walk's view names. It is red with the seek by
+  key forced: 300 keys asked over a window of one position.
+- **The catch-up folds a short tail too.** The catch-up folds whatever it finds, and
+  stops once a read finds no more than `part_tail`. So the first turn reads only what
+  was written after the catch-up's last read. The walk's judgement of every other key
+  stands. As before, the first turn judges again only the keys the tail moved: a forget
+  in `see_the_tail`, a removal over its `moved`. An empty tail judges nothing again.
+- **The row.** `TAIL_JUDGED_BY_ITS_KEYS`: `erp`'s write on one of 40 records a source
+  alone brought is held at the writer before the act walks. It is let go once the act's
+  first turn is queued behind it, so it lands past the walk and the catch-up. A removal
+  of every write of that source keeps the record and retires the other 39. A forgetting
+  counts it co-owned and erases its name. It is red with the search by type skipped where
+  the act names more keys than the tail holds: the removal then retires all 40.
+- **Measured** on SQLite, release build, file-backed, as in R6: 100 000 records of
+  `erp`, then 5 000 writes of 3 records by `crm`, so a forgetting of `crm` reaches
+  15 000 keys, while one caller writes a record of `web` in a loop. Before: the first turn
+  held the writer for 39.0 s, 39.0 s of it reading a tail of no events, and one write
+  waited 39.1 s; the catch-up took 55.5 s and the act 100.8 s. After: the first turn
+  holds it for 73 ms, the tail read 0.5 ms, and the slowest write beside the whole act
+  waited 81 ms against a median of 7.4 ms. The catch-up took 11 ms and the act 6.3 s.
+  The 73 ms left is the turn's own first part, bounded by `part_events`. R6's 49.1 s
+  was the same hold on a busier machine. lakelands#1649's first need is met. A removal
+  of every `crm` write on the same lake was never this slow, because `Remove::reach`
+  already named each type once. Its first turn went from 288 ms (127 ms of tail read) to
+  159 ms (0.2 ms), and its slowest write from 295 ms to 166 ms. What remains is the
+  report read again over the 15 000 records the act holds. That grows with the act, not
+  with the tail.
+- **The ledger.** Product +14, specification +186 net (the ledger row in the pull).
+  core-size reads product 113 718 and specification 201 164.
+
 ## How it came to be
 
 - Amended by 100 (lakelands#1640), proposed for 0.23.0: the resolvers of `preceding` and
@@ -1429,6 +1473,8 @@ chunk or one step, not the whole.
   are turns of the restate. PostgreSQL's `VACUUM` runs off the writer, and the plan's
   "nothing after a swap" became the reclaim's turns after any rebuild. Need 1 of
   lakelands#1649 stays open there: the first turn's tail read.
+- The first turn's tail read, bounded by the tail, built by the pull that closes
+  lakelands#1649: the last of its needs.
 - Amended by 102 (lakelands#1639), proposed for 0.23.0: a thinning act begins
   with `values_thinned`, and a write at a key it selected is refused rather
   than reading through the act.

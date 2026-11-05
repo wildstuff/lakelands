@@ -829,6 +829,7 @@ pub const ALL: &[Check] = &[
     scrubbed::RESTATE_PAGE_OVER_ITS_BOUND,
     scrubbed::SWEEP_IN_TURNS,
     scrubbed::RECLAIM_IN_TURNS,
+    scrubbed::TAIL_JUDGED_BY_ITS_KEYS,
     removed::REMOVED_BEFORE,
     removed::REMOVED_DELIVERY,
     removed::REMOVED_SET,

@@ -995,7 +995,7 @@ impl Job for Forget {
     /// write about a record one of them brought, which another hand's
     /// write on one of them is.
     fn reach(&self) -> Reach {
-        let types: Vec<TypeName> = (self.records.keys()).map(|(t, _)| t.clone()).collect();
+        let types: BTreeSet<TypeName> = (self.records.keys()).map(|(t, _)| t.clone()).collect();
         let keys = (self.records.keys()).map(|(_, k)| k.clone()).collect();
         Reach {
             sources: self.set.clone(),
