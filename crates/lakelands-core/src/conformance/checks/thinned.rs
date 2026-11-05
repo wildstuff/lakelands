@@ -91,7 +91,7 @@ check!(
 
 check!(
     THIN_AS_OF_SAYS_UNANSWERABLE = a_read_before_the_act_says_what_it_cannot_answer,
-    "102 (lakelands#1749): after the act, `daily`'s page at the head, and a kept view `held` over it, name the act and their stranded groups say so; as of the position before it, `daily` and a computed view `rolled` over it answer `d`, the group the act did not strand, and count the five `describe` counts stranded, `held` the three its own marks hold; a record that moved from `e` to `f` before the act strands both, and as of when it was in `e` `daily` leaves `e` out; a `get` of a stranded group is refused `stranded_at_head_only` naming `daily`, of `rolled` and `held` too, a key no group held is `not_found`, and `t1` as of then is refused `thinned`; a holder admitted to `d` alone is answered `d` with no stranded count and a `get` of `a` `not_found`; `describe` of `tick` names the act",
+    "102 (lakelands#1749, lakelands#1759): after the act, `daily`'s page at the head, and a kept view `held` over it, name the act and their stranded groups say so; as of the position before it, `daily` and a computed view `rolled` over it answer `d`, the group the act did not strand, and count the six `describe` counts stranded, `held` the four its own marks hold; a record that moved from `e` to `f` before the act strands both, and as of when it was in `e` `daily` leaves `e` out; a record whose restriction moved it off the open face before the act strands its group on both faces, and as of the position before the move a reader of each face leaves it out although it computes there with the group's late member, and its `get` is refused; a `get` of a stranded group is refused `stranded_at_head_only` naming `daily`, of `rolled` and `held` too, a key no group held is `not_found`, and `t1` as of then is refused `thinned`; a holder admitted to `d` alone is answered `d` with no stranded count and a `get` of `a` `not_found`; `describe` of `tick` names the act",
     given
 );
 
@@ -835,10 +835,15 @@ async fn a_write_at_a_key_a_later_part_has_not_reached_is_refused(
     Ok(())
 }
 
-/// The page `find` answers for `ty` as of `at`, its rows' keys with
+/// The page `find` answers `who` for `ty` as of `at`, its rows' keys with
 /// their stranded mark, and its acts and stranded count.
-async fn page(l: &Lake, ty: &str, at: Option<Position>) -> Result<String, Failure> {
-    let found = l.cat.find(&l.own, &TypeName::from(ty), find_at(at)).await;
+async fn page(
+    l: &Lake,
+    who: &Principal,
+    ty: &str,
+    at: Option<Position>,
+) -> Result<String, Failure> {
+    let found = l.cat.find(who, &TypeName::from(ty), find_at(at)).await;
     match found.must(&format!("finding `{ty}` as of {at:?}"))?.data {
         Found::Records {
             rows,
@@ -864,41 +869,61 @@ async fn a_read_before_the_act_says_what_it_cannot_answer(store: Store, _given: 
     let late = json!({"at": "2026-07-01T00:00:00Z", "m": "d", "n": 3});
     l.upsert("tick", "t7", late).await?;
     tick_at(&l, "t8", "e", 6, 5).await?;
+    // `g` holds `t10`, which no instant spares the act, and `t9`, whose
+    // restriction moves it off the open face before the act: before that
+    // move the group stood whole on both faces.
+    l.upsert("tick", "t10", json!({"m": "g", "n": 9})).await?;
+    tick_at(&l, "t9", "g", 8, 6).await?;
     let early = store.head().await.must("reading the head")?;
     tick_at(&l, "t8", "f", 6, 5).await?;
+    restrict(store.as_ref(), "tick", "t9", "a hold").await?;
     let before = store.head().await.must("reading the head")?;
     thinned(&store, false).await?;
+    let open = reads_all(store.as_ref(), "open");
     let mut red = Vec::new();
     let (head, d) = (
-        "[(\"a\", true), (\"b\", true), (\"d\", false), (\"f\", true)]",
+        "[(\"a\", true), (\"b\", true), (\"d\", false), (\"f\", true), (\"g\", true)]",
         "[(\"d\", false)]",
     );
-    for (ty, at, rows, strands) in [
-        ("daily", None, head, None),
-        ("held", None, head, None),
-        ("daily", Some(early), d, Some(5)),
-        ("daily", Some(before), d, Some(5)),
-        ("rolled", Some(before), d, Some(5)),
-        ("held", Some(before), d, Some(3)),
+    for (who, ty, at, rows, strands) in [
+        (&l.own, "daily", None, head, None),
+        (&l.own, "held", None, head, None),
+        (&l.own, "daily", Some(early), d, Some(6)),
+        (&l.own, "daily", Some(before), d, Some(6)),
+        (&l.own, "rolled", Some(before), d, Some(6)),
+        (&l.own, "held", Some(before), d, Some(4)),
+        (&open, "daily", None, head, None),
+        (&open, "held", None, head, None),
+        (&open, "daily", Some(early), d, Some(6)),
+        (&open, "daily", Some(before), d, Some(6)),
+        (&open, "rolled", Some(before), d, Some(6)),
+        (&open, "held", Some(before), d, Some(4)),
     ] {
         let (now, want) = (
-            page(&l, ty, at).await?,
-            format!("{rows} [(\"tick\", 5)] {strands:?}"),
+            page(&l, who, ty, at).await?,
+            format!("{rows} [(\"tick\", 6)] {strands:?}"),
         );
         if now != want {
-            red.push(format!("`{ty}` as of {at:?} answers {now}, not {want}"));
+            red.push(format!(
+                "`{}`'s `{ty}` as of {at:?} answers {now}, not {want}",
+                who.id
+            ));
         }
     }
-    for (ty, key, at) in [
-        ("daily", "a", before),
-        ("daily", "e", early),
-        ("rolled", "a", before),
-        ("held", "a", before),
-        ("daily", "zzz", before),
-        ("tick", "t1", before),
+    for (who, ty, key, at) in [
+        (&l.own, "daily", "a", before),
+        (&l.own, "daily", "e", early),
+        (&l.own, "daily", "g", early),
+        (&l.own, "rolled", "a", before),
+        (&l.own, "held", "a", before),
+        (&l.own, "daily", "zzz", before),
+        (&l.own, "tick", "t1", before),
+        (&open, "daily", "a", before),
+        (&open, "daily", "g", early),
+        (&open, "tick", "t1", before),
     ] {
         let (t, asked) = (TypeName::from(ty), get_at(key, Some(at)));
-        let got = l.cat.get(&l.own, &t, asked).await;
+        let got = l.cat.get(who, &t, asked).await;
         let said = match (key, invalid_case(&got)) {
             ("zzz", _) => matches!(got, Err(Error::NotFound { .. })),
             (_, Some(Case::StrandedAtHeadOnly { ty: v, position })) => {
@@ -908,7 +933,10 @@ async fn a_read_before_the_act_says_what_it_cannot_answer(store: Store, _given: 
             _ => false,
         };
         if !said {
-            red.push(format!("`{ty}` `{key}` as of {at:?} answers {got:?}"));
+            red.push(format!(
+                "`{}`'s `{ty}` `{key}` as of {at:?} answers {got:?}",
+                who.id
+            ));
         }
     }
     // A holder of `d` alone is told of no group its pairs do not admit.
@@ -947,7 +975,7 @@ async fn a_read_before_the_act_says_what_it_cannot_answer(store: Store, _given: 
         l.describe_type("tick").await?.thinned,
         stranded(&l, "daily").await?,
     );
-    if acts.len() != 1 || groups != 5 {
+    if acts.len() != 1 || groups != 6 {
         red.push(format!(
             "`tick` is thinned by {acts:?}, `daily` strands {groups}"
         ));

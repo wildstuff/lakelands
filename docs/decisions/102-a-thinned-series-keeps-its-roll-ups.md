@@ -1102,14 +1102,18 @@ its mark and changed nowhere else.
   `lake/described.rs`, `doors.rs` and the engines' `view.rs` are not
   touched, since the engines already answer the tombstones and the
   acts (S5).
-- **Not done, and why.** The row of § Conformance rows also asks for a
-  record that moved face before the act; S7's row has none, since no
-  fixture moves a record's restriction cheaply. The omission reads the
-  head's marks on the reader's own face, so it holds by construction,
-  untested at an earlier position. lakelands#1759 owns that part of the
-  row. The cost of reading `thinned` on every `find`, a per-source
-  read of the acts, and of the walk over a view's kept records, is not
-  measured. An
+- **A record that moved face is tested (lakelands#1759).** S7's row had
+  none, since no fixture moved a record's restriction cheaply. It now
+  writes `t9` in group `g`, restricts it before the act, and reads as of
+  the position before that: a reader of each face leaves `g` out and
+  counts it, though the group computes there with `t9` and its late
+  `t10`, so the earlier face's group is stranded and the earlier read
+  omits it rather than answering it short. The omission reads the head's
+  marks on the reader's own face, so it held by construction; the row
+  holds it now.
+- **Not done, and why.** The cost of reading `thinned` on every `find`,
+  a per-source read of the acts, and of the walk over a view's kept
+  records, is not measured. An
   aggregate's `Group::stranded` stays false: an aggregate over a
   computed view leaves the stranded groups out and counts them in
   `stranded`, which is what § A read says asks. A computed view that
@@ -1121,10 +1125,14 @@ its mark and changed nowhere else.
   `daily`'s stranded groups say so and the page names the act, and so
   do a kept `held` over it; as of the position before it, `daily` and
   a computed `rolled` over it answer only `d`, the group no act
-  touched, and count five stranded, and `held`, read through its own
-  marks, three. A record `t8` that moved from group `e` to `f` before
+  touched, and count six stranded, and `held`, read through its own
+  marks, four. A record `t8` that moved from group `e` to `f` before
   the act strands both: as of the position where it was in `e`, `daily`
-  leaves `e` out and its `get` is refused. A `get` of a stranded group
+  leaves `e` out and its `get` is refused. A record `t9` whose
+  restriction moved it off the open face before the act strands `g` on
+  both faces: as of the position before the move, a reader of each face
+  leaves `g` out and its `get` is refused, though the group computes
+  there with `t9` and its late member `t10`. A `get` of a stranded group
   is refused naming `daily`, of `rolled` and `held` too, a key no group
   held answers `NotFound`, and `t1` is refused `Thinned`. `THIN_ZONED_CARRIED` now also asks
   a read's `cut` and `describe`'s. Each was run red with its marker
