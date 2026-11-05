@@ -151,6 +151,7 @@ fn a_type_gives_four_doors_and_the_generic_tools_follow_rights() {
             "reject",
             "search",
             "subscribe",
+            "thin",
             "unsubscribe",
         ]
     );

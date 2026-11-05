@@ -15,7 +15,7 @@ interface store {
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
         compact-report, vector-coverage, forget-report, forget-set-report, selection, remove-report,
-        thin, thin-report,
+        thin, thin-report, thin-reply,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
         feed-filter, feed-batch, version,
@@ -156,6 +156,12 @@ interface store {
         ingest: func(who: principal, source: source-id, records: list<source-record>) -> result<list<committed>, ingest-error>;
         /// `ingest` in the delivery `opts` names.
         ingest-with: func(who: principal, source: source-id, opts: ingest-opts, records: list<source-record>) -> result<list<committed>, ingest-error>;
+        /// Thin a type: take out of the projection every record whose
+        /// field `thin.by` is certainly before `thin.before`, as one act
+        /// in parts beside the writer, keeping the folds of the kept views
+        /// over it; the log keeps every value it took. With `preflight`,
+        /// say what the act would take, appending nothing.
+        thin: func(who: principal, %type: type-name, thin: thin, preflight: bool) -> result<thin-reply, error>;
     }
 
     /// The change feed (`ChangeFeed`): the consumer keeps its own

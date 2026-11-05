@@ -1,6 +1,6 @@
 //! The commands that open a lake: `apply`, `query`, `ingest`, `feed`, `age`,
-//! `purge`, `forget`, `values remove`, `rebuild`, `compact`, `export` and
-//! `serve`. Each calls the library in-process and prints the position of
+//! `purge`, `forget`, `values remove`, `thin`, `rebuild`, `compact`, `export`
+//! and `serve`. Each calls the library in-process and prints the position of
 //! every answer that has one.
 //! `import` makes a lake instead of opening one.
 //!
@@ -1145,6 +1145,46 @@ pub async fn values_remove(
             report.position
         ),
     )
+}
+
+/// `thin`: take out of the projection every record of `ty` whose field
+/// `by` is certainly before `before`, as one act in parts, keeping the
+/// folds of the kept views over it (`LakeStore::thin_values`). Without
+/// `--act` it prints the preflight, the act it would do and how many
+/// records it would take, appending nothing, as `values remove` does
+/// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+pub async fn thin(
+    out: Out<'_>,
+    store: &Arc<dyn LakeStore>,
+    (ty, by): (&str, &str),
+    (before, act): (lakelands_api::Timestamp, bool),
+) -> Result<(), Failure> {
+    let thin = lakelands_api::write::Thin {
+        by: by.into(),
+        before,
+    };
+    let report = store.thin_values(&TypeName::from(ty), &thin, !act).await?;
+    let records = report.records;
+    match act {
+        false => put(
+            out,
+            format!(
+                "{ty} by {by} before {before}: the preflight would take {records} records; \
+                 thin with --act"
+            ),
+        ),
+        true => {
+            let reclaimed = reclaimed(report.reclaimed.as_ref(), None);
+            put(
+                out,
+                format!(
+                    "took {records} records of {ty} by {by} before {before} through position \
+                     {}{reclaimed}",
+                    report.through
+                ),
+            )
+        }
+    }
 }
 
 /// `rebuild`: rebuild the projection from the log. The lake was opened

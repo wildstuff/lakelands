@@ -374,6 +374,26 @@ pub trait Catalog: Send + Sync {
             (None, false, None) => self.ingest(who, source, records).await,
         }
     }
+
+    /// Thin `ty`: take out of the projection every record whose field
+    /// `thin.by` is certainly before `thin.before`, as one act in parts
+    /// beside the writer, keeping the folds of the kept views over it; or,
+    /// on a `preflight`, say what the act would take, appending nothing.
+    /// The log keeps every value it took, and a key it took is refused
+    /// `thinned` at the write doors
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). A
+    /// handle that is no host's, this default, answers it unbound.
+    async fn thin(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        thin: &crate::write::Thin,
+        preflight: bool,
+    ) -> Result<Reply<crate::write::ThinReport>> {
+        let _ = (who, ty, thin, preflight);
+        let op = "thin".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
+    }
 }
 
 /// `ingest` for records already in hand: the records as the source

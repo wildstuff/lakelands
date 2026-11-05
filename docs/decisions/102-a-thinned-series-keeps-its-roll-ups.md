@@ -950,6 +950,85 @@ its mark and changed nowhere else.
   specification are left. Seam 110 of 110; 6 of 20 `cfg(feature)`
   sites.
 
+**S6 (lakelands#1748), the write doors' refusals and the command.**
+
+- **The tombstone refuses at `Decide::target`**, the one read of a
+  record every authored write passes: `upsert`, an `ingest`'s record,
+  a `retire` and a verb through `reached`, and a setting. A key a
+  thinning took is answered `Thinned`, naming the type, the key and the
+  horizon, before any state is read, so nothing is appended and the
+  projection is unchanged. `remove_values`, `forget` and `purge` do not
+  pass through it and are untouched.
+- **A key a later part has not reached is refused by the act's
+  selection.** The fold's tombstone names only the keys the parts
+  already took. The writer's open finds the acts the log began and did
+  not end, from the parts' `values_thinned` and their `act_whole`s, and
+  the lake keeps each owed act's type, field, horizon and first position;
+  the act's first append adds it and its `act_whole` clears it.
+  `Decide::target` reads, for a key of that type, the record at the
+  act's first position — the view before it — and judges it by the
+  act's own selection rule, refusing `Thinned` with the act's horizon;
+  so a write, an ingest or a retirement at a key no part has reached is
+  refused as one at a key the act took is, while a key the selection
+  does not hold stays ordinary.
+- **`KeptOverThinned` is judged where an event would make a view
+  kept.** A `view_kept.<view>` setting written on refuses when no fold
+  has made the view whole and one of its direct sources holds a
+  thinning; so does a declaration, and a migration's step, which routes
+  its views through the same declaration bundle. A view already kept
+  whole is left to `stranded_make`'s carry, and a view over a view whose
+  groups the act stranded is not refused: its members are the inner
+  view's records, which are present at the head.
+- **The facade entry and its `lake-store` WIT door are S5's**, as its
+  row says, and S6 adds no facade method. S6 adds the catalog's own
+  door, `Catalog::thin(who, ty, thin, preflight)`, and its function in
+  the WIT `catalog` resource, so a guest asks the act as it asks any
+  door; the store's catalog checks the caller may author declarations,
+  as a setting or a declaration does, and answers the act's report. The
+  generator makes the tool name `thin` from the catalog's `THIN`
+  constant — no literal name is written — offered to a principal that
+  may change the lake's shape, with `act` absent answering the
+  preflight. `api/tests/wit.rs` is green with the function added.
+- **The command** is `lakelands thin --type <type> --before <instant>
+  --by <field> [--act]`: the field is named, since the record's selection
+  names one and the CLI does not guess `at`; without `--act` it prints
+  the preflight and the count, appending nothing; with it, it appends the
+  act and prints the count and the position. The facade takes a flag,
+  not a report id, so there is no `--report` to gate the act on.
+- **The suite's rows** are `THIN_CORRECTION_REFUSED` (a write, an
+  ingest and a retirement at a thinned key), `THIN_VIEW_KEPT_AFTER_REFUSED`
+  (a setting, a declaration and a migration's step refused, and a view
+  over a stranded view allowed), and `THIN_OWED_ACT_REFUSES_A_LATER_KEY`
+  (an ingest and a retirement at keys the stopped act's selection holds
+  and no part has reached, refused by the selection read at the act's
+  first position, and a key it does not hold landing). Each was run red
+  with its refusal planted out and green with it restored, and all three
+  are green on the memory engine; CI runs SQLite and PostgreSQL.
+- **Measured at S6's head**: product 114 428 and specification 202 002,
+  against 114 143 and 201 630 at its base. S6 adds 294 product lines in
+  and 9 out, and 374 specification in and 2 out, where the plan had
+  120 and 150. The product is over by 165 and the specification by 222.
+  The product's extra is the owed act's selection at the write doors
+  (the lake's owed set, `thin::owing`'s split from `owed`, and
+  `owed_takes`, about 120 lines) and the catalog door with its `catalog`
+  WIT function and the generator's `thin` tool (about 130, the server's
+  dispatch beside them). The specification's is the second row,
+  which stages four separate lakes to reach each door; the third, which
+  feeds 600 records and lets the stopped act take 500 before it writes;
+  and the reclaim row's wait on the cause. Nothing was cut: the
+  four items of § Cut first stay. The ceilings hold with room for S7's
+  planned 162 and 230 at ×1.35: 572 product and 498 specification are
+  left. S6 adds no seam method: the width is S5's and lakelands#1751's.
+  The merged tree reads 112 because lakelands#1751 raised the budget to
+  111 for `compact_step` before lakelands#1750's `thin_values` merged,
+  and that collision is older than this step; it is recorded in
+  lakelands#1755. The operator's decision of 2026-11-05 on the board
+  (lakelands#1755, issuecomment-6649922428), by rule 4, takes the
+  ceiling 111 → 112 with its row in `docs/budgets.md`, so the gate is
+  green at the base and here; lakelands#1752 removes the deprecated
+  `compact()` and brings the width and the ceiling back to 111. 6 of
+  20 `cfg(feature)` sites.
+
 ## How it came to be
 
 - lakelands#1639 — S3's shape weighed and recommended: a read of a key's

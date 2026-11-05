@@ -7,11 +7,14 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU32;
 
 use lakelands_api::Location;
+use lakelands_api::ParamName;
+use lakelands_api::describe::Kept;
 use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode, Scan};
 use lakelands_api::event::{Digest, EventId};
+use lakelands_api::ontology::ViewParam;
 use lakelands_api::read::GroupKey;
-use lakelands_api::seam::{VIEW_KEPT_SETTING, kept_name};
-use lakelands_api::write::{Thin, ThinReport};
+use lakelands_api::seam::{SETTING_TYPE, VIEW_KEPT_SETTING, kept_name};
+use lakelands_api::write::{DeclarationKind, Thin, ThinReport, Withdrawal};
 
 use super::forgotten::{Fails, failing};
 use super::stranded::{HORIZON, answers, daily, stranded, tick, tick_at};
@@ -65,6 +68,24 @@ check!(
 check!(
     THIN_ZONED_CARRIED = a_zoned_views_stranded_groups_keep_the_copy_that_cut_them,
     "102 (lakelands#1746): a kept view grouped by a day of Europe/Berlin, two of whose groups a thinning stranded, is marked below the store as cut under the copy `2000a`; the writer's open makes it again, and it answers as before: the stranded groups carry their folds and name `2000a` as the copy that cut them, and the live group is cut again under the binary's copy",
+    given
+);
+
+check!(
+    THIN_CORRECTION_REFUSED = a_write_an_ingest_and_a_retirement_at_a_thinned_key_are_refused,
+    "102 (lakelands#1748): after a thinning takes `t1` and leaves `t2`, an upsert, an ingest and a retirement at `t1` are each refused `thinned`, naming the type, the key and the horizon; nothing is appended, and `tick` finds `t2` alone before and after",
+    given
+);
+
+check!(
+    THIN_VIEW_KEPT_AFTER_REFUSED = a_view_made_kept_over_a_thinned_type_is_refused,
+    "102 (lakelands#1748): a `view_kept` setting that would make a view over a thinned type kept, a declaration of it asked and not whole, and a migration whose step declares it again are each refused `kept_over_thinned`, naming the view and the type, and append nothing; a view over a view whose group the act stranded is declared again and is not refused",
+    given
+);
+
+check!(
+    THIN_OWED_ACT_REFUSES_A_LATER_KEY = a_write_at_a_key_a_later_part_has_not_reached_is_refused,
+    "102 (lakelands#1748): a thinning of 600 records stopped after its first part refuses an ingest at a key the act's selection at its first position holds and no part has reached, at the first and the last of those, and a retirement of one, each naming the type, the key and the horizon, and appends nothing; a key the selection does not hold lands, and the writer's open finishes the act, taking each of the 600 once and finding the late key alone",
     given
 );
 
@@ -459,6 +480,344 @@ async fn a_zoned_views_stranded_groups_keep_the_copy_that_cut_them(
         "`daily` answers {now:?} (before {was:?}), {groups} stranded; its groups name the \
          copies {cut:?}, the view {copy:?}"
     );
+    Ok(())
+}
+
+/// A series type `name`: its instants `at`, its group `m`, its value `n`
+/// and a text `note`.
+fn series(name: &str) -> TypeDecl {
+    type_decl(
+        name,
+        vec![
+            field("at", StorageKind::DateTime),
+            field("m", StorageKind::Text),
+            field("n", StorageKind::Number),
+            field("note", StorageKind::Text),
+        ],
+    )
+}
+
+/// The view `view` over `source` by `m`: `c` its count, `t` the sum of
+/// `sum`, a field the source holds.
+fn over(source: &str, view: &str, sum: &str) -> TypeDecl {
+    let fields = vec![
+        field("m", StorageKind::Text),
+        field("c", StorageKind::Number),
+        field("t", StorageKind::Number),
+    ];
+    view_of(
+        view,
+        source,
+        &["m"],
+        fields,
+        &[("c", "count()"), ("t", &format!("sum({sum})"))],
+    )
+}
+
+/// The withdrawal of the type `name`.
+fn withdraw(name: &str) -> Declaration {
+    Declaration::Withdraw(Withdrawal {
+        kind: DeclarationKind::Type,
+        name: name.into(),
+    })
+}
+
+/// Runs a thinning of `ty` by `at` at the horizon below the store.
+async fn cut(store: &Store, ty: &str) -> Result<(), Failure> {
+    let r = store
+        .thin_values(&TypeName::from(ty), &by("at"), false)
+        .await;
+    r.must(&format!("thinning `{ty}`"))?;
+    Ok(())
+}
+
+async fn a_write_an_ingest_and_a_retirement_at_a_thinned_key_are_refused(
+    store: Store,
+    _given: Given,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let shared = |n: &str, k: StorageKind| FieldDecl {
+        authority: Authority::Shared,
+        ..field(n, k)
+    };
+    l.declare(type_decl(
+        "tick",
+        vec![
+            shared("at", StorageKind::DateTime),
+            shared("m", StorageKind::Text),
+            shared("n", StorageKind::Number),
+        ],
+    ))
+    .await?;
+    l.upsert(
+        "tick",
+        "t1",
+        json!({"at": "2026-01-01T00:00:00Z", "m": "a", "n": 1}),
+    )
+    .await?;
+    let late = json!({"at": "2026-07-01T00:00:00Z", "m": "a", "n": 2});
+    l.upsert("tick", "t2", late.clone()).await?;
+    thinned(&store, false).await?;
+    let head = store.head().await.must("reading the head")?;
+    let was = keys(&l, None).await?;
+    let (ty, key) = (TypeName::from("tick"), RecordKey::from("t1"));
+    let write = try_upsert(
+        l.cat.as_ref(),
+        &l.own,
+        "tick",
+        "t1",
+        json!({"at": "2026-01-01T00:00:00Z", "m": "a", "n": 3}),
+    )
+    .await;
+    let fed = l
+        .ingest("meter", vec![source_record("tick", "t1", late)])
+        .await;
+    let retired = l.cat.retire(&l.own, &ty, &key, WriteOpts::default()).await;
+    let later = store.head().await.must("reading the head")?;
+    let is = keys(&l, None).await?;
+    let horizon = Timestamp::parse(HORIZON).expect("an instant");
+    let mut red = Vec::new();
+    for (what, said) in [
+        ("the write", invalid_case(&write)),
+        ("the ingest", invalid_case(&fed)),
+        ("the retirement", invalid_case(&retired)),
+    ] {
+        let named = matches!(said, Some(Case::Thinned { ty, key, before })
+            if ty.as_str() == "tick" && key.as_str() == "t1" && before == &horizon);
+        if !named {
+            red.push(format!("{what} answers {said:?}"));
+        }
+    }
+    if later != head || is != was {
+        red.push(format!(
+            "the refusals moved the lake: head {head} then {later}, `tick` {was:?} then {is:?}"
+        ));
+    }
+    ensure!(
+        red.is_empty(),
+        "a write, an ingest and a retirement at a thinned key are refused: {}",
+        red.join("; ")
+    );
+    Ok(())
+}
+
+async fn a_view_made_kept_over_a_thinned_type_is_refused(store: Store, _given: Given) -> Held {
+    let l = Lake::of(store.as_ref());
+    let jan = json!({"at": "2026-01-01T00:00:00Z", "m": "a", "n": 1});
+    let jul = json!({"at": "2026-07-01T00:00:00Z", "m": "a", "n": 2});
+    fn named(said: Option<&Case>, view: &str, ty: &str) -> bool {
+        matches!(said, Some(Case::KeptOverThinned { view: v, ty: t })
+            if v.as_str() == view && t.as_str() == ty)
+    }
+    let mut red = Vec::new();
+    // A setting that would make a view kept, its source thinned below it:
+    // the view was never asked, so the setting is the event that makes it.
+    l.declare(series("one")).await?;
+    l.declare(over("one", "by_one", "n")).await?;
+    l.upsert("one", "o1", jan.clone()).await?;
+    l.upsert("one", "o2", jul.clone()).await?;
+    cut(&store, "one").await?;
+    let head = store.head().await.must("reading the head")?;
+    let key = format!("{VIEW_KEPT_SETTING}by_one");
+    let set = try_upsert(
+        l.cat.as_ref(),
+        &l.own,
+        SETTING_TYPE,
+        &key,
+        json!({"key": key, "value": true}),
+    )
+    .await;
+    if !named(invalid_case(&set), "by_one", "one") {
+        red.push(format!("the setting answers {set:?}"));
+    }
+    let moved = store.head().await.must("reading the head")?;
+    if moved != head {
+        red.push(format!(
+            "the refused setting moved the head from {head} to {moved}"
+        ));
+    }
+    // A declaration that would make it kept: asked, withdrawn while the
+    // act ran, then declared again over the thinned type.
+    l.declare(series("two")).await?;
+    l.declare(over("two", "by_two", "n")).await?;
+    l.set(&format!("{VIEW_KEPT_SETTING}by_two"), json!(true))
+        .await?;
+    l.upsert("two", "p1", jan.clone()).await?;
+    l.upsert("two", "p2", jul.clone()).await?;
+    l.declare_as(withdraw("by_two"), "withdrawing `by_two`")
+        .await?;
+    cut(&store, "two").await?;
+    let head = store.head().await.must("reading the head")?;
+    let again = l.try_declare(over("two", "by_two", "n")).await;
+    if !named(invalid_case(&again), "by_two", "two") {
+        red.push(format!("the declaration answers {again:?}"));
+    }
+    let moved = store.head().await.must("reading the head")?;
+    if moved != head {
+        red.push(format!(
+            "the refused declaration moved the head from {head} to {moved}"
+        ));
+    }
+    // A migration's step that declares it again: asked, but a view with a
+    // parameter is never kept, so the step is what would make it.
+    l.declare(series("three")).await?;
+    l.declare(over("three", "by_three", "n")).await?;
+    l.set(&format!("{VIEW_KEPT_SETTING}by_three"), json!(true))
+        .await?;
+    l.upsert("three", "q1", jan.clone()).await?;
+    l.upsert("three", "q2", jul.clone()).await?;
+    let mut windowed = over("three", "by_three", "n");
+    let view = windowed.view.as_mut().expect("a view");
+    view.params = vec![ViewParam {
+        name: ParamName::from("only"),
+        kind: StorageKind::Number,
+    }];
+    view.r#where = Some("n >= param('only')".into());
+    l.declare(windowed).await?;
+    cut(&store, "three").await?;
+    let head = store.head().await.must("reading the head")?;
+    let mut to = series("three");
+    for f in &mut to.fields {
+        if f.name.as_str() == "note" {
+            f.name = "remark".into();
+        }
+    }
+    let mut m = migration(to);
+    m.renames = vec![("note".into(), "remark".into())];
+    m.views = vec![over("three", "by_three", "n")];
+    let applied = match l.cat.migrate(&l.own, m.clone()).await {
+        Ok(reply) => l
+            .cat
+            .migrate_apply(&l.own, m, &reply.data.report_id)
+            .await
+            .map(|_| ()),
+        Err(e) => Err(e),
+    };
+    if !named(invalid_case(&applied), "by_three", "three") {
+        red.push(format!("the migration answers {applied:?}"));
+    }
+    let moved = store.head().await.must("reading the head")?;
+    if moved != head {
+        red.push(format!(
+            "the refused migration moved the head from {head} to {moved}"
+        ));
+    }
+    // A view over a view, whose group the act stranded, is declared again
+    // under its setting and is not refused.
+    l.declare(series("four")).await?;
+    l.declare(over("four", "by_four", "n")).await?;
+    l.declare(over("by_four", "over_four", "t")).await?;
+    l.set(&format!("{VIEW_KEPT_SETTING}by_four"), json!(true))
+        .await?;
+    l.set(&format!("{VIEW_KEPT_SETTING}over_four"), json!(true))
+        .await?;
+    l.upsert("four", "w1", jan).await?;
+    l.upsert("four", "w2", jul).await?;
+    cut(&store, "four").await?;
+    let was = answers(&l, "over_four", &["c", "t"]).await?;
+    l.declare_as(withdraw("over_four"), "withdrawing `over_four`")
+        .await?;
+    let again = l.declare(over("by_four", "over_four", "t")).await;
+    let now = answers(&l, "over_four", &["c", "t"]).await?;
+    let groups = stranded(&l, "over_four").await?;
+    let kept = l.describe_type("over_four").await?.lifecycle.kept;
+    if again.is_err() || now != was || groups == 0 || !matches!(kept, Some(Kept::Kept)) {
+        red.push(format!(
+            "`over_four`, over the kept `by_four` whose group the act stranded, {again:?}, \
+             answers {now:?} (before {was:?}), {groups} stranded, {kept:?}"
+        ));
+    }
+    ensure!(
+        red.is_empty(),
+        "a view made kept over a thinned type is refused: {}",
+        red.join("; ")
+    );
+    Ok(())
+}
+
+async fn a_write_at_a_key_a_later_part_has_not_reached_is_refused(
+    store: Store,
+    given: Given,
+) -> Held {
+    let (store, start) = owed(store, &given).await?;
+    let l = Lake::of(store.as_ref());
+    let head = store.head().await.must("reading the head")?;
+    let horizon = Timestamp::parse(HORIZON).expect("an instant");
+    let jan = json!({"at": "2026-01-01T00:00:00Z", "n": 1});
+    let fed = l
+        .ingest("meter", vec![source_record("tick", "r550", jan.clone())])
+        .await;
+    let last = l
+        .ingest("meter", vec![source_record("tick", "r599", jan.clone())])
+        .await;
+    let retired = l
+        .cat
+        .retire(
+            &l.own,
+            &TypeName::from("tick"),
+            &RecordKey::from("r570"),
+            WriteOpts::default(),
+        )
+        .await;
+    let later = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    for (what, key, said) in [
+        ("the ingest at `r550`", "r550", invalid_case(&fed)),
+        ("the ingest at `r599`", "r599", invalid_case(&last)),
+        ("the retirement at `r570`", "r570", invalid_case(&retired)),
+    ] {
+        let named = matches!(said, Some(Case::Thinned { ty, key: k, before })
+            if ty.as_str() == "tick" && k.as_str() == key && before == &horizon);
+        if !named {
+            red.push(format!("{what} answers {said:?}"));
+        }
+    }
+    if later != head {
+        red.push(format!(
+            "the refusals moved the head from {head} to {later}"
+        ));
+    }
+    ensure!(
+        red.is_empty(),
+        "a write at a key a later part has not reached is refused: {}",
+        red.join("; ")
+    );
+    // A key the act's selection at its first position does not hold — one
+    // the log never saw before the act — lands.
+    let fresh = source_record("tick", "new", json!({"at": "2026-01-03T00:00:00Z", "n": 2}));
+    l.ingest("meter", vec![fresh])
+        .await
+        .must("a key the act does not take")?;
+    let store = (given.reopen)(store, Seams::default())
+        .await
+        .map_err(|e| Failure::new(format!("the writer's open: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    settles(6_000, Duration::from_millis(5), || async {
+        let after = events_after(store.as_ref(), start).await?;
+        let taken: usize = after
+            .iter()
+            .filter(|e| e.body.kind() == "values_thinned")
+            .map(|e| match &e.body {
+                EventBody::ValuesThinned { keys, .. } => keys.len(),
+                _ => 0,
+            })
+            .sum();
+        let wholes = after
+            .iter()
+            .filter(|e| e.body.kind() == "act_whole")
+            .count();
+        let found = keys(&l, None).await?;
+        ensure!(
+            wholes == 1 && taken == 600 && found == ["new"],
+            "the open finishes the act: {wholes} wholes, {taken} keys taken, `tick` finds {found:?}"
+        );
+        Ok(())
+    })
+    .await?;
+    store
+        .verify(None, None)
+        .await
+        .must("verifying the whole act")?;
     Ok(())
 }
 

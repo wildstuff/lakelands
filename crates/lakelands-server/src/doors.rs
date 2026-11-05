@@ -898,6 +898,23 @@ pub(crate) async fn run(
                 }
             }
         }
+        Door::Thin => {
+            #[derive(Deserialize)]
+            struct D {
+                #[serde(rename = "type")]
+                ty: TypeName,
+                by: lakelands_api::FieldName,
+                before: Timestamp,
+                #[serde(default)]
+                act: bool,
+            }
+            let d: D = args(label, &a)?;
+            let thin = lakelands_api::write::Thin {
+                by: d.by,
+                before: d.before,
+            };
+            to_json(&c.thin(who, &d.ty, &thin, !d.act).await?)
+        }
     };
     said(&mut answer);
     Ok(answer)
@@ -1170,6 +1187,54 @@ mod tests {
             .ok()
             .unwrap();
             assert_eq!(done["outcome"], json!("applied"), "on {name}: {done}");
+        }
+    }
+
+    /// `thin` answers the preflight without appending, and with `act`
+    /// takes the records before its horizon (102).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_thin_tool_reports_first_and_takes_only_with_act() {
+        let ty = json!({"declare": "type", "name": "memo", "fields": [
+            {"name": "text", "type": {"kind": "text"}},
+            {"name": "at", "type": {"kind": "date_time"}}]});
+        for (engine, store) in lakes("thin-door").await {
+            let cat = store.catalog(WriteContext::default());
+            let who = owner("doors");
+            cat.declare(&who, serde_json::from_value(ty.clone()).unwrap())
+                .await
+                .unwrap();
+            for (k, at) in [("a", "2026-01-01T00:00:00Z"), ("b", "2026-07-01T00:00:00Z")] {
+                let patch = [("text".into(), json!("old")), ("at".into(), json!(at))].into();
+                let at = (&"memo".into(), &k.into());
+                cat.upsert(&who, at.0, at.1, patch, Default::default())
+                    .await
+                    .unwrap();
+            }
+            let door = Door::Thin;
+            let call = |a: Value| {
+                let (cat, who, door) = (cat.clone(), who.clone(), door.clone());
+                async move {
+                    let a = a.as_object().cloned().unwrap_or_default();
+                    run(cat.as_ref(), &who, &door, "the thin door", (a, None)).await
+                }
+            };
+            let head = store.head().await.unwrap();
+            let before = json!({"type": "memo", "by": "at", "before": "2026-06-01T00:00:00Z"});
+            let report = call(before.clone()).await.ok().unwrap();
+            assert_eq!(report["data"]["records"], json!(1), "on {engine}: {report}");
+            assert_eq!(
+                store.head().await.unwrap(),
+                head,
+                "on {engine}, the preflight appended"
+            );
+            let mut act = before;
+            act["act"] = json!(true);
+            let done = call(act).await.ok().unwrap();
+            assert_eq!(done["data"]["records"], json!(1), "on {engine}: {done}");
+            assert!(
+                store.head().await.unwrap() > head,
+                "on {engine}, the act appended"
+            );
         }
     }
 }

@@ -1236,6 +1236,39 @@ impl Catalog for Doors {
             records,
         ))
     }
+
+    async fn thin(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        thin: &lakelands_api::write::Thin,
+        preflight: bool,
+    ) -> Result<Reply<lakelands_api::write::ThinReport>> {
+        same_lake(&self.lake, who)?;
+        // A thinning takes rows out of every read of the type: the caller
+        // authors the lake's shape (006), as it does for a declaration.
+        let authors = {
+            let declared = Vec::<lakelands_api::engine::Declared>::new();
+            let sight = lakelands_core::sight::Sight::held(who, &declared);
+            sight.authors()
+        };
+        writes::granted(authors)?;
+        let (lake, ty, thin) = (self.lake.clone(), ty.clone(), thin.clone());
+        if preflight {
+            let data = exec::run(move || crate::thin::preflight(&lake, &ty, &thin)).await?;
+            return Ok(Reply {
+                position: data.through,
+                data,
+            });
+        }
+        let (answer, waiting) = tokio::sync::oneshot::channel();
+        crate::thin::start(&self.lake, ty, thin, answer);
+        let data = waiting.await.unwrap_or_else(|_| Err(exec::halted(true)))?;
+        Ok(Reply {
+            position: data.through,
+            data,
+        })
+    }
 }
 
 impl Doors {

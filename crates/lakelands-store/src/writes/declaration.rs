@@ -470,6 +470,8 @@ impl Call<'_> {
         (now, first, judging): (Timestamp, usize, Judging),
     ) -> Result<Bundled> {
         super::declared_dated((&w.ontology, &w.settings), &declarations)?;
+        let head = self.lake.engine.view(None)?;
+        super::declared_over_thinned(head.as_ref(), &w.settings, &declarations)?;
         let mut drafts = Vec::with_capacity(declarations.len());
         let mut decided = Vec::new();
         // Only a function, or a type the lake holds, computes records again
@@ -504,7 +506,7 @@ impl Call<'_> {
             whole
         });
         // A kept view with stranded groups is made again by its rule alone.
-        let stranded = crate::kept::stranded(self.lake.engine.view(None)?.as_ref(), &w.settings)?;
+        let stranded = crate::kept::stranded(head.as_ref(), &w.settings)?;
         if !stranded.is_empty() {
             let mut after = w.ontology.clone();
             (declarations.iter()).for_each(|d| after.put(d.clone(), 0, None));
