@@ -55,7 +55,10 @@ Each worktree carries two files that are never committed:
   off. Incremental data grows by the tens of gigabytes per target
   directory, and a full run, which rebuilds after every change anyway,
   gains little from it; five worktrees with it on once filled the cache
-  disk.
+  disk. Measured on a 14-core Linux machine (2026-11-05): it turns an
+  edit in lakelands-store into its tests in 11 s instead of 27 s, but
+  makes an edit in lakelands-core slower to test (81 s against 70 s) and
+  the target directory larger (17 GB against 11 GB).
 - `CLAUDE.local.md` — instructions for this worktree that don't belong in
   the repository: the worktree's name, where the developer keeps the source
   material the organs are imported from, the commit they are read at,
