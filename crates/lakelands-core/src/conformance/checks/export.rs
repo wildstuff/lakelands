@@ -691,6 +691,31 @@ pub(super) fn rehashed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<V
     Ok(canonical::to_vec(&event))
 }
 
+/// Every event of `file` rewritten into log format `older`, each hash and
+/// the next line's `prev` made right and `lake_created` saying the same
+/// format, so the whole file is one release's and only its log format is
+/// another's.
+fn as_format(dir: &Path, file: &str, older: u32) -> Result<(), Failure> {
+    let mut prev = Value::Null;
+    let mut lines = Vec::new();
+    for line in lines_of(dir, file)? {
+        let line = rehashed(&line, |e| {
+            e["v"] = json!(older);
+            if !prev.is_null() {
+                e["prev"] = prev.clone();
+            }
+            if e["body"]["kind"] == "lake_created" {
+                e["body"]["format"] = json!(older);
+            }
+        })?;
+        let event: Value = serde_json::from_slice(&line)
+            .map_err(|e| Failure::new(format!("an exported line is not JSON: {e}")))?;
+        prev = event["hash"].clone();
+        lines.push(line);
+    }
+    rewrite(dir, file, &lines)
+}
+
 async fn a_damaged_export_is_refused_naming_the_position(store: Store, scratch: PathBuf) -> Held {
     let scratch = Scratch::new(scratch);
     // A re-key among the events; a checkpoint, so two files.
@@ -1457,15 +1482,35 @@ async fn a_lake_is_written_in_one_format_and_another_is_refused_whole(
         let verified = export::verify(&dir);
         let imported = (given.import)(dir, lake.clone(), None, import_seams()).await;
         let imported = refused(imported, "an export holding an event of another format")?;
+        // An event of another format at position 0 makes the whole archive
+        // another release's, refused as the open of that lake refuses it; a
+        // format where the chain has already run, or a `lake_created` that
+        // contradicts its own line, is damage and is named as such.
+        let as_format = match (&want, last) {
+            (Flaw::FormatOther { v, reads }, false) => Some((*v, *reads)),
+            _ => None,
+        };
         for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
-            ensure!(
-                e.as_ref().and_then(damaged) == Some(&want)
-                    && matches!(e.as_ref().and_then(Error::situation),
-                        Some(Situation::Damaged { position: Some(p), .. }) if *p == at),
-                "{door} of an export whose event at {at} is {what} is refused at that position \
-                 as {want:?}, which names the format and the one this release reads; it \
-                 answered {e:?}"
-            );
+            match as_format {
+                Some((v, r)) => ensure!(
+                    matches!(e.as_ref().and_then(Error::situation),
+                        Some(Situation::LogFormat { lake: l, found, reads: r_known, oldest })
+                            if l == lake.as_str() && *found == v && *r_known == r
+                                && *oldest == Some(u64::from(
+                                    lakelands_api::event::OLDEST_LOG_FORMAT))),
+                    "{door} of an export whose first event is {what} is refused as \
+                     `log_format`, naming the lake, {v} and the one format this release reads, \
+                     {r}; it answered {e:?}"
+                ),
+                None => ensure!(
+                    e.as_ref().and_then(damaged) == Some(&want)
+                        && matches!(e.as_ref().and_then(Error::situation),
+                            Some(Situation::Damaged { position: Some(p), .. }) if *p == at),
+                    "{door} of an export whose event at {at} is {what} is refused at that \
+                     position as {want:?}, which names the format and the one this release \
+                     reads; it answered {e:?}"
+                ),
+            }
         }
     }
     Ok(())
@@ -1612,7 +1657,7 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
 check!(
     OLDER_FORMAT_REFUSED =
         a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_read,
-    "098 and the log format §6: a release reads one format and older ones are not read at all. A lake every line of which is of format 22 and which says so in its `lake_created` is refused at an open in every mode as `log_format`, naming the lake, 22 and the one format this release reads, leaving its log, its projection and its lease as they were; an export of format 22 is refused by its verification and its import as damaged at position 0, naming 22, and no lake is left behind it",
+    "098 and the log format §6: a release reads one format and older ones are not read at all. A lake every line of which is of format 22 and which says so in its `lake_created` is refused at an open in every mode as `log_format`, naming the lake, 22 and the one format this release reads, leaving its log, its projection and its lease as they were; an export of format 22 is refused by its verification and its import as `log_format` the same way, naming its lake, 22 and the one format this release reads, and no lake is left behind it",
     given
 );
 
@@ -1643,40 +1688,19 @@ async fn a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_re
             )));
         }
     };
-    let mut prev = Value::Null;
-    let mut older = Vec::new();
-    for line in lines_of(&from, &file)? {
-        let line = rehashed(&line, |e| {
-            e["v"] = json!(OLDER);
-            if !prev.is_null() {
-                e["prev"] = prev.clone();
-            }
-            if e["body"]["kind"] == "lake_created" {
-                e["body"]["format"] = json!(OLDER);
-            }
-        })?;
-        let event: Value = serde_json::from_slice(&line)
-            .map_err(|e| Failure::new(format!("an exported line is not JSON: {e}")))?;
-        prev = event["hash"].clone();
-        older.push(line);
-    }
-    rewrite(&from, &file, &older)?;
+    as_format(&from, &file, OLDER)?;
     let lake: lakelands_api::LakeId = format!("{}_{OLDER}", store.lake()).into();
     let verified = export::verify(&from);
     let imported = (given.import)(from, lake.clone(), None, import_seams()).await;
     let imported = refused(imported, "an export of format 22")?;
-    let want = Flaw::FormatOther {
-        v: OLDER.into(),
-        reads: reads.into(),
-    };
     for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
         ensure!(
-            e.as_ref().and_then(damaged) == Some(&want)
-                && matches!(e.as_ref().and_then(Error::situation),
-                    Some(Situation::Damaged { position: Some(p), .. })
-                        if *p == Position::GENESIS),
-            "{door} of an export of format {OLDER} is refused at position 0, naming the format \
-             and the one this release reads; it answered {e:?}"
+            matches!(e.as_ref().and_then(Error::situation),
+                Some(Situation::LogFormat { lake: l, found, reads: r, oldest })
+                    if l == store.lake().as_str() && *found == u64::from(OLDER)
+                        && *r == u64::from(reads) && *oldest == Some(u64::from(reads))),
+            "{door} of an export of format {OLDER} is refused as `log_format`, naming the \
+             lake, that format and the one this release reads, {reads}; it answered {e:?}"
         );
     }
     // Then a lake: the same events laid in a log of their own, as a
@@ -1727,6 +1751,85 @@ async fn a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_re
             c.after
         );
     }
+    Ok(())
+}
+
+check!(
+    OLDER_ARCHIVE_REFUSED =
+        an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_written,
+    "098 and the log format §6: a backup or an export of another release's format is the operator's data, not damage. Its verification — the check `restore <dir> --check` runs — and its import — what `restore <dir>` and `import <dir>` run — are refused as `log_format`, naming its lake, 22 and the one format this release reads and writes; the target lake is not looked at, so an import into a lake that holds events answers `log_format` and not its non-empty precondition, and the lake's head is where it was",
+    given
+);
+
+async fn an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_written(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    const OLDER: u32 = 22;
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let scratch = Scratch::new(given.scratch.clone());
+    let l = Lake::of(store.as_ref());
+    l.declare(type_of("note", &[("body", Text)])).await?;
+    l.upsert("note", "n1", json!({"body": "x"})).await?;
+    let lake = store.lake().clone();
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let file = match files(&from)?.as_slice() {
+        [one] => one.clone(),
+        more => {
+            return Err(Failure::new(format!(
+                "a small lake's export is one file: {more:?}"
+            )));
+        }
+    };
+    as_format(&from, &file, OLDER)?;
+    let as_older = |e: &Error| {
+        matches!(e.situation(),
+            Some(Situation::LogFormat { lake: l, found, reads: r, oldest })
+                if l == lake.as_str() && *found == u64::from(OLDER)
+                    && *r == u64::from(reads) && *oldest == Some(u64::from(reads)))
+    };
+    // What `restore --check` runs.
+    let e = export::verify(&from)
+        .err()
+        .ok_or_else(|| Failure::new("an export of another format verified".to_owned()))?;
+    ensure!(
+        as_older(&e),
+        "the verification of an archive of format {OLDER}, which `restore --check` runs, is \
+         refused as `log_format`, naming its lake, that format and the one this release reads, \
+         {reads}; it answered {e:?}"
+    );
+    // What `restore` and `import` run, into a lake that holds nothing.
+    let fresh: lakelands_api::LakeId = format!("{}_{OLDER}", lake).into();
+    let e = refused(
+        (given.import)(from.clone(), fresh, None, import_seams()).await,
+        "an archive of format 22 into a lake that holds nothing",
+    )?;
+    ensure!(
+        as_older(&e),
+        "an import of an archive of format {OLDER}, which `restore` and `import` run into a \
+         lake that holds nothing, is refused as `log_format`; it answered {e:?}"
+    );
+    // And before the target is looked at: the lake it came from holds
+    // events, which an import refuses as a failed precondition -- unless
+    // the archive is refused first, as it must be.
+    let head = store.head().await.must("reading the head")?;
+    let e = refused(
+        (given.import)(from, lake.clone(), Some(store.clone()), import_seams()).await,
+        "an archive of format 22 into a lake that holds events",
+    )?;
+    ensure!(
+        as_older(&e),
+        "an import of an archive of format {OLDER} into a lake that holds events is refused as \
+         `log_format` before the lake's non-empty precondition is asked, so nothing of the \
+         target was read or written; it answered {e:?}"
+    );
+    let after = store.head().await.must("reading the head after")?;
+    ensure!(
+        after == head,
+        "the head of the lake an import of an archive of format {OLDER} was refused into is \
+         where it was, {head}; it is now {after}"
+    );
     Ok(())
 }
 

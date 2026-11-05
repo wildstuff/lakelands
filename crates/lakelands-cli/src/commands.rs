@@ -1394,17 +1394,7 @@ pub fn restore_keys(
 /// when the first event cannot be read; the import's own verification
 /// then says why.
 pub fn exported_lake(dir: &Path) -> Option<String> {
-    let first = dir.join(export::file_name(lakelands_api::Position::GENESIS));
-    let file = std::fs::File::open(first).ok()?;
-    let mut lines = std::io::BufRead::lines(std::io::BufReader::new(file));
-    let line: serde_json::Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
-    if let Some(framed) = line.get("frame") {
-        let event: serde_json::Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
-        return [&framed["lake"], &event["lake"]]
-            .iter()
-            .find_map(|l| l.as_str().map(str::to_owned));
-    }
-    line["lake"].as_str().map(str::to_owned)
+    export::lake_of(dir)
 }
 
 /// `import`: the export in `dir` becomes the lake at `location`, which
@@ -1431,6 +1421,24 @@ pub async fn import(
     let imported = lakelands_store::import(location, seams, dir.to_owned())
         .await
         .map_err(|e| {
+            // An archive of another release's log format is the operator's
+            // data, not damage: the way back is a release that reads it,
+            // and it is said here, not as damage.
+            if let Some(lakelands_api::error::Situation::LogFormat { found, .. }) = e.situation() {
+                let said = e.to_string();
+                let todo = if restoring {
+                    format!(
+                        "restore it with a release that reads log format {found}; it is not \
+                         damaged"
+                    )
+                } else {
+                    format!(
+                        "import it with a release that reads log format {found}; it is not \
+                         damaged"
+                    )
+                };
+                return Failure::new(said, todo);
+            }
             let todo = match &e {
                 lakelands_api::Error::Refused { .. } => {
                     "an export opens only as the lake it came from, into a lake that holds \

@@ -39,13 +39,13 @@
 //! import refuses it before it writes.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write as _};
+use std::io::{BufRead as _, BufReader, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 
 use lakelands_api::catalog::Verification;
 use lakelands_api::engine::CanonicalEvent;
-use lakelands_api::error::{Case, Detail, Doing, Flaw, Part};
-use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION};
+use lakelands_api::error::{Case, Detail, Doing, Flaw, Part, Situation};
+use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
 use lakelands_api::seam::{ChangeFeed, FeedFilter};
 use lakelands_api::{Error, LakeId, LakeStore, Position, Refusal, Result};
 use serde::{Deserialize, Serialize};
@@ -629,6 +629,24 @@ fn first_of(path: &Path) -> Option<u64> {
     }
 }
 
+/// The lake an export holds, as its first event names it, or the frame
+/// before it where that holds it: its first line alone, and never the
+/// manifest, which is not trusted. `None` when the first line cannot be
+/// read; the import's own verification then says why.
+pub fn lake_of(dir: &Path) -> Option<String> {
+    let first = dir.join(file_name(Position::GENESIS));
+    let file = File::open(first).ok()?;
+    let mut lines = BufReader::new(file).lines();
+    let line: serde_json::Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+    if let Some(framed) = line.get("frame") {
+        let event: serde_json::Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+        return [&framed["lake"], &event["lake"]]
+            .iter()
+            .find_map(|l| l.as_str().map(str::to_owned));
+    }
+    line["lake"].as_str().map(str::to_owned)
+}
+
 /// An export's segment files, in order.
 pub fn segment_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let log = dir.join("log");
@@ -678,7 +696,27 @@ pub fn verify(dir: &Path) -> Result<Verification> {
                     let name = name.to_string();
                     return damaged(chain.next, Flaw::NoLineFeed { name });
                 }
-                Err(crate::log::Fault::Flaw(flaw)) => return damaged(chain.next, flaw),
+                Err(crate::log::Fault::Flaw(flaw)) => {
+                    // An archive whose first event is written in a format
+                    // this release does not read is another release's
+                    // data, not damage: it is refused as the open of that
+                    // lake refuses it, naming the lake, its format and the
+                    // one this release reads and writes. A line of another
+                    // format where the chain has already passed an event is
+                    // damage, and says so.
+                    if chain.next == Position::GENESIS
+                        && let Flaw::FormatOther { v, reads } = &flaw
+                        && let Some(lake) = lake_of(dir)
+                    {
+                        return Err(Error::unavailable(Situation::LogFormat {
+                            lake,
+                            found: *v,
+                            reads: *reads,
+                            oldest: Some(OLDEST_LOG_FORMAT.into()),
+                        }));
+                    }
+                    return damaged(chain.next, flaw);
+                }
             };
             let event = chain.event(event.event, index, first)?;
             digest.update(&event);
