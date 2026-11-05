@@ -1170,6 +1170,14 @@ pub(crate) fn look_index(
 
 /// Write the rows of `fields` for up to `limit` head records of `ty` after
 /// `after`; the key the chunk ended at, none once the type is filled.
+///
+/// A row goes by the whole key of `text_index_value`, `(ty, field,
+/// md5(value), key)`, and by the token the write that put the state wrote
+/// ([`engines::lookup_token`]), so the delete names the record and the
+/// value. Naming `ty`, `field` and `key` alone cannot seek the value,
+/// since `key` is the last column: such a delete walks every row the field
+/// holds, once for each chunk of the build, and a field being built holds a
+/// row for every record, because a write beside the build keeps them.
 fn fill_looked(
     db: &mut Db,
     names: &Names,
@@ -1180,25 +1188,35 @@ fn fill_looked(
 ) -> Result<Option<RecordKey>> {
     let after = after.map_or("", RecordKey::as_str);
     let page = head_records_after(db, names, ty, after, i64::from(limit))?;
+    let decl = type_at(db, names, ty, None)?;
     let (mut found, mut values, mut keys) = (Vec::new(), Vec::new(), Vec::new());
     for r in &page {
         for field in fields {
-            let Some(text) = r.fields.get(field).and_then(|v| v.as_str()) else {
+            let kind = decl
+                .as_ref()
+                .and_then(|d| engines::field_kind(d, field))
+                .copied();
+            let Some(token) = r
+                .fields
+                .get(field)
+                .and_then(|v| engines::lookup_token(v, kind))
+            else {
                 continue;
             };
             found.push(field.as_str().to_owned());
-            values.push(text.to_owned());
+            values.push(token);
             keys.push(r.key.as_str().to_owned());
         }
     }
-    let all: Vec<&str> = page.iter().map(|r| r.key.as_str()).collect();
-    let held: Vec<&str> = fields.iter().map(FieldName::as_str).collect();
     db.execute(
         &format!(
-            "DELETE FROM {} WHERE ty = $1 AND key = ANY($2) AND field = ANY($3)",
-            names.t("text_index")
+            "DELETE FROM {text} t USING unnest($2::text[], $3::text[], $4::text[]) \
+             AS d(field, value, key) WHERE t.ty = $1 AND t.field = d.field \
+             AND md5(t.value) = md5(d.value) AND t.key COLLATE \"C\" = d.key \
+             AND t.value = d.value",
+            text = names.t("text_index"),
         ),
-        &[&ty.as_str(), &all, &held],
+        &[&ty.as_str(), &found, &values, &keys],
     )?;
     db.execute(
         &format!(
