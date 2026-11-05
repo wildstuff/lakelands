@@ -1110,14 +1110,14 @@ its mark and changed nowhere else.
   planted out and green with it restored. Both are green on the memory
   engine; CI runs SQLite and PostgreSQL.
 - **Measured at S7's head**: product 114 599 and specification
-  202 193, against 114 428 and 201 993 at its base. S7 adds 194
+  202 202, against 114 428 and 202 002 at its base. S7 adds 194
   product lines in and 23 out, net 171, and 202 specification in and 2
   out, net 200, where the plan had 120 and 170. The product's extra is
   the marker crossing the contract (about 30 lines in the API, the WIT
   and rights) and the reclaim (27). The specification's is the SQLite
   measure (106 lines) beside the two rows. Nothing was cut from § Cut
   first; two of `find.rs`'s helpers were written shorter. 401 product
-  and 307 specification lines are left under the ceilings. Seam 112 of
+  and 298 specification lines are left under the ceilings. Seam 112 of
   112, unchanged: S7 adds no facade or engine-trait method. 6 of 20
   `cfg(feature)` sites.
 
