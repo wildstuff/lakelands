@@ -2484,6 +2484,114 @@ fn import_refuses_a_lake_that_holds_events_another_lake_memory_and_a_damaged_exp
     );
 }
 
+/// The archive in `dir` made one release's whole: every line in log
+/// format 22, each hash made over it and the next line's `prev` made
+/// right, and its `lake_created` saying 22.
+fn as_release_of_format_22(dir: &str) {
+    let file = PathBuf::from(dir).join("log/00000000000000000000.jsonl");
+    let bytes = fs::read(&file).unwrap();
+    let mut restoring = lakelands_core::log::Restoring::new(&bytes[..], true);
+    let mut events = Vec::new();
+    while let Some(restored) = restoring.next_event().unwrap() {
+        events.push(restored.event);
+    }
+    let mut prev: Option<String> = None;
+    let mut lines = Vec::new();
+    for mut event in events {
+        event["v"] = 22.into();
+        if let Some(prev) = prev.take() {
+            event["prev"] = prev.into();
+        }
+        if event["body"]["kind"] == "lake_created" {
+            event["body"]["format"] = 22.into();
+        }
+        event.as_object_mut().unwrap().remove("hash");
+        let hash = lakelands_core::canonical::sha256_hex(&event);
+        event["hash"] = hash.clone().into();
+        prev = Some(hash);
+        lines.push(lakelands_core::canonical::to_vec(&event));
+    }
+    let mut bytes = lines.join(&b'\n');
+    bytes.push(b'\n');
+    fs::write(&file, bytes).unwrap();
+}
+
+/// An archive of another release's log format is the operator's data, not
+/// damage: `restore`, `restore --check` and `import` each refuse it as a
+/// format, naming it and the way back, and nothing is written.
+#[test]
+fn an_archive_of_an_older_log_format_is_refused_as_a_format_by_verify_restore_and_import() {
+    let from = Shell::on("older-format-from", Backend::Store);
+    from.lake();
+    let dir = from.root.join("backup").display().to_string();
+    assert_eq!(from.run(&["export", "--to", &dir]).code, 0);
+    as_release_of_format_22(&dir);
+    let format = "lake `finance` is written in log format 22, and this release reads log \
+                  formats 23 to 23 and writes 23";
+    let way_back = "a release that reads log format 22; it is not damaged";
+
+    // `restore --check` verifies without opening: exit status 1, said as
+    // an archive of another format and not as damage.
+    let to = Shell::on("older-format-to", Backend::Store);
+    to.lake();
+    let before = to.run(&["feed"]).out;
+    let check = to.run(&["restore", &dir, "--check"]);
+    assert_eq!((check.code, check.err.as_str()), (1, ""), "{}", check.out);
+    assert!(
+        check
+            .out
+            .contains(&format!("the backup in {dir}: {format}"))
+            && check
+                .out
+                .contains(&format!("what to do: restore it with {way_back}"))
+            && !check.out.contains("another backup")
+            && !check.out.contains("damaged at position"),
+        "{}",
+        check.out
+    );
+
+    // `restore`: refused before the lake is touched; it is where it was.
+    let restored = to.run(&["restore", &dir]);
+    assert_eq!((restored.code, restored.out.as_str()), (1, ""));
+    assert!(
+        restored.err.contains(format)
+            && restored
+                .err
+                .contains(&format!("what to do: restore it with {way_back}"))
+            && !restored.err.contains("the backup is damaged")
+            && !restored.err.contains("another backup"),
+        "{}",
+        restored.err
+    );
+    assert_eq!(
+        to.run(&["feed"]).out,
+        before,
+        "a refused restore wrote an event"
+    );
+
+    // `import`: the same, with the way back an import.
+    let fresh = Shell::on("older-format-import", Backend::Store);
+    fresh.lake();
+    let before = fresh.run(&["feed"]).out;
+    let imported = fresh.run(&["import", &dir]);
+    assert_eq!((imported.code, imported.out.as_str()), (1, ""));
+    assert!(
+        imported.err.contains(format)
+            && imported
+                .err
+                .contains(&format!("what to do: import it with {way_back}"))
+            && !imported.err.contains("the export is damaged")
+            && !imported.err.contains("restore from another backup"),
+        "{}",
+        imported.err
+    );
+    assert_eq!(
+        fresh.run(&["feed"]).out,
+        before,
+        "a refused import wrote an event"
+    );
+}
+
 /// The built binary moves a lake between two roots, each command in a
 /// process of its own, as the walk types it: the command's engines are the
 /// binary's, not a test's opener.
