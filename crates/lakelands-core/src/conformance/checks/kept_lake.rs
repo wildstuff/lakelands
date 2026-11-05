@@ -1,7 +1,7 @@
 //! The lake v0.23.0 made through its doors, imported as an export and read on every engine (`docs/log-format/lakes/23/`, record 054).
+use crate::conformance::ImportedLake;
 use crate::conformance::fixture::owner;
 use crate::conformance::prelude::*;
-use crate::conformance::ImportedLake;
 use lakelands_api::LakeStore;
 
 check!(
