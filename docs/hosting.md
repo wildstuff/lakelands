@@ -1866,8 +1866,8 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
     PostgreSQL. A host for whom the default is too much lowers the bound
     or turns the switch off. A build writes in chunks, and a write sent meanwhile waited at
     most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records,
-    where a host's own setting holds every write for its whole rebuild
-    (0.85 s and 2.4 s).
+    in chunks of 10 000 (the size measured then; the default is
+    `limits.order_chunk`, 1 000); a host's own setting builds the same way (below).
   - **A binary before 0.17.0 writing or rebuilding the lake** (it reads
     it: the format and the layout are the same) leaves the chosen
     fields' rows behind. No read takes them from then on, and the next
@@ -1875,10 +1875,18 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
     writer that took its lease back without an open keeps chosen fields
     no read takes until it opens the lake again.
   - **A host's own `sort_index.<type>` always wins.** Written, it takes
-    the lake's choice for the type away and the lake chooses nothing
-    there; retired, it hands the type back. A host that knows its orders
-    names them, and writes the setting in a quiet moment: its fold
-    rebuilds the type's rows inside one append, under the writer.
+    the lake's choice for the fields it names away; the setting and the
+    lake share the type's rows field by field, so the lake still chooses
+    the type's other fields (`CHOSEN_ORDER_BESIDE_SORT_INDEX`);
+    retired, it hands those fields back. A host that knows its orders
+    names them, and may write the setting while the lake takes writes:
+    the build runs in parts beside the writer, a part of
+    `limits.order_chunk` records each its own turn in the queue, and no
+    read looks at the rows until the last part has kept them
+    (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`). The
+    setting's write returns when the build is whole. What a write waited
+    meanwhile, measured, is in "What a build costs the writes beside it"
+    below.
   - **Told:** `describe_type` tells a holder of `schema` who reads the
     field what the lake chose, in `chosen`, and what it still sorts
     whole, in `sorted_whole`, with its pages and their time; `lakelands
@@ -1892,11 +1900,17 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   at every position from the setting on
   (`docs/decisions/049-a-view-the-fold-keeps.md`). What it costs and
   where it does not hold:
-  - **Turning it on is a step for a quiet moment:** the fold of the
-    setting's write walks the view's sources once under the writer and
-    holds the folds of every group until that append ends, so a view
-    grouped by a nearly unique field holds about as many as its source
-    has records.
+  - **Turning it on builds in parts beside the writer,** as an index does
+    (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`): the
+    view's records are kept part by part, writes to its sources go on, and
+    reads compute the view until the last part has kept it
+    (`describe_type` says `building`). A set or a trigger over a view in its
+    build is refused as `view_building`. A write waits for at most the
+    part in front of it and the writes queued ahead; the build is not
+    instant: 99 s and 1 210 s on SQLite and 269 s and 7 657 s on
+    PostgreSQL at 1 000 000 and 10 000 000 records, the longest write 0.6 to
+    2.8 s on SQLite and 3.9 to 26.7 s on PostgreSQL ("What a build costs the
+    writes beside it", below).
   - **Every write to a source puts one state more** for each group it
     touches in each kept view, for good. An append reads the state of
     the kept views that read a type it wrote, one read each, and of no
@@ -2008,97 +2022,129 @@ a call). A roll-up is a kept view grouped by `[symbol, date_bucket(at, …)]` wi
 `count`, `sum`, `min`, `max`, `first` and `last`: one roll-up is the hour, three are
 the minute, the hour and the day, each grouped by a derived `date_bucket` field of the
 tick type. The trigger's guard reads `preceding(price, at, symbol)` against a constant
-bound and never fires; it is judged on every write. Bytes are per record: the log's
+bound and never fires, and the `in_force` cells' guard reads the bound in force
+for the tick's symbol instead and never fires either. It is judged on every
+write. Bytes are per record: the log's
 files, the projection's tables, and the projection's indexes (`dbstat`). Reads are of
 the largest series, the median of five, raw (`where symbol and at >= …`, paged by 1 000)
 and from the finest roll-up (last hour) and the hour roll-up (last day).
 
-Machine: Apple M4 Pro, 14 cores, 24 GB, internal NVMe SSD, shared with a desktop user
-and other builds. The last column is the one-minute load average at the start and end
-of a cell. Every cell is one run, not a median. Cells at 100 000 and the first four at
-1 000 000 ran at a load of 1.2 to 2.1 at both ends. The two three-roll-up cells at
-1 000 000 were run twice (the first run overlapped a load of 5 to 7) and the table has
-the second run; a once-a-minute log showed load peaks of 6.9 and 10.7 inside them, which
-the start/end column does not show, and their two runs agree within 6%. Reads of the
-day come from the day roll-up with three roll-ups and from the hour roll-up with one.
-With a guard, the run first writes one tick far above its series' last price and stops
-unless the outcome names the guard as fired.
+Machine: a 13th-generation Intel laptop-class CPU with 14 cores and 38 GB of
+memory, a virtual block disk (the guest reports it as rotational; it sits on shared
+host storage), Linux. It was shared with other builds, a model server and
+other benchmark runs, so the one-minute load average was 2 to 24 (the last column
+of the driver's row, start and end of a cell; it misses peaks inside a cell). PostgreSQL 18 ran in a
+container on the same machine, reached over TCP without TLS. Most cells ran
+once, not a median; the two-run ones are said so beside them. The driver is
+`tick_bench` on this branch at `fc0da1b1` (unchanged since `3c6d7c75`, the
+commit that added it), the release build that ran; `origin/develop`'s copy of
+the driver has neither `--series-index` nor `--build`, and it reads the load
+average from macOS's `load averages:`, so it reads NaN on Linux. Run to run,
+the same cell spread by up to 46% in writes a second and up to 58% in ingest
+(the three-roll-up SQLite cell with no trigger ran twice: 298 and 339 writes a
+second, 326 and 486 records a second, the second 49% more in ingest, and the
+table has the second, whose bytes could be read; the series pair below ran each
+setting twice, 401 and 587 writes a second without and 1 638 and 2 586 records
+a second with, 46% and 58% again). Treat a difference under 58%, the wider of
+the two measures, as none.
+Reads of the day come from the day roll-up with three roll-ups and from the hour
+roll-up with one. With a guard, the run first writes one tick far above its
+series' last price and stops unless the outcome names the guard as fired. The
+bytes a record of a PostgreSQL lake come from `pg_table_size` and
+`pg_indexes_size`; the `preceding` cell with three roll-ups reads 4 948 bytes of
+projection against 7 646 without a trigger, which the same data cannot explain, so
+read PostgreSQL's projection bytes as good to a third (table bloat at the moment
+of reading).
 
-Not measured: PostgreSQL (the slot's cluster is PostgreSQL 16; the engine needs 18, and
-`serve` refuses 16), 10 000 000 records on either engine (a three-roll-up cell at
-113 to 180 records a second would take 15 to 24 hours). The `in_force` trigger cell
-(below) is measured on SQLite only. The issue stays open for these.
+Cut, and why. Of the matrix of roll-ups 0, 1, 3 × triggers none, `preceding`,
+`in_force` × two engines × two sizes, 18 cells ran. PostgreSQL at 1 000 000
+records with three roll-ups runs 41 to 187 records a second, so a cell took 1.5
+to 6.5 hours; PostgreSQL's `in_force` with three roll-ups and all its one-roll-up
+cells, and every cell with a roll-up at 10 000 000 records on either engine, were
+not started: at the rates below a three-roll-up cell at 10 000 000 would take 6 to
+67 hours. PostgreSQL at 10 000 000 ran with no roll-up and no trigger only; SQLite at
+10 000 000 ran the three no-roll-up cells. These cells are cut for time, and the
+issue stays open for them if a host needs them.
 
-What the numbers say, on SQLite at 1 000 000 records:
+SQLite and PostgreSQL, one table (`ingest` is one caller in calls of 1 000;
+`writes/s` is 16 callers, an `upsert` each; reads are of the largest series, the
+median of five):
 
-- A roll-up's fold dominates a write. Ingest falls from about 4 400 records a second
-  with none to about 750 with one and about 175 with three; callers' single writes
-  stay at 400 to 650 a second.
-- A lake keeps about 390 bytes of log a record and 1.7 KB of projection and index with
-  no roll-up, 5.3 KB with one and 13.3 KB with three: the log is under 3% of what
-  three roll-ups keep.
-- The guard cuts ingest by more than half with no roll-up (4 386 to 1 839 records a
-  second), by 20% with one (754 to 603) and by about 9% with three (179 to 163), where
-  the fold already dominates.
-- Reading a busy series' last hour raw takes about 1 s at 1 000 000 records; from a roll-up, under 5 ms.
+| engine | records | roll-ups | trigger | writes/s | p99 ms | ingest rec/s | p99 ms a call | log B/rec | proj. B/rec | index B/rec | raw hour ms | raw day ms | roll-up hour / day ms |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| sqlite | 1 000 000 | 0 | none | 1156 | 97.3 | 4297 | 518.9 | 73 | 664 | 260 | 164.6 | 2043.5 | - |
+| sqlite | 1 000 000 | 0 | preceding | 793 | 34.5 | 1268 | 1003.5 | 73 | 663 | 260 | 149.3 | 1997.4 | - |
+| sqlite | 1 000 000 | 0 | in_force | 1127 | 35.5 | 3058 | 677.5 | 74 | 669 | 264 | 156.2 | 2042.6 | - |
+| sqlite | 1 000 000 | 1 | none | 599 | 149.1 | 1075 | 1304.6 | 73 | 2199 | 273 | 159.4 | 2101.4 | 0.5 / 0.7 |
+| sqlite | 1 000 000 | 1 | preceding | 485 | 105.1 | 653 | 2151.0 | 73 | 2198 | 273 | 152.7 | 2028.1 | 0.6 / 0.8 |
+| sqlite | 1 000 000 | 1 | in_force | 562 | 87.9 | 983 | 1405.0 | 74 | 2206 | 277 | 160.8 | 2029.8 | 0.4 / 0.5 |
+| sqlite | 1 000 000 | 3 | none | 339 | 264.5 | 486 | 2673.9 | 73 | 5426 | 361 | 138.9 | 1903.3 | 2.1 / 0.5 |
+| sqlite | 1 000 000 | 3 | preceding | 337 | 201.6 | 348 | 5096.2 | 73 | 5426 | 360 | 161.0 | 1993.4 | 2.4 / 0.5 |
+| sqlite | 1 000 000 | 3 | in_force | 365 | 146.0 | 465 | 4255.3 | 74 | 5426 | 365 | 154.6 | 1990.0 | 2.2 / 0.3 |
+| postgres | 1 000 000 | 0 | none | 712 | 42.2 | 2958 | 1373.5 | 170 | 790 | 994 | 425.4 | 4131.8 | - |
+| postgres | 1 000 000 | 0 | preceding | 197 | 421.3 | 152 | 12067.8 | 170 | 790 | 993 | 469.4 | 4015.1 | - |
+| postgres | 1 000 000 | 0 | in_force | 318 | 73.1 | 582 | 3165.0 | 172 | 800 | 1004 | 348.4 | 3999.3 | - |
+| postgres | 1 000 000 | 3 | none | 141 | 603.6 | 187 | 13798.8 | 170 | 7646 | 5242 | 604.6 | 14148.6 | 2.9 / 1.1 |
+| postgres | 1 000 000 | 3 | preceding | 153 | 395.0 | 41 | 74130.6 | 170 | 4948 | 4774 | 590.0 | 9868.9 | 2.6 / 0.9 |
+| sqlite | 10 000 000 | 0 | none | 909 | 29.4 | 3930 | 558.7 | 65 | 586 | 266 | 153.2 | 3636.3 | - |
+| sqlite | 10 000 000 | 0 | preceding | 1091 | 28.1 | 564 | 8380.5 | 65 | 586 | 266 | 283.4 | 5603.7 | - |
+| sqlite | 10 000 000 | 0 | in_force | 467 | 81.6 | 1944 | 1512.1 | 65 | 586 | 267 | 259.4 | 7671.2 | - |
+| postgres | 10 000 000 | 0 | none | 333 | 133.7 | 1545 | 3024.0 | 159 | 798 | 1067 | 413.7 | 8133.0 | - |
 
-Which of lakelands#1516 and lakelands#1524 this workload needs: lakelands#1516 (append and
-fold side by side), because the time goes to the fold, not to the append. lakelands#1524
-(sealed segments on other storage, and their compression) acts on the log, which is
-under 3% of the bytes here, so these numbers give it no need. How much lakelands#1516
-would buy is not measured.
+What the numbers say:
 
-SQLite, 100 000 records:
+- **A roll-up's fold dominates a write, on both engines.** On SQLite at 1 000 000
+  records ingest falls from 4 297 records a second with none to 1 075 with one
+  and 486 with three; single writes from 1 156 to 599 and 339. On PostgreSQL
+  with three roll-ups ingest is 187 records a second and single writes 141 (p99
+  604 ms), against 2 958 and 712 with none.
+- **The log is not where the bytes go.** A record's log is 65 to 74 bytes on SQLite and 159 to
+  172 on PostgreSQL; three roll-ups keep 5.8 KB (SQLite) and 10 to 13 KB (PostgreSQL) of
+  projection and indexes a record, so the log is 1% to 3% of them.
+- **A trigger's guard costs a write, and PostgreSQL pays far more than SQLite.**
+  Against no trigger at 1 000 000 records with no roll-up: `preceding` takes ingest from 4 297 to 1 268
+  records a second (−70%) and single writes from 1 156 to 793 on SQLite, and
+  from 2 958 to 152 (−95%) and 712 to 197 (−72%) on PostgreSQL; SQLite's
+  singles (793 against 1 156) are within the spread. `in_force` with four
+  bounds a symbol takes ingest to 582 (−80%) and singles to 318 (−55%, within
+  the spread) on PostgreSQL; on SQLite its ingest (3 058, −29%) and singles
+  (1 127) are both within the spread. With one roll-up the guards' cost is
+  within the spread too (`in_force` −9% ingest, −6% singles on SQLite); with
+  three they are not separable from it, the fold being
+  the whole write. At 10 000 000 records with no roll-up, SQLite's `preceding` takes ingest from
+  3 930 to 564 (−86%) and `in_force` to 1 944 (−51%, within the spread), and the single writes of
+  `preceding` (1 091) were not slower than none (909), at a load of 2 for the
+  first and up to 24 for the last cell of `in_force`; these are single runs at
+  a varying load, so a guard price that grows with the series (a symbol of 716 000 ticks
+  against 72 000 at 1 000 000) is a reading of them, not a settled fact.
+- **Reading a busy series' last hour raw takes 150 ms on SQLite and 350 to 600 ms
+  on PostgreSQL at 1 000 000 records; its last day 2 s and 4 to 14 s;** from a roll-up
+  under 3 ms. At 10 000 000 the raw day (124 000 ticks) takes 3.6 to 7.7 s on SQLite and 8.1 s on PostgreSQL.
+- **Rates fall with the size of the lake on PostgreSQL** (no roll-up, no trigger):
+  2 958 records a second at 1 000 000, 1 545 at 10 000 000, p99 of a call 1.4 s
+  and 3.0 s; SQLite holds (4 297 and 3 930).
 
-| engine | roll-ups | trigger | records | callers: writes/s | p99 ms | ingest: records/s | p99 ms a call of 1000 | log B/rec | projection B/rec | index B/rec | load 1 min, start / end |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| sqlite | 0 | none | 100000 | 682 | 31.7 | 8076 | 227.5 | 424 | 1958 | 526 | 2.1 / 2.0 |
-|   reads (largest series, 7171 ticks) | raw hour 5161 rows 80.1 ms | raw day 7171 rows 85.1 ms |
-| sqlite | 0 | preceding | 100000 | 676 | 35.4 | 3046 | 486.6 | 424 | 1949 | 525 | 2.0 / 1.7 |
-|   reads (largest series, 7171 ticks) | raw hour 5162 rows 82.3 ms | raw day 7172 rows 86.1 ms |
-| sqlite | 1 | none | 100000 | 570 | 103.5 | 1766 | 769.1 | 424 | 4083 | 2142 | 1.7 / 1.3 |
-|   reads (largest series, 7171 ticks) | raw hour 5161 rows 86.1 ms | raw day 7171 rows 90.3 ms | roll-up hour 1 rows 0.2 ms | roll-up day 2 rows 0.2 ms |
-| sqlite | 1 | preceding | 100000 | 561 | 95.0 | 1302 | 983.2 | 424 | 4030 | 2143 | 1.3 / 1.3 |
-|   reads (largest series, 7171 ticks) | raw hour 5162 rows 91.7 ms | raw day 7172 rows 96.7 ms | roll-up hour 1 rows 0.2 ms | roll-up day 2 rows 0.2 ms |
-| sqlite | 3 | none | 100000 | 456 | 217.3 | 520 | 2696.2 | 424 | 8724 | 5572 | 1.3 / 1.4 |
-|   reads (largest series, 7171 ticks) | raw hour 5161 rows 98.2 ms | raw day 7171 rows 103.3 ms | roll-up hour 60 rows 1.0 ms | roll-up day 1 rows 0.1 ms |
-| sqlite | 3 | preceding | 100000 | 443 | 232.6 | 464 | 2923.8 | 424 | 8716 | 5582 | 1.4 / 1.2 |
-|   reads (largest series, 7171 ticks) | raw hour 5162 rows 99.9 ms | raw day 7172 rows 105.6 ms | roll-up hour 60 rows 0.9 ms | roll-up day 1 rows 0.1 ms |
-
-SQLite, 1 000 000 records:
-
-| engine | roll-ups | trigger | records | callers: writes/s | p99 ms | ingest: records/s | p99 ms a call of 1000 | log B/rec | projection B/rec | index B/rec | load 1 min, start / end |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| sqlite | 0 | none | 1000000 | 647 | 39.3 | 4386 | 526.0 | 389 | 1160 | 537 | 1.2 / 1.3 |
-|   reads (largest series, 71847 ticks) | raw hour 5174 rows 1014.0 ms | raw day 71847 rows 1209.2 ms |
-| sqlite | 0 | preceding | 1000000 | 672 | 33.9 | 1839 | 908.1 | 389 | 1161 | 536 | 1.3 / 1.4 |
-|   reads (largest series, 71847 ticks) | raw hour 5175 rows 1031.8 ms | raw day 71848 rows 1217.6 ms |
-| sqlite | 1 | none | 1000000 | 563 | 94.5 | 754 | 2848.5 | 389 | 3148 | 2196 | 1.4 / 1.7 |
-|   reads (largest series, 71847 ticks) | raw hour 5174 rows 1074.6 ms | raw day 71847 rows 1263.7 ms | roll-up hour 1 rows 0.2 ms | roll-up day 14 rows 0.3 ms |
-| sqlite | 1 | preceding | 1000000 | 543 | 94.5 | 603 | 3216.4 | 389 | 3150 | 2196 | 1.7 / 1.5 |
-|   reads (largest series, 71847 ticks) | raw hour 5175 rows 1009.3 ms | raw day 71848 rows 1205.7 ms | roll-up hour 1 rows 0.3 ms | roll-up day 14 rows 0.3 ms |
-| sqlite | 3 | none | 1000000 | 445 | 193.1 | 179 | 10134.3 | 389 | 7624 | 5700 | 3.3 / 1.5 |
-|   reads (largest series, 71847 ticks) | raw hour 5174 rows 1122.4 ms | raw day 71847 rows 1312.5 ms | roll-up hour 60 rows 4.9 ms | roll-up day 1 rows 0.2 ms |
-| sqlite | 3 | preceding | 1000000 | 446 | 199.7 | 163 | 11600.1 | 389 | 7623 | 5723 | 1.5 / 1.8 |
-|   reads (largest series, 71847 ticks) | raw hour 5175 rows 1114.4 ms | raw day 71848 rows 1313.9 ms | roll-up hour 60 rows 4.9 ms | roll-up day 1 rows 0.2 ms |
+Which of lakelands#1516 and lakelands#1524 this workload needs: lakelands#1516
+(append and fold side by side). The time goes to the fold, not to the append: with
+no roll-up SQLite takes 4 300 records a second and with three 490, on the same log; and
+PostgreSQL with three roll-ups takes 187, where the log is 1% of the bytes.
+lakelands#1524 (sealed segments on other storage, and their compression) acts on
+the log, which is 1% to 3% of the bytes here at any size measured, so these numbers
+give it no need. How much lakelands#1516 would buy is not measured. A host
+that keeps a roll-up per tick-rate series on PostgreSQL should size for the
+fold's rate above, not the append's.
 
 ### A trigger that pairs a record in force
 
 `--triggers in_force` declares a type `bound` (keyed by `symbol` and `from`, with `hi`)
 and the trigger `price > in_force(bound.hi, bound.from <= at, bound.symbol = symbol)`,
 with `--bounds` bounds a symbol (4 here) written before the feed. Every write reads
-its symbol's partition once, so the cell is K = 4. SQLite, 100 000 records, no roll-up,
-on an AMD Ryzen 9 9950X with 14 cores and 94 GB, one run each, the load not recorded
-(the run's `uptime` gave none) nor the bytes (no `sqlite3` shell):
-
-| trigger | callers: writes/s | p99 ms | ingest: records/s | p99 ms a call of 1000 |
-|---|---:|---:|---:|---:|
-| none | 1 682 | 22.0 | 7 706 | 197.3 |
-| `preceding`, constant bound | 936 | 51.9 | 2 162 | 658.4 |
-| `in_force`, K = 4 | 1 453 | 22.8 | 4 324 | 421.6 |
-
-The guard fires on a tick far above its bound (the run stops unless the outcome names
-it). The other figures of the cost of a partition, which the cell does not measure, are
+its symbol's partition once, so the cell is K = 4. What it adds to a write is in the
+table above, against no trigger and against `preceding` with a constant bound: on
+SQLite with no roll-up both ingest (29% lower) and single writes stay within the
+spread; on PostgreSQL ingest falls 80%, outside it, and single writes 55%, inside it. The guard fires on a tick far above
+its bound (the run stops unless the outcome names it). The other figures of the cost of a
+partition, which the cell does not measure, are
 reckoned in `docs/decisions/100-a-guard-may-read-the-record-in-force.md`: a read costs
 5 to 7 µs a record of the partition with no order index, about 1 µs with `sort_index`
 up to 4 096, and one seek with `series_index` on the series field and the order field,
@@ -2106,9 +2152,93 @@ for which a read of the partition's size is not paid (the conformance row hands 
 engine at most two rows for a symbol of 40 bounds). A host with partitions of
 hundreds of bounds, or a feed of many writes a second, declares `sort_index` or
 `series_index` on `bound` first.
-
 A writer with no read on `bound` fires nothing and is told nothing: its guard reads
 null, reads no row of the type, and the write goes through.
+
+### What the series pair adds to a write
+
+`series_index.<type>` (`[["symbol", "at"]]`; `docs/decisions/097-a-read-in-a-window-walks-its-window.md`)
+keeps an order index within each symbol. On SQLite it was measured at a median 8.9 µs a
+write at 100 000 records (16.2 → 28.2 µs; `docs/settings.md`). On PostgreSQL the same
+tick cell (1 000 000 records, no roll-up, no trigger, `tick_bench --series-index`), two
+runs each, in turn, at a load of 3 to 12:
+
+| setting | writes/s | p99 ms | ingest rec/s | p99 ms a call of 1000 | proj. B/rec | index B/rec | raw hour / day read ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| without, run 1 | 587 | 43.4 | 2 480 | 1 753 | 790 | 994 | 531 / 5 862 |
+| with, run 1 | 466 | 44.6 | 1 638 | 2 443 | 899 | 1 330 | 175 / 2 517 |
+| without, run 2 | 401 | 79.1 | 2 142 | 1 801 | 790 | 994 | 452 / 3 828 |
+| with, run 2 | 607 | 49.7 | 2 586 | 1 650 | 899 | 1 330 | 109 / 1 573 |
+
+The runs of one setting differ by more than the two settings do (single writes 401 to
+587 without, 466 to 607 with; ingest 2 142 to 2 480 and 1 638 to 2 586), so the
+pair's cost to a write on PostgreSQL is not separable from the spread at this
+load: the means are 494 and 537 writes a second and 2 311 and 2 112 records a second,
+that is +9% in writes and −9% in ingest with the setting, the wrong sign for a cost in one of them. What is measured is the space: 109
+bytes of projection and 336 of index more a record (+445 bytes, +25% of the
+1 784 a record kept without), and the reads: an hour of the largest series fell from
+531 and 452 ms to 175 and 109 (3 to 4 times), and its day from 5 862 and 3 828 ms
+to 2 517 and 1 573 (2.3 to 2.4 times). `docs/settings.md` reckons 11% for an order field on PostgreSQL; this run could not tell
+the pair from none, nor from that.
+
+## What a build costs the writes beside it
+
+Writing `sort_index.<type>`, `lookup_index.<type>` or `view_kept.<type>` on a type that
+holds records builds in parts beside the writer (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`,
+R7 to R9): a part is `limits.order_chunk` records (1 000 by default), each part its own
+turn in the writer's queue, so **a write waits for the part in front of it, and for the
+writes queued ahead of it, and for no more than that**. The bound is therefore the cost of
+one part plus the queue, not the length of the whole build. Measured with `tick_bench --build`:
+the tick type and its hour view are filled with N ticks, and then each setting is
+written, one after the other, while 16 callers keep upserting ticks; the build's wall time runs
+until `describe_type` no longer says `building`, and each write's wait is its call's time (so
+it includes the queue of the 16 callers). Same machine, load and release as
+above; one run each.
+
+| engine | records | build | build wall | writes/s beside | p50 ms | p99 ms | p100 ms |
+|---|---:|---|---:|---:|---:|---:|---:|
+| sqlite | 1 000 000 | none (20 s) | - | 965 | 13.6 | 70.8 | 682 |
+| sqlite | 1 000 000 | `sort_index` on `at` | 50 s | 329 | 29.2 | 481 | 2 197 |
+| sqlite | 1 000 000 | `view_kept` on the hour view | 99 s | 169 | 67.6 | 469 | 631 |
+| sqlite | 1 000 000 | `lookup_index` on `price` | not ended in 2.5 h | - | - | - | - |
+| sqlite | 10 000 000 | none (20 s) | - | 630 | 18.4 | 204 | 306 |
+| sqlite | 10 000 000 | `sort_index` on `at` | 809 s | 200 | 47.6 | 559 | 2 376 |
+| sqlite | 10 000 000 | `view_kept` on the hour view | 1 210 s | 136 | 66.7 | 648 | 2 755 |
+| postgres | 1 000 000 | none (20 s) | - | 516 | 25.5 | 221 | 915 |
+| postgres | 1 000 000 | `sort_index` on `at` | 92 s | 178 | 65.9 | 538 | 1 760 |
+| postgres | 1 000 000 | `view_kept` on the hour view | 269 s | 62 | 146.6 | 1 871 | 3 883 |
+| postgres | 10 000 000 | none (20 s) | - | 252 | 56.9 | 119 | 1 299 |
+| postgres | 10 000 000 | `sort_index` on `at` | 1 870 s | 86 | 142.8 | 844 | 7 106 |
+| postgres | 10 000 000 | `view_kept` on the hour view | 7 657 s | 21 | 408.9 | 6 925 | 26 712 |
+
+No write was refused. What this says:
+
+- **Writes go on, at a share of the rate.** During a `sort_index` build the 16 callers
+  took 34% (SQLite) to 35% (PostgreSQL) of their quiet rate at 1 000 000 records and 32%
+  and 34% at 10 000 000; during a `view_kept` build 18% and 12% at 1 000 000 and 22% and 8% at
+  10 000 000. The build and the callers share the writer.
+- **The longest wait is a part and a queue, and it grows with the type.** On SQLite the longest
+  wait was 2.2 s (`sort_index`) and 0.6 s (`view_kept`) at 1 000 000 records and 2.4 s and
+  2.8 s at 10 000 000, against 0.7 s and 0.3 s with no build; p99 was 0.5 to 0.65 s.
+  On PostgreSQL 1.8 s and 3.9 s at 1 000 000 and 7.1 s and 26.7 s at 10 000 000
+  (p99 0.5 s and 1.9 s, then 0.8 s and 6.9 s), against 0.9 s and 1.3 s with no build. A part is
+  1 000 records, so the part alone is far below these: the wait is mostly the
+  queue of 15 other callers behind the build's turns; on PostgreSQL's kept build the
+  part's own cost adds to it.
+- **Stated bound.** At 16 callers, the longest wait measured was about 3 s on SQLite at 10 000 000
+  records for either build, and 7 s (`sort_index`) or 27 s (`view_kept`) on PostgreSQL;
+  its p99 stays under 1 s except the PostgreSQL kept build (1.9 s at 1 000 000, 6.9 s at 10 000 000).
+  The build walls, of the builds that ended (50 s to 1 210 s on SQLite, 92 s to 7 657 s on
+  PostgreSQL), include the
+  16 callers taking most of the writer; they are not the time a build would take alone, and
+  no run of the earlier path, the whole build in one append, was made at these sizes, so
+  nothing here compares the two.
+- **`lookup_index` is the exception, and a finding.** On SQLite its build did not end in
+  2 h 30 min at 1 000 000 records (one core of the server at 95%, the 16 callers writing on). At smaller
+  types, on 4 callers, it took 53 s at 30 000 records and 125 s at 60 000 (writes waited up to
+  3.7 s) — more than linear — and on PostgreSQL 2.9 s at 30 000 records. It was not run on PostgreSQL
+  at 1 000 000 and was cut at 10 000 000 on both engines. A host that adds a
+  `lookup_index.<type>` to a large type on SQLite should not, until lakelands#1760 is settled.
 
 ## Building declarations in Rust
 

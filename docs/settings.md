@@ -17,7 +17,7 @@ Keeps an order index on these fields, so a page ordered by one of them reads its
 - **Takes:** a list of the type's fields of a kind an order index keeps: text, number, decimal, boolean, date-time, date or reference.
 - **Default:** `null`.
 - **Per type:** one value per type, and none for the lake.
-- **Cost:** each field indexed costs a write about 1–5 % on SQLite and 11 % on PostgreSQL; naming one rebuilds the type's rows while holding the writer, about 0.85 s at 100 000 records on SQLite and 2.4 s on PostgreSQL.
+- **Cost:** each field indexed costs a write about 1–5 % on SQLite and 11 % on PostgreSQL; naming one fills it beside the writer, a chunk of `order_chunk` records a turn, and taking it back clears its rows in chunks of that size.
 
 ### `series_index.<type>`
 
