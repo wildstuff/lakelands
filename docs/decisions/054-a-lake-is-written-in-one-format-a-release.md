@@ -190,13 +190,15 @@ way: `verify` exits 3 and `export` exits 1, both answering "lake
 formats 23 to 23 and writes 23; nothing was read from it and nothing
 appended", with the advice "open it with a release that reads log format
 22; restoring it would not help, it is not damaged"; nothing is written.
-`restore --check` on the lake says "the backup is damaged at position 0:
-written in log format 22, which this release does not read; it writes
-format 23" (exit 1), and an import of an export 0.22.0 wrote says the
-export is damaged at position 0 for the same reason (exit 1), writing no
-log. There is no upgrade and no translation: a host opens the lake with
-a release that reads format 22, or brings its data into a lake of its
-own.
+`restore --check` on the lake, and `restore` and `import` of an export
+0.22.0 wrote, refuse the archive as a log format too, not as damage:
+each answers "lake `liquidity` is written in log format 22, and this
+release reads log formats 23 to 23 and writes 23; nothing was read from
+it and nothing appended", with the advice "restore it with a release
+that reads log format 22; it is not damaged" (`import` says to import
+it), exits 1 and writes no log. There is no upgrade and no translation:
+a host opens the lake with a release that reads format 22, or brings its
+data into a lake of its own.
 
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
