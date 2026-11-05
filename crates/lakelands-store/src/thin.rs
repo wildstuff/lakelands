@@ -108,7 +108,9 @@ impl Job for Thinning {
     fn turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
         let lake = t;
         if let Some(restate) = &mut self.reclaim {
-            let at = self.act.unwrap_or(Position::GENESIS);
+            let at = self
+                .act
+                .expect("the act is opened in the turn that sets the reclaim");
             return Ok(match lake.step_act(w, restate, at)? {
                 Stepped::More => Turned::More,
                 Stepped::Done(reclaimed) => {

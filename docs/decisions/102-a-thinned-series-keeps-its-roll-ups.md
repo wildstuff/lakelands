@@ -1065,7 +1065,10 @@ its mark and changed nowhere else.
   views', which counts a group twice where two inner views hold it. It is the head's count
   of stranded groups, the one `describe` answers, not only those the
   computation would have found: a group a retired record alone held is
-  counted though it computes to nothing. A `get` of a view that left
+  counted though it computes to nothing. `describe` answers that count
+  at the head alone: read as of an earlier position it answers
+  `stranded: 0` and names no `cut`, while `find` there counts the
+  groups it left out. A `get` of a view that left
   groups out itself is refused `StrandedAtHeadOnly` only for a key it
   left out, naming the innermost view that left one out and the
   position; any other key it does not find is `NotFound`. A view that
@@ -1127,15 +1130,18 @@ its mark and changed nowhere else.
   a read's `cut` and `describe`'s. Each was run red with its marker
   planted out and green with it restored. Both are green on the memory
   engine; CI runs SQLite and PostgreSQL.
-- **Measured at S7's head**: product 114 605 and specification
-  202 216, against 114 428 and 202 002 at its base. S7 adds 204
-  product lines in and 27 out, net 177, and 216 specification in and 2
-  out, net 214, where the plan had 120 and 170. The product's extra is
+- **Measured at S7's head**, b70546e3 with develop merged in: product
+  114 627 and specification 202 434, against 114 442 and 202 188 on
+  develop. S7 adds 212 product lines in and 27 out, net 185, and 248
+  specification in and 2 out, net 246, where the plan had 120 and 170.
+  The product's extra is
   the marker crossing the contract (about 30 lines in the API, the WIT
   and rights) and the reclaim (27). The specification's is the SQLite
   measure (108 lines) beside the two rows. Nothing was cut from § Cut
-  first; two of `find.rs`'s helpers were written shorter. 395 product
-  and 284 specification lines are left under the ceilings. Seam 112 of
+  first; two of `find.rs`'s helpers were written shorter. 373 product
+  and 66 specification lines are left under the ceilings there; the
+  second review round's `expect` in `thin.rs` adds two product lines,
+  leaving 371. Seam 112 of
   112, unchanged: S7 adds no facade or engine-trait method. 6 of 20
   `cfg(feature)` sites.
 
