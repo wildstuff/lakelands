@@ -1883,8 +1883,8 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
     reads compute the view until the last part has kept it
     (`describe_type` says `building`). A set or a trigger over a view in its
     build is refused as `view_building`. A write waits for at most the
-    part in front of it and the writes queued ahead; the build is slow,
-    not blocking: 99 s and 1 210 s on SQLite and 269 s and 7 657 s on
+    part in front of it and the writes queued ahead; the build is not
+    instant: 99 s and 1 210 s on SQLite and 269 s and 7 657 s on
     PostgreSQL at 1 000 000 and 10 000 000 records, the longest write 0.6 to
     2.8 s on SQLite and 3.9 to 26.7 s on PostgreSQL ("What a build costs the
     writes beside it", below).
@@ -2080,8 +2080,9 @@ What the numbers say:
   the whole write. At 10 000 000 records with no roll-up, SQLite's `preceding` takes ingest from
   3 930 to 564 (−86%) and `in_force` to 1 944 (−51%), and the single writes of
   `preceding` (1 091) were not slower than none (909), at a load of 2 for the
-  first and up to 24 for the last cell of `in_force`; the guard's price grows with the
-  series (a symbol of 716 000 ticks), which the 1 000 000 cell, with 72 000, hides.
+  first and up to 24 for the last cell of `in_force`; these are single runs at
+  a varying load, so a guard price that grows with the series (a symbol of 716 000 ticks
+  against 72 000 at 1 000 000) is a reading of them, not a settled fact.
 - **Reading a busy series' last hour raw takes 150 ms on SQLite and 350 to 600 ms
   on PostgreSQL at 1 000 000 records; its last day 2 s and 4 to 14 s;** from a roll-up
   under 3 ms. At 10 000 000 the raw day (124 000 ticks) takes 3.6 to 7.7 s on SQLite and 8.1 s on PostgreSQL.
@@ -2192,14 +2193,16 @@ No write was refused. What this says:
 - **Stated bound.** At 16 callers, a write waits at most about 3 s on SQLite at 10 000 000
   records for either build, and up to 7 s (`sort_index`) or 27 s (`view_kept`) on PostgreSQL;
   its p99 stays under 1 s except the PostgreSQL kept build (1.9 s at 1 000 000, 6.9 s at 10 000 000).
-  That is not the old bound, the whole build under the writer: 50 s to 1 210 s on SQLite
-  and 92 s to 7 657 s on PostgreSQL, during which every write waited.
+  The build walls (50 s to 1 210 s on SQLite, 92 s to 7 657 s on PostgreSQL) include the
+  16 callers taking most of the writer; they are not the time a build would take alone, and
+  no run of the earlier path, the whole build in one append, was made at these sizes, so
+  nothing here compares the two.
 - **`lookup_index` is the exception, and a finding.** On SQLite its build did not end in
   2 h 30 min at 1 000 000 records (one core of the server at 95%, the 16 callers writing on). At smaller
   types, on 4 callers, it took 53 s at 30 000 records and 125 s at 60 000 (writes waited up to
   3.7 s) — more than linear — and on PostgreSQL 2.9 s at 30 000 records. It was not run on PostgreSQL
   at 1 000 000 and was cut at 10 000 000 on both engines. A host that adds a
-  `lookup_index.<type>` to a large type on SQLite should not, until this is looked at.
+  `lookup_index.<type>` to a large type on SQLite should not, until lakelands#1760 is settled.
 
 ## Building declarations in Rust
 
