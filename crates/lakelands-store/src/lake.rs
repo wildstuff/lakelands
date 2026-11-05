@@ -335,6 +335,12 @@ pub struct Lake {
     /// none, and its time: only a reaction before it, or of its own
     /// append, is decided again ([`crate::writes::overruled`]).
     acted: (AtomicU64, AtomicI64),
+    /// The thinning acts the log leaves owed, as this handle knows them:
+    /// a type, the field and horizon of the act, and the position it began
+    /// at. A write at a key the act's selection there holds is refused
+    /// though no tombstone names it yet, since a part still to come will
+    /// take it (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    pub(crate) thinning: Mutex<BTreeSet<(TypeName, FieldName, Timestamp, Position)>>,
     /// The sources' keys the lake was given, and the key store (058).
     pub(crate) keys: Arc<crate::sealing::Keys>,
     /// Why a forgetting's reclaim is still owed, where the last one failed
@@ -1402,6 +1408,13 @@ impl Lake {
     /// writes after this open seals under a new one (099), and only a
     /// version the key store still holds is 065's lost key.
     fn tell_owed(&self, w: &mut Writer) -> Result<()> {
+        // A thinning's parts still to come take the keys the act's
+        // selection held at its first position, and the fold puts a
+        // tombstone only for the keys already taken: the writer must know
+        // the act before its first write reads a key (102).
+        let view = self.engine.view(None)?;
+        crate::thin::owing(self, view.as_ref())?;
+        drop(view);
         let (forgotten, acts) = self.acts_listed()?;
         if forgotten.is_empty() && acts.is_empty() {
             return Ok(());
@@ -1613,6 +1626,38 @@ impl Lake {
     pub(crate) fn acted(&self) -> Option<(Position, Timestamp)> {
         let at = Position(self.acted.0.load(Ordering::Acquire));
         (at.0 > 0).then(|| (at, Timestamp(self.acted.1.load(Ordering::Acquire))))
+    }
+
+    /// Note that the thinning of `ty` by `by` before `before`, begun at
+    /// `at`, is owed: the parts still to come take the keys its selection
+    /// at `at` held, though no tombstone names them yet (102). A commit
+    /// that appends more than one part owes nothing, since the whole act
+    /// stands by its first event's append.
+    pub(crate) fn owe_thinning(
+        &self,
+        ty: &TypeName,
+        by: &FieldName,
+        before: Timestamp,
+        at: Position,
+    ) {
+        lakelands_core::lock(&self.thinning).insert((ty.clone(), by.clone(), before, at));
+    }
+
+    /// The thinning of `ty` by `by` before `before` is whole: every key it
+    /// took has its tombstone, and a write reads the fold alone again.
+    pub(crate) fn thinning_whole(&self, ty: &TypeName, by: &FieldName, before: Timestamp) {
+        lakelands_core::lock(&self.thinning)
+            .retain(|(t, b, h, _)| !(t == ty && b == by && h == &before));
+    }
+
+    /// The thinning acts on `ty` this handle knows the log still owes, as
+    /// the field and horizon of each and the position it began at.
+    pub(crate) fn thinnings_owed(&self, ty: &TypeName) -> Vec<(FieldName, Timestamp, Position)> {
+        lakelands_core::lock(&self.thinning)
+            .iter()
+            .filter(|(t, _, _, _)| t == ty)
+            .map(|(_, by, before, at)| (by.clone(), *before, *at))
+            .collect()
     }
 
     /// An act at `at`, at the time `known`, unless a later one is known.

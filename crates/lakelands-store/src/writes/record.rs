@@ -163,6 +163,17 @@ impl Decide<'_> {
                 before,
             }));
         }
+        // A part still to come takes the keys the owed act's selection
+        // holds, and the fold has put no tombstone on those yet: the
+        // act's line is read from the lake's list of what the log owes
+        // (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+        if let Some(before) = crate::thin::owed_takes(self.call.lake, &decl.name, key)? {
+            return Err(Error::invalid(Case::Thinned {
+                ty: decl.name.clone(),
+                key: key.clone(),
+                before,
+            }));
+        }
         let before = pending.record(view, &decl.name, key)?;
         let mine = match &before {
             Some(b) => sees.answers(&decl.name, b) && ends(view, pending, sees, decl, &b.fields)?,

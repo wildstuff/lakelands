@@ -83,6 +83,12 @@ check!(
     given
 );
 
+check!(
+    THIN_OWED_ACT_REFUSES_A_LATER_KEY = a_write_at_a_key_a_later_part_has_not_reached_is_refused,
+    "102 (lakelands#1748): a thinning of 600 records stopped after its first part refuses an ingest at a key the act's selection at its first position holds and no part has reached, at the first and the last of those, and a retirement of one, each naming the type, the key and the horizon, and appends nothing; a key the selection does not hold lands, and the writer's open finishes the act, taking each of the 600 once and finding the late key alone",
+    given
+);
+
 fn by(field: &str) -> Thin {
     Thin {
         by: field.into(),
@@ -726,6 +732,92 @@ async fn a_view_made_kept_over_a_thinned_type_is_refused(store: Store, _given: G
         "a view made kept over a thinned type is refused: {}",
         red.join("; ")
     );
+    Ok(())
+}
+
+async fn a_write_at_a_key_a_later_part_has_not_reached_is_refused(
+    store: Store,
+    given: Given,
+) -> Held {
+    let (store, start) = owed(store, &given).await?;
+    let l = Lake::of(store.as_ref());
+    let head = store.head().await.must("reading the head")?;
+    let horizon = Timestamp::parse(HORIZON).expect("an instant");
+    let jan = json!({"at": "2026-01-01T00:00:00Z", "n": 1});
+    let fed = l
+        .ingest("meter", vec![source_record("tick", "r550", jan.clone())])
+        .await;
+    let last = l
+        .ingest("meter", vec![source_record("tick", "r599", jan.clone())])
+        .await;
+    let retired = l
+        .cat
+        .retire(
+            &l.own,
+            &TypeName::from("tick"),
+            &RecordKey::from("r570"),
+            WriteOpts::default(),
+        )
+        .await;
+    let later = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    for (what, key, said) in [
+        ("the ingest at `r550`", "r550", invalid_case(&fed)),
+        ("the ingest at `r599`", "r599", invalid_case(&last)),
+        ("the retirement at `r570`", "r570", invalid_case(&retired)),
+    ] {
+        let named = matches!(said, Some(Case::Thinned { ty, key: k, before })
+            if ty.as_str() == "tick" && k.as_str() == key && before == &horizon);
+        if !named {
+            red.push(format!("{what} answers {said:?}"));
+        }
+    }
+    if later != head {
+        red.push(format!(
+            "the refusals moved the head from {head} to {later}"
+        ));
+    }
+    ensure!(
+        red.is_empty(),
+        "a write at a key a later part has not reached is refused: {}",
+        red.join("; ")
+    );
+    // A key the act's selection at its first position does not hold — one
+    // the log never saw before the act — lands.
+    let fresh = source_record("tick", "new", json!({"at": "2026-01-03T00:00:00Z", "n": 2}));
+    l.ingest("meter", vec![fresh])
+        .await
+        .must("a key the act does not take")?;
+    let store = (given.reopen)(store, Seams::default())
+        .await
+        .map_err(|e| Failure::new(format!("the writer's open: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    settles(6_000, Duration::from_millis(5), || async {
+        let after = events_after(store.as_ref(), start).await?;
+        let taken: usize = after
+            .iter()
+            .filter(|e| e.body.kind() == "values_thinned")
+            .map(|e| match &e.body {
+                EventBody::ValuesThinned { keys, .. } => keys.len(),
+                _ => 0,
+            })
+            .sum();
+        let wholes = after
+            .iter()
+            .filter(|e| e.body.kind() == "act_whole")
+            .count();
+        let found = keys(&l, None).await?;
+        ensure!(
+            wholes == 1 && taken == 600 && found == ["new"],
+            "the open finishes the act: {wholes} wholes, {taken} keys taken, `tick` finds {found:?}"
+        );
+        Ok(())
+    })
+    .await?;
+    store
+        .verify(None, None)
+        .await
+        .must("verifying the whole act")?;
     Ok(())
 }
 

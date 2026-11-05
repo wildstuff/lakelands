@@ -148,6 +148,12 @@ impl Job for Thinning {
         }
         drop(view);
         lake.append(&mut *w, drafts)?;
+        if begins {
+            lake.owe_thinning(&self.ty, &self.thin.by, self.thin.before, act);
+        }
+        if whole {
+            lake.thinning_whole(&self.ty, &self.thin.by, self.thin.before);
+        }
         self.through = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
         self.act = Some(act);
         Ok(if whole { Turned::Whole } else { Turned::More })
@@ -332,10 +338,14 @@ fn first(
     Ok(ours)
 }
 
-/// The acts a writer's open finds the log began and did not end, each
-/// taken up again from its first position. A log the feed's index finds
-/// no part in owes none, and its declarations are not read.
-pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
+/// The thinning acts the log began and did not end, each with the
+/// position it began at, noted on the lake so a write meets its line
+/// before the fold puts the parts' tombstones (102). A log the feed's
+/// index finds no part in owes none, and its declarations are not read.
+pub(crate) fn owing(
+    lake: &Lake,
+    view: &dyn ProjectionView,
+) -> Result<Vec<(TypeName, Thin, Position)>> {
     let Some(head) = view.position() else {
         return Ok(Vec::new());
     };
@@ -348,7 +358,7 @@ pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn
         return Ok(Vec::new());
     }
     let ontology = Ontology::at(view)?;
-    let mut owing: Vec<Box<dyn Job>> = Vec::new();
+    let mut owing = Vec::new();
     for ty in ontology.types.keys() {
         for row in view.thinned_acts(ty)? {
             let thin = Thin {
@@ -356,11 +366,45 @@ pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn
                 before: row.before,
             };
             if let Some(at) = first(lake, view, ty, &thin)? {
-                owing.push(Box::new(Thinning::new(ty.clone(), thin, Some(at))));
+                lake.owe_thinning(ty, &thin.by, thin.before, at);
+                owing.push((ty.clone(), thin, at));
             }
         }
     }
     Ok(owing)
+}
+
+/// The acts a writer's open finds the log began and did not end, each
+/// taken up again from its first position.
+pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn Job>>> {
+    Ok(owing(lake, view)?
+        .into_iter()
+        .map(|(ty, thin, at)| Box::new(Thinning::new(ty, thin, Some(at))) as Box<dyn Job>)
+        .collect())
+}
+
+/// The horizon of an owed thinning of `ty` whose selection at the act's
+/// first position takes `key`, though no part has taken it yet: a write
+/// at that key is refused as one at a key the act already took is (102).
+/// The selection is read again at the view before the act, the same way
+/// the act's walk reads it.
+pub(crate) fn owed_takes(lake: &Lake, ty: &TypeName, key: &RecordKey) -> Result<Option<Timestamp>> {
+    for (by, horizon, at) in lake.thinnings_owed(ty) {
+        let thin = Thin {
+            by,
+            before: horizon,
+        };
+        let then = lake.engine.view(Some(Position(at.0.saturating_sub(1))))?;
+        let Ok(date) = by_date(&Ontology::at(then.as_ref())?, ty, &thin) else {
+            continue;
+        };
+        if let Some(r) = then.get(ty, key)?
+            && before(&r, &thin, date)
+        {
+            return Ok(Some(horizon));
+        }
+    }
+    Ok(None)
 }
 
 /// Send the thinning of `ty` along the lake's road, answering `answer`

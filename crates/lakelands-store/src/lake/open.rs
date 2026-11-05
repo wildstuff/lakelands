@@ -321,6 +321,7 @@ impl Lake {
             scoped_rate: AtomicU64::new(0),
             way: Mutex::new(None),
             acted: (AtomicU64::new(0), AtomicI64::new(i64::MIN)),
+            thinning: Mutex::default(),
             reclaim_owed: Mutex::new(None),
             rebuilt_at_open: None,
         }

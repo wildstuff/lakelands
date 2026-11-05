@@ -459,7 +459,7 @@ fn command() -> Command {
                         .value_parser(|s: &str| lakelands_api::Timestamp::parse(s).map_err(|e| e.to_string()))
                         .help("Take every record whose --by field is certainly before this instant: RFC 3339, or a date at midnight UTC"),
                 )
-                .arg(Arg::new("by").long("by").value_name("FIELD").default_value("at").help("The field of instants or dates the horizon is judged on"))
+                .arg(Arg::new("by").long("by").value_name("FIELD").required(true).help("The field of instants or dates the horizon is judged on"))
                 .arg(Arg::new("act").long("act").action(ArgAction::SetTrue).help("Take them, appending the act; without it, say what it would take, appending nothing")),
         )
         .subcommand(Command::new("rebuild").about("Rebuild the lake's projection from the log beside it, and put it in the old one's place"))

@@ -15,7 +15,7 @@
 //! type and the relation, since relation names are unique per type only. Per verb: the
 //! verb's name. Generic: `describe`, `query`, `search`, `propose`,
 //! `proposals`, `accept`, `reject`, `declare_type`, `add_field`, `recompute`,
-//! `migrate`, each only if the principal may use it, and the MCP session's
+//! `migrate`, `thin`, each only if the principal may use it, and the MCP session's
 //! doors: `pin`, for `as_of` across a turn, and `subscribe` and `unsubscribe`,
 //! for being told of changes. A 20-type lake offers about 80 tools.
 //!
@@ -135,6 +135,9 @@ pub enum Door {
     /// `migrate`: the preflight, or with a `report_id` argument the
     /// `migrate_apply` door.
     Migrate,
+    /// `thin`: the preflight, or with `act` the thinning act itself
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    Thin,
     /// `plan`: a change's plan. Served over REST only; the tools that make
     /// a change take `plan` and `plan_id` instead
     /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
@@ -184,6 +187,7 @@ const DECLARE_TYPE: &str = "declare_type";
 const ADD_FIELD: &str = "add_field";
 const RECOMPUTE: &str = "recompute";
 const MIGRATE: &str = "migrate";
+const THIN: &str = "thin";
 
 /// The kinds of change a session may subscribe to: the log's event kinds
 /// that change a record, or say something happened to one.
@@ -199,7 +203,7 @@ pub const CHANGE_KINDS: [&str; 7] = [
 
 /// The names of the generic tools, which no type or verb may produce.
 /// The generator emits these constants and no other generic name.
-pub const GENERIC_TOOLS: [&str; 15] = [
+pub const GENERIC_TOOLS: [&str; 16] = [
     DESCRIBE,
     PIN,
     SUBSCRIBE,
@@ -215,6 +219,7 @@ pub const GENERIC_TOOLS: [&str; 15] = [
     ADD_FIELD,
     RECOMPUTE,
     MIGRATE,
+    THIN,
 ];
 
 /// The longest name an MCP client is guaranteed to accept.
@@ -1616,6 +1621,24 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ),
             output_schema: json!({"type": "object"}),
             door: Door::Migrate,
+        });
+        out.push(ToolSpec {
+            name: THIN.into(),
+            description: "Thin a type's series past a horizon: take out of the projection every record whose `by` field is certainly before `before`, keeping the folds of the kept views over it. The log keeps every value it took, and a write, an ingest or a retirement at a key it took is refused `thinned`, a key a later part has not reached included. Without `act` it answers what it would take, appending nothing.".into(),
+            input_schema: obj(
+                props([
+                    ("type", names(|_| true)),
+                    ("by", json!({"type": "string",
+                        "description": "The field whose instant or date is judged against `before`; a field of dates is judged by the end of its day in every zone."})),
+                    ("before", json!({"type": "string",
+                        "description": "The horizon: an instant, or a date judged by its day's end."})),
+                    ("act", json!({"type": "boolean",
+                        "description": "Whether to append the act; false, or left out, answers the preflight and appends nothing."})),
+                ]),
+                &["type", "by", "before"],
+            ),
+            output_schema: reply_schema(json!({"type": "object"})),
+            door: Door::Thin,
         });
     }
 }
