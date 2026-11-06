@@ -1350,7 +1350,8 @@ impl ProjectionStore for PgLake {
     /// `VACUUM (ANALYZE)` over the projection's tables and its `meta`. It
     /// takes `SHARE UPDATE EXCLUSIVE`, so reads and writes go on beside it.
     /// [`Compact::Beside`], an act's step, runs it on a reader's connection
-    /// and needs no lease (099); [`Compact::Whole`], `compact`'s, runs on
+    /// and needs no lease (099); [`Compact::Whole`], the whole compaction,
+    /// runs on
     /// the writer's, held to its lease and refused inside a transaction.
     /// Never `VACUUM FULL`, which would lock every reader out while it
     /// rewrote. A `VACUUM` that fails cannot be rolled back, but it changes

@@ -1365,12 +1365,15 @@ chunk or one step, not the whole.
   writer included, so the reclaim is owed from then on and not from the next turn;
   PostgreSQL's `RECLAIM_OWED` was red until it was.
 - **The seam.** `unused_bases` is a new method, and so is `compact_step`: changing
-  `compact` to take the step broke `lakelands-api`'s public contract. `compact()` stays,
+  `compact` to take the step broke `lakelands-api`'s public contract. `compact()` stayed,
   deprecated since 0.23.0 for one release as 056 asks, provided as
-  `compact_step(Compact::Whole)`, and `compact_step` is provided over it, so an engine
-  implements one of the two. The seam reads 111 of 111: the operator raised it on
-  the board (2026-11-04) by `docs/budgets.md`'s rule 4, and `compact()`'s removal in
-  0.24.0 brings it back to 110.
+  `compact_step(Compact::Whole)`, with `compact_step` provided over it, so an engine
+  implemented one of the two. The operator raised the seam on the board (2026-11-04) by
+  `docs/budgets.md`'s rule 4. In 0.24.0 (lakelands#1752) `compact()` goes, and its
+  provided fallback with it: `compact_step` is the engine's one method, and an engine
+  that takes no step of its own returns `Reclaimed::nothing()` itself. The seam reads
+  112 of 112 in 0.23.0, lakelands#1755's work having raised it once more, and 111 of 111
+  once `compact()` is gone, the ceiling falling with it.
 - **The sweep's rule.** Nothing puts a state at or before the listing's `past`
   without counting a rebuild: a write puts its states at its own position, and a
   rebuild and a scoped pass's open count one. A chunk keeps a base only where a state

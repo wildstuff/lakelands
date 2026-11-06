@@ -437,35 +437,15 @@ pub trait ProjectionStore: Send + Sync {
     /// [`OpenMode::Rebuild`] whatever layout made it is read from here on.
     fn clear(&self) -> Result<()>;
 
-    /// Give the storage the projection no longer uses back, and change
-    /// nothing a view answers: no state, kept history included, no
-    /// applied id, no recorded output. Called outside a transaction, under
-    /// the writer's lock. A compact that fails leaves every answer as it
-    /// was (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
-    /// Deprecated in favour of [`Self::compact_step`], of which this is
-    /// [`Compact::Whole`]; an engine implements one of the two.
-    #[deprecated(
-        since = "0.23.0",
-        note = "`compact_step` takes the step; `Compact::Whole` is this compact"
-    )]
-    fn compact(&self) -> Result<Reclaimed> {
-        self.compact_step(Compact::Whole)
-    }
-
     /// Give the storage the projection no longer uses back, as much as
-    /// `how` asks, under the same terms as [`Self::compact`], and under the
-    /// writer's lock but for [`Compact::Beside`]. An act reclaims in these
-    /// steps, a turn each
-    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`). An
-    /// engine that takes no step keeps its whole compact as an act's
-    /// reclaim: its journal step is the whole, and the others do nothing.
-    fn compact_step(&self, how: Compact) -> Result<Reclaimed> {
-        match how {
-            #[allow(deprecated)]
-            Compact::Whole | Compact::Journal => self.compact(),
-            Compact::Beside | Compact::Pages(_) => Ok(Reclaimed::nothing()),
-        }
-    }
+    /// `how` asks, and change nothing a view answers: no state, kept
+    /// history included, no applied id, no recorded output. Called outside
+    /// a transaction, under the writer's lock but for [`Compact::Beside`];
+    /// a compact that fails leaves every answer as it was
+    /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`). An
+    /// act reclaims in these steps, a turn each
+    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    fn compact_step(&self, how: Compact) -> Result<Reclaimed>;
 
     /// One step of keeping an order index the lake chose beside the log
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`). Called
