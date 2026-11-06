@@ -40,13 +40,14 @@ use lakelands_api::engine::{
     ProjectionStore, ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
-use lakelands_api::event::{Digest, SegmentDigest};
+use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::quarantine::Quarantined;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 use lakelands_core::engines;
 use lakelands_core::engines::pool::{Pool, Taken};
+use lakelands_core::log::reads_format;
 
 use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES, RETIRED_TABLES};
@@ -527,6 +528,20 @@ pub(crate) fn log_ends(target: &Target) -> Result<Option<(CanonicalEvent, Canoni
     if !matches!(shape(&mut db, &target.schema, false)?, Shape::Lake) {
         return Ok(None);
     }
+    // A log in a format this release does not read is another release's
+    // layout too: its ends are given as the lines its rows begin with, read
+    // before any statement names a column of this release's log, and the
+    // open refuses their format
+    // (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+    let lines = (line_at_end(&mut db, &target.schema, false)).zip(line_at_end(
+        &mut db,
+        &target.schema,
+        true,
+    ));
+    let unread = |e: &CanonicalEvent| format_of(&e.bytes).is_some_and(|v| !reads_format(v));
+    if let Some(ends) = lines.filter(|(first, tip)| unread(first) || unread(tip)) {
+        return Ok(Some(ends));
+    }
     let Some((tip, _)) = log::tip(&mut db, &names)? else {
         return Ok(None);
     };
@@ -644,18 +659,7 @@ fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
         .get(0);
     let lease_table = tables.iter().any(|t| t == "lease");
     let read = columns == if lease_table { 6 } else { 3 };
-    let mut written = || {
-        let newest = format!(
-            "SELECT bytes FROM {}.log ORDER BY position DESC LIMIT 1",
-            Target::quote(schema)
-        );
-        let bytes: Option<Vec<u8>> = (db.query_opt(&newest, &[]).ok().flatten()).map(|r| r.get(0));
-        // A row's first line holds its format: a line's own, or a block's.
-        let first = |b: &[u8]| b.split(|c| *c == b'\n').next().map(<[u8]>::to_vec);
-        let line = (bytes.as_deref().and_then(first))
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
-        line.and_then(|l| l["v"].as_u64())
-    };
+    let written = line_at_end(db, schema, true).and_then(|e| format_of(&e.bytes));
     // Whenever `meta` and the log are readable as a lake's, the log's
     // format decides what the tables are: a release this one does not read
     // — before it as well as after — wrote tables it does not know, and
@@ -663,7 +667,7 @@ fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
     // (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
     // Only a schema whose `meta` or log cannot be read as a lake's is
     // refused for its shape.
-    let foreign_elsewhere = written().is_some_and(|v| !lakelands_core::log::reads_format(v));
+    let foreign_elsewhere = written.is_some_and(|v| !reads_format(v));
     if !meta || (!foreign.is_empty() && !(read && foreign_elsewhere)) {
         let tables = (!foreign.is_empty()).then(|| foreign.into_iter().collect());
         let schema = schema.to_owned();
@@ -674,6 +678,38 @@ fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
         return Err(Error::invalid(Case::SchemaMetaForeign { schema }));
     }
     Ok(Shape::Lake)
+}
+
+/// The line the log's oldest row begins with, or its newest's, as an
+/// event of that line alone, none where the log holds none or is not
+/// read. Only `position` and `bytes` are read, which every layout of the
+/// log has held: whatever release laid the log out, its format is read
+/// here before anything names a column only this release's layout has.
+fn line_at_end(db: &mut Db, schema: &str, newest: bool) -> Option<CanonicalEvent> {
+    let order = if newest { "DESC" } else { "ASC" };
+    let statement = format!(
+        "SELECT position, bytes FROM {}.log ORDER BY position {order} LIMIT 1",
+        Target::quote(schema)
+    );
+    let row = db.query_opt(&statement, &[]).ok().flatten()?;
+    let (position, bytes): (i64, Vec<u8>) = (row.get(0), row.get(1));
+    // A row's first line holds its format: a line's own, or a block's.
+    let line = bytes.split(|c| *c == b'\n').next().unwrap_or_default();
+    Some(CanonicalEvent {
+        position: Position(position as u64),
+        id: EventId(String::new()),
+        prev: Digest(String::new()),
+        hash: Digest(String::new()),
+        fence: 0,
+        bytes: line.to_vec(),
+        frame: None,
+    })
+}
+
+/// The format a line says it is written in, where it is JSON saying one.
+fn format_of(line: &[u8]) -> Option<u64> {
+    let line = serde_json::from_slice::<serde_json::Value>(line).ok()?;
+    line["v"].as_u64()
 }
 
 /// Create the lake's tables where they are missing, and on `Create` the

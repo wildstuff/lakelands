@@ -12,7 +12,8 @@
 //! projection whose edges table holds no edge of an array of keys answers
 //! them after the first writer's open, which rebuilds (lakelands#1551). A
 //! log an older release left, its `id`, `prev` and `hash` as text, is
-//! refused by its format, not by a statement that cannot read it.
+//! refused by its format, not by a statement that cannot read it, and
+//! so is one 0.22.0 left, without the column `last` this release's has.
 
 mod common;
 
@@ -20,6 +21,7 @@ use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
 use lakelands_api::error::Situation;
+use lakelands_api::event::LOG_FORMAT_VERSION;
 use lakelands_api::id::TypeName;
 use lakelands_api::ontology::{
     Authority, FieldDecl,
@@ -161,7 +163,7 @@ fn as_text(s: &str) -> String {
          CREATE TABLE {s}.applied (id TEXT PRIMARY KEY, at BIGINT NOT NULL); \
          UPDATE {s}.log SET bytes = convert_to(replace(replace(convert_from(bytes, 'UTF8'), \
          '\"v\":{now}', '\"v\":20'), '\"format\":{now}', '\"format\":20'), 'UTF8')",
-        now = lakelands_api::event::LOG_FORMAT_VERSION,
+        now = LOG_FORMAT_VERSION,
     )
 }
 
@@ -203,6 +205,60 @@ async fn a_log_on_text_columns_is_refused_by_its_format() {
             "{mode:?}: {refused:?}"
         );
     }
+    common::drop_schema(&url, &schema);
+}
+
+/// The log taken back to 0.22.0's: `segment`, `fence` and `id` on each
+/// row, no `last`, `kept`, `running` or `ids`, `frames` beside it, its
+/// lines in the format before.
+fn as_22(s: &str) -> String {
+    format!(
+        "DROP TABLE {s}.ids; ALTER TABLE {s}.segments DROP COLUMN running; \
+         CREATE TABLE {s}.frames (first BIGINT PRIMARY KEY, events INT, bytes BYTEA); \
+         ALTER TABLE {s}.log DROP COLUMN last, DROP COLUMN kept, \
+         ADD COLUMN segment BIGINT NOT NULL DEFAULT 0, ADD COLUMN fence BIGINT NOT NULL \
+         DEFAULT 1, ADD COLUMN id BYTEA NOT NULL DEFAULT ''; \
+         CREATE INDEX log_segment ON {s}.log (segment, position); \
+         UPDATE {s}.log SET bytes = convert_to(replace(replace(convert_from(bytes, 'UTF8'), \
+         '\"v\":{now}', '\"v\":{then}'), '\"format\":{now}', '\"format\":{then}'), 'UTF8')",
+        now = LOG_FORMAT_VERSION,
+        then = LOG_FORMAT_VERSION - 1,
+    )
+}
+
+/// A lake 0.22.0 left, its log without the column `last`, is refused in
+/// every mode by its format, read from `position` and `bytes` alone before
+/// any statement names a column only this release's log has; nothing is
+/// appended to it (lakelands#1774).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_log_of_the_layout_before_is_refused_by_its_format() {
+    let Some(url) = common::url_or_skip("log of 0.22.0") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let location = common::location(&url, "older", &schema);
+    let store = open(&location, OpenMode::Create).await.unwrap();
+    store.close().await.unwrap();
+    drop(store);
+    let rows = format!("SELECT count(*) FROM \"{schema}\".log");
+    let before = tokio::task::block_in_place(|| {
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        client
+            .batch_execute(&as_22(&format!("\"{schema}\"")))
+            .unwrap();
+        one(&url, &rows)
+    });
+    let then = u64::from(LOG_FORMAT_VERSION - 1);
+    for mode in [OpenMode::Read, OpenMode::Write, OpenMode::Rebuild] {
+        let refused = open(&location, mode).await.err().unwrap();
+        let found = match refused.situation() {
+            Some(Situation::LogFormat { found, .. }) => Some(*found),
+            _ => None,
+        };
+        assert_eq!(found, Some(then), "{mode:?}: {refused:?}");
+    }
+    let after = tokio::task::block_in_place(|| one(&url, &rows));
+    assert_eq!(after, before, "nothing is appended to a lake refused");
     common::drop_schema(&url, &schema);
 }
 
