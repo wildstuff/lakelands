@@ -1080,3 +1080,45 @@ fn a_types_order_fields_never_name_a_series_pair() {
     }
     assert!(sorted_fields(&TypeName::from("book"), &decl, Some(&setting)).is_empty());
 }
+
+#[test]
+fn the_key_before_a_key_is_the_greatest_below_it() {
+    assert_eq!(key_before(&[], 4), None);
+    assert_eq!(key_before(&[5, 0], 4), Some(vec![5]));
+    assert_eq!(key_before(&[5, 3], 4), Some(vec![5, 2, 0xFF, 0xFF]));
+    assert_eq!(key_before(&[5, 3, 1, 1, 1], 4), Some(vec![5, 3, 1, 1, 0]));
+}
+
+/// Over one series of `n` keys `[rank, k]` and its tail, every window
+/// `lo..=hi` is chosen as the exact counts choose it: the window's road
+/// when four times its rows fit inside the series.
+#[test]
+fn the_series_sides_choose_as_the_whole_counts_do() {
+    let seek = SeriesSeek {
+        field: FieldName::from("at\u{1F}meter"),
+        series: vec![vec![7; 8]],
+    };
+    for n in [0u8, 3, 40, 200] {
+        let mut keys: Vec<Vec<u8>> = (0..n).map(|k| prefixed(&seek.series[0], &[1, k])).collect();
+        keys.push(seek.tail(0));
+        for (lo, hi) in [(0u8, 0u8), (0, 255), (10, 19), (n / 2, n), (n, 255), (1, 2)] {
+            let window = Window {
+                field: seek.field.clone(),
+                lo: vec![1, lo],
+                hi: vec![1, hi],
+            };
+            let held = keys
+                .iter()
+                .filter(|k| seek.bounds(0, Some(&window)).holds(k))
+                .count() as u64;
+            let wins = held * WINDOW_RATIO <= keys.len() as u64;
+            let chosen = takes_window(1 << 20, |l| {
+                series_window_sides(&seek, &window, l, |_, w: &Window, cap| {
+                    Ok::<_, ()>(keys.iter().filter(|k| w.holds(k)).count().min(cap as usize) as u64)
+                })
+                .map(Some)
+            });
+            assert_eq!(chosen, Ok(Some(wins)), "{n} keys, window {lo}..={hi}");
+        }
+    }
+}

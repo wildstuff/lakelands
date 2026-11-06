@@ -140,6 +140,7 @@ mod search_fields;
 mod search_text_weights;
 mod seen_before;
 mod series_builds;
+mod series_window;
 mod set_declared;
 mod set_migrated;
 mod set_names;
@@ -1077,6 +1078,7 @@ pub const ALL: &[Check] = &[
     series_builds::SERIES_REBUILD_SAME_ROWS,
     series_builds::SERIES_BUILD_REGAINED,
     series_builds::SERIES_TOLD,
+    series_window::SERIES_WINDOW_WALKS_ABOUT_ITS_ROWS,
     rerank::RERANK_REORDERS_THE_WINDOW,
     rerank::RERANK_ONE_WINDOW,
     rerank::RERANK_ONE_WINDOW_ONLY,
