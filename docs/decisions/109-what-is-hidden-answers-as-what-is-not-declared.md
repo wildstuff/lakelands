@@ -119,7 +119,7 @@ record that does not exist.
   path that reads no record is not taken. A walk reaches only admitted
   records. A proposal on a record the holder is not admitted is not
   there to it (below). One that would leave a record outside the
-  holder's pairs is listed without its write (above); it still shows
+  holder's pairs is listed without its write (108); it still shows
   why, the proposer and a type-level verb's payload. A read as of a
   position judges the
   records as they stood then, under the grant followed to that position.
@@ -203,7 +203,7 @@ record that does not exist.
   the proposal is decided: what its listing leaves out is a record that
   would be another's, which its reject would decide as surely as its
   accept, as its own write would be refused. Every reviewer
-  accepts only what it is listed whole (above, lakelands#867). So the
+  accepts only what it is listed whole (108, lakelands#867). So the
   listing tells a free key, where a write is listed in part, from
   another's record, where the same write is not listed: as a write
   tells it on purpose (what a holder's write tells, below).
@@ -213,7 +213,7 @@ record that does not exist.
   declaration or a migration are refused to it, and no migration's
   proposal, of a type or a value type, is listed to it, since a report
   counts every owner's records; its accept and its reject answer as an
-  id that does not exist, as for any entry that is not listed (above): a
+  id that does not exist, as for any entry that is not listed (108): a
   refusal as not granted would tell that the id is a proposal's. A
   proposed declaration is listed and not granted to decide. A reference
   written into the type from another type must name an admitted record.
@@ -396,10 +396,10 @@ it is in force from 0.20.0 (lakelands#1354).
   on a field its holder may not read would, applied, tell it which
   records hold which values of that field.
 - **A hiding follows its fields' renames,** `G` and every `F`, as every
-  grant does (above).
+  grant does (104).
 - **One rule: every read is evaluated over the record as its reader is
   told it.** On a selected record `F` and everything built from it, a
-  derived or computed field and a vector embedded from it (above), are
+  derived or computed field and a vector embedded from it (104), are
   absent or masked, as declared, and every door reads that record so.
 
 | what reads | on a selected record |

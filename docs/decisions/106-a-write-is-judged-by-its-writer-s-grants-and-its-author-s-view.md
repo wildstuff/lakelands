@@ -216,7 +216,7 @@ migration and a proposal of either:
   with them, since it is the existing check that refuses.
 - **A field its author knows of and may not read is refused as not
   granted on it**, wherever the declaration reads its value. A verb may
-  still set such a field: the declaration grants nothing (above).
+  still set such a field: the declaration grants nothing (104).
 - **What a type's shape names stands as declared only where it stands**
   (above). A valid time and a relation's `via` are named by the shape,
   not read by it. A key field is different: an author who may not know
