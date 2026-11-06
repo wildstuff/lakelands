@@ -5,16 +5,9 @@
 
 use std::fmt::Debug;
 
-use lakelands_api::error::Case;
 use lakelands_api::read::{Find, Get};
-use lakelands_api::write::Declaration;
-use lakelands_api::{Access, Error, Refusal};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, field_access, invalid_case, migration, pattern, reads_all, refused_on,
-};
-use crate::conformance::{Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     SHOWN_AS_READ = a_views_definition_is_shown_to_those_its_read_answers,
@@ -108,7 +101,7 @@ async fn lake(store: &dyn lakelands_api::LakeStore) -> Result<Lake, crate::confo
 async fn a_views_definition_is_shown_to_those_its_read_answers(store: Store) -> Held {
     let (s, l) = (store.as_ref(), lake(store.as_ref()).await?);
     let mut author = field_access(s, "author", "invoice", &PARTIAL);
-    author.grants.schema = true;
+    (author.grants.schema, author.grants.restricted) = (true, true);
     // Each reader: whether it is shown the definitions, and answered the reads.
     let cast = [
         (field_access(s, "reader", "invoice", &PARTIAL), false, false),

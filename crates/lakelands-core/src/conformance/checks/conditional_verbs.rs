@@ -3,17 +3,10 @@
 //! record at most, for callers the target holds nothing from
 //! (`docs/decisions/055-a-path-steps-through-a-reference.md`, extended).
 
-use lakelands_api::ontology::MatchPair;
-use lakelands_api::{Error, Find, ReadAt, Refusal};
-use serde_json::{Value, json};
-
 use super::conditional_edges::{DISCOUNTABLE, LATER, by_terms, invoice, lake, terms};
 use super::only::holder;
 use super::paths::{accept, call, proposal_of, unlisted, unmet};
-use crate::conformance::fixture::{
-    Lake, Must, field_access, head_unmoved, migration, refused_like, restrict,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     SKONTO = a_verb_reads_a_conditional_edge_onto_its_targets_key,
@@ -25,6 +18,9 @@ check!(
     "055, extended (lakelands#960): a verb that reads a derived relation is its caller's only where nothing of the target and of the verb's own type is held from the caller: one without `restricted`, one holding `only` on the target type or on the verb's type, one not shown the target type and one kept from a field the match or the `where` reads, on either side, is refused not_granted before any record is read, appending nothing, and neither `describe` nor `describe_type` names the verb to it; one the target holds nothing from calls as the edge holds, a held target record included"
 );
 
+/// What `skonto` requires, as a refusal names it.
+const EDGE: &str = "exists(discountable)";
+
 /// The lake of the edge rows, with `skonto`, its high-risk twin and the
 /// field it sets, and the relation `by_rate`, matched off the key.
 async fn skonto(store: &Store) -> Result<Lake, Failure> {
@@ -33,7 +29,7 @@ async fn skonto(store: &Store) -> Result<Lake, Failure> {
     for (name, risk) in [("skonto", "low"), ("skonto_hi", "high")] {
         l.declare_json(
             json!({"declare": "verb", "name": name, "on": "invoice", "risk": risk,
-            "requires": "exists(discountable)", "effect": "write",
+            "requires": EDGE, "effect": "write",
             "set": [{"field": "discount", "value": "discountable.rate"}]}),
         )
         .await?;
@@ -48,7 +44,9 @@ async fn a_verb_reads_a_conditional_edge_onto_its_targets_key(store: Store) -> H
     for key in ["i2", "i3", "i4", "i5"] {
         got.push(call(&l, &l.own, "skonto", key).await);
     }
-    let want: Vec<_> = ["i2", "i3", "i4", "i5"].map(|k| unmet("skonto", k)).into();
+    let want: Vec<_> = ["i2", "i3", "i4", "i5"]
+        .map(|k| unmet("skonto", k, EDGE))
+        .into();
     ensure!(
         got == want,
         "`skonto` is refused precondition where the edge does not hold: {got:?}, expected {want:?}"
@@ -79,7 +77,7 @@ async fn a_verb_reads_a_conditional_edge_onto_its_targets_key(store: Store) -> H
     let got = call(&l, &l.own, "skonto", "i7").await;
     head_unmoved(s, head, "`skonto` on retired terms").await?;
     ensure!(
-        got == unmet("skonto", "i7"),
+        got == unmet("skonto", "i7", EDGE),
         "`skonto` on an invoice whose terms are retired is refused precondition; {got:?}"
     );
     // A call proposed while the edge holds is judged as it holds at the accept.
@@ -101,7 +99,7 @@ async fn a_verb_reads_a_conditional_edge_onto_its_targets_key(store: Store) -> H
     let got = accept(&l, &l.own, &p).await;
     head_unmoved(s, head, "the accept of a `skonto` gone stale").await?;
     ensure!(
-        got == unmet("skonto_hi", "i8"),
+        got == unmet("skonto_hi", "i8", EDGE),
         "a proposed `skonto` whose period has passed since is refused at the accept; {got:?}"
     );
     // Its terms retired before the accept: no match. Held since the
@@ -143,7 +141,7 @@ async fn a_verb_reads_a_conditional_edge_onto_its_targets_key(store: Store) -> H
         reason: Refusal::NotGranted,
     });
     ensure!(
-        got == [unmet("skonto_hi", "i12"), nope, Ok("applied")],
+        got == [unmet("skonto_hi", "i12", EDGE), nope, Ok("applied")],
         "a proposed `skonto` whose terms are retired before the accept is refused \
          precondition, one whose terms are held since not_granted, and one whose terms were \
          held when it was proposed is accepted; {got:?}"
@@ -184,7 +182,7 @@ async fn a_verb_reads_a_conditional_edge_onto_its_targets_key(store: Store) -> H
         call(&l, &l.own, "two", "i10").await,
     ];
     ensure!(
-        got == [unmet("two", "i9"), Ok("applied")],
+        got == [unmet("two", "i9", "exists(twin)"), Ok("applied")],
         "a match of two pairs onto one key field holds only where both do; {got:?}"
     );
     let not_key = json!({"code": "match_not_key", "relation": "by_rate", "target": "terms"});

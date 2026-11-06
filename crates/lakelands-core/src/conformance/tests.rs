@@ -25,8 +25,8 @@ use lakelands_api::{
 
 use super::fixture::Must;
 use super::{
-    Check, Failure, Fault, FreshLake, Harness, Held, Relimit, Reopen, Report, Store, Tally, checks,
-    run_all, run_checks, run_one,
+    Check, Failure, Fault, FreshLake, Given, Harness, Held, Relimit, Reopen, Report, Store, Tally,
+    checks, run_all, run_checks, run_one,
 };
 
 /// Drives a future to completion on this thread. Everything the tests
@@ -114,6 +114,12 @@ impl Catalog for DownCatalog {
     refuse!(proposals<'life1>(
         who: &'life1 Principal, filter: ProposalFilter
     ) -> Reply<Vec<Proposal>>);
+    refuse!(quarantined<'life1>(
+        who: &'life1 Principal, filter: lakelands_api::quarantine::QuarantineFilter
+    ) -> Reply<Vec<lakelands_api::quarantine::Quarantined>>);
+    refuse!(dismiss_quarantined<'life1, 'life2>(
+        who: &'life1 Principal, id: &'life2 lakelands_api::quarantine::QuarantineId
+    ) -> lakelands_api::quarantine::QuarantineClose);
     refuse!(declare<'life1>(who: &'life1 Principal, declaration: Declaration) -> Outcome);
     refuse!(apply<'life1>(who: &'life1 Principal, declarations: Vec<Declaration>) -> Outcome);
     refuse!(recompute<'life1>(
@@ -184,6 +190,7 @@ impl LakeStore for DownStore {
     refuse!(restrict<'life1, 'life2>(ty: &'life1 TypeName, key: &'life2 RecordKey, reason: String) -> Position);
     refuse!(unrestrict<'life1, 'life2>(ty: &'life1 TypeName, key: &'life2 RecordKey) -> Position);
     refuse!(age<>(today: lakelands_api::Timestamp) -> lakelands_api::write::AgeReport);
+    refuse!(zone<>() -> String);
     refuse!(purge_source<'life1, 'life2, 'life3>(source: &'life1 lakelands_api::SourceId, ty: Option<&'life2 TypeName>, id: Option<&'life3 str>) -> lakelands_api::write::PurgeReport);
     refuse!(purge_preflight<'life1, 'life2>(source: &'life1 lakelands_api::SourceId, ty: Option<&'life2 TypeName>) -> lakelands_api::write::PurgeReport);
     refuse!(forget_source<'life1, 'life2>(source: &'life1 lakelands_api::SourceId, id: Option<&'life2 str>) -> lakelands_api::write::ForgetReport);
@@ -205,10 +212,7 @@ impl Harness for DownHarness {
         "down"
     }
     fn fresh(&self, _: Seams) -> FreshLake<'_> {
-        Box::pin(async {
-            let store: Store = Arc::new(DownStore(LakeId::from("conformance")));
-            Ok(store)
-        })
+        Box::pin(async { Ok(Arc::new(DownStore(LakeId::from("conformance"))) as Store) })
     }
     fn reopener(&self) -> Reopen {
         Arc::new(|_, _| Box::pin(async { Err(down()) }))
@@ -218,6 +222,9 @@ impl Harness for DownHarness {
     }
     fn faulter(&self) -> Fault {
         Arc::new(|_, _, _| Box::pin(async { Err(down()) }))
+    }
+    fn importer(&self) -> super::Import {
+        Arc::new(|_, _, _, _| Box::pin(async { Err(down()) }))
     }
     fn scratch(&self) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("lakelands-conformance-{}", std::process::id()))
@@ -399,7 +406,9 @@ fn next_drains_a_stream_in_order_and_then_ends() {
 }
 
 /// A catalog that carries no delivery id to the store refuses one, rather
-/// than drop it; with none, its `ingest_with` is its `ingest`.
+/// than drop it, and so a delivery sealed apart (065), a commit window
+/// of its own (016) and a quarantine (085); with none, its `ingest_with`
+/// is its `ingest`.
 #[test]
 fn a_catalog_that_carries_no_delivery_refuses_one() {
     use lakelands_api::error::Case;
@@ -414,6 +423,7 @@ fn a_catalog_that_carries_no_delivery_refuses_one() {
     let src = SourceId::from("crm");
     let with = |delivery: Option<&str>| IngestOpts {
         delivery: delivery.map(Into::into),
+        ..IngestOpts::default()
     };
     let named = block_on(cat.ingest_with(
         &who,
@@ -428,4 +438,171 @@ fn a_catalog_that_carries_no_delivery_refuses_one() {
         matches!(&none, Err(e) if e.situation() == down().situation()),
         "with no delivery it ingests, and this catalog's ingest is down"
     );
+    let apart = IngestOpts {
+        sealed_apart: true,
+        ..IngestOpts::default()
+    };
+    let apart = block_on(cat.ingest_with(&who, &src, apart, super::fixture::stream(vec![])));
+    let case = apart.err().and_then(|e| e.case().map(|s| s.case.clone()));
+    assert_eq!(case, Some(Case::SealedApartNotCarried));
+    let window = IngestOpts {
+        commit_window: Some(2),
+        ..IngestOpts::default()
+    };
+    let window = block_on(cat.ingest_with(&who, &src, window, super::fixture::stream(vec![])));
+    let case = window.err().and_then(|e| e.case().map(|s| s.case.clone()));
+    assert_eq!(case, Some(Case::CommitWindowNotCarried));
+    // A quarantine is refused first, whatever else the call asks.
+    let quarantine = IngestOpts {
+        quarantine_refused: true,
+        ..with(Some("batch-8"))
+    };
+    let quarantine =
+        block_on(cat.ingest_with(&who, &src, quarantine, super::fixture::stream(vec![])));
+    let case = quarantine
+        .err()
+        .and_then(|e| e.case().map(|s| s.case.clone()));
+    assert_eq!(case, Some(Case::QuarantineRefusedNotCarried));
+    // A record the host refused is not carried either.
+    let refused = lakelands_api::quarantine::HostRefused {
+        record: super::fixture::source_record("invoice", "i1", serde_json::json!({})),
+        cause: "unmapped".into(),
+        reason: "a column maps to no field".into(),
+    };
+    let host = block_on(cat.quarantine(&who, &src, IngestOpts::default(), refused));
+    let case = host.err().and_then(|e| e.case().map(|s| s.case.clone()));
+    assert_eq!(case, Some(Case::HostQuarantineNotCarried));
+}
+
+/// `requires_unmet` is, by value, the refusal the checks built by hand.
+#[test]
+fn requires_unmet_equals_the_refusal_built_by_hand() {
+    use lakelands_api::Refusal;
+    use lakelands_api::error::{Case, Printed};
+    let by_hand = |part: Option<&str>| {
+        let case = Case::RequiresUnmet {
+            verb: "vet".into(),
+            ty: "invoice".into(),
+            key: "i1".into(),
+            part: part.map(|p| Box::new(Printed(p.into()))),
+        };
+        Error::Refused {
+            field: None,
+            reason: Refusal::Precondition(Box::new(case.into())),
+        }
+    };
+    for part in [None, Some("status = 'open'")] {
+        let got = super::fixture::requires_unmet::<()>("vet", "invoice", "i1", part);
+        assert_eq!(got, Err(by_hand(part)));
+    }
+}
+
+/// A [`Given`] of the down harness whose reopen and relimit are the ones given.
+fn given_of(reopen: Reopen, relimit: Relimit) -> Given {
+    let h = DownHarness;
+    Given {
+        reopen,
+        relimit,
+        scratch: h.scratch(),
+        meter: h.meter(),
+        large_lake: h.large_lake(),
+        harness: h.name().to_owned(),
+        import: h.importer(),
+        continued: h.continuer(),
+        twin: h.twinner(),
+        fault: h.faulter(),
+        location: None,
+        ahead: h.aheader(),
+        lower: h.lowerer(),
+        standby: h.standbyer(),
+    }
+}
+
+fn a_store() -> Store {
+    Arc::new(DownStore(LakeId::from("conformance")))
+}
+
+/// `at_one_set_change` opens the lake again with the default limits but
+/// one membership change per write, and the default seams.
+#[test]
+fn at_one_set_change_relimits_as_the_checks_did_by_hand() {
+    use lakelands_api::location::Limits;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let relimit: Relimit = Arc::new(move |store, _, limits| {
+        log.lock().unwrap().push(limits);
+        Box::pin(async move { Ok(store) })
+    });
+    let given = given_of(DownHarness.reopener(), relimit);
+    block_on(super::fixture::at_one_set_change(&given, a_store(), "x")).unwrap();
+    let by_hand = Limits {
+        max_set_changes: 1,
+        ..Limits::default()
+    };
+    assert_eq!(*seen.lock().unwrap(), [by_hand]);
+    let failing = given_of(DownHarness.reopener(), DownHarness.relimiter());
+    let got = block_on(super::fixture::at_one_set_change(&failing, a_store(), "x"));
+    assert_eq!(got.err().unwrap().to_string(), format!("x: {}", down()));
+}
+
+/// `reopen_with_keys` hands the lake a new, empty key store and answers
+/// that same store.
+#[test]
+fn reopen_with_keys_opens_with_a_new_key_store_and_answers_it() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let reopen: Reopen = Arc::new(move |store, seams| {
+        log.lock().unwrap().push(seams.keys);
+        Box::pin(async move { Ok(store) })
+    });
+    let (keys, _) = block_on(super::fixture::reopen_with_keys(&reopen, a_store(), "x")).unwrap();
+    assert!(keys.is_new());
+    let seen = seen.lock().unwrap();
+    let given = seen[0].as_ref().expect("the seams carry a key store");
+    assert_eq!(
+        Arc::as_ptr(given).cast::<()>(),
+        Arc::as_ptr(&keys).cast::<()>()
+    );
+    assert_eq!(seen.len(), 1);
+}
+
+/// A sealed `record_ingested` whose patch is `patch`, whose box is
+/// `boxed` and whose writer is `writer`.
+fn sealed_event(
+    patch: serde_json::Value,
+    boxed: &str,
+    writer: &str,
+) -> lakelands_api::event::Event {
+    serde_json::from_value(serde_json::json!({
+        "v": 20, "lake": "finance", "position": 1, "id": "0".repeat(32),
+        "prev": lakelands_api::event::Digest::zero(), "known_at": "2026-09-24T00:00:00.000000Z",
+        "writer": writer, "origin": "source", "source": "crm",
+        "context": {"origin": "direct", "depth": 0}, "fence": 0,
+        "sealed": {"key": "k1", "fields": ["name"], "box": boxed},
+        "body": {"kind": "record_ingested", "type": "person", "key": "p1",
+                 "version": 1, "patch": patch, "made": true},
+        "hash": lakelands_api::event::Digest::zero(),
+    }))
+    .unwrap()
+}
+
+#[test]
+fn the_plaintext_search_goes_red_on_a_leak_and_ignores_the_box() {
+    use checks::erasable::plain_outside_box as clean;
+    let issue_box = "WVQGaXJMNhbAda80xQzut+RoXUztV4s1tah588X5";
+    let ok = sealed_event(
+        serde_json::json!({"city": "Oslo"}),
+        "QUJDREVGR0g=",
+        "system:a",
+    );
+    assert!(clean(&ok, &["Ada"]));
+    // The ciphertext of the flake: `Ada` in the box text by chance.
+    let chance = sealed_event(serde_json::json!({"city": "Oslo"}), issue_box, "system:a");
+    assert!(clean(&chance, &["Ada"]));
+    // A leak in the patch, and in another field.
+    let in_patch = sealed_event(serde_json::json!({"name": "Ada"}), issue_box, "system:a");
+    assert!(!clean(&in_patch, &["Ada"]));
+    let in_writer = sealed_event(serde_json::json!({"city": "Oslo"}), issue_box, "user:Ada");
+    assert!(!clean(&in_writer, &["Ada"]));
+    assert!(!clean(&in_patch, &["Bob", "Ada"]));
 }

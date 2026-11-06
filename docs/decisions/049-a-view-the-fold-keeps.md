@@ -4,13 +4,19 @@
 
 ### The fold keeps a view's records, and a read of the view answers them
 
+098 keeps a kept view's head alone and its order entries in
+`view_order`; 099 builds a view in parts, and a read computes until the
+build is whole; 102 strands a group whose members were thinned.
+
 A view asked for by the setting `view_kept.<type>` has its records kept
 in the projection by the fold, one for each group, and a read of the
 view answers them. **A kept record is exactly what the read would
-compute, or the view says at that position that it is not, and the read
-computes.** Nothing kept imitates an order the computation takes; the
-computation at the read stays whole and answers wherever the kept form
-would have to reproduce one.
+compute, or the view says at that position that it is not and the read
+computes, or the members it was computed from are gone and the view says
+the group is stranded, answered at the head alone.** Nothing kept
+imitates an order the computation takes; the computation at the read
+stays whole and answers wherever the kept form would have to reproduce
+one.
 
 - **Asked for by a setting.** The `sys.setting` record
   `view_kept.<type>` with the value `true` asks for the view to be kept.
@@ -23,13 +29,33 @@ would have to reproduce one.
   (`docs/decisions/066-a-set-holds-a-kept-view.md`).
 - **What can be kept is read off the declaration.** A view with no
   parameter and no clock, that reads no field computed at the read
-  (052), each of whose aggregate calls is a function of
+  (052; so a view over a field paired by `in_force` computes at every
+  read, and `view_kept` for it is refused `kept_at_read`), each of whose aggregate calls is a function of
   its values as a multiset: any `count`; a `sum` or an `avg` of what is
   certainly a number; a `min` or a `max` of what is certainly a number
-  or an instant, and that only under group fields that are all text or
-  references, one at least, so that a group whose extreme left is found
-  again by its fields' values. A view over a view is kept while that
-  view is.
+  or an instant, and a `first(f, by)` or a `last(f, by)` whose `by` is
+  certainly one, whatever `f` is. An extreme, as these four are called
+  here, is kept under any group fields the write fixes, or none: when
+  its holder leaves, the next is sought in the order the fold keeps, by
+  a digest of the group's key (below), which is the same whatever the
+  group fields' kinds, and one digest for a view with no group field.
+  A group field computed at the read is refused, as above. A view over
+  a view is kept while that view is.
+- **A group may be a bucket term.** A view's `group_by` lists source
+  fields, and at most one term among them, written as an aggregate's
+  named group key is: `{"name": "hour", "expr": "date_bucket(at, 1h,
+  '2026-01-01T00:00:00Z')"}`, one `date_bucket` over one source field
+  of instants or dates, its other arguments written out, under a name
+  the view type declares as a field. Its records, key, reads, kept rows
+  and the sets and triggers on it are those of the twin view grouped by
+  an equal derived field of the source (066), and the source type does
+  not change: `describe` of the source is the same before and after.
+  `describe` of the view shows its `group_by` as declared, the term
+  with its name and expression. Another expression and a second term
+  are refused `group_term`; a merged source and a bundle's view group
+  by fields alone, and a view grouped by a term that merges a source is
+  refused `group_term_merged`, since no group of the merged source would
+  meet the term.
 - **Under a name no type can bear.** A view's kept records are put under
   `sys:kept.<view>`, which holds a character no type name may. No write,
   link, walk, preflight or fold reaches them by a type's name: a
@@ -77,6 +103,28 @@ would have to reproduce one.
   member, putting a group
   and making a view return no error but the engine's, so no view can
   stop the lake.
+- **A group whose members have gone is stranded.** Where an act thins a
+  type's records past a horizon (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`),
+  the fold notes no member leaving: the group keeps the folds its thinned
+  members gave, and the record bears the mark `sys:stranded`, one mark for
+  both faces. A read answers it as stranded, never as the computation. It is
+  exact: it was exact when it became stranded (the act refuses one that is not,
+  `KeptNotExact`), and every change it can take since — a member's
+  arrival, or a present member's leaving or change — is the fold's; a
+  correction to a thinned member is refused (`Thinned`), so no fold it
+  holds is contradicted, and `not_exact` never counts it; the state's
+  `stranded` (102) does. Its order entries stay, so an extreme whose holder
+  was thinned keeps its holder. A group that held no thinned member at any
+  position computes as before at every position; a stranded group answers at
+  the head only, and a
+  read at an earlier position says it cannot answer it. A group of a view
+  over a view is stranded where it holds a stranded inner group, and its
+  earlier-position read is refused naming the inner. A make of a view
+  after the thinning carries each stranded group's record where the event
+  leaves what it folds, and is refused `StrandedMake` otherwise; every
+  event that would make a view whose source records are thinned kept — a
+  `view_kept.` setting, a declaration, a migration's step — is refused
+  `KeptOverThinned`.
 - **Made by noting from nothing.** A view becomes kept in the fold of
   the event that makes it so: its setting, or a declaration under which
   it can be kept. Every record of its sources is noted as arriving, a
@@ -89,14 +137,19 @@ would have to reproduce one.
   again.** The view or a source declared again; a migration whose step
   reaches a source's records (the migrated type, the types whose keys or
   references move, the link types records move between); a write of a
-  setting that an expression of the view names. The view is ended and
-  made in that event's fold. Nothing is noted from inside a migration's
-  step.
+  setting that an expression of the view names; at a writer's open, a
+  copy of the time-zone database other than the one that cut a view a
+  zone cuts (098). The view is ended and made in that event's fold.
+  Nothing is noted from inside a migration's step.
 - **An extreme is held by the first member of its order.** A `min` or
   a `max` orders its members by their value's sort key (a number before
   an instant), the greatest first for a `max`, and equal values by the
-  least key; its holder is the first. So the holder is a function of the
-  members, whatever the order they came in.
+  least key; its holder is the first. A `first` and a `last` order by
+  their `by` the same way, the greatest first for a `last`, and answer
+  the holder's `f`, which the kept record and the order's entry carry
+  beside the `by`; a member whose `by` is null is in no order. So the
+  holder is a function of the members, whatever the order they came in,
+  and `describe_type` says `kept` of such a view as of one with a `min`.
 - **The fold keeps that order, and the next holder is its first entry.**
   Beside the kept records, under `sys:order.<view>`, the fold keeps an
   entry for each member of each extreme, put in the fold of the event
@@ -112,14 +165,15 @@ would have to reproduce one.
   batch more for each run of entries the transaction ended ahead of it;
   never a member, at any size. A whole face whose folds are the open
   one's has no restricted member and takes the open face's holder.
-- **An order is read at the head only.** An engine keeps one state for
-  each key of an order name and no row beside it: a put replaces the
-  key's state and an end deletes it (`docs/seams.md`). Only the fold
-  reads it, at the head, by the key-ordered page every engine has. A
-  log that names a type beginning `sys:` comes from no door and is not
-  folded past that event, so no event writes into an order.
+- **An order is read at the head only.** An engine keeps one entry for
+  each key of an order name in a place of its own, apart from the
+  records: a put replaces the key's entry and an end deletes it
+  (`put_order`, `docs/seams.md`; lakelands#1690). Only the fold reads
+  it, at the head, by the key-ordered page every engine has. A log that
+  names a type beginning `sys:` comes from no door and is not folded
+  past that event, so no event writes into an order.
 - **An order ends as a whole.** Where a view ends, its order ends in
-  one call to the engine (`end_head_only`), whatever its size, and the
+  one call to the engine (`end_order`), whatever its size, and the
   transaction marks the name ended: a seek after that in the same
   transaction reads only the entries put since, never the engine's. So a
   view ended and made again in one event holds nothing for each entry it
@@ -137,10 +191,9 @@ would have to reproduce one.
   stands where those records are put, before the first later event
   that reads a record or at the transaction's end, so a rebuild whose
   page holds the declaration and later events makes the view at a later
-  position than the live appends did, with the same records. As of a
-  position between, `describe_type` may then say `not_kept_here` where
-  the live lake said `kept`; every read of the view's records answers
-  alike (lakelands#631).
+  position than the live appends did, with the same records; as of an
+  earlier position a kept view is computed in either (lakelands#631, and
+  098, where the fold keeps a group's latest record alone).
 - **An append pays for the views that read what it wrote.** The state
   of a kept view is read in when a record it reads is written, and all
   of them at a setting's write or a declaration; a lake with no
@@ -249,8 +302,10 @@ that already walks the type.
   549 MB more (5.5 s and 281 MB without its entries) and ended in 7 s,
   holding nothing more; a source declared again ends and makes the view
   in one event, about 35 s under the writer.
-- **Not for every view.** An extreme over a text, a sum over what may
-  be a text, a view with a parameter or the clock compute, as before.
+- **Not for every view.** An extreme over a text (a `first` whose
+  `by` is one), a sum over what may be a text, an extreme under any
+  other group field or a second bucket, a view with a parameter or the
+  clock compute, as before.
 
 ## How it came to be
 
@@ -282,3 +337,26 @@ that already walks the type.
 - A group whose measure does not land in its field is flagged as one
   whose measure fails; before, the fold kept what the read answered
   (lakelands#839).
+- `first(f, by)` and `last(f, by)` are kept as `min` and `max` are, and
+  an extreme's group may add one bucket of time to its text and
+  reference fields, so that a view of readings by meter and hour keeps
+  its opening, closing, least and greatest value (lakelands#1603,
+  lakelands#1605). Its holder is found again by the order the fold
+  already keeps, sought from the group's digest, not by a range read
+  over the source.
+- An extreme is kept under any group field the write fixes, or under
+  none, where it was kept only under text and reference fields and one
+  bucket of time beside them (lakelands#1614): the seek by the group's
+  digest needs nothing of the group fields' kinds.
+- Amended by 098 and 099 (lakelands#1652), proposed for 0.23.0.
+- A view's group may hold one `date_bucket` term over a source field,
+  answered as its twin grouped by a derived field, a trigger on it too;
+  until then the source needed the derived field (lakelands#1636,
+  lakelands#1666).
+- A kept view is read at the head alone and computed as of an earlier
+  position, its key keeping its latest state; a kept view a zone cuts
+  is made again at a writer's open under another copy of the time-zone
+  database (098, lakelands#1677).
+- Amended by 102 (lakelands#1639), proposed for 0.23.0: a group whose
+  members were thinned is stranded, exact, answered at the head only, and
+  carried by a make of the view.

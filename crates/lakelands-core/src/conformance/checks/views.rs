@@ -9,28 +9,17 @@
 //! and an exact amount) and one view over it (a total and a count per
 //! partner).
 
-use std::collections::BTreeMap;
-
-use lakelands_api::error::{Case, Place};
+use lakelands_api::Value;
 use lakelands_api::key::UNGROUPED;
-use lakelands_api::ontology::{
-    Authority, Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl, ViewParam,
-    ViewSource,
-};
-use lakelands_api::query::{Pattern, Projection, QueryResult, Step, Walk};
+use lakelands_api::ontology::{ViewParam, ViewSource};
 use lakelands_api::read::Find;
-use lakelands_api::{Error, FieldName, LakeStore, Record, TypeName, Value};
 use rust_decimal::Decimal;
-use serde_json::json;
 
 use super::search::doc_search;
 use crate::conformance::fixture::{
-    Lake, Must, count_view, dec, decimal, delivered, embedding, field, field_access, find_where,
-    get_at, head_unmoved, invalid_case, invalid_like, invalid_said, measure, object_set_on,
-    partner_totals, pattern, refused_like, source_record, step, trigger_on, type_decl, type_of,
-    value, vector, view_of,
+    delivered, get_at, measure, partner_totals, source_record, step, type_of,
 };
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     VIEW_KEY_IS_ITS_GROUP = a_view_record_is_keyed_by_its_group_by_fields,
@@ -79,7 +68,7 @@ check!(
 
 check!(
     NO_TRIGGER_OR_SET_ON_A_VIEW = a_trigger_or_object_set_on_a_view_is_refused,
-    "018, extended: a view is never written, so `declare` and `apply` refuse a trigger on a view, which no write would fire, and an object set over one the lake does not keep, which no write would decide (066), naming both; nothing is appended"
+    "018, extended: a view is never written, so `declare` and `apply` refuse a trigger on a view the lake does not keep, which no write would fire, and an object set over one, which no write would decide (066), naming both; nothing is appended"
 );
 
 check!(
@@ -688,6 +677,7 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Store) -> Held {
         SearchMode::Hybrid {
             text: "p1".into(),
             fields: None,
+            text_fields: None,
             field: near().0,
             vector: Some(near().1),
             weight: None,

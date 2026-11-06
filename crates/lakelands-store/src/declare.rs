@@ -34,7 +34,7 @@
 
 use std::collections::BTreeSet;
 
-use lakelands_api::error::{Beyond, Case, Names, Naming, Place, Said};
+use lakelands_api::error::{Case, Names, Naming, Place, Said};
 use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
@@ -42,25 +42,17 @@ use lakelands_api::ontology::{
     RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl,
     lands_in_the_fold,
 };
+use lakelands_api::read::GroupKey;
 use lakelands_api::tools::{NameProblem, name_problems};
 use lakelands_api::write::{
     Carrier, Declaration, DeclarationKind, FunctionDecl, ObjectSetDecl, SettingDecl, Withdrawal,
 };
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
-use lakelands_core::expr::{Place as Eval, check, parse};
-use lakelands_core::rights::is_system;
+use lakelands_core::expr::{Place as Eval, parse};
 use lakelands_core::shape::{self, Change};
-use lakelands_core::{derive, invalid, links, names, value};
+use lakelands_core::{derive, is_system, links, names, value};
 
 use crate::ontology::Ontology;
-
-/// A refusal of `field`'s value as not well-formed.
-pub(crate) fn invalid_field(field: &FieldName, said: impl Into<Said>) -> Error {
-    Error::Refused {
-        field: Some(field.clone()),
-        reason: Refusal::Invalid(Box::new(said.into())),
-    }
-}
 
 /// `said`, inside the places `at`, outermost first.
 pub(crate) fn at(at: &[Place], said: impl Into<Said>) -> Said {
@@ -70,7 +62,7 @@ pub(crate) fn at(at: &[Place], said: impl Into<Said>) -> Said {
 }
 
 fn name(what: Naming, n: &str) -> Result<()> {
-    names::fault(what, n).map_or(Ok(()), |c| Err(invalid(c)))
+    names::fault(what, n).map_or(Ok(()), |c| Err(Error::invalid(c)))
 }
 
 fn of_type(name: &TypeName) -> Place {
@@ -141,7 +133,7 @@ fn link_ring(o: &Ontology, t: &TypeDecl) -> Option<Names> {
             }
             ring.push(end.clone());
             let owner = (owner == t.name).then_some(t).or_else(|| o.ty(&owner).ok());
-            let next = owner.and_then(|d| d.relations.iter().find(|x| x.name == relation));
+            let next = owner.and_then(|d| d.relation(&relation));
             let Some(next) = next else { break };
             end = next.target.clone();
         }
@@ -152,15 +144,51 @@ fn link_ring(o: &Ontology, t: &TypeDecl) -> Option<Names> {
 /// The field `g` of `source` a view groups by, one a key may be, since the
 /// grouping values are the view record's key; refused naming it at `at`.
 fn grouped_field<'a>(source: &'a TypeDecl, g: &FieldName, on: &[Place]) -> Result<&'a FieldDecl> {
-    let f = source.fields.iter().find(|f| &f.name == g).ok_or_else(|| {
+    let f = source.field(g).ok_or_else(|| {
         let (ty, field) = (source.name.clone(), g.clone());
-        invalid(at(on, Case::UnknownField { ty, field }))
+        Error::invalid(at(on, Case::UnknownField { ty, field }))
     })?;
     if !lakelands_core::log::keyable(f.ty.kind) {
         let field = g.clone();
-        return Err(invalid(at(on, Case::GroupUnkeyable { field })));
+        return Err(Error::invalid(at(on, Case::GroupUnkeyable { field })));
     }
     Ok(f)
+}
+
+/// A view's group: each field one of its source's that a key may be
+/// made of, and each term, under a name of its own, one `date_bucket`
+/// over such a field holding an instant or a date, its other arguments
+/// literals, so that its value is a function of that field alone, as a
+/// derived field's would be; one term at most.
+fn view_group(source: &TypeDecl, v: &ViewDecl, owner: &[Place]) -> Result<()> {
+    let keys = lakelands_core::expr::aggregate::group_keys(&v.group_by);
+    let keys = keys.map_err(|e| Error::invalid(at(owner, e)))?;
+    let mut terms = 0;
+    for (name, e) in keys {
+        let Some(e) = e else {
+            grouped_field(source, &name, owner)?;
+            continue;
+        };
+        terms += 1;
+        let on = [owner, &[Place::Group { name: name.clone() }]].concat();
+        let read = match &e {
+            Expr::Call {
+                func: Func::DateBucket,
+                args,
+            } if args[1..].iter().all(|a| matches!(a, Expr::Lit { .. })) => match &args[0] {
+                Expr::Path { path } if path.len() == 1 => source.field(&path[0]),
+                _ => None,
+            },
+            _ => None,
+        };
+        let timed = |f: &&FieldDecl| matches!(f.ty.kind, StorageKind::DateTime | StorageKind::Date);
+        let second = terms > 1;
+        match read.filter(timed).filter(|_| !second) {
+            Some(f) => drop(grouped_field(source, &f.name, &on)?),
+            None => return Err(Error::invalid(at(owner, Case::GroupTerm { name, second }))),
+        }
+    }
+    Ok(())
 }
 
 /// The declared type a declaration reads, acts on, watches or holds:
@@ -168,7 +196,7 @@ fn grouped_field<'a>(source: &'a TypeDecl, g: &FieldName, on: &[Place]) -> Resul
 fn declared<'a>(o: &'a Ontology, name: &TypeName, on: &[Place]) -> Result<&'a TypeDecl> {
     let ty = name.clone();
     o.ty(name)
-        .map_err(|_| invalid(at(on, Case::Undeclared { ty })))
+        .map_err(|_| Error::invalid(at(on, Case::Undeclared { ty })))
 }
 
 /// A view's source may not be a view with parameters: only a read that
@@ -177,17 +205,21 @@ fn unbound_source(on: &[Place], source: &TypeDecl) -> Result<()> {
     match source.view.as_deref().and_then(|v| v.params.first()) {
         Some(p) => {
             let (source, param) = (source.name.clone(), p.name.clone());
-            Err(invalid(at(on, Case::ReadsParamView { source, param })))
+            Err(Error::invalid(at(
+                on,
+                Case::ReadsParamView { source, param },
+            )))
         }
         None => Ok(()),
     }
 }
 
-/// A view's merged sources: each declared, read once and not as the view's
-/// own source, not a view with parameters, grouped by as many fields as the
-/// view, each of the kind of the main source's field it lines up with and
-/// one a key may be, with measures named uniquely in the view. The
-/// parameters their expressions read are added to `read`.
+/// A view's merged sources: none where the view groups by a term, and
+/// each declared, read once and not as the view's own source, not a view
+/// with parameters, grouped by as many fields as the view, each of the
+/// kind of the main source's field it lines up with and one a key may be,
+/// with measures named uniquely in the view. The parameters their
+/// expressions read are added to `read`.
 fn merged_sources(
     o: &Ontology,
     owner: &[Place],
@@ -195,6 +227,13 @@ fn merged_sources(
     main: &TypeDecl,
     read: &mut BTreeSet<String>,
 ) -> Result<()> {
+    let term = v.group_by.iter().find_map(|k| match k {
+        GroupKey::Named { name, .. } => Some(name.clone()),
+        GroupKey::Field(_) => None,
+    });
+    if let (Some(name), false) = (term, v.merge.is_empty()) {
+        return Err(Error::invalid(at(owner, Case::GroupTermMerged { name })));
+    }
     let mut names: Vec<&FieldName> = v.measures.iter().map(|m| &m.name).collect();
     for (i, m) in v.merge.iter().enumerate() {
         let merged = Place::MergedSource {
@@ -203,15 +242,18 @@ fn merged_sources(
         let on = [owner, &[merged]].concat();
         if m.source == v.source || v.merge[..i].iter().any(|n| n.source == m.source) {
             let source = m.source.clone();
-            return Err(invalid(at(&on, Case::SourceTwice { source })));
+            return Err(Error::invalid(at(&on, Case::SourceTwice { source })));
         }
         let source = declared(o, &m.source, &on)?;
         unbound_source(owner, source)?;
         if m.group_by.len() != v.group_by.len() {
             let (given, view) = (m.group_by.len(), v.group_by.len());
-            return Err(invalid(at(&on, Case::MergedGroupCount { given, view })));
+            return Err(Error::invalid(at(
+                &on,
+                Case::MergedGroupCount { given, view },
+            )));
         }
-        for (g, to) in m.group_by.iter().zip(&v.group_by) {
+        for (g, to) in m.group_by.iter().zip(&v.group_names()) {
             let kind = grouped_field(source, g, &on)?.ty.kind;
             if main
                 .fields
@@ -221,7 +263,7 @@ fn merged_sources(
                 != Some(kind)
             {
                 let (field, view_field) = (g.clone(), to.clone());
-                return Err(invalid(at(
+                return Err(Error::invalid(at(
                     &on,
                     Case::MergedGroupKind { field, view_field },
                 )));
@@ -242,7 +284,7 @@ fn merged_sources(
             // aggregate would read nothing of it.
             if !lakelands_core::expr::calls(&e, &Func::is_aggregate) {
                 let source = m.source.clone();
-                return Err(invalid(at(&on, Case::MeasuresNothing { source })));
+                return Err(Error::invalid(at(&on, Case::MeasuresNothing { source })));
             }
             lakelands_core::expr::params_read(&e, read);
         }
@@ -255,7 +297,7 @@ fn merged_sources(
         .map(|(_, n)| n)
     {
         let name = (*n).clone();
-        return Err(invalid(at(owner, Case::MeasureTwice { name })));
+        return Err(Error::invalid(at(owner, Case::MeasureTwice { name })));
     }
     Ok(())
 }
@@ -265,11 +307,12 @@ fn merged_sources(
 /// records the view does not make, and a rule that reads a type's key
 /// would judge a field no record of the view carries as one.
 fn view_key(owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Result<()> {
-    if t.key.is_empty() || t.key == v.group_by {
+    let names = v.group_names();
+    if t.key.is_empty() || t.key == names {
         return Ok(());
     }
-    let group_by = (!v.group_by.is_empty()).then(|| v.group_by.iter().collect());
-    Err(invalid(at(owner, Case::ViewKey { group_by })))
+    let group_by = (!names.is_empty()).then(|| names.iter().collect());
+    Err(Error::invalid(at(owner, Case::ViewKey { group_by })))
 }
 
 /// A view's declared fields are exactly what it computes: a field for each
@@ -277,7 +320,8 @@ fn view_key(owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Result<()> {
 /// field that nothing fills (028). A read answers declared fields only, so
 /// a computed value with no field would be dropped without a word.
 fn view_fields(owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Result<()> {
-    let computed: Vec<&FieldName> = (v.group_by.iter())
+    let names = v.group_names();
+    let computed: Vec<&FieldName> = (names.iter())
         .chain(v.measures.iter().map(|m| &m.name))
         .chain(
             v.merge
@@ -290,14 +334,14 @@ fn view_fields(owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Result<()> {
         .find(|n| !t.fields.iter().any(|f| &f.name == **n))
     {
         let field = (*n).clone();
-        return Err(invalid_field(
+        return Err(Error::invalid_at(
             n,
             at(owner, Case::ViewValueNoField { field }),
         ));
     }
     if let Some(f) = t.fields.iter().find(|f| !computed.contains(&&f.name)) {
         let field = f.name.clone();
-        return Err(invalid_field(
+        return Err(Error::invalid_at(
             &f.name,
             at(owner, Case::ViewFieldUnfilled { field }),
         ));
@@ -313,7 +357,10 @@ fn view_params(owner: &[Place], v: &ViewDecl, read: &BTreeSet<String>) -> Result
         name(Naming::Parameter, p.name.as_str())?;
         if v.params[..i].iter().any(|q| q.name == p.name) {
             let (what, name) = (Naming::Parameter, p.name.to_string());
-            return Err(invalid(at(owner, Case::DeclaredTwice { what, name })));
+            return Err(Error::invalid(at(
+                owner,
+                Case::DeclaredTwice { what, name },
+            )));
         }
         if !matches!(
             p.kind,
@@ -325,11 +372,11 @@ fn view_params(owner: &[Place], v: &ViewDecl, read: &BTreeSet<String>) -> Result
                 | StorageKind::Date
         ) {
             let (name, kind) = (p.name.clone(), p.kind);
-            return Err(invalid(at(owner, Case::ParamKind { name, kind })));
+            return Err(Error::invalid(at(owner, Case::ParamKind { name, kind })));
         }
         if !read.contains(p.name.as_str()) {
             let name = p.name.clone();
-            return Err(invalid(at(owner, Case::ParamUnread { name })));
+            return Err(Error::invalid(at(owner, Case::ParamUnread { name })));
         }
     }
     if let Some(unknown) = read
@@ -339,7 +386,10 @@ fn view_params(owner: &[Place], v: &ViewDecl, read: &BTreeSet<String>) -> Result
         let declared = Some(v.params.iter().map(|p| &p.name).collect::<Names>());
         let declared = declared.filter(|d| !d.0.is_empty());
         let name = unknown.clone();
-        return Err(invalid(at(owner, Case::ParamUndeclared { name, declared })));
+        return Err(Error::invalid(at(
+            owner,
+            Case::ParamUndeclared { name, declared },
+        )));
     }
     Ok(())
 }
@@ -347,10 +397,10 @@ fn view_params(owner: &[Place], v: &ViewDecl, read: &BTreeSet<String>) -> Result
 /// A condition in its typed form, checked for its place, refused said at
 /// `on`.
 pub fn condition(c: &Condition, place: Eval, on: &[Place]) -> Result<Expr> {
-    let e = typed(c, place).map_err(|c| invalid(at(on, c)))?;
+    let e = typed(c, place).map_err(|c| Error::invalid(at(on, c)))?;
     // A set is named only where its filter is put in the name's place.
     if lakelands_core::expr::calls(&e, &|f| f == Func::InSet) {
-        return Err(invalid(at(on, Case::InSetHere)));
+        return Err(Error::invalid(at(on, Case::InSetHere)));
     }
     Ok(e)
 }
@@ -362,7 +412,7 @@ pub(crate) fn record_stands(stands: bool, e: Expr, on: &[Place]) -> Result<Expr>
     let reads = |f| matches!(f, Func::KnownAt | Func::SeenAt);
     match stands || !lakelands_core::expr::calls(&e, &reads) {
         true => Ok(e),
-        false => Err(invalid(at(on, Case::NoRecordsProvenance))),
+        false => Err(Error::invalid(at(on, Case::NoRecordsProvenance))),
     }
 }
 
@@ -381,15 +431,7 @@ pub fn names_set(o: &Ontology, s: &ObjectSetDecl, target: &str) -> bool {
 /// A condition parsed and checked for its place, the sets it names left
 /// as it names them.
 pub(crate) fn typed(c: &Condition, place: Eval) -> std::result::Result<Expr, Case> {
-    let e = match c {
-        Condition::Expr(e) => e.clone(),
-        Condition::Text(t) => parse(t).map_err(|e| {
-            let (text, why) = (t.clone(), Box::new(e.into()));
-            Case::NotParsed { text, why }
-        })?,
-    };
-    check(&e, place)?;
-    Ok(e)
+    c.checked(place)
 }
 
 /// A condition over the records of `ty` that may name object sets
@@ -420,7 +462,7 @@ pub fn filter_kept<'s>(
     place: Eval,
     on: &[Place],
 ) -> Result<Expr> {
-    let e = typed(c, place).map_err(|c| invalid(at(on, c)))?;
+    let e = typed(c, place).map_err(|c| Error::invalid(at(on, c)))?;
     let named = |name: &str| {
         let set_name = name.to_owned();
         match set(name) {
@@ -437,7 +479,7 @@ pub fn filter_kept<'s>(
             None => Err(Case::SetUndeclared { set: set_name }.into()),
         }
     };
-    lakelands_api::expr::expand_kept(&e, &named, kept).map_err(|s| invalid(at(on, s)))
+    lakelands_api::expr::expand_kept(&e, &named, kept).map_err(|s| Error::invalid(at(on, s)))
 }
 
 /// A set's `where`, the sets it names standing in it, as a write decides
@@ -476,7 +518,7 @@ fn evaluates_across<'d>(
         let steps = read.len() + usize::from(derived.is_some());
         read.last().map(|(_, f)| (f.ty.kind, steps))
     };
-    kind::of(e, &field).map_err(|why| invalid(at(on, why)))
+    kind::of(e, &field).map_err(|why| Error::invalid(at(on, why)))
 }
 
 /// A declared `initial` value stands on an authored field of a type's own
@@ -505,7 +547,7 @@ fn initial(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) 
         }
     };
     let on = [owner, &[of_field(&f.name), Place::Initial]].concat();
-    Err(invalid_field(&f.name, at(&on, why)))
+    Err(Error::invalid_at(&f.name, at(&on, why)))
 }
 
 /// `erasable` stands on a type's own field that a source writes and that
@@ -529,7 +571,7 @@ fn erasable(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>)
         Some(_) => return Ok(()),
     };
     let on = [owner, &[of_field(&f.name), Place::Erasable]].concat();
-    Err(invalid_field(&f.name, at(&on, why)))
+    Err(Error::invalid_at(&f.name, at(&on, why)))
 }
 
 /// A field only verbs write (lakelands#1130) is no key, required only with
@@ -543,7 +585,54 @@ fn verb_written(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result
         _ => return Ok(()),
     };
     let on = [owner, &[of_field(&f.name), Place::Authority]].concat();
-    Err(invalid_field(&f.name, at(&on, why)))
+    Err(Error::invalid_at(&f.name, at(&on, why)))
+}
+
+/// A field the store fills with the writer that made its record (084) is
+/// a stored type's own, plain `text`, no key, and neither computed nor
+/// cleared: nothing but the store's fill ever gives it a value.
+fn writer_filled(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
+    let ty = &f.ty;
+    let computed = f.derived.is_some() || f.function.is_some() || f.embed.is_some();
+    let why = match of {
+        _ if f.authority != Authority::Writer => return Ok(()),
+        None => Case::WriterNotOfType,
+        Some(t) if t.view.is_some() || lakelands_core::links::is_link_type(&t.name) => {
+            Case::WriterNotOfType
+        }
+        _ if ty.kind != StorageKind::Text || ty.value_type.is_some() => Case::WriterNotText,
+        Some(t) if t.key.contains(&f.name) => Case::WriterKey,
+        _ if computed || !f.depends_on.is_empty() => Case::WriterComputed,
+        _ if f.on_input_change == OnInputChange::Clear => Case::WriterComputed,
+        _ => return Ok(()),
+    };
+    let on = [owner, &[of_field(&f.name), Place::Authority]].concat();
+    Err(Error::invalid_at(&f.name, at(&on, why)))
+}
+
+/// `admits` stands on an authored field of a type's own records that keeps
+/// per-field provenance, naming each source once, in its form (069).
+fn admitted(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
+    let mut named = BTreeSet::new();
+    let misnamed =
+        (f.admits.iter()).find_map(|s| match (crate::writes::formed(s), named.insert(s)) {
+            (false, _) => Some(Case::SourceIdForm),
+            (true, false) => Some(Case::AdmitsTwice { source: s.clone() }),
+            (true, true) => None,
+        });
+    let why = match of {
+        _ if f.admits.is_empty() => return Ok(()),
+        None => Case::AdmitsNotOfType,
+        Some(t) if t.view.is_some() => Case::AdmitsNotOfType,
+        Some(_) if f.authority != Authority::Authored => Case::AdmitsNotAuthored,
+        Some(t) if !t.field_meta => Case::AdmitsNoProvenance,
+        Some(_) => match misnamed {
+            Some(case) => case,
+            None => return Ok(()),
+        },
+    };
+    let on = [owner, &[of_field(&f.name), Place::Admits]].concat();
+    Err(Error::invalid_at(&f.name, at(&on, why)))
 }
 
 /// Refuse `computed_at` on a field no record holds: a verb's payload's, a
@@ -552,7 +641,10 @@ fn computed_here(on: &[Place], f: &FieldDecl) -> Result<()> {
     match f.computed_at {
         Some(_) => {
             let on = [on, &[of_field(&f.name)]].concat();
-            Err(invalid_field(&f.name, at(&on, Case::ComputedAtNoRecord)))
+            Err(Error::invalid_at(
+                &f.name,
+                at(&on, Case::ComputedAtNoRecord),
+            ))
         }
         None => Ok(()),
     }
@@ -571,9 +663,11 @@ fn field_type(
     initial(o, owner, f, of)?;
     erasable(o, owner, f, of)?;
     verb_written(owner, f, of)?;
+    writer_filled(owner, f, of)?;
+    admitted(owner, f, of)?;
     let ty = &f.ty;
     let on = [owner, &[of_field(&f.name)]].concat();
-    let wrong = |c: Case| invalid_field(&f.name, at(&on, c));
+    let wrong = |c: Case| Error::invalid_at(&f.name, at(&on, c));
     match (ty.kind, &ty.target, ty.dimensions) {
         (StorageKind::Reference, None, _) => return Err(wrong(Case::ReferenceNoTarget)),
         (StorageKind::Reference, Some(t), _) if t != pending && !o.types.contains_key(t) => {
@@ -592,7 +686,7 @@ fn field_type(
         value::conformance(f, &o.value_type_list()).map_err(wrong)?;
     }
     if let Some(d) = &f.derived {
-        condition(d, Eval::Write, &on)?;
+        condition(d, computed_at(f), &on)?;
     }
     if let Some(func) = &f.function {
         if f.derived.is_some() {
@@ -608,10 +702,100 @@ fn field_type(
     Ok(())
 }
 
+/// Where a derived field is evaluated: at the read, where `in_force` has
+/// meaning, or at the write.
+pub(crate) fn computed_at(f: &FieldDecl) -> Eval {
+    match f.at_read() {
+        true => Eval::AtRead,
+        false => Eval::Write,
+    }
+}
+
+/// Each field of `t` paired at the read pairs as [`pairs`] says, and
+/// where the call is the whole field, `T.f` holds a kind that lands in it
+/// (052, extended).
+fn in_force(o: &Ontology, t: &TypeDecl) -> Result<()> {
+    for (f, e) in t.in_force() {
+        let on = [of_type(&t.name), of_field(&f.name)];
+        let wrong = |case| Error::invalid_at(&f.name, at(&on, case));
+        if let Some(read) = pairs(o, (t, Some(&f.name)), &e, &wrong)? {
+            lands(f, Kind::read(read), &on)?;
+        }
+    }
+    Ok(())
+}
+
+/// Each `in_force` in `e`, over a record of `t`, pairs by the form it
+/// takes, with another stored type, over fields that pair: two of one
+/// kind, a match of text or a reference, which the exact-text index keeps,
+/// an order bound of a kind the lake sorts; of the other type stored
+/// fields. One judgement for `field`, computed at the read, and a
+/// trigger's `when` where none (100), `wrong` saying a refusal where `e`
+/// stands: a field's refusal names it, as 0.22.0 shipped it, and a
+/// trigger's is a case of its own, for a trigger has no field to name. The
+/// kind `T.f` holds where `e` is the call alone.
+fn pairs(
+    o: &Ontology,
+    (t, field): (&TypeDecl, Option<&FieldName>),
+    e: &Expr,
+    wrong: &dyn Fn(Case) -> Error,
+) -> Result<Option<StorageKind>> {
+    use StorageKind::{Reference, Text};
+    let form = || {
+        wrong(field.map_or(Case::GuardInForceForm, |f| Case::InForceForm {
+            field: f.clone(),
+        }))
+    };
+    let mut whole = None;
+    for p in e.pairings().map_err(|_| form())? {
+        let ty = TypeName::from(p.ty.as_str());
+        let other = match o.types.get(&ty) {
+            None if ty != t.name => return Err(wrong(Case::Undeclared { ty })),
+            Some(e) if ty != t.name && e.decl.view.is_none() => &e.decl,
+            _ => return Err(form()),
+        };
+        let theirs = |n: &FieldName| {
+            let (ty, field) = (ty.clone(), n.clone());
+            match other.field(n) {
+                None => Err(wrong(Case::UnknownField { ty, field })),
+                Some(d) if d.at_read() => Err(wrong(Case::ReadsAtRead { field, ty })),
+                Some(d) => Ok(d.ty.kind),
+            }
+        };
+        let read = theirs(p.read)?;
+        if let Expr::Call { func, .. } = e
+            && *func == Func::InForce
+        {
+            whole = Some(read);
+        }
+        let pairs = std::iter::once(p.by).chain(p.matched.iter().copied());
+        for (i, (left, right)) in pairs.enumerate() {
+            let kind = theirs(left)?;
+            let pairs = match i {
+                0 => lakelands_api::seam::sortable(&kind),
+                _ => matches!(kind, Text | Reference),
+            };
+            let ours = t.field(right).filter(|r| !r.at_read()).map(|r| r.ty.kind);
+            if !pairs || ours != Some(kind) {
+                let (left, right) = (left.clone(), right.clone());
+                return Err(wrong(match field {
+                    Some(f) => Case::InForcePair {
+                        field: f.clone(),
+                        left,
+                        right,
+                    },
+                    None => Case::GuardInForcePair { left, right },
+                }));
+            }
+        }
+    }
+    Ok(whole)
+}
+
 fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     name(Naming::Type, t.name.as_str())?;
     let owner = [of_type(&t.name)];
-    let has = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
+    let has = |f: &FieldName| t.has_field(f);
     let mut seen = BTreeSet::new();
     // A view is not searched: its records are computed on read, and the
     // indexes a search reads hold stored records only (018).
@@ -628,23 +812,23 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             searchable,
             embedded,
         };
-        return Err(invalid_field(&f.name, at(&on, case)));
+        return Err(Error::invalid_at(&f.name, at(&on, case)));
     }
     // A view's records are computed and never retired, so the mark of who
     // retires them means nothing there (lakelands#1148).
     if t.view.is_some() && !t.retired_by.is_authors() {
-        return Err(invalid(at(&owner, Case::RetiredByView)));
+        return Err(Error::invalid(at(&owner, Case::RetiredByView)));
     }
     if let Some((field, why)) = t.embedding_problem() {
-        return Err(invalid_field(&field, why));
+        return Err(Error::invalid_at(&field, why));
     }
     if let Some((field, why)) = t.computed_at_problem(|n| o.functions.get(n).map(|e| &e.decl)) {
-        return Err(invalid_field(&field, why));
+        return Err(Error::invalid_at(&field, why));
     }
     for f in &t.fields {
         if !seen.insert(&f.name) {
             let (what, name) = (Naming::Field, f.name.to_string());
-            return Err(invalid_field(
+            return Err(Error::invalid_at(
                 &f.name,
                 at(&owner, Case::DeclaredTwice { what, name }),
             ));
@@ -661,7 +845,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             // an input that declares none.
             for input in &func.decl.inputs {
                 let (function, ty) = (func.decl.name.clone(), t.name.clone());
-                let why = match t.fields.iter().find(|d| d.name == *input.name()) {
+                let why = match t.field(input.name()) {
                     Some(_) if input_kind_held(t, input).is_none() => continue,
                     Some(d) => {
                         let (input, kind, held) =
@@ -683,13 +867,13 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                         at(&on, Case::UnknownField { ty, field })
                     }
                 };
-                return Err(invalid_field(&f.name, why));
+                return Err(Error::invalid_at(&f.name, why));
             }
         }
         for d in &f.depends_on {
             if !has(d) {
                 let (ty, field) = (t.name.clone(), d.clone());
-                return Err(invalid_field(
+                return Err(Error::invalid_at(
                     &f.name,
                     at(&on, Case::UnknownField { ty, field }),
                 ));
@@ -698,36 +882,42 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         if f.ty.kind == StorageKind::Json
             && (o.types.contains_key(f.name.as_str()) || t.name.as_str() == f.name.as_str())
         {
-            return Err(invalid_field(&f.name, at(&owner, Case::JsonNamedAsType)));
+            return Err(Error::invalid_at(
+                &f.name,
+                at(&owner, Case::JsonNamedAsType),
+            ));
         }
     }
     for k in t.key.iter().chain(&t.valid_from).chain(&t.valid_to) {
         if !has(k) {
             let (ty, field) = (t.name.clone(), k.clone());
-            return Err(invalid_field(
+            return Err(Error::invalid_at(
                 k,
                 at(&owner, Case::UnknownField { ty, field }),
             ));
         }
     }
     for k in &t.key {
-        let kind = t.fields.iter().find(|f| &f.name == k).map(|f| f.ty.kind);
+        let kind = t.field(k).map(|f| f.ty.kind);
         if kind.is_some_and(|kind| !lakelands_core::log::keyable(kind)) {
             let field = k.clone();
-            return Err(invalid_field(k, at(&owner, Case::KeyUnkeyable { field })));
+            return Err(Error::invalid_at(
+                k,
+                at(&owner, Case::KeyUnkeyable { field }),
+            ));
         }
     }
     // A valid time is a stored instant or date (028, extended): a field of
     // another kind would set a record's validity by a value that only reads
     // as one.
     for (axis, k) in [("valid_from", &t.valid_from), ("valid_to", &t.valid_to)] {
-        let kind = |k: &FieldName| t.fields.iter().find(|f| &f.name == k).map(|f| f.ty.kind);
+        let kind = |k: &FieldName| t.field(k).map(|f| f.ty.kind);
         if let Some((k, kind)) = k.as_ref().and_then(|k| Some((k, kind(k)?)))
             && !matches!(kind, StorageKind::DateTime | StorageKind::Date)
         {
             let (field, axis) = (k.clone(), axis.to_owned());
             let case = Case::ValidTimeNotTime { field, axis, kind };
-            return Err(invalid_field(k, at(&owner, case)));
+            return Err(Error::invalid_at(k, at(&owner, case)));
         }
     }
     // A valid time has a start (028, extended): a read at `valid_at`
@@ -737,7 +927,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         let held = o.types.get(&t.name).map(|e| &e.decl);
         if !held.is_some_and(|h| h.valid_from.is_none() && h.valid_to.is_some()) {
             let case = Case::ValidToAlone { field: to.clone() };
-            return Err(invalid_field(to, at(&owner, case)));
+            return Err(Error::invalid_at(to, at(&owner, case)));
         }
     }
     // Before any relation is judged: one its author is not shown, put back
@@ -746,13 +936,16 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     let mut named = BTreeSet::new();
     if let Some(r) = t.relations.iter().find(|r| !named.insert(&r.name)) {
         let (what, name) = (Naming::Relation, r.name.to_string());
-        return Err(invalid(at(&owner, Case::DeclaredTwice { what, name })));
+        return Err(Error::invalid(at(
+            &owner,
+            Case::DeclaredTwice { what, name },
+        )));
     }
     for r in &t.relations {
         name(Naming::Relation, r.name.as_str())?;
         let name = r.name.clone();
         let on = [of_type(&t.name), Place::Relation { name }];
-        let wrong = |c: Case| invalid(at(&on, c));
+        let wrong = |c: Case| Error::invalid(at(&on, c));
         // A view's records are computed, never written: no link names one
         // as its live `from`, and it has no stored field for `via` to
         // read. Only a relation derived from matching values reaches out.
@@ -777,7 +970,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         {
             let (field, authority) = (f.name.clone(), f.authority);
             let case = Case::LinkFieldAuthority { field, authority };
-            return Err(invalid_field(&f.name, at(&on, case)));
+            return Err(Error::invalid_at(&f.name, at(&on, case)));
         }
         if let Some(f) = r
             .fields
@@ -831,14 +1024,18 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         let twice = !stood && mine.chain(theirs.iter().copied()).any(same);
         if let Some(inverse) = r.inverse.clone().filter(|_| twice) {
             let target = r.target.clone();
-            return Err(invalid(at(&owner, Case::InverseTwice { inverse, target })));
+            return Err(Error::invalid(at(
+                &owner,
+                Case::InverseTwice { inverse, target },
+            )));
         }
     }
     if let Some(ring) = link_ring(o, t) {
-        return Err(invalid(at(&owner, Case::LinkTypeRing { ring })));
+        return Err(Error::invalid(at(&owner, Case::LinkTypeRing { ring })));
     }
     if let Some(v) = &t.view {
-        source_cycle(o, t, v).map_err(|chain| invalid(at(&owner, Case::ViewCycle { chain })))?;
+        source_cycle(o, t, v)
+            .map_err(|chain| Error::invalid(at(&owner, Case::ViewCycle { chain })))?;
         let source = declared(o, &v.source, &owner)?;
         unbound_source(&owner, source)?;
         let mut read = BTreeSet::new();
@@ -848,9 +1045,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             let e = record_stands(stored, condition(w, Eval::View, &on)?, &on)?;
             lakelands_core::expr::params_read(&e, &mut read);
         }
-        for g in &v.group_by {
-            grouped_field(source, g, &owner)?;
-        }
+        view_group(source, v, &owner)?;
         for m in &v.measures {
             name(Naming::Measure, m.name.as_str())?;
             let name = m.name.clone();
@@ -866,12 +1061,9 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             let Ok(s) = o.ty(&from) else {
                 continue;
             };
-            if let Some(n) = names
-                .iter()
-                .find(|n| !s.fields.iter().any(|f| &f.name == *n))
-            {
+            if let Some(n) = names.iter().find(|n| !s.has_field(n)) {
                 let (ty, field) = (from.clone(), n.clone());
-                return Err(invalid(at(&owner, Case::UnknownField { ty, field })));
+                return Err(Error::invalid(at(&owner, Case::UnknownField { ty, field })));
             }
         }
         view_key(&owner, t, v)?;
@@ -888,17 +1080,20 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         .filter(|f| t.view.is_none() && f.derived.is_some())
     {
         let on = [of_type(&t.name), of_field(&f.name)];
-        let e = condition(f.derived.as_ref().expect("derived"), Eval::Write, &on)?;
+        let e = condition(f.derived.as_ref().expect("derived"), computed_at(f), &on)?;
         lands(f, evaluates(&e, t, &on)?, &on)?;
     }
     // Order the fields as the fold will compute them: a field computed by
     // a function reads what that function's expression reads, so it is
     // ordered, and checked for cycles, with the function resolved.
-    derive::order(&crate::record::resolve_functions(t, o)).map_err(|e| invalid(at(&owner, e)))?;
+    derive::order(&derive::resolve_functions(t, |n| {
+        o.functions.get(n).map(|e| &e.decl)
+    }))
+    .map_err(|e| Error::invalid(at(&owner, e)))?;
     // Its computed fields, derived or computed by a function, read one another
     // without a cycle, so a chain of fills within one record ends
     // (`docs/decisions/022-functions-are-declarations.md`, extended).
-    crate::backed::computed_order(o, t).map_err(|e| invalid(at(&owner, e)))?;
+    crate::backed::computed_order(o, t).map_err(|e| Error::invalid(at(&owner, e)))?;
     Ok(())
 }
 
@@ -914,7 +1109,7 @@ fn lands(f: &FieldDecl, k: Option<Kind>, on: &[Place]) -> Result<()> {
         holds,
         duration,
     };
-    Err(invalid_field(&f.name, at(on, case)))
+    Err(Error::invalid_at(&f.name, at(on, case)))
 }
 
 /// What a view computes lands in the field declared for it, as a derived
@@ -922,7 +1117,7 @@ fn lands(f: &FieldDecl, k: Option<Kind>, on: &[Place]) -> Result<()> {
 /// each group value. A name a measure answers under is read as nothing
 /// certain, since it may be a measure's and not the field's.
 fn view_kinds(o: &Ontology, owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Result<()> {
-    let field = |n: &FieldName| t.fields.iter().find(|f| &f.name == n);
+    let field = |n: &FieldName| t.field(n);
     let merged = v.merge.iter().map(|m| (&m.source, &m.measures));
     let measured: BTreeSet<&FieldName> = (v.measures.iter())
         .chain(v.merge.iter().flat_map(|m| &m.measures))
@@ -941,8 +1136,18 @@ fn view_kinds(o: &Ontology, owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Resu
         };
         let by = (v.group_by.iter()).filter(|_| source == &v.source);
         let by = by.map(|g| {
-            let on = [owner, &[Place::Group { name: g.clone() }]].concat();
-            (g, on, Ok(path(g)))
+            let on = [
+                owner,
+                &[Place::Group {
+                    name: g.name().clone(),
+                }],
+            ]
+            .concat();
+            let e = match g {
+                GroupKey::Field(f) => Ok(path(f)),
+                GroupKey::Named { expr, .. } => condition(expr, Eval::View, &on),
+            };
+            (g.name(), on, e)
         });
         let measures = measures.iter().map(|m| {
             let on = [
@@ -993,7 +1198,187 @@ pub fn check_vocabulary_type(t: &TypeDecl) -> Result<()> {
         return Ok(());
     }
     let ty = t.name.clone();
-    Err(invalid(Case::VocabularyReserved { ty, link }))
+    Err(Error::invalid(Case::VocabularyReserved { ty, link }))
+}
+
+/// How the lake holds a type of the host's vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Held {
+    /// Not at all, or as the vocabulary declares it.
+    Same,
+    /// Otherwise only in what no record and no door's check reads: its
+    /// descriptions, labels, annotations and the order of its fields. A
+    /// writer's open declares it again; a reader reads it as held.
+    Reworded,
+    /// Without optional fields the vocabulary has since added, and
+    /// otherwise only as `Reworded`. A writer's open declares it again,
+    /// and a reader is refused until then.
+    Older,
+}
+
+/// How the lake holds a host vocabulary's type: as the vocabulary declares
+/// it, reworded, or in an older form, one the vocabulary only adds optional
+/// fields to, which reshapes no record and asks nothing of the records
+/// held. A type the vocabulary changes in any other way, beside a field
+/// added or without one, is refused, naming the type and each difference:
+/// an open makes no migration and judges no change as a door does, so it
+/// applies none. Annotations changed are judged as a door judges them.
+pub(crate) fn vocabulary_held(o: &Ontology, t: &TypeDecl) -> Result<Held> {
+    use lakelands_api::error::Revision;
+    let Some(held) = o.types.get(&t.name) else {
+        return Ok(Held::Same);
+    };
+    let held = &held.decl;
+    let (mut bare, mut reasons, mut added) = (t.clone(), Vec::new(), false);
+    for r in shape::differences(held, t) {
+        let Revision::FieldAdded {
+            field,
+            relation,
+            required: false,
+        } = &r
+        else {
+            reasons.push(r);
+            continue;
+        };
+        added = true;
+        let fields = match relation {
+            None => &mut bare.fields,
+            Some(n) => match bare.relations.iter_mut().find(|x| &x.name == n) {
+                Some(x) => &mut x.fields,
+                None => continue,
+            },
+        };
+        fields.retain(|f| &f.name != field);
+    }
+    let parts = otherwise(held, &bare, &reasons);
+    reasons.extend(parts.into_iter().map(|part| Revision::Otherwise { part }));
+    if !reasons.is_empty() {
+        let ty = t.name.clone();
+        return Err(Error::invalid(Case::VocabularyChanged { ty, reasons }));
+    }
+    if annotations(held) != annotations(t)
+        && let Some(fault) = Declaration::Type(t.clone()).annotation_fault()
+    {
+        return Err(fault.into());
+    }
+    Ok(match (added, held == t) {
+        (true, _) => Held::Older,
+        (false, true) => Held::Same,
+        (false, false) => Held::Reworded,
+    })
+}
+
+/// What `t`, a host's type with the optional fields it adds taken out,
+/// declares otherwise than the lake holds it as `held`, beyond the shape
+/// `shaped` already names and beyond what `worded` takes out; the order of
+/// the fields is not compared, as no record and no check reads it.
+fn otherwise(
+    held: &TypeDecl,
+    t: &TypeDecl,
+    shaped: &[lakelands_api::error::Revision],
+) -> Vec<String> {
+    use lakelands_api::error::Revision;
+    let (a, b) = (worded(held), worded(t));
+    let fields = |a: &[FieldDecl], b: &[FieldDecl], of: &str| {
+        let mut parts = Vec::new();
+        for f in a {
+            let Some(g) = b.iter().find(|g| g.name == f.name) else {
+                continue;
+            };
+            let (ty, required) = (f.ty.clone(), f.required);
+            if *f
+                != (FieldDecl {
+                    ty,
+                    required,
+                    ..g.clone()
+                })
+            {
+                parts.push(format!("field `{}`{of}", f.name));
+            }
+        }
+        parts
+    };
+    let mut parts = fields(&a.fields, &b.fields, "");
+    for r in &a.relations {
+        let Some(s) = b.relations.iter().find(|s| s.name == r.name) else {
+            continue;
+        };
+        parts.extend(fields(
+            &r.fields,
+            &s.fields,
+            &format!(" of relation `{}`", r.name),
+        ));
+        let (target, cardinality, fields) = (r.target.clone(), r.cardinality, r.fields.clone());
+        if *r
+            != (RelationDecl {
+                target,
+                cardinality,
+                fields,
+                ..s.clone()
+            })
+        {
+            parts.push(format!("relation `{}`", r.name));
+        }
+    }
+    let keyed = shaped
+        .iter()
+        .any(|r| matches!(r, Revision::KeyChanged { .. }));
+    let viewed = shaped.iter().any(|r| {
+        let view = [
+            Revision::ViewChanged,
+            Revision::BecameView,
+            Revision::StoppedBeingView,
+        ];
+        view.contains(r)
+    });
+    for (part, differs) in [
+        ("`key`", !keyed && a.key != b.key),
+        ("`view`", !viewed && a.view != b.view),
+        ("`valid_from`", a.valid_from != b.valid_from),
+        ("`valid_to`", a.valid_to != b.valid_to),
+        ("`language`", a.language != b.language),
+        ("`field_meta`", a.field_meta != b.field_meta),
+        ("`insert_only`", a.insert_only != b.insert_only),
+        ("`retired_by`", a.retired_by != b.retired_by),
+        ("`constraints`", a.constraints != b.constraints),
+    ] {
+        if differs {
+            parts.push(part.into());
+        }
+    }
+    parts
+}
+
+/// Every annotation map `t` holds: its own, its fields', its relations'
+/// and their fields'.
+fn annotations(t: &TypeDecl) -> Vec<&lakelands_api::ontology::Annotations> {
+    let mut all = vec![&t.annotations];
+    all.extend(t.fields.iter().map(|f| &f.annotations));
+    for r in &t.relations {
+        all.push(&r.annotations);
+        all.extend(r.fields.iter().map(|f| &f.annotations));
+    }
+    all
+}
+
+/// `t` without what people and the host read: its, its fields', its
+/// relations' and its constraints' descriptions, labels and annotations.
+fn worded(t: &TypeDecl) -> TypeDecl {
+    let mut t = t.clone();
+    (t.description, t.label) = (None, None);
+    t.annotations.clear();
+    let unword = |f: &mut FieldDecl| {
+        (f.description, f.label) = (None, None);
+        f.annotations.clear();
+    };
+    t.fields.iter_mut().for_each(unword);
+    for r in &mut t.relations {
+        r.description = None;
+        r.annotations.clear();
+        r.fields.iter_mut().for_each(unword);
+    }
+    t.constraints.iter_mut().for_each(|c| c.description = None);
+    t
 }
 
 /// Whether `ty` is a type of a host's vocabulary: a system type that is
@@ -1020,7 +1405,7 @@ fn carrier(r: &RelationDecl) -> Carrier {
 /// may be, so that identity of the stored values is what connects them;
 /// and no carrier of its own (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
 fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, on: &[Place]) -> Result<()> {
-    let wrong = |c: Case| Err(invalid(at(on, c)));
+    let wrong = |c: Case| Err(Error::invalid(at(on, c)));
     if r.via.is_some() || !r.fields.is_empty() || r.authority != Authority::Authored {
         return wrong(Case::DerivedStoresEdge);
     }
@@ -1037,8 +1422,8 @@ fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, on: &[Plac
         if d.pairs.iter().filter(|q| *q == p).count() > 1 {
             return wrong(Case::PairTwice { from, to });
         }
-        let left = t.fields.iter().find(|f| f.name == p.from);
-        let right = target.and_then(|u| u.fields.iter().find(|f| f.name == p.to));
+        let left = t.field(&p.from);
+        let right = target.and_then(|u| u.field(&p.to));
         let (Some(left), Some(right)) = (left, right) else {
             let (ty, target) = (t.name.clone(), Box::new(r.target.clone()));
             return wrong(Case::PairUnknown {
@@ -1089,7 +1474,7 @@ fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, on: &[Plac
             continue;
         };
         let ty = side.name.clone();
-        match side.fields.iter().find(|f| &f.name == field) {
+        match side.field(field) {
             None => {
                 return wrong(Case::UnknownField {
                     ty,
@@ -1108,6 +1493,84 @@ fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, on: &[Plac
     Ok(())
 }
 
+/// What a write decides by, of `d`, as a refusal names it: a kept set's
+/// `where`, a view's `where`s, a trigger's `when` and a verb's
+/// conditions. A set decided at the read decides nothing at a write.
+fn decided_at_write(d: &Declaration) -> Option<(Naming, String, Vec<&Condition>)> {
+    match d {
+        Declaration::ObjectSet(s) if !s.at_read() => {
+            Some((Naming::ObjectSet, s.name.clone(), vec![&s.filter]))
+        }
+        Declaration::Trigger(t) => {
+            Some((Naming::Trigger, t.name.to_string(), t.when.iter().collect()))
+        }
+        Declaration::Verb(v) => {
+            let holds = v.preconditions.iter().map(|p| &p.holds);
+            Some((
+                Naming::Verb,
+                v.name.to_string(),
+                v.requires.iter().chain(holds).collect(),
+            ))
+        }
+        Declaration::Type(t) => t.view.as_ref().map(|v| {
+            let merged = v.merge.iter().filter_map(|m| m.r#where.as_ref());
+            (
+                Naming::Type,
+                t.name.to_string(),
+                v.r#where.iter().chain(merged).collect(),
+            )
+        }),
+        _ => None,
+    }
+}
+
+/// The sets a condition names by `in_set`, as it names them.
+fn sets_named(c: &Condition) -> Vec<String> {
+    let mut named = Vec::new();
+    if let Ok(e) = c.typed() {
+        lakelands_core::describe::in_sets(&e, &mut named);
+    }
+    named
+}
+
+/// Nothing decided at a write names a set decided at the read: what it
+/// decided by the set would drift from what a read of the set answers at
+/// its own clock, as a kept set's clock would (066). Refused naming the
+/// set and what names it, whichever of the two is declared.
+fn names_no_set_at_read(o: &Ontology, d: &Declaration) -> Result<()> {
+    let refused = |set: String, (kind, name): (Naming, String)| {
+        Err(Error::invalid(at(
+            &[d.place()],
+            Case::SetAtReadNamed { set, kind, name },
+        )))
+    };
+    if let Some((kind, name, conditions)) = decided_at_write(d) {
+        let at_read = |n: &String| o.set(n).is_some_and(ObjectSetDecl::at_read);
+        if let Some(set) = conditions.into_iter().flat_map(sets_named).find(at_read) {
+            return refused(set, (kind, name));
+        }
+    }
+    if let Declaration::ObjectSet(s) = d
+        && s.at_read()
+    {
+        for other in o.declared().iter().map(|e| &e.declaration) {
+            let Some((kind, name, conditions)) = decided_at_write(other) else {
+                continue;
+            };
+            let own = matches!(other, Declaration::ObjectSet(k) if k.name == s.name);
+            if !own
+                && conditions
+                    .into_iter()
+                    .flat_map(sets_named)
+                    .any(|n| n == s.name)
+            {
+                return refused(s.name.clone(), (kind, name));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What a declaration reads of its type, the type has (028, extended): the
 /// reads the migration preflight keeps a field by.
 pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
@@ -1118,6 +1581,26 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         Declaration::ObjectSet(s) => o.ty(&s.of).ok(),
         _ => None,
     };
+    // A kept set is decided at the write and keeps what it decided: a
+    // clock in its `where` would drift from the clock a read of `in_set`
+    // evaluates. One decided at the read keeps nothing to drift from.
+    let at_read = matches!(d, Declaration::ObjectSet(s) if s.at_read());
+    if let Declaration::ObjectSet(s) = d
+        && !s.at_read()
+        && let Ok(e) = s.filter.typed()
+        && e.reads_clock()
+    {
+        let call = if e.calls(&[Func::Now]) {
+            "now()"
+        } else {
+            "today()"
+        };
+        let (set, call) = (s.name.clone(), call.to_owned());
+        return Err(Error::invalid(at(
+            &[d.place()],
+            Case::SetReadsClock { set, call },
+        )));
+    }
     // A verb's path may begin at a relation of its type and go on to the
     // link's fields (055, extended); the relation is judged below. One
     // carried by links begins a path only where `o` holds its link type's
@@ -1144,6 +1627,27 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         }
         _ => Default::default(),
     };
+    // A read evaluates no path through a reference (055), so a set decided
+    // at the read steps through none: not by a relation, a reference field
+    // or `exists`. A path into a `json` field's members stays its record's.
+    if let (Declaration::ObjectSet(s), Some(on)) = (d, on.filter(|_| at_read)) {
+        let steps = |p: &&Vec<FieldName>| {
+            let reference = on
+                .fields
+                .iter()
+                .any(|f| f.name == p[0] && f.ty.target.is_some());
+            p.len() > 1 && (reference || related(on, &p[0]).is_some())
+        };
+        let path = (exists.first().map(|n| n.to_string()))
+            .or_else(|| paths.iter().find(steps).map(|p| p.join(".")));
+        if let Some(path) = path {
+            let set = s.name.clone();
+            return Err(Error::invalid(at(
+                &[d.place()],
+                Case::SetAtReadSteps { set, path },
+            )));
+        }
+    }
     // A relation's name alone, beside the `exists` that names it, stays
     // a field the type does not have.
     let bare = |n: &FieldName| {
@@ -1165,31 +1669,37 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
     if let Some(on) = on
         && let Some(n) = exists.iter().find(|n| related(on, n).is_none())
     {
-        let case = match on.fields.iter().any(|f| &f.name == n) {
+        let case = match on.has_field(n) {
             true => Case::ExistsHere,
             false => Case::UnknownField {
                 ty: on.name.clone(),
                 field: n.clone(),
             },
         };
-        return Err(invalid(at(&[d.place()], case)));
+        return Err(Error::invalid(at(&[d.place()], case)));
     }
     if let Some(on) = on
         && let reads = lakelands_core::describe::declaration_reads(d, &on.name, &|_| None)
-        && let Some(n) = (reads.iter())
-            .find(|n| !on.fields.iter().any(|f| &f.name == *n) && !begins_at_relation(n))
+        && let Some(n) = (reads.iter()).find(|n| !on.has_field(n) && !begins_at_relation(n))
     {
         let (ty, field) = (on.name.clone(), n.clone());
-        return Err(invalid(at(&[d.place()], Case::UnknownField { ty, field })));
+        return Err(Error::invalid(at(
+            &[d.place()],
+            Case::UnknownField { ty, field },
+        )));
     }
-    // A verb, a trigger and a set read a record as stored, at a write.
-    if let Some(on) = on.filter(|_| !matches!(d, Declaration::Type(_)))
+    // A verb, a trigger and a kept set read a record as stored, at a write;
+    // a set decided at the read reads it as the read computes it.
+    if let Some(on) = on.filter(|_| !matches!(d, Declaration::Type(_)) && !at_read)
         && let reads = lakelands_core::describe::declaration_reads(d, &on.name, &|_| None)
         && let Some(n) =
             (reads.iter()).find(|n| on.fields.iter().any(|f| &f.name == *n && f.at_read()))
     {
         let (field, ty) = (n.clone(), on.name.clone());
-        return Err(invalid(at(&[d.place()], Case::ReadsAtRead { field, ty })));
+        return Err(Error::invalid(at(
+            &[d.place()],
+            Case::ReadsAtRead { field, ty },
+        )));
     }
     // What a verb, a trigger and a set read across a reference, the record
     // it reaches has, as stored.
@@ -1199,7 +1709,7 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
     );
     let far = |n: &TypeName| o.ty(n).ok().filter(|_| across);
     if let Some(on) = on.filter(|_| across) {
-        let wrong = |c| Err(invalid(at(&[d.place()], c)));
+        let wrong = |c| Err(Error::invalid(at(&[d.place()], c)));
         for path in paths.iter().cloned() {
             // A relation reads the one link a record holds under it, so one
             // whose records each hold one link record at most.
@@ -1285,9 +1795,7 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
             let own = on.derived_step(&p[0]).and_then(|r| r.derived.as_ref());
             let own = own.map_or(0, |d| {
                 let [from, _] = d.reads();
-                from.iter()
-                    .filter(|n| on.fields.iter().any(|f| &f.name == *n))
-                    .count()
+                from.iter().filter(|n| on.has_field(n)).count()
             });
             let read = on.reads_across(std::slice::from_ref(p), &far);
             if let Some((t, f)) = read.iter().skip(own).find(lands) {
@@ -1315,10 +1823,10 @@ fn conditions_of(d: &Declaration) -> Vec<&Condition> {
         Declaration::Trigger(t) => t.when.iter().collect(),
         Declaration::ObjectSet(s) => vec![&s.filter],
         Declaration::Verb(v) => match &v.effect {
-            VerbEffect::Write { set } => (v.requires.iter())
+            VerbEffect::Write { set } => (v.conditions())
                 .chain(set.iter().map(|a| &a.value))
                 .collect(),
-            _ => v.requires.iter().collect(),
+            _ => v.conditions().collect(),
         },
         _ => vec![],
     }
@@ -1327,7 +1835,7 @@ fn conditions_of(d: &Declaration) -> Vec<&Condition> {
 /// The relation of `on` a path's first segment `n` names, where `on` has
 /// no field of that name.
 fn related<'d>(on: &'d TypeDecl, n: &FieldName) -> Option<&'d RelationDecl> {
-    let field = on.fields.iter().any(|f| &f.name == n);
+    let field = on.has_field(n);
     (on.relations.iter()).find(|r| !field && r.name.as_str() == n.as_str())
 }
 
@@ -1346,25 +1854,43 @@ pub fn reads_of(o: &Ontology, d: &Declaration, ty: &TypeName) -> BTreeSet<FieldN
     reads
 }
 
-/// Refuse taking to the read a field that a trigger, a verb, an object set
+/// Refuse taking to the read a field that a trigger, a verb, a kept set
 /// or another type's derived relation in force reads: each reads the
 /// record as stored. The refusal names the field alone, not what reads it,
 /// which its declarer may not be shown.
 fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
+    // A field another type pairs by stays there, of the kind it was, and
+    // stored: it is refused naming the field alone.
+    let held = o.types.get(&t.name).map(|e| &e.decl);
+    for n in held.map(|h| paired_by(o, h)).unwrap_or_default() {
+        let kind = |d: &TypeDecl| d.field(&n).map(|f| f.ty.kind);
+        if kind(t) != held.and_then(kind) {
+            let (field, ty) = (n.clone(), t.name.clone());
+            return Err(Error::invalid_at(
+                &n,
+                Case::FieldReadElsewhere { field, ty },
+            ));
+        }
+    }
     if !t.fields.iter().any(FieldDecl::at_read) {
         return Ok(());
     }
     let mut read = BTreeSet::new();
     for d in o.declared().iter().map(|d| &d.declaration) {
-        if let Declaration::Verb(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_) = d {
+        let stored = !matches!(d, Declaration::ObjectSet(s) if s.at_read());
+        if let Declaration::Verb(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_) = d
+            && stored
+        {
             read.extend(reads_of(o, d, &t.name));
         }
     }
     let others = o.types.values().filter(|e| e.decl.name != t.name);
     let matching = others
+        .clone()
         .flat_map(|e| &e.decl.relations)
         .filter(|r| r.target == t.name);
     read.extend(matching.flat_map(|r| r.derived.iter().flat_map(|d| d.reads()[1].clone())));
+    read.extend(paired_by(o, t));
     match t
         .fields
         .iter()
@@ -1372,10 +1898,28 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
     {
         Some(f) => {
             let on = [of_type(&t.name), of_field(&f.name)];
-            Err(invalid_field(&f.name, at(&on, Case::ReadAsStored)))
+            Err(Error::invalid_at(&f.name, at(&on, Case::ReadAsStored)))
         }
         None => Ok(()),
     }
+}
+
+/// The fields of `t` another type's field computed at the read or a
+/// trigger's `when` pairs by, and reads (052, 100).
+fn paired_by(o: &Ontology, t: &TypeDecl) -> BTreeSet<FieldName> {
+    let others = (o.types.values().map(|e| &e.decl)).filter(|d| d.name != t.name);
+    let fields = others.flat_map(TypeDecl::in_force).map(|(_, e)| e);
+    let triggers = o.triggers.values().map(|e| &e.decl);
+    let guards = triggers.filter_map(|g| g.when.as_ref()?.typed().ok());
+    let mut out = BTreeSet::new();
+    for e in fields.chain(guards) {
+        for p in e.pairings().unwrap_or_default() {
+            if p.ty.as_str() == t.name.as_str() {
+                out.extend(p.theirs().cloned());
+            }
+        }
+    }
+    out
 }
 
 /// Passes the refusal of a reshaping declaration, which a migration is.
@@ -1404,58 +1948,16 @@ fn constraints(o: &Ontology, t: &TypeDecl) -> Result<()> {
                 name: c.name.clone(),
             },
         ];
-        let wrong = |case| Err(invalid(at(&on, case)));
+        let wrong = |case| Err(Error::invalid(at(&on, case)));
         let constraint = c.name.clone();
         name(Naming::Constraint, constraint.as_str()).map_err(|e| e.within(on[0].clone()))?;
         if !named.insert(&c.name) {
             return wrong(Case::ConstraintNamedTwice { constraint });
         }
-        let e = typed(&c.holds, Eval::Guard).map_err(|s| invalid(at(&on, s)))?;
-        let mut paths = Vec::new();
-        lakelands_api::expr::paths(&e, &mut paths);
-        let backed = |n: &str| {
-            o.functions
-                .get(n)
-                .is_some_and(|f| crate::backed::is_backed(&f.decl))
-        };
-        let beyond = if paths.iter().any(|p| p.len() > 1) {
-            Some(Beyond::Path)
-        } else if e.calls(&[Func::InSet]) {
-            Some(Beyond::InSet)
-        } else if e.calls(&[Func::Setting]) {
-            Some(Beyond::Setting)
-        } else if e.reads_clock() {
-            Some(Beyond::Clock)
-        } else if e.calls(&[Func::Exists]) {
-            Some(Beyond::Exists)
-        } else {
-            let mut fields = e.fields_read().into_iter();
-            fields.find_map(|n| {
-                let f = t.fields.iter().find(|f| &f.name == n)?;
-                let field = n.clone();
-                if f.at_read() {
-                    Some(Beyond::ComputedAtRead { field })
-                } else if f.embed.is_some() || f.function.as_deref().is_some_and(backed) {
-                    Some(Beyond::ComputedOutside { field })
-                } else {
-                    None
-                }
-            })
-        };
-        if let Some(reads) = beyond {
-            return wrong(Case::ConstraintReadsBeyond {
-                constraint,
-                reads: Box::new(reads),
-            });
-        }
-        if let Some(n) = e
-            .fields_read()
-            .into_iter()
-            .find(|n| !t.fields.iter().any(|f| &f.name == *n))
-        {
-            let (ty, field) = (t.name.clone(), n.clone());
-            return wrong(Case::UnknownField { ty, field });
-        }
+        let function = |n: &str| o.functions.get(n).map(|f| &f.decl);
+        let e = t
+            .constraint_reach(c, function)
+            .map_err(|s| Error::invalid(at(&on, s)))?;
         initial_holds(o, t, c, &e)?;
     }
     Ok(())
@@ -1474,7 +1976,7 @@ fn initial_holds(
     c: &ConstraintDecl,
     e: &lakelands_api::expr::Expr,
 ) -> Result<()> {
-    let resolved = crate::record::resolve_functions(t, o);
+    let resolved = derive::resolve_functions(t, |n| o.functions.get(n).map(|e| &e.decl));
     let fixed = derive::fixed(&resolved);
     let read = e.fields_read();
     if read.is_empty() || !read.iter().all(|n| fixed.contains(*n)) || !c.at_ingest.refuses() {
@@ -1505,7 +2007,7 @@ fn initial_holds(
             (field.clone(), Case::InitialBreaks { constraint, field })
         }
     };
-    Err(crate::writes::constraint(Some(field), case))
+    Err(Error::constraint(Some(field), case))
 }
 
 /// A new field may not begin with `_`: under a pattern's bound name the
@@ -1523,7 +2025,10 @@ fn kept_names(o: &Ontology, t: &TypeDecl) -> Result<()> {
     match kept {
         Some(f) => {
             let (ty, field) = (t.name.clone(), f.name.clone());
-            Err(invalid_field(&f.name, Case::FieldNameKept { ty, field }))
+            Err(Error::invalid_at(
+                &f.name,
+                Case::FieldNameKept { ty, field },
+            ))
         }
         None => Ok(()),
     }
@@ -1536,14 +2041,16 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
         return Err(fault.into());
     }
     if let Some(said) = d.integer_fault() {
-        return Err(invalid(said));
+        return Err(Error::invalid(said));
     }
+    names_no_set_at_read(o, d)?;
     match d {
         Declaration::Type(t) => {
             if is_system(&t.name) && !who_is_system {
-                return Err(crate::writes::refused(Refusal::Reserved));
+                return Err(Error::refused(None, Refusal::Reserved));
             }
             type_decl(o, t)?;
+            in_force(o, t)?;
             kept_names(o, t)?;
             read_as_stored(o, t)?;
             constraints(o, t)?;
@@ -1557,7 +2064,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 && let Change::Migrate { reasons } = shape::classify(&current.decl, t)
             {
                 let ty = t.name.clone();
-                migrates = Some(invalid(Case::Reshapes { ty, reasons }));
+                migrates = Some(Error::invalid(Case::Reshapes { ty, reasons }));
             }
             // A relation's link type is a type like any: its fields are
             // checked as a type's, with `t` in force (its `from` points
@@ -1577,7 +2084,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     && let Change::Migrate { reasons } = shape::classify(&current.decl, &lt)
                 {
                     let (ty, links) = (t.name.clone(), lt.name.clone());
-                    let e = || invalid(Case::ReshapesLinks { ty, links, reasons });
+                    let e = || Error::invalid(Case::ReshapesLinks { ty, links, reasons });
                     migrates.get_or_insert_with(e);
                 }
             }
@@ -1585,7 +2092,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             // records: a migration's preflight lists them. One restated in
             // other words, described otherwise or moved to admit at ingest
             // is not (lakelands#1119).
-            let parsed = |c: &ConstraintDecl| typed(&c.holds, Eval::Guard).ok();
+            let parsed = |c: &ConstraintDecl| typed(&c.holds, Eval::Constraint).ok();
             let loosens = |c: &ConstraintDecl, h: &ConstraintDecl| {
                 h.name == c.name
                     && parsed(h) == parsed(c)
@@ -1598,7 +2105,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             {
                 let (ty, constraint) = (t.name.clone(), c.name.clone());
                 migrates.get_or_insert_with(|| {
-                    invalid(Case::ConstraintNeedsMigrate { ty, constraint })
+                    Error::invalid(Case::ConstraintNeedsMigrate { ty, constraint })
                 });
             }
             if let Some(e) = migrates {
@@ -1614,13 +2121,13 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 && value::ValueFormat::parse(f).is_none()
             {
                 let (value_type, format) = (v.name.clone(), f.clone());
-                return Err(invalid(Case::ValueTypeFormat { value_type, format }));
+                return Err(Error::invalid(Case::ValueTypeFormat { value_type, format }));
             }
             if v.scale.is_some() && v.kind != StorageKind::Decimal {
-                return Err(invalid(at(&on, Case::ScaleNotDecimal)));
+                return Err(Error::invalid(at(&on, Case::ScaleNotDecimal)));
             }
             if !v.one_of.is_empty() && v.kind != StorageKind::Text {
-                return Err(invalid(at(&on, Case::OneOfNotText)));
+                return Err(Error::invalid(at(&on, Case::OneOfNotText)));
             }
             if let Some(c) = &v.constraint {
                 let on = [on[0].clone(), Place::Constraint];
@@ -1634,7 +2141,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     ValueTypeChange::Reshaping => Some(Case::ValueTypeReshapes { value_type }),
                 };
                 if let Some(why) = why {
-                    return Err(invalid(why));
+                    return Err(Error::invalid(why));
                 }
             }
         }
@@ -1645,14 +2152,14 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }];
             let ty = v.on.clone();
             // A verb on its type has no record: nothing for a write effect
-            // to set or a retirement to retire, nothing for `requires` to
-            // read (013, extended).
+            // to set or a retirement to retire, nothing for `requires` or a
+            // precondition to read (013, extended).
             if v.scope == VerbScope::Type {
                 if !matches!(v.effect, VerbEffect::External { .. }) {
-                    return Err(invalid(at(&on, Case::TypeVerbWrites { ty })));
+                    return Err(Error::invalid(at(&on, Case::TypeVerbWrites { ty })));
                 }
-                if v.requires.is_some() {
-                    return Err(invalid(at(&on, Case::TypeVerbRequires { ty })));
+                if v.conditions().next().is_some() {
+                    return Err(Error::invalid(at(&on, Case::TypeVerbRequires { ty })));
                 }
             }
             let t = declared(o, &v.on, &on)?;
@@ -1662,12 +2169,12 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             // no type has.
             let types = o.types.values().map(|e| &e.decl);
             if links::is_link_type(&v.on) && links::relation_of(types, &v.on).is_none() {
-                return Err(invalid(at(&on, Case::Undeclared { ty })));
+                return Err(Error::invalid(at(&on, Case::Undeclared { ty })));
             }
             // A link is retired by `unlink`, which judges its relation; a
             // verb does not retire one (035, lakelands#1148).
             if links::is_link_type(&v.on) && matches!(v.effect, VerbEffect::Retire) {
-                return Err(invalid(at(&on, Case::RetireVerbLink { ty })));
+                return Err(Error::invalid(at(&on, Case::RetireVerbLink { ty })));
             }
             // Of the system types, a verb names a relation's link type, and
             // one whose effect is external a type of the host's vocabulary:
@@ -1676,30 +2183,58 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             let external = matches!(v.effect, VerbEffect::External { .. });
             let admitted = links::is_link_type(&v.on) || external && vocabulary_type(&v.on);
             if is_system(&v.on) && !admitted && !who_is_system {
-                return Err(crate::writes::refused(Refusal::Reserved));
+                return Err(Error::refused(None, Refusal::Reserved));
             }
             // A verb on a record of a view could never act: there is no
             // stored record to write or to hand an executor.
             if t.view.is_some() && v.scope == VerbScope::Record {
-                return Err(invalid(at(&on, Case::VerbOnView { ty })));
+                return Err(Error::invalid(at(&on, Case::VerbOnView { ty })));
             }
             let payload = [on[0].clone(), Place::Payload];
             for f in &v.payload {
                 field_type(o, &payload, f, &v.on, None)?;
                 computed_here(&payload, f)?;
             }
+            // A member the verb's payload does not have is never given: the
+            // condition or the value would read null at every call.
+            let given = |e: &Expr, on: &[Place]| {
+                let (_, members) = derive::verb_reads(e);
+                let has = |m: &&FieldName| v.payload.iter().any(|f| &f.name == *m);
+                let Some(m) = members.iter().find(|m| !has(m)) else {
+                    return Ok(());
+                };
+                let member = m.clone();
+                Err(Error::invalid(at(on, Case::PayloadNoMember { member })))
+            };
             if let Some(r) = &v.requires {
-                condition(r, Eval::Verb, &[on[0].clone(), Place::Requires])?;
+                let on = [on[0].clone(), Place::Requires];
+                given(&condition(r, Eval::Verb, &on)?, &on)?;
+            }
+            let mut named = BTreeSet::new();
+            for p in &v.preconditions {
+                let on = [
+                    on[0].clone(),
+                    Place::Precondition {
+                        name: p.name.clone(),
+                    },
+                ];
+                name(Naming::Precondition, p.name.as_str()).map_err(|e| e.within(on[0].clone()))?;
+                if !named.insert(&p.name) {
+                    let (what, name) = (Naming::Precondition, p.name.to_string());
+                    let case = Case::DeclaredTwice { what, name };
+                    return Err(Error::invalid(at(&on[..1], case)));
+                }
+                given(&condition(&p.holds, Eval::Verb, &on)?, &on)?;
             }
             match &v.effect {
                 VerbEffect::Write { set } => {
                     if set.is_empty() {
-                        return Err(invalid(at(&on, Case::WritesNothing)));
+                        return Err(Error::invalid(at(&on, Case::WritesNothing)));
                     }
                     for a in set {
-                        if !t.fields.iter().any(|f| f.name == a.field) {
+                        if !t.has_field(&a.field) {
                             let (ty, field) = (v.on.clone(), a.field.clone());
-                            return Err(invalid(at(&on, Case::UnknownField { ty, field })));
+                            return Err(Error::invalid(at(&on, Case::UnknownField { ty, field })));
                         }
                         let on = [on[0].clone(), of_field(&a.field)];
                         // A link is keyed by its ends: a verb on a link type
@@ -1709,17 +2244,9 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                             && [links::FROM, links::TO].contains(&a.field.as_str())
                         {
                             let end = a.field.clone();
-                            return Err(invalid(at(&on, Case::LinkEndAsField { end })));
+                            return Err(Error::invalid(at(&on, Case::LinkEndAsField { end })));
                         }
-                        let value = condition(&a.value, Eval::Verb, &on)?;
-                        // A member the verb's payload does not have is never
-                        // given: the value would read null at every call.
-                        let (_, members) = lakelands_core::derive::verb_reads(&value);
-                        let has = |m: &&FieldName| v.payload.iter().any(|f| &f.name == *m);
-                        if let Some(m) = members.iter().find(|m| !has(m)) {
-                            let member = m.clone();
-                            return Err(invalid(at(&on, Case::PayloadNoMember { member })));
-                        }
+                        given(&condition(&a.value, Eval::Verb, &on)?, &on)?;
                     }
                 }
                 VerbEffect::External { executor } => name(Naming::Executor, executor)?,
@@ -1749,19 +2276,24 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     via,
                     owner,
                 };
-                return Err(invalid_field(&"on".into(), at(&on, case)));
+                return Err(Error::invalid_at(&"on".into(), at(&on, case)));
             }
-            let watched = declared(o, &t.on, &on)?;
-            // A view is computed on read and never written, so no write
-            // of it can fire a trigger: a trigger on one could never act.
-            if watched.view.is_some() {
-                return Err(invalid_field(
-                    &"on".into(),
-                    at(&on, Case::WatchesView { ty }),
-                ));
-            }
+            // A trigger on a view fires from the rows the lake keeps of it:
+            // whether it keeps them is a setting's, judged at the write
+            // (lakelands#1185).
+            let ty = declared(o, &t.on, &on)?;
             if let Some(w) = &t.when {
-                filter(&|n| o.set(n), &t.on, w, Eval::Guard, &on)?;
+                let e = filter(&|n| o.set(n), &t.on, w, Eval::Guard, &on)?;
+                // The series a `preceding` reads, as a constraint's.
+                let series = ty.series_read(&e);
+                series.map_err(|c| Error::invalid(at(&on, c)))?;
+                // An `in_force` pairs the record a write leaves, so a
+                // view's rows, which no write makes, pair nothing (100).
+                let wrong = |case| Error::invalid(at(&on, case));
+                if ty.view.is_some() && e.calls(&[Func::InForce]) {
+                    return Err(wrong(Case::InForceHere));
+                }
+                pairs(o, (ty, None), &e, &wrong)?;
             }
         }
         Declaration::ObjectSet(s) => {
@@ -1770,11 +2302,17 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 name: s.name.clone(),
             }];
             declared(o, &s.of, &on)?;
+            // A set of a view holds the groups a write decides (066); one
+            // decided at the read of a view is not taken in 0.20.0.
+            if s.at_read() && o.ty(&s.of).is_ok_and(|t| t.view.is_some()) {
+                let (set, view) = (s.name.clone(), s.of.clone());
+                return Err(Error::invalid(at(&on, Case::SetAtReadOfView { set, view })));
+            }
             let ty = s.of.clone();
             // A set is of one type: declared again, it holds that type.
             if let Some(was) = o.object_sets.get(&s.name).filter(|e| e.decl.of != s.of) {
                 let was = was.decl.of.clone();
-                return Err(invalid_field(
+                return Err(Error::invalid_at(
                     &"of".into(),
                     at(&on, Case::SetRetyped { was, ty }),
                 ));
@@ -1805,7 +2343,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             for t in callers() {
                 let within = [on[0].clone(), of_type(&t.decl.name)];
                 crate::backed::computed_order(&probe, &t.decl)
-                    .map_err(|e| invalid(at(&within, e)))?;
+                    .map_err(|e| Error::invalid(at(&within, e)))?;
             }
             let input = [on[0].clone(), Place::Input];
             for i in &f.inputs {
@@ -1818,11 +2356,11 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             // each type that binds it; one that drops its type is always
             // taken.
             if let Some(case) = input_kind_broken(o, f) {
-                return Err(invalid(at(&on, case)));
+                return Err(Error::invalid(at(&on, case)));
             }
             // A call made in process has nothing to gate (064).
             if f.backing == "expr" && !f.risk.is_low() {
-                return Err(invalid(at(&on, Case::ExprRisk)));
+                return Err(Error::invalid(at(&on, Case::ExprRisk)));
             }
             match (f.backing.as_str(), &f.expr) {
                 ("expr", Some(e)) => {
@@ -1831,14 +2369,14 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     // the inputs a field is checked against are all it reads.
                     for field in derive::reads(&e) {
                         if !f.inputs.iter().any(|i| *i.name() == field) {
-                            return Err(invalid(at(&on, Case::ReadsNoInput { field })));
+                            return Err(Error::invalid(at(&on, Case::ReadsNoInput { field })));
                         }
                     }
                 }
-                ("expr", None) => return Err(invalid(at(&on, Case::ExprNoExpression))),
+                ("expr", None) => return Err(Error::invalid(at(&on, Case::ExprNoExpression))),
                 (_, Some(_)) => {
                     let backing = f.backing.clone();
-                    return Err(invalid(at(&on, Case::ExpressionNotExpr { backing })));
+                    return Err(Error::invalid(at(&on, Case::ExpressionNotExpr { backing })));
                 }
                 _ => {}
             }
@@ -1857,9 +2395,9 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                         let calls = x.function.as_deref() == Some(f.name.as_str());
                         let lands = || lands_in_the_fold(fields, x, &called, &mut Vec::new());
                         if x.at_read() && calls && crate::backed::is_backed(f) {
-                            return Err(invalid(at(&on, Case::AtReadBacked)));
+                            return Err(Error::invalid(at(&on, Case::AtReadBacked)));
                         } else if x.ty.target.is_some() && lands() {
-                            return Err(invalid(at(&on, Case::ReferenceUnjudged)));
+                            return Err(Error::invalid(at(&on, Case::ReferenceUnjudged)));
                         }
                     }
                 }
@@ -1877,7 +2415,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
 /// another: an input of no kind is bound by a field of any.
 fn input_kind_held(t: &TypeDecl, input: &FunctionInput) -> Option<StorageKind> {
     let kind = input.kind()?;
-    let held = t.fields.iter().find(|d| d.name == *input.name())?.ty.kind;
+    let held = t.field(input.name())?.ty.kind;
     (held != kind).then_some(held)
 }
 
@@ -1911,19 +2449,20 @@ pub(crate) fn input_kind_broken(o: &Ontology, f: &FunctionDecl) -> Option<Case> 
         })
 }
 
-/// A withdrawal: of a trigger, a verb, an object set or a function in
-/// force, which nothing in force reads ([`reader`]).
+/// A withdrawal: of a type, a trigger, a verb, an object set or a
+/// function in force, which nothing in force reads ([`reader`]). A type's
+/// records are judged where it is appended.
 fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
-    use DeclarationKind::{Function, ObjectSet, Trigger, Verb};
+    use DeclarationKind::{Function, ObjectSet, Trigger, Type, Verb};
     let (kind, name) = (w.kind.naming(), w.name.clone());
-    if !matches!(w.kind, Trigger | Verb | ObjectSet | Function) {
-        return Err(invalid(Case::WithdrawnKind { kind }));
+    if !matches!(w.kind, Type | Trigger | Verb | ObjectSet | Function) {
+        return Err(Error::invalid(Case::WithdrawnKind { kind }));
     }
     if o.held_named(w.kind, &w.name).is_none() {
-        return Err(invalid(Case::WithdrawnUndeclared { kind, name }));
+        return Err(Error::invalid(Case::WithdrawnUndeclared { kind, name }));
     }
     match reader(o, w) {
-        Some(by) => Err(invalid(Case::WithdrawnInUse { kind, name, by })),
+        Some(by) => Err(Error::invalid(Case::WithdrawnInUse { kind, name, by })),
         None => Ok(()),
     }
 }
@@ -1934,14 +2473,88 @@ fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
 /// other verb of the type sets (lakelands#1130), and the last that retires
 /// a type only its verbs retire by that type (lakelands#1239); an object
 /// set by each set and each trigger whose condition names it, itself or
-/// through the sets it names.
+/// through the sets it names; a type by what names it ([`type_reader`]).
 pub(crate) fn reader(o: &Ontology, w: &Withdrawal) -> Option<String> {
     match w.kind {
+        DeclarationKind::Type => type_reader(o, &TypeName::from(w.name.as_str())),
         DeclarationKind::Function => function_reader(o, &w.name),
         DeclarationKind::Verb => verb_reader(o, &VerbName::from(w.name.as_str())),
         DeclarationKind::ObjectSet => set_reader(o, &w.name),
         _ => None,
     }
+}
+
+/// The first declaration in force that names the type `ty`, as a
+/// refusal names it: the lake, for a type it reserves; the relation that
+/// carries a link type; then a field or a relation of another type, a
+/// view computed from it, and a verb, a set or a trigger on it or on a
+/// link type its relations carry, which leave with it (lakelands#1292).
+fn type_reader(o: &Ontology, ty: &TypeName) -> Option<String> {
+    let carries = |owner: &TypeName, relation: &RelationName| {
+        let rs = o.types.get(owner).map(|e| &e.decl.relations);
+        rs.is_some_and(|rs| {
+            rs.iter()
+                .any(|r| &r.name == relation && r.carried_by_links())
+        })
+    };
+    match links::link_type_parts(ty) {
+        Some((owner, relation)) if carries(&owner, &relation) => {
+            return Some(format!("the relation `{relation}` of `{owner}`"));
+        }
+        None if is_system(ty) => return Some("the lake".into()),
+        _ => {}
+    }
+    let decl = &o.types.get(ty)?.decl;
+    let own: BTreeSet<TypeName> = (links::link_types_of(decl).into_iter().map(|l| l.name))
+        .chain([ty.clone()])
+        .collect();
+    let on = |t: &TypeName| own.contains(t);
+    let to = |f: &FieldDecl| f.ty.target.as_ref().is_some_and(on);
+    // A field computed at the read or a trigger's `when` that pairs with
+    // the type's records in force reads it (100).
+    let pairs = |e: &Expr| {
+        let paired = e.pairings().unwrap_or_default();
+        paired.iter().any(|p| on(&TypeName::from(p.ty.as_str())))
+    };
+    let guards = |t: &&lakelands_api::ontology::TriggerDecl| {
+        t.when
+            .as_ref()
+            .and_then(|w| w.typed().ok())
+            .is_some_and(|e| pairs(&e))
+    };
+    let (user, system): (Vec<_>, Vec<_>) = (o.types.values().map(|e| &e.decl))
+        .filter(|t| !own.contains(&t.name))
+        .partition(|t| !is_system(&t.name));
+    let named = user.into_iter().chain(system).find_map(|t| {
+        if let Some(f) = t.fields.iter().find(|f| to(f)) {
+            return Some(format!("the field `{}` of `{}`", f.name, t.name));
+        }
+        if let Some((f, _)) = t.in_force().into_iter().find(|(_, e)| pairs(e)) {
+            return Some(format!("the field `{}` of `{}`", f.name, t.name));
+        }
+        if let Some(r) = (t.relations.iter()).find(|r| on(&r.target) || r.fields.iter().any(to)) {
+            return Some(format!("the relation `{}` of `{}`", r.name, t.name));
+        }
+        let view = t.view.as_deref();
+        let reads = view.is_some_and(|v| on(&v.source) || v.merge.iter().any(|m| on(&m.source)));
+        reads.then(|| format!("the view `{}`", t.name))
+    });
+    let verbs = o.verbs.values().map(|e| &e.decl);
+    let mut verbs = verbs.filter(|v| on(&v.on) || v.payload.iter().any(to));
+    let sets = o.object_sets.values().map(|e| &e.decl);
+    let triggers = o.triggers.values().map(|e| &e.decl);
+    named
+        .or_else(|| verbs.next().map(|v| format!("the verb `{}`", v.name)))
+        .or_else(|| {
+            (sets.clone())
+                .find(|s| on(&s.of))
+                .map(|s| format!("the object set `{}`", s.name))
+        })
+        .or_else(|| {
+            (triggers.clone())
+                .find(|t| on(&t.on) || guards(t))
+                .map(|t| format!("the trigger `{}`", t.name))
+        })
 }
 
 /// The first field only verbs write that `verb` alone of its type's verbs
@@ -2035,13 +2648,13 @@ fn setting_decl(o: &Ontology, s: &SettingDecl) -> Result<()> {
         .or_else(|| unlisted(&s.key));
     if let Some(prefix) = store {
         let prefix = prefix.to_owned();
-        return Err(invalid(at(&on, Case::SettingStoreKey { prefix })));
+        return Err(Error::invalid(at(&on, Case::SettingStoreKey { prefix })));
     }
     if s.group.as_deref() == Some(STORE_GROUP) {
-        return Err(invalid(at(&on, Case::SettingStoreGroup)));
+        return Err(Error::invalid(at(&on, Case::SettingStoreGroup)));
     }
     if s.ty.kind == StorageKind::Reference {
-        return Err(invalid(at(&on, Case::SettingReference)));
+        return Err(Error::invalid(at(&on, Case::SettingReference)));
     }
     let value = FieldDecl {
         ty: s.ty.clone(),
@@ -2060,7 +2673,7 @@ pub(crate) fn tool_names(o: &Ontology, d: &Declaration) -> Result<()> {
     let problems = tool_problems(o, d);
     match problems.is_empty() {
         true => Ok(()),
-        false => Err(invalid(Case::ToolNames { problems })),
+        false => Err(Error::invalid(Case::ToolNames { problems })),
     }
 }
 

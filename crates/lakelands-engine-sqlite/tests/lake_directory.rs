@@ -8,16 +8,19 @@
 //! zeros, positions follow each other, and every checkpoint lists the
 //! sealed segments with the digests of their files. The verifiers of an
 //! export, `lakelands_core::export::verify` and `verify.py <dir>`, read
-//! the directory the same way and agree.
+//! the directory the same way and agree. The lake keeps its projection in
+//! a directory of its own, where it is rebuilt beside and built ahead,
+//! one lake's alone: none of it is in the log's.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind, TypeDecl};
 use lakelands_api::seam::Seams;
 use lakelands_api::write::Declaration;
-use lakelands_api::{Grants, Location, Principal, PrincipalKind, WriteContext};
+use lakelands_api::{EngineConfig, Grants, Location, Principal, PrincipalKind, WriteContext};
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -30,12 +33,19 @@ fn hex(bytes: &[u8]) -> String {
 async fn a_lake_directory_verifies_from_its_segment_files_alone() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("lake-directory-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let (projection, mut location) = (dir.with_extension("p"), Location::sqlite("ledger", &dir));
+    let _ = (
+        std::fs::remove_dir_all(&dir),
+        std::fs::remove_dir_all(&projection),
+    );
+    if let EngineConfig::Sqlite { projection_dir, .. } = &mut location.engine {
+        *projection_dir = Some(projection.clone());
+    }
     let seams = Seams {
         engines: vec![Arc::new(SqliteOpener)],
         ..Seams::default()
     };
-    let store = lakelands_store::open(Location::sqlite("ledger", &dir), seams, OpenMode::Create)
+    let store = lakelands_store::open(location.clone(), seams.clone(), OpenMode::Create)
         .await
         .unwrap();
     let owner = Principal {
@@ -51,6 +61,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         ty: FieldType::kind(StorageKind::Text),
         required: false,
         authority: Authority::Authored,
+        admits: vec![],
         derived: None,
         function: None,
         computed_at: None,
@@ -109,8 +120,36 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
     )
     .await
     .unwrap();
+    store.rebuild().await.unwrap();
     store.close().await.unwrap();
     drop((cat, store));
+    let held = |d: &PathBuf| {
+        std::fs::read_dir(d)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().into_string().unwrap())
+    };
+    assert!(held(&dir).all(|n| !n.starts_with("projection")));
+    assert!(held(&projection).any(|n| n == "projection.db"));
+    // Build ahead makes a projection directory that is not there yet.
+    std::fs::remove_dir_all(&projection).unwrap();
+    lakelands_store::build_ahead(location.clone(), seams.clone())
+        .await
+        .unwrap();
+    assert!(held(&projection).any(|n| n == "projection.db.rebuild"));
+
+    let mut other = location;
+    other.lake = "other".into();
+    let EngineConfig::Sqlite { dir: d, .. } = &mut other.engine else {
+        unreachable!()
+    };
+    *d = dir.with_extension("o");
+    let refused = lakelands_store::open(other, seams, OpenMode::Create).await;
+    let case = refused
+        .err()
+        .and_then(|e| e.case().map(|said| said.case.clone()));
+    let (schema, held, lake) = (None, "ledger".into(), Box::new("other".into()));
+    assert_eq!(case, Some(Case::LakeOther { schema, held, lake }));
 
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir.join("log"))
         .unwrap()
@@ -129,13 +168,28 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
             "{} ends with a line feed",
             file.display()
         );
+        // The stored form (log-format §1.2): each event restored from its
+        // line, its frame and the event before it, and digested so.
+        let (mut lines, mut restored) = (lakelands_core::log::Lines::default(), Vec::new());
         for line in raw[..raw.len() - 1].split(|b| *b == b'\n') {
-            let event: Value = serde_json::from_slice(line).unwrap();
+            let read: Value = serde_json::from_slice(line).unwrap();
             assert_eq!(
-                lakelands_core::canonical::to_vec(&event),
+                lakelands_core::canonical::to_vec(&read),
                 line,
                 "the stored line is canonical"
             );
+            let before = (next != first).then(|| {
+                (
+                    lakelands_api::Position(next - 1),
+                    lakelands_api::event::Digest(prev.clone()),
+                )
+            });
+            let before = before.as_ref().map(|(p, h)| (*p, h));
+            let Some((event, _)) = lines.line(read, before).unwrap() else {
+                continue;
+            };
+            restored.extend(lakelands_core::canonical::to_vec(&event));
+            restored.push(b'\n');
             assert_eq!(event["position"], json!(next));
             assert_eq!(event["prev"], json!(prev));
             let mut body = event.clone();
@@ -153,7 +207,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         digests.push(json!({
             "first": first,
             "last": next - 1,
-            "digest": hex(&Sha256::digest(&raw)),
+            "digest": hex(&Sha256::digest(&restored)),
         }));
     }
 
@@ -166,7 +220,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         (next - 1, prev.as_str())
     );
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/17/verify.py");
+        .join("../../docs/log-format/vectors/23/verify.py");
     let run = match std::process::Command::new("python3")
         .arg(&script)
         .arg(&dir)
@@ -186,7 +240,11 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
     );
     let last = format!("verified through position {}, hash {prev}", next - 1);
     assert!(said.trim_end().ends_with(&last), "{said}");
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = (
+        std::fs::remove_dir_all(&dir),
+        std::fs::remove_dir_all(&projection),
+        std::fs::remove_dir_all(dir.with_extension("o")),
+    );
 }
 
 #[test]

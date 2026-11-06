@@ -4,16 +4,9 @@
 //! with no `type` by a field of any kind, and a function declared again is
 //! held to every type that binds it.
 
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
-use lakelands_api::{Access, Grants, PrincipalKind, TypeName};
-use serde_json::json;
+use lakelands_api::write::Outcome;
 
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, dec, decimal, field, invalid_like, principal, refused_unmoved,
-    type_decl, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 use lakelands_api::ontology::StorageKind::{Date, Decimal, Number, Text};
 
 check!(

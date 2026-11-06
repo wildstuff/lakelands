@@ -147,6 +147,7 @@ pub fn mirror_type() -> TypeDecl {
         ty: FieldType::kind(kind),
         required,
         authority: Authority::Authored,
+        admits: vec![],
         derived: None,
         function: None,
         computed_at: None,
@@ -490,6 +491,8 @@ fn crossing(depth: u32) -> WriteContext {
         origin: WriteOrigin::Reactive,
         depth,
         cause: None,
+        on_behalf_of: None,
+        occasion: None,
     }
 }
 
@@ -541,17 +544,19 @@ fn remapped(ty: &FieldType, map: &BTreeMap<TypeName, TypeName>) -> Option<FieldT
 /// What the target type `t` must be for the connection, seen from the
 /// target alone: every field written by the source, writable by the
 /// principal, referring only to mirrored types; every relation carried by
-/// link records a source relation between mirrored types.
+/// link records a source relation between mirrored types. A field the
+/// target fills with the writer that made the record (`writer`) crosses
+/// nothing: it holds the mirroring principal.
 fn owned_whole(t: &TypeDescription, mirrored: &BTreeSet<TypeName>) -> Result<(), String> {
     let name = &t.name;
     if t.view.is_some() || t.lineage.view_of.is_some() {
         return Err(format!("`{name}` is a view, which nothing writes"));
     }
-    for f in &t.fields {
+    for f in t.fields.iter().filter(|f| f.authority != Authority::Writer) {
         if f.authority != Authority::Source {
             return Err(format!(
                 "`{name}.{}` is written by the authority `{}`; a mirrored type declares only \
-                 fields its source writes (`source`)",
+                 fields its source writes (`source`) and the writer fills (`writer`)",
                 f.name,
                 serde_json::to_value(f.authority)
                     .ok()
@@ -641,7 +646,9 @@ fn admits(
         Ok(())
     };
     let sf: Vec<_> = s.fields.iter().collect();
-    let tf: Vec<_> = t.fields.iter().collect();
+    let tf: Vec<_> = (t.fields.iter())
+        .filter(|f| f.authority != Authority::Writer)
+        .collect();
     check(s.name.as_str(), t.name.as_str(), &sf, &tf)?;
     for r in t.relations.iter().filter(|r| r.carried_by_links()) {
         let Some(q) = s
@@ -850,9 +857,8 @@ impl Mirror {
                 .map_err(|e| refused(format!("the target type `{t}`: {e}")))?
                 .data;
             owned_whole(&td, &mirrored).map_err(refused)?;
-            let fields: BTreeMap<FieldName, Option<TypeName>> = td
-                .fields
-                .iter()
+            let fields: BTreeMap<FieldName, Option<TypeName>> = (td.fields.iter())
+                .filter(|f| f.authority != Authority::Writer)
                 .map(|f| (f.name.clone(), f.ty.target.clone()))
                 .collect();
             mirror.map.insert(
@@ -1164,6 +1170,9 @@ impl Mirror {
                             key: row.key,
                             fields: patch,
                             seen_at,
+                            delivery: None,
+                            resubmits: None,
+                            line: None,
                         },
                     ));
                 }
@@ -1271,6 +1280,9 @@ impl Mirror {
                     key: key.clone(),
                     fields: patch,
                     seen_at: Some(known_at),
+                    delivery: None,
+                    resubmits: None,
+                    line: None,
                 },
             ));
         }
@@ -1629,12 +1641,14 @@ impl Mirror {
             let before = Position(p.0.saturating_sub(1));
             let t = self.describe_source(&s, Some(before)).await?;
             // A field a removal may take: neither a key field nor a
-            // reference, and one a source writes or derived from one.
+            // reference, and one a source writes, an authored one that
+            // admits a source (069), or one derived from one.
             let takeable = |f: &&lakelands_api::describe::FieldDescription| {
-                let by = matches!(
-                    f.authority,
-                    Authority::Source | Authority::Shared | Authority::Derived
-                );
+                let by = match f.authority {
+                    Authority::Source | Authority::Shared | Authority::Derived => true,
+                    Authority::Authored => !f.admits.is_empty(),
+                    _ => false,
+                };
                 f.access.reads() && by && !t.access.key.contains(&f.name) && f.ty.target.is_none()
             };
             let reached = match removal {

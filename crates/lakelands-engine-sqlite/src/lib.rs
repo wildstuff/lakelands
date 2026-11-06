@@ -15,12 +15,17 @@
 //! # A lake directory
 //!
 //! ```text
-//! <dir>/lake                  the lake's name
+//! <dir>/lake                  the lake's name; every handle onto the
+//!                             projection holds it locked shared (handle.rs)
 //! <dir>/lease                 the fencing token and its holder (lease.rs)
 //! <dir>/log/<first>.jsonl     the log's segments (docs/log-format.md §4.2)
 //! <dir>/index/<first>.idx     each event's members beside its bytes (log.rs)
 //! <dir>/projection.db         the projection, with its kept history
+//! <dir>/projection.db.rebuild the projection a rebuild builds beside it (scratch.rs)
+//! <dir>/projection.db.rebuild.mark  its lock, and its mark once built; emptied, kept
 //! ```
+//!
+//! A `projection_dir` takes the last three, and a `lake` file as `<dir>`'s.
 //!
 //! The log is the truth: the projection and the index hold nothing the log
 //! does not, and a lake's segments verify with nothing but the format.
@@ -37,7 +42,10 @@ mod handle;
 mod lease;
 mod log;
 mod projection;
+mod scratch;
 mod view;
+
+use std::path::{Path, PathBuf};
 
 use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::error::{Case, Detail, Doing, Error, Part, Result, Situation};
@@ -45,7 +53,13 @@ use lakelands_api::location::{EngineConfig, Location, SqliteTuning};
 
 use handle::SqliteLake;
 #[doc(hidden)]
-pub use view::{few_holders_statements, first_page_statements, read_statements, seek_statements};
+pub use projection::order_statements;
+#[doc(hidden)]
+pub use view::keyed_routes_plan;
+pub use view::{
+    few_holders_statements, first_page_statements, range_statements, read_statements,
+    seek_statements,
+};
 
 /// The name the engine answers to, in [`EngineConfig::Sqlite`] and in
 /// [`LakeEngine::name`].
@@ -55,16 +69,21 @@ pub(crate) const NAME: &str = "sqlite";
 /// build on the development machine (lakelands#1042).
 pub(crate) const REBUILD_RATE: u64 = 17_000;
 
-pub(crate) use lakelands_core::{damaged, invalid, lock};
+pub(crate) use lakelands_core::{damaged, lock};
 
 /// A failed file operation, for the host.
 pub(crate) fn io_error(doing: Doing, part: Part, e: std::io::Error) -> Error {
     lakelands_core::io_failed(doing, part, &e)
 }
 
-/// A failed projection operation, for the host, as [`told`] says it.
+/// A failed projection operation, for the host, as [`told`] says it: one
+/// with no room left on the disk is named as that.
 pub(crate) fn sql(e: rusqlite::Error) -> Error {
     let detail = Detail::scrubbed(told(&e));
+    if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull) {
+        let part = Some(Part::Projection);
+        return Error::unavailable(Situation::NoRoom { part, detail });
+    }
     let (doing, part) = (Doing::Query, Part::Projection);
     Error::unavailable(Situation::Storage {
         doing,
@@ -111,28 +130,50 @@ impl EngineOpener for SqliteOpener {
     /// directory and the lake when there is none; `Read` and `Write` on a
     /// directory holding no lake answer `Unavailable`.
     fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
-        let (dir, tuning) = kept_in(location)?;
-        Ok(Box::new(SqliteLake::open(
-            location.lake.clone(),
-            dir.clone(),
-            *tuning,
-            mode,
-        )?))
+        let (dir, projection, tuning) = kept_in(location)?;
+        let (lake, dirs) = (location.lake.clone(), (dir.clone(), projection.to_owned()));
+        Ok(Box::new(SqliteLake::open(lake, dirs, *tuning, mode)?))
+    }
+
+    /// Opens the log in the location's directory as `Read` does, and the
+    /// scratch beside its projection, `projection.db.rebuild`; the
+    /// projection itself is not opened.
+    fn open_scratch(&self, location: &Location) -> Result<Box<dyn LakeEngine>> {
+        let (dir, projection, tuning) = kept_in(location)?;
+        let (lake, dirs) = (location.lake.clone(), (dir.clone(), projection.to_owned()));
+        Ok(Box::new(SqliteLake::open_scratch(lake, dirs, *tuning)?))
+    }
+
+    /// The sizes of `projection.db` and its write-ahead journal, read from
+    /// the directory; neither is opened.
+    fn room(&self, location: &Location) -> Result<u64> {
+        let (_, dir, _) = kept_in(location)?;
+        let size = |name: &str| match std::fs::metadata(dir.join(name)) {
+            Ok(m) => Ok(m.len()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(io_error(Doing::Open, Part::Projection, e)),
+        };
+        Ok(size("projection.db")? + size("projection.db-wal")?)
     }
 }
 
-/// The directory and the tuning of a location this engine keeps.
-fn kept_in(location: &Location) -> Result<(&std::path::PathBuf, &SqliteTuning)> {
-    let EngineConfig::Sqlite { dir, tuning } = &location.engine else {
+/// The lake's and its projection's directories, and the tuning, as kept.
+fn kept_in(location: &Location) -> Result<(&PathBuf, &Path, &SqliteTuning)> {
+    let EngineConfig::Sqlite {
+        dir,
+        projection_dir,
+        tuning,
+    } = &location.engine
+    else {
         let lake = Box::new(location.lake.clone());
         let (engine, location) = (NAME.to_owned(), "sqlite".to_owned());
-        return Err(invalid(Case::EngineOtherLocation {
+        return Err(Error::invalid(Case::EngineOtherLocation {
             engine,
             location,
             lake,
         }));
     };
-    Ok((dir, tuning))
+    Ok((dir, projection_dir.as_deref().unwrap_or(dir), tuning))
 }
 
 #[cfg(test)]

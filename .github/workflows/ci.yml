@@ -17,10 +17,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  # The runner has about 14 GB free. Full debug info and incremental
-  # state more than double the test artifacts and the cache; line tables
-  # keep file and line in a failing test's backtrace.
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # The runner has about 14 GB free. Incremental state more than doubles
+  # the test artifacts and the cache. (Line tables only, not full debug
+  # info, is the dev profile's own setting in Cargo.toml.)
   CARGO_INCREMENTAL: 0
 
 jobs:
@@ -28,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt
       - run: cargo fmt --all --check
@@ -37,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -57,9 +56,12 @@ jobs:
             /usr/local/.ghcup /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL"
           df -h /
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      # rust-toolchain.toml pins 1.99.1 and would override this install, so
+      # every cargo call here names +1.89.
+      - uses: dtolnay/rust-toolchain@1.89
+      - run: rustc +1.89 --version --verbose
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --all-targets --locked
+      - run: cargo +1.89 build --workspace --all-targets --locked
 
   nextest:
     runs-on: ubuntu-latest
@@ -76,7 +78,7 @@ jobs:
             /usr/local/.ghcup /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL"
           df -h /
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace --locked
@@ -123,11 +125,14 @@ jobs:
           - engine: pg
             server: pgvector
     # A throwaway PostgreSQL for the `pg` engine only: an empty image
-    # starts no container for the other engines. Its password guards
+    # starts no container for the other engines. The image comes from
+    # Google's public mirror of Docker's official one (the public ECR one answered "Data limit exceeded" on CI runners): it is pulled with
+    # no token, so Docker Hub's pull limit cannot turn the job red and a
+    # fork's pull request starts it as any other. Its password guards
     # nothing but this job's own database, so it is not a secret.
     services:
       postgres:
-        image: ${{ matrix.engine == 'pg' && (matrix.server == 'pgvector' && 'pgvector/pgvector:pg16' || 'postgres:16') || '' }}
+        image: ${{ matrix.engine == 'pg' && 'mirror.gcr.io/library/postgres:18' || '' }}
         env:
           POSTGRES_USER: lakelands
           POSTGRES_PASSWORD: lakelands
@@ -143,10 +148,49 @@ jobs:
       LAKELANDS_TEST_PG_URL: ${{ matrix.engine == 'pg' && 'postgres://lakelands:lakelands@localhost:5432/lakelands' || '' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # The pgvector run adds the extension to the running server, no
+      # restart: the lake asks for `CREATE EXTENSION` itself.
+      - name: add pgvector to the server
+        if: matrix.engine == 'pg' && matrix.server == 'pgvector'
+        run: |
+          docker exec "$(docker ps --filter ancestor=mirror.gcr.io/library/postgres:18 --format '{{.ID}}')" \
+            sh -c 'apt-get update && apt-get install -y postgresql-18-pgvector'
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - run: scripts/conformance.sh "${{ matrix.engine }}"
+
+  # The PostgreSQL engine's refusals at connect, run against what they
+  # guard against (docs/decisions/038-a-lake-in-postgresql.md): PgBouncer
+  # in transaction mode and in session mode, and a server that demands a
+  # client certificate, all in one container of the `pg` leg's image
+  # (scripts/pg-live/up.sh). Runs on every pull request, but builds only
+  # the one test file; the conformance job runs the file too, standing
+  # down for want of these servers.
+  pg-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: start the servers
+        run: scripts/pg-live/up.sh | sed 's/^export //' >> "$GITHUB_ENV"
+      - run: cargo nextest run --locked -p lakelands-engine-pg --test live_servers --no-tests=fail
+
+  # The SQLite engine's lease on the operating system whose file lock is
+  # mandatory: a read through a second handle is refused there while the
+  # lease is held, and must still be answered as a held lease, never as a
+  # storage failure (lakelands#1688).
+  sqlite-lease-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p lakelands-engine-sqlite --lib lease
 
   # Licences and advisories (deny.toml): one job each, so a new advisory
   # never hides a licence failure.
@@ -170,7 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about
@@ -191,12 +235,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-semver-checks
       # The script's own comparisons, held to a fixture (lakelands#517).
       - run: scripts/release/host-changes-test.sh
+      - run: scripts/release/notes-test.sh
       - run: scripts/release/host-changes.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The host surface changes only by its rule
@@ -213,7 +258,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-semver-checks@0.50.0
@@ -254,6 +299,7 @@ jobs:
           - doc-heads-its-item
           - detail-sources
           - refusals
+          - rights-private
           - records-resolve
           - vectors-kept
           - conflict-markers
@@ -265,6 +311,14 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # The matrix is read from the merge ref but the checkout is the PR
+      # head: a head that predates a gate has no script for it.
+      - name: the gate exists at this head
+        run: |
+          [ -x "scripts/gates/$G.sh" ] || { echo "::error::the PR head predates gate $G: rebase onto develop"; exit 1; }
+        env:
+          G: ${{ matrix.gate }}
       - run: scripts/gates/${{ matrix.gate }}.sh
         env:
           GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PR_TITLE: ${{ github.event.pull_request.title }}

@@ -154,3 +154,67 @@ fn a_seed_that_reaches_nothing_is_no_component_where_none_stands_alone() {
         "a and b, c, and d with a start type"
     );
 }
+
+/// A graph of `n` records `k0`… with the given arcs, by index.
+fn held(n: usize, arcs: &[(u32, u32)]) -> Held {
+    let nodes = (0..n)
+        .map(|i| super::super::tests::fixture::n(&format!("k{i}")))
+        .collect();
+    let mut arcs = arcs.to_vec();
+    arcs.sort_unstable();
+    Held { nodes, arcs }
+}
+
+/// Every round keeps the whole mass, whatever floors it drops: a cycle,
+/// a record with no arc out, a record linked to itself and one linked to
+/// nothing, over 37 rounds that each hand a record a share of 7.
+#[test]
+fn every_round_of_page_rank_keeps_the_whole_mass() {
+    let g = held(
+        7,
+        &[
+            (0, 1),
+            (1, 2),
+            (2, 0),
+            (3, 3),
+            (3, 0),
+            (4, 1),
+            (4, 2),
+            (4, 3),
+            (0, 5),
+        ],
+    );
+    let mut out = vec![0u64; g.nodes.len()];
+    for &(u, _) in &g.arcs {
+        out[u as usize] += 1;
+    }
+    let mut mass = spread(RANK_MASS, g.nodes.len());
+    assert_eq!(
+        mass[..2],
+        [142_857_142_858, 142_857_142_857],
+        "the unit left over goes first"
+    );
+    for round_at in 0..37 {
+        mass = round(&out, &g.arcs, &mass);
+        assert_eq!(mass.iter().sum::<u64>(), RANK_MASS, "round {round_at}");
+    }
+    let ranked = page_rank(&g);
+    assert_eq!(ranked.iter().sum::<u64>(), RANK_MASS);
+    assert!(
+        ranked[0] > ranked[6],
+        "a record linked to outranks one linked to nothing"
+    );
+}
+
+/// The rounds stop at the first that changes no unit, or at 100: a lone
+/// record keeps the whole mass, and no graph is no scores.
+#[test]
+fn page_rank_of_one_record_is_the_whole_mass_and_of_none_is_nothing() {
+    assert_eq!(page_rank(&held(1, &[])), vec![RANK_MASS]);
+    assert_eq!(page_rank(&held(1, &[(0, 0)])), vec![RANK_MASS]);
+    assert_eq!(page_rank(&held(0, &[])), Vec::<u64>::new());
+    assert_eq!(
+        page_rank(&held(2, &[(0, 1), (1, 0)])),
+        vec![RANK_MASS / 2; 2]
+    );
+}

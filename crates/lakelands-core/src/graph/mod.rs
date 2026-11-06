@@ -1,6 +1,7 @@
 //! The graph walks a pattern query runs: one step's multi-hop walk,
-//! a chain of steps, a bounded neighbourhood, a shortest path, and the
-//! whole-graph measures (degree centrality, connected components).
+//! a chain of steps, a bounded neighbourhood, a shortest path, the
+//! cheapest walk, and the whole-graph measures (degree centrality,
+//! connected components, PageRank, communities).
 //!
 //! Every engine keeps a lake's links and answers one narrow question
 //! about them, [`ProjectionView::edges`]: the links of some records of
@@ -44,14 +45,18 @@
 //!   or whose range is empty, is refused as invalid rather than quietly
 //!   answered with less than it asked for.
 
+mod communities;
+mod held;
 mod measures;
 mod path;
 mod step;
 mod subgraph;
 
-pub use measures::{Component, Components, degrees};
-pub use path::{Path, shortest_path};
-pub use step::{Reached, Traversal, neighbors, reach, spanned, step, traverse, traverse_each};
+pub use communities::communities;
+pub use held::{Held, Holding};
+pub use measures::{Component, Components, RANK_MASS, degrees, page_rank};
+pub use path::{Cheap, Path, WEIGHT_PLACES, cheapest, cost_text, shortest_path, units};
+pub use step::{Reached, Shape, Traversal, neighbors, reach, spanned, step, traverse, tree_each};
 pub use subgraph::{Subgraph, starts_page, subgraph};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,9 +64,8 @@ use std::slice;
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::query::{Depth, Edge, Step, Walk};
-use lakelands_api::{RecordKey, RelationName, Result, TypeName};
+use lakelands_api::{Error, RecordKey, RelationName, Result, TypeName};
 
-use crate::invalid;
 use lakelands_api::error::Case;
 
 /// A record's identity: its type and its key. Ordered by type, then key.
@@ -171,23 +175,19 @@ fn edges_of<S: EdgeSource + ?Sized>(
 pub fn check_depth(depth: Depth, max_depth: u32) -> Result<()> {
     if depth.max > max_depth {
         let (max, asked) = (max_depth, depth.max);
-        return Err(invalid(Case::StepTooDeep { max, asked }));
+        return Err(Error::invalid(Case::StepTooDeep { max, asked }));
     }
     if depth.min > depth.max {
         let (min, max) = (depth.min, depth.max);
-        return Err(invalid(Case::DepthEmpty { min, max }));
+        return Err(Error::invalid(Case::DepthEmpty { min, max }));
     }
     Ok(())
 }
 
 /// What a walk that would hold more than `max` records is refused with,
 /// never cut (026).
-fn too_large(max: u32) -> lakelands_api::Error {
-    let reason = lakelands_api::Refusal::TooLarge { max };
-    lakelands_api::Error::Refused {
-        field: None,
-        reason,
-    }
+fn too_large(max: u32) -> Error {
+    Error::refused(None, lakelands_api::Refusal::TooLarge { max })
 }
 
 /// The identity of a link, for deduplication and ordering:

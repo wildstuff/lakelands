@@ -17,10 +17,11 @@
 //!   every record with one in either direction, then the record key
 //!   ascending. Values compare by [`cmp_values`]: ranked by kind, then
 //!   compared by the evaluator within a kind.
-//! - **Links.** A relation carried by a reference field (`via`) links a
-//!   record to the record of the relation's target whose key is that
-//!   field's text value; the links into a record are those of every type
-//!   with such a relation to its type.
+//! - **Links.** A relation carried by a field (`via`) links a record to
+//!   the record of the relation's target whose key is that field's text
+//!   value, or, where the field holds an array, to that of each distinct
+//!   string element ([`keys_of`]); the links into a record are those of
+//!   every type with such a relation to its type.
 //! - **Full text.** A type's searchable text fields go through the one
 //!   token pipeline (`crate::stem`), stemmed by the type's language, as
 //!   they stand at the head; a record scores the number of distinct query
@@ -33,23 +34,30 @@
 //!   vectors ([`lakelands_api::query::cosine`]). Best first, ties by key.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 
-use lakelands_api::engine::{After, CanonicalEvent, Scan};
+use sha2::{Digest as _, Sha256};
+
+pub use lakelands_api::engine::Window;
+use lakelands_api::engine::{
+    After, CanonicalEvent, Choose, Chosen, KeyRange, Rankings, Scan, SeriesPair, SeriesState,
+    TextCounts, TextStats, WindowAt, WindowBatch, WindowSides,
+};
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
-use lakelands_api::expr::{Condition, Expr};
+use lakelands_api::expr::{CmpOp, Condition, Expr, Literal};
 use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName};
-use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
-use lakelands_api::query::Edge;
+use lakelands_api::ontology::{ComputedAt, FieldDecl, StorageKind, TypeDecl};
+use lakelands_api::query::{Edge, MATCH_SPANS, Matched, Span};
 use lakelands_api::read::{Direction, Order, OrderBy};
-use lakelands_api::record::{FieldMeta, StoredRecord, Value};
+use lakelands_api::record::{FieldMeta, Origin, Record, StoredRecord, Value};
 use lakelands_api::time::Timestamp;
-use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
+use lakelands_api::write::{Declaration, DeclarationKind, Proposal, ProposalFilter, ProposedWrite};
 
 pub use crate::expr::order::{cmp_values, sort_key};
 use crate::expr::{RecordScope, holds};
-use crate::invalid;
+
+pub mod pool;
 
 /// The clock an engine evaluates a filter with. The store hands an engine
 /// only filters that do not read the clock, so any fixed instant will do.
@@ -61,7 +69,7 @@ const NO_CLOCK: Timestamp = Timestamp(0);
 pub fn head_only(name: &TypeName) -> Result<()> {
     match lakelands_api::seam::is_head_only(name) {
         true => Ok(()),
-        false => Err(invalid(Case::NotHeadOnly { ty: name.clone() })),
+        false => Err(Error::invalid(Case::NotHeadOnly { ty: name.clone() })),
     }
 }
 
@@ -82,46 +90,143 @@ pub fn declaration_key(d: &Declaration) -> String {
     }
 }
 
+/// The token a value is looked up by in a field of `kind`: a text (a
+/// reference's value included) as it is; a number or a decimal as its
+/// number normalised, `as_number(value).normalize()` written out, so `-0`
+/// and `0` are one token and `7`, `7.00` and `'7'` alike are `7`. `None`
+/// for a value of a number field that reads as no number: it keeps no row
+/// and the read takes the old road
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §A
+/// number's exact lookup). A field whose kind is not known is looked up
+/// by its text, as it was before numbers were.
+pub fn lookup_token(value: &Value, kind: Option<StorageKind>) -> Option<String> {
+    match kind {
+        Some(StorageKind::Number | StorageKind::Decimal) => {
+            let read = crate::expr::eval::as_number(&crate::expr::eval::from_json(value))?;
+            Some(read.normalize().to_string())
+        }
+        _ => value.as_str().map(str::to_owned),
+    }
+}
+
+/// The token a literal asks a field of `kind` for, if it asks for one: on
+/// a text field a text that reads as neither a number nor an instant (the
+/// evaluator compares such text as text); on a number or decimal field
+/// any number, written as [`lookup_token`] writes it, so `= 7`, `= 7.00`
+/// and `= '7'` reach the same set.
+fn literal_token(lit: &Literal, kind: Option<StorageKind>) -> Option<String> {
+    match kind {
+        Some(StorageKind::Number | StorageKind::Decimal) => {
+            let number = match lit {
+                Literal::Number(n) => n.as_str(),
+                Literal::Text(t) => t.as_str(),
+                _ => return None,
+            };
+            let read: rust_decimal::Decimal = number.parse().ok()?;
+            Some(read.normalize().to_string())
+        }
+        _ => match lit {
+            Literal::Text(t)
+                if t.parse::<rust_decimal::Decimal>().is_err()
+                    && Timestamp::denoted(t).is_err() =>
+            {
+                Some(t.clone())
+            }
+            _ => None,
+        },
+    }
+}
+
 /// A narrowing an engine may take from a filter, with the one evaluator's
 /// meaning: when the filter is, or has as one of its `and` terms,
 /// `field = 'text'` whose text reads neither as a number nor as an
 /// instant, only records whose `field` holds exactly that JSON string can
-/// be selected (the evaluator compares such text as text). An engine may
-/// then look the candidates up by that value; it still evaluates the whole
-/// filter on each.
-pub fn exact_text_term(filter: &Expr) -> Option<(FieldName, String)> {
-    exact_text_terms(filter).into_iter().next()
+/// be selected (the evaluator compares such text as text); on a number or
+/// decimal field `field = <number>` narrows to the value's token
+/// ([`lookup_token`]). An engine may then look the candidates up by that
+/// token; it still evaluates the whole filter on each.
+pub fn exact_text_term(
+    filter: &Expr,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
+) -> Option<(FieldName, String)> {
+    cmp_terms(filter, kind).into_iter().next()
 }
 
-/// Every such narrowing of a filter, its `and` terms in order.
-pub fn exact_text_terms(filter: &Expr) -> Vec<(FieldName, String)> {
-    use lakelands_api::expr::{CmpOp, Literal};
+/// Every such narrowing of a filter, its `and` terms in order, an `in`'s
+/// values one entry each.
+pub fn exact_text_terms(
+    filter: &Expr,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
+) -> Vec<(FieldName, String)> {
+    let mut out = cmp_terms(filter, kind);
+    out.extend(
+        in_terms(filter, kind)
+            .into_iter()
+            .flat_map(|(f, ts)| ts.into_iter().map(move |t| (f.clone(), t))),
+    );
+    out
+}
+
+/// The `field = literal` narrowings of a filter, its `and` terms in
+/// order.
+fn cmp_terms(
+    filter: &Expr,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
+) -> Vec<(FieldName, String)> {
     match filter {
-        Expr::And { args } => args.iter().flat_map(exact_text_terms).collect(),
+        Expr::And { args } => args.iter().flat_map(|a| cmp_terms(a, kind)).collect(),
         Expr::Cmp {
             cmp: CmpOp::Eq,
             lhs,
             rhs,
-        } => match (lhs.as_ref(), rhs.as_ref()) {
-            (
-                Expr::Path { path },
-                Expr::Lit {
-                    value: Literal::Text(t),
-                },
-            )
-            | (
-                Expr::Lit {
-                    value: Literal::Text(t),
-                },
-                Expr::Path { path },
-            ) if path.len() == 1
-                && t.parse::<rust_decimal::Decimal>().is_err()
-                && Timestamp::denoted(t).is_err() =>
-            {
-                vec![(path[0].clone(), t.clone())]
+        } => {
+            let (path, lit) = match (lhs.as_ref(), rhs.as_ref()) {
+                (Expr::Path { path }, Expr::Lit { value }) => (path, value),
+                (Expr::Lit { value }, Expr::Path { path }) => (path, value),
+                _ => return Vec::new(),
+            };
+            let [field] = path.as_slice() else {
+                return Vec::new();
+            };
+            literal_token(lit, kind(field))
+                .map(|t| vec![(field.clone(), t)])
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The `field in (literals)` narrowings of a filter of a number or decimal
+/// field, its `and` terms in order: every value's token, and none where a
+/// value reads as no number, since then the whole `in` takes the old road.
+fn in_terms(
+    filter: &Expr,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
+) -> Vec<(FieldName, Vec<String>)> {
+    match filter {
+        Expr::And { args } => args.iter().flat_map(|a| in_terms(a, kind)).collect(),
+        Expr::In { arg, list } => {
+            let Expr::Path { path } = arg.as_ref() else {
+                return Vec::new();
+            };
+            let [field] = path.as_slice() else {
+                return Vec::new();
+            };
+            let kind = kind(field);
+            if !matches!(kind, Some(StorageKind::Number | StorageKind::Decimal)) {
+                return Vec::new();
             }
-            _ => Vec::new(),
-        },
+            let tokens: Option<Vec<String>> = list
+                .iter()
+                .map(|e| match e {
+                    Expr::Lit { value } => literal_token(value, kind),
+                    _ => None,
+                })
+                .collect();
+            tokens
+                .map(|ts| vec![(field.clone(), ts)])
+                .unwrap_or_default()
+        }
         _ => Vec::new(),
     }
 }
@@ -238,55 +343,108 @@ pub fn holds_exactly(record: &StoredRecord, equal: &[(FieldName, Value)]) -> boo
         .all(|(f, v)| !v.is_null() && record.fields.get(f) == Some(v))
 }
 
-/// The one field and text an engine may look candidates up by in its text
-/// index at the head, of the fields `kept` says it keeps rows for
-/// ([`looked_up`]): a string the scan must hold exactly, else one of the
-/// filter's [`exact_text_terms`]. The engine still admits each candidate.
-/// Asked with every field kept, it is the text a scan of the type may
-/// narrow its storage's read by.
-pub fn text_lookup(scan: &Scan, kept: &dyn Fn(&FieldName) -> bool) -> Option<(FieldName, String)> {
-    let terms = scan.filter.iter().flat_map(exact_text_terms);
+/// The one field and token an engine may look candidates up by in its
+/// exact lookup at the head, of the fields `kept` says it keeps rows for
+/// ([`looked_up`]): a value the scan must hold exactly, else one of the
+/// filter's [`exact_text_terms`], each as [`lookup_token`] writes it for
+/// the field's kind. The engine still admits each candidate. Asked with
+/// every field kept, it is the value a scan of the type may narrow its
+/// storage's read by.
+pub fn text_lookup(
+    scan: &Scan,
+    kept: &dyn Fn(&FieldName) -> bool,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
+) -> Option<(FieldName, String)> {
+    let terms = scan.filter.iter().flat_map(|f| cmp_terms(f, kind));
     (scan.equal.iter())
-        .filter_map(|(f, v)| Some((f.clone(), v.as_str()?.to_owned())))
+        .filter_map(|(f, v)| Some((f.clone(), lookup_token(v, kind(f))?)))
         .chain(terms)
         .find(|(f, _)| kept(f))
 }
 
-/// The one field and the texts an engine may look candidates up by in its
-/// text index at the head, in one ask: those of `equal_any` where each of
-/// its tuples holds a string for the same field, else [`text_lookup`]'s
-/// one. The engine still admits each candidate.
+/// The one field and the tokens an engine may look candidates up by in
+/// its exact lookup at the head, in one ask: those of `equal_any` where
+/// each of its tuples holds a token for the same field; else an `in` of
+/// the filter on one number or decimal field; else [`text_lookup`]'s one.
+/// The engine still admits each candidate.
 pub fn text_lookups(
     scan: &Scan,
     kept: &dyn Fn(&FieldName) -> bool,
+    kind: &dyn Fn(&FieldName) -> Option<StorageKind>,
 ) -> Option<(FieldName, Vec<String>)> {
     let first = |t: &[(FieldName, Value)]| {
-        t.first()
-            .and_then(|(f, v)| Some((f.clone(), v.as_str()?.to_owned())))
+        let (f, v) = t.first()?;
+        Some((f.clone(), lookup_token(v, kind(f))?))
     };
-    let Some((field, _)) = (scan.equal_any.first().and_then(|t| first(t))).filter(|(f, _)| kept(f))
-    else {
-        return text_lookup(scan, kept).map(|(f, t)| (f, vec![t]));
-    };
-    let texts = scan
-        .equal_any
-        .iter()
-        .map(|t| first(t).filter(|(f, _)| *f == field).map(|(_, v)| v));
-    // A tuple that holds no text there: the one lookup `equal` gives.
-    texts
-        .collect::<Option<Vec<String>>>()
-        .map(|texts| (field, texts))
-        .or_else(|| text_lookup(scan, kept).map(|(f, t)| (f, vec![t])))
+    if let Some((field, _)) =
+        (scan.equal_any.first().and_then(|t| first(t))).filter(|(f, _)| kept(f))
+    {
+        let texts = scan
+            .equal_any
+            .iter()
+            .map(|t| first(t).filter(|(f, _)| *f == field).map(|(_, v)| v));
+        // A tuple that holds no token there: the one lookup `equal` gives.
+        if let Some(texts) = texts.collect::<Option<Vec<String>>>() {
+            return Some((field, texts));
+        }
+    }
+    if let Some((field, token)) = (scan.equal.iter())
+        .filter_map(|(f, v)| Some((f.clone(), lookup_token(v, kind(f))?)))
+        .find(|(f, _)| kept(f))
+    {
+        return Some((field, vec![token]));
+    }
+    let ins = scan.filter.iter().flat_map(|f| in_terms(f, kind));
+    if let Some((field, ts)) = ins.into_iter().find(|(f, _)| kept(f)) {
+        return Some((field, ts));
+    }
+    text_lookup(scan, kept, kind).map(|(f, t)| (f, vec![t]))
 }
 
-/// The text fields of `ty` its exact-text index keeps rows for, of the
-/// lake's declarations at the head `decls` and its `lookup_index.<type>`
+/// The field of a type whose key is that one text field. A record's key
+/// is then its value made a key component (`lakelands_api::key`), which
+/// reads back into the value, so the head state at that key is the only
+/// one that can hold a text there: the exact-text index keeps no rows for
+/// it, and a lookup by it reads that head by key ([`key_lookup`]).
+pub fn text_key(decl: &TypeDecl) -> Option<&FieldName> {
+    let [key] = decl.key.as_slice() else {
+        return None;
+    };
+    let text = |f: &FieldDecl| f.name == *key && f.ty.kind == StorageKind::Text;
+    decl.fields.iter().any(text).then_some(key)
+}
+
+/// The keys a scan of a declared type reads when it must hold exactly a
+/// text ([`text_lookups`]: an `=` of the filter, `equal`, or one of the
+/// texts a match's `equal_any` asks for) in the type's [`text_key`]: those
+/// the texts make, in key order. The engine reads their states at its
+/// position and the rulebook admits, orders and cuts them ([`scan`]).
+pub fn key_lookup(decl: Option<&TypeDecl>, scan: &Scan) -> Option<BTreeSet<String>> {
+    let key = text_key(decl?)?;
+    let kind = |f: &FieldName| (f == key).then_some(StorageKind::Text);
+    let (_, texts) = text_lookups(scan, &|f| f == key, &kind)?;
+    let made = texts.into_iter().map(serde_json::Value::String);
+    Some(
+        made.filter_map(|t| lakelands_api::key::key_component(&t))
+            .collect(),
+    )
+}
+
+/// The fields of `ty` its exact lookup keeps rows for, of the lake's
+/// declarations at the head `decls` and its `lookup_index.<type>`
 /// setting's value: those its declarations look its records up by (its
-/// key, its references, the fields a derived relation matches at either
-/// end, those a set's condition or a view's `where` over it compares to a
-/// text at the top level) and those the setting names
-/// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
-/// `None`, every field, for a name no type declares: a view's kept records.
+/// key, but a [`text_key`], its references, the fields a derived relation
+/// matches at either end, those a set's condition or a view's `where` over
+/// it compares to a text at the top level, those a constraint's or a
+/// trigger's `preceding` matches its series on, those another type's
+/// `in_force` or a trigger's matches it on) and those the setting names.
+/// A declaration looks a record up by a text or a reference only; a
+/// number or decimal field is looked up only when the setting names it, so
+/// no type pays that it did not ask
+/// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`,
+/// `docs/decisions/097-a-read-in-a-window-walks-its-window.md` §A
+/// number's exact lookup). `None`, every field, for a name no type
+/// declares: a view's kept records.
 pub fn looked_up<'a>(
     ty: &TypeName,
     decls: impl IntoIterator<Item = &'a Declaration>,
@@ -295,9 +453,13 @@ pub fn looked_up<'a>(
     let (mut own, mut out) = (None, BTreeSet::new());
     let mut terms = |c: &Option<Condition>| {
         let e = c.as_ref().and_then(|c| c.typed().ok());
-        out.extend(e.iter().flat_map(exact_text_terms).map(|(f, _)| f));
+        out.extend(
+            e.iter()
+                .flat_map(|f| exact_text_terms(f, &|_| None))
+                .map(|(f, _)| f),
+        );
     };
-    let mut matched = Vec::new();
+    let (mut matched, mut series) = (Vec::new(), Vec::new());
     for d in decls {
         match d {
             Declaration::Type(t) => {
@@ -311,24 +473,58 @@ pub fn looked_up<'a>(
                 for v in t.view.iter().filter(|v| v.source == *ty) {
                     terms(&v.r#where);
                 }
+                for (_, e) in t.in_force() {
+                    let paired = e.pairings().unwrap_or_default().into_iter();
+                    let paired = paired.filter(|p| p.ty.as_str() == ty.as_str());
+                    matched.extend(paired.flat_map(|p| p.matched).map(|(m, _)| m.clone()));
+                }
                 for m in t.view.iter().flat_map(|v| &v.merge) {
                     (m.source == *ty).then(|| terms(&m.r#where));
                 }
             }
             Declaration::ObjectSet(o) if o.of == *ty => terms(&Some(o.filter.clone())),
+            Declaration::Trigger(t) => {
+                (t.on == *ty).then(|| series.extend(t.when.clone()));
+                let e = t.when.as_ref().and_then(|c| c.typed().ok());
+                let paired = e.as_ref().map(|e| e.pairings().unwrap_or_default());
+                let paired = paired.into_iter().flatten();
+                let paired = paired.filter(|p| p.ty.as_str() == ty.as_str());
+                matched.extend(paired.flat_map(|p| p.matched).map(|(m, _)| m.clone()));
+            }
             _ => {}
         }
     }
     let t = own?;
+    let constraints = t.constraints.iter().map(|c| c.holds.clone());
+    let typed = (constraints.chain(series)).filter_map(|c| c.typed().ok());
+    out.extend(
+        typed
+            .flat_map(|e| e.series().into_keys())
+            .flat_map(|s| s.into_iter().skip(1)),
+    );
     let refs = t
         .fields
         .iter()
         .filter(|f| f.ty.kind == StorageKind::Reference);
     out.extend(matched.into_iter().chain(t.key.iter().cloned()));
     out.extend(refs.map(|f| f.name.clone()));
-    out.extend(index_fields(t, setting, false, |k| *k == StorageKind::Text));
+    let named = index_fields(t, setting, false, |k| {
+        matches!(
+            k,
+            StorageKind::Text | StorageKind::Number | StorageKind::Decimal
+        )
+    });
+    out.extend(named.iter().cloned());
     let texts = |f: &FieldDecl| matches!(f.ty.kind, StorageKind::Text | StorageKind::Reference);
-    out.retain(|f| t.fields.iter().any(|d| d.name == *f && texts(d)));
+    let numbered = |f: &FieldDecl| {
+        matches!(f.ty.kind, StorageKind::Number | StorageKind::Decimal) && named.contains(&f.name)
+    };
+    out.retain(|f| {
+        t.fields
+            .iter()
+            .any(|d| d.name == *f && (texts(d) || numbered(d)))
+            && Some(f) != text_key(t)
+    });
     Some(out)
 }
 
@@ -399,6 +595,14 @@ pub fn count_in_key_order<E>(
             _ => return Ok(n),
         }
     }
+}
+
+/// How many of `records` [`scan`] would select, its order, keyset
+/// position and limit ignored: a count over states already read, such as
+/// those a [`key_lookup`] read.
+pub fn count_of(decl: Option<&TypeDecl>, records: &[StoredRecord], scan: &Scan) -> u64 {
+    count_read(records.len());
+    records.iter().filter(|r| admits(decl, r, scan)).count() as u64
 }
 
 /// A scan over the states of one type's records at one position, `decl`
@@ -518,9 +722,289 @@ pub fn sort_index_type(r: &StoredRecord) -> Option<TypeName> {
     setting_for(r, lakelands_api::seam::SORT_INDEX_SETTING)
 }
 
+/// The type whose series index a setting's state asks for, if it is a
+/// `series_index.<type>` setting.
+pub fn series_index_type(r: &StoredRecord) -> Option<TypeName> {
+    setting_for(r, lakelands_api::seam::SERIES_INDEX_SETTING)
+}
+
+/// The meta row by which an engine keeps a type's series pairs and whether
+/// each is whole.
+pub fn series_mark(ty: &TypeName) -> String {
+    format!("series.{ty}")
+}
+
+/// The pairs a `series_index.<type>` setting of this value asks for, by
+/// `decl`, the type's declaration: those whose series field is text,
+/// reference, number or decimal and whose order field is sortable, neither
+/// computed at the read, once each and in the setting's order. A value of
+/// another shape names none: the setting is checked when it is written,
+/// and a log that came another way holds no other pair.
+pub fn series_pairs(decl: &TypeDecl, setting: Option<&Value>) -> Vec<SeriesPair> {
+    let declared = |f: &FieldName, keeps: fn(&StorageKind) -> bool| {
+        (decl.fields.iter())
+            .any(|d| d.name == *f && keeps(&d.ty.kind) && d.computed_at != Some(ComputedAt::Read))
+    };
+    let mut out: Vec<SeriesPair> = Vec::new();
+    let pairs = setting
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|p| p.as_array());
+    for pair in pairs.flatten() {
+        if pair.len() != 2 {
+            continue;
+        }
+        let (Some(series), Some(order)) = (pair[0].as_str(), pair[1].as_str()) else {
+            continue;
+        };
+        let (series, order) = (FieldName::from(series), FieldName::from(order));
+        let held = out.iter().any(|p| p.series == series && p.order == order);
+        if !held
+            && declared(&series, lakelands_api::seam::series_kind)
+            && declared(&order, lakelands_api::seam::sortable)
+        {
+            out.push(SeriesPair { series, order });
+        }
+    }
+    out
+}
+
+/// The derived field names a type's series pairs keep their rows under,
+/// those being built too: `<order>\u{1F}<series>`.
+pub fn series_fields(state: &SeriesState) -> Vec<FieldName> {
+    (state.kept.iter().chain(state.building.iter()))
+        .map(|p| {
+            FieldName::from(lakelands_api::seam::series_field(
+                p.order.as_str(),
+                p.series.as_str(),
+            ))
+        })
+        .collect()
+}
+
+/// A series state as a meta row holds it: none where it holds none.
+pub fn series_decoded(text: Option<String>) -> SeriesState {
+    text.map_or_else(SeriesState::default, |t| {
+        serde_json::from_str(&t).unwrap_or_default()
+    })
+}
+
+/// Whether `f` is a series pair's derived field: no order index of the
+/// lake's own keeps one, so `sweep`, `eligible`, `rebuild_sorted` and the
+/// fields a read takes skip them.
+pub fn is_series_field(f: &FieldName) -> bool {
+    lakelands_api::seam::is_series_field(f.as_str())
+}
+
+/// The series a read seeks in one kept pair's index: the pair's derived
+/// field and the first eight bytes of each named series text's token, once
+/// each (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// series index). A scan that names a series exactly on the pair's series
+/// field, by `=` or `in`, seeks the pair; one that does not, or names a
+/// text the index keeps no token for, takes the road without it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeriesSeek {
+    /// The pair's derived field, which its rows are kept under:
+    /// `<order>\u{1F}<series>`.
+    pub field: FieldName,
+    /// The prefix of each named series' rows in the scan's order: the
+    /// token's SHA-256, its first eight bytes.
+    pub series: Vec<Vec<u8>>,
+}
+
+impl SeriesSeek {
+    /// One series' rows inside a read's window: its prefix, then the
+    /// window's bounds; or, under no window, the whole of them, ending
+    /// below the `0xFF` tail, which sorts above every value and is read
+    /// after the window.
+    pub fn bounds(&self, series: usize, window: Option<&Window>) -> Window {
+        let prefix = &self.series[series];
+        let (lo, hi) = match window {
+            Some(w) => (prefixed(prefix, &w.lo), prefixed(prefix, &w.hi)),
+            None => {
+                let mut hi = prefix.clone();
+                hi.push(0xFE);
+                (prefix.clone(), hi)
+            }
+        };
+        Window {
+            field: self.field.clone(),
+            lo,
+            hi,
+        }
+    }
+
+    /// The key of one series' records without an order value: its prefix,
+    /// then `0xFF`, above every rank.
+    pub fn tail(&self, series: usize) -> Vec<u8> {
+        let mut key = self.series[series].clone();
+        key.push(0xFF);
+        key
+    }
+
+    /// Every row of one series, the tail included: the pair's whole
+    /// holding of it.
+    pub fn holders(&self, series: usize) -> Window {
+        let prefix = &self.series[series];
+        let mut hi = prefix.clone();
+        hi.push(0xFF);
+        Window {
+            field: self.field.clone(),
+            lo: prefix.clone(),
+            hi,
+        }
+    }
+
+    /// The prefix of the series whose rows hold `key`, when one does.
+    pub fn series_of(&self, key: &[u8]) -> Option<usize> {
+        self.series.iter().position(|p| key.starts_with(p))
+    }
+}
+
+/// `prefix` then `key`: how the pair's index holds a series row's sort
+/// key, the series' eight bytes ahead of its order value's key.
+pub fn prefixed(prefix: &[u8], key: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(prefix.len() + key.len());
+    out.extend_from_slice(prefix);
+    out.extend_from_slice(key);
+    out
+}
+
+/// The seek a scan makes in a pair for a read of `field`: the first kept
+/// pair whose order field is `field` and whose series field the scan names
+/// exactly ([`exact_series`]), each text hashed to the eight bytes its
+/// rows carry. `None`: no such pair, no exact text, or a text the index
+/// keeps no token for; the read takes the road without a pair.
+pub fn series_seek(
+    decl: &TypeDecl,
+    state: &SeriesState,
+    field: &FieldName,
+    scan: &Scan,
+) -> Option<SeriesSeek> {
+    for pair in &state.kept {
+        if pair.order != *field {
+            continue;
+        }
+        let kind = field_kind(decl, &pair.series).copied();
+        let Some(tokens) = exact_series(scan, &pair.series, kind) else {
+            continue;
+        };
+        let mut series: Vec<Vec<u8>> = Vec::new();
+        for token in tokens {
+            let prefix = Sha256::digest(token.as_bytes())[..8].to_vec();
+            if !series.contains(&prefix) {
+                series.push(prefix);
+            }
+        }
+        return Some(SeriesSeek {
+            field: FieldName::from(lakelands_api::seam::series_field(
+                pair.order.as_str(),
+                pair.series.as_str(),
+            )),
+            series,
+        });
+    }
+    None
+}
+
+/// The exact texts a scan names in `field`, the pair's series field: the
+/// values of `equal_any`'s tuples when all of them begin there, else
+/// `equal`'s, else the filter's `=` or `in` on it, as [`lookup_token`] and
+/// [`literal_token`] write them. `None` where the scan names no text
+/// there, or names one the pair's rows cannot carry alone, so a read must
+/// not narrow to the texts it can name.
+fn exact_series(scan: &Scan, field: &FieldName, kind: Option<StorageKind>) -> Option<Vec<String>> {
+    let first = |t: &[(FieldName, Value)]| {
+        let (f, v) = t.first()?;
+        (f == field).then(|| lookup_token(v, kind))?
+    };
+    if !scan.equal_any.is_empty()
+        && let Some(tokens) = scan
+            .equal_any
+            .iter()
+            .map(|t| first(t))
+            .collect::<Option<Vec<_>>>()
+    {
+        return Some(tokens);
+    }
+    if let Some((_, v)) = scan.equal.iter().find(|(f, _)| f == field) {
+        return lookup_token(v, kind).map(|t| vec![t]);
+    }
+    let filter = scan.filter.as_ref()?;
+    let (mut eq, mut ins, mut blocked) = (None, Vec::new(), false);
+    eq_in_terms(filter, field, &mut eq, &mut ins, &mut blocked);
+    if blocked {
+        return None;
+    }
+    if let Some(lit) = eq {
+        return literal_token(lit, kind).map(|t| vec![t]);
+    }
+    if ins.is_empty() {
+        return None;
+    }
+    ins.into_iter()
+        .map(|lit| literal_token(lit, kind))
+        .collect()
+}
+
+/// The `=` and `in` terms of a filter on one field, its `and` terms only:
+/// the last `=`'s literal and every `in`'s, with `blocked` set where an
+/// `in` holds a value that is no literal.
+fn eq_in_terms<'e>(
+    filter: &'e Expr,
+    field: &FieldName,
+    eq: &mut Option<&'e Literal>,
+    ins: &mut Vec<&'e Literal>,
+    blocked: &mut bool,
+) {
+    match filter {
+        Expr::And { args } => args
+            .iter()
+            .for_each(|a| eq_in_terms(a, field, eq, ins, blocked)),
+        Expr::Cmp {
+            cmp: CmpOp::Eq,
+            lhs,
+            rhs,
+        } => {
+            let (path, lit) = match (lhs.as_ref(), rhs.as_ref()) {
+                (Expr::Path { path }, Expr::Lit { value }) => (path, value),
+                (Expr::Lit { value }, Expr::Path { path }) => (path, value),
+                _ => return,
+            };
+            let [f] = path.as_slice() else {
+                return;
+            };
+            if f == field {
+                *eq = Some(lit);
+            }
+        }
+        Expr::In { arg, list } => {
+            let Expr::Path { path } = arg.as_ref() else {
+                return;
+            };
+            let [f] = path.as_slice() else {
+                return;
+            };
+            if f != field {
+                return;
+            }
+            for e in list {
+                match e {
+                    Expr::Lit { value } => ins.push(value),
+                    _ => *blocked = true,
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The types whose exact-text index a declaration can move: those
 /// [`looked_up`] reads it for. A type's own, the targets of its derived
-/// relations, its view's sources; a set's type.
+/// relations, the types it pairs with by `in_force`, its view's sources;
+/// a set's and a trigger's type, and the types a trigger's `in_force`
+/// pairs with.
 pub fn looked_up_by(d: &Declaration) -> BTreeSet<TypeName> {
     let mut out = BTreeSet::new();
     match d {
@@ -528,12 +1012,27 @@ pub fn looked_up_by(d: &Declaration) -> BTreeSet<TypeName> {
             out.insert(t.name.clone());
             let derived = t.relations.iter().filter(|r| r.derived.is_some());
             out.extend(derived.map(|r| r.target.clone()));
+            for (_, e) in t.in_force() {
+                let paired = e.pairings().unwrap_or_default().into_iter();
+                out.extend(paired.map(|p| TypeName::from(p.ty.as_str())));
+            }
             for v in t.view.iter() {
                 out.insert(v.source.clone());
                 out.extend(v.merge.iter().map(|m| m.source.clone()));
             }
         }
         Declaration::ObjectSet(o) => _ = out.insert(o.of.clone()),
+        Declaration::Trigger(t) => {
+            out.insert(t.on.clone());
+            let e = t.when.as_ref().and_then(|c| c.typed().ok());
+            let paired = e.as_ref().map(|e| e.pairings().unwrap_or_default());
+            out.extend(
+                paired
+                    .into_iter()
+                    .flatten()
+                    .map(|p| TypeName::from(p.ty.as_str())),
+            );
+        }
         _ => {}
     }
     out
@@ -659,6 +1158,131 @@ pub fn sort_index_key(ty: &TypeName) -> String {
     format!("{}{ty}", lakelands_api::seam::SORT_INDEX_SETTING)
 }
 
+/// The key of the setting that asks for `ty`'s exact lookup.
+pub fn lookup_index_key(ty: &TypeName) -> String {
+    format!("{}{ty}", lakelands_api::seam::LOOKUP_INDEX_SETTING)
+}
+
+/// The key of the setting that asks for `ty`'s series pairs.
+pub fn series_index_key(ty: &TypeName) -> String {
+    format!("{}{ty}", lakelands_api::seam::SERIES_INDEX_SETTING)
+}
+
+/// The meta row by which an engine keeps the fields of `ty`'s order index
+/// the lake chose, as JSON (`Chosen`): in the projection and never in the
+/// log.
+pub fn chosen_mark(ty: &TypeName) -> String {
+    format!("chosen.{ty}")
+}
+
+/// The meta row by which an engine marks the position every type's chosen
+/// fields were last kept through. The fold moves it to the position it
+/// folds through only from the one it folds from; a writer that keeps no
+/// chosen field (a binary before them) moves its `sorted.<type>` marks
+/// and leaves this behind, and no fold moves it again. A chosen field is
+/// then read by no view, no step of choosing is taken, and a writer's open
+/// drops the choice and the mark.
+pub const CHOSEN_THROUGH: &str = "chosen_through";
+
+/// The fields a type's order index keeps for the fold: those its setting
+/// names and those the lake chose, `building` ones too for the fold and
+/// not for a read. The setting and the lake share the rows field by
+/// field: a field the host has set is the host's setting, and a chosen
+/// one goes when the setting comes. A chosen field the declaration no
+/// longer holds with a kind the index keeps is left out, and a view keeps
+/// none of its own.
+pub fn order_fields(
+    ty: &TypeName,
+    decl: &TypeDecl,
+    setting: Option<&Value>,
+    chosen: &Chosen,
+    building: bool,
+) -> Vec<FieldName> {
+    let held = |f: &&FieldName| {
+        (decl.fields.iter()).any(|d| d.name == **f && lakelands_api::seam::sortable(&d.ty.kind))
+    };
+    let chosen_building = chosen.building.iter().filter(|_| building);
+    let mut chosen_rows: Vec<FieldName> = chosen
+        .kept
+        .iter()
+        .chain(chosen_building)
+        .filter(held)
+        .cloned()
+        .collect();
+    let named = sorted_fields(ty, decl, setting);
+    if !named.is_empty() || decl.view.is_some() || kept_view(ty).is_some() {
+        // A field a setting is having built is no read's until its `Keep`;
+        // the fold keeps its rows from the setting's event on. A chosen
+        // field the setting does not name keeps its rows beside them.
+        let mut fields: Vec<FieldName> = match building {
+            true => named,
+            false => named
+                .into_iter()
+                .filter(|f| !chosen.setting_building.contains(f))
+                .collect(),
+        };
+        for f in chosen_rows {
+            if !fields.contains(&f) && !chosen.setting_building.contains(&f) {
+                fields.push(f);
+            }
+        }
+        // A series pair's derived field is no order index of the lake's
+        // own: a read, a rebuild of the setting and the chooser skip it.
+        fields.retain(|f| !is_series_field(f));
+        return fields;
+    }
+    chosen_rows.retain(|f| !is_series_field(f));
+    chosen_rows
+}
+
+/// A step of choosing as the chosen fields of a type take it: the fields
+/// after it, and whether it asks the engine to fill, or to delete the rows
+/// of, a field. A step that does nothing leaves them as they are. A
+/// `DropChunk` moves the field to `dropping` at its first chunk and leaves
+/// it there until the last, whose `None` answer removes it; a `Drop`
+/// clears the whole field in its one step, so the engine takes the mark
+/// away with it.
+#[allow(deprecated)]
+pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
+    let (kept, building) = (&mut chosen.kept, &mut chosen.building);
+    let setting = &mut chosen.setting_building;
+    let dropping = &mut chosen.dropping;
+    match step {
+        // A field a drop holds is the drop's until its last chunk: no
+        // `Start` of it builds rows the drop is clearing.
+        Choose::Start(f) if dropping.contains(f) => false,
+        Choose::Start(f) if !kept.contains(f) && !building.contains(f) => {
+            building.push(f.clone());
+            true
+        }
+        Choose::Keep(f) if setting.contains(f) => {
+            // A host's setting names the field: keeping it is no choice,
+            // and the read takes it from the setting, not from `kept`.
+            setting.retain(|b| b != f);
+            true
+        }
+        Choose::Keep(f) if building.contains(f) => {
+            building.retain(|b| b != f);
+            kept.push(f.clone());
+            true
+        }
+        Choose::Drop(f) | Choose::DropChunk { field: f, .. }
+            if kept.contains(f) || building.contains(f) || setting.contains(f) =>
+        {
+            kept.retain(|k| k != f);
+            building.retain(|b| b != f);
+            setting.retain(|b| b != f);
+            dropping.push(f.clone());
+            true
+        }
+        // A field the drop already holds takes the next chunk; the last
+        // chunk's engine removes the mark.
+        Choose::Drop(f) | Choose::DropChunk { field: f, .. } => dropping.contains(f),
+        Choose::Fill { field, .. } => building.contains(field) || setting.contains(field),
+        _ => false,
+    }
+}
+
 /// The meta row by which an engine that keeps `ty`'s order index in
 /// tables marks the position it was last kept through.
 pub fn sorted_mark(ty: &TypeName) -> String {
@@ -676,20 +1300,51 @@ pub fn setting_value(r: &StoredRecord) -> Option<&Value> {
 }
 
 /// The order index rows of a record's state: one per field of `fields`
-/// (the type's [`sorted_fields`]) that the state holds with a value, with
-/// its [`order_key`]. Retired and restricted states have rows too:
-/// [`admits`] decides on them when a page is read.
+/// (the type's [`sorted_fields`] and the derived fields of its
+/// [`series_fields`]) that the state holds with a value, with its
+/// [`order_key`]. A series field keeps one row a pair: eight bytes of the
+/// SHA-256 of its series token, then its order value's key, or `0xFF`
+/// where it holds no order value. Retired and restricted states have rows
+/// too: [`admits`] decides on them when a page is read.
 pub fn order_rows<'a>(
     fields: &'a [FieldName],
+    decl: Option<&TypeDecl>,
     record: &StoredRecord,
 ) -> Vec<(&'a FieldName, Vec<u8>)> {
     fields
         .iter()
         .filter_map(|f| {
+            if let Some((order, series)) = lakelands_api::seam::split_series_field(f.as_str()) {
+                return series_key(decl, record, order, series).map(|k| (f, k));
+            }
             let v = record.fields.get(f).filter(|v| !v.is_null())?;
             Some((f, order_key(v)))
         })
         .collect()
+}
+
+/// The key of a series pair's row for `record`: the first eight bytes of
+/// the SHA-256 of the series token, then the order value's [`order_key`].
+/// A record with a series and no order value has `0xFF` there, above every
+/// rank, so a series' records without one come last in key order and a
+/// window never reaches them. A series value that reads as no number has
+/// no row, as under the number lookup (097 §The series index).
+fn series_key(
+    decl: Option<&TypeDecl>,
+    record: &StoredRecord,
+    order: &str,
+    series: &str,
+) -> Option<Vec<u8>> {
+    let series = FieldName::from(series);
+    let kind = decl.and_then(|d| field_kind(d, &series)).copied();
+    let token = lookup_token(record.fields.get(&series)?, kind)?;
+    let mut key = Sha256::digest(token.as_bytes())[..8].to_vec();
+    let order = FieldName::from(order);
+    match record.fields.get(&order).filter(|v| !v.is_null()) {
+        Some(v) => key.extend(order_key(v)),
+        None => key.push(0xFF),
+    }
+    Some(key)
 }
 
 /// Whether an order index kept by [`order_rows`] for `fields` can answer
@@ -701,8 +1356,499 @@ pub fn by_order_index<'a>(fields: &[FieldName], scan: &'a Scan) -> Option<&'a Or
     (first.by == OrderBy::Value && fields.contains(&first.field)).then_some(first)
 }
 
+/// The kind `decl` declares `field` with.
+pub fn field_kind<'d>(decl: &'d TypeDecl, field: &FieldName) -> Option<&'d StorageKind> {
+    decl.fields
+        .iter()
+        .find(|f| f.name == *field)
+        .map(|f| &f.ty.kind)
+}
+
+/// The kind a narrowing of the storage's own text may take: any but a
+/// number or a decimal, whose JSON number is not the token the exact
+/// lookup keeps for it (097 §A number's exact lookup). Asked of a field
+/// the declaration gives no kind, it answers none, as it was before
+/// numbers were.
+pub fn text_kind(kind: Option<StorageKind>) -> Option<StorageKind> {
+    kind.filter(|k| !matches!(k, StorageKind::Number | StorageKind::Decimal))
+}
+
+/// A filter's bound on an ordered field: the inclusive interval of
+/// [`order_key`]s a page ordered by the field reads, and outside which it
+/// need not read at all
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// window).
+///
+/// `filter`'s `and` terms `field op literal`, with `>=`, `>`, `<=`, `<`
+/// or `=`, narrow it; the ends are the terms' cut keys, so they hold
+/// every value the comparison admits and may hold rows it rejects, which
+/// the rulebook still rejects. Three places take the field's kind:
+///
+/// - A text or reference field takes no window, and neither does a field
+///   of any other kind: a comparison between two ranks of text is
+///   byte-wise, and narrowing would drop values the rulebook admits.
+/// - A date or date-time field holds rank 1. Only a literal that reads as
+///   an instant and not as a number narrows it, the midnight a day reads
+///   among them.
+/// - A number or decimal field can hold more than rank 0. A range term
+///   narrows only under a number literal, which compares with no unread
+///   value; a text literal narrows only `=`, and only if it reads as a
+///   number. A value no `Decimal` reads is of another rank and is not
+///   admitted by such a comparison.
+///
+/// A side no term bounds ends at its rank's edge, so a value of a higher
+/// rank is outside the window. Two terms whose cut keys cross (`x >= 10
+/// and x <= 5`) admit no value, and narrow nothing: the rulebook answers
+/// no row. `None` when no term narrows the field.
+pub fn window(filter: &Expr, field: &FieldName, kind: &StorageKind) -> Option<Window> {
+    let rank = match kind {
+        StorageKind::Number | StorageKind::Decimal => 0,
+        StorageKind::DateTime | StorageKind::Date => 1,
+        _ => return None,
+    };
+    let mut lo: Option<Vec<u8>> = None;
+    let mut hi: Option<Vec<u8>> = None;
+    for (op, literal) in window_terms(filter, field) {
+        let Some(key) = narrowing_key(literal, op, kind) else {
+            continue;
+        };
+        match op {
+            CmpOp::Ge | CmpOp::Gt => {
+                lo = Some(lo.map_or_else(|| key.clone(), |l| l.max(key.clone())))
+            }
+            CmpOp::Le | CmpOp::Lt => {
+                hi = Some(hi.map_or_else(|| key.clone(), |h| h.min(key.clone())))
+            }
+            CmpOp::Eq => {
+                lo = Some(lo.map_or_else(|| key.clone(), |l| l.max(key.clone())));
+                hi = Some(hi.map_or_else(|| key.clone(), |h| h.min(key.clone())));
+            }
+            _ => {}
+        }
+    }
+    if lo.is_none() && hi.is_none() {
+        return None;
+    }
+    let window = Window {
+        field: field.clone(),
+        lo: lo.unwrap_or_else(|| vec![rank]),
+        hi: hi.unwrap_or_else(|| rank_edge(rank)),
+    };
+    // Terms whose cut keys cross admit no value at all; the rulebook
+    // answers no row, and a range whose start is above its end is no
+    // window (and would panic a set's range).
+    if window.lo > window.hi {
+        return None;
+    }
+    Some(window)
+}
+
+/// The windows `filter` opens on the fields `decl` declares, one per
+/// field a term bounds, in the declaration's order. A read takes the
+/// first its engine keeps an order index for
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The smaller side).
+pub fn bound_windows(decl: &TypeDecl, filter: Option<&Expr>) -> Vec<Window> {
+    let Some(filter) = filter else {
+        return Vec::new();
+    };
+    decl.fields
+        .iter()
+        .filter_map(|f| window(filter, &f.name, &f.ty.kind))
+        .collect()
+}
+
+/// The records among `records` that `scan` admits: how a read by key
+/// (`get_many`, which applies nothing) is held to the scan's flags,
+/// `valid_at`, exact pairs and filter. Adds each record read to
+/// `rows_read`, in the order given
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §Who counts and who admits).
+pub fn admitted(
+    decl: Option<&TypeDecl>,
+    records: Vec<StoredRecord>,
+    scan: &Scan,
+) -> Vec<StoredRecord> {
+    count_read(records.len());
+    records
+        .into_iter()
+        .filter(|r| admits(decl, r, scan))
+        .collect()
+}
+
+/// The window's road costs about a quarter of today's, so a window of
+/// four times fewer rows or less takes it
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The smaller side).
+pub const WINDOW_RATIO: u64 = 4;
+
+/// The rows the choice counts a window to in its first round; four times
+/// as many each round.
+pub const WINDOW_ROUND: u64 = 4096;
+
+/// The index rows a walk of a window's keys answers at most in one batch:
+/// a short batch is the whole window.
+pub const WINDOW_BATCH: u32 = 1024;
+
+/// Whether a read over a window takes the window's road, asked in rounds:
+/// `count(l)` answers the window counted to `l` and the other side to
+/// four times what the window counted, `ceiling` the most rows `l` may
+/// reach. The window's road is taken when it is whole and four times its
+/// rows fit inside the other side; the other side when it is short or the
+/// window outgrows `ceiling`. `None` when no round answered: the engine
+/// keeps no window
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §The smaller side).
+pub fn takes_window<E>(
+    ceiling: u64,
+    mut count: impl FnMut(u64) -> Result<Option<WindowSides>, E>,
+) -> Result<Option<bool>, E> {
+    let ceiling = ceiling.max(1);
+    let mut l = WINDOW_ROUND.min(ceiling);
+    loop {
+        let Some(sides) = count(l)? else {
+            return Ok(None);
+        };
+        if sides.whole {
+            // The whole window is counted: four times it fits inside the
+            // other side, or does not, and either answer stands.
+            return Ok(Some(
+                sides.inside.saturating_mul(WINDOW_RATIO) <= sides.other,
+            ));
+        }
+        // The window outgrew the round, and the other side did not reach
+        // four times what was counted: it is the smaller side.
+        if sides.other < sides.inside.saturating_mul(WINDOW_RATIO) {
+            return Ok(Some(false));
+        }
+        // Both were cut: count further, or give up at the ceiling.
+        if l >= ceiling {
+            return Ok(Some(false));
+        }
+        l = l.saturating_mul(WINDOW_RATIO).min(ceiling);
+    }
+}
+
+/// The greatest key a value of `rank` can have: a key of a higher rank is
+/// greater and so outside a window ending here.
+fn rank_edge(rank: u8) -> Vec<u8> {
+    let mut key = vec![rank];
+    key.extend(std::iter::repeat_n(0xff, ORDER_KEY_BYTES - 1));
+    key
+}
+
+/// A filter's `and` terms `field op literal`, `and` nested, with the
+/// operator as the field's side sees it: a literal on the left is
+/// reversed.
+fn window_terms<'e>(filter: &'e Expr, field: &FieldName) -> Vec<(CmpOp, &'e Literal)> {
+    fn walk<'e>(e: &'e Expr, field: &FieldName, out: &mut Vec<(CmpOp, &'e Literal)>) {
+        match e {
+            Expr::And { args } => args.iter().for_each(|a| walk(a, field, out)),
+            Expr::Cmp { cmp, lhs, rhs } => {
+                let path_of = |e: &'e Expr| match e {
+                    Expr::Path { path } if path.len() == 1 && path[0] == *field => Some(()),
+                    _ => None,
+                };
+                match (lhs.as_ref(), rhs.as_ref()) {
+                    (lhs, Expr::Lit { value }) if path_of(lhs).is_some() => {
+                        out.push((*cmp, value));
+                    }
+                    (Expr::Lit { value }, rhs) if path_of(rhs).is_some() => {
+                        out.push((reversed(*cmp), value));
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(filter, field, &mut out);
+    out
+}
+
+/// `op` with its sides swapped.
+fn reversed(op: CmpOp) -> CmpOp {
+    match op {
+        CmpOp::Lt => CmpOp::Gt,
+        CmpOp::Le => CmpOp::Ge,
+        CmpOp::Gt => CmpOp::Lt,
+        CmpOp::Ge => CmpOp::Le,
+        CmpOp::Eq | CmpOp::Ne => op,
+    }
+}
+
+/// `literal`'s [`order_key`] when the evaluator compares it with a value
+/// of `kind` under `op`; `None` when it narrows nothing (see [`window`]).
+fn narrowing_key(literal: &Literal, op: CmpOp, kind: &StorageKind) -> Option<Vec<u8>> {
+    use crate::expr::eval::Val;
+    let value = match kind {
+        StorageKind::DateTime | StorageKind::Date => {
+            let Literal::Text(t) = literal else {
+                return None;
+            };
+            // A text that reads as a number compares with a value of this
+            // kind only by its bytes; it narrows nothing.
+            if t.parse::<rust_decimal::Decimal>().is_ok() {
+                return None;
+            }
+            Val::Time(Timestamp::denoted(t).ok()?)
+        }
+        StorageKind::Number | StorageKind::Decimal => match literal {
+            Literal::Number(n) => Val::Num(n.parse::<rust_decimal::Decimal>().ok()?),
+            Literal::Text(t) if op == CmpOp::Eq => {
+                Val::Num(t.parse::<rust_decimal::Decimal>().ok()?)
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let mut key = crate::expr::order::val_key(&value);
+    // The index keeps the key cut as [`order_key`] cuts it; a window bounds
+    // what the index holds, so its ends are cut the same.
+    key.truncate(ORDER_KEY_BYTES);
+    Some(key)
+}
+
+/// What sorts above a date's whole day in a group key, and below the next
+/// day: a date field's key may hold the day's text (`2026-01-05`) or an
+/// instant of that day's zoned bucket (`2026-01-05T00:00:00Z`), whose
+/// next byte is `T`, under this byte. A key's date component holds no
+/// `~` of its own.
+const ABOVE_DAY: &str = "~";
+
+/// The interval of group keys `filter` admits, for a kept view whose group
+/// fields `decl` keys its records by, in their declared order
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`
+/// §What narrows, and the interval it makes): a from, inclusive, and an
+/// until, exclusive, each open where no term fixes it, and `None` where no
+/// term narrows the key at all. The interval is a superset of the keys the
+/// filter admits; the rulebook still decides every row.
+///
+/// The filter is read as the conjunction of its `and` terms, each a
+/// comparison of one group field with one literal. The group fields are
+/// walked in the key's order, and the walk stops at the first field that
+/// does not narrow: a field behind a bound never narrows alone. The two
+/// ends are built apart — the lower from `=`, `>=` and `>`, the upper from
+/// `=`, `<=` and `<`.
+///
+/// - A text or reference field narrows an exact only, and only a literal
+///   that reads as neither a number nor an instant: `compare` coerces two
+///   texts that read alike, so `'0123'` is `'123'`, and a literal that
+///   reads as an instant equals every spelling of it.
+/// - A date-time or date field takes every comparison record 097 admits a
+///   window for, a literal that reads as an instant and not as a number.
+///   A date's component is the literal instant's UTC day. Its key may
+///   hold that day's text or an instant of that day: a group term's
+///   value is never landed, so a `date_bucket` term's zoned start
+///   (record 101) is what the key holds. An upper end is therefore the
+///   day's prefix ([`ABOVE_DAY`]), which sorts above the day's text and
+///   every instant text of that day and below the next day, and an
+///   exact on a date ends the walk, since a later component is not
+///   reachable past both spellings.
+/// - A boolean field narrows an exact given as a boolean, and takes no
+///   bound.
+/// - A number or decimal field narrows nothing, its key order not being
+///   the number order; nor does a text range, the key rule's escapes not
+///   keeping the text's order, nor `or`, `not`, `in`, `!=`, a term under a
+///   function or a comparison of two paths.
+pub fn key_range(decl: &TypeDecl, filter: &Expr) -> Option<KeyRange> {
+    key_interval(decl, filter).0
+}
+
+/// [`key_range`], with the number of group fields the filter's exacts fix
+/// before the first field that does not narrow: the fields a page ordered
+/// by the key's order must ask for after ([`orders_by_group_key`]).
+fn key_interval(decl: &TypeDecl, filter: &Expr) -> (Option<KeyRange>, usize) {
+    let fields = &decl.key;
+    let mut fixed: Vec<String> = Vec::new();
+    // Where the walk stopped before a field: the exacts it fixed are
+    // followed by another field, and the lower end keeps the `:` that
+    // excludes a value extending the last of them.
+    let mut stopped: Option<usize> = None;
+    let mut lower: Option<String> = None;
+    let mut upper: Option<String> = None;
+    // Whether the last exact is a date's: the walk stops there, and the
+    // ends are made on the day's prefix, which holds both spellings of
+    // the day a key may carry ([`ABOVE_DAY`]).
+    let mut day_exact = false;
+    for (i, field) in fields.iter().enumerate() {
+        let Some(kind) = field_kind(decl, field) else {
+            stopped = Some(i);
+            break;
+        };
+        let terms = window_terms(filter, field);
+        let exact = terms.iter().find_map(|(op, literal)| {
+            (*op == CmpOp::Eq)
+                .then(|| group_component(literal, *op, kind))
+                .flatten()
+        });
+        if let Some(component) = exact {
+            fixed.push(component);
+            if matches!(kind, StorageKind::Date) {
+                day_exact = true;
+                stopped = Some(i);
+                break;
+            }
+            continue;
+        }
+        // The tightest cut of each end among the field's terms.
+        for (op, literal) in &terms {
+            let Some(component) = group_component(literal, *op, kind) else {
+                continue;
+            };
+            match op {
+                CmpOp::Ge | CmpOp::Gt => {
+                    lower = Some(match lower {
+                        Some(l) => l.max(component),
+                        None => component,
+                    })
+                }
+                CmpOp::Le | CmpOp::Lt => {
+                    // An upper end on a date holds the whole day: the day's
+                    // text and an instant of it sort under the prefix, and
+                    // the next day does not.
+                    let component = match kind {
+                        StorageKind::Date => format!("{component}{ABOVE_DAY}"),
+                        _ => component,
+                    };
+                    upper = Some(match upper {
+                        Some(u) => u.min(component),
+                        None => component,
+                    })
+                }
+                _ => {}
+            }
+        }
+        // A bound ends the walk for both ends, as a field with no term does.
+        stopped = Some(i);
+        break;
+    }
+    let joined = fixed.join(":");
+    let with = |bound: &str| match fixed.is_empty() {
+        true => bound.to_owned(),
+        false => format!("{joined}:{bound}"),
+    };
+    let from = match lower {
+        Some(bound) => Some(with(&bound)),
+        None if fixed.is_empty() => None,
+        // A date's exact is held by the day's prefix, which a key may
+        // extend with an instant's `T` as well as with the `:` that joins
+        // another field: the lower starts at the day itself.
+        None if day_exact => Some(joined.clone()),
+        // The last exact is followed by another field.
+        None if stopped.is_some() => Some(format!("{joined}:")),
+        None => Some(joined.clone()),
+    };
+    let until = match upper {
+        Some(bound) => Some(format!("{};", with(&bound))),
+        None if fixed.is_empty() => None,
+        // The day's prefix holds the day's text and every instant text of
+        // that day, and sorts below the next day.
+        None if day_exact => Some(format!("{joined}{ABOVE_DAY};")),
+        None => Some(format!("{joined};")),
+    };
+    let range = (from.is_some() || until.is_some()).then(|| KeyRange {
+        from: from.map(RecordKey::from),
+        until: until.map(RecordKey::from),
+    });
+    (range, fixed.len())
+}
+
+/// Whether a page of a kept view keyed by `decl.key`, filtered by `filter`
+/// and ordered `order`, is read from the group key rather than from an
+/// order index
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`
+/// §A page in the group fields' order). The page must ask for the group
+/// fields the filter's exacts leave, in the declared order and ascending,
+/// and the key's bytes must order each of them as the comparator does:
+/// every one a date-time, date or boolean field. A text or reference
+/// field's bytes order by spelling — two values that read as numbers or
+/// as one instant compare equal or by number — and a number or decimal
+/// field's by its written text (`9` after `10`), so those keep their page
+/// on the order index.
+pub fn orders_by_group_key(decl: &TypeDecl, filter: Option<&Expr>, order: &[Order]) -> bool {
+    let remaining = &decl.key[fixed_fields(decl, filter)..];
+    !order.is_empty()
+        && order.len() == remaining.len()
+        && order.iter().zip(remaining).all(|(o, field)| {
+            o.by == OrderBy::Value && o.dir == Direction::Asc && o.field == *field
+        })
+        && remaining.iter().all(|field| {
+            matches!(
+                field_kind(decl, field),
+                Some(StorageKind::DateTime | StorageKind::Date | StorageKind::Boolean)
+            )
+        })
+}
+
+/// How many of a kept view's group fields a filter's exacts fix before the
+/// first field that does not narrow ([`key_range`]).
+fn fixed_fields(decl: &TypeDecl, filter: Option<&Expr>) -> usize {
+    filter.map_or(0, |f| key_interval(decl, f).1.min(decl.key.len()))
+}
+
+/// The key component `literal` fixes for a group field of `kind` compared
+/// by `op`, or `None` where the comparison narrows nothing ([`key_range`]).
+fn group_component(literal: &Literal, op: CmpOp, kind: &StorageKind) -> Option<String> {
+    let value = match kind {
+        StorageKind::Text | StorageKind::Reference => {
+            if op != CmpOp::Eq {
+                return None;
+            }
+            let Literal::Text(t) = literal else {
+                return None;
+            };
+            // A text that reads alike as a number or an instant compares
+            // coerced, and narrows nothing.
+            if t.parse::<rust_decimal::Decimal>().is_ok() || Timestamp::denoted(t).is_ok() {
+                return None;
+            }
+            Value::String(t.clone())
+        }
+        StorageKind::DateTime | StorageKind::Date => {
+            if !matches!(
+                op,
+                CmpOp::Eq | CmpOp::Ge | CmpOp::Gt | CmpOp::Le | CmpOp::Lt
+            ) {
+                return None;
+            }
+            let Literal::Text(t) = literal else {
+                return None;
+            };
+            if t.parse::<rust_decimal::Decimal>().is_ok() {
+                return None;
+            }
+            // The one written form's years only: a component written
+            // outside them (`10000-…`, `-0001-…`) does not sort where the
+            // stored, canonicalised one does, and a bound on the wrong
+            // side would exclude rows the filter admits. Such a literal
+            // narrows nothing, and the rulebook still decides every row.
+            let at: Timestamp = Timestamp::parse(t).ok()?;
+            match kind {
+                // A date's component is the instant's UTC day, floored.
+                StorageKind::Date => {
+                    let (y, m, d) = at.date();
+                    Value::String(format!("{y:04}-{m:02}-{d:02}"))
+                }
+                _ => Value::String(at.to_string()),
+            }
+        }
+        StorageKind::Boolean => match (op, literal) {
+            (CmpOp::Eq, Literal::Bool(b)) => Value::Bool(*b),
+            _ => return None,
+        },
+        // A number's components are its text and a decimal's written form,
+        // neither in the order the field compares.
+        _ => return None,
+    };
+    lakelands_api::key::key_component(&value)
+}
+
 thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ROWS_WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static COUNT_WALKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static BATCHES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static HOLDER_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -752,6 +1898,275 @@ pub fn count_holder_read() {
 /// the type or every match; it costs one add per call or batch.
 pub fn rows_read() -> u64 {
     ROWS_READ.with(|n| n.get())
+}
+
+/// The index rows the reads on this thread walked: a range statement adds
+/// what it hands, [`Holders::Few`] the holders one of its statements
+/// passes, [`Holders::Many`] the count of the range it walked while a
+/// check asked for walks, and the memory engine what it hands
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §What
+/// `rows_read` counts, and what is added). [`rows_read`] reads what a read
+/// was handed; this reads what it passed, so a check can hold that a
+/// window's page does not grow with the rows outside its bound. It costs
+/// one add per statement.
+pub fn rows_walked() -> u64 {
+    ROWS_WALKED.with(|n| n.get())
+}
+
+/// [`rows_walked`] over every thread of the process: for a store check,
+/// whose reads go through a store that runs them on its blocking pool. It
+/// counts what other checks running at the same time walk too.
+pub fn rows_walked_in_process() -> u64 {
+    ROWS_WALKED_IN_PROCESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static ROWS_WALKED_IN_PROCESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Whether a check on this thread asked engines to count the rows a walk
+/// passes: off in a product read, where [`Holders::Many`] does not run
+/// the count that would tell it.
+pub fn counting_walks() -> bool {
+    COUNT_WALKS.with(|on| on.get())
+}
+
+/// Asks engines on this thread to count walks, or stops asking. A check
+/// that counts walks turns it on around the read and off after it.
+pub fn count_walks(on: bool) {
+    COUNT_WALKS.with(|c| c.set(on));
+}
+
+/// Counts `n` index rows walked for [`rows_walked`]. An engine calls it
+/// where it passes index rows: a range statement with what it handed,
+/// [`Holders::Few`] with its holders once a statement, [`Holders::Many`]
+/// with its count once a walk, and the memory engine with what it hands.
+pub fn count_walk(n: usize) {
+    ROWS_WALKED.with(|c| c.set(c.get() + n as u64));
+    ROWS_WALKED_IN_PROCESS.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The rows of one pair's several series, merged into the one stream a
+/// page reads: sort key in the field's direction, then record key; asked
+/// by key (`by_key`), the record key alone, which is how the records
+/// without an order value come last. Each series is read on its own and
+/// only as far ahead as the merge needs: the first ask is the batch
+/// shared among the series, plus one, and a series whose rows run out is
+/// asked again for twice the batch it first had, never for more than its
+/// share of what the call still lacks plus one
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §`in`).
+pub struct MergedRows {
+    series: usize,
+    dir: Direction,
+    by_key: bool,
+    /// Where each series' next read starts, after the last row it was
+    /// handed.
+    at: Vec<Option<(Vec<u8>, String)>>,
+    /// Whether each series has no row past its last read.
+    done: Vec<bool>,
+    /// The rows read and not yet merged, each in its series' order.
+    pending: Vec<VecDeque<(Vec<u8>, StoredRecord)>>,
+    /// How many rows each series is asked for next.
+    want: Vec<u32>,
+    /// The position last handed on, which the next call continues from.
+    served: Option<(Vec<u8>, String)>,
+    started: bool,
+}
+
+impl MergedRows {
+    /// A merge over `series` streams in `dir`, of the value's sort key and
+    /// the record key, or of the record key alone where `by_key`.
+    pub fn new(series: usize, dir: Direction, by_key: bool) -> Self {
+        Self {
+            series,
+            dir,
+            by_key,
+            at: vec![None; series],
+            done: vec![false; series],
+            pending: (0..series).map(|_| VecDeque::new()).collect(),
+            want: vec![0; series],
+            served: None,
+            started: false,
+        }
+    }
+
+    /// The next at most `n` rows after `from`, `read(series, from, n)`
+    /// answering one series' rows after `from`, its value key stripped of
+    /// the series' prefix.
+    pub fn next<E>(
+        &mut self,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+        mut read: impl FnMut(
+            usize,
+            Option<(&[u8], &str)>,
+            u32,
+        ) -> Result<Vec<(Vec<u8>, StoredRecord)>, E>,
+    ) -> Result<Vec<(Vec<u8>, StoredRecord)>, E> {
+        let from = from.map(|(k, r)| (k.to_vec(), r.to_owned()));
+        if !self.started || from != self.served {
+            self.reset(n);
+            self.started = true;
+        }
+        let mut out = Vec::new();
+        while (out.len() as u32) < n {
+            for i in 0..self.series {
+                if self.done[i] || !self.pending[i].is_empty() {
+                    continue;
+                }
+                // What this call still lacks, shared among the series, and
+                // one to know whether a series has more: no series is asked
+                // past that, however far its next batch would have grown.
+                let left = n.saturating_sub(out.len() as u32).saturating_add(1);
+                let share = left.div_ceil((self.series as u32).max(1)).saturating_add(1);
+                let ask = self.want[i].max(1).min(share);
+                let start = self.at[i].clone().or_else(|| from.clone());
+                let at = start.as_ref().map(|(k, r)| (k.as_slice(), r.as_str()));
+                let rows = read(i, at, ask)?;
+                self.done[i] = (rows.len() as u32) < ask;
+                if let Some((k, r)) = rows.last() {
+                    self.at[i] = Some((k.clone(), r.key.to_string()));
+                }
+                self.pending[i].extend(rows);
+                self.want[i] = self.want[i].saturating_mul(2).min(2048);
+            }
+            let least = (0..self.series)
+                .filter(|i| !self.pending[*i].is_empty())
+                .min_by(|a, b| {
+                    let (a, b) = (self.pending[*a].front(), self.pending[*b].front());
+                    match (a, b) {
+                        (Some(a), Some(b)) => self.order(a, b),
+                        _ => Ordering::Equal,
+                    }
+                });
+            let Some(i) = least else {
+                break;
+            };
+            if let Some(row) = self.pending[i].pop_front() {
+                out.push(row);
+            }
+        }
+        self.served = out.last().map(|(k, r)| (k.clone(), r.key.to_string()));
+        Ok(out)
+    }
+
+    /// Forgets every series' read, so that the next fill starts from
+    /// `n`'s batch.
+    fn reset(&mut self, n: u32) {
+        self.pending.iter_mut().for_each(VecDeque::clear);
+        self.done.fill(false);
+        self.at.fill_with(|| None);
+        let base = (n / self.series.max(1) as u32).saturating_add(1);
+        self.want.fill(base.max(1));
+        self.served = None;
+    }
+
+    /// The rulebook's order between two rows: the sort key in `dir`, then
+    /// the record key; by key, the record key alone.
+    fn order(&self, a: &(Vec<u8>, StoredRecord), b: &(Vec<u8>, StoredRecord)) -> Ordering {
+        let values = if self.by_key {
+            Ordering::Equal
+        } else if self.dir == Direction::Desc {
+            b.0.cmp(&a.0)
+        } else {
+            a.0.cmp(&b.0)
+        };
+        values.then_with(|| a.1.key.cmp(&b.1.key))
+    }
+}
+
+/// The keys of a pair's rows inside `window`, at most `n`, after `after`:
+/// the series walked one after another, from the one `after` stopped in,
+/// `read(series, from, n)` answering one series' index rows after `from`.
+/// A window's keys are read as a set — a count and an aggregate sort them
+/// themselves, and a page in key order sorts them — so the series' order
+/// inside the batch is no part of the answer, and the walk pays one seek a
+/// series (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+/// §`in`).
+pub fn series_window_keys<E>(
+    seek: &SeriesSeek,
+    window: &Window,
+    after: Option<&WindowAt>,
+    n: u32,
+    mut read: impl FnMut(
+        usize,
+        &Window,
+        Option<(&[u8], &str)>,
+        u32,
+    ) -> Result<Vec<(Vec<u8>, RecordKey)>, E>,
+) -> Result<WindowBatch, E> {
+    let (first, mut from) = match after {
+        Some(a) => match seek.series_of(&a.sort_key) {
+            Some(i) => (i, Some((a.sort_key.clone(), a.key.to_string()))),
+            None => (0, None),
+        },
+        None => (0, None),
+    };
+    let mut keys = Vec::new();
+    let mut last = after.cloned();
+    let mut done = true;
+    for i in first..seek.series.len() {
+        if keys.len() as u32 >= n {
+            done = false;
+            break;
+        }
+        let want = n - keys.len() as u32;
+        let at = from.as_ref().map(|(k, r)| (k.as_slice(), r.as_str()));
+        let rows = read(i, &seek.bounds(i, Some(window)), at, want)?;
+        let full = rows.len() as u32 == want;
+        for (sort_key, key) in rows {
+            last = Some(WindowAt {
+                sort_key,
+                key: key.clone(),
+            });
+            keys.push(key);
+        }
+        from = None;
+        if full {
+            done = false;
+            break;
+        }
+    }
+    Ok(WindowBatch {
+        keys,
+        after: last,
+        done,
+    })
+}
+
+/// The two sides of a pair's window: `inside`, its rows counted a bound
+/// `l + 1`, and `other`, the pair's whole holding of the named series
+/// counted a bound four times `inside`, the series one after another and
+/// every series' tail included. `count(series, window)` counts one
+/// series' rows in a window.
+pub fn series_window_sides<E>(
+    seek: &SeriesSeek,
+    window: &Window,
+    l: u64,
+    mut count: impl FnMut(usize, &Window, u64) -> Result<u64, E>,
+) -> Result<WindowSides, E> {
+    let mut inside = 0;
+    for i in 0..seek.series.len() {
+        let left = l.saturating_add(1).saturating_sub(inside);
+        if left == 0 {
+            break;
+        }
+        inside += count(i, &seek.bounds(i, Some(window)), left)?.min(left);
+    }
+    let whole = inside <= l;
+    let cap = inside.saturating_mul(WINDOW_RATIO);
+    let mut other = 0;
+    for i in 0..seek.series.len() {
+        let left = cap.saturating_sub(other);
+        if left == 0 {
+            break;
+        }
+        other += count(i, &seek.holders(i), left)?.min(left);
+    }
+    count_walk((inside + other) as usize);
+    Ok(WindowSides {
+        inside,
+        whole,
+        other,
+    })
 }
 
 /// The records the edge walks on this thread were handed to find a
@@ -848,8 +2263,9 @@ pub enum Holders<'a> {
     All,
     /// More than [`FEW_HOLDERS`] hold the text in the field.
     Many(&'a FieldName, &'a str),
-    /// At most [`FEW_HOLDERS`] hold it.
-    Few(&'a FieldName, &'a str),
+    /// At most [`FEW_HOLDERS`] hold it, and this many do: the count
+    /// [`Holders::of`] read, which a walk of one statement passes.
+    Few(&'a FieldName, &'a str, u64),
 }
 
 /// The most records holding a page's exact text that the page reads from
@@ -870,10 +2286,11 @@ impl<'a> Holders<'a> {
         let Some((field, text)) = lookup else {
             return Ok(Holders::All);
         };
-        Ok(if count(field, text, FEW_HOLDERS + 1)? > FEW_HOLDERS {
+        let held = count(field, text, FEW_HOLDERS + 1)?;
+        Ok(if held > FEW_HOLDERS {
             Holders::Many(field, text)
         } else {
-            Holders::Few(field, text)
+            Holders::Few(field, text, held)
         })
     }
 
@@ -881,7 +2298,7 @@ impl<'a> Holders<'a> {
     pub fn text(&self) -> Option<(&'a str, &'a str)> {
         match *self {
             Holders::All => None,
-            Holders::Many(f, t) | Holders::Few(f, t) => Some((f.as_str(), t)),
+            Holders::Many(f, t) | Holders::Few(f, t, _) => Some((f.as_str(), t)),
         }
     }
 }
@@ -1220,8 +2637,19 @@ impl PlaceKey {
     }
 }
 
+/// The keys a field-carried relation reads in `value`: a string is one
+/// key, an array its distinct string elements in key order, and anything
+/// else, an element that is no string included, none.
+pub fn keys_of(value: &Value) -> BTreeSet<&str> {
+    match value {
+        Value::String(key) => BTreeSet::from([key.as_str()]),
+        Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
 /// The links `record` declares over the relations of `decl` carried by a
-/// reference field, over `relation` or all of them.
+/// field, over `relation` or all of them: one per key of the field.
 pub fn links_of(
     decl: &TypeDecl,
     record: &StoredRecord,
@@ -1230,9 +2658,9 @@ pub fn links_of(
     decl.relations
         .iter()
         .filter(|r| relation.is_none_or(|want| *want == r.name))
-        .filter_map(|r| {
-            let to = record.fields.get(r.via.as_ref()?)?.as_str()?;
-            Some(Edge {
+        .filter_map(|r| Some((r, record.fields.get(r.via.as_ref()?)?)))
+        .flat_map(|(r, value)| {
+            keys_of(value).into_iter().map(|to| Edge {
                 from: (record.ty.clone(), record.key.clone()),
                 relation: r.name.clone(),
                 to: (r.target.clone(), RecordKey::from(to)),
@@ -1244,7 +2672,7 @@ pub fn links_of(
 
 /// The links that point at the record `ty` `key`, over `relation` or all:
 /// from the records of every type in `types` that declares a relation to
-/// `ty` carried by a reference field, `records_of` answering a type's
+/// `ty` carried by a field, `records_of` answering a type's
 /// records at the view's position. The one place that decides which types
 /// can link here and which of their links do.
 pub fn in_links<'a, E>(
@@ -1285,11 +2713,14 @@ pub fn order_edges(edges: &mut Vec<Edge>) {
 
 /// The distinct tokens of `text` under the language `tag`.
 pub fn tokens(text: &str, tag: &str) -> BTreeSet<String> {
-    crate::stem::stem_text(text, tag)
-        .split(' ')
-        .filter(|t| !t.is_empty())
-        .map(str::to_owned)
-        .collect()
+    token_list(text, tag).collect()
+}
+
+/// The tokens of `text` under the language `tag`, in text order, repeats
+/// kept: a field's length and a token's frequency in it count these.
+fn token_list(text: &str, tag: &str) -> impl Iterator<Item = String> {
+    let terms = crate::stem::stem_tokens(text, tag).map(|(_, _, term)| term);
+    terms.filter(|t| !t.is_empty())
 }
 
 /// The distinct tokens a record's searchable text fields hold under its
@@ -1309,55 +2740,242 @@ fn field_tokens<'r>(
     fields: Option<&'r [FieldName]>,
 ) -> impl Iterator<Item = (&'r FieldName, BTreeSet<String>)> {
     let tag = decl.language.as_deref().unwrap_or("");
+    searched_texts(decl, &record.fields, fields).map(move |(f, text)| (f, tokens(text, tag)))
+}
+
+/// The text each of a record's searchable fields holds in `values`, only
+/// those `fields` names when it names any: the fields a search reads.
+fn searched_texts<'d, 'v>(
+    decl: &'d TypeDecl,
+    values: &'v BTreeMap<FieldName, Value>,
+    fields: Option<&'d [FieldName]>,
+) -> impl Iterator<Item = (&'d FieldName, &'v str)> {
     decl.fields
         .iter()
         .filter(move |f| f.searchable && fields.is_none_or(|named| named.contains(&f.name)))
-        .filter_map(move |f| Some((&f.name, tokens(record.fields.get(&f.name)?.as_str()?, tag))))
+        .filter_map(move |f| Some((&f.name, values.get(&f.name)?.as_str()?)))
 }
 
-/// Full-text hits, as `docs/seams.md` §`ranked` defines them: the
-/// records of one type as they stand at the head, `decl` the type's
-/// declaration there, are hits when they are live and their searchable
-/// text holds a query token — the text of the searchable fields `fields`
-/// names, when it names any. A restricted record is a candidate like any
-/// other; whether a principal may see it is the store's, as for `find`
-/// and `get`. A hit scores each distinct query token its text holds at
-/// the weight of the heaviest field holding it, `weights` giving each
-/// field's and 1 for one it does not name, summed in the tokens' order;
-/// best first, ties by key, at most `k`. With every weight 1 that is the
-/// count of the tokens it holds.
-///
-/// An engine may hand in any superset of the hits as `head`: a record
-/// whose named fields hold no query token scores nothing and is dropped
-/// here, before the ranking is cut at `k`.
-pub fn lexical<'a>(
+/// Where a search's `query` tokens stand in `record`, as its reader is
+/// answered it: in each of the fields [`field_tokens`] walks for `fields`
+/// that the record holds, every token the pipeline under `tag` makes a
+/// query token of is a match, in text order, its first [`MATCH_SPANS`]
+/// answered as spans and every one counted. A field none matched is not
+/// named, so neither is one the record does not answer its reader.
+pub fn matched(
     decl: &TypeDecl,
-    head: impl IntoIterator<Item = &'a StoredRecord>,
+    record: &Record,
+    fields: &[FieldName],
+    query: &BTreeSet<String>,
+    tag: &str,
+) -> BTreeMap<FieldName, Matched> {
+    let at = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let mut out = BTreeMap::new();
+    for (field, text) in searched_texts(decl, &record.fields, Some(fields)) {
+        let (mut spans, mut count) = (Vec::new(), 0u32);
+        let found = crate::stem::stem_tokens(text, tag).filter(|t| query.contains(&t.2));
+        for (start, end, _) in found {
+            count = count.saturating_add(1);
+            if spans.len() < MATCH_SPANS {
+                spans.push(Span {
+                    start: at(start),
+                    end: at(end),
+                });
+            }
+        }
+        if count > 0 {
+            out.insert(field.clone(), Matched { spans, count });
+        }
+    }
+    out
+}
+
+/// Each field of a record that a search of `fields` reads and that holds
+/// a token, in its declaration's order: its length and how often it
+/// holds each token of `query`, repeats counted. No score reads how often
+/// a field holds a token the query does not ask for, so none is counted.
+fn field_counts<'d>(
+    decl: &'d TypeDecl,
+    record: &StoredRecord,
+    fields: Option<&'d [FieldName]>,
+    query: &BTreeSet<String>,
+) -> impl Iterator<Item = (&'d FieldName, u64, BTreeMap<String, u64>)> {
+    let tag = decl.language.as_deref().unwrap_or("");
+    searched_texts(decl, &record.fields, fields).filter_map(move |(f, text)| {
+        let (mut len, mut tf) = (0, BTreeMap::new());
+        for t in token_list(text, tag) {
+            len += 1;
+            if query.contains(&t) {
+                *tf.entry(t).or_insert(0u64) += 1;
+            }
+        }
+        (len > 0).then_some((f, len, tf))
+    })
+}
+
+/// The tokens each searchable field of `record` holds, repeats counted,
+/// for the fields that hold any: what an engine keeps of a head's text and
+/// adds into its counts of the type's field.
+pub fn text_lengths(decl: &TypeDecl, record: &StoredRecord) -> Vec<(FieldName, u64)> {
+    let none = BTreeSet::new();
+    let lengths = field_counts(decl, record, None, &none).map(|(f, len, _)| (f.clone(), len));
+    lengths.collect()
+}
+
+/// Add into `out` the statistics a search of `text` in `fields` reads
+/// over `heads` (`docs/seams.md` §`ranked`): for each searched field, the
+/// heads whose field holds a token and the tokens they hold there; for
+/// each query token, the heads that hold it in a searched field. `heads`
+/// are live heads counted over, each as its reader is told it.
+pub fn text_stats(
+    decl: &TypeDecl,
+    heads: impl IntoIterator<Item = impl std::borrow::Borrow<StoredRecord>>,
+    (text, fields): (&str, Option<&[FieldName]>),
+    out: &mut TextCounts,
+) {
+    let query = tokens(text, decl.language.as_deref().unwrap_or(""));
+    for r in heads {
+        let mut held = BTreeSet::new();
+        for (f, len, tf) in field_counts(decl, r.borrow(), fields, &query) {
+            let (n, l) = out.fields.entry(f.clone()).or_insert((0, 0));
+            (*n, *l) = (*n + 1, *l + len);
+            held.extend(query.iter().filter(|t| tf.contains_key(*t)));
+        }
+        for t in held {
+            *out.df.entry(t.clone()).or_insert(0) += 1;
+        }
+    }
+}
+
+/// The text's ranking an engine answers for `asked` (`docs/seams.md`
+/// §`ranked`), its candidates any superset of the hits among the live
+/// heads, each once: [`lexical`] over the class `asked.text_stats` names.
+/// `kept(held)` answers the counts the engine keeps of the type's fields,
+/// over the heads that are not held and, with `held`, over every head; a
+/// reader with no class is ranked by what the store counted for it.
+pub fn ranked_text<E>(
+    decl: &TypeDecl,
+    candidates: impl IntoIterator<Item = impl std::borrow::Borrow<StoredRecord>>,
+    asked: &Rankings,
+    k: u32,
+    kept: impl FnOnce(bool) -> std::result::Result<BTreeMap<FieldName, (u64, u64)>, E>,
+) -> std::result::Result<Vec<(RecordKey, f64)>, E> {
+    let Some((text, fields)) = &asked.text else {
+        return Ok(Vec::new());
+    };
+    let (fields, weights) = (fields.as_deref(), &asked.text_weights);
+    let candidates = candidates.into_iter();
+    Ok(match &asked.text_stats {
+        Some(TextStats::Counted(counted)) => {
+            let counts = Counts::Counted(counted);
+            lexical(decl, candidates, text, fields, weights, counts, k)
+        }
+        Some(TextStats::Unheld) => {
+            let class = candidates.filter(|r| !r.borrow().restricted);
+            let counts = Counts::Kept(&kept(false)?);
+            lexical(decl, class, text, fields, weights, counts, k)
+        }
+        None => {
+            let counts = Counts::Kept(&kept(true)?);
+            lexical(decl, candidates, text, fields, weights, counts, k)
+        }
+    })
+}
+
+/// The statistics [`lexical`] scores by.
+pub enum Counts<'a> {
+    /// The counts of each field kept over the heads of the reader's class;
+    /// the candidates handed in are of that class, and each query token's
+    /// heads are counted over them.
+    Kept(&'a BTreeMap<FieldName, (u64, u64)>),
+    /// Every count, as the store counted it for a reader with no class.
+    Counted(&'a TextCounts),
+}
+
+/// BM25F's saturation (`docs/seams.md` §`ranked`).
+const K1: f64 = 1.2;
+/// BM25F's length normalisation (`docs/seams.md` §`ranked`).
+const B: f64 = 0.75;
+
+/// Full-text hits, as `docs/seams.md` §`ranked` defines them: of the
+/// `candidates`, records of one type as they stand at the head, `decl`
+/// the type's declaration there, the hits are those live whose searchable
+/// text holds a query token — the text of the searchable fields `fields`
+/// names, when it names any. A hit scores by BM25F in its combined-field
+/// form over `counts`, each field weighing what `weights` gives it and 1
+/// for one it does not name; best first, ties by key, at most `k`. The
+/// sums run in one order, fields in their declaration's and tokens in
+/// theirs, from 0, and `ln` is `libm`'s, so a score's bits are the same
+/// on every engine and target.
+///
+/// An engine may hand in any superset of the hits: a record whose named
+/// fields hold no query token scores nothing and is dropped here, before
+/// the ranking is cut at `k`.
+pub fn lexical(
+    decl: &TypeDecl,
+    candidates: impl IntoIterator<Item = impl std::borrow::Borrow<StoredRecord>>,
     text: &str,
     fields: Option<&[FieldName]>,
     weights: &BTreeMap<FieldName, f64>,
+    counts: Counts<'_>,
     k: u32,
 ) -> Vec<(RecordKey, f64)> {
     let query = tokens(text, decl.language.as_deref().unwrap_or(""));
-    let mut hits: Vec<(RecordKey, f64)> = head
+    let held: Vec<_> = candidates
         .into_iter()
-        .filter(|r| !r.retired)
+        .filter(|r| !r.borrow().retired)
         .filter_map(|r| {
-            let held: Vec<(f64, BTreeSet<String>)> = field_tokens(decl, r, fields)
-                .map(|(f, t)| (weights.get(f).copied().unwrap_or(1.0), t))
-                .collect();
-            let heaviest = |t: &String| {
-                let w = held
-                    .iter()
-                    .filter(|(_, ts)| ts.contains(t))
-                    .map(|(w, _)| *w);
-                w.reduce(f64::max)
-            };
-            let (mut score, mut any) = (0.0, false);
-            for w in query.iter().filter_map(heaviest) {
-                (score, any) = (score + w, true);
+            let r = r.borrow();
+            let held: Vec<_> = field_counts(decl, r, fields, &query).collect();
+            let holds = |t: &String| held.iter().any(|(_, _, tf)| tf.contains_key(t));
+            query.iter().any(holds).then(|| (r.key.clone(), held))
+        })
+        .collect();
+    let (lengths, df) = match counts {
+        Counts::Counted(c) => (&c.fields, c.df.clone()),
+        Counts::Kept(kept) => {
+            let mut df = BTreeMap::new();
+            for t in &query {
+                let holds = |h: &&(_, Vec<(_, _, BTreeMap<String, u64>)>)| {
+                    h.1.iter().any(|(_, _, tf)| tf.contains_key(t))
+                };
+                df.insert(t.clone(), held.iter().filter(holds).count() as u64);
             }
-            any.then(|| (r.key.clone(), score))
+            (kept, df)
+        }
+    };
+    let searched = decl
+        .fields
+        .iter()
+        .filter(|f| f.searchable && fields.is_none_or(|named| named.contains(&f.name)));
+    let n = searched
+        .filter_map(|f| lengths.get(&f.name))
+        .map(|c| c.0)
+        .sum::<u64>() as f64;
+    let mut hits: Vec<(RecordKey, f64)> = held
+        .into_iter()
+        .map(|(key, held)| {
+            let mut score = 0.0;
+            for t in &query {
+                let (mut x, mut any) = (0.0, false);
+                for (f, len, tf) in &held {
+                    let Some(tf) = tf.get(t) else { continue };
+                    any = true;
+                    let len = *len as f64;
+                    let avg = match lengths.get(*f) {
+                        Some(&(n_f, l_f)) if n_f > 0 && l_f > 0 => l_f as f64 / n_f as f64,
+                        _ => len,
+                    };
+                    let w = weights.get(*f).copied().unwrap_or(1.0);
+                    x += w * *tf as f64 / (1.0 - B + B * len / avg);
+                }
+                if any {
+                    let df = df.get(t).copied().unwrap_or(0) as f64;
+                    let idf = libm::log((2.0 * n + 2.0) / (2.0 * df + 1.0));
+                    score += idf * x * (K1 + 1.0) / (x + K1);
+                }
+            }
+            (key, score)
         })
         .collect();
     rank(&mut hits, k);
@@ -1405,24 +3023,24 @@ pub fn append_fault(
 ) -> Result<()> {
     for (expected, event) in (first..).zip(events) {
         if let Some(why) = fence_fault(event, lease, floor) {
-            return Err(invalid(why));
+            return Err(Error::invalid(why));
         }
         floor = event.fence;
         let position = event.position;
         if position.0 != expected {
             let next = expected;
-            return Err(invalid(Case::AppendNotNext { position, next }));
+            return Err(Error::invalid(Case::AppendNotNext { position, next }));
         }
         if event.prev != prev {
             let (named, hash) = (event.prev.0.clone(), prev.0.clone());
-            return Err(invalid(Case::AppendPrev {
+            return Err(Error::invalid(Case::AppendPrev {
                 position,
                 named,
                 hash,
             }));
         }
         if event.bytes.contains(&b'\n') {
-            return Err(invalid(Case::AppendLineFeed { position }));
+            return Err(Error::invalid(Case::AppendLineFeed { position }));
         }
         prev = event.hash.clone();
     }
@@ -1448,7 +3066,7 @@ pub fn first_of_next(
     let events = first(sealed)?;
     if events.is_empty() {
         let after = sealed.last;
-        return Err(invalid(Case::SealNoFirst { after }));
+        return Err(Error::invalid(Case::SealNoFirst { after }));
     }
     Ok(events)
 }
@@ -1477,6 +3095,46 @@ pub fn layout(lake: &LakeId, found: Option<u64>, wanted: u64) -> Result<()> {
     Err(Error::unavailable(situation))
 }
 
+/// The number a projection stores for each event kind of the format, in
+/// the order the format lists them. A code is never reused or moved: a
+/// kind a later format adds takes the next number, and 2, a kind no format
+/// from 23 on holds, stays unused.
+pub const KIND_CODES: [(&str, i64); 26] = [
+    ("lake_created", 1),
+    ("lease_taken", 3),
+    ("declared", 4),
+    ("migrated", 5),
+    ("value_type_migrated", 6),
+    ("record_upserted", 7),
+    ("record_ingested", 8),
+    ("source_forgotten", 9),
+    ("values_removed", 10),
+    ("record_retired", 11),
+    ("record_restricted", 12),
+    ("record_unrestricted", 13),
+    ("verb_called", 14),
+    ("write_proposed", 15),
+    ("write_accepted", 16),
+    ("write_rejected", 17),
+    ("trigger_fired", 18),
+    ("trigger_dropped", 19),
+    ("object_set_changed", 20),
+    ("output_recorded", 21),
+    ("checkpoint", 22),
+    ("record_quarantined", 23),
+    ("quarantine_closed", 24),
+    ("source_purged", 25),
+    ("act_whole", 26),
+    ("values_thinned", 27),
+];
+
+/// The code of the event kind `kind`, or none for one the format does not
+/// list: a filter may name a kind a newer format adds, which no event of
+/// this one is of.
+pub fn kind_code(kind: &str) -> Option<i64> {
+    KIND_CODES.iter().find(|(k, _)| *k == kind).map(|(_, c)| *c)
+}
+
 /// The refusal of a query vector of `query` dimensions where `ty.field`
 /// holds vectors of `held`. It names no record: the store refuses it
 /// by the declaration before any engine reads a vector, and an engine's
@@ -1485,7 +3143,7 @@ pub fn dimensions(query: usize, held: usize, ty: &TypeName, field: &str) -> Erro
     let case = Case::QueryDimensions { query, held };
     let (name, field) = (ty.clone(), field.into());
     let at = Said::from(case).within(At::Field { name: field });
-    invalid(at.within(At::Type { name }))
+    Error::invalid(at.within(At::Type { name }))
 }
 
 /// The refusal of a query vector the caller says `query` made, where
@@ -1496,13 +3154,67 @@ pub fn model(query: &str, held: &str, ty: &TypeName, field: &str) -> Error {
     let case = Case::QueryModel { query, held };
     let (name, field) = (ty.clone(), field.into());
     let at = Said::from(case).within(At::Field { name: field });
-    invalid(at.within(At::Type { name }))
+    Error::invalid(at.within(At::Type { name }))
 }
 
 /// Best first by score, ties by key, at most `k`.
 pub fn rank(hits: &mut Vec<(RecordKey, f64)>, k: u32) {
     hits.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     hits.truncate(k as usize);
+}
+
+/// The best `k` of a field's vectors whose head record the reader's
+/// selection `seen` admits, in [`rank`]'s order, `decl` the type in force.
+/// `top(m)` answers the field's best `m` ([`TopK`]); the candidates are
+/// judged best first, and the depth grows fourfold from `k` until `k`
+/// pass or the field ends, so what a search holds is the depth it reaches
+/// and a selection that admits most candidates reads few records more
+/// than it keeps. `read` answers the head records of a batch's keys, in
+/// any order. Where `seen` is `None`, or admits every live record, no
+/// record is read.
+pub fn rank_seen(
+    k: u32,
+    seen: Option<(&Scan, Option<&TypeDecl>)>,
+    mut top: impl FnMut(u32) -> Result<Vec<(RecordKey, f64)>>,
+    mut read: impl FnMut(Vec<RecordKey>) -> Result<Vec<StoredRecord>>,
+) -> Result<Vec<(RecordKey, f64)>> {
+    let Some((seen, decl)) = seen.filter(|(s, _)| !admits_every_live(s)) else {
+        return top(k);
+    };
+    let (mut out, mut judged, mut depth) = (Vec::new(), 0, k.max(16));
+    loop {
+        let best = top(depth)?;
+        let fresh = &best[judged.min(best.len())..];
+        let admitted: BTreeSet<RecordKey> =
+            read(fresh.iter().map(|(key, _)| key.clone()).collect())?
+                .into_iter()
+                .filter(|r| admits(decl, r, seen))
+                .map(|r| r.key)
+                .collect();
+        out.extend(
+            fresh
+                .iter()
+                .filter(|(key, _)| admitted.contains(key))
+                .cloned(),
+        );
+        judged = best.len();
+        if out.len() >= k as usize || best.len() < depth as usize {
+            break;
+        }
+        depth = depth.saturating_mul(4);
+    }
+    out.truncate(k as usize);
+    Ok(out)
+}
+
+/// Whether `seen` admits every live record: an engine need not read a
+/// candidate's state to judge it.
+pub fn admits_every_live(seen: &Scan) -> bool {
+    seen.restricted
+        && seen.filter.is_none()
+        && seen.valid_at.is_none()
+        && seen.equal.is_empty()
+        && seen.equal_any.is_empty()
 }
 
 /// The best `k` of a stream of scored keys, holding at most `k` of them
@@ -1594,7 +3306,10 @@ pub fn declared_on(d: &Declaration, stands: &impl Fn(&str) -> Option<TypeName>) 
         Declaration::Verb(v) => v.on.clone(),
         Declaration::Trigger(t) => t.on.clone(),
         Declaration::ObjectSet(s) => s.of.clone(),
-        // A withdrawal names the type of what it withdraws.
+        // A withdrawal names the type of what it withdraws, or the type.
+        Declaration::Withdraw(w) if w.kind == DeclarationKind::Type => {
+            return vec![w.name.as_str().into()];
+        }
         Declaration::Withdraw(_) => return stands(&declaration_key(d)).into_iter().collect(),
         _ => return Vec::new(),
     };
@@ -1603,13 +3318,16 @@ pub fn declared_on(d: &Declaration, stands: &impl Fn(&str) -> Option<TypeName>) 
     out
 }
 
-/// The types a proposed write touches: a record write's type, the type a
+/// The types a proposed write touches: a record write's type, a change
+/// to records' type, the type a
 /// called verb acts on, every type a declaration names ([`declared_on`]),
 /// and a migration's type. `stands` answers the type a declaration in
 /// force stands on, by its [`declaration_key`].
 fn touched(write: &ProposedWrite, stands: &impl Fn(&str) -> Option<TypeName>) -> Vec<TypeName> {
     match write {
-        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => vec![ty.clone()],
+        ProposedWrite::Upsert { ty, .. }
+        | ProposedWrite::Retire { ty, .. }
+        | ProposedWrite::Records { ty, .. } => vec![ty.clone()],
         ProposedWrite::Call { verb, .. } => stands(&format!("verb {verb}")).into_iter().collect(),
         ProposedWrite::Declare { declarations, .. } => (declarations.iter())
             .flat_map(|d| declared_on(d, stands))
@@ -1677,96 +3395,546 @@ pub fn proposals<'a>(
 /// A state an engine's projection stored as JSON, read back; `what`
 /// names it (`a record`) in the fault of one that cannot be read.
 pub fn decode<T: serde::de::DeserializeOwned>(state: &str, what: &str) -> Result<T> {
-    serde_json::from_str(state).map_err(|e| {
-        let (what, detail) = (what.to_owned(), Detail::json(&e));
-        crate::damaged(Part::Projection, None, Flaw::Unreadable { what, detail })
-    })
+    serde_json::from_str(state).map_err(|e| unreadable(what, &e))
+}
+
+fn unreadable(what: &str, e: &serde_json::Error) -> Error {
+    let (what, detail) = (what.to_owned(), Detail::json(e));
+    crate::damaged(Part::Projection, None, Flaw::Unreadable { what, detail })
 }
 
 /// A record as an engine keeps it: its provenance once, where its fields
 /// share it, and per field only where a field's differs (lakelands#1018).
 /// Every field a source or an author wrote in one event carries the same
-/// block, so a record keeps it once, not once a field.
+/// block, and every field the fold derives in it the same block derived,
+/// so a record keeps it once, not once a field (098); and every record
+/// of one append carries the same block but its position, so where
+/// [`SHARED`] records of one write name a block the projection keeps it
+/// once among its bases, and the state names it by the id it is kept
+/// under; else the state keeps it inline. What the row holds beside the
+/// state is not kept in it: its type, its key and its position, the
+/// row's `since`; nor is a flag that is false, nor `base`'s position
+/// where it is the row's (lakelands#1318); nor a vector's elements, which
+/// a row of their own holds ([`Elements`]), the state naming its position.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct State {
-    #[serde(rename = "type")]
-    ty: TypeName,
-    key: RecordKey,
+    /// Each field kept apart, with the position of the row holding its
+    /// elements: first, so a state naming none starts otherwise.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    vectors: BTreeMap<FieldName, Position>,
     version: lakelands_api::id::Version,
     fields: BTreeMap<FieldName, Value>,
-    /// The provenance most of the fields share.
+    /// The provenance most of the fields share: inline, its position left
+    /// out where it is the row's, or the id of the base it is kept as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    base: Option<FieldMeta>,
-    /// Each field's whose differs from `base`, or that holds no value.
+    base: Option<Block>,
+    /// A kept base's position, where it is not the row's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_at: Option<Position>,
+    /// The fields whose provenance is `base`'s but derived: the fold
+    /// derived them in the event that wrote the base's fields (098).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    derived: Vec<FieldName>,
+    /// Each field's whose differs from `base` and from `derived`, or that
+    /// holds no value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     meta: BTreeMap<FieldName, FieldMeta>,
     /// The fields holding a value with no provenance, beside a `base`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     bare: Vec<FieldName>,
-    position: Position,
     made: Position,
-    // Written even when false: an engine's statements read them.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     retired: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     restricted: bool,
 }
 
-/// The state an engine keeps for a record: [`State`]'s form.
-pub fn record_state(r: &StoredRecord) -> String {
-    // The block most fields with a value share; ties to the first field's.
-    let mut shared: Vec<(&FieldMeta, usize)> = Vec::new();
+/// A state's base: the id it is kept under, or the block inline.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum Block {
+    Kept(i64),
+    Inline(serde_json::Map<String, Value>),
+}
+
+/// The fewest records of one write naming a base for the projection to
+/// keep it once, as a row their states name by its id; a base fewer name
+/// stays inline in each state. A write is what the engine puts in one
+/// transaction, so a rebuild, which folds many appends in one, may keep
+/// rows a fresh projection kept inline; both read the same. A row costs
+/// more than the block it saves until enough states share it: on SQLite,
+/// records written two an append took 917.5 bytes each with their base a
+/// row and 903.2 with it inline, three an append 876.5 and 903.2
+/// (lakelands#1432; PostgreSQL was not measured).
+pub const SHARED: usize = 3;
+
+/// The provenance most of `r`'s fields with a value share, a field the
+/// fold derives in the same event counted with the fields written in it
+/// ([`derived`]); ties to the first field's. Of a share, the block is a
+/// written field's where one is among it.
+fn shared(r: &StoredRecord) -> Option<&FieldMeta> {
+    let mut shared: Vec<(&FieldMeta, FieldMeta, usize)> = Vec::new();
     for m in r.fields.keys().filter_map(|f| r.meta.get(f)) {
-        match shared.iter_mut().find(|(b, _)| *b == m) {
-            Some((_, n)) => *n += 1,
-            None => shared.push((m, 1)),
+        let kin = derived(m);
+        match shared.iter_mut().find(|(_, k, _)| *k == kin) {
+            Some((b, _, n)) => {
+                *n += 1;
+                if b.origin == Origin::Derived {
+                    *b = m;
+                }
+            }
+            None => shared.push((m, kin, 1)),
         }
     }
-    let base = (shared.iter().rev().max_by_key(|(_, n)| *n)).map(|(b, _)| (*b).clone());
+    (shared.iter().rev().max_by_key(|(_, _, n)| *n)).map(|(b, _, _)| *b)
+}
+
+/// `m` as the fold gives a field it derives in `m`'s event: a derived
+/// field's provenance is its event's, the origin aside, so a state keeps
+/// it by naming the field ([`State::derived`]).
+fn derived(m: &FieldMeta) -> FieldMeta {
+    FieldMeta {
+        origin: Origin::Derived,
+        ..m.clone()
+    }
+}
+
+/// A provenance block as JSON, its position left out where it is `at`.
+fn block(m: &FieldMeta, at: Option<Position>) -> serde_json::Map<String, Value> {
+    let Ok(Value::Object(mut block)) = serde_json::to_value(m) else {
+        unreachable!("a field's provenance serialises as an object")
+    };
+    if at.is_none_or(|at| at == m.position) {
+        block.remove("position");
+    }
+    block
+}
+
+/// The base of `r`: the block most of its fields with a value share,
+/// without its position, as the projection keeps it, if any has one.
+pub fn base_of(r: &StoredRecord) -> Option<String> {
+    let block = block(shared(r)?, None);
+    Some(serde_json::to_string(&block).expect("a block serialises"))
+}
+
+/// The bases [`SHARED`] or more of `records` of one write name: those
+/// the projection keeps as rows. The records of an append each have a
+/// position of their own and share their base whole, its time included.
+pub fn shared_bases<'a>(records: impl IntoIterator<Item = &'a StoredRecord>) -> HashSet<String> {
+    let mut named: HashMap<String, HashSet<(&TypeName, &RecordKey)>> = HashMap::new();
+    for r in records {
+        if let Some(base) = base_of(r) {
+            named.entry(base).or_default().insert((&r.ty, &r.key));
+        }
+    }
+    (named.into_iter())
+        .filter(|(_, names)| names.len() >= SHARED)
+        .map(|(base, _)| base)
+        .collect()
+}
+
+/// The bases of the write an engine puts record by record, which knows a
+/// base is shared only at the [`SHARED`]th record of the write naming it:
+/// the states put before it keep it inline until then.
+#[derive(Debug, Default)]
+pub struct Sharing {
+    named: HashMap<String, Named>,
+}
+
+#[derive(Debug)]
+enum Named {
+    Inline(Vec<(TypeName, RecordKey, Position)>),
+    Kept(i64),
+}
+
+impl Sharing {
+    /// The id the state of `r` names `base` by, `None` to keep it inline:
+    /// at the [`SHARED`]th record of the write naming it, `keep` keeps it
+    /// and answers its id, and `name` has the states the write put before
+    /// it, by type, key and position, name that id ([`name_base`]). A
+    /// write is what one `Sharing` sees.
+    pub fn id(
+        &mut self,
+        r: &StoredRecord,
+        base: &str,
+        keep: &mut dyn FnMut(&str) -> Result<i64>,
+        name: &mut dyn FnMut(&TypeName, &RecordKey, Position, i64) -> Result<()>,
+    ) -> Result<Option<i64>> {
+        let named = (self.named.entry(base.to_owned())).or_insert(Named::Inline(Vec::new()));
+        let before = match named {
+            Named::Kept(id) => return Ok(Some(*id)),
+            Named::Inline(before) => before,
+        };
+        let this = |(ty, key, _): &&(TypeName, RecordKey, Position)| (ty, key) == (&r.ty, &r.key);
+        before.retain(|held| !this(&held));
+        before.push((r.ty.clone(), r.key.clone(), r.position));
+        if before.len() < SHARED {
+            return Ok(None);
+        }
+        let id = keep(base)?;
+        for (ty, key, at) in before.iter().filter(|held| !this(held)) {
+            name(ty, key, *at, id)?;
+        }
+        *named = Named::Kept(id);
+        Ok(Some(id))
+    }
+}
+
+/// The state an engine keeps for a record: [`State`]'s form, kept in a
+/// row that holds its type, its key and its position as `since`, the
+/// fields `apart` names left to their rows ([`put_vectors`]), and its
+/// base inline, or by the id `base` answers for it where the engine keeps
+/// it once.
+pub fn record_state(
+    r: &StoredRecord,
+    apart: &BTreeMap<FieldName, Position>,
+    base: &mut dyn FnMut(&str) -> Result<Option<i64>>,
+) -> Result<String> {
+    let shared = shared(r);
+    let kin = shared.filter(|m| m.origin != Origin::Derived).map(derived);
+    let takes = |f: &FieldName, m: &FieldMeta| r.fields.contains_key(f) && shared == Some(m);
+    let derives =
+        |f: &FieldName, m: &FieldMeta| r.fields.contains_key(f) && kin.as_ref() == Some(m);
     let meta = (r.meta.iter())
-        .filter(|(f, m)| !r.fields.contains_key(*f) || base.as_ref() != Some(*m))
+        .filter(|(f, m)| !takes(f, m) && !derives(f, m))
         .map(|(f, m)| (f.clone(), m.clone()));
+    let derived = (r.meta.iter()).filter(|(f, m)| derives(f, m));
     let bare = r
         .fields
         .keys()
-        .filter(|f| base.is_some() && !r.meta.contains_key(*f));
+        .filter(|f| shared.is_some() && !r.meta.contains_key(*f));
+    let fields = r.fields.iter().filter(|(f, _)| !apart.contains_key(*f));
+    let (kept, at) = match (shared, base_of(r)) {
+        (Some(m), Some(b)) => match base(&b)? {
+            Some(id) => (Some(Block::Kept(id)), Some(m.position)),
+            None => (Some(Block::Inline(block(m, Some(r.position)))), None),
+        },
+        _ => (None, None),
+    };
     let state = State {
-        ty: r.ty.clone(),
-        key: r.key.clone(),
+        vectors: apart.clone(),
         version: r.version,
-        fields: r.fields.clone(),
+        fields: fields.map(|(f, v)| (f.clone(), v.clone())).collect(),
+        derived: derived.map(|(f, _)| f.clone()).collect(),
         meta: meta.collect(),
         bare: bare.cloned().collect(),
-        base,
-        position: r.position,
+        base: kept,
+        base_at: at.filter(|at| *at != r.position),
         made: r.made,
         retired: r.retired,
         restricted: r.restricted,
     };
-    serde_json::to_string(&state).expect("a record serialises")
+    Ok(serde_json::to_string(&state).expect("a record serialises"))
 }
 
-/// A record from the state [`record_state`] kept: each field with a value
-/// and no provenance of its own takes `base`, but a bare one.
-pub fn decode_record(state: &str) -> Result<StoredRecord> {
-    let s: State = decode(state, "a record")?;
-    let mut meta = s.meta;
-    if let Some(base) = &s.base {
-        for f in s.fields.keys().filter(|f| !s.bare.contains(f)) {
-            meta.entry(f.clone()).or_insert_with(|| base.clone());
-        }
+/// `state` naming the base kept as `id` where it holds `base` inline;
+/// `None` where it holds another.
+pub fn name_base(state: &str, base: &str, id: i64) -> Result<Option<String>> {
+    let mut s: State = decode(state, "a record")?;
+    let Some(Block::Inline(mut inline)) = s.base.take() else {
+        return Ok(None);
+    };
+    let at = inline.remove("position");
+    if serde_json::to_string(&inline).expect("a block serialises") != base {
+        return Ok(None);
     }
-    Ok(StoredRecord {
-        ty: s.ty,
-        key: s.key,
+    s.base = Some(Block::Kept(id));
+    s.base_at = at
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| unreadable("a record", &e))?;
+    Ok(Some(
+        serde_json::to_string(&s).expect("a record serialises"),
+    ))
+}
+
+/// What a state keeps apart, which the caller reads from their rows: each
+/// field kept apart with the position of the row holding its elements
+/// ([`rejoin`]), and the base it names by its id ([`rebase`]).
+#[derive(Debug, Default)]
+pub struct Apart {
+    pub vectors: Vec<(FieldName, Position)>,
+    pub base: Option<Based>,
+}
+
+/// The base a state names: its id, and what the record takes of it.
+#[derive(Debug)]
+pub struct Based {
+    pub id: i64,
+    at: Position,
+    fields: Vec<FieldName>,
+    derived: Vec<FieldName>,
+}
+
+/// A record from the state [`record_state`] kept in the row of `ty`'s
+/// `key` put at `since`, and what it keeps apart, which the caller reads
+/// from their rows: each field with a value and no provenance of its own
+/// takes the base, but a bare one, a field the state names derived takes
+/// it derived, and the base takes `since` where the state holds no
+/// position for it.
+pub fn decode_record(
+    ty: &str,
+    key: &str,
+    since: Position,
+    state: &str,
+) -> Result<(StoredRecord, Apart)> {
+    let s: State = decode(state, "a record")?;
+    let valued = s.fields.keys().chain(s.vectors.keys());
+    let takes: Vec<FieldName> = (valued
+        .filter(|f| !s.bare.contains(f) && !s.meta.contains_key(*f) && !s.derived.contains(f)))
+    .cloned()
+    .collect();
+    let mut meta = s.meta;
+    let base = match s.base {
+        Some(Block::Kept(id)) => Some(Based {
+            id,
+            at: s.base_at.unwrap_or(since),
+            fields: takes,
+            derived: s.derived,
+        }),
+        Some(Block::Inline(mut base)) => {
+            let at = || Value::from(since.0);
+            base.entry("position").or_insert_with(at);
+            let base: FieldMeta = serde_json::from_value(Value::Object(base))
+                .map_err(|e| unreadable("a record", &e))?;
+            let derives = s.derived.into_iter().map(|f| (f, derived(&base)));
+            meta.extend(derives);
+            meta.extend(takes.into_iter().map(|f| (f, base.clone())));
+            None
+        }
+        None => None,
+    };
+    let r = StoredRecord {
+        ty: TypeName::from(ty),
+        key: RecordKey::from(key),
         version: s.version,
         fields: s.fields,
         meta,
-        position: s.position,
+        position: since,
         made: s.made,
         retired: s.retired,
         restricted: s.restricted,
+    };
+    let vectors = s.vectors.into_iter().collect();
+    Ok((r, Apart { vectors, base }))
+}
+
+/// Give the fields of `r` that take its base the block its row holds,
+/// `block`: a state naming a base the projection does not hold is one it
+/// cannot read.
+pub fn rebase(r: &mut StoredRecord, based: Based, block: Option<&str>) -> Result<()> {
+    let block = block.ok_or_else(|| base_missing("its row is missing"))?;
+    let mut block: serde_json::Map<String, Value> = decode(block, "a record's base")?;
+    block.insert("position".to_owned(), Value::from(based.at.0));
+    let meta: FieldMeta = serde_json::from_value(Value::Object(block))
+        .map_err(|e| unreadable("a record's base", &e))?;
+    for f in based.derived {
+        r.meta.insert(f, derived(&meta));
+    }
+    for f in based.fields {
+        r.meta.insert(f, meta.clone());
+    }
+    Ok(())
+}
+
+/// The fault of a base whose row the projection lacks, `why`.
+pub fn base_missing(why: &str) -> Error {
+    let missing = <serde_json::Error as serde::de::Error>::custom(why);
+    unreadable("a record's base", &missing)
+}
+
+/// A vector's elements as the projection keeps them apart from its
+/// record's state (`docs/decisions/072-a-vector-is-stored-once.md`): as
+/// little-endian `f32`s where every element is exactly one (`single`),
+/// else as doubles.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Elements {
+    pub single: bool,
+    pub data: Vec<u8>,
+}
+
+impl Elements {
+    /// Elements as a row holds them.
+    pub fn new(single: bool, data: Vec<u8>) -> Elements {
+        Elements { single, data }
+    }
+
+    /// The elements of `v` where it is a vector they give back exactly:
+    /// an array of numbers, each the one its double reads as in the log's
+    /// number form ([`number`]). Anything else stays in the state.
+    pub fn of(v: &Value) -> Option<Elements> {
+        let a = v.as_array().filter(|a| !a.is_empty())?;
+        let xs: Vec<f64> = (a.iter())
+            .map(|e| e.as_f64().filter(|x| number(*x) == *e))
+            .collect::<Option<_>>()?;
+        let single = xs.iter().all(|x| f64::from(*x as f32) == *x);
+        let data = match single {
+            true => xs.iter().flat_map(|x| (*x as f32).to_le_bytes()).collect(),
+            false => xs.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        };
+        Some(Elements { single, data })
+    }
+
+    fn doubles(&self) -> Vec<f64> {
+        match self.single {
+            true => vector_of(&self.data).into_iter().map(f64::from).collect(),
+            false => (self.data.as_chunks::<8>().0.iter())
+                .map(|c| f64::from_le_bytes(*c))
+                .collect(),
+        }
+    }
+
+    /// The vector they hold, as the record held it.
+    pub fn value(&self) -> Value {
+        Value::Array(self.doubles().into_iter().map(number).collect())
+    }
+
+    /// The vector as a ranking reads it: each element as an `f32`.
+    pub fn ranked(&self) -> Vec<f32> {
+        match self.single {
+            true => vector_of(&self.data),
+            false => self.doubles().into_iter().map(|x| x as f32).collect(),
+        }
+    }
+}
+
+/// Put back into `r` the vector of `field` its row holds, `row`: a state
+/// naming a row the projection does not hold is one it cannot read.
+pub fn rejoin(r: &mut StoredRecord, field: FieldName, row: Option<Elements>) -> Result<()> {
+    let missing = || <serde_json::Error as serde::de::Error>::custom("its row is missing");
+    let e = row.ok_or_else(|| unreadable("a record's vector", &missing()))?;
+    r.fields.insert(field, e.value());
+    Ok(())
+}
+
+/// A double as the log's number form reads it: an integral one within
+/// ±(2^53 − 1) an integer, `-0` among them as `0`; any other the double.
+fn number(x: f64) -> Value {
+    const SAFE: f64 = 9_007_199_254_740_991.0;
+    match x.fract() == 0.0 && x.abs() <= SAFE {
+        true => Value::from(x as i64),
+        false => serde_json::Number::from_f64(x).map_or(Value::Null, Value::Number),
+    }
+}
+
+/// A row of a record's vector in force at the head: its field, the
+/// position it was written at, and its elements.
+pub type VectorRow = (FieldName, Position, Elements);
+
+/// What putting a record's state does to its vector rows ([`put_vectors`]).
+#[derive(Debug, Default)]
+pub struct VectorPut {
+    /// The fields kept apart, each with the position of the row the state
+    /// names.
+    pub apart: BTreeMap<FieldName, Position>,
+    /// The rows written at the state's position, each ending there too
+    /// where `ends`.
+    pub written: Vec<(FieldName, Elements)>,
+    pub ends: bool,
+    /// The rows written before that end at the state's position.
+    pub ended: Vec<(FieldName, Position)>,
+    /// The rows written at the state's own position, by a state it
+    /// replaces, that it does not name: they go.
+    pub gone: Vec<FieldName>,
+    /// The record's rows in force after it.
+    pub held: Vec<VectorRow>,
+}
+
+/// Whether `ty`'s states keep their vectors in place: the store's own
+/// names, `sys.` and `sys:`, which some reads take without a join, but a
+/// link type's, whose vector fields a caller declares.
+pub fn vectors_in_place(ty: &TypeName) -> bool {
+    let own = ["sys.", "sys:"].iter().any(|p| ty.as_str().starts_with(p));
+    own && !ty.as_str().starts_with(lakelands_api::key::LINK_PREFIX)
+}
+
+/// The fields a state of `ty` keeps apart ([`put_vectors`]): those declared
+/// as vectors by the declaration its records answer to, `decl_of` reading
+/// a type's at the head; a kept name's is its view's, a link type's its
+/// relation's fields. A value of any other field stays in the state,
+/// whatever its shape, and so does every vector of the store's own names.
+pub fn vector_fields(
+    ty: &TypeName,
+    mut decl_of: impl FnMut(&TypeName) -> Result<Option<TypeDecl>>,
+) -> Result<BTreeSet<FieldName>> {
+    let vectors = |fields: &[FieldDecl]| -> BTreeSet<FieldName> {
+        (fields.iter())
+            .filter(|f| f.ty.kind == StorageKind::Vector)
+            .map(|f| f.name.clone())
+            .collect()
+    };
+    if vectors_in_place(ty) {
+        return Ok(BTreeSet::new());
+    }
+    Ok(match crate::links::link_type_parts(ty) {
+        Some((t, name)) => (decl_of(&t)?.iter())
+            .flat_map(|d| d.relations.iter().filter(|r| r.name == name))
+            .flat_map(|r| vectors(&r.fields))
+            .collect(),
+        None => (decl_of(&kept_view(ty).unwrap_or_else(|| ty.clone()))?)
+            .map_or_else(BTreeSet::new, |d| vectors(&d.fields)),
     })
+}
+
+/// What putting `r`'s state does to the vector rows of its record, `held`
+/// those in force before it (`docs/decisions/072-a-vector-is-stored-once.md`):
+/// each vector a row in force holds bit for bit, the state names; any
+/// other is written at the state's position, and so is every one of a
+/// state after a retirement. A row the state does not name ends at its
+/// position, and so does every row a retired state names, so a row in
+/// force is one of the head. A state put where a `later` one is kept
+/// already keeps its vectors in place and changes no row: the row at its
+/// position may be one a later state names with other elements. Only the
+/// fields of `vectors` ([`vector_fields`]) are kept apart.
+pub fn put_vectors(
+    r: &StoredRecord,
+    held: Vec<VectorRow>,
+    later: bool,
+    vectors: &BTreeSet<FieldName>,
+) -> VectorPut {
+    if later {
+        return VectorPut {
+            held,
+            ..VectorPut::default()
+        };
+    }
+    let at = r.position;
+    let mut put = VectorPut {
+        ends: r.retired,
+        ..VectorPut::default()
+    };
+    let mut was: BTreeMap<_, _> = (held.into_iter())
+        .map(|(f, since, e)| (f, (since, e)))
+        .collect();
+    let kept = (r.fields.iter()).filter(|(f, _)| vectors.contains(*f));
+    for (f, e) in kept.filter_map(|(f, v)| Some((f, Elements::of(v)?))) {
+        let since = match was.remove(f) {
+            Some((since, h)) if h == e => {
+                if put.ends {
+                    put.ended.push((f.clone(), since));
+                }
+                since
+            }
+            other => {
+                if let Some((since, _)) = other.filter(|(since, _)| *since != at) {
+                    put.ended.push((f.clone(), since));
+                }
+                put.written.push((f.clone(), e.clone()));
+                at
+            }
+        };
+        put.apart.insert(f.clone(), since);
+        if !put.ends {
+            put.held.push((f.clone(), since, e));
+        }
+    }
+    for (f, (since, _)) in was {
+        match since == at {
+            true => put.gone.push(f),
+            false => put.ended.push((f, since)),
+        }
+    }
+    put
 }
 
 /// A vector as an index stores it: its components as little-endian
@@ -1792,12 +3960,12 @@ pub fn view_at(as_of: Option<Position>, folded: Option<Position>) -> Result<Opti
     match (as_of, folded) {
         (None, folded) => Ok(folded),
         (Some(p), Some(head)) if p <= head => Ok(Some(p)),
-        (Some(_), head) => Err(Error::Refused {
-            field: None,
-            reason: Refusal::OutOfRange {
+        (Some(_), head) => Err(Error::refused(
+            None,
+            Refusal::OutOfRange {
                 head: head.unwrap_or_default(),
             },
-        }),
+        )),
     }
 }
 
@@ -1810,15 +3978,15 @@ pub fn commit_refusal(
     through: Position,
 ) -> Option<Error> {
     if let Some(folded) = folded.filter(|f| *f > through) {
-        return Some(invalid(Case::CommitBehind { folded, through }));
+        return Some(Error::invalid(Case::CommitBehind { folded, through }));
     }
     let late = late.filter(|p| *p > through)?;
-    Some(invalid(Case::CommitLate { late, through }))
+    Some(Error::invalid(Case::CommitLate { late, through }))
 }
 
 /// The refusal of a put made outside a transaction of the fold.
 pub fn unstaged() -> Error {
-    invalid(Case::NotStaged)
+    Error::invalid(Case::NotStaged)
 }
 
 #[cfg(test)]

@@ -6,14 +6,10 @@
 //! append. A set with a problem appends nothing, and its refusal names
 //! every problem.
 
-use lakelands_api::Position;
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{FieldType, StorageKind};
-use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
-use serde_json::{Value, json};
+use lakelands_api::write::Outcome;
 
-use crate::conformance::fixture::{Lake, Must, field, get_at, invalid_case, said_like, type_decl};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{get_at, said_like};
+use crate::conformance::prelude::*;
 
 check!(
     BUNDLE_WHOLE = a_bundle_with_forward_references_is_applied_whole_or_not_at_all,

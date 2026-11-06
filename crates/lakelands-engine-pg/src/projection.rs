@@ -22,8 +22,8 @@
 //!
 //! **Head indexes.** Beside the history the engine keeps indexes of the
 //! latest states only: exact text values for equality lookups, the links
-//! of `via` relations, one row per full-text token of a record, and the
-//! vectors. They are rewritten in the fold's own transaction, from the
+//! of `via` relations, and one row per full-text token of a record. They
+//! are rewritten in the fold's own transaction, from the
 //! record and the declaration in force, so they always describe the head.
 //! A view uses them only when it reads the head, and only to find
 //! candidates: whether a candidate matches, where it sorts and what it
@@ -37,6 +37,14 @@
 //! to agree with
 //! (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
 //!
+//! **Vectors.** A vector's elements are kept once, in a row of `vectors`
+//! written by the state that changed them, which every later state naming
+//! it shares; a row ends (`until`) where its record's state stops naming
+//! it, or is retired, so the rows in force are the head's, which a ranking
+//! reads and the vector index holds
+//! (`docs/decisions/072-a-vector-is-stored-once.md`). A read joins the rows
+//! its states name, in one statement for a batch of them ([`joined`]).
+//!
 //! **Recorded outputs** keep their history too: a later output for the
 //! same call (a failed call made again after its function was declared
 //! again) supersedes the earlier from its own position on, so the head
@@ -45,35 +53,95 @@
 //!
 //! Every table is named with the lake's schema ([`Names`]).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use lakelands_api::engine::{Applied, Declared};
+use lakelands_api::engine::{
+    Applied, Choose, Chosen, Declared, Look, SeriesPair, SeriesState, TextCounts,
+};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
-use lakelands_api::ontology::TypeDecl;
+use lakelands_api::ontology::{StorageKind, TypeDecl};
+use lakelands_api::quarantine::QuarantineId;
+use lakelands_api::read::ThinnedAct;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::Declaration;
 use lakelands_core::engines::{self, decode};
+use postgres::Row;
 use postgres::types::ToSql;
 
-use crate::connect::Db;
+use crate::connect::{Db, Target};
+use crate::handle::ANALYZE_AFTER;
+use crate::vector_index::{self, Touched};
 
 /// The lake's tables, each named with its schema.
 #[derive(Clone, Debug)]
 pub(crate) struct Names {
     schema: String,
+    /// For a scratch, the lake's schema, which keeps the log's tables.
+    log: Option<String>,
+    /// Where the lake's parts are made.
+    pub(crate) at: lakelands_api::location::PgTablespaces,
 }
 
+/// The tables of the log and the lease, which a scratch reads in the
+/// lake's schema.
+const LOG_TABLES: [&str; 4] = ["lease", "segments", "log", "ids"];
+
 impl Names {
-    /// The tables of the schema written as `quoted`.
-    pub(crate) fn new(quoted: String) -> Names {
-        Names { schema: quoted }
+    /// The tables of the lake `target` names.
+    pub(crate) fn of(target: &Target) -> Result<Names> {
+        let (schema, log, at) = (target.quoted_schema()?, None, target.tablespaces.clone());
+        Ok(Names { schema, log, at })
+    }
+
+    /// The tables of a scratch in the schema written as `quoted`, beside
+    /// the lake `live` names: the projection's and `meta` there, the log's
+    /// and the lease in the lake's schema (`scratch.rs`).
+    pub(crate) fn beside(quoted: String, live: &Names) -> Names {
+        Names {
+            schema: quoted,
+            log: Some(live.schema.clone()),
+            at: live.at.clone(),
+        }
+    }
+
+    /// `column` of `log` or `ids`, `id`, `prev` or `hash` (perhaps qualified), as
+    /// SQL reads it: the hex digits its bytes spell.
+    pub(crate) fn hex(column: &str) -> String {
+        format!("encode({column}::bytea, 'hex')")
+    }
+
+    /// `digits`, an expression of hex digits, as a column of `log` or `ids`
+    /// keeps it.
+    pub(crate) fn kept(digits: &str) -> String {
+        format!("decode({digits}, 'hex')")
+    }
+
+    /// The clause that makes a table or an index in `space`, if named.
+    pub(crate) fn space(space: &Option<String>) -> String {
+        let named = space.as_deref().map(Target::quote);
+        named.map_or_else(String::new, |t| format!(" TABLESPACE {t}"))
+    }
+
+    /// The statement that makes what follows in the transaction in `space`.
+    fn default_space(space: &Option<String>) -> String {
+        let named = space.as_deref().map_or("DEFAULT".into(), Target::quote);
+        format!("SET LOCAL default_tablespace = {named};\n")
+    }
+
+    /// The schema, as SQL writes it.
+    pub(crate) fn schema(&self) -> &str {
+        &self.schema
     }
 
     /// One table, schema-qualified.
     pub(crate) fn t(&self, table: &str) -> String {
-        format!("{}.{table}", self.schema)
+        match &self.log {
+            Some(log) if LOG_TABLES.contains(&table) => format!("{log}.{table}"),
+            _ => format!("{}.{table}", self.schema),
+        }
     }
 
     /// The statements that create the lake's tables, if absent.
@@ -95,94 +163,157 @@ impl Names {
     /// for that seek; ending at `since`, it filtered a type's states put at
     /// one position row by row, every head read paying for all of them
     /// (lakelands#1018).
+    ///
+    /// Each part goes in its tablespace where named: a table by its clause,
+    /// its keys and indexes by `default_tablespace`, set for the transaction.
     pub(crate) fn schema_sql(&self) -> String {
-        let (s, heads) = (&self.schema, heads_sql(&self.schema));
+        let (s, pt, a) = (&self.schema, Names::space(&self.at.projection), &self.at);
+        let [ix, vs] = [&a.indexes, &a.vectors].map(Names::default_space);
+        let heads = heads_sql(s, &pt);
+        let log = self.log_sql();
         format!(
             "
 CREATE SCHEMA IF NOT EXISTS {s};
-CREATE TABLE IF NOT EXISTS {s}.meta (
+{ix}CREATE TABLE IF NOT EXISTS {s}.meta (
     k TEXT PRIMARY KEY, n BIGINT, t TEXT
-);
-CREATE TABLE IF NOT EXISTS {s}.lease (
-    one INTEGER PRIMARY KEY CHECK (one = 1),
-    fence BIGINT NOT NULL, holder TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS {s}.segments (
-    first BIGINT PRIMARY KEY, digest TEXT
-);
-CREATE TABLE IF NOT EXISTS {s}.log (
-    position BIGINT PRIMARY KEY, segment BIGINT NOT NULL, fence BIGINT NOT NULL,
-    id TEXT NOT NULL, prev TEXT NOT NULL, hash TEXT NOT NULL, bytes BYTEA NOT NULL
-);
-CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
-CREATE TABLE IF NOT EXISTS {s}.declarations (
+){pt};{log}
+{ix}CREATE TABLE IF NOT EXISTS {s}.declarations (
     ident TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (ident, since)
-);
+){pt};
 CREATE INDEX IF NOT EXISTS declarations_since ON {s}.declarations (since);
 CREATE TABLE IF NOT EXISTS {s}.records (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, since BIGINT NOT NULL,
-    state TEXT NOT NULL,
+    state TEXT NOT NULL, flags SMALLINT NOT NULL,
     PRIMARY KEY (ty, key, since)
-);
+){pt};
 CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since, key);
+CREATE TABLE IF NOT EXISTS {s}.view_order (
+    name TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, entry BYTEA NOT NULL,
+    PRIMARY KEY (name, key)
+){pt};
 CREATE TABLE IF NOT EXISTS {s}.proposals (
     id TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (id, since)
-);
+){pt};
 CREATE INDEX IF NOT EXISTS proposals_newest ON {s}.proposals (((state::jsonb ->> 'position')::int8));
+CREATE TABLE IF NOT EXISTS {s}.quarantined (
+    source TEXT COLLATE \"C\" NOT NULL, delivery TEXT COLLATE \"C\" NOT NULL, ix TEXT NOT NULL,
+    since BIGINT NOT NULL, state TEXT NOT NULL,
+    PRIMARY KEY (source, delivery, ix, since)
+){pt};
+CREATE INDEX IF NOT EXISTS quarantined_at ON {s}.quarantined ((state::jsonb ->> 'type'), (state::jsonb ->> 'key'));
 CREATE TABLE IF NOT EXISTS {s}.members (
     object_set TEXT NOT NULL, ty TEXT NOT NULL, key TEXT NOT NULL,
     since BIGINT NOT NULL, state BOOLEAN NOT NULL,
     PRIMARY KEY (object_set, ty, key, since)
-);
+){pt};
 CREATE TABLE IF NOT EXISTS {s}.outputs (
     seam TEXT NOT NULL, input TEXT NOT NULL, since BIGINT NOT NULL,
     state TEXT NOT NULL,
     PRIMARY KEY (seam, input, since)
-);
-{heads}CREATE TABLE IF NOT EXISTS {s}.applied (
-    id TEXT PRIMARY KEY, at BIGINT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS {s}.routes (
-    at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT, source TEXT
-);
+){pt};
+{heads}CREATE TABLE IF NOT EXISTS {s}.routes (
+    at BIGINT NOT NULL, kind INTEGER NOT NULL, ty INTEGER, key TEXT, source INTEGER
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.names (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name TEXT NOT NULL UNIQUE
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.bases (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, block TEXT NOT NULL
+){pt};
+CREATE INDEX IF NOT EXISTS bases_block ON {s}.bases (md5(block));
 CREATE INDEX IF NOT EXISTS routes_kind ON {s}.routes (kind, at);
 CREATE INDEX IF NOT EXISTS routes_ty ON {s}.routes (ty, at);
 CREATE INDEX IF NOT EXISTS routes_key ON {s}.routes (key, at);
 CREATE INDEX IF NOT EXISTS routes_source ON {s}.routes (source, at);
 CREATE TABLE IF NOT EXISTS {s}.text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL
-);
+){pt};
 CREATE UNIQUE INDEX IF NOT EXISTS text_index_value
     ON {s}.text_index (ty, field, md5(value), key COLLATE \"C\");
-CREATE INDEX IF NOT EXISTS text_index_key ON {s}.text_index (ty, key);
 CREATE TABLE IF NOT EXISTS {s}.lookup_fields (
     ty TEXT NOT NULL, field TEXT NOT NULL, PRIMARY KEY (ty, field)
-);
+){pt};
 CREATE TABLE IF NOT EXISTS {s}.edges (
     src_ty TEXT NOT NULL, src_key TEXT NOT NULL, relation TEXT NOT NULL,
     dst_ty TEXT NOT NULL, dst_key TEXT NOT NULL
-);
+){pt};
 CREATE INDEX IF NOT EXISTS edges_src ON {s}.edges (src_ty, src_key);
 CREATE INDEX IF NOT EXISTS edges_dst ON {s}.edges (dst_ty, dst_key);
 CREATE TABLE IF NOT EXISTS {s}.full_text (
     ty TEXT NOT NULL, token TEXT NOT NULL, key TEXT NOT NULL,
     PRIMARY KEY (ty, token, key)
-);
+){pt};
 CREATE INDEX IF NOT EXISTS full_text_key ON {s}.full_text (ty, key);
 CREATE TABLE IF NOT EXISTS {s}.sort_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, sort_key BYTEA NOT NULL,
     PRIMARY KEY (ty, key, field)
-);
+){pt};
 CREATE INDEX IF NOT EXISTS sort_index_asc ON {s}.sort_index (ty, field, sort_key, key COLLATE \"C\");
-CREATE INDEX IF NOT EXISTS sort_index_desc
-    ON {s}.sort_index (ty, field, sort_key DESC, key COLLATE \"C\");
-CREATE TABLE IF NOT EXISTS {s}.vectors (
-    ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, data BYTEA NOT NULL,
-    PRIMARY KEY (ty, field, key)
+CREATE TABLE IF NOT EXISTS {s}.graphs (
+    ty TEXT NOT NULL, field TEXT NOT NULL, class TEXT NOT NULL, dims INT NOT NULL,
+    gen BIGINT, next BIGINT, stale BIGINT,
+    PRIMARY KEY (ty, field, class)
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.graph_keys (
+    ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, PRIMARY KEY (ty, key)
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.text_stats (
+    ty TEXT NOT NULL, field TEXT NOT NULL, held BOOLEAN NOT NULL,
+    records BIGINT NOT NULL, tokens BIGINT NOT NULL,
+    PRIMARY KEY (ty, field, held)
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.text_lengths (
+    ty TEXT NOT NULL, key TEXT NOT NULL, field TEXT NOT NULL,
+    held BOOLEAN NOT NULL, tokens BIGINT NOT NULL,
+    PRIMARY KEY (ty, key, field)
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.thinned_types (
+    ty TEXT NOT NULL, \"by\" TEXT NOT NULL, \"before\" BIGINT NOT NULL,
+    at BIGINT NOT NULL, through BIGINT NOT NULL, gone BIGINT NOT NULL,
+    PRIMARY KEY (ty, \"by\", \"before\")
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.thinned (
+    ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, \"before\" BIGINT NOT NULL,
+    at BIGINT NOT NULL, PRIMARY KEY (ty, key)
+){pt};
+{vs}CREATE TABLE IF NOT EXISTS {s}.vectors (
+    ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, field TEXT NOT NULL,
+    since BIGINT NOT NULL, until BIGINT, single BOOLEAN NOT NULL, data BYTEA NOT NULL,
+    PRIMARY KEY (ty, key, field, since)
 );
+CREATE INDEX IF NOT EXISTS vectors_head ON {s}.vectors (ty, field, key) WHERE until IS NULL;
 "
+        )
+    }
+
+    /// The statements that create the log's tables and the lease's, if
+    /// absent, in the lake's schema; none for a scratch, which reads them
+    /// there. A table a later build adds to the log is made by the first
+    /// writer's open of this build, by `clear`, and by the swap of a
+    /// rebuild (`scratch.rs`).
+    pub(crate) fn log_sql(&self) -> String {
+        if self.log.is_some() {
+            return String::new();
+        }
+        let (s, lg) = (&self.schema, Names::default_space(&self.at.log));
+        format!(
+            "
+{lg}CREATE TABLE IF NOT EXISTS {s}.lease (
+    one INTEGER PRIMARY KEY CHECK (one = 1),
+    fence BIGINT NOT NULL, holder TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS {s}.segments (
+    first BIGINT PRIMARY KEY, digest TEXT, running BYTEA
+);
+CREATE TABLE IF NOT EXISTS {s}.log (
+    position BIGINT PRIMARY KEY, last BIGINT NOT NULL, prev BYTEA NOT NULL,
+    hash BYTEA NOT NULL, bytes BYTEA STORAGE EXTERNAL NOT NULL, kept BYTEA
+);
+CREATE TABLE IF NOT EXISTS {s}.ids (
+    id BYTEA NOT NULL, at BIGINT NOT NULL, PRIMARY KEY (id, at)
+);"
         )
     }
 }
@@ -190,7 +321,7 @@ CREATE TABLE IF NOT EXISTS {s}.vectors (
 /// The heads tables, one per history that keeps heads: each thing's
 /// identifying columns, as its history types them, and the position of
 /// its latest state.
-fn heads_sql(s: &str) -> String {
+fn heads_sql(s: &str, pt: &str) -> String {
     HISTORIES
         .iter()
         .filter(|h| h.head)
@@ -201,9 +332,14 @@ fn heads_sql(s: &str) -> String {
             });
             format!(
                 "CREATE TABLE IF NOT EXISTS {s}.{t}_head ({columns}, since BIGINT NOT NULL, \
-                 PRIMARY KEY ({ident})) WITH (fillfactor = 70);\n",
+                 {flags}PRIMARY KEY ({ident})) WITH (fillfactor = 70){pt};\n",
                 t = h.table,
                 ident = h.ident.join(", "),
+                flags = if h.flags {
+                    "flags SMALLINT NOT NULL, "
+                } else {
+                    ""
+                },
             )
         })
         .collect()
@@ -214,22 +350,26 @@ fn heads_sql(s: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 4;
+pub(crate) const LAYOUT: u64 = 13;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 19] = [
+pub(crate) const LAKE_TABLES: [&str; 29] = [
     "meta",
     "lease",
     "segments",
     "log",
+    "ids",
     "declarations",
     "records",
+    "view_order",
     "proposals",
+    "quarantined",
     "members",
     "outputs",
-    "applied",
     "routes",
+    "names",
+    "bases",
     "text_index",
     "lookup_fields",
     "edges",
@@ -238,11 +378,38 @@ pub(crate) const LAKE_TABLES: [&str; 19] = [
     "vectors",
     "declarations_head",
     "records_head",
+    "graphs",
+    "graph_keys",
+    "text_stats",
+    "text_lengths",
+    "thinned_types",
+    "thinned",
 ];
 
 /// The projection's tables, cleared by a rebuild; the log, its segments,
 /// the lease and the lake's name stay.
-pub(crate) const PROJECTION_TABLES: &[&str] = LAKE_TABLES.split_at(4).1;
+pub(crate) const PROJECTION_TABLES: &[&str] = LAKE_TABLES.split_at(5).1;
+
+/// The projection's tables an earlier build had and this one does not,
+/// which a rebuild's `clear` or swap drops where it meets them
+/// (`scratch.rs`). The list names what a lake this format can carry:
+/// `frames` went with the log this format reads, and a lake that holds
+/// one is not opened at all, so it is not named here.
+/// `applied` went with 0.21.0: an applied id is answered from the key of
+/// `ids` (`view.rs`).
+pub(crate) const RETIRED_TABLES: &[&str] = &["applied"];
+
+/// A record state's flags as `records` and `records_head` hold them, so
+/// that a count and a vector read test a column, not the state's JSON:
+/// [`RETIRED`] where it is retired, [`HELD`] where it is restricted.
+pub(crate) fn flags(r: &StoredRecord) -> i16 {
+    (if r.retired { RETIRED } else { 0 }) | (if r.restricted { HELD } else { 0 })
+}
+
+/// The flag of a retired state.
+pub(crate) const RETIRED: i16 = 1;
+/// The flag of a restricted state.
+pub(crate) const HELD: i16 = 2;
 
 /// A history table: its name and the columns naming one thing in it.
 pub(crate) struct History {
@@ -252,17 +419,31 @@ pub(crate) struct History {
     pub(crate) state: &'static str,
     /// Whether it keeps a heads table, for reads at the head.
     head: bool,
+    /// Whether its rows and heads hold a state's [`flags`] beside it.
+    flags: bool,
 }
 
 pub(crate) const DECLARATIONS: History = History::new("declarations", &["ident"], "text", true);
-pub(crate) const RECORDS: History = History::new("records", &["ty", "key"], "text", true);
+pub(crate) const RECORDS: History = History {
+    flags: true,
+    ..History::new("records", &["ty", "key"], "text", true)
+};
 pub(crate) const PROPOSALS: History = History::new("proposals", &["id"], "text", false);
+pub(crate) const QUARANTINED: History =
+    History::new("quarantined", &["source", "delivery", "ix"], "text", false);
 pub(crate) const OUTPUTS: History = History::new("outputs", &["seam", "input"], "text", false);
 pub(crate) const MEMBERS: History =
     History::new("members", &["object_set", "ty", "key"], "boolean", false);
 
 /// Every history.
-const HISTORIES: [&History; 5] = [&DECLARATIONS, &RECORDS, &PROPOSALS, &MEMBERS, &OUTPUTS];
+const HISTORIES: [&History; 6] = [
+    &DECLARATIONS,
+    &RECORDS,
+    &PROPOSALS,
+    &QUARANTINED,
+    &MEMBERS,
+    &OUTPUTS,
+];
 
 impl History {
     const fn new(
@@ -276,6 +457,7 @@ impl History {
             ident,
             state,
             head,
+            flags: false,
         }
     }
 
@@ -294,7 +476,7 @@ impl History {
     pub(crate) fn at_head(&self, names: &Names) -> String {
         let t = names.t(self.table);
         format!(
-            "{t}_head h CROSS JOIN LATERAL (SELECT x.state FROM {t} x \
+            "{t}_head h CROSS JOIN LATERAL (SELECT x.* FROM {t} x \
              WHERE {on} AND x.since = h.since LIMIT 1) r",
             on = self.each(" AND ", |_, c| format!("x.{c} = h.{c}")),
         )
@@ -317,9 +499,13 @@ impl History {
     /// there is replaced.
     fn move_heads(&self, names: &Names, rows: &str) -> String {
         let columns = self.ident.join(", ");
+        let (flags, set) = match self.flags {
+            true => (", flags", ", flags = EXCLUDED.flags"),
+            false => ("", ""),
+        };
         format!(
-            "INSERT INTO {}_head AS h ({columns}, since) {rows} \
-             ON CONFLICT ({columns}) DO UPDATE SET since = EXCLUDED.since \
+            "INSERT INTO {}_head AS h ({columns}, since{flags}) {rows} \
+             ON CONFLICT ({columns}) DO UPDATE SET since = EXCLUDED.since{set} \
              WHERE h.since <= EXCLUDED.since",
             names.t(self.table)
         )
@@ -337,6 +523,7 @@ impl History {
         since: Position,
         state: &(dyn ToSql + Sync),
     ) -> Result<()> {
+        debug_assert!(!self.flags, "a history with flags is put with put_many");
         let n = self.ident.len();
         let at = since.0 as i64;
         let mut args: Vec<&(dyn ToSql + Sync)> = ident.to_vec();
@@ -365,12 +552,14 @@ impl History {
     ///
     /// Answers the things whose latest state is now a buffered one, each
     /// with whether the history held a state of it before; nothing where
-    /// the history keeps no heads.
+    /// the history keeps no heads. A history that keeps [`flags`] is
+    /// handed each row's in `flags`, in the rows' order; any other none.
     pub(crate) fn put_many<S: ToSql + Sync>(
         &self,
         db: &mut Db,
         names: &Names,
         rows: &BTreeMap<(Vec<String>, i64), S>,
+        flags: &[i16],
     ) -> Result<Vec<(Vec<String>, bool)>> {
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -393,32 +582,41 @@ impl History {
         args.push(&since);
         args.push(&states);
         let columns = self.ident.join(", ");
-        let arrays: Vec<String> = (1..=n).map(|i| format!("${i}::text[]")).collect();
+        let mut arrays: Vec<String> = (1..=n).map(|i| format!("${i}::text[]")).collect();
+        arrays.push(format!("${}::int8[], ${}::{}[]", n + 1, n + 2, self.state));
+        let (mut put, mut set) = (format!("{columns}, since, state"), "");
+        if self.flags {
+            debug_assert_eq!(flags.len(), rows.len(), "a row's flags beside it");
+            args.push(&flags);
+            arrays.push(format!("${}::int2[]", n + 3));
+            put.push_str(", flags");
+            set = ", flags = EXCLUDED.flags";
+        }
         // An upserted head reads `xmax` 0 when it was inserted: the thing
-        // had no state before.
+        // had no state before. A head takes its thing's latest buffered row.
+        let latest = match self.flags {
+            true => format!(
+                "SELECT DISTINCT ON ({columns}) {columns}, since, flags FROM b \
+                 ORDER BY {columns}, since DESC"
+            ),
+            false => format!("SELECT {columns}, max(since) FROM b GROUP BY {columns}"),
+        };
         let heads = match self.head {
             true => format!(
                 "{} RETURNING {columns}, xmax <> 0",
-                self.move_heads(
-                    names,
-                    &format!("SELECT {columns}, max(since) FROM b GROUP BY {columns}")
-                )
+                self.move_heads(names, &latest)
             ),
             false => "SELECT 1 WHERE false".to_owned(),
         };
         let answer = db.query(
             &format!(
                 "WITH b AS (\
-                   SELECT * FROM unnest({arrays}, ${s}::int8[], ${v}::{ty}[]) \
-                   AS b({columns}, since, state)\
+                   SELECT * FROM unnest({arrays}) AS b({put})\
                  ), put AS (\
-                   INSERT INTO {table} ({columns}, since, state) SELECT * FROM b \
-                   ON CONFLICT ({columns}, since) DO UPDATE SET state = EXCLUDED.state\
+                   INSERT INTO {table} ({put}) SELECT * FROM b \
+                   ON CONFLICT ({columns}, since) DO UPDATE SET state = EXCLUDED.state{set}\
                  ) {heads}",
                 arrays = arrays.join(", "),
-                s = n + 1,
-                v = n + 2,
-                ty = self.state,
                 table = names.t(self.table),
             ),
             &args,
@@ -439,13 +637,19 @@ impl History {
 #[derive(Default)]
 pub(crate) struct HeadTypes(HashMap<TypeName, HeadType>);
 
-/// A type's declaration at the head, its order index's fields, and its
-/// exact-text index's (`None`, every field, for a kept name).
+/// A type's declaration at the head, its order index's fields, its
+/// exact-text index's (`None`, every field, for a kept name), and those
+/// its states keep apart ([`engines::vector_fields`]).
 #[derive(Clone, Default)]
 pub(crate) struct HeadType {
     pub(crate) decl: Option<TypeDecl>,
     pub(crate) sorted: Vec<FieldName>,
+    /// The derived fields of the type's series pairs, each kept from its
+    /// `Start` (097 §The series index): no order index of the lake's own
+    /// names one, but a write keeps their rows beside the order fields'.
+    pub(crate) series: Vec<FieldName>,
     pub(crate) looked: Option<BTreeSet<FieldName>>,
+    pub(crate) vectors: BTreeSet<FieldName>,
 }
 
 impl HeadTypes {
@@ -462,44 +666,623 @@ impl HeadTypes {
 /// `ty`'s declaration at the head and the fields its order index keeps:
 /// those its `sort_index.<type>` setting at the head names that the
 /// declaration (a kept name's view's) declares with a kind the index
-/// keeps. A kept name has no declaration. One round trip.
+/// keeps. A kept name has no declaration. One round trip, the setting's
+/// head row read once.
 pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<HeadType> {
     let view = engines::kept_view(ty);
     let row = db.query_one(
         &format!(
-            "SELECT (SELECT r.state FROM {d} WHERE h.ident = $1), \
-             (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3), \
-             (SELECT array_agg(field) FROM {l} WHERE ty = $4)",
+            "SELECT (SELECT r.state FROM {d} WHERE h.ident = $1), s.state, \
+             (SELECT array_agg(field) FROM {l} WHERE ty = $4), \
+             (SELECT t FROM {m} WHERE k = $5), s.since, \
+             (SELECT t FROM {m} WHERE k = $6) \
+             FROM (SELECT) AS one LEFT JOIN LATERAL \
+             (SELECT r.state, r.since FROM {r} WHERE h.ty = $2 AND h.key = $3) AS s ON true",
             d = DECLARATIONS.at_head(names),
             r = RECORDS.at_head(names),
             l = names.t("lookup_fields"),
+            m = names.t("meta"),
         ),
         &[
             &format!("type {}", view.as_ref().unwrap_or(ty)),
             &SETTING_TYPE,
             &engines::sort_index_key(ty),
             &ty.as_str(),
+            &engines::chosen_mark(ty),
+            &engines::series_mark(ty),
         ],
     )?;
     let looked: Option<Vec<String>> = row.get(2);
     let declared = declared_type(row.get(0))?;
-    let setting = row
-        .get::<_, Option<String>>(1)
-        .map(|state| decode_record(&state))
-        .transpose()?;
+    let setting = setting_at(&row, ty, [1, 4])?;
+    let chosen = chosen_decoded(row.get(3));
+    let series = engines::series_fields(&engines::series_decoded(row.get(5)));
     let sorted = match &declared {
-        Some(d) => engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)),
+        Some(d) => engines::order_fields(ty, d, setting.as_ref(), &chosen, true),
         None => Vec::new(),
     };
+    let own = view.as_ref().unwrap_or(ty);
+    let vectors = engines::vector_fields(ty, |t| match t == own {
+        true => Ok(declared.clone()),
+        false => type_at(db, names, t, None),
+    })?;
     let decl = declared.filter(|_| view.is_none());
-    let looked = decl
-        .as_ref()
-        .map(|_| looked.into_iter().flatten().map(FieldName::from).collect());
+    let looked = decl.as_ref().map(|_| {
+        // A field the setting is having built is no read's until its
+        // `Keep`, but a write beside the build keeps its rows too.
+        let mut fields: BTreeSet<FieldName> =
+            looked.into_iter().flatten().map(FieldName::from).collect();
+        fields.extend(chosen.looked_building.iter().cloned());
+        fields
+    });
     Ok(HeadType {
         decl,
         sorted,
+        series,
         looked,
+        vectors,
     })
+}
+
+/// The fields of an order index the lake chose, as the meta row holds
+/// them: none where it holds none.
+pub(crate) fn chosen_decoded(text: Option<String>) -> Chosen {
+    text.map_or_else(Chosen::default, |t| {
+        serde_json::from_str(&t).unwrap_or_default()
+    })
+}
+
+/// Keep `ty`'s chosen fields as `chosen`: no row where it holds none.
+/// The lake's first choice marks them kept through the position folded
+/// through, which the fold moves on from there, and writes the mark's twin
+/// row in `sort_index` ([`held`]).
+fn set_chosen(db: &mut Db, names: &Names, ty: &TypeName, chosen: &Chosen) -> Result<()> {
+    let (meta, mark) = (names.t("meta"), engines::chosen_mark(ty));
+    if *chosen == Chosen::default() {
+        return db.execute(&format!("DELETE FROM {meta} WHERE k = $1"), &[&mark]);
+    }
+    let text = serde_json::to_string(chosen).expect("the chosen fields serialise");
+    db.execute(
+        &format!(
+            "WITH marked AS (INSERT INTO {meta} (k, n) \
+             VALUES ($1, (SELECT n FROM {meta} WHERE k = 'folded')) \
+             ON CONFLICT (k) DO NOTHING RETURNING k) \
+             INSERT INTO {} (ty, field, key, sort_key) SELECT '', k, '', ''::bytea FROM marked \
+             ON CONFLICT DO NOTHING",
+            names.t("sort_index")
+        ),
+        &[&engines::CHOSEN_THROUGH],
+    )?;
+    db.execute(
+        &format!("INSERT INTO {meta} (k, t) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET t = $2"),
+        &[&mark, &text],
+    )
+}
+
+/// The fields of `ty`'s order index the lake chose, as a read takes them:
+/// none unless they are kept through the position folded through, which
+/// a writer that keeps no chosen field folds past.
+pub(crate) fn chosen_kept(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Chosen> {
+    let row = db.query_one(
+        &format!(
+            "SELECT (SELECT t FROM {} WHERE k = $1), {}",
+            names.t("meta"),
+            held(names, "$2")
+        ),
+        &[&engines::chosen_mark(ty), &engines::CHOSEN_THROUGH],
+    )?;
+    Ok(match row.get::<_, bool>(1) {
+        true => chosen_decoded(row.get(0)),
+        false => Chosen::default(),
+    })
+}
+
+/// Whether the lake's chosen fields are kept through the position folded
+/// through, as SQL with `mark` the parameter naming their mark: a lake
+/// that never chose holds no mark and is. A mark is held only beside its
+/// twin row in `sort_index` (type `''`, field the mark's name): a binary
+/// before the chosen fields clears the projection by dropping its tables,
+/// `sort_index` with every chosen row among them, and keeps `meta`, so
+/// its rebuild through the same position leaves the mark where it stood
+/// and takes the twin.
+pub(crate) fn held(names: &Names, mark: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM {m} WHERE k = {mark} \
+         AND (n IS DISTINCT FROM (SELECT n FROM {m} WHERE k = 'folded') \
+         OR NOT EXISTS (SELECT 1 FROM {s} WHERE ty = '' AND field = {mark})))",
+        m = names.t("meta"),
+        s = names.t("sort_index"),
+    )
+}
+
+/// The fields of `ty`'s order index the lake chose, as its meta row holds
+/// them.
+pub(crate) fn chosen_of(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Chosen> {
+    let row = db.query_opt(
+        &format!("SELECT t FROM {} WHERE k = $1", names.t("meta")),
+        &[&engines::chosen_mark(ty)],
+    )?;
+    Ok(chosen_decoded(row.and_then(|row| row.get(0))))
+}
+
+/// The series pairs of `ty` and whether each is whole, as its `series.`
+/// row holds them: none where it holds none.
+pub(crate) fn series_of(db: &mut Db, names: &Names, ty: &TypeName) -> Result<SeriesState> {
+    let row = db.query_opt(
+        &format!("SELECT t FROM {} WHERE k = $1", names.t("meta")),
+        &[&engines::series_mark(ty)],
+    )?;
+    Ok(engines::series_decoded(row.and_then(|row| row.get(0))))
+}
+
+/// Keep `ty`'s series pairs as `state`: no row where it holds none.
+fn set_series(db: &mut Db, names: &Names, ty: &TypeName, state: &SeriesState) -> Result<()> {
+    let (meta, mark) = (names.t("meta"), engines::series_mark(ty));
+    if *state == SeriesState::default() {
+        return db.execute(&format!("DELETE FROM {meta} WHERE k = $1"), &[&mark]);
+    }
+    let text = serde_json::to_string(state).expect("the series pairs serialise");
+    db.execute(
+        &format!("INSERT INTO {meta} (k, t) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET t = $2"),
+        &[&mark, &text],
+    )
+}
+
+/// The field a step of choosing names.
+#[allow(deprecated)]
+fn chosen_field(step: &Choose) -> Option<&FieldName> {
+    match step {
+        Choose::Start(f) | Choose::Keep(f) | Choose::Drop(f) => Some(f),
+        Choose::Fill { field, .. } | Choose::DropChunk { field, .. } => Some(field),
+    }
+}
+
+/// One step of a series pair's build, in a transaction of its own that
+/// moves no position: the pair's state is kept in `series.<type>`, and its
+/// rows under the derived field of `field`.
+#[allow(deprecated)]
+fn choose_series(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    step: &Choose,
+    field: &FieldName,
+) -> Result<Option<RecordKey>> {
+    let Some((order, series)) = lakelands_api::seam::split_series_field(field.as_str()) else {
+        return Ok(None);
+    };
+    let pair = SeriesPair {
+        series: FieldName::from(series),
+        order: FieldName::from(order),
+    };
+    db.batch("BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL synchronous_commit = off")?;
+    let done = (|| {
+        let mut state = series_of(db, names, ty)?;
+        // A build fills and keeps a pair only while it is `building`: a
+        // setting put back beside the writer takes the pair back, whole, in
+        // that write, and the part in hand must not fill it again.
+        let building = state.building.contains(&pair);
+        let without = |state: &mut SeriesState| {
+            state.kept.retain(|p| p != &pair);
+            state.building.retain(|p| p != &pair);
+        };
+        match step {
+            Choose::Start(_) => {
+                if !state.kept.contains(&pair) && !state.building.contains(&pair) {
+                    state.building.push(pair.clone());
+                    state.started += 1;
+                }
+                set_series(db, names, ty, &state)?;
+                Ok(None)
+            }
+            Choose::Fill {
+                field,
+                after,
+                limit,
+            } => match building {
+                true => fill_chosen(db, names, ty, field, after.as_ref(), *limit),
+                false => Ok(None),
+            },
+            Choose::Keep(_) => {
+                if building {
+                    state.building.retain(|p| p != &pair);
+                    if !state.kept.contains(&pair) {
+                        state.kept.push(pair.clone());
+                    }
+                    set_series(db, names, ty, &state)?;
+                }
+                Ok(None)
+            }
+            // A pair taken back: its rows go whole in one step, or a chunk
+            // a call, and its state leaves with the last.
+            Choose::Drop(field) => {
+                let _ = drop_chosen(db, names, ty, field, None, u32::MAX)?;
+                without(&mut state);
+                set_series(db, names, ty, &state)?;
+                Ok(None)
+            }
+            Choose::DropChunk {
+                field,
+                after,
+                limit,
+            } => {
+                let last = drop_chosen(db, names, ty, field, after.as_ref(), *limit)?;
+                if last.is_none() {
+                    without(&mut state);
+                    set_series(db, names, ty, &state)?;
+                }
+                Ok(last)
+            }
+        }
+    })();
+    db.end(done)
+}
+
+/// One step of choosing an order index for `ty` (`ProjectionStore::
+/// choose_order`), in a transaction of its own that moves no position.
+#[allow(deprecated)]
+pub(crate) fn choose_order(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    step: &Choose,
+) -> Result<Option<RecordKey>> {
+    // A series pair's derived field is kept in the type's `series.` row,
+    // not in `Chosen`: its own road fills it from the pair (097 §The
+    // series index).
+    if let Some(field) = chosen_field(step).filter(|f| engines::is_series_field(f)) {
+        return choose_series(db, names, ty, step, field);
+    }
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::sort_index_key(ty)),
+    )?;
+    // A kept name is built as the view it keeps, as a host's setting for
+    // it names the view's fields.
+    let kept = engines::kept_view(ty);
+    let own = kept.clone().unwrap_or_else(|| ty.clone());
+    let Some(decl) = type_at(db, names, &own, None)?.filter(|d| kept.is_some() || d.view.is_none())
+    else {
+        return Ok(None);
+    };
+    let named =
+        engines::sorted_fields(ty, &decl, setting.as_ref().and_then(engines::setting_value));
+    let sortable = |f: &FieldName| {
+        (decl.fields.iter()).any(|d| d.name == *f && lakelands_api::seam::sortable(&d.ty.kind))
+    };
+    let mut chosen = chosen_of(db, names, ty)?;
+    // A field a host's setting names is filled by its own build, field by
+    // field; the setting and the lake share the rows, and a step on any
+    // other field is the lake's.
+    let setting_build = matches!(
+        step,
+        Choose::Fill { field, .. } | Choose::Keep(field)
+            if chosen.setting_building.contains(field)
+    );
+    let names_field = match step {
+        Choose::Start(f) | Choose::Keep(f) | Choose::Drop(f) => named.contains(f),
+        Choose::Fill { field, .. } | Choose::DropChunk { field, .. } => named.contains(field),
+    };
+    if matches!(step, Choose::Start(f) if !sortable(f)) || (names_field && !setting_build) {
+        return Ok(None);
+    }
+    // Nothing is chosen on a lake a writer that keeps no chosen field
+    // folded past, before a writer's open drops what it left.
+    let held = db.query_one(
+        &format!("SELECT {}", held(names, "$1")),
+        &[&engines::CHOSEN_THROUGH],
+    )?;
+    if !held.get::<_, bool>(0) || !engines::chosen_after(&mut chosen, step) {
+        return Ok(None);
+    }
+    db.batch("BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL synchronous_commit = off")?;
+    let done = match step {
+        Choose::Fill {
+            field,
+            after,
+            limit,
+        } => fill_chosen(db, names, ty, field, after.as_ref(), *limit),
+        // A drop clears a chunk of the field's rows a call; its last, which
+        // finds no more records, takes the mark away. Both write the mark,
+        // so one a writer went between is taken up by the next. `Drop` is
+        // the whole field in one step, kept for a host's build: it answers
+        // none.
+        Choose::Drop(field) => drop_chosen(db, names, ty, field, None, u32::MAX).and_then(|_| {
+            chosen.dropping.retain(|f| f != field);
+            if chosen == Chosen::default() {
+                set_sorted(db, names, ty, None)?;
+            }
+            set_chosen(db, names, ty, &chosen)?;
+            Ok(None)
+        }),
+        Choose::DropChunk {
+            field,
+            after,
+            limit,
+        } => drop_chosen(db, names, ty, field, after.as_ref(), *limit).and_then(|last| {
+            if last.is_none() {
+                chosen.dropping.retain(|f| f != field);
+                if chosen == Chosen::default() {
+                    set_sorted(db, names, ty, None)?;
+                }
+            }
+            set_chosen(db, names, ty, &chosen)?;
+            Ok(last)
+        }),
+        _ => set_chosen(db, names, ty, &chosen).and_then(|()| {
+            if let Choose::Start(_) = step {
+                let marked = db.query_opt(
+                    &format!("SELECT 1 FROM {} WHERE k = $1", names.t("meta")),
+                    &[&engines::sorted_mark(ty)],
+                )?;
+                if marked.is_none()
+                    && let Some(at) = folded(db, names)?
+                {
+                    set_sorted(db, names, ty, Some(at))?;
+                }
+            }
+            Ok(None)
+        }),
+    };
+    db.end(done)
+}
+
+/// Mark the fields `ty`'s `sort_index` setting asks for as building, and
+/// ensure the type has a `sorted` mark: a read keeps the old road until
+/// each field's `Keep`. A field the setting no longer names is marked
+/// dropping, and a `Drop` clears its rows in parts. The setting and the
+/// lake share the rows field by field: a chosen field the setting names is
+/// the setting's now.
+pub(crate) fn mark_sorted(db: &mut Db, names: &Names, ty: &TypeName) -> Result<()> {
+    let own = engines::kept_view(ty).unwrap_or_else(|| ty.clone());
+    let Some(decl) = type_at(db, names, &own, None)? else {
+        return Ok(());
+    };
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::sort_index_key(ty)),
+    )?;
+    let named =
+        engines::sorted_fields(ty, &decl, setting.as_ref().and_then(engines::setting_value));
+    let mut chosen = chosen_of(db, names, ty)?;
+    chosen.kept.retain(|f| !named.contains(f));
+    chosen.building.retain(|f| !named.contains(f));
+    let mut dropping = std::mem::take(&mut chosen.dropping);
+    let rows = db.query(
+        &format!(
+            "SELECT DISTINCT field FROM {} WHERE ty = $1 AND position(chr(31) IN field) = 0",
+            names.t("sort_index")
+        ),
+        &[&ty.as_str()],
+    )?;
+    for row in &rows {
+        let f = FieldName::from(row.get::<_, String>(0));
+        let held = chosen.kept.contains(&f) || chosen.building.contains(&f);
+        if !named.contains(&f) && !held && !dropping.contains(&f) {
+            dropping.push(f);
+        }
+    }
+    dropping.retain(|f| !named.contains(f));
+    chosen.dropping = dropping;
+    chosen.setting_building = named;
+    set_chosen(db, names, ty, &chosen)?;
+    if chosen.setting_building.is_empty() {
+        if chosen.kept.is_empty() && chosen.building.is_empty() && chosen.dropping.is_empty() {
+            return set_sorted(db, names, ty, None);
+        }
+        return Ok(());
+    }
+    let marked = db.query_opt(
+        &format!("SELECT 1 FROM {} WHERE k = $1", names.t("meta")),
+        &[&engines::sorted_mark(ty)],
+    )?;
+    if marked.is_none()
+        && let Some(at) = folded(db, names)?
+    {
+        set_sorted(db, names, ty, Some(at))?;
+    }
+    Ok(())
+}
+
+/// Mark the fields a live `lookup_index` setting asks the exact-text index
+/// for as building — those coming, and those going — and leave
+/// `lookup_fields` as it is: a read keeps the old road until `Keep`.
+pub(crate) fn mark_looked(db: &mut Db, names: &Names, ty: &TypeName) -> Result<()> {
+    let decls = head_declarations(db, names)?;
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(format!("{}{ty}", lakelands_api::seam::LOOKUP_INDEX_SETTING)),
+    )?;
+    let now: BTreeSet<FieldName> = engines::looked_up(
+        ty,
+        decls.iter(),
+        setting.as_ref().and_then(engines::setting_value),
+    )
+    .unwrap_or_default();
+    let rows = db.query(
+        &format!(
+            "SELECT field FROM {} WHERE ty = $1",
+            names.t("lookup_fields")
+        ),
+        &[&ty.as_str()],
+    )?;
+    let was: BTreeSet<FieldName> = rows
+        .iter()
+        .map(|r| FieldName::from(r.get::<_, String>(0)))
+        .collect();
+    let mut chosen = chosen_of(db, names, ty)?;
+    chosen.looked_building = now.difference(&was).cloned().collect();
+    chosen.looked_going = was.difference(&now).cloned().collect();
+    set_chosen(db, names, ty, &chosen)
+}
+
+/// One step of building the exact-text index a `lookup_index.<type>`
+/// setting asks for (`ProjectionStore::look_index`), in a transaction of
+/// its own that moves no position.
+pub(crate) fn look_index(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    step: &Look,
+) -> Result<Option<RecordKey>> {
+    db.batch("BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL synchronous_commit = off")?;
+    let done = (|| {
+        let mut chosen = chosen_of(db, names, ty)?;
+        match step {
+            Look::Fill {
+                fields,
+                after,
+                limit,
+            } => fill_looked(db, names, ty, fields, after.as_ref(), *limit),
+            Look::Keep { fields } => {
+                let lookup = names.t("lookup_fields");
+                let text = names.t("text_index");
+                for f in fields {
+                    db.execute(
+                        &format!("INSERT INTO {lookup} (ty, field) VALUES ($1, $2)"),
+                        &[&ty.as_str(), &f.as_str()],
+                    )?;
+                }
+                chosen.looked_building.retain(|f| !fields.contains(f));
+                for f in std::mem::take(&mut chosen.looked_going) {
+                    db.execute(
+                        &format!("DELETE FROM {text} WHERE ty = $1 AND field = $2"),
+                        &[&ty.as_str(), &f.as_str()],
+                    )?;
+                    db.execute(
+                        &format!("DELETE FROM {lookup} WHERE ty = $1 AND field = $2"),
+                        &[&ty.as_str(), &f.as_str()],
+                    )?;
+                }
+                set_chosen(db, names, ty, &chosen)?;
+                Ok(None)
+            }
+        }
+    })();
+    db.end(done)
+}
+
+/// Write the rows of `fields` for up to `limit` head records of `ty` after
+/// `after`; the key the chunk ended at, none once the type is filled.
+fn fill_looked(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    fields: &[FieldName],
+    after: Option<&RecordKey>,
+    limit: u32,
+) -> Result<Option<RecordKey>> {
+    let after = after.map_or("", RecordKey::as_str);
+    let page = head_records_after(db, names, ty, after, i64::from(limit))?;
+    let (mut found, mut values, mut keys) = (Vec::new(), Vec::new(), Vec::new());
+    for r in &page {
+        for field in fields {
+            let Some(text) = r.fields.get(field).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            found.push(field.as_str().to_owned());
+            values.push(text.to_owned());
+            keys.push(r.key.as_str().to_owned());
+        }
+    }
+    let all: Vec<&str> = page.iter().map(|r| r.key.as_str()).collect();
+    let held: Vec<&str> = fields.iter().map(FieldName::as_str).collect();
+    db.execute(
+        &format!(
+            "DELETE FROM {} WHERE ty = $1 AND key = ANY($2) AND field = ANY($3)",
+            names.t("text_index")
+        ),
+        &[&ty.as_str(), &all, &held],
+    )?;
+    db.execute(
+        &format!(
+            "INSERT INTO {} (ty, field, value, key) \
+             SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[]) ON CONFLICT DO NOTHING",
+            names.t("text_index"),
+        ),
+        &[&ty.as_str(), &found, &values, &keys],
+    )?;
+    Ok(page
+        .last()
+        .map(|r| r.key.clone())
+        .filter(|_| page.len() == limit as usize))
+}
+
+/// Write the rows of `field` for up to `limit` head records of `ty` after
+/// `after`; the key the chunk ended at, none once the type is filled.
+fn fill_chosen(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    field: &FieldName,
+    after: Option<&RecordKey>,
+    limit: u32,
+) -> Result<Option<RecordKey>> {
+    let after = after.map_or("", RecordKey::as_str);
+    let page = head_records_after(db, names, ty, after, i64::from(limit))?;
+    let (mut fields, mut keys, mut sort_keys) = (Vec::new(), Vec::new(), Vec::new());
+    let decl = type_at(db, names, ty, None)?;
+    for r in &page {
+        for (field, sort_key) in engines::order_rows(std::slice::from_ref(field), decl.as_ref(), r)
+        {
+            fields.push(field.as_str().to_owned());
+            keys.push(r.key.as_str().to_owned());
+            sort_keys.push(sort_key);
+        }
+    }
+    let all: Vec<&str> = page.iter().map(|r| r.key.as_str()).collect();
+    db.execute(
+        &format!(
+            "DELETE FROM {} WHERE ty = $1 AND field = $2 AND key = ANY($3)",
+            names.t("sort_index")
+        ),
+        &[&ty.as_str(), &field.as_str(), &all],
+    )?;
+    db.execute(
+        &format!(
+            "INSERT INTO {} (ty, field, key, sort_key) \
+             SELECT $1, * FROM unnest($2::text[], $3::text[], $4::bytea[])",
+            names.t("sort_index"),
+        ),
+        &[&ty.as_str(), &fields, &keys, &sort_keys],
+    )?;
+    Ok(page
+        .last()
+        .map(|r| r.key.clone())
+        .filter(|_| page.len() == limit as usize))
+}
+
+/// Clear the `field`'s rows of up to `limit` head records of `ty` after
+/// `after`, in key order; the key the chunk ended at, none once the type
+/// is cleared.
+fn drop_chosen(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    field: &FieldName,
+    after: Option<&RecordKey>,
+    limit: u32,
+) -> Result<Option<RecordKey>> {
+    let after = after.map_or("", RecordKey::as_str);
+    let page = head_records_after(db, names, ty, after, i64::from(limit))?;
+    let all: Vec<&str> = page.iter().map(|r| r.key.as_str()).collect();
+    db.execute(
+        &format!(
+            "DELETE FROM {} WHERE ty = $1 AND field = $2 AND key = ANY($3)",
+            names.t("sort_index")
+        ),
+        &[&ty.as_str(), &field.as_str(), &all],
+    )?;
+    Ok(page
+        .last()
+        .map(|r| r.key.clone())
+        .filter(|_| page.len() == limit as usize))
 }
 
 /// The declarations at the head.
@@ -537,12 +1320,28 @@ pub(crate) fn relook(
     let was = rows.iter().map(|row| (row.get(0), row.get(1))).collect();
     let heads = RECORDS.at_head(names);
     let changes = engines::relooked(kept, moved, &was, |key| {
-        let sql = format!("SELECT r.state FROM {heads} WHERE h.ty = $1 AND h.key = $2");
+        let sql = format!("SELECT {RECORD} FROM {heads} WHERE h.ty = $1 AND h.key = $2");
         let row = db.query_opt(&sql, &[&SETTING_TYPE, &key])?;
-        (row.map(|row| decode::<StoredRecord>(row.get(0), "a record"))).transpose()
+        row.map(|row| record_at(&row, 0).map(|(r, _)| r))
+            .transpose()
     })?;
     let text = names.t("text_index");
     for (ty, f, comes) in changes {
+        // A number or decimal field keeps its value's token, which SQL
+        // cannot make: fill it from the head states in this transaction
+        // (097 §A number's exact lookup).
+        let kind = type_at(db, names, &TypeName::from(ty.as_str()), None)?
+            .as_ref()
+            .and_then(|d| engines::field_kind(d, &FieldName::from(f.as_str())))
+            .copied();
+        if comes && matches!(kind, Some(StorageKind::Number | StorageKind::Decimal)) {
+            fill_tokens(db, names, &ty, &f, kind)?;
+            db.execute(
+                &format!("INSERT INTO {lookup} (ty, field) VALUES ($1, $2)"),
+                &[&ty, &f],
+            )?;
+            continue;
+        }
         let statements = match comes {
             true => [
                 format!(
@@ -565,24 +1364,80 @@ pub(crate) fn relook(
     Ok(())
 }
 
+/// Fill `field`'s exact-lookup rows from `ty`'s head states, a page at a
+/// time, each value's token made in Rust (097 §A number's exact lookup).
+fn fill_tokens(
+    db: &mut Db,
+    names: &Names,
+    ty: &str,
+    field: &str,
+    kind: Option<StorageKind>,
+) -> Result<()> {
+    let name = TypeName::from(ty);
+    let field = FieldName::from(field);
+    let mut after = String::new();
+    loop {
+        let page = head_records_after(db, names, &name, &after, REBUILD_PAGE)?;
+        let mut rows: [Vec<String>; 4] = Default::default();
+        for r in (page.iter()).filter(|r| !r.is_ended()) {
+            let Some(token) = r
+                .fields
+                .get(&field)
+                .and_then(|v| engines::lookup_token(v, kind))
+            else {
+                continue;
+            };
+            for (column, v) in rows.iter_mut().zip([
+                ty.to_owned(),
+                field.as_str().to_owned(),
+                token,
+                r.key.to_string(),
+            ]) {
+                column.push(v);
+            }
+        }
+        if !rows[0].is_empty() {
+            let [r1, r2, r3, r4] = &rows;
+            db.execute(
+                &format!(
+                    "INSERT INTO {text} (ty, field, value, key) \
+                     SELECT u.ty, u.field, u.value, u.key \
+                     FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) \
+                     AS u(ty, field, value, key) ON CONFLICT DO NOTHING",
+                    text = names.t("text_index"),
+                ),
+                &[r1, r2, r3, r4],
+            )?;
+        }
+        match page.len() as i64 {
+            n if n == REBUILD_PAGE => after = page[page.len() - 1].key.to_string(),
+            _ => return Ok(()),
+        }
+    }
+}
+
 /// The statement of a feed filter's positions in `routes` from `$2`
 /// through `$3`, at most `$4`: those of each value of `$1` in the column
 /// `by` the filter is sought by (`lakelands_core::feed::Seek`), or every
-/// row's without one, each row checked against the kinds `$5`, types `$6`
-/// and keys `$7` that are not empty.
+/// row's without one, each row checked against the kind codes `$5`, type
+/// ids `$6` and keys `$7` that are not empty. A value of `$1` is a key
+/// for `key`, else a code or an id.
 pub(crate) fn routes_sql(names: &Names, by: Option<&str>) -> String {
     let routes = names.t("routes");
-    let checked = "at BETWEEN $2 AND $3 AND (cardinality($5::text[]) = 0 OR kind = ANY($5)) \
-         AND (cardinality($6::text[]) = 0 OR ty = ANY($6)) \
+    let checked = "at BETWEEN $2 AND $3 AND (cardinality($5::int4[]) = 0 OR kind = ANY($5)) \
+         AND (cardinality($6::int4[]) = 0 OR ty = ANY($6)) \
          AND (cardinality($7::text[]) = 0 OR key = ANY($7))";
     match by {
-        Some(column) => format!(
-            "SELECT DISTINCT r.at FROM unnest($1::text[]) v(value) CROSS JOIN LATERAL (\
-             SELECT DISTINCT at FROM {routes} WHERE {column} = v.value AND {checked} \
-             ORDER BY at LIMIT $4) r ORDER BY r.at LIMIT $4"
-        ),
+        Some(column) => {
+            let held = if column == "key" { "text" } else { "int4" };
+            format!(
+                "SELECT DISTINCT r.at FROM unnest($1::{held}[]) v(value) CROSS JOIN LATERAL (\
+                 SELECT DISTINCT at FROM {routes} WHERE {column} = v.value AND {checked} \
+                 ORDER BY at LIMIT $4) r ORDER BY r.at LIMIT $4"
+            )
+        }
         None => format!(
-            "SELECT DISTINCT at FROM {routes} WHERE cardinality($1::text[]) = 0 AND {checked} \
+            "SELECT DISTINCT at FROM {routes} WHERE cardinality($1::int4[]) = 0 AND {checked} \
              ORDER BY at LIMIT $4"
         ),
     }
@@ -599,29 +1454,37 @@ pub(crate) fn folded(db: &mut Db, names: &Names) -> Result<Option<Position>> {
         .map(|v| Position(v as u64)))
 }
 
-/// Record the position folded through, and that every order index and
-/// vector index the lake keeps (a `sorted.<type>` or `vindex.<type>.<field>`
-/// mark each) is kept through it too, in one statement.
+/// Record the position folded through, and that every order index the
+/// lake keeps (a `sorted.<type>` mark each) is kept through it too, in
+/// one statement. So are the chosen fields among them, and the text
+/// statistics, if they were kept through the position it folds from (the
+/// statement reads `folded` as it was); a writer that keeps none folded
+/// past them otherwise, and they stay behind until a writer's open drops
+/// or counts them.
 pub(crate) fn set_folded(db: &mut Db, names: &Names, through: Position) -> Result<()> {
     db.execute(
         &format!(
-            "WITH s AS (UPDATE {m} SET n = $1 WHERE k LIKE 'sorted.%' OR k LIKE 'vindex.%') \
+            "WITH s AS (UPDATE {m} SET n = $1 \
+             WHERE k LIKE 'sorted.%' OR (k IN ($2, '{TEXT_STATS}') \
+             AND n IS NOT DISTINCT FROM (SELECT n FROM {m} WHERE k = 'folded'))) \
              INSERT INTO {m} (k, n) VALUES ('folded', $1) ON CONFLICT (k) DO UPDATE SET n = $1",
             m = names.t("meta")
         ),
-        &[&(through.0 as i64)],
+        &[&(through.0 as i64), &engines::CHOSEN_THROUGH],
     )
 }
 
 /// The records an order index's rebuild reads at a time.
 const REBUILD_PAGE: i64 = 1024;
 
-/// `ANALYZE` over the tables a view plans from: `records`, its heads and
-/// the head indexes. One statement, run outside any transaction.
+/// `ANALYZE` over the tables a view plans from: `records`, its heads, the
+/// head indexes and the vectors, which the graphs' writes read by key.
+/// One statement, run outside any transaction.
 pub(crate) fn analyze(db: &mut Db, names: &Names) -> Result<()> {
     let tables: Vec<String> = [
         "records",
         "records_head",
+        "vectors",
         "text_index",
         "edges",
         "full_text",
@@ -631,6 +1494,122 @@ pub(crate) fn analyze(db: &mut Db, names: &Names) -> Result<()> {
     .map(|t| names.t(t))
     .collect();
     db.batch(&format!("ANALYZE {}", tables.join(", ")))
+}
+
+/// Mark the pairs `ty`'s `series_index` setting asks for as building, and
+/// leave the pairs it no longer names out: a read keeps the old road until
+/// each pair's `Keep`, and the fold keeps a building pair's rows from its
+/// `Start`. A pair still named and already kept stays kept.
+pub(crate) fn mark_series(db: &mut Db, names: &Names, ty: &TypeName) -> Result<()> {
+    let Some(decl) = type_at(db, names, ty, None)? else {
+        return Ok(());
+    };
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::series_index_key(ty)),
+    )?;
+    let named = engines::series_pairs(&decl, setting.as_ref().and_then(engines::setting_value));
+    let mut state = series_of(db, names, ty)?;
+    // A pair the setting no longer names is taken back: its rows go in the
+    // writer's turn, as a `Drop` does, so none is left without a pair.
+    let gone: Vec<_> = state
+        .kept
+        .iter()
+        .chain(state.building.iter())
+        .filter(|p| !named.contains(p))
+        .cloned()
+        .collect();
+    for pair in &gone {
+        let field = FieldName::from(lakelands_api::seam::series_field(
+            pair.order.as_str(),
+            pair.series.as_str(),
+        ));
+        let _ = drop_chosen(db, names, ty, &field, None, u32::MAX)?;
+    }
+    state.kept.retain(|p| named.contains(p));
+    state.building.retain(|p| named.contains(p));
+    let mut started = false;
+    for pair in named {
+        if !state.kept.contains(&pair) && !state.building.contains(&pair) {
+            state.building.push(pair);
+            started = true;
+        }
+    }
+    if started {
+        state.started += 1;
+    }
+    set_series(db, names, ty, &state)
+}
+
+/// Fill `ty`'s series pairs whole from its head records, under its setting
+/// and declaration at the head, and write them kept: a fold from the log
+/// makes a pair whole at its event rather than marking it for a build. A
+/// setting taken back leaves no pair and drops their rows.
+pub(crate) fn rebuild_series(db: &mut Db, names: &Names, ty: &TypeName) -> Result<()> {
+    // A fold from the log makes the pairs whole, so a build may go on from
+    // its cursor; the count goes on rather than back, so a build never
+    // reads a number again for a pair whose rows a take-back beside the
+    // writer has since cleared.
+    let started = series_of(db, names, ty)?.started;
+    db.execute(
+        &format!(
+            "DELETE FROM {} WHERE ty = $1 AND position(chr(31) IN field) > 0",
+            names.t("sort_index")
+        ),
+        &[&ty.as_str()],
+    )?;
+    let Some(decl) = type_at(db, names, ty, None)? else {
+        let state = SeriesState {
+            started,
+            ..SeriesState::default()
+        };
+        return set_series(db, names, ty, &state);
+    };
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::series_index_key(ty)),
+    )?;
+    let pairs = engines::series_pairs(&decl, setting.as_ref().and_then(engines::setting_value));
+    let state = SeriesState {
+        kept: pairs,
+        building: Vec::new(),
+        started,
+    };
+    set_series(db, names, ty, &state)?;
+    let fields = engines::series_fields(&state);
+    if fields.is_empty() {
+        return Ok(());
+    }
+    let mut after = String::new();
+    loop {
+        let page = head_records_after(db, names, ty, &after, REBUILD_PAGE)?;
+        let Some(last) = page.last() else { break };
+        after = last.key.to_string();
+        let (mut found, mut keys, mut sort_keys) = (Vec::new(), Vec::new(), Vec::new());
+        for r in &page {
+            for (field, sort_key) in engines::order_rows(&fields, Some(&decl), r) {
+                found.push(field.as_str().to_owned());
+                keys.push(r.key.as_str().to_owned());
+                sort_keys.push(sort_key);
+            }
+        }
+        db.execute(
+            &format!(
+                "INSERT INTO {} (ty, field, key, sort_key) \
+                 SELECT $1, * FROM unnest($2::text[], $3::text[], $4::bytea[])",
+                names.t("sort_index"),
+            ),
+            &[&ty.as_str(), &found, &keys, &sort_keys],
+        )?;
+        if (page.len() as i64) < REBUILD_PAGE {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Rewrite `ty`'s order index from its head records, under its setting and
@@ -645,11 +1624,38 @@ pub(crate) fn rebuild_sorted(
     ty: &TypeName,
     through: Position,
 ) -> Result<u64> {
+    // A series pair's rows are the host's: a `sort_index` rebuild leaves
+    // them, and `sorted_fields` never names one (097 §How a lake with
+    // records gets it).
     db.execute(
-        &format!("DELETE FROM {} WHERE ty = $1", names.t("sort_index")),
+        &format!(
+            "DELETE FROM {} WHERE ty = $1 AND position(chr(31) IN field) = 0",
+            names.t("sort_index")
+        ),
         &[&ty.as_str()],
     )?;
-    let head = head_type(db, names, ty)?;
+    // A host's setting that names a field wins: the lake's choice goes.
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::sort_index_key(ty)),
+    )?;
+    let mut head = head_type(db, names, ty)?;
+    let named = head
+        .decl
+        .as_ref()
+        .map(|d| engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)));
+    // A host's setting names its fields: the lake's choice of those goes,
+    // and its choice of the type's other fields shares the rebuilt rows.
+    if let Some(named) = named.filter(|n| !n.is_empty()) {
+        let mut chosen = chosen_of(db, names, ty)?;
+        chosen.kept.retain(|f| !named.contains(f));
+        chosen.building.retain(|f| !named.contains(f));
+        chosen.dropping.retain(|f| !named.contains(f));
+        set_chosen(db, names, ty, &chosen)?;
+        head = head_type(db, names, ty)?;
+    }
     if head.sorted.is_empty() {
         return set_sorted(db, names, ty, None).map(|()| 0);
     }
@@ -661,7 +1667,7 @@ pub(crate) fn rebuild_sorted(
         after = last.key.to_string();
         let (mut fields, mut keys, mut sort_keys) = (Vec::new(), Vec::new(), Vec::new());
         for r in &page {
-            for (field, sort_key) in engines::order_rows(&head.sorted, r) {
+            for (field, sort_key) in engines::order_rows(&head.sorted, head.decl.as_ref(), r) {
                 fields.push(field.as_str().to_owned());
                 keys.push(r.key.as_str().to_owned());
                 sort_keys.push(sort_key);
@@ -701,7 +1707,9 @@ fn set_sorted(db: &mut Db, names: &Names, ty: &TypeName, through: Option<Positio
 /// it (a binary before it) folded past its mark or wrote its setting, and
 /// drop the index of a type whose setting such a writer removed. A
 /// setting asks for the indexes of [`engines::ordered_names`]; one of
-/// those that keeps no field has no mark and is not behind.
+/// those that keeps no field has no mark and is not behind. The lake's
+/// choice goes whole where such a writer folded past it: it left the
+/// chosen fields' rows as they were while it moved every `sorted.` mark.
 pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
     db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
         let Some(folded) = folded(db, names)? else {
@@ -742,6 +1750,30 @@ pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
                 behind.insert(ty.to_string());
             }
         }
+        let held: bool = db
+            .query_one(
+                &format!("SELECT {}", held(names, "$1")),
+                &[&engines::CHOSEN_THROUGH],
+            )?
+            .get(0);
+        if !held {
+            let (m, s) = (names.t("meta"), names.t("sort_index"));
+            let stale: Vec<String> = db.column(
+                &format!("SELECT substr(k, 8) FROM {m} WHERE k LIKE 'chosen.%'"),
+                &[],
+            )?;
+            for ty in stale {
+                set_chosen(db, names, &TypeName::from(ty.as_str()), &Chosen::default())?;
+                behind.insert(ty);
+            }
+            db.execute(
+                &format!(
+                    "WITH twin AS (DELETE FROM {s} WHERE ty = '' AND field = $1) \
+                     DELETE FROM {m} WHERE k = $1"
+                ),
+                &[&engines::CHOSEN_THROUGH],
+            )?;
+        }
         for ty in behind {
             rebuild_sorted(db, names, &TypeName::from(ty), folded)?;
         }
@@ -749,8 +1781,116 @@ pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
     })
 }
 
-pub(crate) fn decode_record(state: &str) -> Result<StoredRecord> {
-    lakelands_core::engines::decode_record(state)
+/// What a statement selects of a record `r`: its row's type, key and
+/// position, then its state, which leaves them out.
+pub(crate) const RECORD: &str = "r.ty, r.key, r.since, r.state";
+
+/// The record a row holds from the column `at` on, as [`RECORD`] selects
+/// it, and the fields its state keeps apart ([`joined`] reads them).
+pub(crate) fn record_at(row: &Row, at: usize) -> Result<(StoredRecord, engines::Apart)> {
+    let since = Position(row.get::<_, i64>(at + 2) as u64);
+    engines::decode_record(row.get(at), row.get(at + 1), since, row.get(at + 3))
+}
+
+/// The records `read`, each vector its state keeps apart read from its
+/// row and each base it names from its row of `bases`: one statement for
+/// all the vectors and one for all the bases, none where no state keeps
+/// one.
+pub(crate) fn joined<T>(
+    db: &mut Db,
+    names: &Names,
+    read: Vec<(T, (StoredRecord, engines::Apart))>,
+) -> Result<Vec<(T, StoredRecord)>> {
+    let mut asked = VectorRows::default();
+    for (_, (r, apart)) in &read {
+        let ident = [r.ty.to_string(), r.key.to_string()];
+        for (f, at) in &apart.vectors {
+            asked.push(&ident, f, at.0 as i64, None);
+        }
+    }
+    let mut ids: Vec<i64> = (read.iter())
+        .filter_map(|(_, (_, apart))| Some(apart.base.as_ref()?.id))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut blocks = HashMap::new();
+    if !ids.is_empty() {
+        let bases = names.t("bases");
+        let sql = format!("SELECT id, block FROM {bases} WHERE id = ANY($1::int8[])");
+        for row in db.query(&sql, &[&ids])? {
+            blocks.insert(row.get::<_, i64>(0), row.get::<_, String>(1));
+        }
+    }
+    // Each row found by its place among those asked for.
+    let mut rows = HashMap::new();
+    if !asked.since.is_empty() {
+        let [tys, keys, fields] = &asked.ident;
+        let found = db.query(
+            &format!(
+                "SELECT w.n, v.single, v.data FROM unnest($1::text[], $2::text[], $3::text[], \
+                 $4::int8[]) WITH ORDINALITY AS w(ty, key, field, since, n) \
+                 JOIN {} v ON v.ty = w.ty AND v.key = w.key AND v.field = w.field \
+                 AND v.since = w.since",
+                names.t("vectors")
+            ),
+            &[tys, keys, fields, &asked.since],
+        )?;
+        for row in found {
+            let e = engines::Elements::new(row.get(1), row.get(2));
+            rows.insert(row.get::<_, i64>(0), e);
+        }
+    }
+    let (mut out, mut n) = (Vec::with_capacity(read.len()), 0);
+    for (t, (mut r, apart)) in read {
+        if let Some(based) = apart.base {
+            let block = blocks.get(&based.id).map(String::as_str);
+            engines::rebase(&mut r, based, block)?;
+        }
+        for (f, _) in apart.vectors {
+            n += 1;
+            engines::rejoin(&mut r, f, rows.remove(&n))?;
+        }
+        out.push((t, r));
+    }
+    Ok(out)
+}
+
+/// The records `rows` hold from the column `at` on, joined ([`joined`]).
+pub(crate) fn records_at(
+    db: &mut Db,
+    names: &Names,
+    rows: &[Row],
+    at: usize,
+) -> Result<Vec<StoredRecord>> {
+    let read: Vec<_> = rows
+        .iter()
+        .map(|r| Ok(((), record_at(r, at)?)))
+        .collect::<Result<_>>()?;
+    Ok(joined(db, names, read)?
+        .into_iter()
+        .map(|(_, r)| r)
+        .collect())
+}
+
+/// The value of the `sort_index.<type>` setting of `ty` a row holds as
+/// two scalar reads of its head, its state in the column `state` and its
+/// position in `since`; `None` where it is unset. Its value alone: the
+/// provenance of a base its state names is not read.
+pub(crate) fn setting_at(
+    row: &Row,
+    ty: &TypeName,
+    [state, since]: [usize; 2],
+) -> Result<Option<serde_json::Value>> {
+    let (Some(s), Some(at)) = (
+        row.get::<_, Option<&str>>(state),
+        row.get::<_, Option<i64>>(since),
+    ) else {
+        return Ok(None);
+    };
+    let key = engines::sort_index_key(ty);
+    let at = Position(at as u64);
+    let (setting, _) = engines::decode_record(SETTING_TYPE, &key, at, s)?;
+    Ok(engines::setting_value(&setting).cloned())
 }
 
 /// The declaration of a type in force at `at` (`None` for the head).
@@ -801,11 +1941,32 @@ pub(crate) fn head_records_after(
     n: i64,
 ) -> Result<Vec<StoredRecord>> {
     db.records(
+        names,
         &format!(
-            "SELECT r.state FROM {} WHERE h.ty = $1 AND h.key > $2 ORDER BY h.key LIMIT $3",
+            "SELECT {RECORD} FROM {} WHERE h.ty = $1 AND h.key > $2 ORDER BY h.key LIMIT $3",
             RECORDS.at_head(names)
         ),
         &[&ty.as_str(), &after, &n],
+    )
+}
+
+/// The states of one record after `after` and at or before `through`,
+/// oldest first, at most `limit`.
+pub(crate) fn key_states(
+    db: &mut Db,
+    names: &Names,
+    (ty, key): (&TypeName, &RecordKey),
+    (after, through): (i64, i64),
+    limit: i64,
+) -> Result<Vec<StoredRecord>> {
+    db.records(
+        names,
+        &format!(
+            "SELECT {RECORD} FROM {} r WHERE r.ty = $1 AND r.key = $2 AND r.since > $3 \
+             AND r.since <= $4 ORDER BY r.since LIMIT $5",
+            names.t("records")
+        ),
+        &[&ty.as_str(), &key.as_str(), &after, &through, &limit],
     )
 }
 
@@ -816,21 +1977,39 @@ pub(crate) fn head_record(
     ty: &TypeName,
     key: &RecordKey,
 ) -> Result<Option<StoredRecord>> {
-    db.query_opt(
+    let row = db.query_opt(
         &format!(
-            "SELECT r.state FROM {} WHERE h.ty = $1 AND h.key = $2",
+            "SELECT {RECORD} FROM {} WHERE h.ty = $1 AND h.key = $2",
             RECORDS.at_head(names)
         ),
         &[&ty.as_str(), &key.as_str()],
-    )?
-    .map(|r| decode_record(&r.get::<_, String>(0)))
-    .transpose()
+    )?;
+    Ok(records_at(db, names, &Vec::from_iter(row), 0)?.pop())
+}
+
+/// The latest states of the records of `ty` that `keys` names, in no
+/// order: one statement, and one more each for the bases and the vectors
+/// they keep apart ([`joined`]).
+pub(crate) fn head_records(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    keys: &[String],
+) -> Result<Vec<StoredRecord>> {
+    db.records(
+        names,
+        &format!(
+            "SELECT {RECORD} FROM {} WHERE h.ty = $1 AND h.key = ANY($2::text[])",
+            RECORDS.at_head(names)
+        ),
+        &[&ty.as_str(), &keys],
+    )
 }
 
 /// The head index rows of records, as arrays for one statement each.
 #[derive(Default)]
 struct IndexRows<'r> {
-    text: [Vec<&'r str>; 4],
+    text: [Vec<String>; 4],
     tokens: [Vec<String>; 3],
     edges: [Vec<String>; 5],
     sorted: SortRows<'r>,
@@ -850,9 +2029,14 @@ type SortRows<'r> = (Vec<&'r str>, Vec<String>, Vec<&'r str>, Vec<Vec<u8>>);
 /// holds a row of it.
 ///
 /// A row stays only when the new rows hold it column for column, and no
-/// column of `text_index`, `full_text` or `sort_index` can be null, so `=`
-/// compares them whole. A row of `full_text` or `sort_index` that stayed is
-/// passed over by its key, not by a conflict: most of their rows are new
+/// column of `full_text` or `sort_index` can be null, so `=` compares them
+/// whole. `text_index` keeps no index by key: its old rows went before the
+/// heads moved, sought by value ([`Buffer::unindex_texts`]), and a state
+/// indexed again under a new declaration keeps the rows it held, which the
+/// insert passes over by conflict; a field the declaration no longer looks
+/// up keeps its rows until its value changes, and no read seeks them. A
+/// row of `full_text` or `sort_index` that stayed is passed over by its
+/// key, not by a conflict: most of their rows are new
 /// (a declaration drops a type's `sort_index` rows whole), and a plain
 /// insert is the cheaper one. `edges` has no key (a record may hold one
 /// link twice), so its rows go and come as before.
@@ -870,13 +2054,23 @@ pub(crate) fn index_records(
             if head.looked.as_ref().is_some_and(|l| !l.contains(field)) {
                 continue;
             }
-            if let Some(value) = value.as_str() {
-                for (column, v) in rows.text.iter_mut().zip([ty, field.as_str(), value, key]) {
+            // A number or decimal field keeps its value's token; a text
+            // field keeps its text (097 §A number's exact lookup).
+            let kind = decl.and_then(|d| engines::field_kind(d, field)).copied();
+            if let Some(token) = engines::lookup_token(value, kind) {
+                for (column, v) in rows.text.iter_mut().zip([
+                    ty.to_owned(),
+                    field.as_str().to_owned(),
+                    token,
+                    key.to_owned(),
+                ]) {
                     column.push(v);
                 }
             }
         }
-        for (field, sort_key) in engines::order_rows(&head.sorted, r) {
+        let mut order: Vec<FieldName> = head.sorted.clone();
+        order.extend(head.series.iter().cloned());
+        for (field, sort_key) in engines::order_rows(&order, head.decl.as_ref(), r) {
             rows.sorted.0.push(ty);
             rows.sorted.1.push(field.as_str().to_owned());
             rows.sorted.2.push(key);
@@ -903,6 +2097,14 @@ pub(crate) fn index_records(
             rows.tokens[2].push(key.to_owned());
         }
     }
+    if !stale.is_empty() {
+        let (tys, keys): (Vec<&str>, Vec<&str>) = stale.iter().copied().unzip();
+        unlength(db, names, &tys, &keys)?;
+    }
+    let lengths = records
+        .iter()
+        .filter_map(|(head, r)| Some((head.decl.as_ref()?, *r)));
+    length(db, names, lengths)?;
     let [t1, t2, t3, t4] = &rows.text;
     let [f1, f2, f3] = &rows.tokens;
     let [e1, e2, e3, e4, e5] = &rows.edges;
@@ -914,7 +2116,7 @@ pub(crate) fn index_records(
         // statement names `sort_index` only when a record's type has one.
         let sorted = records.iter().any(|(head, _)| !head.sorted.is_empty());
         let (tys, keys): (Vec<&str>, Vec<&str>) = stale.iter().copied().unzip();
-        let mut params: Vec<&(dyn ToSql + Sync)> = vec![&tys, &keys, t1, t2, t3, t4, f1, f2, f3];
+        let mut params: Vec<&(dyn ToSql + Sync)> = vec![&tys, &keys, f1, f2, f3];
         params.extend(sort.iter().filter(|_| sorted));
         // The rows of the stale records in `table`, but for those among the
         // new rows `new`, which have `columns`.
@@ -929,7 +2131,7 @@ pub(crate) fn index_records(
             )
         };
         let z = if sorted {
-            let new = "$10::text[], $11::text[], $12::text[], $13::bytea[]";
+            let new = "$6::text[], $7::text[], $8::text[], $9::bytea[]";
             let columns = ["ty", "field", "key", "sort_key"];
             format!(", z AS ({})", gone("sort_index", new, &columns))
         } else {
@@ -938,16 +2140,11 @@ pub(crate) fn index_records(
         db.execute(
             &format!(
                 "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
-                 x AS ({x}), y AS ({y}){z} \
+                 y AS ({y}){z} \
                  DELETE FROM {edges} t USING d WHERE t.src_ty = d.ty AND t.src_key = d.key",
-                x = gone(
-                    "text_index",
-                    "$3::text[], $4::text[], $5::text[], $6::text[]",
-                    &["ty", "field", "value", "key"]
-                ),
                 y = gone(
                     "full_text",
-                    "$7::text[], $8::text[], $9::text[]",
+                    "$3::text[], $4::text[], $5::text[]",
                     &["ty", "token", "key"]
                 ),
                 edges = names.t("edges"),
@@ -990,6 +2187,172 @@ pub(crate) fn index_records(
     )
 }
 
+/// The meta key of the position the text statistics are folded through;
+/// null where they count an empty projection.
+pub(crate) const TEXT_STATS: &str = "text_stats";
+
+/// Add live heads' text into their types' counts (`docs/seams.md`
+/// §`ranked`), each under its type's declaration at the head: each
+/// searchable field's tokens, under its hold, kept beside so that the next
+/// write of the record takes out exactly this. One statement.
+fn length<'r>(
+    db: &mut Db,
+    names: &Names,
+    records: impl Iterator<Item = (&'r TypeDecl, &'r StoredRecord)>,
+) -> Result<()> {
+    let (mut tys, mut keys, mut fields) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut held, mut tokens) = (Vec::new(), Vec::new());
+    for (decl, r) in records.filter(|(_, r)| !r.retired) {
+        for (field, n) in engines::text_lengths(decl, r) {
+            tys.push(r.ty.as_str());
+            keys.push(r.key.as_str());
+            fields.push(field.to_string());
+            held.push(r.restricted);
+            tokens.push(n as i64);
+        }
+    }
+    if tys.is_empty() {
+        return Ok(());
+    }
+    db.execute(
+        &format!(
+            "WITH n AS (SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bool[], \
+             $5::bigint[]) AS n(ty, key, field, held, tokens)), \
+             x AS (INSERT INTO {lengths} (ty, key, field, held, tokens) SELECT * FROM n) \
+             INSERT INTO {stats} AS s (ty, field, held, records, tokens) \
+             SELECT ty, field, held, count(*), sum(tokens)::bigint FROM n GROUP BY ty, field, held \
+             ON CONFLICT (ty, field, held) DO UPDATE \
+             SET records = s.records + EXCLUDED.records, tokens = s.tokens + EXCLUDED.tokens",
+            lengths = names.t("text_lengths"),
+            stats = names.t("text_stats"),
+        ),
+        &[&tys, &keys, &fields, &held, &tokens],
+    )
+}
+
+/// Take what [`length`] added for records out of their types' counts.
+fn unlength(db: &mut Db, names: &Names, tys: &[&str], keys: &[&str]) -> Result<()> {
+    db.execute(
+        &format!(
+            "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
+             gone AS (DELETE FROM {lengths} t USING d WHERE t.ty = d.ty AND t.key = d.key \
+             RETURNING t.ty, t.field, t.held, t.tokens), \
+             sums AS (SELECT ty, field, held, count(*) AS n, sum(tokens)::bigint AS l \
+             FROM gone GROUP BY ty, field, held) \
+             UPDATE {stats} s SET records = s.records - sums.n, tokens = s.tokens - sums.l \
+             FROM sums WHERE s.ty = sums.ty AND s.field = sums.field AND s.held = sums.held",
+            lengths = names.t("text_lengths"),
+            stats = names.t("text_stats"),
+        ),
+        &[&tys, &keys],
+    )
+}
+
+/// Whether the text statistics describe the head: their mark is the
+/// position folded through, or null on an empty projection.
+fn text_stats_held(db: &mut Db, names: &Names) -> Result<bool> {
+    let m = names.t("meta");
+    let row = db.query_opt(
+        &format!(
+            "SELECT n IS NOT DISTINCT FROM (SELECT n FROM {m} WHERE k = 'folded') \
+             FROM {m} WHERE k = $1"
+        ),
+        &[&TEXT_STATS],
+    )?;
+    Ok(row.is_some_and(|r| r.get(0)))
+}
+
+/// Count the text statistics again from the head where their mark is
+/// absent or behind: a lake written before they were kept, or folded by
+/// a writer that keeps none. Once, in one transaction.
+pub(crate) fn catch_up_text_stats(db: &mut Db, names: &Names) -> Result<()> {
+    db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+        if text_stats_held(db, names)? {
+            return Ok(());
+        }
+        let (stats, lengths, m) = (
+            names.t("text_stats"),
+            names.t("text_lengths"),
+            names.t("meta"),
+        );
+        db.batch(&format!("DELETE FROM {stats}; DELETE FROM {lengths}"))?;
+        let types: Vec<String> = db.column(
+            &format!("SELECT DISTINCT ty FROM {}", names.t("records_head")),
+            &[],
+        )?;
+        for ty in types.iter().map(|t| TypeName::from(t.as_str())) {
+            let Some(decl) = head_type(db, names, &ty)?.decl else {
+                continue;
+            };
+            head_pages(db, names, &ty, |db, page| {
+                length(db, names, page.iter().map(|r| (&decl, r)))
+            })?;
+        }
+        db.execute(
+            &format!(
+                "INSERT INTO {m} (k, n) VALUES ($1, (SELECT n FROM {m} WHERE k = 'folded')) \
+                 ON CONFLICT (k) DO UPDATE SET n = EXCLUDED.n"
+            ),
+            &[&TEXT_STATS],
+        )
+    })
+}
+
+/// Each head of `ty` that is not ended, a page at a time.
+fn head_pages(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    mut each: impl FnMut(&mut Db, Vec<StoredRecord>) -> Result<()>,
+) -> Result<()> {
+    let mut after = String::new();
+    loop {
+        let page = head_records_after(db, names, ty, &after, PAGE as i64)?;
+        let next = (page.len() == PAGE).then(|| page.last().map(|r| r.key.to_string()));
+        each(db, page.into_iter().filter(|r| !r.is_ended()).collect())?;
+        match next.flatten() {
+            Some(last) => after = last,
+            None => return Ok(()),
+        }
+    }
+}
+
+/// The counts of `ty`'s fields over its live heads that are not held,
+/// and with `held` over every one: as kept, where they describe the head,
+/// else counted from it at the read.
+pub(crate) fn text_counts(
+    db: &mut Db,
+    names: &Names,
+    (ty, decl): (&TypeName, &TypeDecl),
+    held: bool,
+) -> Result<BTreeMap<FieldName, (u64, u64)>> {
+    if !text_stats_held(db, names)? {
+        let mut counts = TextCounts::default();
+        head_pages(db, names, ty, |_, page| {
+            let class = page
+                .iter()
+                .filter(|r| !r.retired && (held || !r.restricted));
+            engines::text_stats(decl, class, ("", None), &mut counts);
+            Ok(())
+        })?;
+        return Ok(counts.fields);
+    }
+    let rows = db.query(
+        &format!(
+            "SELECT field, sum(records)::bigint, sum(tokens)::bigint FROM {} \
+             WHERE ty = $1 AND (NOT held OR $2) GROUP BY field",
+            names.t("text_stats")
+        ),
+        &[&ty.as_str(), &held],
+    )?;
+    let count = |r: &Row, i| r.get::<_, i64>(i) as u64;
+    let field = |r: &Row| FieldName::from(r.get::<_, String>(0));
+    Ok(rows
+        .iter()
+        .map(|r| (field(r), (count(r, 1), count(r, 2))))
+        .collect())
+}
+
 /// How many puts the buffer holds before it is written, and how many
 /// records a pass over a type reads at a time.
 pub(crate) const PAGE: usize = 1_024;
@@ -1011,47 +2374,212 @@ pub(crate) struct Buffer {
     records: BTreeMap<(Vec<String>, i64), StoredRecord>,
     /// The last state put of each key of a head-only name, none for one
     /// ended: written over whatever the key held, with no row beside it.
-    heads: BTreeMap<(String, String), (i64, Option<String>)>,
+    heads: BTreeMap<(String, String), (i64, Option<StoredRecord>)>,
     /// The head-only names whose every key was ended: deleted before the
     /// heads are written.
     ended: BTreeSet<String>,
+    /// The last entry put of each key of a view's order, none for one
+    /// deleted: `view_order` holds one row a key (record 098, F11).
+    orders: BTreeMap<(String, String), Option<Vec<u8>>>,
+    /// The orders whose every entry was ended: deleted before the entries
+    /// are written.
+    orders_ended: BTreeSet<String>,
     proposals: BTreeMap<(Vec<String>, i64), String>,
+    quarantined: BTreeMap<(Vec<String>, i64), String>,
     outputs: BTreeMap<(Vec<String>, i64), String>,
     members: BTreeMap<(Vec<String>, i64), bool>,
-    /// Applied ids, each with the first position it was marked at.
-    applied: BTreeMap<String, i64>,
     /// The feed index's rows of the events applied.
     routes: Vec<Route>,
+    /// The records whose every state, membership and index row goes,
+    /// before any put of the buffer is written.
+    dropped: BTreeSet<(String, String)>,
+    /// The outputs whose every state goes, by seam and input, likewise.
+    dropped_outputs: BTreeSet<(String, String)>,
+    /// The sweep's chunk: the bases of its ids that no state put after its
+    /// position names go, once every put is written.
+    dropped_bases: Option<(Vec<i64>, i64)>,
+    /// The vector index's last put (`Some`) or remove of each field of a
+    /// key whose state it holds, by type, key and field: made when it is
+    /// written where the rows its last state leaves differ.
+    indexed: BTreeMap<(String, String, String), Option<Vec<f32>>>,
+    /// The settings put beside the writer: their types are marked
+    /// building at the commit, not walked there (099).
+    live_sorted: BTreeSet<TypeName>,
+    live_looked: BTreeSet<TypeName>,
+    /// The types whose `series_index.<type>` setting was put beside the
+    /// writer: marked building at the commit, not filled there (099).
+    live_series: BTreeSet<TypeName>,
+    /// The thinning acts' rows (`thinned_types`), by type, field and
+    /// horizon: the position each began at, its `through` and its `gone`.
+    thinned_acts: BTreeMap<(String, String, i64), (i64, i64, i64)>,
+    /// The thinned records' tombstones (`thinned`), by type and key: the
+    /// horizon and the position the act began at.
+    thinned: BTreeMap<(String, String), (i64, i64)>,
 }
 
-/// A row of the feed index: position, kind, type, key and source.
-type Route = (
-    i64,
-    &'static str,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+/// A row of the feed index: position, kind, type, key and source, the
+/// types and the source still by name.
+type Route = (i64, i32, Option<String>, Option<String>, Option<String>);
 
 impl Buffer {
     /// The puts it holds, of every kind.
     pub(crate) fn len(&self) -> usize {
         let (records, states) = (
-            self.records.len() + self.heads.len() + self.ended.len(),
-            self.proposals.len() + self.outputs.len(),
+            self.records.len()
+                + self.heads.len()
+                + self.ended.len()
+                + self.orders.len()
+                + self.orders_ended.len(),
+            self.proposals.len() + self.quarantined.len() + self.outputs.len(),
         );
-        records + states + self.members.len() + self.applied.len()
+        let dropped = self.dropped.len()
+            + self.dropped_outputs.len()
+            + usize::from(self.dropped_bases.is_some());
+        records
+            + states
+            + self.members.len()
+            + self.routes.len()
+            + self.thinned_acts.len()
+            + self.thinned.len()
+            + dropped
+    }
+
+    /// A thinning act's row: a row already begun keeps the position it
+    /// began at, and each part moves `through` and `gone`.
+    pub(crate) fn thinned_act(&mut self, act: &ThinnedAct, at: Position) {
+        let key = (act.ty.to_string(), act.by.to_string(), act.before.0);
+        let (through, gone) = (act.through.0 as i64, act.gone as i64);
+        self.thinned_acts
+            .entry(key)
+            .and_modify(|(_, t, g)| {
+                *t = through;
+                *g = gone;
+            })
+            .or_insert((at.0 as i64, through, gone));
+    }
+
+    /// A thinned record's tombstone: the first put of its key is kept.
+    pub(crate) fn thinned(&mut self, ty: &str, key: &str, before: Timestamp, at: Position) {
+        self.thinned
+            .entry((ty.to_owned(), key.to_owned()))
+            .or_insert((before.0, at.0 as i64));
+    }
+
+    /// Every state of a record goes, with its memberships and its index
+    /// rows: what the buffer holds of it, and the rows, before any put.
+    pub(crate) fn drop_record(&mut self, ty: &str, key: &str) {
+        let of = |ident: &[String]| ident[0] == ty && ident[1] == key;
+        self.records.retain(|(ident, _), _| !of(ident));
+        self.members.retain(|(ident, _), _| !of(&ident[1..]));
+        self.indexed.retain(|(t, k, _), _| t != ty || k != key);
+        self.dropped.insert((ty.to_owned(), key.to_owned()));
+    }
+
+    /// Every state of a seam's output for one input goes, likewise.
+    pub(crate) fn drop_output(&mut self, seam: &str, input: &str) {
+        self.outputs
+            .retain(|(ident, _), _| ident[0] != seam || ident[1] != input);
+        (self.dropped_outputs).insert((seam.to_owned(), input.to_owned()));
+    }
+
+    /// The bases of `ids` no state put after `past` names go, once the
+    /// buffer's puts are written.
+    pub(crate) fn drop_bases(&mut self, ids: &[u64], past: Position) {
+        let ids = ids.iter().map(|id| *id as i64).collect();
+        self.dropped_bases = Some((ids, past.0 as i64));
+    }
+
+    /// The state of `ty`'s `key` the buffer puts last, if any.
+    pub(crate) fn latest(&self, ty: &str, key: &str) -> Option<&StoredRecord> {
+        let ident = vec![ty.to_owned(), key.to_owned()];
+        let of = (ident.clone(), i64::MIN)..=(ident, i64::MAX);
+        self.records.range(of).next_back().map(|(_, r)| r)
+    }
+
+    /// Take the vector index's put (`Some`) or remove of `ty`'s `key`
+    /// where a state of it is held, answering whether it took it.
+    pub(crate) fn index(
+        &mut self,
+        (ty, key, field): (&str, &str, &str),
+        v: Option<&[f32]>,
+    ) -> bool {
+        let held = self.latest(ty, key).is_some();
+        if held {
+            let at = (ty.to_owned(), key.to_owned(), field.to_owned());
+            self.indexed.insert(at, v.map(<[f32]>::to_vec));
+        }
+        held
     }
 
     pub(crate) fn record(&mut self, r: &StoredRecord) {
         if lakelands_api::seam::is_head_only(&r.ty) {
-            let state = (!r.is_ended()).then(|| lakelands_core::engines::record_state(r));
+            let state = (!r.is_ended()).then(|| r.clone());
             let key = (r.ty.to_string(), r.key.to_string());
             self.heads.insert(key, (r.position.0 as i64, state));
             return;
         }
         let ident = vec![r.ty.as_str().to_owned(), r.key.as_str().to_owned()];
+        // A kept name keeps one state for each of its keys: a put deletes
+        // the states the key held, with their rows, and an ended record
+        // only deletes (098). A state put before one this buffer already
+        // holds is dropped, since the later one is the head; a state a
+        // previous transaction committed is not read here, the fold putting
+        // a key's states in the order it folds them.
+        if lakelands_api::seam::is_kept_name(&r.ty) {
+            let of = (ident.clone(), i64::MIN)..=(ident.clone(), i64::MAX);
+            let held: Vec<((Vec<String>, i64), Position)> = self
+                .records
+                .range(of)
+                .map(|(at, held)| (at.clone(), held.position))
+                .collect();
+            if held.iter().any(|(_, held)| *held > r.position) {
+                return;
+            }
+            for (at, _) in held {
+                self.records.remove(&at);
+            }
+            let of = (r.ty.to_string(), r.key.to_string(), String::new())
+                ..=(r.ty.to_string(), r.key.to_string(), String::from(char::MAX));
+            let fields: Vec<(String, String, String)> =
+                self.indexed.range(of).map(|(at, _)| at.clone()).collect();
+            for at in fields {
+                self.indexed.remove(&at);
+            }
+            (self.dropped).insert((r.ty.to_string(), r.key.to_string()));
+            if !r.is_ended() {
+                self.records.insert((ident, r.position.0 as i64), r.clone());
+            }
+            return;
+        }
         self.records.insert((ident, r.position.0 as i64), r.clone());
+    }
+
+    /// A record put beside the writer: a `sort_index.<type>` setting's
+    /// state, whose type is marked building at the commit rather than
+    /// walked there (099).
+    pub(crate) fn live_sorted(&mut self, r: &StoredRecord) {
+        self.record(r);
+        if let Some(ty) = engines::sort_index_type(r) {
+            self.live_sorted.insert(ty);
+        }
+    }
+
+    /// A record put beside the writer whose type's exact-text index the
+    /// commit marks building (`lookup_index.<type>`), not rebuilds (099).
+    pub(crate) fn live_looked(&mut self, r: &StoredRecord) {
+        self.record(r);
+        if let Some(ty) = engines::lookup_index_type(r) {
+            self.live_looked.insert(ty);
+        }
+    }
+
+    /// A record put beside the writer whose type's series pairs the commit
+    /// marks building (`series_index.<type>`), not fills (099).
+    pub(crate) fn live_series(&mut self, r: &StoredRecord) {
+        self.record(r);
+        if let Some(ty) = engines::series_index_type(r) {
+            self.live_series.insert(ty);
+        }
     }
 
     /// Every key of the head-only name `ty` ended: what the buffer holds
@@ -1061,9 +2589,32 @@ impl Buffer {
         self.ended.insert(ty.to_owned());
     }
 
+    /// Put an entry of the order `name` at `key`, or delete the one there
+    /// where `entry` is none.
+    pub(crate) fn order(&mut self, name: &str, key: &str, entry: Option<&[u8]>) {
+        let at = (name.to_owned(), key.to_owned());
+        self.orders.insert(at, entry.map(<[u8]>::to_vec));
+    }
+
+    /// End every entry of the order `name`: what the buffer holds of it
+    /// goes, and so do its rows, before any entry put after.
+    pub(crate) fn end_orders(&mut self, name: &str) {
+        self.orders.retain(|(n, _), _| n != name);
+        self.orders_ended.insert(name.to_owned());
+    }
+
     pub(crate) fn proposal(&mut self, id: &str, at: Position, state: String) {
         self.proposals
             .insert((vec![id.to_owned()], at.0 as i64), state);
+    }
+
+    pub(crate) fn quarantined(&mut self, id: &QuarantineId, at: Position, state: String) {
+        let ident = vec![
+            id.source.to_string(),
+            id.delivery.to_string(),
+            id.index.to_string(),
+        ];
+        self.quarantined.insert((ident, at.0 as i64), state);
     }
 
     pub(crate) fn output(&mut self, seam: &str, input: &str, at: Position, state: String) {
@@ -1077,35 +2628,237 @@ impl Buffer {
     }
 
     pub(crate) fn applied(&mut self, applied: &Applied) {
+        // The id is the log's at `at`, which answers it (`view.rs`).
         let at = applied.at.0 as i64;
-        self.applied.entry(applied.id.0.clone()).or_insert(at);
         for a in &applied.about {
             let (ty, key) = (a.ty.as_ref().map(|t| t.to_string()), a.key.as_ref());
             let (key, source) = (key.map(|k| k.to_string()), applied.source.clone());
-            (self.routes).push((at, applied.kind, ty, key, source.map(|s| s.to_string())));
+            let kind = engines::kind_code(applied.kind).expect("a kind the format lists");
+            (self.routes).push((at, kind as i32, ty, key, source.map(|s| s.to_string())));
         }
+    }
+
+    /// Delete the exact-text rows of the head states the buffer drops or
+    /// moves its records' heads past, in one statement before any head
+    /// moves: each row sought by `text_index_value` with a value its head
+    /// state holds, so no index by key is kept for it. A row the record's
+    /// latest buffered state holds again stays, and is not written again
+    /// ([`index_records`]). A head a buffered state does not move past
+    /// keeps its rows.
+    fn unindex_texts(&self, db: &mut Db, names: &Names, types: &mut HeadTypes) -> Result<()> {
+        let mut moved: BTreeMap<(&str, &str), i64> = BTreeMap::new();
+        for (ident, at) in self.records.keys() {
+            moved.insert((&ident[0], &ident[1]), *at);
+        }
+        for (ty, key) in &self.dropped {
+            moved.insert((ty, key), i64::MAX);
+        }
+        if moved.is_empty() {
+            return Ok(());
+        }
+        self.unindex_tokens(db, names, types, &moved)?;
+        let mut stay: [Vec<&str>; 4] = Default::default();
+        for ((ident, at), r) in &self.records {
+            let (ty, key) = (ident[0].as_str(), ident[1].as_str());
+            if moved.get(&(ty, key)) != Some(at) {
+                continue;
+            }
+            for (field, value) in &r.fields {
+                if let Some(value) = value.as_str() {
+                    for (column, v) in stay.iter_mut().zip([ty, field.as_str(), value, key]) {
+                        column.push(v);
+                    }
+                }
+            }
+        }
+        let ((tys, keys), since): ((Vec<&str>, Vec<&str>), Vec<i64>) = moved.into_iter().unzip();
+        let [s1, s2, s3, s4] = &stay;
+        db.execute(
+            &format!(
+                "WITH o AS (SELECT h.ty, f.key AS field, f.value #>> '{{}}' AS value, \
+                 h.key COLLATE \"C\" AS key \
+                 FROM unnest($1::text[], $2::text[], $3::int8[]) AS k(ty, key, since) \
+                 JOIN {heads} h ON h.ty = k.ty AND h.key = k.key AND h.since <= k.since \
+                 JOIN {records} r ON r.ty = h.ty AND r.key = h.key AND r.since = h.since \
+                 CROSS JOIN LATERAL jsonb_each(r.state::jsonb -> 'fields') f \
+                 WHERE jsonb_typeof(f.value) = 'string' \
+                 EXCEPT SELECT * FROM unnest($4::text[], $5::text[], $6::text[], $7::text[])) \
+                 DELETE FROM {text} t USING o WHERE t.ty = o.ty AND t.field = o.field \
+                 AND md5(t.value) = md5(o.value) AND t.key COLLATE \"C\" = o.key \
+                 AND t.value = o.value",
+                heads = names.t("records_head"),
+                records = names.t("records"),
+                text = names.t("text_index"),
+            ),
+            &[&tys, &keys, &since, s1, s2, s3, s4],
+        )?;
+        Ok(())
+    }
+
+    /// Delete the exact-lookup rows of the moved heads' number and
+    /// decimal fields: their token is made in Rust, so no row can be
+    /// sought by value. Each moved key's entries in those fields go
+    /// whole, and [`index_records`] writes its buffered state's again; a
+    /// `lookup_index.<type>` setting the transaction put fills or drops
+    /// what it changes after it ([`relook`]).
+    fn unindex_tokens(
+        &self,
+        db: &mut Db,
+        names: &Names,
+        types: &mut HeadTypes,
+        moved: &BTreeMap<(&str, &str), i64>,
+    ) -> Result<()> {
+        let mut fields: BTreeMap<&str, Vec<FieldName>> = BTreeMap::new();
+        for (ty, _) in moved.keys() {
+            if fields.contains_key(ty) {
+                continue;
+            }
+            let head = types.get(db, names, &TypeName::from(*ty))?;
+            let kept = match (head.decl.as_ref(), head.looked.as_ref()) {
+                (Some(decl), Some(looked)) => looked
+                    .iter()
+                    .filter(|f| {
+                        matches!(
+                            engines::field_kind(decl, f).copied(),
+                            Some(StorageKind::Number | StorageKind::Decimal)
+                        )
+                    })
+                    .cloned()
+                    .collect(),
+                _ => Vec::new(),
+            };
+            fields.insert(ty, kept);
+        }
+        let mut gone: [Vec<&str>; 3] = Default::default();
+        for (ty, key) in moved.keys() {
+            for field in &fields[ty] {
+                for (column, v) in gone.iter_mut().zip([*ty, *key, field.as_str()]) {
+                    column.push(v);
+                }
+            }
+        }
+        if gone[0].is_empty() {
+            return Ok(());
+        }
+        let [g1, g2, g3] = &gone;
+        db.execute(
+            &format!(
+                "DELETE FROM {text} t USING unnest($1::text[], $2::text[], $3::text[]) \
+                 AS d(ty, key, field) WHERE t.ty = d.ty AND t.field = d.field \
+                 AND t.key COLLATE \"C\" = d.key",
+                text = names.t("text_index"),
+            ),
+            &[g1, g2, g3],
+        )?;
+        Ok(())
+    }
+
+    /// Delete the rows of what the buffer dropped, in one statement.
+    fn drop_rows(&self, db: &mut Db, names: &Names) -> Result<()> {
+        if !self.dropped.is_empty() {
+            let (tys, keys): (Vec<&str>, Vec<&str>) = (self.dropped.iter())
+                .map(|(t, k)| (t.as_str(), k.as_str()))
+                .unzip();
+            let gone = |table: &str, ty: &str, key: &str| {
+                format!(
+                    "DELETE FROM {} t USING d WHERE t.{ty} = d.ty AND t.{key} = d.key",
+                    names.t(table)
+                )
+            };
+            let sets = format!(
+                "SELECT DISTINCT substr(ident, 12) FROM {} WHERE starts_with(ident, 'object_set ')",
+                names.t("declarations")
+            );
+            db.execute(
+                &format!(
+                    "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
+                     r AS ({}), h AS ({}), m AS ({} AND t.object_set IN ({sets})), \
+                     y AS ({}), z AS ({}), v AS ({}) {}",
+                    gone("records", "ty", "key"),
+                    gone("records_head", "ty", "key"),
+                    gone("members", "ty", "key"),
+                    gone("full_text", "ty", "key"),
+                    gone("sort_index", "ty", "key"),
+                    gone("vectors", "ty", "key"),
+                    gone("edges", "src_ty", "src_key"),
+                ),
+                &[&tys, &keys],
+            )?;
+            unlength(db, names, &tys, &keys)?;
+        }
+        if !self.dropped_outputs.is_empty() {
+            let (seams, inputs): (Vec<&str>, Vec<&str>) = (self.dropped_outputs.iter())
+                .map(|(s, i)| (s.as_str(), i.as_str()))
+                .unzip();
+            db.execute(
+                &format!(
+                    "DELETE FROM {} t USING unnest($1::text[], $2::text[]) AS d(seam, input) \
+                     WHERE t.seam = d.seam AND t.input = d.input",
+                    names.t("outputs")
+                ),
+                &[&seams, &inputs],
+            )?;
+        }
+        Ok(())
     }
 
     /// Write every buffered put: one statement per history table, the
     /// head indexes of the records whose latest state is now a buffered
     /// one, under their types' declarations at the head as `types` reads
     /// them after every declaration the transaction put, and the applied
-    /// ids. That leaves what putting them one by one leaves. The types
-    /// whose `vector_index.<type>` setting it wrote go into `asked`. It
-    /// answers the order index rows the settings it wrote rebuilt.
+    /// ids; the bases [`engines::SHARED`] states of one write share before
+    /// them, and last, after a sweep, the rows of `bases` no state names
+    /// any more. That leaves what putting them one by one leaves. The types
+    /// whose `vector_index.<type>` setting it wrote go into `asked`, and
+    /// the records it wrote or erased into `touched`, for the graphs
+    /// (`crate::vector_index`). It answers the order index rows the
+    /// settings it wrote rebuilt. A rebuild reads the heads it pages over
+    /// in the transaction that put them, which the planner has not seen:
+    /// `put`, the records the transaction put, tells whether to analyse
+    /// them first.
     pub(crate) fn write(
         self,
         db: &mut Db,
         names: &Names,
         types: &mut HeadTypes,
         asked: &mut BTreeMap<TypeName, Position>,
+        touched: &mut Touched,
+        put: u64,
     ) -> Result<u64> {
-        let records: BTreeMap<(Vec<String>, i64), String> = self
-            .records
-            .iter()
-            .map(|(k, r)| (k.clone(), lakelands_core::engines::record_state(r)))
-            .collect();
-        let heads = RECORDS.put_many(db, names, &records)?;
+        self.unindex_texts(db, names, types)?;
+        self.drop_rows(db, names)?;
+        for (ty, _) in &self.dropped {
+            touched.erased.insert(TypeName::from(ty.as_str()));
+        }
+        for (ident, _) in self.records.keys() {
+            let keys = touched.keys.entry(TypeName::from(ident[0].as_str()));
+            keys.or_default().insert(ident[1].clone());
+        }
+        for (ty, key, _) in self.indexed.keys() {
+            let keys = touched.keys.entry(TypeName::from(ty.as_str()));
+            keys.or_default().insert(key.clone());
+        }
+        let mut apart = self.put_vectors(db, names, types)?;
+        let heads = self.heads.values().filter_map(|(_, r)| r.as_ref());
+        // A write the buffer flushes in two pages is counted a page at a time.
+        let shared = engines::shared_bases(self.records.values().chain(heads));
+        let ids = put_bases(db, names, &shared)?;
+        let base = |b: &str| {
+            if !shared.contains(b) {
+                return Ok(None);
+            }
+            let id = ids.get(b).copied().map(Some);
+            id.ok_or_else(|| engines::base_missing("its write kept no row of it"))
+        };
+        let records: BTreeMap<(Vec<String>, i64), String> = (self.records.iter())
+            .map(|(k, r)| {
+                let apart = apart.remove(k).unwrap_or_default();
+                let state = engines::record_state(r, &apart, &mut |b| base(b))?;
+                Ok((k.clone(), state))
+            })
+            .collect::<Result<_>>()?;
+        let flagged: Vec<i16> = self.records.values().map(flags).collect();
+        let heads = RECORDS.put_many(db, names, &records, &flagged)?;
         // A head-only name's key is one row, written over in place, and its
         // head beside it.
         let (table, head) = (names.t("records"), names.t("records_head"));
@@ -1119,11 +2872,16 @@ impl Buffer {
         }
         if !self.heads.is_empty() {
             let (mut tys, mut keys, mut since, mut states) = (vec![], vec![], vec![], vec![]);
-            for ((ty, key), (at, state)) in &self.heads {
+            let mut flagged = vec![];
+            for ((ty, key), (at, r)) in &self.heads {
                 tys.push(ty.as_str());
                 keys.push(key.as_str());
                 since.push(*at);
-                states.push(state.as_deref());
+                flagged.push(r.as_ref().map_or(0, flags));
+                let state = r
+                    .as_ref()
+                    .map(|r| engines::record_state(r, &BTreeMap::new(), &mut |b| base(b)));
+                states.push(state.transpose()?);
             }
             let b = "unnest($1::text[], $2::text[]) AS b(ty, key)";
             let gone = |t: &str| {
@@ -1134,19 +2892,74 @@ impl Buffer {
             db.execute(
                 &format!(
                     "WITH b AS (SELECT * FROM \
-                     unnest($1::text[], $2::text[], $3::int8[], $4::text[]) AS b(ty, key, since, state) \
-                     WHERE state IS NOT NULL), \
-                     h AS (INSERT INTO {head} (ty, key, since) SELECT ty, key, since FROM b) \
-                     INSERT INTO {table} (ty, key, since, state) SELECT * FROM b"
+                     unnest($1::text[], $2::text[], $3::int8[], $4::text[], $5::int2[]) \
+                     AS b(ty, key, since, state, flags) WHERE state IS NOT NULL), \
+                     h AS (INSERT INTO {head} (ty, key, since, flags) \
+                     SELECT ty, key, since, flags FROM b) \
+                     INSERT INTO {table} (ty, key, since, state, flags) SELECT * FROM b"
                 ),
-                &[&tys, &keys, &since, &states],
+                &[&tys, &keys, &since, &states, &flagged],
             )?;
         }
-        PROPOSALS.put_many(db, names, &self.proposals)?;
-        OUTPUTS.put_many(db, names, &self.outputs)?;
-        MEMBERS.put_many(db, names, &self.members)?;
+        // An order's row is one a key, its entry written over in place: a
+        // name ended as a whole goes first, then the keys deleted, then the
+        // entries put after them.
+        let orders = names.t("view_order");
+        if !self.orders_ended.is_empty() {
+            let gone: Vec<&str> = self.orders_ended.iter().map(String::as_str).collect();
+            db.execute(
+                &format!("DELETE FROM {orders} WHERE name = ANY($1::text[])"),
+                &[&gone],
+            )?;
+        }
+        if !self.orders.is_empty() {
+            let mut deleted: Vec<(&str, &str)> = Vec::new();
+            let mut rows: Vec<(&str, &str, Option<&[u8]>)> = Vec::new();
+            for ((name, key), entry) in &self.orders {
+                match entry {
+                    None => deleted.push((name.as_str(), key.as_str())),
+                    Some(entry) => rows.push((name.as_str(), key.as_str(), Some(entry))),
+                }
+            }
+            if !deleted.is_empty() {
+                let (views, keys): (Vec<&str>, Vec<&str>) = deleted.into_iter().unzip();
+                db.execute(
+                    &format!(
+                        "DELETE FROM {orders} t USING unnest($1::text[], $2::text[]) \
+                         AS b(name, key) WHERE t.name = b.name AND t.key = b.key"
+                    ),
+                    &[&views, &keys],
+                )?;
+            }
+            if !rows.is_empty() {
+                let mut views = Vec::with_capacity(rows.len());
+                let mut keys = Vec::with_capacity(rows.len());
+                let mut entries = Vec::with_capacity(rows.len());
+                for (name, key, entry) in rows {
+                    views.push(name);
+                    keys.push(key);
+                    entries.push(entry);
+                }
+                db.execute(
+                    &format!(
+                        "INSERT INTO {orders} (name, key, entry) \
+                         SELECT name, key, entry FROM unnest($1::text[], $2::text[], $3::bytea[]) \
+                         AS b(name, key, entry) \
+                         ON CONFLICT (name, key) DO UPDATE SET entry = EXCLUDED.entry"
+                    ),
+                    &[&views, &keys, &entries],
+                )?;
+            }
+        }
+        PROPOSALS.put_many(db, names, &self.proposals, &[])?;
+        QUARANTINED.put_many(db, names, &self.quarantined, &[])?;
+        OUTPUTS.put_many(db, names, &self.outputs, &[])?;
+        MEMBERS.put_many(db, names, &self.members, &[])?;
         let mut latest = Vec::with_capacity(heads.len());
         let mut settings = Vec::new();
+        let mut live_sorted = Vec::new();
+        let mut series_settings = Vec::new();
+        let mut live_series = Vec::new();
         for (ident, had) in &heads {
             let r = self
                 .records
@@ -1155,11 +2968,27 @@ impl Buffer {
                 .map(|(_, r)| r)
                 .expect("a head the buffer put");
             // A `sort_index.<type>` setting whose head state the buffer holds
-            // changes which fields of its type are indexed: read again.
-            if let Some(ty) = engines::sort_index_type(r) {
-                for ty in engines::ordered_names(&ty) {
+            // changes which fields of its type are indexed: read again, or
+            // marked building where the setting was put beside the writer.
+            if let Some(view) = engines::sort_index_type(r) {
+                let live = self.live_sorted.contains(&view);
+                for ty in engines::ordered_names(&view) {
                     types.0.remove(&ty);
-                    settings.push((ty, r.position));
+                    match live {
+                        true => live_sorted.push(ty),
+                        false => settings.push((ty, r.position)),
+                    }
+                }
+            }
+            // A `series_index.<type>` setting likewise changes which pairs
+            // of its type are kept whole: read again, or marked building
+            // where it was put beside the writer.
+            if let Some(ty) = engines::series_index_type(r) {
+                let live = self.live_series.contains(&ty);
+                types.0.remove(&ty);
+                match live {
+                    true => live_series.push(ty),
+                    false => series_settings.push(ty),
                 }
             }
             // A `vector_index.<type>` setting whose head state the buffer
@@ -1184,23 +3013,29 @@ impl Buffer {
         // The setting's write rebuilds the index it asks for, so the index
         // describes the head from the next read on.
         let mut rebuilt = 0;
+        if !settings.is_empty() && put >= ANALYZE_AFTER {
+            let (heads, records) = (names.t("records_head"), names.t("records"));
+            db.batch(&format!("ANALYZE {heads}, {records}"))?;
+        }
         for (ty, at) in settings {
             rebuilt += rebuild_sorted(db, names, &ty, at)?;
         }
-        if !self.applied.is_empty() {
-            let (ids, at): (Vec<&str>, Vec<i64>) = self
-                .applied
-                .iter()
-                .map(|(id, at)| (id.as_str(), *at))
-                .unzip();
-            db.execute(
-                &format!(
-                    "INSERT INTO {} (id, at) SELECT * FROM unnest($1::text[], $2::int8[]) \
-                     ON CONFLICT DO NOTHING",
-                    names.t("applied")
-                ),
-                &[&ids, &at],
-            )?;
+        // A setting put beside the writer marks what it asks for as
+        // building, and a build fills it in turns.
+        for ty in live_sorted {
+            mark_sorted(db, names, &ty)?;
+        }
+        // A setting written into the log fills its type's pairs whole, at
+        // its event; one put beside the writer marks them building, and a
+        // build fills them in turns.
+        for ty in series_settings {
+            rebuild_series(db, names, &ty)?;
+        }
+        for ty in live_series {
+            mark_series(db, names, &ty)?;
+        }
+        for ty in self.live_looked {
+            mark_looked(db, names, &ty)?;
         }
         if !self.routes.is_empty() {
             let (mut at, mut kinds, mut tys, mut keys) = (vec![], vec![], vec![], vec![]);
@@ -1212,16 +3047,296 @@ impl Buffer {
                 keys.push(key.as_deref());
                 sources.push(source.as_deref());
             }
+            let held = names.t("names");
+            let mut all: Vec<&str> = tys.iter().chain(&sources).flatten().copied().collect();
+            all.sort_unstable();
+            all.dedup();
             db.execute(
                 &format!(
-                    "INSERT INTO {} (at, kind, ty, key, source) SELECT * FROM \
-                     unnest($1::int8[], $2::text[], $3::text[], $4::text[], $5::text[])",
+                    "INSERT INTO {held} (name) SELECT n FROM unnest($1::text[]) n \
+                     WHERE NOT EXISTS (SELECT 1 FROM {held} WHERE name = n) \
+                     ON CONFLICT DO NOTHING"
+                ),
+                &[&all],
+            )?;
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (at, kind, ty, key, source) \
+                     SELECT u.at, u.kind, t.id, u.key, s.id FROM \
+                     unnest($1::int8[], $2::int4[], $3::text[], $4::text[], $5::text[]) \
+                     AS u(at, kind, ty, key, source) \
+                     LEFT JOIN {held} t ON t.name = u.ty LEFT JOIN {held} s ON s.name = u.source",
                     names.t("routes")
                 ),
                 &[&at, &kinds, &tys, &keys, &sources],
             )?;
         }
+        if let Some((ids, past)) = &self.dropped_bases {
+            // The states past the view, each type's first found by its
+            // index, so a chunk reads the tail and not the lake.
+            let records = names.t("records");
+            db.execute(
+                &format!(
+                    "WITH RECURSIVE t(ty) AS (SELECT min(ty) FROM {records} UNION ALL \
+                     SELECT (SELECT min(ty) FROM {records} WHERE ty > t.ty) FROM t \
+                     WHERE t.ty IS NOT NULL) \
+                     DELETE FROM {} b WHERE b.id = ANY($1::int8[]) AND NOT EXISTS \
+                     (SELECT 1 FROM {records} r WHERE r.ty IN (SELECT ty FROM t) \
+                     AND r.since > $2 AND r.state::jsonb -> 'base' = to_jsonb(b.id))",
+                    names.t("bases"),
+                ),
+                &[ids, past],
+            )?;
+        }
+        if !self.thinned_acts.is_empty() {
+            let (mut tys, mut bys, mut befores, mut ats) = (vec![], vec![], vec![], vec![]);
+            let (mut throughs, mut gones) = (vec![], vec![]);
+            for ((ty, by, before), (at, through, gone)) in &self.thinned_acts {
+                tys.push(ty.as_str());
+                bys.push(by.as_str());
+                befores.push(*before);
+                ats.push(*at);
+                throughs.push(*through);
+                gones.push(*gone);
+            }
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (ty, \"by\", \"before\", at, through, gone) \
+                     SELECT * FROM unnest($1::text[], $2::text[], $3::int8[], $4::int8[], \
+                     $5::int8[], $6::int8[]) AS b(ty, \"by\", \"before\", at, through, gone) \
+                     ON CONFLICT (ty, \"by\", \"before\") DO UPDATE SET \
+                     through = excluded.through, gone = excluded.gone",
+                    names.t("thinned_types")
+                ),
+                &[&tys, &bys, &befores, &ats, &throughs, &gones],
+            )?;
+        }
+        if !self.thinned.is_empty() {
+            let (mut tys, mut keys, mut befores, mut ats) = (vec![], vec![], vec![], vec![]);
+            for ((ty, key), (before, at)) in &self.thinned {
+                tys.push(ty.as_str());
+                keys.push(key.as_str());
+                befores.push(*before);
+                ats.push(*at);
+            }
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (ty, key, \"before\", at) \
+                     SELECT * FROM unnest($1::text[], $2::text[], $3::int8[], $4::int8[]) \
+                     AS b(ty, key, \"before\", at) \
+                     ON CONFLICT (ty, key) DO NOTHING",
+                    names.t("thinned")
+                ),
+                &[&tys, &keys, &befores, &ats],
+            )?;
+        }
         Ok(rebuilt)
+    }
+}
+
+/// Keep each of the `shared` bases that `bases` does not hold, in one
+/// statement, and answer the id of every one by its block. A base is
+/// found by the hash of its block and then the block, so two blocks of one
+/// hash are two rows.
+fn put_bases(db: &mut Db, names: &Names, shared: &HashSet<String>) -> Result<HashMap<String, i64>> {
+    let blocks: BTreeSet<&str> = shared.iter().map(String::as_str).collect();
+    if blocks.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let blocks: Vec<&str> = blocks.into_iter().collect();
+    let held = names.t("bases");
+    let rows = db.query(
+        &format!(
+            "WITH u AS (SELECT * FROM unnest($1::text[]) AS u(block)), \
+             i AS (INSERT INTO {held} (block) SELECT block FROM u \
+             WHERE NOT EXISTS (SELECT 1 FROM {held} b \
+             WHERE md5(b.block) = md5(u.block) AND b.block = u.block) RETURNING id, block) \
+             SELECT id, block FROM i UNION ALL SELECT b.id, b.block FROM {held} b JOIN u \
+             ON md5(b.block) = md5(u.block) AND b.block = u.block"
+        ),
+        &[&blocks],
+    )?;
+    Ok((rows.iter())
+        .map(|r| (r.get::<_, String>(1), r.get::<_, i64>(0)))
+        .collect())
+}
+
+/// A record's rows of `vectors` in force, as [`Buffer::put_vectors`] reads
+/// them: those of its states, and those the index put alone (`since` -1).
+#[derive(Default)]
+struct Held {
+    rows: Vec<engines::VectorRow>,
+    alone: BTreeSet<String>,
+    head: Option<i64>,
+}
+
+/// The fields each buffered state keeps apart, by its row of `records`.
+type StatesApart = BTreeMap<(Vec<String>, i64), BTreeMap<FieldName, Position>>;
+
+/// The rows [`Buffer::put_vectors`] writes, as arrays for one statement.
+#[derive(Default)]
+struct VectorRows {
+    ident: [Vec<String>; 3],
+    since: Vec<i64>,
+    until: Vec<Option<i64>>,
+    single: Vec<bool>,
+    data: Vec<Vec<u8>>,
+}
+
+impl VectorRows {
+    fn push(&mut self, ident: &[String], field: &FieldName, since: i64, until: Option<i64>) {
+        let ident = ident.iter().map(String::as_str).chain([field.as_str()]);
+        for (column, v) in self.ident.iter_mut().zip(ident) {
+            column.push(v.to_owned());
+        }
+        self.since.push(since);
+        self.until.push(until);
+    }
+}
+
+impl Buffer {
+    /// Write the vector rows of the buffered records' states
+    /// ([`engines::put_vectors`]), over the rows in force each record holds
+    /// and whether a later state of it is kept, and answer the fields each
+    /// state keeps apart, of those its type's declaration in `types` keeps.
+    /// A vector the index put alone for a field a state names goes.
+    fn put_vectors(
+        &self,
+        db: &mut Db,
+        names: &Names,
+        types: &mut HeadTypes,
+    ) -> Result<StatesApart> {
+        let mut apart = BTreeMap::new();
+        let mut held: BTreeMap<(String, String), Held> = BTreeMap::new();
+        for (ident, _) in self.records.keys() {
+            held.entry((ident[0].clone(), ident[1].clone()))
+                .or_default();
+        }
+        if held.is_empty() {
+            return Ok(apart);
+        }
+        let (tys, keys): (Vec<String>, Vec<String>) = held.keys().cloned().unzip();
+        let b = "unnest($1::text[], $2::text[]) AS b(ty, key)";
+        let rows = db.query(
+            &format!(
+                "SELECT v.ty, v.key, v.field, v.since, v.single, v.data FROM {b} JOIN {} v \
+                 ON v.ty = b.ty AND v.key = b.key AND v.until IS NULL",
+                names.t("vectors")
+            ),
+            &[&tys, &keys],
+        )?;
+        for row in rows {
+            let h = held
+                .get_mut(&(row.get(0), row.get(1)))
+                .expect("a key asked for");
+            let (field, since): (String, i64) = (row.get(2), row.get(3));
+            match since < 0 {
+                true => drop(h.alone.insert(field)),
+                false => {
+                    let e = engines::Elements::new(row.get(4), row.get(5));
+                    h.rows.push((field.into(), Position(since as u64), e));
+                }
+            }
+        }
+        let heads = db.query(
+            &format!(
+                "SELECT h.ty, h.key, h.since FROM {b} JOIN {} h ON h.ty = b.ty AND h.key = b.key",
+                names.t("records_head")
+            ),
+            &[&tys, &keys],
+        )?;
+        for row in heads {
+            held.get_mut(&(row.get(0), row.get(1)))
+                .expect("a key asked for")
+                .head = Some(row.get(2));
+        }
+        let (mut written, mut ended, mut gone) = <[VectorRows; 3]>::default().into();
+        let mut vectors: BTreeMap<&TypeName, BTreeSet<FieldName>> = BTreeMap::new();
+        for ((ident, at), r) in &self.records {
+            if !vectors.contains_key(&r.ty) {
+                vectors.insert(&r.ty, types.get(db, names, &r.ty)?.vectors);
+            }
+            let h = held
+                .get_mut(&(ident[0].clone(), ident[1].clone()))
+                .expect("a key held");
+            let behind = h.head.is_some_and(|head| head > *at);
+            let put = engines::put_vectors(r, std::mem::take(&mut h.rows), behind, &vectors[&r.ty]);
+            h.rows = put.held;
+            let until = put.ends.then_some(*at);
+            for (f, e) in put.written {
+                written.push(ident, &f, *at, until);
+                written.single.push(e.single);
+                written.data.push(e.data);
+            }
+            for (f, since) in put.ended {
+                ended.push(ident, &f, since.0 as i64, Some(*at));
+            }
+            for f in put.gone {
+                gone.push(ident, &f, *at, None);
+            }
+            for f in put.apart.keys() {
+                if h.alone.remove(f.as_str()) {
+                    gone.push(ident, f, -1, None);
+                }
+            }
+            apart.insert((ident.clone(), *at), put.apart);
+        }
+        // An index put or remove after the states stands where the rows they
+        // leave hold otherwise: made once they are written.
+        let mut later = Vec::new();
+        for ((ty, key, field), vector) in &self.indexed {
+            let h = &held[&(ty.clone(), key.clone())];
+            let row = (h.rows.iter()).find(|(f, ..)| f.as_str() == field);
+            let row = row.map(|(.., e)| e.ranked());
+            if h.alone.contains(field) || row != *vector {
+                later.push(((ty.as_str(), key.as_str(), field.as_str()), vector));
+            }
+        }
+        let t = names.t("vectors");
+        let ident = "unnest($1::text[], $2::text[], $3::text[], $4::int8[]";
+        if !written.since.is_empty() {
+            let w = &written;
+            let [tys, keys, fields] = &w.ident;
+            db.execute(
+                &format!(
+                    "INSERT INTO {t} (ty, key, field, since, until, single, data) \
+                     SELECT * FROM {ident}, $5::int8[], $6::bool[], $7::bytea[]) \
+                     ON CONFLICT (ty, key, field, since) DO UPDATE SET until = EXCLUDED.until, \
+                     single = EXCLUDED.single, data = EXCLUDED.data"
+                ),
+                &[tys, keys, fields, &w.since, &w.until, &w.single, &w.data],
+            )?;
+        }
+        if !ended.since.is_empty() {
+            let [tys, keys, fields] = &ended.ident;
+            db.execute(
+                &format!(
+                    "UPDATE {t} t SET until = b.until FROM \
+                     {ident}, $5::int8[]) AS b(ty, key, field, since, until) \
+                     WHERE t.ty = b.ty AND t.key = b.key AND t.field = b.field \
+                     AND t.since = b.since"
+                ),
+                &[tys, keys, fields, &ended.since, &ended.until],
+            )?;
+        }
+        if !gone.since.is_empty() {
+            let [tys, keys, fields] = &gone.ident;
+            db.execute(
+                &format!(
+                    "DELETE FROM {t} t USING {ident}) AS b(ty, key, field, since) \
+                     WHERE t.ty = b.ty AND t.key = b.key AND t.field = b.field \
+                     AND t.since = b.since"
+                ),
+                &[tys, keys, fields, &gone.since],
+            )?;
+        }
+        for (at, vector) in later {
+            match vector {
+                Some(vector) => vector_index::put(db, names, at, vector)?,
+                None => vector_index::remove(db, names, at)?,
+            }
+        }
+        Ok(apart)
     }
 }
 
@@ -1258,6 +3373,18 @@ pub(crate) fn put_declaration(
     )?;
     let kept = (!head.sorted.is_empty()).then_some(d.since);
     set_sorted(db, names, &t.name, kept)?;
+    // A pair goes back to `Start`: the declaration may have dropped or
+    // changed a field its rows were filled under, so no reader takes rows
+    // the declaration removed.
+    let mut series = series_of(db, names, &t.name)?;
+    if !series.kept.is_empty() {
+        series.building.append(&mut series.kept);
+        set_series(db, names, &t.name, &series)?;
+    }
+    // The pairs the setting at the head names are building under it, so a
+    // setting put before the declaration that first declares its fields
+    // starts its pairs here, as one put over a built pair restarts them.
+    mark_series(db, names, &t.name)?;
     Ok(Some(t.name.clone()))
 }
 
@@ -1275,14 +3402,14 @@ pub(crate) fn index_older(
 ) -> Result<()> {
     let head = types.get(db, names, ty)?;
     let page = format!(
-        "SELECT r.state FROM {} WHERE h.ty = $1 AND h.since < $2 AND h.key > $3 \
+        "SELECT {RECORD} FROM {} WHERE h.ty = $1 AND h.since < $2 AND h.key > $3 \
          ORDER BY h.key LIMIT {PAGE}",
         RECORDS.at_head(names)
     );
     // A page of the type at a time; an ended key has no index rows.
     let mut after = String::new();
     loop {
-        let records = db.records(&page, &[&ty.as_str(), &(at.0 as i64), &after])?;
+        let records = db.records(names, &page, &[&ty.as_str(), &(at.0 as i64), &after])?;
         let live = || records.iter().filter(|r| !r.is_ended());
         let indexed: Vec<(&HeadType, &StoredRecord)> = live().map(|r| (&head, r)).collect();
         let stale: Vec<(&str, &str)> = live().map(|r| (r.ty.as_str(), r.key.as_str())).collect();

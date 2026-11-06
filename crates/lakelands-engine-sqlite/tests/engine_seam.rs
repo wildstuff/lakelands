@@ -50,6 +50,54 @@ impl EngineHarness for Sqlite {
         marked.expect("marking the projection");
         true
     }
+
+    fn fold_as_before(&self, lake: &LakeId) -> bool {
+        let path = self.root.join(lake.as_str()).join("projection.db");
+        rusqlite::Connection::open(path)
+            .and_then(|db| {
+                db.execute_batch(
+                    "UPDATE sort_index SET sort_key = x'00'; \
+                     UPDATE meta SET v = v + 1 WHERE k = 'folded' OR k LIKE 'sorted.%';",
+                )
+            })
+            .expect("folding as a writer without the chosen fields");
+        true
+    }
+
+    fn stale_text_stats(&self, lake: &LakeId, behind: bool) -> bool {
+        let path = self.root.join(lake.as_str()).join("projection.db");
+        let stale = match behind {
+            true => {
+                "UPDATE meta SET v = v - 1 WHERE k = 'text_stats'; \
+                 UPDATE text_stats SET records = records * 2, tokens = tokens * 2 + 1; \
+                 DELETE FROM text_lengths;"
+            }
+            false => {
+                "DROP TABLE text_stats; DROP TABLE text_lengths; \
+                 DELETE FROM meta WHERE k = 'text_stats';"
+            }
+        };
+        rusqlite::Connection::open(path)
+            .and_then(|db| db.execute_batch(stale))
+            .expect("leaving the text statistics stale");
+        true
+    }
+
+    fn scratch(&self, lake: &LakeId) -> lakelands_api::Result<Box<dyn LakeEngine>> {
+        SqliteOpener.open_scratch(&self.location(lake.as_str()))
+    }
+
+    fn forge_scratch_mark(&self, lake: &LakeId) -> bool {
+        let path = self
+            .root
+            .join(lake.as_str())
+            .join("projection.db.rebuild.mark");
+        let text = std::fs::read_to_string(&path).expect("reading the scratch's mark");
+        let mut mark: serde_json::Value = serde_json::from_str(&text).expect("a mark");
+        mark["hash"] = serde_json::Value::String("0".repeat(64));
+        std::fs::write(&path, mark.to_string()).expect("forging the mark");
+        true
+    }
 }
 
 #[test]

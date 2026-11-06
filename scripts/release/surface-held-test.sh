@@ -5,11 +5,13 @@
 # It needs no tag and no cargo-semver-checks.
 #
 # The fixture's rows, let through: a variant added, a tuple variant's
-# field added, a variant's number moved in the enum that gained it, a door
+# field added, a variant's number moved in the enum that gained it, its
+# place in a derived order moved there (a warning, read as a failure), a door
 # the release marked `#[deprecated]` over several lines and then removed,
 # a door the list names, an enum the list names as hidden, a function's signature the list names (from
 # host-changes.sh's own checks), and a constant the list names by its
-# file. Refused: a variant's number moved in an enum that gained none, a
+# file. Refused: a variant's number moved in an enum that gained none, its
+# place in a derived order moved there, a
 # door removed with no deprecation, the listed door's parameters changed
 # (the list names its removal, not this lint), an enum the list names as
 # hidden turned non-exhaustive too (the list names the one lint), a constant of the same

@@ -11,6 +11,7 @@ fn a_sqlite_location_written_without_tuning_reads_with_the_defaults() {
         location.engine,
         EngineConfig::Sqlite {
             dir: "/var/lakes/ledger".into(),
+            projection_dir: None,
             tuning: SqliteTuning::DEFAULT,
         }
     );

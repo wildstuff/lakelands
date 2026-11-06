@@ -28,6 +28,50 @@ what is shared is what the lake declares, before any rule of who is
 shown what. A principal's grants, its renames followed and its `only`
 are applied per read.
 
+#### A grant that is not understood stops the root
+
+A grant exists to narrow what a principal may do, so a part of one that
+is read past takes a restriction away without a word: `onyl` for `only`
+leaves its holder reading every record. `Grants`, `TypeGrants` and
+`HiddenWhere` therefore refuse a key they do not know. A root whose
+`lakelands.json` holds such a key does not open, for `serve`, `--as` or
+any other command: the refusal names the key, the principal and the
+place in the file, and comes before any lake is opened, so nothing is
+appended. A configuration written for a later build, holding a key this
+build does not know, is refused the same way, since this build could
+not apply it.
+
+No event and no proposal holds a grant. Grants reach the store on a
+call, from the resolver, and the log records only what they decided, so
+strict types stop no old log folding. A host that keeps grants of its
+own is refused the same key when it reads them through these types.
+
+A grant under a type name no lake declares is told and starts. It cannot
+be refused: a configuration may name a type before it is declared, and a
+grant stands under a renamed type's old name, where it still holds. So a
+process acting as a configured principal says so on standard error at
+its start, at every start until a lake declares the name, naming the
+principal, the type and the lakes it looked in. `serve` with its HTTP
+door tells of every principal, over the lakes each addresses. `serve`
+without a door and a command given `--as` have one lake open and act as
+one principal, so they tell of that principal and look in that lake
+alone, and a type only another lake declares is told there too. The
+line does not tell an old name from a misspelling, because the list of
+renames is not on the facade, and a line is not worth widening it for.
+`verify` says nothing of this: it answers whether the log holds.
+
+A field name under a type grant's `fields`, or under `hide_where[].fields`,
+that the type declares in none of the lakes looked in is told the same
+way, naming the principal, the type and the field, and is not refused for
+the same two reasons: the declaration may come after the configuration,
+and a grant stands under a renamed field's old name.
+
+A key written twice in one of a grant's maps (`types`, `fields`, `only`,
+`only_any`, `hide_where[].fields`) stops the root as an unknown key does,
+naming the principal and the key, before any lake is opened. A map keeps
+the last value of a repeated key, so a restriction written first would
+drop without a word.
+
 ### A field has one access, the lowest over every name it has borne and everything it is built from
 
 #### A field may be granted `write_only`: written, and never read
@@ -44,7 +88,10 @@ absent from `fields`, `masked` and `meta`, from every read schema, from
 `describe`'s derivation and meaning, and from the names a host's watch
 shows. For writing it is as `write`: `upsert`, `ingest` under its
 door's authority, a verb's effect, a proposal, and `retire` when every
-other field is writable too.
+other field is writable too. A type its principal may write and not
+read, and one keyed by a field it may only write, is not declared to a
+read and is described for its writes alone
+(`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
 
 - **Nothing flows back.** A write answers what any write answers, its
   position and version, never the value or the field's provenance, and
@@ -132,10 +179,14 @@ value in every read as of a position before the rename.
 enters: a read takes the list from the view it reads at the head, so a
 rename is in its shape and in its grants or in neither; a read as of a
 position takes the head's list, where a later rename can only take away.
-A write is followed before it waits for the writer, and a migration can
-rename a field while it waits. Where the list has grown when the write
-takes the writer, it is refused to be sent again; an ingest is followed
-under the writer itself.
+A write is followed at its turn in the lake's queue of writes, before it
+takes the writer: a migration through the same handle waits its turn as
+the write does, so a write that waited behind one is followed through its
+renames. Only what the writer catches up with as it is taken can rename
+a field between the two: another handle's migration, or one whose fold
+the lake has not yet made; where the list has grown when the write takes
+the writer, it is refused to be sent again. An ingest is
+followed under the writer itself.
 
 **A type's name follows the same rule.** A renamed relation carried by
 link records moves them to the link type of its new name, and a grant
@@ -174,8 +225,8 @@ embedded from. So a field is read no further than every field it is
 built from, its `depends_on` and its `embed.from`, and theirs in turn.
 A source the principal may not read hides the field. A masked source
 masks it, unless the field is already hidden. The rule lives in one
-place, the field's access (`lakelands_core::rights::field_access`), so
-it holds on every door: such a field is absent or masked in `get`,
+place, the field's access (`Sight::field_access` in `lakelands-core`),
+so it holds on every door: such a field is absent or masked in `get`,
 `find` and a pattern's rows, and in `describe` and the tools.
 Filtering, ordering or aggregating over it is refused as not granted,
 naming it, as for its source. A search over a vector embedded from a
@@ -372,16 +423,23 @@ that reads a view is granted something of each of its sources.
 holds their values. So a type keyed by a field its principal may not
 know of is not shown to it: it answers as a type that is not declared,
 and so does every type made of it, a link type of its relations and a
-view over it. A key field the principal sees masked or may only write
-still gives its value through the key: the field is known, and only its
-value is withheld elsewhere. A grouped view's records are keyed by its
-`group_by`, and an ungrouped view's one record by no field. A view
-declares no other `key` (018), and one that holds another all the same,
-a host's own type, which passes no `declare`, is judged by its groups
-too: no view is hidden for a field its records do not carry as their
-key. A grouped view's key is judged at its sources too: each key field
-on the view, on its source and on each merge source by position, since
-the key holds their values. It is also the key `describe`, the tools and
+view over it. A key field the principal sees masked still gives its
+value through the key: the field is known, and only its value is
+withheld elsewhere. A key field granted `write_only` is one its
+principal may not know of to read, since for reading it is as `none`:
+a record key would hand out its value (lakelands#1572). Only the
+reading side is withheld: the type is hidden from its reads and shown
+to its writes, upsert and retire, since a write names the key and
+answers no value of it
+(`docs/decisions/092-reading-is-judged-apart-from-writing.md`). A
+grouped view's records are keyed by its `group_by`, and an ungrouped
+view's one record by no field. A view declares no other `key` (018),
+and one that holds another all the same, a host's own type, which
+passes no `declare`, is judged by its groups too: no view is hidden for
+a field its records do not carry as their key. A grouped view's key is
+judged at its sources too: each key field on the view, on its source
+and on each merge source by position, since the key holds their values.
+It is also the key `describe`, the tools and
 a listed declaration name. A view's definition shown to a principal
 names no measure of a field it may not know of, as its fields do not. A
 measure that reads such a measure by name, directly or through another,
@@ -454,10 +512,11 @@ against, each of the reader as its call named it, its grants followed
 there (below). Following comes first, since a grant held through a
 rename may hide what the grants as given do not. A write judges under
 its lock with the principal its call was made with. Where the types
-moved while it waited, its sight is made a second time, over the head's
-types, and the write is refused to be sent again where the head hides
-other references from it than its call was shown; one that waited while
-types moved that hide nothing more from it is applied.
+moved between its sight and its lock, as only a migration the writer
+catches up with as it is taken moves them, its sight is made a second
+time, over the head's types, and the write is refused to be sent again
+where the head hides other references from it than its call was shown;
+one seen before types moved that hide nothing more from it is applied.
 
 What is shown does not turn on a read's valid time. A read at `valid_at`
 filters records by the type's valid-time fields, so the read that
@@ -510,7 +569,10 @@ read nor named the type in the pattern, search and subscribe tools.
   field**: the value of one that is read, the name of one that is masked,
   in the declaration's order, and nothing of one that is hidden or only
   written. One who reads no field is still answered the record; that is
-  how it sees what is withheld, and what a writer writes against.
+  how it sees what is withheld, and what a writer writes against. One
+  that sees no field, granted nothing of the type but writes, is not
+  shown it for reading
+  (`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
 - **The probe is refused.** A filter, an order, an aggregate
   or a search over a field the principal does not read is not granted
   (below), so `may.find` promises the door, not every question.
@@ -542,7 +604,10 @@ alone; with the start hidden, by the end alone, a record holding while
 it has not ended. A refusal, or a filter by the hidden bound, would tell
 the reader that a valid time it is not shown exists. A type in force
 with a `valid_to` and no `valid_from` (028) is filtered by nothing, so
-its read probes nothing either (lakelands#909).
+its read probes nothing either (lakelands#909). A grant that says
+`dates_by_hidden_valid_time` filters by the stored bounds, shown or not,
+and probes neither; the bounds stay withheld
+(`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
 
 A walk keeps each record it meets by its own type's valid time, so it
 probes every type it can meet, not only the one a step is judged to
@@ -841,11 +906,16 @@ nothing the hash would.
 
 #### A report's id is made over what its reader is shown
 
-A report's id names the report and the head it was made at, and it is
-computed over the report as its reader is shown it, so the reader can
-compute it from what it holds and learns nothing from it.
-`migrate_apply` compares the caller's own id; an accept compares no id,
-and a listed proposal's id is made at the head before the proposal.
+A report's id names the report and the position it was read at, the one
+039 names: the log's last event that is neither a `lease_taken` nor a
+`checkpoint`. It is computed over the report as its reader is shown it,
+so the reader can compute it from what it holds and learns nothing from
+it; the reply's `position` is that position unless a lease or a seal
+stands after it. `migrate_apply` compares the caller's own id, and
+refuses it once a write since has reached what the report names, while a
+write elsewhere leaves it good (099); an accept compares no id, and a
+listed proposal's id is made at the position 039 names before the
+proposal (lakelands#1476).
 
 #### The stored report, the log and the feed hold the whole hash
 
@@ -867,6 +937,16 @@ know of says nothing. A relation is described only to a reader shown
 both its ends, the field that carries it where it is carried by a
 reference field, and, for a derived relation, every field its match
 pairs (above).
+
+A type described as of a position is told the names it bore after it
+(`035 § A renamed relation keeps its edges`) only where its reader,
+its grants named at the head, is shown it at the head under its last
+name too. The position judges whether the type is described at all;
+the head judges whether its new name is told. A reader shown the old
+link type as of before by a permission on the old name alone, which
+gives nothing under the new one, is not told the new name: it would
+learn the name of a type it is not shown. A reader not shown the type
+at the position is described nothing of it, rename included.
 
 ### A write asks first whether its writer is shown the type, checks grants before data, and tells only what the grants cover
 
@@ -905,25 +985,28 @@ shown:
 - A type that is not shown is a name that is not declared, under every
   value: `null` and `false` change nothing, and would otherwise tell a
   declared type from none.
-- A field the description does not name is one the type does not
-  declare. A field it names masked or write-only is judged by its kind:
-  the description says the kind already, and an index changes no answer.
+- A setting that names a type's fields reaches the judge only from a
+  writer that reads the type whole (below), so no field it names is one
+  the writer is not shown, masked or write-only.
 - A view shown without its definition cannot be kept, and the refusal
   says no more: the reason names a measure, a call and a field of the
   source, and is said to one shown the view as declared, as `kept` says
   it.
-- The judge reads the value as its writer writes it. A setting for a
-  type is told to its writer as were what it is not shown absent, and
-  its write keeps the names it is not told after its own
-  (`docs/decisions/063-every-setting-is-in-one-list.md`), so a standing
-  name the writer is not shown is neither judged nor dropped. Its retire
-  is judged as the write it is: it clears only what its writer is told.
+- The judge reads the value as its writer writes it. A setting that
+  names a type's fields is told, and may be written, retired or
+  proposed, only by a writer that reads the type whole; any other is
+  refused it as not granted before anything of the record is judged
+  (`docs/decisions/063-every-setting-is-in-one-list.md`), so no standing
+  name the writer is not shown is judged, dropped or counted in what
+  its write answers.
 
 The judge once read the value the write leaves, standing names too: a
 principal extended or patched a setting only while shown everything it
 named. That left the setting to one who sees more, and the refusal told
-the principal that the setting names something it is not shown; judged
-as written, the setting is the one its twin without those names holds.
+the principal that the setting names something it is not shown. It was
+then judged as written, over a record told narrowed, whose version still
+counted the names its writer was not told; the setting is now told and
+written whole or not at all.
 
 #### Every door that writes a record asks first whether its writer is shown the type
 
@@ -1023,6 +1106,60 @@ not read, a write-only field and a reference to a type the caller is not
 shown are judged the same way, since a filter on them is. A verb that
 reads no such field is judged by the fields it writes alone.
 
+A verb declared `granted` asks one grant more: its type's grants name
+it (`docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`).
+
+A refused `requires` names the part of it the record fails, so its
+caller knows which rule to meet (lakelands#1286). `requires_unmet`
+carries `part`: of an `and`, an `and` within it split in turn, the
+first conjunct in declaration order that does not hold; of any other
+condition, an `or` and a `not` among them, the whole. A part inside an
+`or` is never named alone, since no one alternative is what the record
+fails. The conjuncts are evaluated in order, as the `and` evaluates
+them, so naming one reads nothing the condition does not. The part is
+written in the text form a condition is declared in. A part that read
+a field its caller may not read would be left out; by the rule above
+there is none: a caller who may not read every field the
+`requires` reads is refused `not_granted` before the record is read,
+and so is one not told every setting it, or a value the verb sets,
+reads (`docs/decisions/063-every-setting-is-in-one-list.md`); a
+reviewer who may not, or is not told such a setting, is not shown the
+proposal, so whoever is told
+`requires_unmet` may read every part of it. A part that reads
+`setting('<key>')` is left out where its caller is not shown that
+setting, and so is a part after one that reads a setting its caller
+is not shown, since naming a part tells that every part before it
+held; the refusal is otherwise the same. A host's declared setting is
+shown to a holder of `schema` and to one who may write it, as
+`describe` tells its declaration; any other key to a reader of
+`sys.setting` that no `only` holds there,
+where its record is told whole
+(`docs/decisions/063-every-setting-is-in-one-list.md`). That is
+narrower than what a reader may read of the record, and errs towards
+leaving the part out. At an accept the caller is the reviewer. The
+literals and function names of a part are told: the condition is the
+contract of a verb its caller may call, `describe` does not carry it,
+so this is the one place it is told, and only the part that fails. A
+constraint is a type's own rule and its refusal names it, not a part of
+its condition (`docs/decisions/059-a-type-declares-its-constraints.md`).
+
+A verb may name its conditions (lakelands#1330). Beside `requires`,
+`preconditions` lists conditions, each a `name` and what it `holds`,
+judged after `requires` in order, as one `and` of them all. A
+`requires_unmet` of one is said within it, at the place `precondition`
+with its name, beside its `part`, so a caller is told which rule it
+broke without matching the text of the rule; one of `requires` is said
+at no place, as before. The place is told where the part is and left
+out where it is not, since it tells, as the part does, that every part
+before it held. A place, not a new member of the case, keeps the case
+what a caller already reads. A name is an identifier, two alike are refused
+`declared_twice`, and a verb on its type, with no record to
+read, declares none, as it declares no `requires`. What reads a verb's
+`requires`, the grants, what a caller is shown and what a proposal
+keeps, reads its preconditions alike. A verb that names nothing is
+declared, written and refused as before: `preconditions` is left out
+where there are none.
+
 A type its principal is not shown is not named by what is declared
 beside it either. A verb on such a type is not described and no tool
 is made of it, even where the principal could write every field the
@@ -1043,7 +1180,7 @@ literally, such a shape removes that field: a principal who was never
 told of `salary` would propose it away, and the lake could not tell that
 from a removal it meant. So a migration's `to`, and a type declared
 again, is read as its author's view of the type:
-- a field hidden from the author (`rights::field_access` answering
+- a field hidden from the author (`Sight::field_access` answering
   `none`, by its grant or through a field it is built from) is put back
   as declared, at its declared place, and so is such a link field of
   each relation the shape keeps;
@@ -1351,7 +1488,9 @@ is never logged:
 A report's id is made over what its reader is shown (above), so a
 preview read trimmed is applied by the id it carried, and whether the
 migration is lossless is decided over the whole report: the trim changes
-what is read, not what is decided.
+what is read, not what is decided. A proposal and its listing only
+tell: a proposal's report is lossless as its proposer is told it, and
+the proposal is refused as lossy only by that (below).
 
 **`more`.** A report says `more` where an entry was left out of it, or
 where a count is larger than the keys named beside it: a field's
@@ -1538,10 +1677,12 @@ know of the field:
 - **`references`**: the fields the reader may know of, of types it may
   see.
 
-The totals and `lossless` stay whole, and the entry says `more` when
-anything was left out. The two schema hashes are those of the shapes
-its reader is shown, and the report's id is made over what it is shown
-(above). A logged report is lossless, so it names no record that would
+The totals stay whole, and the entry says `more` when anything was
+left out. `lossless` is the proposer's: a filed report is lossless as
+its proposer was told it, by the records and constraints it was told
+of, so it is lossless to every reader. The two schema hashes are those
+of the shapes its reader is shown, and the report's id is made over
+what it is shown (above). A logged report is lossless, so it names no record that would
 not convert or would collide. A migration of a type its reader may not
 see is not there (below).
 
@@ -1735,12 +1876,14 @@ listed nothing that names it, which is not there to it. A holder of
 each definition in force, so it accepts a set of a verb that sets a
 field it is kept from. And the direct door is wider than the accept: a
 holder of `schema` kept from a field declares and migrates the type
-itself, its view carried back
+itself, the act needing `restricted` too (062), its view carried
+back
 (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`), and
 may not accept the same migration from another. What it authors it has
 seen; what another proposes may touch what it has not.
 
-Accepting a change of the ontology needs `schema` as well as `review`.
+Accepting a change of the ontology needs `schema` and `restricted` as
+well as `review`, `restricted` as the act's own door needs it (062).
 For a record write, the proposer's own grants were the check when it was
 proposed, and its reviewer decides whether it happens, where the entry
 is its to decide: a holder of `only` is judged by its own pairs too, and
@@ -1859,7 +2002,9 @@ record that does not exist.
   holder's records alone; its count of the retired counts the holder's
   retired records alone, another's being a key that is free to it
   (lakelands#1024). A search ranks the type and keeps the admitted
-  candidates, pulling deeper until its page is full; the fused search's
+  candidates, pulling deeper until its page is full; under a vector
+  index it is ranked exactly over the records that hold its pairs,
+  never streamed from a graph that holds others; the fused search's
   path that reads no record is not taken. A walk reaches only admitted
   records. A proposal on a record the holder is not admitted is not
   there to it (below). One that would leave a record outside the
@@ -2007,6 +2152,55 @@ proposer held `only` on the type, never on what. A reviewer is a reader
 of what it decides, so it decides only what it may read, and what it
 accepts it is answered for as for its own write.
 
+#### A grant may admit a set of values, and refuse a part read as the whole
+
+A grant may hold `only_any` beside `only`: for a field, a set of text
+values. A record is admitted where its field holds one of them, beside
+every pair of `only`, as `only` admits it, at every door above: the
+engine reads under the set as it reads under a pair, as one of several
+values to the same index, and no door filters after the fact. `""` is
+an ordinary value. The set closes as the pair does: it names a `text`
+or `reference` field the holder may read, or the grant is not applied;
+an empty set admits nothing; a field named both in `only` and in
+`only_any` is a grant that cannot be applied, since the two would say
+two things of one field; a rename that joins two names keeps the values
+both sets hold. `describe` tells the holder its sets in `may.only_any`
+(lakelands#1588). A proposal made under a set is accepted only by a
+reviewer whose own pair or set on the field holds every value of it: a
+reviewer of one of the values would otherwise apply a change to records
+of another it does not see.
+
+**Why.** A host often admits a principal to the records of several
+owners, a manager to a team's, and a grant of one value cannot say
+that; a host that filtered above the lake would lose the sums and the
+searches again. A set fails closed for the reason a pair does: a set
+the store guessed at, an empty one read as no restriction or a clash
+with `only` resolved to either side, would admit records the host did
+not name, and the host is told at once instead.
+
+A grant that admits only some records of a type may hold
+`whole_sets_only` there. A read computed over a set of the type's
+records then refuses as invalid, naming the type: a count, `total`, the
+count of the retired, a sum, a group, a pattern's aggregate, and any
+view that reads the type, kept or not, at any depth of its sources. A
+link type whose end the grant narrows is narrowed with it, so a count
+of its links or a view over them refuses alike, and so does a graph
+measure, `degree`, `components`, `page_rank` or `communities`, over a
+graph that meets the type, as its start or at an end of a step's links,
+since a record's measure is read off the records and links around it
+(lakelands#1608). A
+read that answers records, `get`, `find` and a search, is answered as
+without it. On a type the grant does not narrow it changes nothing
+(lakelands#1590).
+
+**Why it is opt-in.** A sum over the admitted part is the right answer
+for a holder who knows its grant is a part, its own claims, and the
+store has answered so since the pair was added; turning it off by
+default would refuse reads hosts rely on. Where a figure over a part
+can be mistaken for one over the whole, an agent told "the total is 35"
+reporting it as the team's, the host says so on the grant, and the
+store refuses rather than answering a part as though it were the whole.
+
 #### `only` keeps the reference it names
 
 A reference to a type its principal is not shown is a field it may not
@@ -2066,6 +2260,155 @@ of the three doors was a copy with a part missing. An answer that fails
 closed cannot be skipped: a site that asks nothing has no pairs to
 filter by, and so no record to hand out.
 
+### A grant may admit every record to read and only some to write
+
+A principal's grant on a type may hold `writes_only`: pairs of a field
+and a value, valid as those of `only` are, a field the type declares, of
+kind `text` or `reference`, that the holder reads, with a text value.
+Its holder reads what its other grants give it, every record where they
+give every record, and writes only the records whose fields hold every
+pair (lakelands#1490).
+
+- **Judged before and after.** A write is judged against the record at
+  its key, live or retired, and against the record it leaves: both must
+  hold the pairs. A change, a handover to other values and a retirement
+  of another's record are refused, and so is a create that does not
+  leave the pairs: a value the write gives, a field's `initial` or an
+  `authority: writer` field that names the holder's own writer counts.
+  A retired record of another blocks a create at its key, so a holder
+  cannot take another's key over by its retirement. Every write door is
+  judged so: `upsert`, `retire`, a verb, `ingest`, a proposed write and
+  its accept, and a change to records, whose plan names each record the
+  holder may not write as refused and whose `enact` is then refused
+  whole. The refusal is `not_granted` and names no field: the holder
+  reads the record, so the refusal tells it nothing it could not read.
+- **A grant that cannot be applied** is refused as invalid at the doors
+  that write the type, naming the type, as `writes_only_unappliable`.
+  It changes no read: a grant that says nothing about reading is no
+  reason to hide what the other grants show.
+- **Links.** A link is its holder's to make by one end it holds: a
+  record of an end type that carries the holder's `writes_only` and
+  holds its pairs. A holder links its own record to one it may only read.
+  An end of a type carrying no `writes_only` is held by no grant, not
+  even by a grant that writes the type: the pairs are what make a record
+  the holder's, and a type without them names no record as its own. A
+  link with no end held is refused, not opened, so a holder of
+  `writes_only` on the link type alone makes no link. Both ends must be
+  its own where the relation is to-one at the other end, since the link
+  then takes that end's one place. Where the relation is to-many at the
+  other end, the holder's one end suffices: no declaration accepted can
+  name a relation in a computed field's expression or `depends_on`, so a
+  link changes no answer of the other end but through its one place. The
+  link record itself must hold the pairs the holder's `writes_only` on
+  the link type names, at its create, at an `unlink` and at any other
+  write to it. A holder of `writes_only` on an
+  end type who holds none on the link type makes no link of it: the
+  case is not covered, so it is refused, not opened.
+- **Proposals.** A proposal is judged as the direct write is, and its
+  pairs pin it as those of `only` do: a write that may move them, a verb
+  that assigns a field they name, is not proposed, and the accept is
+  refused once the record moved since. A records proposal carries the
+  proposer's `writes_only` pairs into its `only`, so a change accepted
+  later writes only the records its proposer could; a pair that would
+  contradict one of `only` is refused. A reviewer holding `writes_only`
+  accepts only what its pairs admit, at the record at the key and in the
+  write it leaves, and rejects only that too: deciding is writing the
+  outcome, and a reviewer is no wider when it says no. It decides no
+  schema proposal, as a holder of `only` decides none.
+- **Schema.** With `schema` a holder may propose a declaration or a
+  migration; `declare`, `apply`, `migrate` and the other direct schema
+  doors stay refused, as does an aging rule on the type: a shape is the
+  whole type's, and a change to it moves records the holder may not
+  write.
+- **`describe`** tells the holder its pairs as `may.writes_only`, offers
+  `upsert` only where a create can hold them, a relation only where its
+  link type's grant can be held, and no write, link or verb that would
+  be refused.
+- **With `only`.** A grant may hold both: its holder reads what `only`
+  admits and writes only what both admit.
+
+**Why.** A team often reads the whole lake and is answerable for a part
+of it. Before, the host had two choices, each wrong: give `only` and
+hide the rest from a reader who needs it, or give the type and let the
+reader write records that are not its own. Judging the record before and
+after is what makes the pairs a boundary: a check of the after alone
+lets a write take another's record over by giving it the holder's
+values, and one of the before alone lets the holder hand its record out
+of its own reach. Where a rule does not cover a case, the case is
+refused, so a host never learns of a gap by a write it did not mean to
+allow.
+
+### A field may be hidden on only the records a condition selects
+
+A principal's grant on a type may hold `hide_where`: hidings, each a
+field `G` of the type, a set of text values, and the fields `F` it
+lowers, each to `none` or to `masked`. A record is selected where its
+`G` holds one of the values, compared as `only` compares a pair. On a
+selected record each `F` has the lower of its type-wide access and the
+hiding's; on every other record the type-wide access stands. A hiding
+only lowers an access, never raises one. The operator accepted its
+shape on lakelands#1400 (2026-10-25) with the five consequences below;
+it is in force from 0.20.0 (lakelands#1354).
+
+- **The condition is read only where its holder may read it.** `G` is a
+  field of kind `text` or `reference`, which the holder reads at least
+  `read`, not computed at the read, and lowered by no hiding of the
+  grant. `F` is no key field, no valid-time field, no field the grant's
+  `only` names, and not `G`; the type is no view. A grant that breaks
+  this is not applied and not guessed at, as a grant whose `only`
+  cannot be applied is not:
+  the doors that name the type refuse it as invalid, naming the type
+  and never the field, and a walk or a view that reaches the type reads
+  every `F` as hidden on every record, so it fails closed. A condition
+  on a field its holder may not read would, applied, tell it which
+  records hold which values of that field.
+- **A hiding follows its fields' renames,** `G` and every `F`, as every
+  grant does (above).
+- **One rule: every read is evaluated over the record as its reader is
+  told it.** On a selected record `F` and everything built from it, a
+  derived or computed field and a vector embedded from it (above), are
+  absent or masked, as declared, and every door reads that record so.
+
+| what reads | on a selected record |
+|---|---|
+| `get`, `find`, `count`, an aggregate, a pattern query | `F` is not answered. A `where`, an order, a group or a measure over `F` reads it as null. The store evaluates them over the records as told: a filter or an order that reads `F` is not handed to the engine, one that does not still is. |
+| a lexical search | `F` brings no match and no rank, and the text statistics a ranking reads are counted over the text as told (025). |
+| a vector or hybrid search | a vector built from `F` brings no candidate. The reader has no class of its own and is ranked exactly over what it is told, as a holder of `only` is (078); a hybrid search fuses what each axis tells. |
+| a probe | probing `F` is allowed, since the holder reads it on other records; it reads null on a selected one, so it tells nothing of it. |
+| a view | a view that reads `F` is computed for this reader from the records as told, never read kept; a set over such a view is this reader's only where nothing it reads is held from it (066). |
+| a derived relation, a walk | an edge derived from `F` does not exist on a selected record (044). |
+| a proposal | listed as told; a reviewer not told a proposal whole is refused its accept, as above. |
+| a subscription | the names of the fields a change moved are told per record, not per type. |
+| the change feed | refused: a principal with a hiding does not read everything. |
+| an export, a backup | unchanged: they take no principal and are the host's. |
+| a write | `F` on a record selected before or after the write is not writable: the write is refused whole, not granted, naming `F` (012), also to a writer that may write `F` on every other record. Its answer names no trigger and no object set whose condition reads a field a hiding of the writer lowers (024); `through` still covers what it does not name (015). A verb that reads `F` is refused not granted on a selected record, its own or one it reads across a reference, whether its `requires` holds or not (lakelands#1463). |
+| a read as of a position | a record is selected by its `G` at that position; a search ranks by the head's indexes, and a ranking reaches `F` on a record only where its reader is shown `F` there both at that position and at the head: a record selected at either, by its key and names there, is neither matched nor ranked by `F` (025). |
+| `describe` | `F` keeps its type-wide access, and its description tells the holder where it is lowered, `G` and the values, as `may.only` tells a holder its pairs; the schema hash follows what is described. |
+
+What it costs and what it tells, accepted with it:
+
+1. A reader a hiding narrows reads the type, wherever a read touches
+   `F`, by a scan in the store: no engine pushdown and no vector index.
+2. Its holder learns which records hide `F`: it reads `G`, and
+   `describe` tells it the values.
+3. The change feed is refused to it.
+4. `F` is not writable on a selected record, whatever the type-wide
+   grant gives.
+5. The condition is equality to a fixed set of values, and nothing
+   richer.
+
+**Why.** A host keeps the text of documents of many kinds in one type,
+one record a chunk, each naming the record its document was filed
+under. A kind that hides its text from a reader has to hide it on its
+chunks too, and with a field's access per type the host hid it on every
+chunk, which took every other document's text out of that reader's
+search. A hiding keeps the field where the condition selects and leaves
+the rest of the type as the grant gives it. The rule that a read is
+evaluated over the record as told is the one a narrowed sight already
+keeps for a reader told a record its own way; it makes one judgement of
+what the record holds, so no door can answer from a value another door
+hid.
+
 ### A record held at the head is not there to one without the grant, at any position and at every write door
 
 A retention hold withholds a record without erasing it. The host places
@@ -2085,11 +2428,22 @@ refusal), an engine that cannot read answers its outage, as at every
 other door (lakelands#927).
 
 What the other records say of a held record follows from that. An
+answer that only tells, a proposal or a listing, says whether a change
+is lossless by what its reader is told of: a held record that the
+change would leave breaking a constraint that refuses makes it no
+lossier than a retired one, which the change does not judge, so twins
+that differ only in which of the two it is are answered alike. The
+accept judges every record and refuses there
+(`docs/decisions/062-a-change-plans-before-it-acts.md`). An
 engine's full-text and vector candidates include restricted records, and
 the store applies the principal's grants to the hits
 (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`),
 so one without the grant is never answered it as a hit, and it moves no
-other hit's rank or score. A restricted link is walked only by a
+other hit's rank or score. Under a vector index the candidates are its
+reader's class's: one without the grant is streamed from a graph that
+holds no record held at the head, so a held record is no candidate of
+it, and shapes neither its pages nor the depth they are read at
+(`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`). A restricted link is walked only by a
 principal holding the grant
 (`docs/decisions/035-a-link-is-a-record.md`). In a view the fold keeps,
 a restricted record is a member for a reader with the grant and for no
@@ -2217,6 +2571,35 @@ of the grant. A call above low risk is judged as its caller's write
 before it is proposed, as `propose` judges it. The host places and lifts
 a hold on a retired record too: a key whose retired record is held is
 otherwise closed to every writer without the grant for good.
+
+### A quarantined record is there as a proposal's write is, and its cells are read as their fields
+
+From lakelands#1502 (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`):
+a quarantined record is listed and dismissed by a holder of `ingest`
+(`not_granted` otherwise), and is there to its reader as a proposal's
+write is: not where the reader is not shown its type, not at a key whose
+record is restricted to a reader without `restricted`, and not, to a
+holder of `only`, where the record its cells would leave is not
+admitted. One not there is `not_found`, as one that never was.
+
+- **A cell is read as the field it names**, through every rename since,
+  with the access the reader's grants give that field and `sensitive`'s
+  raise: shown, named in `masked` with its value withheld, or not there
+  nor named where the field is `none`. A cell that names no field of the
+  type, or one a redeclaration removed, is read by the type's default
+  access; one whose field was `sensitive` when it came keeps the raise.
+- **A hiding** lowers a cell where it would lower the field on either
+  record the row touches: where the `G` cell as sent holds one of its
+  values; where the live record at the type and key, at the head, is
+  selected; and where the `G` cell is there but is not a text or
+  reference value. A row whose `G` cell is absent, at a key no live
+  record holds, is not selected.
+- **The refusal** is shown whole to a reader shown every name it holds,
+  and to any other as its kind alone, `error` and the reason's `code`,
+  with `more: true`; a `not_found` is `not_found` alone.
+
+This is the one word of this record for it: a quarantined record is not
+a held one, which here is a restricted record.
 
 ### Some things are still told, on purpose
 
@@ -2346,12 +2729,33 @@ Of a probe:
 
 Of `only`:
 
-- It is not several admitted values for one field, nor a predicate
-  other than equality.
+- It is not a predicate other than equality: several admitted values
+  for one text field are `only_any`'s (above), and nothing else
+  compares.
 - It is not taken from `Principal.id` implicitly.
 - It does not change `restricted`: a record must pass both rules.
 - A reference value naming another's key is shown as a key; the record
   behind it is not found, as for a restricted record.
+
+Of `writes_only`:
+
+- It is not taken from `Principal.id` implicitly: a host that means a
+  principal's own records writes the pair, or names an
+  `authority: writer` field with that principal's writer.
+- It does not change `only`: `only` still decides what is read, and a
+  grant holding both writes only what both admit.
+- It does not change a read, nor counts as one: a grant whose reads
+  cover every record still does with it.
+
+Of a field hidden on the records a condition selects:
+
+- It is not a condition over several fields: one field `G` selects.
+- It is not a predicate: equality to one of a set of values, as `only`
+  compares a pair, and nothing else.
+- It is not a path: `G` is a field of the type's own record, never one
+  read across a reference or a relation.
+- It is not a raise: a selected record's field is never read further
+  than the type-wide grant gives.
 
 ## How it came to be
 
@@ -2744,3 +3148,38 @@ Of `only`:
   and `constraint` included, and a proposed migration of one was listed
   to every reviewer; a value type is now listed by the fields its reader
   is shown that use it, or to a holder of `schema` (lakelands#1088).
+- 070 added: a verb declared `granted` is callable and described only to
+  a caller whose grants on its type name it (lakelands#1287).
+- Extended: a type described as of a position is told its names since
+  only where its reader is shown it at the head too (lakelands#1291).
+- A proposed migration, of a type or of a value type, was refused by a
+  restricted record that it would leave breaking a constraint that
+  refuses, of its own type or of another whose references a re-key
+  rewrites; it is now judged by what its proposer is told of, and the
+  accept judges every record.
+- Changing the lake's types (`enact`, `declare`, `apply`, `add_field`,
+  `recompute`, `migrate_apply`, `migrate_value_type_apply`, and `accept`
+  of such a change) needs `restricted` beside `schema`, refused `grant_needed`
+  whatever the lake holds; to a caller without it, a change's plan and
+  preview are judged as it is told, as a proposal's are (062).
+- A verb names its conditions as `preconditions`, and a refusal of one
+  names it (lakelands#1330).
+- Under a vector index an engine's candidates are its reader's class's:
+  a held record is no candidate of one without `restricted`, and a
+  holder of `only` is ranked exactly over its pairs (078,
+  lakelands#1254).
+- A field may be hidden on only the records a condition selects
+  (lakelands#1412), in the shape the operator accepted on
+  lakelands#1400: a grant had given a field one access on every record
+  of its type, so a host hid on every record a field it had to hide on
+  some.
+- Extended: a search as of a position reaches a field a condition hides
+  on a record only where its reader is shown it there at that position
+  and at the head; it had been judged at the head alone
+  (lakelands#1456).
+- A grant may admit every record to read and only some to write
+  (lakelands#1490): `only` had been the one way to keep a principal to
+  some records, and it kept the reads to them too.
+- Dropped: the clause that a holder owns both ends where a computed
+  field of the other end's type reads across the relation (lakelands#1506);
+  the declaration checks refuse every such field, so it could not be shown.

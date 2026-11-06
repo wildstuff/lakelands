@@ -9,17 +9,12 @@
 //! that would break it.
 
 use lakelands_api::describe::TypeDescription;
-use lakelands_api::error::{Beyond, Case};
-use lakelands_api::ontology::{AtIngest, TypeDecl};
-use lakelands_api::write::{Declaration, Migration, Outcome};
-use lakelands_api::{Access, Error, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::error::Beyond;
+use lakelands_api::ontology::AtIngest;
+use lakelands_api::write::Outcome;
 
-use crate::conformance::fixture::{
-    Answer, Lake, Must, describe_type, field_access, head_unmoved, ingest, invalid_case, patch,
-    reactive, reason, reviewer, source_record, try_upsert, write_verb,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{Answer, ingest, reviewer, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     CONSTRAINT_HELD_AT_EVERY_DOOR = a_constraint_holds_at_every_write_door,
@@ -60,7 +55,7 @@ check!(
 check!(
     CONSTRAINT_READS_ITS_RECORD_ALONE =
         a_constraint_reads_its_record_alone_and_is_added_by_a_migration,
-    "lakelands#1119: a constraint names itself once and reads its record alone, its own fields as stored or computed at the write, `previous` and `changed`; a path, `exists`, a setting, the clock or a field computed at the read is refused at the declaration, naming the constraint; a type that holds a constraint is declared again with it removed, restated in other words, described otherwise or moved to admit at ingest, and one added, changed or moved to refuse is refused naming `migrate`; `describe_type` tells a constraint to one who reads every field it reads"
+    "lakelands#1119: a constraint names itself once and reads its record alone, its own fields as stored or computed at the write, `previous` and `changed`; a path, `exists`, a setting or a field computed at the read is refused at the declaration, naming the constraint; a type that holds a constraint is declared again with it removed, restated in other words, described otherwise or moved to admit at ingest, and one added, changed or moved to refuse is refused naming `migrate`; `describe_type` tells a constraint to one who reads every field it reads"
 );
 
 check!(
@@ -343,7 +338,7 @@ async fn a_walk_of_the_lake_leaves_no_record_breaking_a_constraint(store: Store)
         "bill",
         &[("amount", Access::Masked)],
     );
-    masked.grants.schema = true;
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
     // As it knows the type: without the constraint it is not told.
     let mut known = bill("0 - paid");
     known["constraints"] = json!([]);
@@ -546,7 +541,7 @@ async fn a_walk_is_granted_by_the_fields_it_may_move(store: Store) -> Held {
         "loan",
         &[("amount", Access::Masked)],
     );
-    masked.grants.schema = true;
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
     let not_granted =
         |a: &lakelands_api::Result<Outcome>| matches!(reason(a), Some(Refusal::NotGranted));
     // A function declared again: one that leaves `L-1` within, one that does not.
@@ -593,7 +588,7 @@ async fn a_constraint_named_like_one_its_author_is_not_told_is_not_granted(store
         "invoice",
         &[("amount", Access::Masked)],
     );
-    masked.grants.schema = true;
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
     let theirs = |name: &str| {
         let mut t = invoice("invoice", "authored", "refuse");
         if let Some(cs) = t["constraints"].as_array_mut() {
@@ -675,7 +670,6 @@ async fn a_constraint_reads_its_record_alone_and_is_added_by_a_migration(store: 
     let mut said = Vec::new();
     for (holds, beyond) in [
         ("setting('cap') = 'x'", Beyond::Setting),
-        ("now() > now()", Beyond::Clock),
         ("exists(next)", Beyond::Exists),
         ("next.n > 1", Beyond::Path),
         (
@@ -698,7 +692,7 @@ async fn a_constraint_reads_its_record_alone_and_is_added_by_a_migration(store: 
                 invalid_case(&twice),
                 Some(Case::ConstraintNamedTwice { .. })
             ),
-        "a constraint reading a setting, the clock or a field computed at the read, and \
+        "a constraint reading a setting, a path or a field computed at the read, and \
          one named twice, are refused at the declaration: {said:?}, {twice:?}"
     );
     // Added by `declare` to a type in force: refused, naming `migrate`;
@@ -792,7 +786,7 @@ async fn a_migration_lists_the_records_its_constraints_would_find_broken(store: 
     // To one kept from `amount`, its migration leaves the constraint over
     // it as declared, and is not told the entry but `more`.
     let mut kept = field_access(store.as_ref(), "kept", "bill", &[("amount", Access::None)]);
-    kept.grants.schema = true;
+    (kept.grants.schema, kept.grants.restricted) = (true, true);
     let mut theirs = invoice("bill", "authored", "admit");
     let unread = |v: &Value| v.to_string().contains("amount");
     for list in ["fields", "constraints"] {
@@ -821,7 +815,7 @@ async fn a_migration_lists_the_records_its_constraints_would_find_broken(store: 
         "bill",
         &[("amount", Access::Masked)],
     );
-    masked.grants.schema = true;
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
     let mut theirs = invoice("bill", "authored", "admit");
     if let Some(cs) = theirs["constraints"].as_array_mut() {
         cs.retain(|c| c["name"] != "never_overpaid");

@@ -27,7 +27,11 @@ async fn a_window_with_an_applied_id_is_judged_as_each_record_asks() {
     };
     let lake = Lake::open(&Location::memory("asks"), seams, OpenMode::Create);
     let lake = Arc::new(lake.expect("the lake opens"));
-    let cat = Store { lake: lake.clone() }.catalog(WriteContext::default());
+    let cat = Store {
+        lake: lake.clone(),
+        owns: false,
+    }
+    .catalog(WriteContext::default());
     let owner = Principal {
         kind: PrincipalKind::Human,
         id: "owner".into(),
@@ -69,6 +73,9 @@ async fn a_window_with_an_applied_id_is_judged_as_each_record_asks() {
         key: key.clone(),
         fields: body(b),
         seen_at: None,
+        delivery: None,
+        resubmits: None,
+        line: None,
     };
     let fed = lakelands_api::ingest_all(
         cat.as_ref(),

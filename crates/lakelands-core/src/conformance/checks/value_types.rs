@@ -11,21 +11,10 @@
 //! `scale` is neither. A migration that renames values is in
 //! `value_renames.rs`.
 
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, ValueTypeDecl};
-use lakelands_api::write::{Declaration, ProposedWrite, ValueTypeReport};
-use lakelands_api::{
-    Access, Error, Grants, LakeStore, Principal, PrincipalKind, Refusal, WriteOpts,
-};
-use serde_json::{Value, json};
+use lakelands_api::write::ValueTypeReport;
 
-use crate::conformance::fixture::{
-    Lake, Must, describe_type, events_after, field, field_access, head_unmoved, invalid_case,
-    invalid_like, log_events, object_set_on, principal, reason, refused_on, reviewer, trigger_on,
-    try_upsert, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::reviewer;
+use crate::conformance::prelude::*;
 
 check!(
     VERSIONS_KEY_A_TYPE = a_value_types_version_is_answered_with_the_types_that_use_it,
@@ -64,7 +53,7 @@ check!(
 
 check!(
     STALE_REPORT = a_value_type_report_from_before_the_lake_moved_is_refused,
-    "027 and 006: a value-type migration is applied only against the report of the lake as it stands; after the lake moved it is refused as invalid; and only by the id of the report its caller was shown: two readers kept from different uses of one tightening, each applying by the other's id, are refused as `migration_stale`, appending nothing, where its own applies (lakelands#935)"
+    "027 and 006: a value-type migration is applied only against the report of the lake as it stands; after a write reached what it names it is refused as invalid; and only by the id of the report its caller was shown: two readers kept from different uses of one tightening, each applying by the other's id, are refused as `migration_stale`, appending nothing, where its own applies (lakelands#935)"
 );
 
 check!(
@@ -412,10 +401,11 @@ async fn the_preflight_counts_what_would_not_fit_over_every_use_and_history(stor
     );
     // One without `restricted` is answered no read of `i4`: it is counted,
     // and the misfits named are of the records that reader is answered.
-    let (architect, to) = (
+    let (mut architect, to) = (
         reviewer(store.as_ref(), true),
         status(&["open", "paid", "void"]),
     );
+    architect.grants.restricted = false;
     let seen = l
         .cat
         .migrate_value_type(&architect, to.clone().into())
@@ -557,7 +547,7 @@ async fn a_value_type_report_from_before_the_lake_moved_is_refused(store: Store)
     // different uses are given two, and each other's is stale.
     let kept = |id, ty, field| {
         let mut who = field_access(store.as_ref(), id, ty, &[(field, Access::None)]);
-        who.grants.schema = true;
+        (who.grants.schema, who.grants.restricted) = (true, true);
         who
     };
     let (ka, kb) = (

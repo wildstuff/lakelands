@@ -33,8 +33,9 @@ impl RemoteFeed {
 /// What one block of the stream said.
 #[derive(Debug, PartialEq)]
 enum Said {
-    /// An event, and whether its batch names it overruled.
-    Event(Box<Event>, bool),
+    /// An event, whether its batch names it overruled, and the last
+    /// position of its append where the stream says it.
+    Event(Box<Event>, bool, Option<Position>),
     Failed(Error),
     Next(Position),
     Nothing,
@@ -48,16 +49,19 @@ struct NotSse;
 /// field's value loses one leading space, `data` lines join with `\n`,
 /// a line starting `:` is a comment. The marker `: next <position>`
 /// counts only as a comment in a block that holds nothing else, the
-/// marker `: overruled` marks the block's event, and a block without
-/// `data` dispatches nothing.
+/// markers `: overruled` and `: append <position>` mark the block's
+/// event, and a block without `data` dispatches nothing.
 fn block(lines: &[String]) -> std::result::Result<Said, NotSse> {
     let (mut kind, mut data, mut next, mut fields) = (None, None::<String>, None, false);
-    let mut overruled = false;
+    let (mut overruled, mut append) = (false, None);
     for l in lines {
         if let Some(c) = l.strip_prefix(':') {
             let c = c.strip_prefix(' ').unwrap_or(c);
             if let Some(n) = c.strip_prefix("next ") {
                 next = Some(n.parse::<u64>().map_err(|_| NotSse)?);
+            }
+            if let Some(n) = c.strip_prefix("append ") {
+                append = Some(Position(n.parse::<u64>().map_err(|_| NotSse)?));
             }
             overruled |= c == "overruled";
             continue;
@@ -87,7 +91,7 @@ fn block(lines: &[String]) -> std::result::Result<Said, NotSse> {
             .map(Said::Failed)
             .map_err(|_| NotSse),
         (_, Some(d)) => serde_json::from_str(&d)
-            .map(|e| Said::Event(Box::new(e), overruled))
+            .map(|e| Said::Event(Box::new(e), overruled, append))
             .map_err(|_| NotSse),
         (_, None) => Ok(Said::Nothing),
     }
@@ -150,6 +154,7 @@ impl ChangeFeed for RemoteFeed {
                 next: from,
                 head,
                 overruled: Vec::new(),
+                appends: Vec::new(),
             });
         }
         // An empty key would be an empty `key=`, which the door refuses;
@@ -179,11 +184,15 @@ impl ChangeFeed for RemoteFeed {
         }
         let mut stream = Stream::open(wire, key, query).await?;
         let (mut events, mut overruled): (Vec<Event>, Vec<Position>) = (Vec::new(), Vec::new());
+        let mut appends: Vec<Position> = Vec::new();
         let next = loop {
             match stream.said().await? {
-                Said::Event(e, o) => {
+                Said::Event(e, o, end) => {
                     if o {
                         overruled.push(e.position);
+                    }
+                    if let Some(end) = end.filter(|end| appends.last() != Some(end)) {
+                        appends.push(end);
                     }
                     events.push(*e);
                     if events.len() >= limit as usize {
@@ -204,6 +213,7 @@ impl ChangeFeed for RemoteFeed {
             next,
             head,
             overruled,
+            appends,
         })
     }
 
@@ -225,7 +235,7 @@ impl ChangeFeed for RemoteFeed {
         let past = async {
             loop {
                 match stream.said().await? {
-                    Said::Event(e, _) => return Ok(e.position),
+                    Said::Event(e, ..) => return Ok(e.position),
                     Said::Next(n) if n > after.next() => return Ok(Position(n.0 - 1)),
                     Said::Failed(e) => return Err(e),
                     Said::Next(_) | Said::Nothing => {}
@@ -403,11 +413,27 @@ mod tests {
         for (mark, want) in [(": overruled", true), (": keep-alive", false)] {
             let said = block(&lines(&["id: 12", mark, "event: trigger_fired", &data]));
             assert!(
-                matches!(said, Ok(Said::Event(_, o)) if o == want),
+                matches!(said, Ok(Said::Event(_, o, _)) if o == want),
                 "{mark}: {said:?}"
             );
         }
         assert_eq!(block(&lines(&[": overruled"])), Ok(Said::Nothing));
+    }
+
+    /// `: append <position>` in an event's block names where its append
+    /// ends (083); a block without it names none.
+    #[test]
+    fn the_append_mark_names_its_blocks_append() {
+        let e = r#"{"body":{"key":"s1","kind":"trigger_fired","trigger":"wrote","type":"stop"},"context":{"depth":0,"origin":"direct"},"fence":1,"hash":"b24bae34b1cb98a888c26a50b5d6e80cd45ba528308b96822581335f7cdff7af","id":"5d9e8a7d2730bbd0e040b3cf60c48107","known_at":"2026-10-18T05:03:32.289866Z","lake":"l","origin":"system","position":12,"prev":"f66cb5de55179e25fc2dcb5a76d7cc9840bae8d475f55ca0dbdf871517324bef","v":17,"writer":"system:lakelands"}"#;
+        let data = format!("data: {e}");
+        for (mark, want) in [(": append 13", Some(Position(13))), (": keep-alive", None)] {
+            let said = block(&lines(&["id: 12", mark, "event: trigger_fired", &data]));
+            assert!(
+                matches!(said, Ok(Said::Event(_, _, end)) if end == want),
+                "{mark}: {said:?}"
+            );
+        }
+        assert_eq!(block(&lines(&["id: 12", ": append x", &data])), Err(NotSse));
     }
 
     /// A stream that sends its head and one keep-alive, then nothing, is

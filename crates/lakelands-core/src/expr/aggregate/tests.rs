@@ -20,6 +20,7 @@ fn m(name: &str, func: AggFunc, field: Option<&str>) -> AggMeasure {
         name: name.into(),
         func,
         field: field.map(FieldName::from),
+        by: None,
     }
 }
 

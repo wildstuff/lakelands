@@ -14,6 +14,28 @@ importing the shape of the platform the organs come from.
 3. `CLAUDE.local.md` if present (gitignored): where the source organs
    are read from, and background material that must never be cited.
 
+## Finding your way
+
+Every turn re-reads the whole session, so a lookup that takes one call
+instead of five is the cheapest work there is.
+
+- `scripts/map.sh` names every crate with its size and what it is for;
+  `scripts/map.sh <crate|dir>` (`store`, `core/src/conformance`) lists
+  its source files with their lines and the first line of their module
+  doc. A file of more than a few hundred lines is read by range, never
+  whole.
+- `fleet-where NAME` (fleet machines) gives the line of a definition, or
+  the line range of a doc section titled NAME; `fleet-where --uses NAME`
+  the files that use it. Elsewhere, `git grep -n`.
+- The big docs (`conformance.md` is generated; `seams.md`, `refusals.md`,
+  `hosting.md`, `budgets.md` and some decision records run past 100 KB):
+  `grep -n '^#' FILE` for the outline, then `sed -n 'A,Bp' FILE`. The
+  decision records' file names are their index: `ls docs/decisions`.
+- Test the narrowest lane that can fail first: `cargo nextest run -p
+  <crate>`, then `scripts/conformance.sh mem` for a behaviour of the
+  contract; the other engines and the whole workspace after that
+  (`CONTRIBUTING.md` § Building and testing).
+
 ## The rules the gates enforce
 
 - **Vocabulary.** `tribe`, `WILD_`, `chief`, `elder`, `ROOT_TRIBE` do
@@ -28,12 +50,15 @@ importing the shape of the platform the organs come from.
 - **One catalog.** Every LLM-facing tool name is produced by the catalog
   generator; a string-literal tool name outside it fails.
 - **Budgets.** `cfg(feature)` sites ≤ 20 (features are one per engine);
-  store facade + engine traits ≤ 110 methods; the core crates' product
-  code ≤ 74k lines and their specification (the conformance suite and
-  unit tests, which live in `tests.rs` files, never inline) ≤ 108k. Each
-  goes down by itself and is raised only by the rule in
-  `docs/budgets.md`: a decisive reason, cutting first, a measured size,
-  and a recorded row. The gates refuse a raise without its row.
+  the store facade and every `pub trait` in `engine.rs` ≤ 110 methods;
+  the core crates' (api, core, store and the three engines) product
+  code ≤ 92.5k lines and their specification (the conformance suite, unit
+  tests, which live in `tests.rs` files, never inline, and every
+  `tests/` beside `src/`) ≤ 168.5k. Each goes down by itself, its base
+  is lowered to its count at the release, and it is raised only by the
+  rule in `docs/budgets.md`: a decisive reason, cutting first, a
+  measured size, and a recorded row. The gates refuse a raise without
+  its row.
 - **The conformance suite is the specification.** A behaviour claim goes
   into the suite, not beside one engine; it runs on every engine in CI.
 - **Licence.** `cargo deny` on every PR; no copyleft-in-a-library.

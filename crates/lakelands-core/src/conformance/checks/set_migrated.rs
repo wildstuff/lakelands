@@ -1,19 +1,10 @@
 //! A migration decides the membership of the records it migrates again
 //! (`docs/decisions/004-the-change-feed-is-the-log.md`, extended).
 
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::StorageKind::{self, Boolean, Text};
-use lakelands_api::ontology::{RelationDecl, TypeDecl};
-use lakelands_api::seam::Seams;
-use lakelands_api::{Error, LakeStore, Outcome, Position, Refusal};
-use serde_json::json;
+use lakelands_api::ontology::StorageKind::{Boolean, Text};
 
-use crate::conformance::fixture::{
-    Lake, Must, events_from, head_unmoved, limits, migration, object_set_on, refused_on, type_of,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::type_of;
+use crate::conformance::prelude::*;
 
 check!(
     SET_MIGRATED_COMPUTED = a_migration_computes_again_what_it_changes_and_decides_its_sets,
@@ -155,13 +146,8 @@ async fn a_migration_decides_the_membership_of_the_records_it_migrates(
          them; its append changed {got:?} and it answered {answer:?}"
     );
     // A boolean again: four changes, past a ceiling of one.
-    let lower = Limits {
-        max_set_changes: 1,
-        ..limits()
-    };
-    let store = (given.relimit)(store, Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
+    let store =
+        at_one_set_change(&given, store, "opening the lake again with a lower ceiling").await?;
     let l = Lake::of(store.as_ref());
     let m = migration(linked(Boolean));
     // Past the ceiling too, a stale report and a record that does not

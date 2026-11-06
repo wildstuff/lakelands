@@ -14,9 +14,19 @@ Every field of every record carries its own provenance:
   source;
 - `position`: the exact log coordinate of that event;
 - `writer`: the principal that wrote it;
+- `on_behalf_of`: the principal the writer acted for, where the host's
+  context named one
+  (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+  The fold writes it from the event whenever it writes `writer`; a
+  field the store fills by its own hand (`initial`, the writer that made
+  its record, a migration's fill) names none;
 - `source`: where it came from;
-- `procedure_version`: for a value a procedure produced, which version
-  of the procedure produced it.
+- `procedure` and `procedure_version`: for a value a procedure
+  produced, which procedure produced it and which version of it. The
+  name is the one the log's event carries: a verb's, a function's, an
+  embedding's model. A reader of a vector learns which model made it
+  from the value's own metadata, without reading the declaration, which
+  may have moved since the value was computed.
 
 The values come from the event, so they are part of the log format. The
 fold writes them beside the value every time it changes a field, and a
@@ -61,8 +71,15 @@ is made without a value for it
 which an aging move writes on the same lifecycle fields, so a reader
 tells the value a record started with from one the lake moved since.
 It takes the creating event's `known_at`, `position` and `writer`, and
-nothing of a source: no `source`, `seen_at`, `upstream` or
-`procedure_version`, since the value came from the declaration.
+nothing of a source: no `source`, `seen_at`, `upstream`,
+`procedure` or `procedure_version`, since the value came from the declaration.
+
+A field the store fills with the writer that made its record
+(`authority: writer`,
+`docs/decisions/084-a-field-holds-the-writer-that-made-its-record.md`)
+is the store's own hand: `origin: system`, at the event that filled it,
+naming as its `writer` the writer the field holds, and nothing of a
+source.
 
 ### A record that is judged is judged with its provenance
 
@@ -146,3 +163,7 @@ the fold is pure, so the metadata is as reproducible as the value.
   everywhere else, are read wherever a record is judged, and a field
   the fold changes is stamped as it changes, inside the pass
   (lakelands#852).
+- A field the store fills with its record's maker names that writer in
+  its provenance (lakelands#1488).
+- A field names the principal its writer acted for, `on_behalf_of`,
+  beside `writer`, from the event that wrote it (088, lakelands#1489).

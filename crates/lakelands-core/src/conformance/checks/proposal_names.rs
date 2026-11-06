@@ -6,16 +6,9 @@
 //! write out where its reader may see nothing of it, and answers its
 //! filters on what it shows.
 
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, LakeStore, Principal, WriteOpts};
-use serde_json::{Value, json};
-
 use super::rekey::{IBANS, lake, to_iban};
-use crate::conformance::fixture::{
-    Lake, Must, field_access, object_set_on, patch, refused_like, reviewer, trigger_on,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::reviewer;
+use crate::conformance::prelude::*;
 
 check!(
     NAMES_AS_THE_READERS_VIEW = a_proposed_shape_names_only_what_its_reader_may_know_of,

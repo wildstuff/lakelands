@@ -1,32 +1,35 @@
 //! Part of a source is taken back in one act
 //! (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): what it
 //! wrote before a time, or in one delivery, reads as erased at every
-//! position, a record left holding nothing of another hand is retired,
-//! and a record another hand also wrote keeps that hand's values.
+//! position, a record the source made left holding nothing of another
+//! hand is retired, and a record another hand also wrote keeps that
+//! hand's values.
 
-use lakelands_api::event::{Event, EventBody};
-use lakelands_api::write::{RemoveReport, Selection};
-use lakelands_api::{DeliveryId, IngestOpts, LakeStore, Position, SourceId, Timestamp};
-use serde_json::{Value, json};
+use lakelands_api::write::RemoveReport;
+use lakelands_api::{DeliveryId, IngestOpts};
 
-use crate::conformance::fixture::{
-    Lake, Must, count_view, events_after, events_from, get_at, refused_like, source_record,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{get_at, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     REMOVED_BEFORE = a_sources_values_before_a_time_read_as_erased_at_every_position,
-    "065: `remove_values_preflight` of what `tracker` wrote before the first event of the second day names the events selected and the first position it does not reach, the records holding a value it takes, the values per field, the two records `tracker` alone wrote as retired, the one with an author's `note` as kept, and not one an author retired and another source made again with nothing but its key, the derived field and the kept view computed again, the record left breaking an admitting constraint over the taken field and one over the field derived from it, and the `tour` whose reference names a record it retires, said as left naming a retired one; `remove_values` with that report appends one `values_removed` and the two retirements, and names that `tour` as its preflight did; after it the record made again stays, a record `web` also wrote a value on before the cut is kept, not retired, and keeps `web`'s value, which is not `tracker`'s and so not taken, a reference `tracker` wrote stays, as a field that identifies a record, the kept view counts what is left, and the report says what is computed again; the kept record holds its `note` and no `duration` nor what is derived from it, its provenance saying `erased` and naming `tracker`, at the head and `as_of` before the act, the second day's records keep theirs, and a rebuild answers the same; a field that is not erasable is taken all the same; a stale report is refused, and so is a time past the year 9999; a repeat appends nothing, and a selection of nothing appends nothing; a field declared `required` that the act leaves empty is listed among the breaches, naming the field, and said, and the act is not refused for it, though the author's next write of that record is"
+    "065: `remove_values_preflight` of what `tracker` wrote before the first event of the second day names the events selected and the first position it does not reach, the records holding a value it takes, the values per field, the two records `tracker` alone wrote as retired, the one with an author's `note` as kept, and not one an author retired and another source made again with nothing but its key, the derived field and the kept view computed again, the record left breaking an admitting constraint over the taken field and one over the field derived from it, and the `tour` whose reference names a record it retires, said as left naming a retired one; `remove_values` with that report appends one `values_removed`, the two retirements and one `act_whole`, and names that `tour` as its preflight did; after it the record made again stays, a record `web` also wrote a value on before the cut is kept, not retired, and keeps `web`'s value, which is not `tracker`'s and so not taken, a reference `tracker` wrote stays, as a field that identifies a record, the kept view counts what is left, and the report says what is computed again; the kept record holds its `note` and no `duration` nor what is derived from it, its provenance saying `erased` and naming `tracker`, at the head and `as_of` before the act, the second day's records keep theirs, and a rebuild answers the same; a field that is not erasable is taken all the same; a report under an id whose head a write moved past is taken: a write elsewhere since leaves its id good, and a time past the year 9999 is refused; a repeat appends nothing, and a selection of nothing appends nothing; a field declared `required` that the act leaves empty is listed among the breaches, naming the field, and said, and the act is not refused for it, though the author's next write of that record is"
 );
 
 check!(
     REMOVED_DELIVERY = a_delivery_taken_back_reads_as_erased_and_a_later_one_stays,
-    "065: `remove_values` of one delivery, by the caller's id or by the store's own, takes what its events wrote and nothing else: a record the same source wrote again in a later delivery keeps those values from that event on and reads as erased before it, a record only that delivery wrote is retired, a redelivery of the same values under another id appended nothing and so selects nothing, and a later delivery under the same id stays, until the act is asked again, which takes that delivery and only it"
+    "065: `remove_values` of one delivery, by the caller's id or by the store's own, takes what its events wrote and nothing else: a record the same source wrote again in a later delivery keeps those values from that event on and reads as erased before it, a record only that delivery wrote is retired, a redelivery of the same values under another id appended nothing and so selects nothing, and a later delivery under the same id stays, until the act is asked again, which takes that delivery and only it; a set of deliveries is one act that takes each as its single act would, an id the log never held selecting nothing and the empty set nothing at all, appending nothing"
+);
+
+check!(
+    REMOVED_SET = a_set_of_deliveries_counts_as_its_single_acts,
+    "065 (twins): `tracker` delivers `mon`, writing `v1` and `v2`, and `tue`, writing `v1` again with a place and `v3`, which an author's note keeps; taking back the set in one lake and `mon` then `tue` in its twin leaves each record read alike; the set counts the events and values the single acts sum to, 4 events, `duration` 4 and `place` 1, a record reached by both once, 3 against 4, retires what the last single act leaves retired, `v1` and `v2`, and keeps `v3` alone, which the single acts count with `v1`, 1 against 2",
+    given
 );
 
 check!(
     REMOVE_CRASH = a_removal_a_crash_stopped_is_finished_by_the_next_writers_open,
-    "065: a removal stopped after its event, before its rebuild, is finished by the writer's next open, which rebuilds knowing the act and reclaims, and by the act's repeat on the same handle, each appending no second event; the values read as erased at every position after either",
+    "065, extended (lakelands#1485, 099): a removal stopped after its event, before its rebuild, is finished by the road beside the writer's next open, which rebuilds knowing the act and reclaims after the open has answered, and by the act's repeat on the same handle, each appending no second event; the values read as erased at every position after either; the act stopped so answers `act_unfinished` at the head it appended to",
     given
 );
 
@@ -68,7 +71,58 @@ check!(
 
 check!(
     REMOVE_CRASH_SHREDDED = a_shredding_act_a_crash_stopped_is_finished_at_each_step,
-    "065: an act that would destroy `crm`'s version, stopped after its event because the key store failed to destroy it, leaves the version, which seals nothing more: `crm`'s next sealed value on that handle is refused `key_missing`, appending nothing; a rebuild does not count the act done while the version is held, and finishes it, destroying the version; one stopped after the destroy, before its rebuild, refuses `crm`'s next sealed value `key_missing` on that handle, appending nothing, and the writer's next open finishes it, after which `crm` seals under a new version; each appends no second event, and the values read as erased before the act",
+    "065, 099: an act that would destroy `crm`'s version, stopped after its event because the key store failed to destroy it, leaves the version, which seals nothing more: `crm`'s next sealed value on that handle is refused `key_missing`, appending nothing; a rebuild does not count the act done while the version is held, and finishes it, destroying the version; one stopped after the destroy, before its scoped restate's first page commits, took the version from its first turn, so `crm`'s next sealed value is taken under a new version while the act is owed, and the road beside the writer's next open runs its restate; each appends no second event, and the values read as erased before the act",
+    given
+);
+
+check!(
+    ACT_ERASES_IN_ITS_FIRST_TURN = an_acts_versions_seal_nothing_and_the_source_has_a_new_one,
+    "099: a removal's erasure, and the destruction of the versions it takes whole, happen in its first turn: its appends whole in the log and only its restate owed, the log holds its `values_removed` and the key store no longer holds the version, and a write of the source while the act is owed seals under a version the act left, which is the source's new one, and reads its own values, and the act's repeat finishes its restate and answers its report; a forgetting's erasure is its first turn alone too: with its restate owed its keys are gone and its ingest is refused, so nothing is sealed under a destroyed key, and its repeat answers its report",
+    given
+);
+
+check!(
+    REMOVE_TAKES_A_DELIVERY_THAT_GREW =
+        a_removal_takes_an_event_of_its_delivery_written_since_its_report,
+    "099: a report names its selection through its position; an event of the delivery written after the report and before the act is taken in, and the act under the report's id answers two events, the record the later event wrote retired beside the first, both read as erased at every position"
+);
+
+check!(
+    REMOVE_LEAVES_A_LATER_DELIVERY = a_removal_leaves_an_event_of_its_delivery_written_after_it,
+    "099: with `part_events` 1, an event of the same delivery written after the act's first turn is not taken: the act answers the six events its selection held, retires the six records, and the seventh record keeps its duration and is not retired, at the head and after a rebuild",
+    given
+);
+
+check!(
+    REMOVE_WRITTEN_BEFORE_JUDGED_AT_ITS_FIRST_TURN =
+        a_tail_event_before_the_time_is_taken_and_one_after_is_not,
+    "099: a `WrittenBefore` act judges its tail at its first turn by the time: an event of the source written while the act walked, before the time, is taken and its record retired, while one written after the time stays with its value, whichever of the two the walk's view held, and the act answers one event",
+    reopens
+);
+
+check!(
+    REMOVE_TAIL_WRITE_KEEPS_ITS_VERSION =
+        an_unselected_tail_write_keeps_the_version_it_was_sealed_under,
+    "099: an unselected write of the source, written while the act walked and sealed under the version the walk saw as wholly selected, keeps that version: the act names no version in `values_removed`, the key store holds the version, and the write's value reads, while the values it selected read as erased",
+    given
+);
+
+check!(
+    REMOVE_TAKEN_IN_UNDER_A_KEPT_VERSION_IS_NOT_SHREDDED =
+        a_taken_value_under_a_kept_version_refuses_shredded_and_counts_unshredded,
+    "099: a value the act takes that is sealed under a version another delivery keeps is redacted only: with `require_shredded` the act is refused `remove_not_shredded`, counting one, appending nothing and leaving the head where it was, and without it the act appends, names one `unshredded`, keeps the version, and the value reads as erased",
+    given
+);
+
+check!(
+    REMOVE_STALE_ON_ANOTHER_SOURCES_WRITE =
+        a_report_whose_record_another_source_wrote_since_is_stale,
+    "099: another source's write on a record the report named as retirable, since the report, makes the report stale: the act under its id is refused `remove_report_stale`, appending nothing and leaving the record live with the other source's value, and the preflight that follows names the record kept"
+);
+
+check!(
+    ACTS_OF_ONE_SOURCE_OVERLAP = a_report_before_the_first_act_is_stale_only_on_the_overlap,
+    "099: two acts of one source over deliveries under one version, the second overlapping the first: a report read before the first act is stale for the overlapping delivery, refused `remove_report_stale` and appending nothing, and taken for a disjoint one, whose act appends and retires what it alone emptied; the overlapping act run again folds the earlier selections, counts its own two events once alone, retires the record the two emptied, and destroys the version the acts together take whole, leaving every record with no value; a forgetting's report, read before those acts, selects every event of the source there, and the acts take what it selected, so the act under its id is refused `forget_report_stale`",
     given
 );
 
@@ -163,7 +217,7 @@ pub(super) fn erased(r: &lakelands_api::Record, field: &str, source: &str) -> bo
 }
 
 /// The `values_removed` events after `after`.
-async fn acts(store: &dyn LakeStore, after: Position) -> Result<Vec<Event>, Failure> {
+pub(super) async fn acts(store: &dyn LakeStore, after: Position) -> Result<Vec<Event>, Failure> {
     let events = events_after(store, after).await?;
     let act = |e: &Event| matches!(e.body, EventBody::ValuesRemoved { .. });
     Ok(events.into_iter().filter(act).collect())
@@ -262,31 +316,30 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
         report.log_events > 0 && !report.report_id.is_empty() && report.reclaimed.is_none(),
         "the preflight counts the log's events, carries an id and reclaims nothing: {report:?}"
     );
-    // A report of another head is refused.
+    // A write elsewhere since the report leaves its id good: the id names
+    // the position the report was read at and the records it selected
+    // (099), and the note is neither.
     l.upsert("visit", "v4", json!({"note": "moved"})).await?;
-    refused_like(
-        "removing with a report of another head",
-        store
-            .remove_values(&tracker, &selection, false, Some(&report.report_id))
-            .await,
-        &json!({"code": "remove_report_stale"}),
-    )?;
-    let report = store.remove_values_preflight(&tracker, &selection).await;
-    let report = report.must("the preflight again")?;
     let before = store.head().await.must("reading the head")?;
     let done = store
         .remove_values(&tracker, &selection, false, Some(&report.report_id))
         .await;
-    let done = done.must("removing tracker's first day")?;
+    let done = done.must("removing tracker's first day under its report's id")?;
     let events = events_after(store.as_ref(), before).await?;
     let kinds: Vec<&str> = events.iter().map(|e| e.body.kind()).collect();
     ensure!(
-        kinds == ["values_removed", "record_retired", "record_retired"]
+        kinds
+            == [
+                "values_removed",
+                "record_retired",
+                "record_retired",
+                "act_whole"
+            ]
             && shape(&done) == shape(&report)
             && stranded(&done) == stranded(&report)
             && done.reclaimed.is_some(),
-        "the act appends `values_removed` and two retirements, answers its preflight's report \
-         and reclaims; it appended {kinds:?} and answered {done:?}"
+        "the act appends `values_removed`, two retirements and `act_whole`, answers its \
+         preflight's report and reclaims; it appended {kinds:?} and answered {done:?}"
     );
     // At the head and before the act, the first day reads as erased.
     kept_others(&l, before).await?;
@@ -369,6 +422,7 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
     let b1 = source_record("badge", "b1", json!({"id": "b1", "level": 3}));
     let opts = IngestOpts {
         delivery: Some(DeliveryId::from("badges")),
+        ..IngestOpts::default()
     };
     let said = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &tracker, opts, vec![b1]);
     said.await.must("ingesting b1")?;
@@ -424,6 +478,7 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
     let deliver = async |id: Option<&str>, visits: &[(&str, Value)]| {
         let opts = IngestOpts {
             delivery: id.map(DeliveryId::from),
+            ..IngestOpts::default()
         };
         let records = (visits.iter())
             .map(|(k, f)| source_record("visit", k, f.clone()))
@@ -508,6 +563,107 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
         "taking `b1` back again selects the one later event, and retires `v5`: {again:?}, \
          {v5:?}"
     );
+    let head = store.head().await.must("reading the head")?;
+    let empty = Selection::Deliveries(vec![]);
+    let said = store.remove_values_preflight(&tracker, &empty).await;
+    let said = said.must("the preflight of the empty set")?;
+    let done = store.remove_values(&tracker, &empty, false, None).await;
+    let done = done.must("removing the empty set")?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        said.events == 0 && done.events == 0 && after == head,
+        "the empty set selects nothing and appends nothing: {said:?}, {done:?}, the head moved \
+         from {head} to {after}"
+    );
+    // A set of deliveries is one act: an id the log never held selects
+    // nothing, and the rest are taken as their single acts would take them.
+    let (b4, _) = deliver(Some("b4"), &[("v6", v("v6", 60))]).await?;
+    let set = Selection::Deliveries(["b2", "never", "b4"].map(DeliveryId::from).to_vec());
+    let said = store.remove_values_preflight(&tracker, &set).await;
+    let said = said.must("the preflight of b2, never and b4")?;
+    let report = store.remove_values(&tracker, &set, false, None).await;
+    let report = report.must("removing b2, never and b4")?;
+    let left = (
+        read_all(&l, None).await?,
+        acts(store.as_ref(), b4).await?.len(),
+    );
+    ensure!(
+        said.events == 3 && report.events == 3 && left == (vec![json!(null); 6], 1),
+        "the set selects `b2`'s two events and `b4`'s one in one act, and retires `v1`, `v3` and \
+         `v6`: the preflight {said:?}, the act {report:?}, then every visit and the acts after \
+         `b4` {left:?}"
+    );
+    Ok(())
+}
+
+async fn a_set_of_deliveries_counts_as_its_single_acts(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    store.head().await.must("reading the head")?;
+    let twin = (given.twin)(store.lake().clone(), Default::default()).await;
+    let twin = twin.map_err(|e| Failure::new(format!("the harness opened no twin: {e}")))?;
+    let tracker: SourceId = "tracker".into();
+    let v = |k: &str, f: Value| source_record("visit", k, f);
+    for s in [&store, &twin] {
+        let l = Lake::of(s.as_ref());
+        visits(&l).await?;
+        let mon = vec![
+            v("v1", json!({"id": "v1", "duration": 10})),
+            v("v2", json!({"id": "v2", "duration": 20})),
+        ];
+        let tue = vec![
+            v("v1", json!({"id": "v1", "duration": 10, "place": "Rome"})),
+            v("v3", json!({"id": "v3", "duration": 30})),
+        ];
+        for (id, records) in [("mon", mon), ("tue", tue)] {
+            let opts = IngestOpts {
+                delivery: Some(id.into()),
+                ..IngestOpts::default()
+            };
+            let said = lakelands_api::ingest_all_with(&*l.cat, &l.own, &tracker, opts, records);
+            said.await.must("ingesting a delivery")?;
+        }
+        l.upsert("visit", "v3", json!({"note": "seen"})).await?;
+    }
+    let set = Selection::Deliveries(["mon", "tue"].map(DeliveryId::from).to_vec());
+    let whole = store.remove_values(&tracker, &set, false, None).await;
+    let whole = [whole.must("removing the set")?];
+    let mut singles = Vec::new();
+    for d in ["mon", "tue"] {
+        let one = Selection::Delivery(d.into());
+        let done = twin.remove_values(&tracker, &one, false, None).await;
+        singles.push(done.must("removing one delivery")?);
+    }
+    // What the reports count, summed.
+    let tally = |rs: &[RemoveReport]| {
+        let mut values = std::collections::BTreeMap::<&str, u64>::new();
+        for f in rs.iter().flat_map(|r| &r.fields) {
+            *values.entry(f.field.as_str()).or_default() += f.redacted;
+        }
+        let sum = |n: fn(&RemoveReport) -> u64| rs.iter().map(n).sum::<u64>();
+        json!({
+            "events": sum(|r| r.events),
+            "values": values,
+            "records": sum(|r| r.types.iter().map(|t| t.records).sum()),
+            "retired": sum(|r| r.retired.iter().map(|t| u64::from(t.retired)).sum()),
+            "kept": sum(|r| r.kept.iter().map(|t| t.records).sum()),
+        })
+    };
+    let counts = |records: u64, kept: u64| {
+        json!({"events": 4, "values": {"duration": 4, "place": 1}, "records": records,
+               "retired": 2, "kept": kept})
+    };
+    let (one, two) = (
+        read_all(&Lake::of(store.as_ref()), None).await?,
+        read_all(&Lake::of(twin.as_ref()), None).await?,
+    );
+    let (set, acts) = (tally(&whole), tally(&singles));
+    ensure!(
+        one == two && set == counts(3, 1) && acts == counts(4, 2),
+        "the set leaves each record as its single acts leave it, and counts a record they both \
+         reach once: the set {set}, the single acts {acts}; read {one:?} and {two:?}"
+    );
     Ok(())
 }
 
@@ -554,7 +710,18 @@ async fn a_removal_a_crash_stopped_is_finished_by_the_next_writers_open(
         );
         Ok::<_, Failure>(())
     };
-    finished(&store, "v2", "v1", 1, "the writer's next open").await?;
+    // The open leaves the act to the road beside it: poll the log,
+    // bounded, for its settle before any verb is called.
+    settles(6_000, Duration::from_millis(10), || {
+        finished(
+            &store,
+            "v2",
+            "v1",
+            1,
+            "the road beside the writer's next open",
+        )
+    })
+    .await?;
     // Again, finished by the act's repeat on the same handle.
     let l = Lake::of(store.as_ref());
     tracked(&l, &[("v3", 30), ("v4", 40)]).await?;
@@ -562,9 +729,11 @@ async fn a_removal_a_crash_stopped_is_finished_by_the_next_writers_open(
     let again = Selection::WrittenBefore(Timestamp::from_date(9998, 1, 1).expect("a date"));
     fails[1].store(1, Ordering::SeqCst);
     let stopped = store.remove_values(&tracker, &again, false, None).await;
+    let head = store.head().await.must("reading the head")?;
     ensure!(
-        stopped.is_err(),
-        "the second removal whose rebuild fails answers {stopped:?}"
+        super::forgotten::unfinished(&stopped, head),
+        "the second removal whose rebuild fails answers that it is in the log through the \
+         head, {head}, and unfinished: {stopped:?}"
     );
     let repeat = store.remove_values(&tracker, &again, false, None).await;
     repeat.must("repeating the act")?;
@@ -729,11 +898,10 @@ async fn a_version_whose_values_are_all_taken_is_destroyed_and_the_rest_redacted
     store: Store,
     reopen: crate::conformance::Reopen,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
+    use super::erasable::{again, person, with};
     use lakelands_api::seam::KeyStore;
-    use std::sync::Arc;
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let crm: SourceId = "crm".into();
@@ -893,11 +1061,10 @@ async fn a_shredding_act_imports_erased_and_destroys_a_backups_versions(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
+    use super::erasable::{person, with};
     use lakelands_api::seam::KeyStore;
     use std::sync::Arc;
-    let keys = Arc::new(Keys::default());
-    let store = again(&given.reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
@@ -975,7 +1142,7 @@ async fn a_shredding_act_imports_erased_and_destroys_a_backups_versions(
 
 /// A key store that destroys a source's key only whole: `destroy_version`
 /// is the seam's default.
-struct Whole(std::sync::Arc<super::erasable::Keys>);
+pub(super) struct Whole(pub(super) std::sync::Arc<super::erasable::Keys>);
 
 impl lakelands_api::seam::KeyStore for Whole {
     fn create(
@@ -1158,14 +1325,13 @@ async fn an_output_of_a_later_version_replays_after_an_earlier_one_is_destroyed(
     store: Store,
     reopen: crate::conformance::Reopen,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
+    use super::erasable::{again, person, with};
     use crate::conformance::backing;
     use lakelands_api::ontology::StorageKind;
     use lakelands_api::seam::KeyStore;
-    use std::sync::Arc;
+
     const TOKEN: &str = "removed_replayed";
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare_json(
         json!({"declare": "function", "name": "shout", "backing": backing::KIND,
@@ -1373,43 +1539,1003 @@ async fn a_shredding_act_a_crash_stopped_is_finished_at_each_step(
         "a rebuild after the failed destroy finishes the act: the version is gone: {held:?}"
     );
     erased_before(&store, "p1", before, 1).await?;
-    // Stopped after the destroy, before the rebuild.
+    // Stopped after the destroy, before its scoped restate: the first
+    // page's commit fails, after the page dropped the records' states.
     let l = Lake::of(store.as_ref());
     l.ingest("crm", vec![p("p2", "Bea")])
         .await
         .must("ingesting p2")?;
     l.upsert("person", "p2", json!({"note": "kept"})).await?;
-    let before = store.head().await.must("reading the head")?;
-    fails[1].store(1, Ordering::SeqCst);
+    fails[5].store(1, Ordering::SeqCst);
     let stopped = store.remove_values(&crm, &all, false, None).await;
     let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
     ensure!(
         stopped.is_err() && held.is_empty(),
-        "the act whose rebuild fails answers {stopped:?}, its version destroyed: {held:?}"
+        "the act whose scoped restate fails answers {stopped:?}, its version destroyed: {held:?}"
     );
+    // The version took: it seals nothing more from the act's first turn,
+    // and the source seals under a new one while the act is owed (099).
     let head = store.head().await.must("reading the head")?;
-    let refused = l.ingest("crm", vec![p("p3", "Cy")]).await;
-    let unmoved = store.head().await.must("reading the head")?;
+    let sealed = l.ingest("crm", vec![p("p3", "Cy")]).await;
+    let moved = store.head().await.must("reading the head")?;
+    let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
     ensure!(
-        matches!(&refused, Err(lakelands_api::Error::Unavailable { situation })
-            if matches!(**situation, lakelands_api::error::Situation::KeyMissing { .. }))
-            && unmoved == head,
-        "while the act is owed, crm's next sealed value is refused `key_missing`, appending \
-         nothing: {refused:?}, the head moved from {head} to {unmoved}"
+        sealed.is_ok() && moved > head && held.len() == 1,
+        "the version the act took seals nothing more: crm's next sealed value is taken under \
+         a new one while the act is owed: {sealed:?}, the head moved from {head} to {moved}, \
+         {held:?}"
     );
     store = fault(store).await?;
-    erased_before(&store, "p2", before, 2).await?;
+    // The open leaves the act to the road beside it: poll, bounded, for
+    // the settle whose restate erases `p2` at the head.
+    let erased_at_head = async |store: &Store, key: &str| {
+        let l = Lake::of(store.as_ref());
+        let r = at(&l, "person", key, None).await?;
+        ensure!(
+            r.as_ref().is_some_and(|r| erased(r, "name", "crm")),
+            "`{key}` does not read its name erased at the head: {r:?}"
+        );
+        Ok::<_, Failure>(())
+    };
+    settles(6_000, Duration::from_millis(10), || {
+        erased_at_head(&store, "p2")
+    })
+    .await?;
     let l = Lake::of(store.as_ref());
-    l.ingest("crm", vec![p("p3", "Cy")])
-        .await
-        .must("ingesting p3 after the open")?;
     let p3 = at(&l, "person", "p3", None).await?;
     let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
     ensure!(
         p3.as_ref()
             .is_some_and(|r| r.fields.get("name") == Some(&json!("Cy")))
             && held.len() == 1,
-        "once the open finished the act, crm seals under a new version: {p3:?}, {held:?}"
+        "after the open ran the restate, the new version's value reads: {p3:?}, {held:?}"
     );
+    Ok(())
+}
+
+check!(
+    REOPENED_WRITE_READS_THROUGH_AN_OWED_ACT =
+        a_writer_that_opened_while_an_act_is_owed_reads_through_it,
+    "099: a writer that opens between an act's parts takes it up from the lists: a verb's `requires` on a record the owed source wrote is judged on the record refolded through the erasure before the road has restated it, and the source's own sealed value after that turn seals under a new version the key store holds, not refused `key_missing`; once the road's restate runs, the record reads as the restate left it",
+    given
+);
+
+async fn a_writer_that_opened_while_an_act_is_owed_reads_through_it(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use super::erasable::{Keys, person};
+    let keys = Arc::new(Keys::default());
+    let fails: super::forgotten::Fails = Arc::default();
+    let wrap = super::forgotten::failing(&fails);
+    let fault = async |store: Store| {
+        let seams = Seams {
+            keys: Some(keys.clone()),
+            ..Seams::default()
+        };
+        (given.fault)(store, seams, wrap.clone())
+            .await
+            .map_err(|e| Failure::new(format!("the writer's open was refused: {e}")))
+    };
+    let mut store = fault(store).await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    l.declare_json(json!({"declare": "verb", "name": "copy", "on": "person",
+        "risk": "low", "effect": "write", "requires": "name is null",
+        "set": [{"field": "note", "value": "'owed'"}]}))
+        .await?;
+    let crm: SourceId = "crm".into();
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let p = |k: &str, name: &str| source_record("person", k, json!({"id": k, "name": name}));
+    l.ingest("crm", vec![p("p1", "Ada"), p("p2", "Bea")])
+        .await
+        .must("ingesting from crm")?;
+    for k in ["p1", "p2"] {
+        l.upsert("person", k, json!({"note": "kept"})).await?;
+    }
+    // The act stops after its first turn, its version destroyed, its
+    // scoped restate failed at its first page's commit.
+    fails[5].store(1, Ordering::SeqCst);
+    let stopped = store.remove_values(&crm, &all, false, None).await;
+    let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    ensure!(
+        stopped.is_err() && held.is_empty(),
+        "the act whose scoped restate fails answers {stopped:?}, its version destroyed: {held:?}"
+    );
+    // Every page's commit fails, so the act stays owed through the open.
+    fails[5].store(1_000_000, Ordering::SeqCst);
+    store = fault(store).await?;
+    let l = Lake::of(store.as_ref());
+    let head = store.head().await.must("reading the head")?;
+    let called = l
+        .cat
+        .call(
+            &l.own,
+            &"copy".into(),
+            Some(&RecordKey::from("p2")),
+            patch(json!({})),
+            WriteOpts::default(),
+        )
+        .await;
+    ensure!(
+        called.is_ok(),
+        "a write in the writer that opened while the act is owed reads `p2` through the \
+         erasure, so `name is null` passes: {called:?}"
+    );
+    // A version the act took seals nothing after an open either.
+    let sealed = l.ingest("crm", vec![p("p3", "Cy")]).await;
+    let moved = store.head().await.must("reading the head")?;
+    let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    ensure!(
+        sealed.is_ok() && moved > head && held.len() == 1,
+        "crm's write after the open whose act took the old version seals under a new one the \
+         key store holds: {sealed:?}, the head moved from {head} to {moved}, {held:?}"
+    );
+    // The pages commit again, and the road the open started restates.
+    fails[5].store(0, Ordering::SeqCst);
+    store = fault(store).await?;
+    let l = Lake::of(store.as_ref());
+    settles(6_000, Duration::from_millis(1), || async {
+        let shown = at(&l, "person", "p1", None)
+            .await?
+            .ok_or_else(|| Failure::new("`p1` after the road's restate"))?;
+        ensure!(
+            erased(&shown, "name", "crm") && shown.fields.get("note") == Some(&json!("kept")),
+            "the road's restate takes `p1`'s name and keeps the author's note: {shown:?}"
+        );
+        Ok(())
+    })
+    .await
+}
+
+/// Append `records` of `ty` from `source` in delivery `id`, answering the
+/// first window's position.
+async fn delivered(
+    l: &Lake,
+    source: &str,
+    ty: &str,
+    id: &str,
+    records: &[(&str, Value)],
+) -> Result<Position, Failure> {
+    let opts = IngestOpts {
+        delivery: Some(DeliveryId::from(id)),
+        ..IngestOpts::default()
+    };
+    let source: SourceId = source.into();
+    let records = (records.iter())
+        .map(|(k, f)| source_record(ty, k, f.clone()))
+        .collect();
+    let windows = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &source, opts, records)
+        .await
+        .must("ingesting a delivery")?;
+    windows
+        .first()
+        .map(|w| w.position)
+        .ok_or_else(|| Failure::new("a delivery names no window"))
+}
+
+/// The wall clock, in microseconds since the epoch.
+fn micros_now() -> i64 {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the epoch");
+    i64::try_from(since.as_micros()).expect("the clock fits")
+}
+
+async fn an_acts_versions_seal_nothing_and_the_source_has_a_new_one(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    let fails: super::forgotten::Fails = Arc::default();
+    // The restate a removal or a forgetting owes goes by the scoped
+    // refold where that is measured the shorter and by the rebuild
+    // otherwise, so the stop is armed on both first steps: the clear a
+    // rebuild begins with, and the commit a scoped page ends with.
+    // Whichever way the act goes, its first turn is in the log and its
+    // restate is owed.
+    let owe = |on: bool| {
+        let n = u32::from(on);
+        fails[1].store(n, Ordering::SeqCst);
+        fails[5].store(n, Ordering::SeqCst);
+    };
+    let wrap = super::forgotten::failing(&fails);
+    let store = (given.fault)(store, super::erasable::with(&keys), wrap)
+        .await
+        .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    l.declare(super::erasable::person()).await?;
+    let p = |k: &str, name: &str| source_record("person", k, json!({"id": k, "name": name}));
+    l.ingest(
+        "tracker",
+        vec![p("v1", "Ada"), p("v2", "Bea"), p("v3", "Cy")],
+    )
+    .await
+    .must("ingesting tracker's records")?;
+    let start = store.head().await.must("reading the head")?;
+    let tracker: SourceId = "tracker".into();
+    let old = super::erasable::first(&keys, store.as_ref(), "tracker")?;
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a far date"));
+    // The act stops before its restate: its appends are whole in the log,
+    // its version destroyed, and the projection still holds what it took.
+    owe(true);
+    let stopped = store.remove_values(&tracker, &all, false, None).await;
+    let events = events_after(store.as_ref(), start).await?;
+    let removed = (events.iter())
+        .filter(|e| matches!(e.body, EventBody::ValuesRemoved { .. }))
+        .count();
+    let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+    let held = keys
+        .ids(store.lake(), &tracker)
+        .must("listing tracker's keys")?;
+    ensure!(
+        stopped.is_err() && removed == 1 && whole && held.is_empty(),
+        "the act's first turn destroys the version it takes whole, and only its restate is \
+         owed: the act answered {stopped:?}, the log's `values_removed` {removed}, its whole \
+         {whole}, the key store {held:?}"
+    );
+    // The source's write while the act is owed seals under a version the
+    // act left, the source's new one, and reads its own values.
+    let l = Lake::of(store.as_ref());
+    l.ingest("tracker", vec![p("v9", "Zoe")])
+        .await
+        .must("ingesting while the act is owed")?;
+    let sealed = (events_after(store.as_ref(), start).await?.into_iter())
+        .filter(|e| matches!(e.body, EventBody::RecordIngested { .. }))
+        .filter_map(|e| e.sealed.map(|s| s.key))
+        .next_back();
+    let held = keys
+        .ids(store.lake(), &tracker)
+        .must("listing tracker's keys")?;
+    let v9 = at(&l, "person", "v9", None).await?;
+    ensure!(
+        held.len() == 1
+            && held[0] != old
+            && sealed.as_ref() == Some(&held[0])
+            && v9
+                .as_ref()
+                .is_some_and(|r| r.fields.get("name") == Some(&json!("Zoe"))),
+        "the version the act took seals nothing more: the source's write while the act is owed \
+         seals under a new one the key store holds, and reads its own values: the old key \
+         {old:?}, the keys {held:?}, sealing {sealed:?}, v9 {v9:?}"
+    );
+    // The act's repeat finishes its restate, appending its events no
+    // second time, and answers its report.
+    owe(false);
+    let done = store
+        .remove_values(&tracker, &all, false, None)
+        .await
+        .must("the act's repeat")?;
+    ensure!(
+        done.events == 3,
+        "the act's repeat finishes its restate and answers the report of the three records \
+         it took whole: {done:?}"
+    );
+    // A forgetting's keys go in its first turn too, before its parts: a
+    // reader between them finds none, and the source's ingest is refused,
+    // so nothing is sealed under a destroyed key (099).
+    let giver: SourceId = "giver".into();
+    l.ingest(
+        "giver",
+        vec![p("q1", "Dee"), p("q2", "Eve"), p("q3", "Fay")],
+    )
+    .await
+    .must("ingesting giver's records")?;
+    let start = store.head().await.must("reading the head")?;
+    owe(true);
+    let stopped = store.forget_source(&giver, None).await;
+    let events = events_after(store.as_ref(), start).await?;
+    let forgot = (events.iter()).any(|e| matches!(e.body, EventBody::SourceForgotten { .. }));
+    let whole = (events.iter()).any(|e| e.body.kind() == "act_whole");
+    let left = keys.ids(store.lake(), &giver).ok().unwrap_or_default();
+    let refused = l.ingest("giver", vec![p("late", "Eve")]).await;
+    let retired = (events.iter())
+        .filter(|e| matches!(e.body, EventBody::RecordRetired { .. }))
+        .count();
+    ensure!(
+        stopped.is_err() && forgot && whole && left.is_empty() && refused.is_err() && retired == 3,
+        "the forgetting destroys giver's keys before its restate and its first turn retires \
+         the three records giver alone brought, and the source's ingest while the act is owed \
+         is refused, so nothing is sealed under a destroyed key: {stopped:?}, forgotten \
+         {forgot}, whole {whole}, retired {retired}, keys {left:?}, ingest {refused:?}"
+    );
+    owe(false);
+    let done = store
+        .forget_source(&giver, None)
+        .await
+        .must("the forgetting's repeat")?;
+    ensure!(
+        done.reclaimed.is_some(),
+        "the forgetting's repeat finishes its restate and reclaim, appending nothing again: \
+         {done:?}"
+    );
+    Ok(())
+}
+
+async fn a_removal_takes_an_event_of_its_delivery_written_since_its_report(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    visits(&l).await?;
+    let v = |k: &str, d: u32| json!({"id": k, "duration": d});
+    let b1 = delivered(&l, "tracker", "visit", "b1", &[("v1", v("v1", 10))]).await?;
+    let tracker: SourceId = "tracker".into();
+    let sel = Selection::Delivery(DeliveryId::from("b1"));
+    let report = store
+        .remove_values_preflight(&tracker, &sel)
+        .await
+        .must("the preflight")?;
+    delivered(&l, "tracker", "visit", "b1", &[("v2", v("v2", 20))]).await?;
+    let done = store
+        .remove_values(&tracker, &sel, false, Some(&report.report_id))
+        .await
+        .must("the act under the report's id")?;
+    let v1 = at(&l, "visit", "v1", Some(b1)).await?;
+    let v2 = at(&l, "visit", "v2", None).await?;
+    ensure!(
+        report.events == 1
+            && done.events == 2
+            && v1
+                .as_ref()
+                .is_some_and(|r| erased(r, "duration", "tracker"))
+            && v2.is_none(),
+        "the report names one event, the act under its id takes the event the delivery grew \
+         since, and the record it wrote is retired beside the first: the preflight {report:?}, \
+         the act {done:?}, v1 {v1:?}, v2 {v2:?}"
+    );
+    Ok(())
+}
+
+async fn a_removal_leaves_an_event_of_its_delivery_written_after_it(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let mut few = limits();
+    few.part_events = 1;
+    let store = (given.relimit)(store, Seams::default(), few)
+        .await
+        .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    visits(&l).await?;
+    let v = |k: &str, d: u32| json!({"id": k, "duration": d});
+    let start = store.head().await.must("reading the head")?;
+    delivered(
+        &l,
+        "tracker",
+        "visit",
+        "b1",
+        &[
+            ("v1", v("v1", 10)),
+            ("v2", v("v2", 20)),
+            ("v3", v("v3", 30)),
+            ("v4", v("v4", 40)),
+            ("v5", v("v5", 50)),
+            ("v6", v("v6", 60)),
+        ],
+    )
+    .await?;
+    let tracker: SourceId = "tracker".into();
+    let sel = Selection::Delivery(DeliveryId::from("b1"));
+    let slot: Arc<std::sync::Mutex<Option<RemoveReport>>> = Arc::default();
+    let (s, answer, s2) = (store.clone(), slot.clone(), store.clone());
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            let done = s
+                .remove_values(&tracker, &sel, false, None)
+                .await
+                .must("the act")?;
+            *crate::lock(&answer) = Some(done);
+            Ok(())
+        }),
+        Box::pin(async move {
+            settles(6_000, Duration::from_millis(5), || async {
+                ensure!(
+                    !acts(s2.as_ref(), start).await?.is_empty(),
+                    "the act's `values_removed`"
+                );
+                Ok(())
+            })
+            .await?;
+            let l = Lake::of(s2.as_ref());
+            delivered(&l, "tracker", "visit", "b1", &[("v7", v("v7", 70))]).await?;
+            Ok(())
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let done = crate::lock(&slot).take().expect("the act answered");
+    let v7 = at(&l, "visit", "v7", None).await?;
+    let v1 = at(&l, "visit", "v1", None).await?;
+    store.rebuild().await.must("rebuilding")?;
+    let rebuilt = at(&l, "visit", "v7", None).await?;
+    ensure!(
+        done.events == 6
+            && v1.is_none()
+            && v7
+                .as_ref()
+                .is_some_and(|r| r.fields.get("duration") == Some(&json!(70)))
+            && rebuilt
+                .as_ref()
+                .is_some_and(|r| r.fields.get("duration") == Some(&json!(70))),
+        "the act counts the six events its selection held and retires the six records, while \
+         the seventh, written after its first turn, keeps its duration at the head and after a \
+         rebuild: the act {done:?}, v1 {v1:?}, v7 {v7:?}, after a rebuild {rebuilt:?}"
+    );
+    Ok(())
+}
+
+/// Where a [`Gate`] stands.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Gated {
+    /// Whether it holds every entry taken with nothing queued behind it.
+    armed: bool,
+    /// Whether it holds nothing any more.
+    open: bool,
+    /// Whether it holds an entry now.
+    pub(super) holds: bool,
+    /// How many held entries it was told to let through, and has not.
+    let_through: u32,
+    /// How many held entries went on.
+    pub(super) passed: u64,
+    /// Whether the check sends the entry it waits to see queued.
+    pub(super) watching: bool,
+    /// Whether an entry was queued behind the one held, once watched for.
+    pub(super) behind: bool,
+}
+
+/// A meter that holds the writer's turn. The writer tells the queue's
+/// depth on its own thread as it takes an entry, before the entry runs,
+/// and a caller tells it only as it queues one, so never 0: armed, the
+/// gate holds each entry taken with nothing queued behind it, which has
+/// done nothing yet, until it is let through or the gate is opened, and,
+/// once the check watches, notes an entry queued behind the one it holds.
+/// The order of the writer's turns is then the check's, not the
+/// scheduler's.
+#[derive(Default)]
+pub(super) struct Gate {
+    at: std::sync::Mutex<Gated>,
+    moved: std::sync::Condvar,
+}
+
+impl Gate {
+    pub(super) fn now(&self) -> Gated {
+        *crate::lock(&self.at)
+    }
+
+    fn set(&self, how: impl FnOnce(&mut Gated)) {
+        how(&mut crate::lock(&self.at));
+        self.moved.notify_all();
+    }
+
+    pub(super) fn arm(&self) {
+        self.set(|g| g.armed = true);
+    }
+
+    pub(super) fn open(&self) {
+        self.set(|g| g.open = true);
+    }
+
+    /// Arm the gate again, as it stood before it was first armed and
+    /// opened: a check holds a second act's turns with it.
+    pub(super) fn rearm(&self) {
+        self.set(|g| {
+            *g = Gated {
+                armed: true,
+                ..Gated::default()
+            }
+        });
+    }
+
+    /// Let the entry held go on, and hold the next.
+    pub(super) fn let_one_through(&self) {
+        self.set(|g| g.let_through += 1);
+    }
+
+    /// Note, from now on, an entry queued behind the one held: the check
+    /// sends it next.
+    pub(super) fn watch(&self) {
+        self.set(|g| g.watching = true);
+    }
+
+    /// Wait, off the writer, until `stands` holds of the gate.
+    pub(super) async fn reaches(&self, what: &str, stands: impl Fn(&Gated) -> bool) -> Held {
+        settles(30_000, Duration::from_millis(2), || async {
+            let now = self.now();
+            ensure!(stands(&now), "{what}: the gate stands at {now:?}");
+            Ok(())
+        })
+        .await
+    }
+}
+
+impl lakelands_api::seam::Meter for Gate {
+    fn count(&self, _: lakelands_api::seam::Metered<'_>, _: lakelands_api::seam::Count, _: u64) {}
+    fn observe(&self, _: lakelands_api::seam::Metered<'_>, _: lakelands_api::seam::Spread, _: u64) {
+    }
+    fn level(
+        &self,
+        _: lakelands_api::seam::Metered<'_>,
+        n: lakelands_api::seam::Level,
+        depth: u64,
+    ) {
+        if n != lakelands_api::seam::Level::Queued {
+            return;
+        }
+        let mut at = crate::lock(&self.at);
+        if at.holds && at.watching && depth > 0 {
+            at.behind = true;
+        }
+        if !at.armed || at.open || depth > 0 {
+            return;
+        }
+        at.holds = true;
+        // A check that never lets it go does not hold the writer past the
+        // time any of its waits gives up.
+        let (mut at, _) = self
+            .moved
+            .wait_timeout_while(at, Duration::from_secs(60), |g| {
+                !g.open && g.let_through == 0
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        at.let_through = at.let_through.saturating_sub(1);
+        at.holds = false;
+        at.passed += 1;
+    }
+}
+
+/// Opens the gate whichever way the check ends, so the writer it holds
+/// is let go.
+pub(super) struct Opens(pub(super) Arc<Gate>);
+
+impl Drop for Opens {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
+async fn a_tail_event_before_the_time_is_taken_and_one_after_is_not(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let gate = Arc::new(Gate::default());
+    let seams = Seams {
+        meter: Some(gate.clone()),
+        ..Seams::default()
+    };
+    let store = super::erasable::again(&reopen, store, seams, "with a gate on its writer").await?;
+    let _opens = Opens(gate.clone());
+    let l = Lake::of(store.as_ref());
+    visits(&l).await?;
+    let names: Vec<String> = (0..1_200).map(|i| format!("m{i}")).collect();
+    let many: Vec<(&str, u32)> = names.iter().map(|n| (n.as_str(), 10)).collect();
+    tracked(&l, &many).await?;
+    let tracker: SourceId = "tracker".into();
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a far date"));
+    let pre = store
+        .remove_values_preflight(&tracker, &all)
+        .await
+        .must("the preflight")?;
+    // The time is taken now, after the preflight's walk, so that what
+    // stands between it and the early write is the act's walk alone.
+    let far = Timestamp(micros_now() + 3_000_000);
+    let sel = Selection::WrittenBefore(far);
+    let slot: Arc<std::sync::Mutex<Option<RemoveReport>>> = Arc::default();
+    let (s, answer, s2) = (store.clone(), slot.clone(), store.clone());
+    let early = source_record("visit", "early", json!({"id": "early", "duration": 5}));
+    let late = source_record("visit", "late", json!({"id": "late", "duration": 7}));
+    // The order is the lake's, not the scheduler's: the early write takes
+    // the writer's turn and is held before it appends; the act is sent
+    // only then, so its walk cannot see the write, and its first turn is
+    // queued behind it; the gate opens only once that turn waits there,
+    // so the write lands in the act's tail, before its first turn.
+    gate.arm();
+    let (g1, g2) = (gate.clone(), gate.clone());
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            let l = Lake::of(s2.as_ref());
+            l.ingest("tracker", vec![early])
+                .await
+                .must("writing the event before the time")?;
+            // The event after the time is written once the clock passed it.
+            settles(30_000, Duration::from_millis(10), || async {
+                ensure!(micros_now() > far.0, "the clock passing the time");
+                Ok(())
+            })
+            .await?;
+            l.ingest("tracker", vec![late])
+                .await
+                .must("writing the event after the time")?;
+            Ok(())
+        }),
+        Box::pin(async move {
+            g1.reaches("the early write holding the writer's turn", |g| g.holds)
+                .await?;
+            g1.watch();
+            let done = s
+                .remove_values(&tracker, &sel, false, None)
+                .await
+                .must("the act")?;
+            *crate::lock(&answer) = Some(done);
+            Ok(())
+        }),
+        Box::pin(async move {
+            let behind = g2
+                .reaches("the act's first turn queued behind the early write", |g| {
+                    g.behind
+                })
+                .await;
+            g2.open();
+            behind
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let done = crate::lock(&slot).take().expect("the act answered");
+    let early = at(&l, "visit", "early", None).await?;
+    let late = at(&l, "visit", "late", None).await?;
+    // The report is of the records the act judged again at its first turn,
+    // not of the walk's: the one the tail made is retired, and counted.
+    let retired: u32 = done.retired.iter().map(|t| t.retired).sum();
+    let held: u64 = done.types.iter().map(|t| t.records).sum();
+    ensure!(
+        pre.events == 1_200
+            && done.events == pre.events + 1
+            && held == pre.events + 1
+            && u64::from(retired) == pre.events + 1
+            && done.kept.is_empty()
+            && early.is_none()
+            && late
+                .as_ref()
+                .is_some_and(|r| r.fields.get("duration") == Some(&json!(7))),
+        "the act takes the event written before the time while it walked, one more than its \
+         report read, retires it and counts it: the preflight {pre:?}, the act {done:?}, early \
+         {early:?}, late {late:?}"
+    );
+    Ok(())
+}
+
+async fn an_unselected_tail_write_keeps_the_version_it_was_sealed_under(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(super::erasable::person()).await?;
+    let names: Vec<String> = (0..1_500).map(|i| format!("m{i}")).collect();
+    let rows: Vec<(String, Value)> = names
+        .iter()
+        .map(|n| (n.clone(), json!({"id": n, "name": n})))
+        .collect();
+    let many: Vec<(&str, Value)> = rows.iter().map(|(n, f)| (n.as_str(), f.clone())).collect();
+    let b1 = delivered(&l, "tracker", "person", "b1", &many).await?;
+    let tracker: SourceId = "tracker".into();
+    let version = super::erasable::first(&keys, store.as_ref(), "tracker")?;
+    let sel = Selection::Delivery(DeliveryId::from("b1"));
+    let slot: Arc<std::sync::Mutex<Option<RemoveReport>>> = Arc::default();
+    let (s, answer, s2) = (store.clone(), slot.clone(), store.clone());
+    let source = tracker.clone();
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            let done = s
+                .remove_values(&source, &sel, false, None)
+                .await
+                .must("the act")?;
+            *crate::lock(&answer) = Some(done);
+            Ok(())
+        }),
+        Box::pin(async move {
+            delivered(
+                &Lake::of(s2.as_ref()),
+                "tracker",
+                "person",
+                "b2",
+                &[("other", json!({"id": "other", "name": "Zoe"}))],
+            )
+            .await?;
+            Ok(())
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let done = crate::lock(&slot).take().expect("the act answered");
+    let held = keys
+        .ids(store.lake(), &tracker)
+        .must("listing tracker's keys")?;
+    let other = at(&l, "person", "other", None).await?;
+    let m0 = at(&l, "person", "m0", Some(b1)).await?;
+    ensure!(
+        done.events == 1_500
+            && done.keys.is_empty()
+            && held == [version.clone()]
+            && other
+                .as_ref()
+                .is_some_and(|r| r.fields.get("name") == Some(&json!("Zoe")))
+            && m0.as_ref().is_some_and(|r| erased(r, "name", "tracker")),
+        "the unselected write, sealed under the version the walk saw wholly selected, keeps it: \
+         the act names no version {done:?}, the key store holds {held:?}, the write reads \
+         {other:?}, and a selected value reads as erased {m0:?}"
+    );
+    Ok(())
+}
+
+async fn a_taken_value_under_a_kept_version_refuses_shredded_and_counts_unshredded(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(super::erasable::person()).await?;
+    let tracker: SourceId = "tracker".into();
+    delivered(
+        &l,
+        "tracker",
+        "person",
+        "b1",
+        &[("v1", json!({"id":"v1","name":"Ada"}))],
+    )
+    .await?;
+    let first = super::erasable::first(&keys, store.as_ref(), "tracker")?;
+    let second = keys
+        .create(store.lake(), &tracker)
+        .must("making a second version")?;
+    let store = super::erasable::again(
+        &given.reopen,
+        store,
+        super::erasable::with(&keys),
+        "with a second version",
+    )
+    .await?;
+    let l = Lake::of(store.as_ref());
+    delivered(
+        &l,
+        "tracker",
+        "person",
+        "b2",
+        &[("other", json!({"id":"other","name":"Bea"}))],
+    )
+    .await?;
+    delivered(
+        &l,
+        "tracker",
+        "person",
+        "b1",
+        &[("v3", json!({"id":"v3","name":"Cy"}))],
+    )
+    .await?;
+    let sel = Selection::Delivery(DeliveryId::from("b1"));
+    let head = store.head().await.must("reading the head")?;
+    refused_like(
+        "removing d1 with `require_shredded` while a version it keeps seals one of its values",
+        store.remove_values(&tracker, &sel, true, None).await,
+        &json!({"code": "remove_not_shredded", "source": "tracker", "count": 1}),
+    )?;
+    let unmoved = store.head().await.must("reading the head")?;
+    ensure!(unmoved == head, "the refused act appended up to {unmoved}");
+    let done = store
+        .remove_values(&tracker, &sel, false, None)
+        .await
+        .must("the act")?;
+    let held = keys
+        .ids(store.lake(), &tracker)
+        .must("listing tracker's keys")?;
+    let v3 = at(&l, "person", "v3", Some(head)).await?;
+    let other = at(&l, "person", "other", None).await?;
+    ensure!(
+        done.keys == [first.clone()]
+            && done.unshredded == 1
+            && held == [second.clone()]
+            && v3.as_ref().is_some_and(|r| erased(r, "name", "tracker"))
+            && other
+                .as_ref()
+                .is_some_and(|r| r.fields.get("name") == Some(&json!("Bea"))),
+        "the act destroys the version whose values it all selects, names one value redacted \
+         only, and keeps the version that seals one outside its selection: the act {done:?}, \
+         the keys {held:?}, v3 {v3:?}, other {other:?}"
+    );
+    Ok(())
+}
+
+async fn a_report_whose_record_another_source_wrote_since_is_stale(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    visits(&l).await?;
+    tracked(&l, &[("v1", 10)]).await?;
+    let tracker: SourceId = "tracker".into();
+    let far = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a far date"));
+    let report = store
+        .remove_values_preflight(&tracker, &far)
+        .await
+        .must("the preflight")?;
+    ensure!(
+        report
+            .retired
+            .iter()
+            .any(|t| t.ty.as_str() == "visit" && t.retired == 1),
+        "the preflight names `v1` retirable: {report:?}"
+    );
+    l.ingest(
+        "web",
+        vec![source_record(
+            "visit",
+            "v1",
+            json!({"id": "v1", "place": "Oslo"}),
+        )],
+    )
+    .await
+    .must("web writing v1")?;
+    refused_like(
+        "removing under the report's id after another source's write on a record it named",
+        store
+            .remove_values(&tracker, &far, false, Some(&report.report_id))
+            .await,
+        &json!({"code": "remove_report_stale"}),
+    )?;
+    let live = at(&l, "visit", "v1", None).await?;
+    let again = store
+        .remove_values_preflight(&tracker, &far)
+        .await
+        .must("the preflight after web's write")?;
+    ensure!(
+        live.as_ref()
+            .is_some_and(|r| r.fields.get("duration") == Some(&json!(10))
+                && r.fields.get("place") == Some(&json!("Oslo")))
+            && again.retired != report.retired
+            && again
+                .kept
+                .iter()
+                .any(|k| k.ty.as_str() == "visit" && k.first.iter().any(|k| k == "v1")),
+        "web's write makes the report stale, the lake unmoved, the record live with both \
+         values, and the preflight after names it kept: the first {report:?}, the second \
+         {again:?}, v1 {live:?}"
+    );
+    Ok(())
+}
+
+async fn a_report_before_the_first_act_is_stale_only_on_the_overlap(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(super::erasable::person()).await?;
+    let tracker: SourceId = "tracker".into();
+    delivered(
+        &l,
+        "tracker",
+        "person",
+        "mon",
+        &[
+            ("v1", json!({"id": "v1", "name": "Ada"})),
+            ("v2", json!({"id": "v2", "name": "Bea"})),
+        ],
+    )
+    .await?;
+    let version = super::erasable::first(&keys, store.as_ref(), "tracker")?;
+    delivered(
+        &l,
+        "tracker",
+        "person",
+        "tue",
+        &[
+            ("v2", json!({"id": "v2", "city": "Rome"})),
+            ("v3", json!({"id": "v3", "name": "Cy"})),
+        ],
+    )
+    .await?;
+    delivered(
+        &l,
+        "tracker",
+        "person",
+        "wed",
+        &[
+            ("v4", json!({"id": "v4", "name": "Dee"})),
+            ("v5", json!({"id": "v5", "name": "Eve"})),
+        ],
+    )
+    .await?;
+    let mon = Selection::Delivery(DeliveryId::from("mon"));
+    let tue = Selection::Delivery(DeliveryId::from("tue"));
+    let wed = Selection::Delivery(DeliveryId::from("wed"));
+    let pre_tue = store
+        .remove_values_preflight(&tracker, &tue)
+        .await
+        .must("the preflight for tue")?;
+    let pre_wed = store
+        .remove_values_preflight(&tracker, &wed)
+        .await
+        .must("the preflight for wed")?;
+    let pre_forget = store
+        .forget_preflight(&tracker)
+        .await
+        .must("the forgetting's preflight")?;
+    let retired = |r: &RemoveReport| -> Vec<u32> {
+        (r.retired.iter())
+            .filter(|t| t.ty.as_str() == "person")
+            .map(|t| t.retired)
+            .collect()
+    };
+    let kept = |r: &RemoveReport| -> Vec<String> {
+        (r.kept.iter())
+            .filter(|k| k.ty.as_str() == "person")
+            .flat_map(|k| k.first.iter().map(ToString::to_string))
+            .collect()
+    };
+    ensure!(
+        pre_tue.events == 2
+            && retired(&pre_tue) == [1]
+            && kept(&pre_tue) == ["v2"]
+            && pre_wed.events == 2
+            && retired(&pre_wed) == [2]
+            && kept(&pre_wed).is_empty(),
+        "tue's preflight, read before either act, takes its two events, retires `v3`, and \
+         keeps `v2`, which holds `mon`'s name; wed's, disjoint from mon, retires its two \
+         records: tue {pre_tue:?}, wed {pre_wed:?}"
+    );
+    let mon_done = store
+        .remove_values(&tracker, &mon, false, None)
+        .await
+        .must("the act for mon")?;
+    let tue_slot: Arc<std::sync::Mutex<Option<Result<RemoveReport, Error>>>> = Arc::default();
+    let wed_slot: Arc<std::sync::Mutex<Option<Result<RemoveReport, Error>>>> = Arc::default();
+    let (tue_in, wed_in) = (tue_slot.clone(), wed_slot.clone());
+    let (s1, s2) = (store.clone(), store.clone());
+    let (source1, source2) = (tracker.clone(), tracker.clone());
+    let tue_first_choice = tue.clone();
+    let callers: Vec<Caller<'static, Held>> = vec![
+        Box::pin(async move {
+            let done = s1
+                .remove_values(&source1, &tue_first_choice, false, Some(&pre_tue.report_id))
+                .await;
+            *crate::lock(&tue_in) = Some(done);
+            Ok(())
+        }),
+        Box::pin(async move {
+            let done = s2
+                .remove_values(&source2, &wed, false, Some(&pre_wed.report_id))
+                .await;
+            *crate::lock(&wed_in) = Some(done);
+            Ok(())
+        }),
+    ];
+    join_all(callers).await.into_iter().collect::<Held>()?;
+    let tue_first = crate::lock(&tue_slot).take().expect("tue answered");
+    refused_like(
+        "tue's act under a report read before mon's",
+        tue_first,
+        &json!({"code": "remove_report_stale"}),
+    )?;
+    let wed_done = crate::lock(&wed_slot)
+        .take()
+        .expect("wed answered")
+        .must("the act for wed, under the report read before mon's")?;
+    let tue_done = store
+        .remove_values(&tracker, &tue, false, None)
+        .await
+        .must("the act for tue, run again")?;
+    let held = keys
+        .ids(store.lake(), &tracker)
+        .must("listing tracker's keys")?;
+    let mut live = Vec::new();
+    for k in ["v1", "v2", "v3", "v4", "v5"] {
+        live.push(at(&l, "person", k, None).await?);
+    }
+    ensure!(
+        mon_done.events == 2
+            && retired(&mon_done) == [1]
+            && wed_done.events == 2
+            && retired(&wed_done) == [2]
+            && tue_done.events == 2
+            && retired(&tue_done) == [2]
+            && tue_done.keys == [version.clone()]
+            && held.is_empty()
+            && live.iter().all(Option::is_none),
+        "each act counts its own two events; mon retires what it alone emptied, wed its two \
+         records, and tue, folding the earlier selections, the record the two emptied; the \
+         three together take the version whole and tue destroys it: mon {mon_done:?}, wed \
+         {wed_done:?}, tue {tue_done:?}, the keys {held:?}, left {live:?}"
+    );
+    // A forgetting's report selects every event of its source: the acts
+    // above took what it selected, so the id over what is left moves (099).
+    refused_like(
+        "a forgetting under a report read before the acts of its source",
+        store
+            .forget_source(&tracker, Some(pre_forget.report_id.as_str()))
+            .await,
+        &json!({"code": "forget_report_stale"}),
+    )?;
     Ok(())
 }

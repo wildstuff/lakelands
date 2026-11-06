@@ -23,26 +23,14 @@
 //! its first `says ... kept` on a lake that keeps no view, and each row is
 //! red where a kept record answers something else than its twin.
 
-use std::collections::BTreeSet;
-
 use lakelands_api::describe::{Kept, NotKept};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Projection, Walk};
-use lakelands_api::read::{AggFunc, Direction, OrderBy};
-use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING, Seams, VIEW_KEPT_SETTING};
-use lakelands_api::write::Declaration;
-use lakelands_api::{
-    Access, Catalog, Find, Found, LakeStore, Position, Principal, ReadAt, Record, Reply, SourceId,
-    Timestamp, TypeName, Value, WriteOpts,
-};
-use serde_json::json;
+use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING, VIEW_KEPT_SETTING};
+use lakelands_api::{Reply, Value};
 
 use super::export::Scratch;
-use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, doors, get_at, ingest, order, owner, patch, pattern, reads_all,
-    restrict, source_record, step, try_upsert,
-};
-use crate::conformance::{Failure, Given, Held, ImportedLake, Store};
+use crate::conformance::ImportedLake;
+use crate::conformance::fixture::{doors, get_at, ingest, order, owner, source_record, step};
+use crate::conformance::prelude::*;
 
 check!(
     KEPT_SHAPES = a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes,
@@ -72,6 +60,29 @@ check!(
     KEPT_ORDER = a_kept_view_answers_every_ordered_page_from_its_order_index_as_its_twin_computes,
     "041 and lakelands#668: a `sort_index.<view>` setting asks for an order index of a kept view's records, and every page in an order it keeps answers as the same view computed, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: pages of two by the group field and by each measure, both ways, and by the last measure below 100, each continued by its cursor to its last page, for the owner, a reader without the `restricted` grant, readers kept from a field of the view (refused alike where an order names it), of its source and of a merged source, and one holding `only` on the source by the group field, a kept page handing out a cursor where its twin's does; for the owner as of the row before and, at the table's end, after a rebuild, a compact and an import, as of every row's end; while the index is asked for before its view is kept and after, of a merged view too, members arrive, change, move to another group and leave, a group is restricted whole and another reads otherwise on its whole face, the view is declared again, and the setting is retired and asked for again",
     given
+);
+
+check!(
+    KEPT_FILTER_PAGE = a_kept_filter_page_answers_in_the_group_fields_order,
+    "103: a kept view's page ordered by the group fields the filter leaves, ascending, answers as the computation across pages and batches: from the key interval and without an order-index read where every one of them is a date-time, date or boolean — one field, two, or a date a bucket fills — and from the order index where one is a text, reference, number or decimal field, a text group field holding `9` and `10` answering `9` first as the computation does; a descending order, an order that is not the remaining group fields and the remaining fields in another order keep the order index"
+);
+
+check!(
+    KEPT_BUCKETS =
+        a_kept_first_and_last_answer_as_their_twins_in_a_view_grouped_by_a_bucket_of_time,
+    "049, extended (lakelands#1603, lakelands#1605): a view grouped by a text field and an hour derived by `date_bucket` is kept, its `min`, `max`, `first(v, at)` and `last(v, at)` answering as their twins, read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own, while members arrive, two tie on `at`, one has no `at` and one no value, a bucket's first, last and least member is retired, a member moves to the next hour and an earlier one arrives, a holder's value changes and another's goes null, a holder leaves after another member's value changed, and a bucket's last member leaves, `describe_type` saying `kept` after each; `first` and `last` of a text by a decimal are kept in a view grouped by text alone, and by a date under a week bucket of it; a boolean, a JSON value, an expression and a value ordered by itself are carried as their twins carry them, through holders retired and moved; a `max` grouped by an instant the host writes, a `min` by a bucket alone, a `first` by two buckets and a `last` of no group are kept (lakelands#1614), answering as their twins while members arrive, an update moves each extreme to another holder and each holder is retired; declared again with a `first` that orders by a text, a kept view cannot be kept, and answers as its twin, until it is declared as it was",
+    given
+);
+
+check!(
+    KEPT_TERMS = a_view_grouped_by_a_bucket_term_answers_as_its_twin_grouped_by_a_derived_field,
+    "049 and 017, extended (lakelands#1636): a view whose group holds a `date_bucket` term over a field of its source, under a name the view type declares, answers as its twin, the same view grouped by a field of that name derived by the same expression in a type that is its source's mirror, every write to the source written to the mirror too, read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: by a text and an hour, a text and a week of a date, an hour alone, a text and a day under a `where`, a text and a day of Europe/Berlin and a week of it alone (lakelands#1667), and a view over the first that groups by the text, all kept, `describe_type` saying `kept`, while members arrive, a bucket's first, last and least member is retired, members move to the next hour and the next day, a holder's instant goes null, a member is held and lifted, two are fed and their source purged, readings arrive around Berlin's changes of offset, a day of 23 hours and one of 25, and one moves across a local midnight, and a bucket's last member leaves; and `describe_type` of the source says the same before the views are declared, after they are and are kept, and after every write",
+    given
+);
+
+check!(
+    TERM_REFUSED = a_group_term_that_is_no_bucket_of_a_source_field_is_refused,
+    "049, extended (lakelands#1636): a view's group term that is no `date_bucket` over one field of its source holding an instant or a date is refused `group_term`, naming it: another function, a bucket of a text field, a bucket of a field the source does not hold and a bucket of an expression; a second term is refused `group_term` saying it is the second; a view grouped by a term that merges a source is refused `group_term_merged`, naming the term; each appends nothing"
 );
 
 const SHAPES: &str = r#"
@@ -461,6 +472,193 @@ const ORDERS: &str = r#"
     put line g {"g": "x", "n": "4"}
 "#;
 
+const BUCKETS: &str = r#"
+    declare {"declare": "type", "name": "reading", "fields": [{"name": "meter", "type": {"kind": "text"}}, {"name": "at", "type": {"kind": "date_time"}}, {"name": "v", "type": {"kind": "decimal"}}, {"name": "note", "type": {"kind": "text"}}, {"name": "ok", "type": {"kind": "boolean"}}, {"name": "d", "type": {"kind": "json"}}, {"name": "hour", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')", "depends_on": ["at"]}, {"name": "day", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'day')", "depends_on": ["at"]}, {"name": "on", "type": {"kind": "date"}}, {"name": "week", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(on, 'week')", "depends_on": ["on"]}]}
+    view hourly = reading by meter:text hour:date_time | low:decimal=min(v); high:decimal=max(v); opened:decimal=first(v, at); closed:decimal=last(v, at); c:number=count()
+    view noted = reading by meter:text | least:text=first(note, v); most:text=last(note, v)
+    view weekly = reading by meter:text week:date_time | early:text=first(note, on); late:text=last(note, on); c:number=count()
+    view carried = reading by meter:text hour:date_time | sure:boolean=first(ok, at); kept:json=last(d, at); twice:decimal=last(v * 2, at); least:decimal=first(v, v)
+    view stamped = reading by at:date_time | high:decimal=max(v); c:number=count()
+    view hours = reading by hour:date_time | low:decimal=min(v); c:number=count()
+    view cuts = reading by hour:date_time day:date_time | opened:decimal=first(v, at); c:number=count()
+    view latest = reading by | closed:decimal=last(v, at); c:number=count()
+    row a view by a meter and its hour is made over the readings
+    put reading r1 {"meter": "m1", "at": "2026-01-01T00:10:00Z", "v": "5", "note": "a", "ok": true, "d": {"x": 1}}
+    put reading r2 {"meter": "m1", "at": "2026-01-01T00:50:00Z", "v": "2", "note": "b", "ok": false, "d": [2, "b"]}
+    put reading r3 {"meter": "m1", "at": "2026-01-01T01:20:00Z", "v": "7", "note": "c"}
+    put reading r4 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "1", "note": "d", "d": 1.5}
+    put reading r5 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "3", "note": "e", "ok": false, "d": "e"}
+    put reading r6 {"meter": "m1", "v": "9", "note": "f"}
+    put reading r7 {"meter": "m1", "at": "2026-01-01T00:30:00Z", "note": "g"}
+    put reading d1 {"meter": "m1", "on": "2026-01-07", "note": "p"}
+    put reading d2 {"meter": "m1", "on": "2026-01-05", "note": "q"}
+    put reading d3 {"meter": "m1", "on": "2026-01-12", "note": "s"}
+    set view_kept.hourly true
+    set view_kept.noted true
+    set view_kept.weekly true
+    set view_kept.carried true
+    set view_kept.stamped true
+    set view_kept.hours true
+    set view_kept.cuts true
+    set view_kept.latest true
+    says hourly kept
+    says noted kept
+    says weekly kept
+    says carried kept
+    read hourly noted weekly carried stamped hours cuts latest
+    is hourly m1:2026-01-01T00%3A00%3A00.000000Z 2,5,5,2,3; m1:2026-01-01T01%3A00%3A00.000000Z 7,7,7,7,1; m2:2026-01-01T00%3A00%3A00.000000Z 1,3,1,1,2
+    is noted m1 b,f; m2 d,e
+    row a bucket's first, last and least member is retired, one moves to the next hour and an earlier one arrives
+    retire reading r2
+    says hourly kept
+    put reading r1 {"at": "2026-01-01T01:05:00Z"}
+    put reading r8 {"meter": "m2", "at": "2026-01-01T00:05:00Z", "v": "4", "note": "h"}
+    put reading r5 {"v": "0"}
+    says hourly kept
+    says carried kept
+    read hourly noted carried
+    is hourly m1:2026-01-01T00%3A00%3A00.000000Z -,-,-,-,1; m1:2026-01-01T01%3A00%3A00.000000Z 5,7,5,7,2; m2:2026-01-01T00%3A00%3A00.000000Z 0,4,4,1,3
+    row a holder's value changes, another's goes null, and a holder leaves after a member's value changed
+    put reading r8 {"v": "5"}
+    put reading r4 {"v": null}
+    put reading r5 {"v": "2"}
+    put reading d2 {"note": "r"}
+    says hourly kept
+    is hourly m1:2026-01-01T00%3A00%3A00.000000Z -,-,-,-,1; m1:2026-01-01T01%3A00%3A00.000000Z 5,7,5,7,2; m2:2026-01-01T00%3A00%3A00.000000Z 2,5,5,-,3
+    retire reading r4
+    retire reading d2
+    says hourly kept
+    says weekly kept
+    is hourly m1:2026-01-01T00%3A00%3A00.000000Z -,-,-,-,1; m1:2026-01-01T01%3A00%3A00.000000Z 5,7,5,7,2; m2:2026-01-01T00%3A00%3A00.000000Z 2,5,5,2,2
+    read hourly noted weekly
+    row a bucket's last member leaves
+    retire reading r7
+    retire reading r3
+    retire reading r1
+    says hourly kept
+    says noted kept
+    says carried kept
+    read hourly noted carried
+    row under an instant the host writes, a bucket alone, two buckets and no group, members arrive, holders move and leave
+    put reading r10 {"meter": "m3", "at": "2026-01-01T03:10:00Z", "v": "4"}
+    put reading r11 {"meter": "m3", "at": "2026-01-01T03:50:00Z", "v": "6"}
+    put reading r12 {"meter": "m3", "at": "2026-01-01T03:40:00Z", "v": "1"}
+    put reading r13 {"meter": "m3", "at": "2026-01-01T03:40:00Z", "v": "3"}
+    put reading r12 {"v": "7"}
+    put reading r11 {"at": "2026-01-01T03:00:00Z"}
+    put reading r10 {"at": "2026-01-01T03:55:00Z"}
+    retire reading r12
+    retire reading r13
+    retire reading r11
+    retire reading r10
+    says stamped kept
+    says hours kept
+    says cuts kept
+    says latest kept
+    read stamped hours cuts latest
+    row a view whose first orders by a text is declared
+    view noted = reading by meter:text | least:text=first(note, note); most:text=last(note, v)
+    says noted cannot be kept
+    put reading n1 {"meter": "m2", "v": "2", "note": "j"}
+    read noted
+    view noted = reading by meter:text | least:text=first(note, v); most:text=last(note, v)
+    says noted kept
+    then
+    row the lake goes on after it
+    put reading r9 {"meter": "m2", "at": "2026-01-01T02:00:00Z", "v": "6", "note": "i"}
+    retire reading r5
+    put reading d1 {"on": "2026-01-06"}
+"#;
+
+const TERMS: &str = r#"
+    declare {"declare": "type", "name": "reading", "fields": [{"name": "meter", "type": {"kind": "text"}, "authority": "shared"}, {"name": "at", "type": {"kind": "date_time"}, "authority": "shared"}, {"name": "v", "type": {"kind": "decimal"}, "authority": "shared"}, {"name": "note", "type": {"kind": "text"}, "authority": "shared"}, {"name": "on", "type": {"kind": "date"}, "authority": "shared"}]}
+    unchanged reading
+    declare {"declare": "type", "name": "reading_d", "fields": [{"name": "meter", "type": {"kind": "text"}, "authority": "shared"}, {"name": "at", "type": {"kind": "date_time"}, "authority": "shared"}, {"name": "v", "type": {"kind": "decimal"}, "authority": "shared"}, {"name": "note", "type": {"kind": "text"}, "authority": "shared"}, {"name": "on", "type": {"kind": "date"}, "authority": "shared"}, {"name": "hour", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')", "depends_on": ["at"]}, {"name": "day", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'day')", "depends_on": ["at"]}, {"name": "week", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(on, 'week')", "depends_on": ["on"]}, {"name": "lday", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'day', 'Europe/Berlin')", "depends_on": ["at"]}, {"name": "lweek", "type": {"kind": "date_time"}, "authority": "derived", "derived": "date_bucket(at, 'week', 'Europe/Berlin')", "depends_on": ["at"]}]}
+    mirror reading reading_d
+    view hourly = reading by meter:text hour:date_time | low:decimal=min(v); high:decimal=max(v); opened:decimal=first(v, at); closed:decimal=last(v, at); c:number=count() | {"terms": {"hour": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')"}}
+    view weekly = reading by meter:text week:date_time | early:text=first(note, on); late:text=last(note, on); c:number=count() | {"terms": {"week": "date_bucket(on, 'week')"}}
+    view hours = reading by hour:date_time | low:decimal=min(v); c:number=count() | {"terms": {"hour": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')"}}
+    view daily = reading by meter:text day:date_time | s:decimal=sum(v); c:number=count() | {"terms": {"day": "date_bucket(at, 'day')"}, "where": "v > 1"}
+    view metered = hourly by meter:text | top:decimal=max(high); n:number=count()
+    view local = reading by meter:text lday:date_time | low:decimal=min(v); closed:decimal=last(v, at); c:number=count() | {"terms": {"lday": "date_bucket(at, 'day', 'Europe/Berlin')"}}
+    view lweeks = reading by lweek:date_time | s:decimal=sum(v); c:number=count() | {"terms": {"lweek": "date_bucket(at, 'week', 'Europe/Berlin')"}}
+    set view_kept.hourly true
+    set view_kept.weekly true
+    set view_kept.hours true
+    set view_kept.daily true
+    set view_kept.metered true
+    set view_kept.local true
+    set view_kept.lweeks true
+    unchanged reading
+    row a view by a meter and a term over its readings' instant is made
+    put reading r1 {"meter": "m1", "at": "2026-01-01T00:10:00Z", "v": "5", "note": "a"}
+    put reading r2 {"meter": "m1", "at": "2026-01-01T00:50:00Z", "v": "2", "note": "b"}
+    put reading r3 {"meter": "m1", "at": "2026-01-01T01:20:00Z", "v": "7", "note": "c"}
+    put reading r4 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "1", "note": "d"}
+    put reading r5 {"meter": "m2", "at": "2026-01-01T00:10:00Z", "v": "3", "note": "e"}
+    put reading r6 {"meter": "m1", "v": "9", "note": "f"}
+    put reading r7 {"meter": "m1", "at": "2026-01-01T00:30:00Z", "note": "g"}
+    put reading d1 {"meter": "m1", "on": "2026-01-07", "note": "p"}
+    put reading d2 {"meter": "m1", "on": "2026-01-05", "note": "q"}
+    put reading d3 {"meter": "m1", "on": "2026-01-12", "note": "s"}
+    says hourly kept
+    says weekly kept
+    says hours kept
+    says daily kept
+    says metered kept
+    read hourly weekly hours daily metered
+    is hourly m1:2026-01-01T00%3A00%3A00.000000Z 2,5,5,2,3; m1:2026-01-01T01%3A00%3A00.000000Z 7,7,7,7,1; m2:2026-01-01T00%3A00%3A00.000000Z 1,3,1,1,2
+    row a bucket's first, last and least member is retired, one moves to the next hour and the next day, and an earlier one arrives
+    retire reading r2
+    put reading r1 {"at": "2026-01-01T01:05:00Z"}
+    put reading r8 {"meter": "m2", "at": "2026-01-01T00:05:00Z", "v": "4", "note": "h"}
+    put reading r5 {"v": "0"}
+    put reading r3 {"at": "2026-01-02T00:20:00Z"}
+    put reading d2 {"on": "2026-01-13"}
+    says hourly kept
+    says daily kept
+    read hourly weekly hours daily metered
+    row a member is held and lifted, its instant goes null, and one is fed and purged
+    hold reading r8
+    put reading r4 {"at": null}
+    lift reading r8
+    feed crm reading f1 {"meter": "m2", "at": "2026-01-01T02:10:00Z", "v": "8", "note": "k"}
+    feed crm reading f2 {"meter": "m3", "at": "2026-01-01T02:50:00Z", "v": "6", "note": "l"}
+    says hourly kept
+    read hourly hours daily metered
+    purge crm
+    says hourly kept
+    says hours kept
+    read hourly hours daily metered
+    row readings around Berlin's changes of offset arrive, one moves across a local midnight and one leaves
+    put reading z1 {"meter": "m1", "at": "2030-03-30T23:30:00Z", "v": "3"}
+    put reading z2 {"meter": "m1", "at": "2030-03-31T21:30:00Z", "v": "4"}
+    put reading z3 {"meter": "m1", "at": "2030-03-31T22:30:00Z", "v": "5"}
+    put reading z4 {"meter": "m2", "at": "2030-10-26T22:30:00Z", "v": "6"}
+    put reading z5 {"meter": "m2", "at": "2030-10-27T22:30:00Z", "v": "7"}
+    put reading z6 {"meter": "m2", "at": "2030-10-27T23:30:00Z", "v": "8"}
+    says local kept
+    says lweeks kept
+    put reading z2 {"at": "2030-03-31T22:10:00Z"}
+    retire reading z1
+    says local kept
+    read local lweeks hourly daily
+    row a bucket's last member leaves
+    retire reading r7
+    retire reading r3
+    retire reading r1
+    retire reading d1
+    says hourly kept
+    says weekly kept
+    read hourly weekly hours daily metered
+    unchanged reading
+    then
+    row the lake goes on after it
+    put reading r9 {"meter": "m2", "at": "2026-01-01T02:00:00Z", "v": "6", "note": "i"}
+    retire reading r5
+    put reading d3 {"on": "2026-01-06"}
+"#;
+
 /// Each check's function: its table, run by [`twin`].
 macro_rules! tables {
     ($($run:ident = $table:ident,)*) => {$(
@@ -475,6 +673,8 @@ tables! {
     a_kept_view_answers_as_its_twin_at_every_position_and_under_every_setting = POSITIONS,
     a_kept_extreme_answers_as_its_twin_when_a_run_or_a_re_key_moves_its_holders = RUNS,
     a_kept_view_answers_every_ordered_page_from_its_order_index_as_its_twin_computes = ORDERS,
+    a_kept_first_and_last_answer_as_their_twins_in_a_view_grouped_by_a_bucket_of_time = BUCKETS,
+    a_view_grouped_by_a_bucket_term_answers_as_its_twin_grouped_by_a_derived_field = TERMS,
 }
 
 /// A view of a table, declared as `name` and as `name_twin`.
@@ -485,6 +685,9 @@ struct Pair {
     /// Whether its source is a view of the table: its twin reads that
     /// view's twin.
     over: bool,
+    /// For a view grouped by a term, the type its twin reads: its
+    /// source's mirror, which holds the term as a derived field.
+    mirror: Option<String>,
     /// What it reads through: its own declaration, types, and settings
     /// (see [`setting`]).
     reads: Vec<String>,
@@ -517,6 +720,12 @@ struct Twin {
     valid_at: Option<(Timestamp, String)>,
     /// How many records are restricted.
     held: u32,
+    /// Each stored type every write to which a `mirror` line sends to
+    /// another type too.
+    mirrors: BTreeMap<String, String>,
+    /// What `describe_type` first said of each type an `unchanged` line
+    /// names.
+    described: BTreeMap<String, String>,
     /// The rows that failed, each with the first thing that failed it.
     red: Vec<String>,
 }
@@ -601,13 +810,20 @@ impl Twin {
             }
             for i in 1..=times {
                 let line = line.replace('#', &i.to_string());
-                if let Err(e) = self.line(store, &line).await {
-                    self.fail(format!("`{line}`: {e}"));
+                for line in [Some(line.clone()), self.mirrored(&line)]
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Err(e) = self.line(store, &line).await {
+                        self.fail(format!("`{line}`: {e}"));
+                    }
                 }
             }
             let words: Vec<&str> = line.splitn(4, ' ').collect();
             let wrote = match (word, words.get(1..3)) {
-                ("row" | "valid_at" | "is" | "was" | "says", _) => continue,
+                ("row" | "valid_at" | "is" | "was" | "says" | "mirror" | "unchanged", _) => {
+                    continue;
+                }
                 ("set", Some(&[key, _])) | (_, Some(&[SETTING_TYPE, key])) => setting(key),
                 ("put" | "retire" | "hold" | "lift" | "view", Some(w)) => w[0].to_owned(),
                 ("feed", Some(w)) => w[1].to_owned(),
@@ -651,6 +867,20 @@ impl Twin {
         for (at, reached) in self.ends.clone() {
             self.same(store, when, Some(at), &reached, [1, 0, 0]).await;
         }
+    }
+
+    /// A write to a type a `mirror` line names, sent to its mirror: a
+    /// `feed` names its source before the type.
+    fn mirrored(&self, line: &str) -> Option<String> {
+        let mut words: Vec<&str> = line.splitn(4, ' ').collect();
+        let at = match words.first()? {
+            &"put" | &"retire" | &"hold" | &"lift" => 1,
+            &"feed" => 2,
+            _ => return None,
+        };
+        let mirror = self.mirrors.get(*words.get(at)?)?;
+        words[at] = mirror;
+        Some(words.join(" "))
     }
 
     /// The views of the table that `which` holds for.
@@ -721,6 +951,15 @@ impl Twin {
                 self.is(&l, p[0], p[1], valid_at).await?;
             }
             ("says", Ok(p), _) => says(&l, p[0], p[1]).await?,
+            ("mirror", Ok(p), _) => drop(self.mirrors.insert(p[0].into(), p[1].into())),
+            ("unchanged", ..) => {
+                let now = json!(l.describe_type(rest).await?).to_string();
+                let first = self.described.entry(rest.to_owned()).or_insert(now.clone());
+                ensure!(
+                    *first == now,
+                    "`describe_type` of `{rest}` was {first}, and is {now}"
+                );
+            }
             _ => return Err(bad("is no event, or is short".into())),
         }
         Ok(())
@@ -729,8 +968,11 @@ impl Twin {
     /// The declarations of a view and of its twin, from
     /// `name = source by field:kind .. | measure:kind=expr; .. | rest`,
     /// where a field a merged source fills has no `=expr` and `rest` is
-    /// the view's other members. Each carries a relation `of_<name>`,
-    /// derived from its first group field to its source's.
+    /// the view's other members. A group field `rest` names in `terms`
+    /// is that term in the view, and in its twin the field of that name
+    /// of the source's mirror, which its twin reads. Each carries a
+    /// relation `of_<name>`, derived from its first group field to its
+    /// source's, unless that field is a term.
     fn views(&mut self, spec: &str) -> Result<Vec<Value>, String> {
         let mut parts = spec.split(" | ");
         let head: Vec<&str> = parts.next().unwrap_or_default().split(' ').collect();
@@ -742,7 +984,17 @@ impl Twin {
             .map(|m| m.split_once('=').map_or((m, None), |(f, e)| (f, Some(e))))
             .collect();
         let rest = serde_json::from_str::<Value>(parts.next().unwrap_or("{}"));
-        let rest = rest.map_err(|e| e.to_string())?;
+        let mut rest = rest.map_err(|e| e.to_string())?;
+        let terms = rest.as_object_mut().and_then(|r| r.remove("terms"));
+        let terms = terms.unwrap_or_else(|| json!({}));
+        let mirror = self
+            .mirrors
+            .get(source)
+            .filter(|_| terms != json!({}))
+            .cloned();
+        if terms != json!({}) && mirror.is_none() {
+            return Err(format!("its source `{source}` has no mirror for its terms"));
+        }
         let inner = self.pairs.iter().find(|p| p.name == source);
         let kept = setting(&format!("{VIEW_KEPT_SETTING}{name}"));
         let over = inner.is_some();
@@ -763,31 +1015,42 @@ impl Twin {
         fields.extend(measures.iter().flat_map(|(f, _)| kinds(f)));
         let called = |f: &str| f.split(':').next().unwrap_or_default().to_owned();
         let keys: Vec<String> = by.iter().map(|f| called(f)).collect();
+        let first = keys
+            .first()
+            .filter(|k| terms.get(k.as_str()).is_none())
+            .cloned();
+        let grouped = |end: &str| -> Vec<Value> {
+            let term = |k: &String| terms.get(k).filter(|_| end.is_empty());
+            let key = |k: &String| term(k).map_or(json!(k), |e| json!({"name": k, "expr": e}));
+            keys.iter().map(key).collect()
+        };
         let exprs = measures
             .iter()
             .filter_map(|(f, e)| Some((called(f), (*e)?)));
         let exprs: Vec<Value> = exprs.map(|(n, e)| json!({"name": n, "expr": e})).collect();
         let declared = |end: &str| {
             let read = if over { end } else { "" };
-            let by = json!([{"from": keys.first(), "to": keys.first()}]);
+            let by = json!([{"from": first, "to": first}]);
             let near = json!({"name": format!("of_{name}{end}"), "derived": {"match": by},
                               "target": format!("{source}{read}")});
-            let source = format!("{source}{read}");
-            let mut view = json!({"source": source, "group_by": keys, "measures": exprs});
+            let twin = mirror.as_ref().filter(|_| !end.is_empty());
+            let source = twin.cloned().unwrap_or(format!("{source}{read}"));
+            let group_by = grouped(end);
+            let mut view = json!({"source": source, "group_by": group_by, "measures": exprs});
             for (member, value) in rest.as_object().into_iter().flatten() {
                 view[member] = value.clone();
             }
-            let near = Value::from_iter(keys.first().map(|_| near));
+            let near = Value::from_iter(first.as_ref().map(|_| near));
             json!({"declare": "type", "name": format!("{name}{end}"), "key": keys,
                    "fields": fields, "view": view, "relations": near})
         };
         let declared = vec![declared(""), declared("_twin")];
         if !self.pairs.iter().any(|p| p.name == name) {
-            let (name, source, by) = (name.to_owned(), source.to_owned(), keys.first().cloned());
+            let (name, source, by) = (name.to_owned(), source.to_owned(), first);
             let measures = measures.iter().map(|(f, _)| called(f)).collect();
             let (seen, keys, asked, indexed) = Default::default();
             #[rustfmt::skip]
-            self.pairs.push(Pair { name, source, over, reads, by, seen, merged, measures, keys, asked, indexed });
+            self.pairs.push(Pair { name, source, over, mirror, reads, by, seen, merged, measures, keys, asked, indexed });
         }
         Ok(declared)
     }
@@ -841,9 +1104,11 @@ impl Twin {
             source.fields.insert(field.as_str().into(), Access::None);
         }
         for p in self.pairs.iter().filter(|p| !p.over) {
-            let source = blind.grants.types.entry(p.source.as_str().into());
-            let hidden = p.by.iter().map(|f| (f.as_str().into(), Access::None));
-            source.or_default().fields.extend(hidden);
+            for source in [Some(&p.source), p.mirror.as_ref()].into_iter().flatten() {
+                let source = blind.grants.types.entry(source.as_str().into());
+                let hidden = p.by.iter().map(|f| (f.as_str().into(), Access::None));
+                source.or_default().fields.extend(hidden);
+            }
         }
         for (p, end) in self.pairs.iter().flat_map(|p| [(p, ""), (p, "_twin")]) {
             let hidden = p.measures.first().map(|m| m.as_str().into());
@@ -862,11 +1127,11 @@ impl Twin {
             let Some((by, seen)) = p.by.as_ref().zip(p.seen.as_ref()) else {
                 continue;
             };
-            let source = only.grants.types.entry(p.source.as_str().into());
-            source
-                .or_default()
-                .only
-                .insert(by.as_str().into(), json!(seen));
+            for source in [Some(&p.source), p.mirror.as_ref()].into_iter().flatten() {
+                let source = only.grants.types.entry(source.as_str().into());
+                let only = &mut source.or_default().only;
+                only.insert(by.as_str().into(), json!(seen));
+            }
         }
         let readers = [
             ("the owner", owner(store)),
@@ -1018,6 +1283,7 @@ async fn says(l: &Lake, view: &str, want: &str) -> Held {
             NotKept::NotWhole { .. } => "not whole",
             NotKept::NotKeptHere => "not kept here",
             NotKept::OnlySome => "only some",
+            NotKept::Building => "building",
         },
         None => "nothing",
     };
@@ -1119,7 +1385,11 @@ async fn said(
     if p.indexed {
         out.extend(paged(cat, who, &ty, p, at).await);
     }
-    let read = |(door, answer): (String, String)| (door, answer.replace("_twin", ""));
+    let mirror = |a: String| match &p.mirror {
+        Some(m) => a.replace(m.as_str(), &p.source),
+        None => a,
+    };
+    let read = |(door, answer): (String, String)| (door, mirror(answer.replace("_twin", "")));
     Ok(out.into_iter().map(read).collect())
 }
 
@@ -1174,4 +1444,1179 @@ fn told<T: serde::Serialize>(answer: lakelands_api::Result<Reply<T>>) -> String 
     };
     told["next_cursor"] = json!(told.get("next_cursor").is_some_and(|c| !c.is_null()));
     told.to_string()
+}
+
+async fn a_group_term_that_is_no_bucket_of_a_source_field_is_refused(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    for ty in ["reading", "credit"] {
+        l.declare_json(json!({"declare": "type", "name": ty, "fields": [
+            field("meter", "text"), field("at", "date_time"), field("v", "decimal")]}))
+            .await?;
+    }
+    // A view of `reading` keyed by its groups' names, each a field.
+    let view = |group_by: Value| {
+        let names: Vec<&str> = (group_by.as_array().into_iter().flatten())
+            .filter_map(|g| g.as_str().or_else(|| g["name"].as_str()))
+            .collect();
+        let mut fields: Vec<_> = (names.iter())
+            .map(|n| field(n, if *n == "meter" { "text" } else { "date_time" }))
+            .collect();
+        fields.push(field("n", "number"));
+        json!({"declare": "type", "name": "hourly", "key": names, "fields": fields,
+            "view": {"source": "reading", "group_by": group_by,
+                     "measures": [{"name": "n", "expr": "count()"}]}})
+    };
+    let term = |name: &str, expr: &str| json!({"name": name, "expr": expr});
+    let hour = term("hour", "date_bucket(at, 1h, '2026-01-01T00:00:00Z')");
+    let mut merged = view(json!(["meter", hour]));
+    merged["view"]["merge"] = json!([{"source": "credit", "group_by": ["meter", "at"],
+        "measures": [{"name": "c", "expr": "count()"}]}]);
+    if let Some(fields) = merged["fields"].as_array_mut() {
+        fields.push(field("c", "number"));
+    }
+    let not = |expr: &str| {
+        let want = json!({"code": "group_term", "name": "hour", "second": false});
+        (
+            expr.to_owned(),
+            view(json!(["meter", term("hour", expr)])),
+            want,
+        )
+    };
+    let cases = [
+        not("lower(meter)"),
+        not("date_bucket(meter, 'day')"),
+        not("date_bucket(gone, 'day')"),
+        not("date_bucket(at + 1h, 'day')"),
+        (
+            "a second term".to_owned(),
+            view(json!([
+                "meter",
+                hour,
+                term("day", "date_bucket(at, 'day')")
+            ])),
+            json!({"code": "group_term", "name": "day", "second": true}),
+        ),
+        (
+            "a merged source".to_owned(),
+            merged,
+            json!({"code": "group_term_merged", "name": "hour"}),
+        ),
+    ];
+    for (what, declared, want) in cases {
+        let before = s.head().await.must("the head")?;
+        let declared = serde_json::from_value::<Declaration>(declared)
+            .map_err(|e| Failure::new(format!("a view grouped by `{what}` does not read: {e}")))?;
+        let answer = l.cat.declare(&l.own, declared).await;
+        refused_like(&format!("a view grouped by `{what}`"), answer, &want)?;
+        head_unmoved(s, before, &format!("a view grouped by `{what}`")).await?;
+    }
+    Ok(())
+}
+
+check!(
+    KEPT_FILTER_NARROWS = a_filter_on_a_kept_view_reads_the_groups_of_its_interval,
+    "103: a kept view grouped `[g, b]`, `g` a text and `b` an hour of time, read filtered `g = x` answers as the computation, and its count and aggregate, a bucket's `max`, `first` and `last` among the measures, with it, walking the groups of `x` and not a value extending it; read with a bound on `b` above, below and both, the terms in the filter's other order, a window covering every bucket, and a bound that crosses another, it answers as the computation, walking the groups its interval holds; a view grouped `[b, g]` read `b = lo and g = x` walks the groups of `x` and of a value extending it, which a final exact cannot exclude; a view grouped by a date field whose term is a day bucket, its key holding the bucket's start instant, answers the bucket the computation answers on an exact day and walks the day's prefix for an exact and for a bound"
+);
+
+check!(
+    KEPT_FILTER_WHOLE = a_filter_the_group_key_cannot_carry_reads_the_whole_view,
+    "103: a filter the group key cannot carry answers as the computation and walks the whole view: `or`, `not`, `!=`, `in`, a term under a function, a text range, a text literal that reads as a number or as an instant, a term on the second group field alone, a number group field and a boolean bound"
+);
+
+check!(
+    KEPT_FILTER_POSITIONS =
+        a_narrowed_read_answers_as_the_computation_at_an_earlier_position_and_after_a_write,
+    "103: a filtered read of a kept view at an earlier position answers as the computation there, the kept records narrowing nothing; after a write takes a group's least and first, its greatest and its last out of the group and puts each back, the narrowed read and its aggregate answer as the computation, walking the group"
+);
+
+/// An hour of 2026-01-01 as a filter's literal names it.
+fn clock(h: u8) -> String {
+    format!("2026-01-01T{h:02}:00:00Z")
+}
+
+/// A find of every record `condition` holds for.
+fn filtered(condition: &str) -> Find {
+    Find {
+        filter: Some(Condition::Text(condition.to_owned())),
+        ..Find::default()
+    }
+}
+
+/// The lake the filter checks read: a tick's group, instant, number and
+/// boolean; a view kept by `[g, hour]` and its twin computed, one by
+/// `[hour, g]`, one by the number, one by the boolean, one by `g` alone
+/// holding a least and the bucket's extremes, and one, over a stamp's
+/// instant, by a date field whose term is a day bucket.
+async fn ticks(store: Store) -> Result<Lake, Failure> {
+    let l = Lake::of(store.as_ref());
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    let fields = [
+        field("g", "text"),
+        field("at", "date_time"),
+        field("n", "decimal"),
+        field("ok", "boolean"),
+    ];
+    l.declare_json(json!({"declare": "type", "name": "tick", "fields": fields}))
+        .await?;
+    let hour = json!({"name": "hour", "expr": "date_bucket(at, 1h, '2026-01-01T00:00:00Z')"});
+    let (c, total) = (
+        json!({"name": "c", "expr": "count()"}),
+        json!({"name": "total", "expr": "sum(n)"}),
+    );
+    let least = json!({"name": "low", "expr": "min(n)"});
+    let (high, opened, closed) = (
+        json!({"name": "high", "expr": "max(n)"}),
+        json!({"name": "opened", "expr": "first(n, at)"}),
+        json!({"name": "closed", "expr": "last(n, at)"}),
+    );
+    let bucketed = |groups: serde_json::Value, group_fields: Vec<serde_json::Value>| {
+        (
+            groups,
+            group_fields,
+            json!([
+                c.clone(),
+                total.clone(),
+                high.clone(),
+                opened.clone(),
+                closed.clone()
+            ]),
+            vec![
+                field("c", "number"),
+                field("total", "decimal"),
+                field("high", "decimal"),
+                field("opened", "decimal"),
+                field("closed", "decimal"),
+            ],
+        )
+    };
+    let (roll, flip) = (
+        bucketed(
+            json!(["g", hour]),
+            vec![field("g", "text"), field("hour", "date_time")],
+        ),
+        bucketed(
+            json!([hour, "g"]),
+            vec![field("hour", "date_time"), field("g", "text")],
+        ),
+    );
+    let measures = vec![
+        roll,
+        flip,
+        (
+            json!(["n"]),
+            vec![field("n", "decimal")],
+            json!([c.clone()]),
+            vec![field("c", "number")],
+        ),
+        (
+            json!(["ok"]),
+            vec![field("ok", "boolean")],
+            json!([c.clone()]),
+            vec![field("c", "number")],
+        ),
+        (
+            json!(["g"]),
+            vec![field("g", "text")],
+            json!([least, c, high, opened, closed]),
+            vec![
+                field("low", "decimal"),
+                field("high", "decimal"),
+                field("opened", "decimal"),
+                field("closed", "decimal"),
+                field("c", "number"),
+            ],
+        ),
+    ];
+    for (name, (groups, group_fields, measures, measure_fields)) in
+        ["roll", "flip", "by_n", "by_ok", "least"]
+            .into_iter()
+            .zip(measures)
+    {
+        let mut fields = group_fields;
+        fields.extend(measure_fields);
+        for end in ["", "_twin"] {
+            let view = json!({"source": "tick", "group_by": groups,
+                "measures": measures});
+            l.declare_json(json!({"declare": "type", "name": format!("{name}{end}"),
+                "fields": fields, "view": view}))
+                .await?;
+        }
+        l.set(&format!("view_kept.{name}"), json!(true)).await?;
+    }
+    let ticks = [
+        (
+            "t1",
+            json!({"g": "m-7", "at": "2026-01-01T00:10:00Z", "n": "1", "ok": true}),
+        ),
+        (
+            "t2",
+            json!({"g": "m-7", "at": "2026-01-01T00:40:00Z", "n": "2", "ok": false}),
+        ),
+        (
+            "t3",
+            json!({"g": "m-7", "at": "2026-01-01T01:10:00Z", "n": "3", "ok": true}),
+        ),
+        (
+            "t4",
+            json!({"g": "m-7", "at": "2026-01-01T02:20:00Z", "n": "4", "ok": true}),
+        ),
+        (
+            "t5",
+            json!({"g": "m-70", "at": "2026-01-01T00:15:00Z", "n": "5", "ok": true}),
+        ),
+        (
+            "t6",
+            json!({"g": "m-8", "at": "2026-01-01T00:05:00Z", "n": "6", "ok": true}),
+        ),
+        (
+            "t7",
+            json!({"g": "123", "at": "2026-01-01T00:30:00Z", "n": "7", "ok": false}),
+        ),
+        (
+            "t8",
+            json!({"g": "2026-01-01T00:00:00Z", "at": "2026-01-01T00:45:00Z", "n": "8", "ok": false}),
+        ),
+    ];
+    for (key, fields) in ticks {
+        l.upsert("tick", key, fields).await?;
+    }
+    // A view whose group field is declared a date and whose term is a
+    // bucket of one: a term's value is never landed, so the key holds the
+    // bucket's start instant, where a day's key holds its text.
+    l.declare_json(json!({"declare": "type", "name": "stamp",
+        "fields": [field("on", "date_time")]}))
+        .await?;
+    for end in ["", "_twin"] {
+        let view = json!({"source": "stamp",
+            "group_by": [{"name": "day", "expr": "date_bucket(on, 'day')"}],
+            "measures": [{"name": "c", "expr": "count()"}]});
+        l.declare_json(json!({"declare": "type", "name": format!("stamped{end}"),
+            "fields": [field("day", "date"), field("c", "number")],
+            "view": view}))
+            .await?;
+    }
+    l.set("view_kept.stamped", json!(true)).await?;
+    for (key, on) in [
+        ("s1", "2026-01-05T00:10:00Z"),
+        ("s2", "2026-01-05T23:50:00Z"),
+        ("s3", "2026-01-06T00:10:00Z"),
+        ("s4", "2026-01-07T12:00:00Z"),
+    ] {
+        l.upsert("stamp", key, json!({"on": on})).await?;
+    }
+    for view in ["roll", "flip", "by_n", "by_ok", "least", "stamped"] {
+        says(&l, view, "kept").await?;
+    }
+    Ok(l)
+}
+
+/// What `view` answers to `find`, and the rows the read walked.
+async fn walked_read(l: &Lake, view: &str, find: Find) -> (String, u64) {
+    let before = crate::engines::rows_walked_in_process();
+    let reply = l.cat.find(&l.own, &TypeName::from(view), find).await;
+    let walked = crate::engines::rows_walked_in_process() - before;
+    (told(reply), walked)
+}
+
+/// Fails unless a read of `view` `what` describes answers as its twin
+/// computed, and walks `walked` rows.
+async fn narrowed_as(l: &Lake, view: &str, what: &str, find: Find, walked: u64) -> Held {
+    let twin = format!("{view}_twin");
+    let (kept, seen) = walked_read(l, view, find.clone()).await;
+    let computed = told(l.cat.find(&l.own, &TypeName::from(twin), find).await);
+    let computed = computed.replace("_twin", "");
+    ensure!(
+        kept == computed,
+        "`{view}` read {what} answers {kept}, and the computation {computed}"
+    );
+    ensure!(
+        seen == walked,
+        "`{view}` read {what} walked {seen} rows, not {walked}"
+    );
+    Ok(())
+}
+
+async fn a_filter_on_a_kept_view_reads_the_groups_of_its_interval(store: Store) -> Held {
+    let l = ticks(store).await?;
+    let (zero, one, two, three) = (clock(0), clock(1), clock(2), clock(3));
+    let reading = "g = 'm-7'";
+    let cases = [
+        ("g = 'm-7'".to_owned(), 3),
+        (format!("g = 'm-7' and hour >= '{one}'"), 2),
+        (format!("g = 'm-7' and hour < '{two}'"), 3),
+        (
+            format!("g = 'm-7' and hour >= '{one}' and hour < '{two}'"),
+            2,
+        ),
+        (
+            format!("g = 'm-7' and hour < '{two}' and hour >= '{one}'"),
+            2,
+        ),
+        (
+            format!("g = 'm-7' and hour >= '{zero}' and hour < '{three}'"),
+            3,
+        ),
+        ("g = 'nope'".to_owned(), 0),
+        (
+            format!("g = 'm-7' and hour >= '{two}' and hour < '{one}'"),
+            0,
+        ),
+    ];
+    for (condition, walked) in cases {
+        let what = format!("`{condition}`");
+        narrowed_as(&l, "roll", &what, filtered(&condition), walked).await?;
+    }
+    narrowed_as(
+        &l,
+        "flip",
+        &format!("`hour = '{zero}' and g = 'm-7'`"),
+        filtered(&format!("hour = '{zero}' and g = 'm-7'")),
+        2,
+    )
+    .await?;
+    let count = aggregate(vec![agg("c", AggFunc::Count, None)]);
+    let total = aggregate(vec![
+        agg("c", AggFunc::Count, None),
+        agg("total", AggFunc::Sum, Some("total")),
+    ]);
+    // The bucket's max, first and last, folded under the filter: the
+    // kept view carries them by bucket, and the aggregate reads the
+    // groups the interval holds.
+    let (mut opened, mut closed) = (
+        agg("opened", AggFunc::First, Some("opened")),
+        agg("closed", AggFunc::Last, Some("closed")),
+    );
+    opened.by = Some("hour".into());
+    closed.by = Some("hour".into());
+    let extremes = aggregate(vec![
+        agg("high", AggFunc::Max, Some("high")),
+        opened,
+        closed,
+    ]);
+    for door in [count, total, extremes] {
+        let find = Find {
+            filter: Some(Condition::Text(reading.to_owned())),
+            ..door
+        };
+        narrowed_as(&l, "roll", &format!("`{reading}`, an aggregate"), find, 3).await?;
+    }
+    // The count door: the page walks its three groups and the total
+    // walks them again, rather than the whole view.
+    let counting = Find {
+        total: true,
+        filter: Some(Condition::Text(reading.to_owned())),
+        ..Find::default()
+    };
+    narrowed_as(&l, "roll", &format!("`{reading}`, a total"), counting, 6).await?;
+    // A date field whose term is a bucket: the key holds the bucket's
+    // start instant, where a day's key holds its text. The exact answers
+    // the group the computation answers, and the day's prefix, not the
+    // day's text alone, is the upper end.
+    for (condition, walked) in [
+        ("day = '2026-01-05'", 1),
+        ("day >= '2026-01-05' and day < '2026-01-07'", 3),
+        ("day <= '2026-01-06'", 2),
+        ("day > '2026-01-06'", 2),
+        ("day = '2026-01-04'", 0),
+    ] {
+        let what = format!("`{condition}`");
+        narrowed_as(&l, "stamped", &what, filtered(condition), walked).await?;
+    }
+    Ok(())
+}
+
+async fn a_filter_the_group_key_cannot_carry_reads_the_whole_view(store: Store) -> Held {
+    let l = ticks(store).await?;
+    for condition in [
+        "g = 'm-7' or g = 'm-8'",
+        "not (g = 'm-7')",
+        "g != 'm-7'",
+        "g in ('m-7', 'm-8')",
+        "lower(g) = 'm-7'",
+        "g >= 'm-7'",
+        "g = '123'",
+        "g = '2026-01-01T00:00:00Z'",
+        "hour = '2026-01-01T00:00:00Z'",
+    ] {
+        let what = format!("`{condition}`");
+        narrowed_as(&l, "roll", &what, filtered(condition), 7).await?;
+    }
+    // A bound on the bucket the filter asks first, in instants the one
+    // written form's years cannot hold: their components would sort on
+    // the wrong side of every key, so the interval stays open and the
+    // rulebook decides the whole view.
+    for condition in [
+        "hour <= '9999-12-31T23:59:59-14:00'",
+        "hour >= '0000-01-01T00:00:00+14:00'",
+    ] {
+        let what = format!("`{condition}`");
+        narrowed_as(&l, "flip", &what, filtered(condition), 7).await?;
+    }
+    narrowed_as(&l, "by_n", "`n = 1`", filtered("n = 1"), 8).await?;
+    narrowed_as(&l, "by_ok", "`ok >= false`", filtered("ok >= false"), 2).await?;
+    Ok(())
+}
+
+async fn a_narrowed_read_answers_as_the_computation_at_an_earlier_position_and_after_a_write(
+    store: Store,
+) -> Held {
+    let head = store.clone();
+    let l = ticks(store).await?;
+    let at = ReadAt {
+        as_of: Some(head.head().await.must("the head")?),
+        ..ReadAt::default()
+    };
+    l.upsert(
+        "tick",
+        "t9",
+        json!({"g": "m-7", "at": "2026-01-01T01:30:00Z", "n": "9"}),
+    )
+    .await?;
+    let find = Find {
+        at,
+        ..filtered("g = 'm-7'")
+    };
+    let kept = told(
+        l.cat
+            .find(&l.own, &TypeName::from("roll"), find.clone())
+            .await,
+    );
+    let twin = told(l.cat.find(&l.own, &TypeName::from("roll_twin"), find).await);
+    let twin = twin.replace("_twin", "");
+    ensure!(
+        kept == twin,
+        "`roll` read `g = 'm-7'` at an earlier position answers {kept}, and the computation {twin}"
+    );
+    // A group's least and first, its greatest and its last each leave
+    // the group and come back.
+    let narrow = filtered("g = 'm-7'");
+    narrowed_as(&l, "least", "`g = 'm-7'`", narrow.clone(), 2).await?;
+    l.retire("tick", "t1").await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its least and first retired",
+        narrow.clone(),
+        2,
+    )
+    .await?;
+    l.retire("tick", "t9").await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its greatest retired",
+        narrow.clone(),
+        2,
+    )
+    .await?;
+    l.retire("tick", "t4").await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its last retired",
+        narrow.clone(),
+        2,
+    )
+    .await?;
+    l.upsert(
+        "tick",
+        "t1",
+        json!({"g": "m-7", "at": "2026-01-01T00:10:00Z", "n": "1"}),
+    )
+    .await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its least and first came back",
+        narrow.clone(),
+        2,
+    )
+    .await?;
+    l.upsert(
+        "tick",
+        "t9",
+        json!({"g": "m-7", "at": "2026-01-01T01:30:00Z", "n": "9"}),
+    )
+    .await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its greatest came back",
+        narrow.clone(),
+        2,
+    )
+    .await?;
+    l.upsert(
+        "tick",
+        "t4",
+        json!({"g": "m-7", "at": "2026-01-01T02:20:00Z", "n": "4"}),
+    )
+    .await?;
+    narrowed_as(
+        &l,
+        "least",
+        "`g = 'm-7'` after its last came back",
+        narrow,
+        2,
+    )
+    .await?;
+    let (mut opened, mut closed) = (
+        agg("opened", AggFunc::First, Some("opened")),
+        agg("closed", AggFunc::Last, Some("closed")),
+    );
+    opened.by = Some("g".into());
+    closed.by = Some("g".into());
+    let folds = aggregate(vec![
+        agg("low", AggFunc::Min, Some("low")),
+        agg("high", AggFunc::Max, Some("high")),
+        opened,
+        closed,
+    ]);
+    let find = Find {
+        filter: Some(Condition::Text("g = 'm-7'".to_owned())),
+        ..folds
+    };
+    narrowed_as(&l, "least", "an aggregate of `g = 'm-7'`", find, 2).await?;
+    Ok(())
+}
+
+/// The lake the paged checks read: ticks of the series `a`, `b` and `c`
+/// and of the texts `9` and `10`, a view kept by `[g, at]`, one by `at`
+/// alone, one by the boolean, one by the text alone, one by the number,
+/// one by the three fields `[g, at, ok]` and one by the two `[g, ok]`, a
+/// view of a reference to a target keyed `9` and `10`, a view of a date
+/// bucketed from an instant, and a view by the remaining date of another,
+/// each with a twin computed, and an order index on the field its page is
+/// asked for where it keeps one.
+async fn pokes(store: Store) -> Result<Lake, Failure> {
+    let l = Lake::of(store.as_ref());
+    let field = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}});
+    let to_target = json!({"name": "r", "type": {"kind": "reference", "target": "target"}});
+    l.declare_json(json!({"declare": "type", "name": "target",
+        "fields": [field("v", "number")]}))
+        .await?;
+    for k in 1..=10 {
+        l.upsert("target", &k.to_string(), json!({"v": k})).await?;
+    }
+    let fields = [
+        field("g", "text"),
+        field("at", "date_time"),
+        field("ok", "boolean"),
+        field("n", "decimal"),
+        field("num", "number"),
+        to_target.clone(),
+    ];
+    l.declare_json(json!({"declare": "type", "name": "poke", "fields": fields}))
+        .await?;
+    let c = json!({"name": "c", "expr": "count()"});
+    // Each view, its group fields, the fields it declares, and the field
+    // its order index keeps.
+    let views = [
+        (
+            "series",
+            json!(["g", "at"]),
+            vec![field("g", "text"), field("at", "date_time")],
+            "at",
+        ),
+        ("times", json!(["at"]), vec![field("at", "date_time")], "at"),
+        ("by_ok", json!(["ok"]), vec![field("ok", "boolean")], "ok"),
+        ("numbers", json!(["g"]), vec![field("g", "text")], "g"),
+        ("digits", json!(["n"]), vec![field("n", "decimal")], "n"),
+        ("nums", json!(["num"]), vec![field("num", "number")], "num"),
+        ("refs", json!(["r"]), vec![to_target.clone()], "r"),
+        (
+            "grid",
+            json!(["g", "at", "ok"]),
+            vec![
+                field("g", "text"),
+                field("at", "date_time"),
+                field("ok", "boolean"),
+            ],
+            "ok",
+        ),
+        (
+            "booleans",
+            json!(["g", "ok"]),
+            vec![field("g", "text"), field("ok", "boolean")],
+            "ok",
+        ),
+        (
+            "flags",
+            json!(["ok", "at"]),
+            vec![field("ok", "boolean"), field("at", "date_time")],
+            "at",
+        ),
+    ];
+    for (name, group_by, group_fields, ordered) in views {
+        let mut fields = group_fields;
+        fields.push(field("c", "number"));
+        for end in ["", "_twin"] {
+            let view = json!({"source": "poke", "group_by": group_by,
+                "measures": [c.clone()]});
+            l.declare_json(json!({"declare": "type", "name": format!("{name}{end}"),
+                "fields": fields, "view": view}))
+                .await?;
+        }
+        l.set(&format!("view_kept.{name}"), json!(true)).await?;
+        l.set(&format!("sort_index.{name}"), json!([ordered]))
+            .await?;
+    }
+    // A date group field a bucket fills: the key holds the bucket's start
+    // instant, where a day's key holds its text.
+    l.declare_json(json!({"declare": "type", "name": "stamp",
+        "fields": [field("g", "text"), field("on", "date_time"),
+            field("at", "date_time")]}))
+        .await?;
+    for end in ["", "_twin"] {
+        let view = json!({"source": "stamp", "group_by": ["g",
+            {"name": "day", "expr": "date_bucket(on, 'day')"}],
+            "measures": [c.clone()]});
+        l.declare_json(json!({"declare": "type", "name": format!("dated{end}"),
+            "fields": [field("g", "text"), field("day", "date"), field("c", "number")],
+            "view": view}))
+            .await?;
+    }
+    for end in ["", "_twin"] {
+        let view = json!({"source": "stamp", "group_by": [
+            {"name": "day", "expr": "date_bucket(on, 'day')"}, "at"],
+            "measures": [c.clone()]});
+        l.declare_json(json!({"declare": "type", "name": format!("days{end}"),
+            "fields": [field("day", "date"), field("at", "date_time"),
+                field("c", "number")], "view": view}))
+            .await?;
+    }
+    l.set("view_kept.dated", json!(true)).await?;
+    l.set("sort_index.dated", json!(["day"])).await?;
+    l.set("view_kept.days", json!(true)).await?;
+    l.set("sort_index.days", json!(["at"])).await?;
+    let ticks = [
+        (
+            "a0",
+            json!({"g": "a", "at": "2026-01-01T00:10:00Z", "ok": true, "n": "9", "num": 1, "r": "1"}),
+        ),
+        (
+            "a1",
+            json!({"g": "a", "at": "2026-01-01T01:10:00Z", "ok": false, "n": "10", "num": 2, "r": "2"}),
+        ),
+        (
+            "a2",
+            json!({"g": "a", "at": "2026-01-01T02:10:00Z", "ok": true, "n": "2", "num": 3, "r": "3"}),
+        ),
+        (
+            "b0",
+            json!({"g": "b", "at": "2026-01-01T00:20:00Z", "ok": true, "n": "3", "num": 4, "r": "4"}),
+        ),
+        (
+            "b1",
+            json!({"g": "b", "at": "2026-01-01T01:20:00Z", "ok": false, "n": "4", "num": 5, "r": "5"}),
+        ),
+        (
+            "c0",
+            json!({"g": "c", "at": "2026-01-01T00:30:00Z", "ok": true, "n": "5", "num": 6, "r": "6"}),
+        ),
+        (
+            "t9",
+            json!({"g": "9", "at": "2026-01-01T03:10:00Z", "ok": true, "n": "6", "num": 9, "r": "9"}),
+        ),
+        (
+            "t10",
+            json!({"g": "10", "at": "2026-01-01T03:20:00Z", "ok": true, "n": "7", "num": 10, "r": "10"}),
+        ),
+    ];
+    for (key, fields) in ticks {
+        l.upsert("poke", key, fields).await?;
+    }
+    for (key, day) in [
+        ("s1", "2026-01-05T00:10:00Z"),
+        ("s2", "2026-01-05T23:50:00Z"),
+        ("s3", "2026-01-06T00:10:00Z"),
+        ("s4", "2026-01-07T12:00:00Z"),
+        ("s5", "2026-01-05T00:05:00Z"),
+    ] {
+        let g = if key == "s5" { "b" } else { "a" };
+        l.upsert("stamp", key, json!({"g": g, "on": day, "at": day}))
+            .await?;
+    }
+    for view in [
+        "series", "times", "by_ok", "numbers", "digits", "nums", "refs", "grid", "booleans",
+        "flags", "dated", "days",
+    ] {
+        says(&l, view, "kept").await?;
+    }
+    Ok(l)
+}
+
+/// The keys of one page of `view` read `find`, and the rows the read
+/// walked in this process.
+async fn keys_walked(l: &Lake, view: &str, find: Find) -> Result<(Vec<String>, u64), Failure> {
+    let before = crate::engines::rows_walked_in_process();
+    let reply = l
+        .cat
+        .find(&l.own, &TypeName::from(view), find)
+        .await
+        .must("a page of a kept view")?;
+    let walked = crate::engines::rows_walked_in_process() - before;
+    match reply.data {
+        Found::Records { rows, .. } => Ok((
+            rows.iter().map(|r| r.key.as_str().to_owned()).collect(),
+            walked,
+        )),
+        Found::Groups { .. } => Err(Failure::new(format!("a page of `{view}` answered groups"))),
+    }
+}
+
+/// The keys of each page of `view` read `find` to its last, following its
+/// cursors.
+async fn keys_by_cursor(l: &Lake, view: &str, mut find: Find) -> Result<Vec<Vec<String>>, Failure> {
+    let mut out = Vec::new();
+    for _ in 0..64 {
+        let reply = l
+            .cat
+            .find(&l.own, &TypeName::from(view), find.clone())
+            .await
+            .must("a page of a kept view")?;
+        match reply.data {
+            Found::Records {
+                rows, next_cursor, ..
+            } => {
+                out.push(rows.iter().map(|r| r.key.as_str().to_owned()).collect());
+                match next_cursor {
+                    Some(c) => find.cursor = Some(c),
+                    None => return Ok(out),
+                }
+            }
+            Found::Groups { .. } => {
+                return Err(Failure::new(format!("a page of `{view}` answered groups")));
+            }
+        }
+    }
+    Err(Failure::new(format!(
+        "`{view}` walked more than 64 pages without its last"
+    )))
+}
+
+/// Fails unless every page of `view` read `find`, its cursors followed,
+/// answers the page the computation answers.
+async fn paged_as(l: &Lake, view: &str, what: &str, find: Find) -> Held {
+    let kept = keys_by_cursor(l, view, find.clone()).await?;
+    let computed = keys_by_cursor(l, &format!("{view}_twin"), find).await?;
+    ensure!(
+        kept == computed,
+        "`{view}` read {what} answers pages {kept:?}, and the computation {computed:?}"
+    );
+    Ok(())
+}
+
+async fn a_kept_filter_page_answers_in_the_group_fields_order(store: Store) -> Held {
+    let l = pokes(store).await?;
+    let (a, by_at) = ("g = 'a'".to_owned(), "at".to_owned());
+    let filter = |condition: &str| Some(Condition::Text(condition.to_owned()));
+    let ascending = || vec![order(&by_at, OrderBy::Value, Direction::Asc)];
+    // `series` is grouped `[g, at]`: the filter fixes `g`, so the page's
+    // remaining group field is `at`, and the three groups of `a` are the
+    // interval. The order index holds every series' groups in the at
+    // order, so a page read there walks more than the interval.
+    let reading = Find {
+        filter: filter(&a),
+        order_by: ascending(),
+        limit: Some(5),
+        ..Find::default()
+    };
+    let (keys, walked) = keys_walked(&l, "series", reading.clone()).await?;
+    ensure!(
+        keys.len() == 3,
+        "`series` read `g = 'a'` by `at` answers {} groups, not 3: {keys:?}",
+        keys.len()
+    );
+    ensure!(
+        walked == 3,
+        "`series` read `g = 'a'` by `at` walked {walked} rows, not the interval's 3: the page \
+         is not read from the key"
+    );
+    let (computed, _) = keys_walked(&l, "series_twin", reading).await?;
+    ensure!(
+        keys == computed,
+        "`series` read `g = 'a'` by `at` answers {keys:?}, and the computation {computed:?}"
+    );
+    // Across pages and batches, two a page, the cursor continuing by key.
+    paged_as(
+        &l,
+        "series",
+        "`g = 'a'` by `at`, two a page",
+        Find {
+            filter: filter(&a),
+            order_by: ascending(),
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // Three safe group fields, the filter fixing the first: the page asks
+    // for the two the filter leaves, in the declared order, and reads the
+    // interval's three keys.
+    let by_both = vec![
+        order(&by_at, OrderBy::Value, Direction::Asc),
+        order("ok", OrderBy::Value, Direction::Asc),
+    ];
+    let grid = Find {
+        filter: filter(&a),
+        order_by: by_both,
+        limit: Some(5),
+        ..Find::default()
+    };
+    let (keys, walked) = keys_walked(&l, "grid", grid.clone()).await?;
+    ensure!(
+        keys.len() == 3 && walked == 3,
+        "`grid` read `g = 'a'` by `at` and `ok` answers {} groups and walks {walked} rows, not \
+         the interval's 3",
+        keys.len()
+    );
+    let (computed, _) = keys_walked(&l, "grid_twin", grid).await?;
+    ensure!(
+        keys == computed,
+        "`grid` read `g = 'a'` by `at` and `ok` answers {keys:?}, and the computation {computed:?}"
+    );
+    paged_as(
+        &l,
+        "grid",
+        "`g = 'a'` by `at` and `ok`, two a page",
+        Find {
+            filter: filter(&a),
+            order_by: vec![
+                order(&by_at, OrderBy::Value, Direction::Asc),
+                order("ok", OrderBy::Value, Direction::Asc),
+            ],
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // A bound on the remaining field leaves the interval its own: the five
+    // groups of the first two hours.
+    let bounded = "at >= '2026-01-01T00:00:00Z' and at < '2026-01-01T02:00:00Z'";
+    let (keys, walked) = keys_walked(
+        &l,
+        "times",
+        Find {
+            filter: filter(bounded),
+            order_by: ascending(),
+            limit: Some(8),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 5 && walked == 5,
+        "`times` read `{bounded}` by `at` answers {} groups and walks {walked} rows, not the \
+         interval's 5",
+        keys.len()
+    );
+    paged_as(
+        &l,
+        "times",
+        &format!("`{bounded}` by `at`, two a page"),
+        Find {
+            filter: filter(bounded),
+            order_by: ascending(),
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // A boolean group field's components order as `false` and `true`
+    // compare.
+    let (keys, walked) = keys_walked(
+        &l,
+        "by_ok",
+        Find {
+            order_by: vec![order("ok", OrderBy::Value, Direction::Asc)],
+            limit: Some(5),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 2 && walked == 2,
+        "`by_ok` read by `ok` answers {} groups and walks {walked} rows, not the key's two",
+        keys.len()
+    );
+    ensure!(
+        keys.first().is_some_and(|k| k.starts_with("false")),
+        "`by_ok` read by `ok` answers {keys:?}, not the key's `false` first"
+    );
+    paged_as(
+        &l,
+        "by_ok",
+        "by `ok`, one a page",
+        Find {
+            order_by: vec![order("ok", OrderBy::Value, Direction::Asc)],
+            limit: Some(1),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // Grouped `[g, ok]`, the filter fixes `g` and the page asks for the
+    // boolean: the key's two interval keys are read, `false` before
+    // `true`.
+    let (keys, walked) = keys_walked(
+        &l,
+        "booleans",
+        Find {
+            filter: filter(&a),
+            order_by: vec![order("ok", OrderBy::Value, Direction::Asc)],
+            limit: Some(5),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys == ["a:false", "a:true"] && walked == 2,
+        "`booleans` read `g = 'a'` by `ok` answers {keys:?} and walks {walked} rows, not the \
+         key's `a:false`, `a:true` and 2"
+    );
+    paged_as(
+        &l,
+        "booleans",
+        "`g = 'a'` by `ok`, one a page",
+        Find {
+            filter: filter(&a),
+            order_by: vec![order("ok", OrderBy::Value, Direction::Asc)],
+            limit: Some(1),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // Grouped `[ok, at]`, a boolean exact fixes the first field: the
+    // interval's six `true` groups are walked, where the order index on
+    // `at`, which no text lookup narrows here, would walk all eight.
+    let truly = "ok = true".to_owned();
+    let (keys, walked) = keys_walked(
+        &l,
+        "flags",
+        Find {
+            filter: filter(&truly),
+            order_by: ascending(),
+            limit: Some(9),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 6 && walked == 6,
+        "`flags` read `{truly}` by `at` answers {} groups and walks {walked} rows, not the \
+         interval's 6",
+        keys.len()
+    );
+    let (computed, _) = keys_walked(
+        &l,
+        "flags_twin",
+        Find {
+            filter: filter(&truly),
+            order_by: ascending(),
+            limit: Some(9),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys == computed,
+        "`flags` read `{truly}` by `at` answers {keys:?}, and the computation {computed:?}"
+    );
+    paged_as(
+        &l,
+        "flags",
+        &format!("`{truly}` by `at`, two a page"),
+        Find {
+            filter: filter(&truly),
+            order_by: ascending(),
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // A date group field a bucket fills, its key the bucket's start
+    // instant: the page of the three days `a` holds reads the interval's
+    // three keys.
+    let by_day = || vec![order("day", OrderBy::Value, Direction::Asc)];
+    let (keys, walked) = keys_walked(
+        &l,
+        "dated",
+        Find {
+            filter: filter(&a),
+            order_by: by_day(),
+            limit: Some(5),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 3 && walked == 3,
+        "`dated` read `g = 'a'` by `day` answers {} groups and walks {walked} rows, not the \
+         interval's 3",
+        keys.len()
+    );
+    ensure!(
+        keys.first().is_some_and(|k| k.starts_with("a:2026-01-05")),
+        "`dated` read `g = 'a'` by `day` answers {keys:?}, not the day's first"
+    );
+    paged_as(
+        &l,
+        "dated",
+        "`g = 'a'` by `day`, one a page",
+        Find {
+            filter: filter(&a),
+            order_by: by_day(),
+            limit: Some(1),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // A day's upper end holds that day's text and every instant of it: the
+    // bound cuts the third day, its key an instant of that day, and the
+    // page walks the two the filter admits.
+    let by_a_day = "g = 'a' and day <= '2026-01-06'";
+    let (keys, walked) = keys_walked(
+        &l,
+        "dated",
+        Find {
+            filter: filter(by_a_day),
+            order_by: by_day(),
+            limit: Some(5),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 2 && walked == 2,
+        "`dated` read `{by_a_day}` by `day` answers {} groups and walks {walked} rows, not the \
+         bound's 2",
+        keys.len()
+    );
+    paged_as(
+        &l,
+        "dated",
+        &format!("`{by_a_day}` by `day`, one a page"),
+        Find {
+            filter: filter(by_a_day),
+            order_by: by_day(),
+            limit: Some(1),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // A date exact fixes the first field, whose key holds the bucket's
+    // start instant; the day's prefix holds both spellings, so the three
+    // groups of that day are walked, where the order index on `at`, which
+    // the exact does not narrow, holds all five.
+    let on_day = "day = '2026-01-05'";
+    let (keys, walked) = keys_walked(
+        &l,
+        "days",
+        Find {
+            filter: filter(on_day),
+            order_by: ascending(),
+            limit: Some(9),
+            ..Find::default()
+        },
+    )
+    .await?;
+    ensure!(
+        keys.len() == 3 && walked == 3,
+        "`days` read `{on_day}` by `at` answers {} groups and walks {walked} rows, not the \
+         day's 3",
+        keys.len()
+    );
+    paged_as(
+        &l,
+        "days",
+        &format!("`{on_day}` by `at`, one a page"),
+        Find {
+            filter: filter(on_day),
+            order_by: ascending(),
+            limit: Some(1),
+            ..Find::default()
+        },
+    )
+    .await?;
+    // Text, decimal, number and reference group fields keep their page on
+    // the order index: `9` answers before `10`, as the computation orders
+    // them, where the key's bytes put `10` first.
+    for (view, grouped, field) in [
+        ("numbers", "g", "g"),
+        ("digits", "n", "n"),
+        ("nums", "num", "num"),
+        ("refs", "r", "r"),
+    ] {
+        let find = Find {
+            order_by: vec![order(field, OrderBy::Value, Direction::Asc)],
+            limit: Some(99),
+            ..Find::default()
+        };
+        let (keys, _) = keys_walked(&l, view, find.clone()).await?;
+        let position = |key: &str| keys.iter().position(|k| k == key);
+        ensure!(
+            matches!((position("9"), position("10")), (Some(n9), Some(n10)) if n9 < n10),
+            "`{view}` read by `{grouped}` answers {keys:?}, not the computation's `9` before `10`"
+        );
+        paged_as(
+            &l,
+            view,
+            &format!("by `{grouped}`, two a page"),
+            Find {
+                limit: Some(2),
+                ..find
+            },
+        )
+        .await?;
+    }
+    // A descending order, an order that is not the remaining group
+    // fields, and the remaining fields the other way about keep the order
+    // index. The descending page read in the key's order would answer
+    // ascending, and the reversed pair would answer `at`'s order rather
+    // than `ok`'s then `at`'s, so a predicate that took any same-length
+    // set of the safe fields is red on the pair.
+    paged_as(
+        &l,
+        "series",
+        "`g = 'a'` by `at` descending",
+        Find {
+            filter: filter(&a),
+            order_by: vec![order("at", OrderBy::Value, Direction::Desc)],
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    paged_as(
+        &l,
+        "series",
+        "`g = 'a'` by `g` and `at`",
+        Find {
+            filter: filter(&a),
+            order_by: vec![
+                order("g", OrderBy::Value, Direction::Asc),
+                order("at", OrderBy::Value, Direction::Asc),
+            ],
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    paged_as(
+        &l,
+        "grid",
+        "`g = 'a'` by `ok` and `at`",
+        Find {
+            filter: filter(&a),
+            order_by: vec![
+                order("ok", OrderBy::Value, Direction::Asc),
+                order(&by_at, OrderBy::Value, Direction::Asc),
+            ],
+            limit: Some(2),
+            ..Find::default()
+        },
+    )
+    .await?;
+    Ok(())
 }

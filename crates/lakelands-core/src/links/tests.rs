@@ -1,4 +1,5 @@
 use super::*;
+use crate::conformance::fixture::stored_record;
 use lakelands_api::FieldName;
 use serde_json::json;
 
@@ -30,20 +31,18 @@ fn a_link_record_is_an_edge_out_of_its_from_and_into_its_to() {
     .unwrap();
     invoice.relations = vec![relation()];
     let link = |from: &str, to: &str, retired: bool| StoredRecord {
-        ty: "sys.link.invoice.approved_by".into(),
-        key: link_key(&from.into(), &to.into()),
-        version: lakelands_api::Version(1),
-        fields: [
-            ("from".into(), json!(from)),
-            ("to".into(), json!(to)),
-            ("since".into(), json!("2026-09-01T00:00:00.000000Z")),
-        ]
-        .into(),
-        meta: Default::default(),
-        position: lakelands_api::Position(3),
-        made: lakelands_api::Position(3),
         retired,
-        restricted: false,
+        ..stored_record(
+            "sys.link.invoice.approved_by",
+            link_key(&from.into(), &to.into()),
+            [
+                ("from".into(), json!(from)),
+                ("to".into(), json!(to)),
+                ("since".into(), json!("2026-09-01T00:00:00.000000Z")),
+            ]
+            .into(),
+            3,
+        )
     };
     let all = [link("i1", "p1", false), link("i2", "p1", true)];
     let lookup = |_: &TypeName, field: &str, keys: &[RecordKey]| -> Result<Vec<StoredRecord>, ()> {

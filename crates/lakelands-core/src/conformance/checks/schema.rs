@@ -5,23 +5,11 @@
 //! `docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! `docs/decisions/028-authoring-is-strict-and-whole.md`).
 
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl, ValueTypeDecl};
-use lakelands_api::seam::Seams;
-use lakelands_api::tools::{Door, GENERIC_TOOLS, MAX_TOOL_NAME, ToolSpec, tools};
-use lakelands_api::write::{
-    Declaration, DeclarationKind, InForce, Outcome, ProposedWrite, Recompute, ValueTypeMigration,
-};
-use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
-use serde_json::{Value, json};
+use lakelands_api::tools::{Door, GENERIC_TOOLS, MAX_TOOL_NAME, ToolSpec};
+use lakelands_api::write::{DeclarationKind, InForce, Outcome, ValueTypeMigration};
 
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, count_view, dec, decimal, events_after, field, head_unmoved,
-    invalid_case, is_invalid, migration, object_set_on, principal, reason, refused_unmoved,
-    reviewer, trigger_on, type_decl, value, value_type, view_of, write_verb,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::reviewer;
+use crate::conformance::prelude::*;
 
 check!(
     ADD_FIELD_GRANT_FIRST =
@@ -54,7 +42,7 @@ check!(
     "003: every type name starting `sys.` is reserved; an ordinary principal, even the owner, is refused declaring one and nothing is appended"
 );
 
-const VECTOR: &str = include_str!("../../../../../docs/log-format/vectors/17/schema-hash.json");
+const VECTOR: &str = include_str!("../../../../../docs/log-format/vectors/23/schema-hash.json");
 
 async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(store: Store) -> Held {
     let vector: Value = serde_json::from_str(VECTOR)
@@ -448,7 +436,7 @@ async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(stor
 
 check!(
     IN_FORCE_APPENDS_NOTHING = a_declaration_that_is_the_one_in_force_appends_nothing,
-    "027, extended (lakelands#565): a declaration that is the one in force (a value type, a function, a type, a verb, a trigger, a set, and a type whose computed field is stated with its completed `depends_on` or without) is answered `applied` at the head and appends nothing, by `declare` and by `apply`, and its version stays; a refusal still comes first; of a set what differs is appended alone, and what it sets off happens; an accepted proposal of declarations in force appends its acceptance alone"
+    "027, extended (lakelands#565): a declaration that is the one in force (a value type, a function, a type, a verb, a trigger, a set, and a type whose computed field is stated with its completed `depends_on` or without) is answered `applied` at the head and appends nothing, by `declare` and by `apply`, and its version stays; a refusal still comes first; of a set what differs is appended alone, and what it sets off happens; an accepted proposal of declarations in force by then appends its acceptance alone, and each accept answers how each declaration stands after it, appended or not; a proposal of declarations all in force is not filed: it is answered `applied` at the head with how each stands, appending nothing, to one without `schema` kept from a field who proposes the type as it is shown it too, while a reviewer's accept of one that differs answers it appended (lakelands#1187)"
 );
 
 async fn a_declaration_that_is_the_one_in_force_appends_nothing(store: Store) -> Held {
@@ -508,23 +496,122 @@ async fn a_declaration_that_is_the_one_in_force_appends_nothing(store: Store) ->
         "a set of a changed function and an unchanged type appends the function alone, \
          and `gross` is computed again as 9; it reads {gross:?} after {written:?}"
     );
-    // An accepted proposal of declarations in force: its acceptance alone.
-    let declarations = vec![scaled(3), bill(&["net"])];
-    let proposed = ProposedWrite::Declare {
-        declarations,
+    // Proposed twice while it differs: the first accept appends the
+    // function, the second, all in force by then, its acceptance alone.
+    let declarations = vec![scaled(4), bill(&["net"])];
+    let proposed = || ProposedWrite::Declare {
+        declarations: declarations.clone(),
         plan: None,
     };
-    let proposed = l.cat.propose(&l.own, proposed, "again".into()).await;
-    let Outcome::Proposed { proposal, .. } = proposed.must("proposing")? else {
-        return Err(Failure::new("a proposed set is not answered as proposed"));
+    let mut filed = Vec::new();
+    for _ in 0..2 {
+        let proposal = l.cat.propose(&l.own, proposed(), "again".into()).await;
+        let Outcome::Proposed { proposal, .. } = proposal.must("proposing")? else {
+            return Err(Failure::new(
+                "a proposed change is not answered as proposed",
+            ));
+        };
+        filed.push(proposal);
+    }
+    let first = l.cat.accept(&l.own, &filed[0]).await.must("accepting")?;
+    let at = store.head().await.must("reading the head")?;
+    let second = l.cat.accept(&l.own, &filed[1]).await;
+    let second = second.must("accepting the second")?;
+    let written = events_after(store.as_ref(), at).await?;
+    let stood = |o: &Outcome| match o {
+        Outcome::Applied { declared, .. } => (declared.iter())
+            .map(|d| (d.name.clone(), d.version, d.appended))
+            .collect(),
+        Outcome::Proposed { .. } => Vec::new(),
     };
-    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
-    let written = events_after(store.as_ref(), before).await?;
+    let both = |appended| vec![("scaled".into(), 3, appended), ("bill".into(), 1, false)];
     ensure!(
-        written.len() == 3 && matches!(written[2].body, EventBody::WriteAccepted { .. }),
-        "an accepted proposal of declarations in force appends `write_accepted` alone; \
-         after the function's, the log holds {:?}",
-        &written[1..]
+        stood(&first) == both(true)
+            && stood(&second) == both(false)
+            && written.len() == 1
+            && matches!(written[0].body, EventBody::WriteAccepted { .. }),
+        "the first accept answers `scaled` appended at version 3 and `bill` in force, \
+         the second both in force, appending `write_accepted` alone: {first:?}, then \
+         {second:?} after {written:?}"
+    );
+    // All in force, a proposal is not filed: answered as `apply` answers it.
+    let head = store.head().await.must("reading the head")?;
+    let again = l.cat.propose(&l.own, proposed(), "in force".into()).await;
+    let again = again.must("proposing what is in force")?;
+    head_unmoved(store.as_ref(), head, "the proposal of what is in force").await?;
+    ensure!(
+        matches!(again, Outcome::Applied { position, .. } if position == head)
+            && stood(&again) == both(false),
+        "a proposal of declarations all in force is answered `applied` at the head {head} \
+         with both in force; it answered {again:?}"
+    );
+    // The road the rule serves: one without `schema`, kept from `shade`,
+    // proposes `paint` as it is shown it and is answered as `apply`
+    // answers; a reviewer accepts what differs, answered how it stands.
+    let paint = |extra: &[&str]| {
+        let names = ["name"].iter().chain(extra);
+        let fields = names.map(|f| field(f, StorageKind::Text)).collect();
+        Declaration::Type(type_decl("paint", fields))
+    };
+    let since = l.declare_as(paint(&["shade"]), "declaring `paint`").await?;
+    let since = since.position();
+    let painter = field_access(
+        store.as_ref(),
+        "painter",
+        "paint",
+        &[("shade", Access::None)],
+    );
+    let shown = |extra| ProposedWrite::Declare {
+        declarations: vec![paint(extra)],
+        plan: None,
+    };
+    let stands = |version, since, appended| InForce {
+        kind: DeclarationKind::Type,
+        name: "paint".into(),
+        version,
+        since,
+        appended,
+    };
+    let declared = |o: &Outcome| match o {
+        Outcome::Applied { declared, .. } => declared.clone(),
+        Outcome::Proposed { .. } => Vec::new(),
+    };
+    let head = store.head().await.must("reading the head")?;
+    let as_shown = l.cat.propose(&painter, shown(&[]), "as shown".into()).await;
+    let as_shown = as_shown.must("proposing `paint` as it is shown")?;
+    head_unmoved(
+        store.as_ref(),
+        head,
+        "the proposal of `paint` as it is shown",
+    )
+    .await?;
+    ensure!(
+        matches!(as_shown, Outcome::Applied { position, .. } if position == head)
+            && declared(&as_shown) == [stands(1, since, false)],
+        "one kept from `shade` proposing `paint` as it is shown it is answered `applied` at \
+         the head {head}, `paint` standing from {since}; it answered {as_shown:?}"
+    );
+    let noted = l
+        .cat
+        .propose(&painter, shown(&["note"]), "a note".into())
+        .await;
+    let Outcome::Proposed { proposal, .. } = noted.must("proposing a note")? else {
+        return Err(Failure::new("a proposal that differs is not filed"));
+    };
+    let accepted = l
+        .cat
+        .accept(&reviewer(store.as_ref(), true), &proposal)
+        .await;
+    let accepted = accepted.must("accepting the note")?;
+    let written = events_after(store.as_ref(), head).await?;
+    let at = written
+        .iter()
+        .find(|e| matches!(e.body, EventBody::Declared { .. }));
+    let at = at.map(|e| e.position);
+    ensure!(
+        at.is_some_and(|at| declared(&accepted) == [stands(2, at, true)]),
+        "a reviewer's accept of `paint` with a note answers it appended at version 2, \
+         standing from its `declared`: {accepted:?} after {written:?}"
     );
     Ok(())
 }
@@ -649,7 +736,7 @@ async fn a_declaration_answers_how_it_stands_in_force(store: Store, given: Given
 
 check!(
     MIGRATION_IN_FORCE = a_migration_to_what_is_in_force_appends_nothing,
-    "027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing only where it fills no record (050); a stale report is refused first; an accepted proposal of it appends its acceptance alone; a value type's migration to itself is refused as before, there being nothing to migrate"
+    "027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing only where it fills no record (050); a stale report is refused first; a proposal of it is answered `applied` at the head and appends nothing (lakelands#1267), one with a change being filed whole and migrating when accepted; a value type's migration to itself is refused as before, there being nothing to migrate"
 );
 
 async fn a_migration_to_what_is_in_force_appends_nothing(store: Store) -> Held {
@@ -683,23 +770,119 @@ async fn a_migration_to_what_is_in_force_appends_nothing(store: Store) -> Held {
          the head is {after}, `bill` at version {version}, and they answered {stale:?}, \
          {typed:?} and {got:?}"
     );
-    // Proposed and accepted: the proposal and its acceptance, nothing more.
-    let (migration, report) = (Box::new(migration(bill)), Default::default());
-    let write = ProposedWrite::Migrate { migration, report };
+    // Proposed: answered `applied` at the head with how `bill` stands, and
+    // nothing filed (lakelands#1267); accepting what was never filed is not
+    // possible, so the log is as it was.
+    let (same, report) = (Box::new(migration(bill.clone())), Default::default());
+    let write = ProposedWrite::Migrate {
+        migration: same,
+        report,
+    };
     let proposed = l.cat.propose(&l.own, write, "again".into()).await;
-    let Outcome::Proposed { proposal, .. } = proposed.must("proposing")? else {
+    let proposed = proposed.must("proposing")?;
+    let (after, version) = (
+        store.head().await.must("reading the head")?,
+        l.describe_type("bill").await?.lifecycle.version,
+    );
+    ensure!(
+        matches!(&proposed, Outcome::Applied { position, declared, .. }
+            if *position == before && declared.len() == 1 && !declared[0].appended)
+            && (after, version) == (before, 1),
+        "a proposed migration to the type in force is answered `applied` at the head \
+         {before} with `bill` not appended, and files nothing; the head is {after}, \
+         `bill` at version {version}, and it answered {proposed:?}"
+    );
+    // One with a change is proposed whole, and its accept migrates.
+    let mut noted = bill;
+    noted.fields.push(field("note", StorageKind::Text));
+    let (changed, report) = (Box::new(migration(noted)), Default::default());
+    let write = ProposedWrite::Migrate {
+        migration: changed,
+        report,
+    };
+    let proposed = l.cat.propose(&l.own, write, "noted".into()).await;
+    let Outcome::Proposed { proposal, .. } = proposed.must("proposing a change")? else {
         return Err(Failure::new(
-            "a proposed migration is not answered as proposed",
+            "a proposed migration with a change is not answered as proposed",
         ));
     };
-    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
     let written = events_after(store.as_ref(), before).await?;
     ensure!(
-        written.len() == 2 && matches!(written[1].body, EventBody::WriteAccepted { .. }),
-        "an accepted proposal of a migration to the type in force appends `write_accepted` \
-         alone; the log holds {written:?}"
+        written.len() == 1 && matches!(written[0].body, EventBody::WriteProposed { .. }),
+        "a proposed migration with a change is filed whole as `write_proposed`; the log \
+         holds {written:?}"
+    );
+    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
+    let version = l.describe_type("bill").await?.lifecycle.version;
+    ensure!(
+        version == 2,
+        "the accepted migration with a change migrates `bill` to version 2; it is at {version}"
     );
     Ok(())
+}
+
+check!(
+    MIGRATION_FILL_PROPOSED = a_proposed_migration_in_force_is_filed_only_where_it_fills,
+    "027, extended (lakelands#1267): a proposed migration to the type in force that fills a record is filed, as it changes that record; one that fills none is answered `applied` at the head with its plan and the type named in `declared`, appending nothing, to one without `schema` too; a filed one whose fill the records took by then is accepted by appending `write_accepted` alone"
+);
+
+async fn a_proposed_migration_in_force_is_filed_only_where_it_fills(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let no = field("no", StorageKind::Text);
+    let mut status = field("status", StorageKind::Text);
+    status.initial = Some(json!("open"));
+    l.declare(type_decl("t", vec![no.clone()])).await?;
+    l.upsert("t", "t1", json!({"no": "1"})).await?;
+    // Added with an `initial`, a migration fills nothing; `fill` does.
+    let to = type_decl("t", vec![no, status]);
+    l.migrate(to.clone()).await?;
+    let fill = Migration {
+        fill: vec!["status".into()],
+        ..migration(to)
+    };
+    let propose = |who| {
+        let write = ProposedWrite::Migrate {
+            migration: Box::new(fill.clone()),
+            report: Default::default(),
+        };
+        l.cat.propose(who, write, "fill".into())
+    };
+    let before = store.head().await.must("reading the head")?;
+    let Outcome::Proposed { proposal, .. } = propose(&l.own).await.must("proposing the fill")?
+    else {
+        return Err(Failure::new(
+            "a proposed migration that fills a record is not answered as proposed",
+        ));
+    };
+    let written = events_after(store.as_ref(), before).await?;
+    ensure!(
+        written.len() == 1 && matches!(written[0].body, EventBody::WriteProposed { .. }),
+        "a proposed migration to the type in force that fills a record is filed; the log \
+         holds {written:?}"
+    );
+    // The record takes the field before the accept: it fills none by then.
+    l.upsert("t", "t1", json!({"status": "done"})).await?;
+    let at = store.head().await.must("reading the head")?;
+    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
+    let written = events_after(store.as_ref(), at).await?;
+    ensure!(
+        written.len() == 1 && matches!(written[0].body, EventBody::WriteAccepted { .. }),
+        "an accepted proposal whose fill the records took by then appends `write_accepted` \
+         alone; the log holds {written:?}"
+    );
+    // Nothing to fill now: not filed, for one without `schema` as well.
+    let head = store.head().await.must("reading the head")?;
+    for who in [&l.own, &reviewer(store.as_ref(), false)] {
+        let got = propose(who).await.must("proposing what is in force")?;
+        ensure!(
+            matches!(&got, Outcome::Applied { position, declared, plan, .. }
+                if *position == head && plan.is_some()
+                    && declared.len() == 1 && !declared[0].appended),
+            "a proposed migration that fills none is answered `applied` at the head {head} \
+             with its plan and `t` in force; it answered {got:?}"
+        );
+    }
+    head_unmoved(store.as_ref(), head, "the proposals of what is in force").await
 }
 
 check!(
@@ -758,6 +941,7 @@ async fn the_door_computes_again_what_a_declaration_in_force_computes(store: Sto
             "blind",
             Grants {
                 schema: true,
+                restricted: true,
                 ..Grants::default()
             },
         ),

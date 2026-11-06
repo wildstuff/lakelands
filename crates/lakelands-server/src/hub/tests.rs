@@ -262,6 +262,7 @@ fn an_empty_batch_short_of_the_head_is_not_caught_up() {
         next,
         head,
         overruled: Vec::new(),
+        appends: Vec::new(),
     };
     let from = Position::GENESIS;
     assert!(!caught_up(&batch(examined, Position(10_000)), from));

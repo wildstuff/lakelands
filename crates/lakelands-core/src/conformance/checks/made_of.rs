@@ -1,24 +1,14 @@
 //! A type made of another, a link type or a view, is shown only with it
 //! (`docs/decisions/006-grants-not-roles.md`, extended, lakelands#595).
 
+use lakelands_api::ingest_all;
 use lakelands_api::key::{UNGROUPED, link_key};
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Projection, Search, SearchMode, Walk};
-use lakelands_api::read::{AggFunc, Aggregate, Get, GroupKey, OrderBy};
-use lakelands_api::write::{ProposalFilter, ProposedWrite, WriteOpts};
-use lakelands_api::{
-    Access, Catalog, Error, FieldName, Find, Grants, LakeStore, Missing, Principal, PrincipalKind,
-    TypeName, ingest_all,
-};
-use serde_json::json;
+use lakelands_api::read::Get;
+use lakelands_api::write::WriteOpts;
 
 use super::links::{SEPT, lake, link_ok};
-use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, alike_renamed, field, field_access, get_at, object_set_on, order,
-    patch, pattern, principal, source_record, step, trigger_on, view_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{get_at, order, source_record, step};
+use crate::conformance::prelude::*;
 
 const LINKS: &str = "sys.link.invoice.approved_by";
 
@@ -147,14 +137,8 @@ async fn a_type_made_of_another_is_shown_only_with_it(store: Store) -> Held {
             at: Default::default(),
         };
         let search = Search {
-            ty: LINKS.into(),
-            mode: SearchMode::lexical("x"),
-            k: 1,
-            cursor: None,
-            filter: None,
-            with_meta: false,
             at: Default::default(),
-            rerank: None,
+            ..searched(LINKS, SearchMode::lexical("x"), 1)
         };
         // A walk's answer; "no relation" where it is the answer for none, alike.
         let walk = |from: &'static str, key: &'static str, by: &'static str| async move {

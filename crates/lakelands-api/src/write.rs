@@ -35,6 +35,18 @@ pub struct WriteOpts {
     /// recorded in the log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<IdempotencyKey>,
+    /// Answer once the write is in the log and folded, at its own
+    /// position, and make the calls its computed fields (an embedding
+    /// included) are due in a task of the lake's own after. Until then
+    /// such a field holds no value and no `error`, as a waiting one does:
+    /// a lexical or structured read finds the record, a vector ranking
+    /// leaves it out. Off by default: the write answers once they are
+    /// recorded. A call that hands an external verb to its executor
+    /// waits as without it, and so does a write through a network door,
+    /// which does not carry it
+    /// (`docs/decisions/022-functions-are-declarations.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_computed_fields: bool,
 }
 
 /// Options an `ingest` takes.
@@ -42,11 +54,37 @@ pub struct WriteOpts {
 #[serde(deny_unknown_fields)]
 pub struct IngestOpts {
     /// The delivery its records came in, as the caller names it (a
-    /// vendor's batch id); else the store's own, `d<first position>`.
+    /// vendor's batch id); else the store's own, `d<first position>`. A
+    /// record that names its own delivery is in that one instead.
     /// Not part of a record's ingest id: the same content under another
     /// delivery is a duplicate and stays with the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<DeliveryId>,
+    /// Seal the call's values of erasable fields under a key of their own
+    /// too, one per source and delivery, outside the source's versions, so
+    /// that taking back a delivery shreds it alone
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    /// Refused as unbound where the key store makes no such key. Off by
+    /// default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sealed_apart: bool,
+    /// The most records one of the call's commit windows holds, for this
+    /// delivery alone; else the lake's `limits.commit_window_events`.
+    /// Between 1 and the lake's `limits.commit_window_max`, else refused
+    /// as invalid
+    /// (`docs/decisions/016-two-write-doors-by-origin.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_window: Option<u32>,
+    /// Quarantine a record refused by a rule of the record, and go on with
+    /// the stream; off, a refused record ends it
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quarantine_refused: bool,
+    /// The host's intake run, of a delivery id's form, which keys the
+    /// call's quarantined records in place of their delivery; each
+    /// record's `line` keys it in place of its place (085, extended).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<DeliveryId>,
 }
 
 /// What a write did. A writer never has to know in advance whether its
@@ -82,8 +120,9 @@ pub enum Outcome {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         renamed: Vec<(FieldName, FieldName)>,
         /// For `declare` and `apply`: each declaration sent, in the order
-        /// sent, as it stands in force after the call. Empty for every
-        /// other write.
+        /// sent, as it stands in force after the call; so for a `propose`
+        /// of declarations all in force, which files nothing, and for the
+        /// `accept` of proposed declarations. Empty for every other write.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         declared: Vec<InForce>,
         /// For a change to the ontology: the plan that applied, as the one
@@ -274,11 +313,38 @@ pub enum ProposedWrite {
         /// The first records it called for, in key order.
         first: Vec<RecordKey>,
     },
+    /// A change to the records a condition selects, whole, as `enact`
+    /// makes it: its accept enacts it against the plan its reviewer is
+    /// shown, or is refused `plan_stale`
+    /// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
+    Records {
+        /// The type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The condition, in the expression grammar.
+        #[serde(rename = "where")]
+        filter: Condition,
+        /// What it does to each record selected.
+        to: ChangeTo,
+        /// The proposer's `only` on the type, held beside the condition.
+        /// The store answers it; whatever a proposer sends is replaced.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        only: std::collections::BTreeMap<FieldName, serde_json::Value>,
+        /// Whether restricted records are left out: so where its proposer
+        /// does not hold `restricted`. The store answers it; whatever a
+        /// proposer sends is replaced.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        skip_restricted: bool,
+        /// Its plan as its proposer was shown it. The store answers it;
+        /// whatever a proposer sends is replaced.
+        #[serde(default)]
+        plan: Box<Plan>,
+    },
 }
 
 impl ProposedWrite {
-    /// The change to the ontology it proposes, as `plan` plans it; `None`
-    /// for a write of records.
+    /// The change it proposes, as `plan` plans it: to the ontology, or to
+    /// the records a condition selects; `None` for a write of one record.
     pub fn change(&self) -> Option<Change> {
         match self {
             ProposedWrite::Declare { declarations, .. } => Some(Change::Declare {
@@ -292,6 +358,20 @@ impl ProposedWrite {
                     to: (**to).clone(),
                     renames: renames.clone(),
                 }),
+            }),
+            ProposedWrite::Records {
+                ty,
+                filter,
+                to,
+                only,
+                skip_restricted,
+                ..
+            } => Some(Change::Records {
+                ty: ty.clone(),
+                filter: Box::new(filter.clone()),
+                to: to.clone(),
+                only: only.clone(),
+                skip_restricted: *skip_restricted,
             }),
             _ => None,
         }
@@ -309,6 +389,7 @@ impl ProposedWrite {
             ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. } => {
                 ProposalKind::Compute
             }
+            ProposedWrite::Records { .. } => ProposalKind::Records,
         }
     }
 
@@ -342,6 +423,8 @@ pub enum ProposalKind {
     MigrateValueType,
     /// A function's outside calls.
     Compute,
+    /// A change to the records a condition selects.
+    Records,
 }
 
 /// Where a proposal stands.
@@ -417,8 +500,8 @@ pub struct ProposalFilter {
 
 /// An object set: the records of one type, or the groups of a view the
 /// lake keeps, matching a condition. When a write moves a record or a
-/// group into or out of the set, the store appends `ObjectSetChanged` in
-/// the same append.
+/// group into or out of a kept set, the store appends `ObjectSetChanged`
+/// in the same append; a set decided at the read keeps no membership.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectSetDecl {
@@ -432,6 +515,36 @@ pub struct ObjectSetDecl {
     /// What the set is for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// When its membership is decided.
+    #[serde(default, skip_serializing_if = "DecidedAt::is_write")]
+    pub decided_at: DecidedAt,
+}
+
+/// When an object set's membership is decided.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecidedAt {
+    /// At each write that moves a record into or out of it: the
+    /// membership is kept, and its changes are in the log.
+    #[default]
+    Write,
+    /// At every read that names it, its `where` over the record read at
+    /// the read's clock: no membership is kept.
+    Read,
+}
+
+impl DecidedAt {
+    /// Whether it is [`DecidedAt::Write`], the default.
+    pub fn is_write(&self) -> bool {
+        *self == DecidedAt::Write
+    }
+}
+
+impl ObjectSetDecl {
+    /// Whether it is decided at every read ([`DecidedAt::Read`]).
+    pub fn at_read(&self) -> bool {
+        self.decided_at == DecidedAt::Read
+    }
 }
 
 /// One declaration of a lake's ontology. It is read strictly: a member it
@@ -459,10 +572,12 @@ pub enum Declaration {
     Withdraw(Withdrawal),
 }
 
-/// A trigger, a verb, an object set or a function taken out of force from
-/// the withdrawal's position on: `describe` no longer shows it, and a read
-/// as of before still does. Declaring the same name again later is a new
-/// declaration, whose version continues the withdrawn one's.
+/// A type, a trigger, a verb, an object set or a function taken out of
+/// force from the withdrawal's position on: `describe` no longer shows it,
+/// and a read as of before still does. Declaring the same name again later
+/// is a new declaration, whose version continues the withdrawn one's. A
+/// type is withdrawn once it holds no live record and nothing in force
+/// names it; the link types its relations carry leave with it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Withdrawal {
@@ -533,8 +648,8 @@ impl DeclarationKind {
     }
 }
 
-/// A declaration sent to `declare` or `apply`, as it stands in force
-/// after the call (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+/// A declaration sent to `declare` or `apply`, or proposed, as it stands
+/// in force after the call (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 /// extended).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InForce {
@@ -797,6 +912,9 @@ impl Declaration {
             Declaration::ValueType(v) => all.push(("constraint".into(), v.constraint.as_ref())),
             Declaration::Verb(v) => {
                 all.push(("requires".into(), v.requires.as_ref()));
+                for (i, p) in v.preconditions.iter().enumerate() {
+                    all.push((format!("preconditions[{i}].holds"), Some(&p.holds)));
+                }
                 if let crate::ontology::VerbEffect::Write { set } = &v.effect {
                     for (i, a) in set.iter().enumerate() {
                         all.push((format!("set[{i}].value"), Some(&a.value)));
@@ -817,10 +935,9 @@ impl From<AnnotationFault> for crate::error::Error {
     fn from(f: AnnotationFault) -> crate::error::Error {
         use crate::error::{Error, Refusal};
         match f {
-            AnnotationFault::Reserved { key, .. } => Error::Refused {
-                field: Some(key.into()),
-                reason: Refusal::Reserved,
-            },
+            AnnotationFault::Reserved { key, .. } => {
+                Error::refused(Some(key.into()), Refusal::Reserved)
+            }
             AnnotationFault::Invalid { said } => Error::invalid(said),
         }
     }
@@ -983,6 +1100,13 @@ pub struct Migration {
     /// (`docs/decisions/050-a-field-declares-its-initial-value.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fill: Vec<FieldName>,
+    /// Views over the type, each declared again as it stands after the
+    /// migration: judged against the migrated type in its plan in place of
+    /// the view in force, and declared in the migration's append; one that
+    /// reads as the lake holds it is kept, not declared again
+    /// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<TypeDecl>,
 }
 
 impl Migration {
@@ -994,6 +1118,7 @@ impl Migration {
             renames,
             relation_renames,
             fill,
+            views: Vec::new(),
         }
     }
 
@@ -1004,7 +1129,7 @@ impl Migration {
     /// it may not know of is no field to it (lakelands#750). It lives in
     /// the contract; the store and the core's conversion call it.
     pub fn renamed_fields(&self, before: &TypeDecl) -> Result<Vec<(&FieldName, &FieldName)>, Case> {
-        let has = |t: &TypeDecl, n: &FieldName| t.fields.iter().any(|f| &f.name == n);
+        let has = |t: &TypeDecl, n: &FieldName| t.has_field(n);
         let mut out: Vec<(&FieldName, &FieldName)> = Vec::new();
         for (from, to) in &self.renames {
             if !has(before, from) {
@@ -1037,7 +1162,7 @@ impl Migration {
     /// why.
     pub fn fills(&self) -> Result<(), Case> {
         for (i, f) in self.fill.iter().enumerate() {
-            let (field, declared) = (f.clone(), self.to.fields.iter().find(|d| &d.name == f));
+            let (field, declared) = (f.clone(), self.to.field(f));
             let case = match (declared, self.renames.iter().find(|(from, _)| from == f)) {
                 (None, Some((_, to))) => Case::FillRenamed {
                     field,
@@ -1070,7 +1195,7 @@ impl Migration {
                 let (from, to) = (old.clone(), new.clone());
                 Said::from(case).within(Place::RelationRename { from, to })
             };
-            let of = |t: &'a TypeDecl, n| t.relations.iter().find(|r| &r.name == n);
+            let of = |t: &'a TypeDecl, n| t.relation(n);
             let (Some(was), Some(is)) = (of(before, old), of(&self.to, new)) else {
                 return Err(wrong(Case::RelationRenameNamesNone));
             };
@@ -1109,7 +1234,7 @@ impl Migration {
         for r in &self.to.relations {
             let renamed = self.relation_renames.iter().find(|(_, new)| new == &r.name);
             let name = renamed.map_or(&r.name, |(old, _)| old);
-            let was = before.relations.iter().find(|w| &w.name == name);
+            let was = before.relation(name);
             // A rename is said by the report's `relations`, a link field below.
             let (of, said) = (format!("{}.", r.name), ["name", "fields"]);
             differing(Some(r.name.to_string()), was, r, &said, &mut out);
@@ -1173,7 +1298,7 @@ fn differing<T: Serialize + Default>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Carrier {
-    /// By a reference field of the record, the relation's `via`.
+    /// By a field of the record, the relation's `via`, one key or an array.
     Via,
     /// By link records, of the relation's link type.
     Links,
@@ -1402,10 +1527,11 @@ pub struct MigrationReport {
     /// stored values: a migration that only restates is lossless. It says
     /// nothing of what the migration removes, which is `dropped`.
     pub lossless: bool,
-    /// Names this report; `migrate_apply` must repeat it. It is the id of
-    /// the report as its reader is shown it and of the head it was made
-    /// at: the SHA-256 of `{"report": …, "head": …}` in canonical form,
-    /// the report with this member empty.
+    /// Names this report; `migrate_apply` must repeat it. It is the
+    /// position it was read at, a hyphen, and the SHA-256 of the report as
+    /// its reader is shown it there, in canonical form, with this member
+    /// empty. A write since that reaches the type makes it stale; one
+    /// elsewhere does not.
     pub report_id: String,
     /// Whether the report holds more than this reader is shown, or counts
     /// more than it names: an entry left out, a `not_convertible` larger
@@ -1471,7 +1597,9 @@ pub struct Unlive {
 /// A change to the ontology, as `plan` plans it and `enact` makes it
 /// (`docs/decisions/062-a-change-plans-before-it-acts.md`): what the doors
 /// `apply`, `add_field`, `recompute`, `migrate_apply` and
-/// `migrate_value_type_apply` each make.
+/// `migrate_value_type_apply` each make; or a change to the records a
+/// condition selects
+/// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "change", rename_all = "snake_case")]
 pub enum Change {
@@ -1503,6 +1631,41 @@ pub enum Change {
         /// The migration.
         migration: Box<ValueTypeMigration>,
     },
+    /// The same values set on, or a retirement of, every record of one
+    /// type that a condition selects, as its caller's `find` with that
+    /// condition answers them.
+    Records {
+        /// The type. On a link type, its links' own fields are set, or
+        /// the links unlinked; no end is named.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The condition, in the expression grammar.
+        #[serde(rename = "where")]
+        filter: Box<Condition>,
+        /// What it does to each record selected.
+        to: ChangeTo,
+        /// Text values a selected record's fields must hold, beside the
+        /// condition: a proposal's carries its proposer's `only`, so its
+        /// accept selects no record the proposer could not.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        only: std::collections::BTreeMap<FieldName, serde_json::Value>,
+        /// Whether restricted records are left out, beside the condition:
+        /// a proposal's is set where its proposer does not hold
+        /// `restricted`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        skip_restricted: bool,
+    },
+}
+
+/// What a change to records does to each record it selects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub enum ChangeTo {
+    /// These values set, the same on every record: values, never an
+    /// expression over the record.
+    Set(Patch),
+    /// Each record retired.
+    Retire,
 }
 
 /// What a change would do, before it does it: told to its author, and
@@ -1512,11 +1675,18 @@ pub enum Change {
 /// `enact` acts only on the plan its caller was shown.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
-    /// Names this plan; `enact` must repeat it. As a migration's report id:
-    /// the SHA-256 of `{"plan": …, "head": …}` in canonical form, the plan
-    /// as its reader is shown it with this member empty.
+    /// Names this plan; `enact` must repeat it. A plan of declarations is
+    /// named as a migration's report is: the position it was read at, a
+    /// hyphen, and the SHA-256, in canonical form, of `{"plan": <plan>}`
+    /// over the plan as its reader is shown it there, with this member
+    /// and every section's `report_id` empty and `at` at position `0`. A
+    /// change to records' plan is named by that SHA-256 alone, over
+    /// `{"plan": <plan>, "selection": [[key, version], …]}` with this
+    /// member empty and `at` at position `0`, so it names no position and
+    /// a write that moves its selection moves it.
     pub report_id: String,
-    /// The head it was made at.
+    /// The position it was read at: the log's last event that is neither
+    /// a `lease_taken` nor a `checkpoint`.
     pub at: Position,
     /// Each type whose stored records the change would change, by name: a
     /// migration's report, of the type migrated or of one a declaration
@@ -1529,8 +1699,57 @@ pub struct Plan {
     /// True when no section loses a value or breaks a constraint that
     /// refuses: the change can be made as planned. A proposal's plan of
     /// declarations only tells, and is judged on the records its proposer
-    /// is told of; its accept still refuses on every record.
+    /// is told of; its accept still refuses on every record. A plan of
+    /// records holds it while no record is refused.
     pub lossless: bool,
+    /// A change to records' section: what it selects, changes and is
+    /// refused. Its plan's id is made over it and over every selected
+    /// key with the version read, never over the head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records: Option<Box<RecordsPlan>>,
+}
+
+/// What a change to records would do, as its caller is answered it: every
+/// count and key is an answer to its read
+/// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordsPlan {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// How many records the condition selects.
+    pub selected: u64,
+    /// Up to five of their keys, the smallest.
+    pub sample_keys: Vec<RecordKey>,
+    /// Per field set, how many selected records it would change. A field
+    /// its caller may write and not read is told as written on every one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FieldChanged>,
+    /// Every refusal a selected record would meet, as that record's own
+    /// `upsert` or `retire` is refused; one is enough that the change
+    /// cannot be enacted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<RecordsRefused>,
+}
+
+/// How many selected records a change to records changes one field of.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldChanged {
+    /// The field.
+    pub field: FieldName,
+    /// How many records it would change.
+    pub records: u64,
+}
+
+/// One refusal the records a change selects would meet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordsRefused {
+    /// The refusal, as the first of them is refused it.
+    pub refusal: Box<crate::Error>,
+    /// How many records it refuses.
+    pub records: u64,
+    /// Up to five of their keys, the smallest.
+    pub sample_keys: Vec<RecordKey>,
 }
 
 /// How the values of one field convert to its new type.
@@ -1563,9 +1782,15 @@ pub struct Committed {
     /// How many records were already in the log and appended nothing.
     pub duplicates: u32,
     /// The call's delivery: the caller's, or the store's once a window
-    /// appended; none before.
+    /// appended; none before. The store's names no event where every
+    /// record named its own. A delivery a record names is not listed:
+    /// the window's records are the next `records + duplicates +
+    /// quarantined.len()` of the stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<DeliveryId>,
+    /// The stream index of each record the window quarantined, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<u64>,
 }
 
 /// How many refused moves a rule's run lists (`RuleRun::refusals`); the
@@ -1684,6 +1909,11 @@ pub struct PurgeReport {
     /// The lake's `max_set_changes`, beside `set_off`.
     #[serde(default)]
     pub max_set_changes: u32,
+    /// Per type, in name order, the source's open quarantined records the
+    /// act closes; types with none are left out
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<crate::quarantine::TypeQuarantined>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1746,10 +1976,10 @@ pub struct ForgetReport {
     /// are erased with it.
     pub outputs: u64,
     /// Per type, in name order, the records it retires: those the source
-    /// alone brought, as a purge retires them.
+    /// made and alone brought, as a purge retires them.
     pub retired: Vec<TypeRetired>,
-    /// Per type, in name order, the records another hand wrote too: they
-    /// stay, with that hand's values.
+    /// Per type, in name order, the records another hand made or wrote
+    /// too: they stay, with that hand's values.
     pub co_owned: Vec<ForgetRecords>,
     /// The computed fields that read an erasable field holding the
     /// source's values, each computed again, in type then field order.
@@ -1771,6 +2001,10 @@ pub struct ForgetReport {
     /// of the log took, which the act walks again. The fold's cost is the ontology's and
     /// a reclaim's the projection's, so the act may still differ from it.
     pub expected_ms: u64,
+    /// Whether `expected_ms` leaves the reclaim out because this lake has
+    /// not timed one yet (before its first reclaim): the act may take longer than it says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reclaim_untimed: bool,
     /// The head after the act, or the head the preflight read.
     pub position: Position,
     /// The projection's storage in bytes before and after the act's
@@ -1782,10 +2016,92 @@ pub struct ForgetReport {
     /// writer's next open, a repeat or a compact runs it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reclaim_owed: Option<String>,
+    /// How the act restates the projection: the preflight's choice, or
+    /// the way the act took. A repeat that finds the act done restates
+    /// nothing, and answers the default.
+    #[serde(default)]
+    pub way: ForgetWay,
     /// Names a preflight's report; `forget_source` may repeat it. Empty
     /// on the act's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub report_id: String,
+    /// Per type, in name order, the source's open quarantined records the
+    /// act closes; types with none are left out
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<crate::quarantine::TypeQuarantined>,
+}
+
+/// What `LakeStore::forget_sources` erased, or what
+/// `LakeStore::forget_sources_preflight` says it would: several sources
+/// forgotten in one act, one log walk and one rebuild under one hold of
+/// the writer (`docs/decisions/058-a-source-may-be-forgotten.md`,
+/// extended).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgetSetReport {
+    /// Per source, in id order, what forgetting it takes, as
+    /// `forget_source` answers it, the set's time, position and
+    /// `reclaim_owed` in each; the act's reclaim and the preflight's id
+    /// are the set's alone, below. A record the set's sources made and
+    /// alone brought is retired under the first of them that brought it,
+    /// and one another hand made or wrote too is co-owned.
+    pub sources: Vec<ForgetReport>,
+    /// The events the act's one rebuild folds again: the log's length.
+    pub events: u64,
+    /// How long the act is expected to hold the writer's lock, in
+    /// milliseconds, as `ForgetReport::expected_ms` says it: one rebuild
+    /// and one reclaim, and the preflight's own walk for the whole set.
+    pub expected_ms: u64,
+    /// Whether `expected_ms` leaves the reclaim out because this lake has
+    /// not timed one yet (before its first reclaim): the act may take longer than it says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reclaim_untimed: bool,
+    /// The head after the act, or the head the preflight read.
+    pub position: Position,
+    /// The projection's storage in bytes before and after the act's
+    /// reclaim, where the engine measures it; absent on a preflight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaimed: Option<CompactReport>,
+    /// Why the reclaim is still owed, as `ForgetReport::reclaim_owed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_owed: Option<String>,
+    /// How the act restates the projection, as `ForgetReport::way`.
+    #[serde(default)]
+    pub way: ForgetWay,
+    /// Names a preflight's report over the set; `forget_sources` may
+    /// repeat it. For a set of one it is the id `forget_preflight`
+    /// answers. Empty on the act's own report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub report_id: String,
+}
+
+/// How a forgetting restates the projection
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`): by a scoped
+/// refold of the records its sources wrote, where nothing else the lake
+/// keeps reads them and it is expected to take less than the rebuild;
+/// otherwise by the rebuild, with why. Either leaves the projection as
+/// the other would.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgetWay {
+    /// Whether the records are refolded alone; the rebuild otherwise.
+    pub scoped: bool,
+    /// Why the rebuild is chosen, each in a sentence; empty for the
+    /// scoped refold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub why: Vec<String>,
+    /// The records the scoped refold restates.
+    pub records: u64,
+    /// The events it folds: those about its records, and the lake's own
+    /// declarations, migrations and settings once per page, each record
+    /// a migration walks of a type its records read counted as one.
+    pub events: u64,
+    /// How long the scoped refold is expected to take, in milliseconds,
+    /// at the rate the last one this handle ran folded, or before any at
+    /// the rebuild's, and the reclaim's time.
+    pub scoped_ms: u64,
+    /// How long the rebuild is expected to take, as `expected_ms` reckons
+    /// it without the preflight's walk.
+    pub rebuild_ms: u64,
 }
 
 /// Records of one type a forgetting reads, with the first keys.
@@ -1831,6 +2147,12 @@ pub enum Selection {
     WrittenBefore(Timestamp),
     /// What it wrote in one delivery.
     Delivery(DeliveryId),
+    /// What it wrote in any of a set of deliveries, in one act: as the acts
+    /// taking each back would take them, with one walk and one rebuild.
+    Deliveries(Vec<DeliveryId>),
+    /// What it wrote of what it says it observed before a time: each event
+    /// whose `seen_at` is before it, wherever in the log it stands.
+    SeenBefore(Timestamp),
 }
 
 /// The values one field of one type loses to a removal.
@@ -1848,6 +2170,42 @@ pub struct RemovedField {
     pub shredded: u64,
 }
 
+/// A thinning act's cut: the field of instants or dates the host judges,
+/// and the horizon past which the records are taken
+/// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Thin {
+    /// The field of instants or dates.
+    pub by: FieldName,
+    /// The horizon: every record whose field is certainly before it, and
+    /// whose key the act had not taken, is taken.
+    pub before: Timestamp,
+}
+
+/// What `LakeStore::thin_values` took, or what it says it would with
+/// `preflight` at `true`
+/// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). It
+/// repeats no key: the log's parts name them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThinReport {
+    /// The type the act took records of.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The field of instants or dates it judged.
+    pub by: FieldName,
+    /// The horizon.
+    pub before: Timestamp,
+    /// The records it took, or would take.
+    pub records: u64,
+    /// The last position the act had got through.
+    pub through: Position,
+    /// The projection's storage in bytes before and after the act's
+    /// reclaim, where the engine measures it; absent on a preflight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaimed: Option<CompactReport>,
+}
+
 /// What `LakeStore::remove_values` took back, or what
 /// `LakeStore::remove_values_preflight` says it would
 /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
@@ -1857,21 +2215,25 @@ pub struct RemoveReport {
     pub source: SourceId,
     /// The selection, as asked.
     pub selection: Selection,
-    /// For a time, the first position it does not reach: every event of
-    /// the source below it is selected.
+    /// For a time of the log's clock, the first position it does not
+    /// reach: every event of the source below it is selected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<Position>,
     /// The source's `record_ingested` events selected.
     pub events: u64,
-    /// For a delivery, the source's events written before the log kept
-    /// deliveries, which it cannot select.
+    /// For a delivery or a set of them, the source's events written
+    /// before the log kept deliveries, which it cannot select.
     pub undelivered: u64,
+    /// For a time the source observed, the source's events that state no
+    /// `seen_at`, which it cannot select.
+    #[serde(default)]
+    pub unseen: u64,
     /// Per type, in name order, the records holding a value it removes.
     pub types: Vec<ForgetRecords>,
     /// Per type and field, in that order, the values it removes.
     pub fields: Vec<RemovedField>,
-    /// Per type, in name order, the records left holding nothing of
-    /// another hand: retired, as a purge retires them.
+    /// Per type, in name order, the records the source made left holding
+    /// nothing of another hand: retired, as a purge retires them.
     pub retired: Vec<TypeRetired>,
     /// Per type, in name order, the records reached that stay, with what
     /// another hand or the source outside the selection wrote.
@@ -1888,6 +2250,10 @@ pub struct RemoveReport {
     pub references: Vec<PurgeReference>,
     /// The versions of the source's key it destroys, oldest first.
     pub keys: Vec<KeyId>,
+    /// The keys of the source's deliveries sealed apart it destroys, in id
+    /// order: each whose values it all selects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apart: Vec<KeyId>,
     /// The values of an erasable field it redacts and does not shred: in
     /// plaintext, or sealed under a version that also seals values outside
     /// the selection. `require_shredded` refuses the act while any are.
@@ -1899,6 +2265,10 @@ pub struct RemoveReport {
     /// rebuild this handle ran folded, the last reclaim's time and the
     /// preflight's own walk, as [`ForgetReport::expected_ms`].
     pub expected_ms: u64,
+    /// Whether `expected_ms` leaves the reclaim out because this lake has
+    /// not timed one yet (before its first reclaim): the act may take longer than it says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reclaim_untimed: bool,
     /// The head after the act, or the head the preflight read.
     pub position: Position,
     /// The projection's storage in bytes before and after the act's
@@ -1914,6 +2284,11 @@ pub struct RemoveReport {
     /// on the act's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub report_id: String,
+    /// Per type, in name order, the source's open quarantined records the
+    /// act closes, those whose last version it selects
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<crate::quarantine::TypeQuarantined>,
 }
 
 impl RemoveReport {
@@ -1925,6 +2300,23 @@ impl RemoveReport {
             }
             (Selection::WrittenBefore(t), None) => format!("written before {t}"),
             (Selection::Delivery(d), _) => format!("of delivery `{d}`"),
+            (Selection::Deliveries(ds), _) if ds.is_empty() => "of no delivery".to_owned(),
+            (Selection::Deliveries(ds), _) => {
+                let named: Vec<String> = ds.iter().take(5).map(|d| format!("`{d}`")).collect();
+                let more = ds.len().saturating_sub(5);
+                let more = if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                };
+                let n = if ds.len() == 1 {
+                    "delivery"
+                } else {
+                    "deliveries"
+                };
+                format!("of {} {n} ({}{more})", ds.len(), named.join(", "))
+            }
+            (Selection::SeenBefore(t), _) => format!("seen before {t}"),
         };
         let (events, are) = (counted(self.events, "event"), be(self.events));
         let mut said = vec![format!(
@@ -1939,6 +2331,12 @@ impl RemoveReport {
                 "keep"
             };
             said.push(format!("{n} {keep} no delivery and stay."));
+        }
+        if self.unseen > 0 {
+            let n = counted(self.unseen, "event");
+            let state = verb(self.unseen, "states", "state");
+            let stay = verb(self.unseen, "stays", "stay");
+            said.push(format!("{n} {state} no time seen and {stay}."));
         }
         for f in &self.fields {
             let (ty, field) = (&f.ty, &f.field);
@@ -1964,6 +2362,17 @@ impl RemoveReport {
             said.push(format!(
                 "{} {} of `{}`'s key {} destroyed.",
                 if n == 1 { "Version" } else { "Versions" },
+                keys.join(", "),
+                self.source,
+                be(n)
+            ));
+        }
+        if !self.apart.is_empty() {
+            let keys: Vec<&str> = self.apart.iter().map(|k| k.as_str()).collect();
+            let n = self.apart.len() as u64;
+            said.push(format!(
+                "The {} {} of `{}`'s deliveries sealed apart {} destroyed.",
+                if n == 1 { "key" } else { "keys" },
                 keys.join(", "),
                 self.source,
                 be(n)
@@ -2019,12 +2428,20 @@ impl RemoveReport {
             ));
         }
         let (n, ms) = (counted(self.log_events, "event"), self.expected_ms);
+        let untimed = match self.reclaim_untimed {
+            true => UNTIMED,
+            false => "",
+        };
         said.push(format!(
-            "The act refolds {n}, about {ms} ms under the writer's lock."
+            "The act refolds {n}: {ms} ms of the writer's lock, the figure the summary rounds to seconds{untimed}."
         ));
         said
     }
 }
+
+/// What a preflight adds to its figure where the lake has timed no reclaim
+/// yet ([`RemoveReport::reclaim_untimed`]).
+pub const UNTIMED: &str = ", not counting the reclaim, which this lake has not timed yet";
 
 /// `n` and `noun`, plural but for one.
 fn counted(n: u64, noun: &str) -> String {
@@ -2085,7 +2502,11 @@ pub struct ValueTypeReport {
     /// (lakelands#1119).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breaches: Vec<Breach>,
-    /// Names this report; `migrate_value_type_apply` must repeat it.
+    /// Names this report; `migrate_value_type_apply` must repeat it. It is
+    /// the position it was read at, a hyphen, and the SHA-256 of the report
+    /// as its reader is shown it there, in canonical form, with this
+    /// member empty. A write since that reaches a type using the value
+    /// type makes it stale; one elsewhere does not.
     pub report_id: String,
 }
 

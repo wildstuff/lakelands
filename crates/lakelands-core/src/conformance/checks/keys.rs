@@ -7,14 +7,7 @@
 //! disagrees with its key fields is refused, and a record created by its
 //! key alone gets its key fields from it.
 
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::{FieldName, Refusal, TypeName};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, patch, reason, type_decl, value,
-};
-use crate::conformance::{Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     KEY_AND_KEY_FIELDS_AGREE = a_key_that_disagrees_with_its_key_fields_is_refused,

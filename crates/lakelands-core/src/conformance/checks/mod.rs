@@ -10,14 +10,22 @@ use super::Check;
 pub use forgotten::{Fails, failing};
 
 mod accepted_whole;
+mod acts;
+mod admitted;
 mod after;
 mod aggregates;
 mod aging;
+mod ahead;
 mod annotations;
 mod authored_reads;
 mod authors_view;
 mod backings;
+mod batched;
+mod before_declared;
+mod builds;
 mod bundles;
+mod change;
+mod chosen;
 mod compact;
 mod computed_at;
 mod computed_inputs;
@@ -26,6 +34,7 @@ mod concurrency;
 mod conditional_edges;
 mod conditional_verbs;
 mod constraints;
+mod context;
 mod cursors;
 mod date_bucket;
 mod dates;
@@ -36,50 +45,70 @@ mod derived_relations;
 mod describe;
 mod durations;
 mod embeddings;
-mod erasable;
+pub(in crate::conformance) mod erasable;
 mod export;
 mod feed;
 mod fields;
 mod filters;
+mod first_last;
 mod forgotten;
 mod function_input;
 mod fusion;
+mod graph_cheapest;
+mod graph_communities;
 mod graph_measures;
+mod graph_rank;
 mod graph_steps;
 mod grid;
+mod guard_in_force;
 mod hidden_readers;
+mod hidden_where;
 mod host_cause;
 mod host_settings;
+mod in_force;
 mod ingest;
 mod initial;
 mod judged;
+mod kept_builds;
+mod kept_heads;
+mod kept_lake;
 mod kept_sets;
+mod kept_triggers;
 mod key_versions;
 mod keys;
 mod landing;
 mod latest;
+mod lexical_score;
 mod link_paths;
 mod link_triggers;
 mod links;
 mod logged_ids;
 mod made_of;
 mod masking;
+mod matches;
+mod metered;
 mod migrate;
+mod migrate_views;
 mod only;
 mod only_proposals;
 mod paging;
 mod paths;
+mod pattern_tree;
 mod plan;
 mod positions;
+mod projection_form;
 mod proposal_names;
 mod proposals;
 mod provenance;
 mod purge;
+mod quarantine;
+mod quarantine_host;
 mod query_model;
 mod reached;
 mod reactions;
 mod reactive_depth;
 mod read_clock;
+mod read_your_writes;
 mod readers_view;
 mod reads_kept;
 mod rebuild;
@@ -90,6 +119,8 @@ mod removed;
 mod renamed_grants;
 mod report_names;
 mod required_at_create;
+mod requires_parts;
+mod requires_payload;
 mod rerank;
 mod restated;
 mod restriction;
@@ -100,28 +131,43 @@ mod risky_calls;
 mod row_pages;
 mod schema;
 mod schema_proposals;
+mod scrubbed;
 mod sealed;
+mod sealed_apart;
 mod search;
 mod search_axes;
 mod search_fields;
 mod search_text_weights;
+mod seen_before;
+mod series_builds;
 mod set_declared;
 mod set_migrated;
 mod set_names;
 mod set_rewritten;
 mod sets_across;
+mod sets_at_read;
 mod settings;
 mod shown_hash;
+mod sized;
 mod sorted_whole;
+mod standby;
+mod stored_form;
+mod stored_vectors;
+mod stranded;
 mod streaming;
+mod taken_lease;
+mod thin;
+mod thinned;
 mod trigger_firing;
 mod triggers;
 mod upgrade;
+mod upsert_preflight;
 mod valid_cells;
 mod value_renames;
 mod value_types;
 mod values;
 mod vector_index;
+mod verb_grants;
 mod verb_reads;
 mod verb_written;
 mod verbs_on_type;
@@ -134,7 +180,12 @@ mod view_stack;
 mod views;
 mod vocabulary;
 mod walks;
+mod window;
 mod withdraw;
+mod write_judged;
+mod writer_filled;
+mod writes_only;
+mod zone_today;
 
 /// Every check, in the order the suite runs them.
 pub const ALL: &[Check] = &[
@@ -161,6 +212,9 @@ pub const ALL: &[Check] = &[
     paging::MISSING_SORT_VALUES_LAST,
     paging::UNNAMED_LIMIT,
     paging::EACH_HOLDER_ONCE,
+    projection_form::FLAGS_FOLLOW_THE_STATE,
+    projection_form::KEY_ORDER_THROUGH_KEYS,
+    projection_form::DESCENDING_WITHOUT_ITS_INDEX,
     landing::MEASURE_LANDS,
     paths::PATH_STEPS,
     paths::PATH_NOT_REACHED,
@@ -170,6 +224,11 @@ pub const ALL: &[Check] = &[
     link_paths::LINK_PATH_READS,
     link_paths::LINK_PATH_HELD,
     link_paths::LINK_PATH_PROPOSED,
+    requires_parts::REQUIRES_PART,
+    requires_payload::PAYLOAD_REQUIRED,
+    requires_payload::PRECONDITION_NAMED,
+    requires_payload::PRECONDITION_GRANTED,
+    verb_grants::VERB_GRANTED,
     latest::LATEST_ORDER,
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,
@@ -192,6 +251,7 @@ pub const ALL: &[Check] = &[
     risky_calls::CALL_RUNS_BY_RISK,
     risky_calls::CALL_DECIDED_ONCE,
     risky_calls::CALL_PROPOSAL_HOLDS_NO_INPUTS,
+    risky_calls::CALL_PROPOSED_FOR,
     risky_calls::SWEEP_PROPOSED,
     risky_calls::SWEEP_LISTED_WHOLE,
     risky_calls::SWEEP_EXISTENCE_HIDES_NO_HOLD,
@@ -205,6 +265,14 @@ pub const ALL: &[Check] = &[
     risky_calls::EXPR_HAS_NO_RISK,
     query_model::QUERY_MODEL_CHECKED,
     query_model::QUERY_MODEL_AFTER_RIGHTS,
+    matches::MATCHES_NAMED,
+    matches::MATCHES_UNASKED,
+    matches::MATCHES_NEED_TEXT,
+    matches::MATCHES_SHOWN,
+    matches::MATCHES_HYBRID,
+    matches::MATCHES_CAPPED,
+    matches::MATCHES_READ_THEN,
+    matches::MATCHES_DECLARED_SINCE,
     views::GROUPS_AND_SUMS,
     view_stack::VIEW_STACK,
     views::FAILING_MEASURE_REFUSES,
@@ -237,11 +305,32 @@ pub const ALL: &[Check] = &[
     views::VIEW_FIELDS_DECLARED,
     ingest::SAME_CONTENT_TWICE,
     ingest::A_SOURCE_PER_RECORD,
+    ingest::A_DELIVERY_PER_RECORD,
     ingest::SAME_KEY_TWICE,
     ingest::FOREIGN_FIELD_REFUSED,
     ingest::UPSTREAM_PER_FIELD,
     ingest::DELIVERY_NAMED,
+    ingest::ON_BEHALF_OF_NOT_IN_ID,
     ingest::UPSERT_REFUSES_SOURCE_FIELD,
+    quarantine::QUARANTINED_GOES_ON,
+    quarantine::QUARANTINED_BY_DELIVERY,
+    quarantine::QUARANTINED_WHICH,
+    quarantine::QUARANTINED_TABLE,
+    quarantine::QUARANTINED_ENDS,
+    quarantine::QUARANTINED_SIGHT,
+    quarantine::QUARANTINED_ACTS,
+    quarantine::QUARANTINED_CLOSED,
+    quarantine::QUARANTINED_VERSIONS,
+    quarantine_host::QUARANTINED_BY_HOST,
+    quarantine_host::QUARANTINED_BY_RUN_AND_LINE,
+    quarantine_host::QUARANTINED_ACROSS_CALLS,
+    quarantine_host::QUARANTINED_BY_HOST_NAMES_ITS_LINE,
+    quarantine_host::QUARANTINED_DELIVERY_NAMES_ITS_LINE,
+    quarantine_host::QUARANTINED_UNNAMED_NEEDS_NO_LINE,
+    quarantine_host::QUARANTINED_BY_RUN_PLACES,
+    quarantine_host::QUARANTINED_BY_HOST_CLOSES,
+    quarantine_host::QUARANTINED_BY_HOST_PROTECTED,
+    quarantine_host::QUARANTINED_BY_HOST_GRANTED,
     constraints::CONSTRAINT_HELD_AT_EVERY_DOOR,
     constraints::CONSTRAINT_JUDGED_THROUGH_WHAT_MOVES,
     constraints::CONSTRAINT_TOLD_AT_ACCEPT,
@@ -251,8 +340,23 @@ pub const ALL: &[Check] = &[
     constraints::CONSTRAINT_NOT_GRANTED_UNREAD,
     constraints::CONSTRAINT_READS_ITS_RECORD_ALONE,
     constraints::CONSTRAINT_BROKEN_IN_THE_PREFLIGHT,
+    write_judged::CLOCK_JUDGED_AT_THE_WRITE,
+    write_judged::PRECEDING_JUDGED_AT_THE_WRITE,
+    write_judged::WALK_JUDGES_NO_WRITE_PART,
+    write_judged::WALK_JUDGES_THE_REST,
+    write_judged::PRECEDING_SERIES_CHOSEN,
+    write_judged::PRECEDING_IN_A_GUARD,
+    zone_today::ZONE_CUTS_TODAY,
+    zone_today::ZONE_ACROSS_THE_CHANGE,
+    zone_today::ZONE_IN_FORCE_AT_THE_WRITE,
+    zone_today::ZONE_UNSET_IS_UTC,
+    zone_today::ZONE_AGING_IS_THE_DATE_HANDED,
+    zone_today::ZONE_AT_THE_READ,
+    upsert_preflight::UPSERT_JUDGED_AS_WRITTEN,
+    upsert_preflight::UPSERT_JUDGED_ON_WHAT_IT_MAKES,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,
     sorted_whole::SORTED_WHOLE_TOLD,
+    sorted_whole::SORTED_WHOLE_BESIDE_A_LOOKUP_BUILD,
     rebuild::REBUILD_ANSWERS_AS_BEFORE,
     rebuild::REBUILD_REPRODUCES_THE_CHAIN,
     rebuild::REBUILD_FOLDS_OVER_RECORDS,
@@ -264,9 +368,11 @@ pub const ALL: &[Check] = &[
     filters::PROVENANCE_IN_WHERE_AND_ORDER,
     filters::LOOKED_UP_OR_SCANNED,
     filters::LONG_TEXT_AND_NUL,
+    filters::TEXT_KEY_READ_BY_KEY,
     provenance::TWO_TIME_AXES,
     provenance::VALID_TIME_IS_A_DATE_TIME,
     provenance::FIELD_PROVENANCE,
+    provenance::BASE_PER_RECORD,
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
     computed_inputs::COMPUTED_AS_ITS_INPUTS,
@@ -279,7 +385,29 @@ pub const ALL: &[Check] = &[
     computed_at::AT_THE_READ,
     computed_at::SAID_WHEN,
     computed_at::MOVED,
+    in_force::IN_FORCE_PAIRED,
+    in_force::IN_FORCE_SIGHT,
+    in_force::IN_FORCE_LONG,
+    in_force::IN_FORCE_REFUSED,
+    guard_in_force::GUARD_IN_FORCE_FIRES_ON_ITS_OWN_BOUND,
+    guard_in_force::GUARD_IN_FORCE_CROSSING,
+    guard_in_force::GUARD_IN_FORCE_BOX,
+    guard_in_force::GUARD_IN_FORCE_LATER_BOUND_AND_BACKDATED,
+    guard_in_force::GUARD_IN_FORCE_LAID_OVER_IN_AN_APPEND,
+    guard_in_force::GUARD_IN_FORCE_NO_BOUND,
+    guard_in_force::GUARD_IN_FORCE_UNDER_A_HIDING,
+    guard_in_force::GUARD_IN_FORCE_WITHOUT_A_GRANT,
+    guard_in_force::GUARD_IN_FORCE_REFUSED,
+    guard_in_force::GUARD_IN_FORCE_KEEPS_ITS_FIELDS,
+    guard_in_force::GUARD_IN_FORCE_KEEPS_ITS_TYPE,
+    guard_in_force::GUARD_IN_FORCE_READ_APART_FROM_PRECEDING,
+    guard_in_force::GUARD_IN_FORCE_LATER_WRITE_MOVES_NO_FIRING,
+    guard_in_force::GUARD_IN_FORCE_BOUND_TAKEN_BACK_STANDS,
+    guard_in_force::GUARD_READS_THROUGH_AN_OWED_ACT,
+    guard_in_force::GUARD_IN_FORCE_READS_ONE_PARTITION,
     read_clock::READ_CLOCK,
+    read_clock::TODAY_RULES_OUT,
+    before_declared::BEFORE_DECLARED,
     authored_reads::AUTHOR_READS,
     renamed_grants::GRANT_FOLLOWS,
     authored_reads::HIDDEN_TYPE,
@@ -288,7 +416,10 @@ pub const ALL: &[Check] = &[
     masking::VALID_AT_MEETS,
     masking::VALID_AT_VIEW,
     masking::WRITE_ONLY,
+    masking::WRITE_ONLY_KEY,
     masking::VIA_HIDDEN,
+    masking::RANK_UNSEEN,
+    masking::WEIGHT_HIDDEN,
     authors_view::DECLARED_SINCE_NOT_TAKEN,
     authors_view::HIDDEN_LINK_TYPE_NOT_GRANTED,
     authors_view::HIDDEN_FIELD_KEPT,
@@ -357,6 +488,7 @@ pub const ALL: &[Check] = &[
     walks::ROWS_HOLD_MATCHED_STARTS,
     walks::STEP_BINDS_ONE_TYPE,
     walks::OPEN_STEP,
+    walks::ALIKE_STEP,
     search::MATCH_SET,
     search::SEARCH_ORDER,
     search::SEARCH_PROBE_REFUSED,
@@ -372,6 +504,7 @@ pub const ALL: &[Check] = &[
     proposals::NOT_PROPOSED_IF_IT_COULD_NOT_RUN,
     proposals::ACCEPT_AFTER_REDECLARE,
     proposals::ACCEPT_APPLIES,
+    proposals::ACCEPTED_FOR_THE_PROPOSER,
     proposals::REJECT_AND_DECIDED,
     proposals::WHO_DECIDES,
     proposals::NOT_SHOWN_NOT_DECIDED,
@@ -415,17 +548,30 @@ pub const ALL: &[Check] = &[
     feed::OBJECT_SET_CHANGES,
     feed::HIDDEN_TRIGGER,
     feed::PAGED_FROM_NEXT,
+    feed::APPEND_ENDS,
+    feed::APPEND_DELIVERIES,
     retire::RETIRE_NEEDS_EVERY_FIELD,
     retire::READABLE_BEFORE_RETIREMENT,
     ingest::REVERT_IS_A_CHANGE,
     views::VIEW_KEY_IS_ITS_GROUP,
     view_rights::VIEW_OVER_A_HIDDEN_FIELD,
     view_rights::SHOWN_AS_READ,
+    kept_heads::KEPT_HEAD_ONLY_EARLIER_READ,
+    kept_heads::ORDER_ENTRIES_APART,
+    kept_heads::PROVENANCE_ONCE,
+    kept_heads::ZONED_REFOLDED,
     view_kept::KEPT_SHAPES,
     view_kept::KEPT_VALUES,
     view_kept::KEPT_POSITIONS,
     view_kept::KEPT_RUNS,
     view_kept::KEPT_ORDER,
+    view_kept::KEPT_FILTER_PAGE,
+    view_kept::KEPT_BUCKETS,
+    view_kept::KEPT_TERMS,
+    view_kept::KEPT_FILTER_NARROWS,
+    view_kept::KEPT_FILTER_WHOLE,
+    view_kept::KEPT_FILTER_POSITIONS,
+    view_kept::TERM_REFUSED,
     keys::KEY_AND_KEY_FIELDS_AGREE,
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
@@ -443,6 +589,24 @@ pub const ALL: &[Check] = &[
     only::ONLY_SCHEMA,
     only::ONLY_GRANT_CHECKED,
     only::ONLY_UNAPPLIED_ADMITS_NONE,
+    only::ONLY_ANY_READS,
+    only::WHOLE_SETS_ONLY,
+    hidden_where::HIDDEN_NOT_ANSWERED,
+    hidden_where::HIDDEN_NOT_TOLD,
+    hidden_where::HIDDEN_NO_LEXICAL,
+    hidden_where::HIDDEN_NO_VECTOR,
+    hidden_where::HIDDEN_VIEW,
+    hidden_where::HIDDEN_NOT_WRITTEN,
+    hidden_where::HIDING_UNAPPLIED,
+    hidden_where::HIDDEN_DESCRIBED,
+    hidden_where::HIDDEN_AS_OF,
+    hidden_where::HIDDEN_SEARCH_AS_OF,
+    hidden_where::HIDDEN_RERANKED,
+    hidden_where::HIDDEN_NO_EDGE,
+    hidden_where::HIDDEN_PROPOSED,
+    hidden_where::HIDDEN_CHANGED,
+    hidden_where::HIDDEN_QUERY_ORDER,
+    hidden_where::HIDDEN_NOT_REACTED,
     only_proposals::ONLY_PROPOSES,
     only_proposals::ONLY_DECIDES,
     reactions::VERB_WRITE_REACTS,
@@ -463,13 +627,28 @@ pub const ALL: &[Check] = &[
     sets_across::SET_ACROSS_EDGES,
     sets_across::SET_ACROSS_BOUND,
     sets_across::SET_ACROSS_DECLARED,
+    sets_across::SET_CLOCK,
+    sets_across::SET_CLOCK_REPLAYS,
     sets_across::SET_ACROSS_READ,
     sets_across::SET_ACROSS_HELD,
+    sets_at_read::SET_AT_READ,
+    sets_at_read::SET_AT_READ_STEPS,
+    sets_at_read::SET_AT_READ_NAMED,
+    sets_at_read::SET_AT_READ_AGAIN,
+    sets_at_read::SET_AT_READ_MERGED,
+    sets_at_read::SET_AT_READ_RIGHTS,
     kept_sets::KEPT_SET,
     kept_sets::KEPT_SET_REFUSED,
     kept_sets::KEPT_SET_REMADE,
     kept_sets::KEPT_SET_BOUND,
     kept_sets::KEPT_SET_HELD,
+    kept_triggers::KEPT_TRIGGER,
+    kept_triggers::KEPT_TRIGGER_DEEP,
+    kept_triggers::KEPT_TRIGGER_REFUSED,
+    kept_triggers::KEPT_TRIGGER_BOUND,
+    kept_triggers::KEPT_TRIGGER_INEXACT,
+    kept_triggers::KEPT_TRIGGER_TERM,
+    kept_triggers::KEPT_TRIGGER_ZONED,
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,
@@ -483,6 +662,14 @@ pub const ALL: &[Check] = &[
     plan::PLAN_REFUSES,
     plan::PLAN_SHOWN,
     plan::PLAN_ACCEPTED,
+    plan::PLAN_TOLD,
+    plan::PLAN_REOPENED,
+    change::CHANGE_PLANNED,
+    change::CHANGE_REFUSED,
+    change::CHANGE_READ,
+    change::CHANGE_PROPOSED,
+    change::CHANGE_REVIEWED,
+    change::CHANGE_LINKS,
     values::DECIMAL_NOT_A_NUMBER,
     values::GEO_VALUES,
     values::JSON_VALUES,
@@ -503,13 +690,18 @@ pub const ALL: &[Check] = &[
     reads_kept::MIGRATION_NAMES_A_SHOWN_VIEW,
     reads_kept::DECLARATION_READS_ITS_TYPE,
     migrate::VIEW_SOURCE_KEPT,
+    migrate_views::MIGRATE_WITH_ITS_VIEWS,
+    migrate_views::MIGRATE_WITH_ITS_VIEWS_UNAPPLIED,
+    migrate_views::MIGRATE_WITH_ITS_VIEWS_JUDGED,
     schema::REORDERED_FIELDS,
     schema::IN_FORCE_APPENDS_NOTHING,
     schema::IN_FORCE_ANSWERED,
     schema::MIGRATION_IN_FORCE,
+    schema::MIGRATION_FILL_PROPOSED,
     schema::RECOMPUTED,
     relation_renamed::RENAMED_KEEPS_EDGES,
     relation_renamed::RENAMED_GRANT_FOLLOWS,
+    relation_renamed::RENAMED_LINEAGE,
     relation_renamed::RENAME_REFUSED,
     relation_renamed::RENAME_CARRIES,
     relation_renamed::RENAMED_EVERY_CARRIER,
@@ -523,22 +715,30 @@ pub const ALL: &[Check] = &[
     aggregates::EMPTY_AGGREGATE,
     aggregates::COUNT_IS_THE_WALK,
     aggregates::SETTING_IN_A_GROUP_KEY,
+    first_last::BY_ORDER,
     aggregates::PATTERN_AGGREGATE_READS_PATHS,
     date_bucket::GROUPS,
     date_bucket::WHERE,
     date_bucket::DECLARED,
     date_bucket::WINDOWS,
+    date_bucket::ZONED,
+    date_bucket::ZONED_DATE,
     durations::DAYS,
     durations::LANDS,
     durations::VIEW_LANDS,
     durations::NEVER,
     filters::CLEARED_FIELD,
     walks::CYCLE_TERMINATES,
+    walks::ARRAY_FIELD_EDGE_PER_KEY,
+    walks::ARRAY_FIELD_REWRITE_MOVES_EDGES,
+    walks::ARRAY_FIELD_EVERY_READER,
+    walks::ARRAY_FIELD_HIDDEN_WITH_ITS_FIELD,
     derived_relations::BOTH_WAYS,
     derived_relations::EDGE_MOVES,
     derived_relations::NULL_NEVER_MATCHES,
     derived_relations::PROBES_BOTH_SIDES,
     derived_relations::MEASURES_AS_LINKS,
+    derived_relations::RANK_AS_LINKS,
     derived_relations::DECLARED_NOT_MIGRATED,
     derived_relations::PAIR_OF_TWO_KINDS,
     conditional_edges::CONDITIONAL_WALK,
@@ -546,6 +746,14 @@ pub const ALL: &[Check] = &[
     conditional_edges::CONDITION_DECLARED,
     conditional_verbs::SKONTO,
     conditional_verbs::SKONTO_HELD,
+    graph_cheapest::CHEAPEST_TAKES_LEAST,
+    graph_cheapest::CHEAPEST_WITHIN_DEPTH,
+    graph_cheapest::CHEAPEST_TIES,
+    graph_cheapest::CHEAPEST_PLACES,
+    graph_cheapest::CHEAPEST_MISSING_NEGATIVE,
+    graph_cheapest::CHEAPEST_JUDGED,
+    graph_cheapest::CHEAPEST_REFUSALS,
+    graph_cheapest::CHEAPEST_TOO_LARGE,
     graph_measures::DEGREE_COUNTS,
     graph_measures::COMPONENTS_PARTITION,
     graph_measures::COMPONENTS_ANY_PAGE,
@@ -554,6 +762,14 @@ pub const ALL: &[Check] = &[
     graph_measures::GRAPH_TOO_LARGE,
     graph_measures::MEASURE_REFUSALS,
     graph_measures::MEASURE_IN_ONE_PAGE,
+    graph_rank::RANK_PINNED,
+    graph_rank::RANK_ANY_ORDER,
+    graph_rank::RANK_NO_START,
+    graph_rank::RANK_TOO_LARGE,
+    graph_communities::COMMUNITIES_PINNED,
+    graph_communities::COMMUNITIES_ANY_ORDER,
+    graph_communities::COMMUNITY_CONNECTED,
+    graph_communities::COMMUNITIES_TOO_LARGE,
     graph_steps::ROW_DEPTH,
     graph_steps::GRAPH_PAGES,
     graph_steps::GRAPH_BOUND,
@@ -562,17 +778,32 @@ pub const ALL: &[Check] = &[
     graph_steps::PATH_STEPS,
     graph_steps::GRAPH_RIGHTS,
     graph_steps::REACH_STEPS,
+    pattern_tree::TREE_BRANCH,
+    pattern_tree::TREE_OPTIONAL,
+    pattern_tree::TREE_ABSENT,
+    pattern_tree::TREE_RIGHTS,
+    pattern_tree::TREE_CURSOR,
+    pattern_tree::TREE_BOUND,
+    pattern_tree::TREE_REFUSED,
     search::SEARCH_FOLLOWS_TEXT,
     search::WITHHELD_NEVER_HITS,
     search::VECTOR_LEAVES_THE_NEIGHBOURS,
     search::VECTOR_TOP_K,
     vector_index::VECTOR_INDEX_RECALL,
     vector_index::INDEXED_TIE,
+    vector_index::ONE_RANKING_PAGED,
+    vector_index::UNSEEN_WRITE_MOVES_NO_PAGE,
+    vector_index::ONLY_IS_RANKED_EXACTLY,
+    vector_index::HOLD_KEEPS_THE_SEQUENCE,
+    vector_index::UPGRADE_KEEPS_THE_RANKING,
     search::HYBRID_WITHOUT_BACKEND,
     search::SEARCH_READS_A_VECTOR_FIELD,
     search::SEARCH_RANKS_BY_THE_HEAD,
     search::HYBRID_THROUGH_BACKEND,
+    search::HYBRID_FALLS_BACK,
+    search::VECTOR_BY_TEXT,
     erasable::SEALED_IN_THE_LOG,
+    erasable::ONE_BOX,
     erasable::ERASABLE_DECLARED,
     erasable::KEY_MISSING,
     erasable::SEALED_OUTPUT,
@@ -582,12 +813,27 @@ pub const ALL: &[Check] = &[
     key_versions::KEY_PERIOD_TOLD,
     forgotten::FORGOTTEN,
     forgotten::FORGET_CRASH,
+    forgotten::FORGET_GROUPS_BY_ACT,
     forgotten::FORGET_PLAINTEXT,
     forgotten::FORGET_IMPORT,
     forgotten::RECLAIM_OWED,
     forgotten::FORGET_EXPECTED_TIME,
+    forgotten::FORGET_SET,
+    forgotten::FORGET_SET_OWED,
+    forgotten::FORGET_LEAVES_NO_WRITE_BEHIND,
+    scrubbed::SCRUBBED,
+    scrubbed::SCRUB_FALLBACK,
+    scrubbed::SCRUB_CRASH,
+    scrubbed::RESTATE_SCOPED_FOR_A_REMOVAL,
+    scrubbed::RESTATE_TELLS_EVERY_ACT,
+    scrubbed::RESTATE_WRITES_GO_ON,
+    scrubbed::RESTATE_PAGE_OVER_ITS_BOUND,
+    scrubbed::SWEEP_IN_TURNS,
+    scrubbed::RECLAIM_IN_TURNS,
+    scrubbed::TAIL_JUDGED_BY_ITS_KEYS,
     removed::REMOVED_BEFORE,
     removed::REMOVED_DELIVERY,
+    removed::REMOVED_SET,
     removed::REMOVE_CRASH,
     removed::REMOVED_TWINS,
     removed::REMOVED_SHREDDED,
@@ -596,12 +842,44 @@ pub const ALL: &[Check] = &[
     removed::REMOVED_COMPUTED,
     removed::REMOVED_REPLAYED,
     removed::REMOVE_CRASH_SHREDDED,
+    removed::REOPENED_WRITE_READS_THROUGH_AN_OWED_ACT,
+    removed::ACT_ERASES_IN_ITS_FIRST_TURN,
+    removed::REMOVE_TAKES_A_DELIVERY_THAT_GREW,
+    removed::REMOVE_LEAVES_A_LATER_DELIVERY,
+    removed::REMOVE_WRITTEN_BEFORE_JUDGED_AT_ITS_FIRST_TURN,
+    removed::REMOVE_TAIL_WRITE_KEEPS_ITS_VERSION,
+    removed::REMOVE_TAKEN_IN_UNDER_A_KEPT_VERSION_IS_NOT_SHREDDED,
+    removed::REMOVE_STALE_ON_ANOTHER_SOURCES_WRITE,
+    removed::ACTS_OF_ONE_SOURCE_OVERLAP,
+    acts::ACT_WALKS_OFF_THE_WRITER,
+    acts::ACT_BETWEEN_PARTS_VERIFIES,
+    acts::ACT_BETWEEN_PARTS_EXPORTS,
+    acts::POLL_STOPS_BEFORE_AN_OWED_ACT,
+    acts::ACT_TAIL_OVERRUN_MOVES_THE_VIEW,
+    acts::REPORT_NOT_STALE_BY_A_WRITE_ELSEWHERE,
+    acts::REPORT_STALE_WHEN_REACHED,
+    acts::WRITE_READS_THROUGH_AN_OWED_ACT,
+    sealed_apart::APART_SHREDDED,
+    sealed_apart::APART_OUTPUT,
+    sealed_apart::APART_READ,
+    sealed_apart::APART_CUT,
+    sealed_apart::APART_SET,
+    sealed_apart::APART_DELIVERIES,
+    sealed_apart::APART_STREAMING,
+    sealed_apart::APART_OFF,
+    sealed_apart::APART_KEPT,
+    sealed_apart::APART_PER_DELIVERY,
+    sealed_apart::APART_ASKED_ONCE,
+    seen_before::SEEN_BEFORE,
+    seen_before::SEEN_SHREDDED,
+    seen_before::SEEN_PREFIX,
     reached::REMOVED_REKEYED,
     reached::FORGOTTEN_REKEYED,
     reached::REMOVED_ACROSS,
     reached::FORGOTTEN_ACROSS,
     reached::REMOVED_FIRED,
     reached::FORGOTTEN_FIRED,
+    reached::ACT_WHOLE_FOLLOWS_ITS_PARTS_FIRED,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,
     embeddings::EMBED_ONCE,
@@ -619,10 +897,14 @@ pub const ALL: &[Check] = &[
     embeddings::EMBED_BESIDE_BACKLOG,
     embeddings::EMBED_ORPHAN_SWEEP,
     embeddings::EMBED_SWEEP_REKEYED,
+    embeddings::EMBED_DEFERRED,
+    embeddings::EMBED_DEFERRED_UPDATE,
+    embeddings::EMBED_DEFERRED_VERB,
     rebuild::INDEXES_AFTER_REBUILD,
     rebuild::ONE_JSON_FORM,
     ingest::DUPLICATE_ACROSS_WINDOWS,
     ingest::REFUSAL_NAMES,
+    ingest::OWN_WINDOW,
     ingest::INSERT_ONLY,
     ingest::REFERENCE_WITH_NUL,
     aging::MOVES_WHAT_HOLDS_FROM,
@@ -696,18 +978,34 @@ pub const ALL: &[Check] = &[
     rekey::RENAMED_REFERENCE,
     export::ONE_FILE_PER_SEGMENT,
     export::VERIFIES,
-    export::PREFIX,
+    export::EXPORT_IMPORT_KEEPS_APPENDS,
+    export::FRAMED_DAMAGE,
+    stored_form::APPEND_OF_ONE_STAYS_A_LINE,
+    stored_form::BLOCK_RESTORES_EVERY_EVENT,
+    stored_form::FEED_APPENDS_FROM_BLOCKS,
+    stored_form::SEAL_SIZED_BY_RESTORED_BYTES,
+    stored_form::CREATION_WHOLE,
+    export::GROWS,
     export::NOT_EMPTY,
     export::DAMAGE,
     export::IMPORT_IS_THE_LAKE,
     export::IMPORT_REFUSED,
+    export::BACKUP_CUT,
+    export::BACKUP_TORN,
+    export::BACKUP_FRAME_CUT,
+    export::APPEND_TORN_BETWEEN_BLOCKS,
+    export::BACKUP_DAMAGED,
     export::ONE_FORMAT,
+    export::OLDER_FORMAT_REFUSED,
+    export::OLDER_ARCHIVE_REFUSED,
     export::ANOTHER_RELEASES,
     export::PROJECTION_AHEAD,
     export::VERIFY_THROUGH,
     export::IMPORT_UNKNOWN_MEMBER,
     export::IMPORTED_VIEW_CYCLE,
     export::IMPORT_CONTEXT_CAUSE,
+    export::ON_BEHALF_OF_PLACE,
+    export::IMPORT_ID_FORM,
     compact::ANSWERS_AS_BEFORE,
     compact::APPENDS_NOTHING,
     compact::AGAIN_AND_ON,
@@ -719,8 +1017,18 @@ pub const ALL: &[Check] = &[
     settings::SETTINGS_TOLD,
     host_settings::HOST_SETTING_KIND,
     host_settings::HOST_SETTING_GROUP,
+    host_settings::HOST_SETTING_PERIOD_WRITES,
+    host_settings::HOST_SETTING_PERIOD_GRANTS,
+    host_settings::HOST_SETTING_PERIODS_TOLD,
     settings::SETTING_RECORDS_TOLD,
     settings::SETTING_RECORDS_PAGED,
+    settings::SETTING_IN_A_CONDITION,
+    settings::SETTING_AT_A_DATE,
+    settings::SETTING_ON_THE_CLOCK,
+    settings::SETTING_UNDATED_AS_BEFORE,
+    settings::SETTING_AT_MISFIT,
+    settings::SETTING_PERIODS_AS_OF_THE_EVENT,
+    settings::SETTING_DATED_NOT_KEPT,
     feed::LIMIT_ZERO_IS_ONE,
     feed::MADE,
     feed::BY_KEY,
@@ -733,9 +1041,46 @@ pub const ALL: &[Check] = &[
     fusion::SAME_LIST_UNREAD,
     fusion::FUSED_BY_WEIGHT,
     fusion::WEIGHTS_REFUSED,
+    chosen::CHOSEN_ORDER_INDEX,
+    chosen::CHOSEN_BUILD_BESIDE_WRITES,
+    chosen::CHOSEN_SWITCH,
+    chosen::CHOSEN_ORDER_BESIDE_SORT_INDEX,
+    chosen::CHOSEN_UNUSED,
+    chosen::CHOSEN_TOLD_TO_SCHEMA,
+    builds::BUILD_READ_ANSWERS_AS_BEFORE,
+    builds::BUILD_NEVER_READ_PART_BUILT,
+    builds::BUILD_WRITES_GO_ON,
+    builds::BUILD_WRITE_REACHES_BOTH_SIDES,
+    builds::BUILD_RESTART_FINISHES,
+    builds::BUILD_SETTING_TAKEN_BACK,
+    builds::BUILD_SETTING_SET_AGAIN,
+    builds::BUILD_TYPE_DECLARED_AGAIN,
+    builds::BUILD_BESIDE_A_REMOVAL,
+    builds::BUILD_REBUILD_SAME_LAKE,
+    builds::BUILD_EXPORT_IMPORT_SAME_LAKE,
+    kept_builds::KEPT_BUILD_READ_ANSWERS_AS_BEFORE,
+    kept_lake::LAKE_23_READ,
+    kept_builds::KEPT_BUILD_WRITE_BESIDE,
+    kept_builds::KEPT_BUILD_WRITES_GO_ON,
+    kept_builds::KEPT_BUILD_RESTART_FINISHES,
+    kept_builds::KEPT_BUILD_SETTING_TAKEN_BACK,
+    kept_builds::KEPT_BUILD_SETTING_SET_AGAIN,
+    kept_builds::KEPT_BUILD_REBUILD_SAME_LAKE,
+    kept_builds::VIEW_BUILD_EXTREME_LOSES_ITS_HOLDER,
+    kept_builds::VIEW_BUILD_OVER_A_VIEW,
+    kept_builds::KEPT_BUILD_TYPE_DECLARED_AGAIN,
+    kept_builds::KEPT_BUILD_EXPORT_IMPORT_SAME_LAKE,
+    kept_builds::VIEW_BUILDING_REFUSES_READERS,
+    series_builds::SERIES_SETTING_BUILDS,
+    series_builds::SERIES_BUILD_RESUMES,
+    series_builds::SERIES_TAKEN_BACK,
+    series_builds::SERIES_REBUILD_SAME_ROWS,
+    series_builds::SERIES_BUILD_REGAINED,
+    series_builds::SERIES_TOLD,
     rerank::RERANK_REORDERS_THE_WINDOW,
     rerank::RERANK_ONE_WINDOW,
     rerank::RERANK_ONE_WINDOW_ONLY,
+    rerank::RERANK_ONLY_ANY,
     rerank::RERANK_RANKS_AGAINST,
     rerank::RERANK_PAGES_WITHOUT_EMBEDDING,
     rerank::RERANK_SEES_ONLY_WHAT_ITS_READER_READS,
@@ -749,25 +1094,50 @@ pub const ALL: &[Check] = &[
     search_text_weights::WEIGHTS_TEXT_UNWEIGHTED,
     search_text_weights::WEIGHTS_TEXT_FUSED,
     search_text_weights::WEIGHTS_TEXT_HIDDEN,
+    lexical_score::LEXICAL_BITS,
+    lexical_score::LEXICAL_RARITY,
+    lexical_score::LEXICAL_LENGTH,
+    lexical_score::LEXICAL_HELD,
+    lexical_score::LEXICAL_ONLY,
+    lexical_score::LEXICAL_HIDDEN_AS_OF,
+    lexical_score::LEXICAL_RECOUNT,
     search_text_weights::WEIGHTS_TEXT_REFUSED,
-    upgrade::FORMAT_14_UPGRADED,
-    upgrade::FORMAT_15_UPGRADED,
-    upgrade::FORMAT_16_UPGRADED,
+    search_text_weights::WEIGHTS_TEXT_OWN,
+    search_text_weights::WEIGHTS_TEXT_OWN_HIDDEN,
+    search_text_weights::WEIGHTS_TEXT_OWN_REFUSED,
+    search::TEXT_AS_OF_FINDS_THE_TEXT_THEN,
+    search::TEXT_AS_OF_SAME_AT_EVERY_HEAD,
+    search::TEXT_AS_OF_REFUSED,
+    search::TEXT_AS_OF_HOLDS_BOTH_POSITIONS,
+    search::TEXT_AS_OF_DECLARED_THEN,
     upgrade::LAYOUT_REBUILT,
+    ahead::BUILT_AHEAD,
     verb_written::VERB_ONLY,
     verb_written::VERB_ONLY_TOLD,
+    writer_filled::WRITER_FILLED,
+    writer_filled::WRITER_REFUSED,
+    writer_filled::WRITER_MIGRATED,
+    writer_filled::WRITER_CARRIED,
+    writes_only::WRITES_ONLY_DOORS,
+    writes_only::WRITES_ONLY_LINKS,
+    writes_only::WRITES_ONLY_REVIEWED,
+    writes_only::WRITES_ONLY_DESCRIBED,
+    admitted::ADMITTED,
+    admitted::ADMITS_DECLARED,
+    admitted::OWN_VALUE,
+    admitted::ADMITTED_TAKEN,
+    admitted::CLOSED,
+    admitted::ADMITTED_KEY,
+    admitted::ADMITTED_FORGOTTEN,
     retired_by_verbs::RETIRED_BY_VERBS,
     retired_by_verbs::RETIRED_BY_VERBS_TOLD,
-    upgrade::LAKE_14_READ,
-    upgrade::LAKE_14_MIGRATED_READ,
-    upgrade::LAKE_15_READ,
-    upgrade::LAKE_16_READ,
-    upgrade::LAKE_17_READ,
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     vocabulary::TOOL_NAME_REFUSES_OPEN,
-    vocabulary::HOST_VIEW_KEY,
+    vocabulary::HOST_TYPE_CHECKED_AT_OPEN,
     vocabulary::HOST_EXTERNAL_VERB,
+    vocabulary::HOST_TYPE_GAINS_A_FIELD,
+    vocabulary::HOST_TYPE_RESHAPED_REFUSES_OPEN,
     backings::FAILURE_RETRIED,
     embeddings::EMBED_SEARCH_OTHER_BACKEND,
     embeddings::EMBED_SEARCH_JUDGED_FIRST,
@@ -795,18 +1165,44 @@ pub const ALL: &[Check] = &[
     concurrency::READS_AT_A_POSITION,
     concurrency::FEED_READERS_AGREE,
     concurrency::BACKED_UNDER_WRITES,
+    concurrency::DESCRIBED_AT_ITS_POSITION,
     aging::HELD_RULE_RUNS,
     aging::SETTING_IN_WHEN,
     aging::SKIPPED_EVERY_WAY,
     aging::REFUSED_BY_CONSTRAINT,
     aging::REFUSALS_BOUNDED,
     concurrency::AGE_UNDER_WRITES,
+    batched::ONE_WINNER_ON_A_VERSION,
+    batched::ONE_KEY_ONE_WRITE,
+    batched::DEEP_CONTEXT_ALONE,
+    batched::BELOW_SET_CEILING,
+    batched::BACKED_OWN_FILL,
+    batched::KEY_PER_PRINCIPAL,
+    batched::ONE_LINK_LANDS,
+    batched::SETTING_WHOLE,
+    stored_vectors::VECTOR_BITS_KEPT,
+    stored_vectors::VECTOR_WIDENED_KEPT,
+    stored_vectors::VECTOR_LINK_KEPT,
+    stored_vectors::VECTOR_ERASED_KEPT,
+    stored_vectors::VECTOR_RESTRICTION_KEPT,
+    stored_vectors::VECTOR_REKEY_ENDED,
+    stored_vectors::VECTOR_RENAME_KEPT,
+    stored_vectors::VECTOR_JSON_IN_PLACE,
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,
     purge::INITIAL_NO_OWNER,
     purge::SHARED_SINCE,
     purge::PREFLIGHT,
+    purge::ACT_WHOLE_ENDS_THE_ACT,
+    purge::PURGE_TAKES_A_WRITE_SINCE_ITS_REPORT,
+    purge::PURGE_STALE_ON_A_SHARED_KEY,
+    purge::ACT_RESUMES_AT_OPEN,
+    purge::ACT_APPENDS_IN_PARTS,
+    purge::PURGE_MADE_SINCE_SHARED,
+    purge::ACT_REPEAT_FINISHES_AND_APPENDS_NOTHING,
+    purge::ACT_REBUILD_SAME_LAKE,
     purge::REFERENCES_NAMED,
+    purge::REPORT_HEAD,
     purge::ONE_TYPE,
     purge::CO_OWNED_IN_TYPE,
     purge::OWN_REFERENCES,
@@ -814,10 +1210,30 @@ pub const ALL: &[Check] = &[
     purge::TYPED_ID,
     purge::TYPE_REFUSED,
     purge::CARRIED_LINKS_NAMED,
+    purge::REFERENCES_IN_AN_ARRAY,
     value_types::CONSTRAINT_AND_FORMAT,
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,
+    thin::THIN_REFUSALS,
+    stranded::THIN_GROUP_STRANDED,
+    stranded::THIN_ERASURE_RESTATES_STRANDED_FOLDS,
+    stranded::THIN_STRANDED_MAKE_CARRIES,
+    thinned::THIN_TAKES_THE_RAW_ROWS,
+    thinned::THIN_KEPT_VIEW_ANSWERS_AS_BEFORE,
+    thinned::THIN_EXACT_GROUPS_ONLY,
+    thinned::THIN_PARTS_AND_WRITES,
+    thinned::THIN_FOREIGN_WHOLE_KEEPS_IT_OWED,
+    thinned::THIN_VERIFY_EXPORT_IMPORT_REBUILD,
+    thinned::THIN_LATE_TICK_FOLDS,
+    thinned::THIN_ZONED_CARRIED,
+    thinned::THIN_CORRECTION_REFUSED,
+    thinned::THIN_VIEW_KEPT_AFTER_REFUSED,
+    thinned::THIN_OWED_ACT_REFUSES_A_LATER_KEY,
+    thinned::THIN_AS_OF_SAYS_UNANSWERABLE,
     reactive_depth::TOO_DEEP,
+    read_your_writes::REACHES,
+    read_your_writes::REACHES_UNLEASED,
+    read_your_writes::LOST_ANSWER,
     trigger_firing::TRIGGER_DROPPED,
     trigger_firing::TRIGGER_STRICT,
     trigger_firing::TRIGGER_CHANGE,
@@ -827,6 +1243,10 @@ pub const ALL: &[Check] = &[
     host_cause::DEPTH_ON_EVERY_DOOR,
     host_cause::CONTEXT_FIRST,
     host_cause::TRIGGER_CEILING_AT_APPEND,
+    context::ON_BEHALF_OF_RECORDED,
+    context::ON_BEHALF_OF_FORM,
+    context::OCCASION_RECORDED,
+    context::OCCASION_FORM,
     triggers::TRANSITION,
     triggers::RETIREMENT,
     triggers::REVIVAL,
@@ -836,6 +1256,7 @@ pub const ALL: &[Check] = &[
     triggers::TRIGGER_CEILING,
     withdraw::WITHDRAWN_TRIGGER,
     withdraw::WITHDRAWN_FUNCTION,
+    withdraw::WITHDRAWN_TYPE,
     withdraw::WITHDRAWN_VERB,
     withdraw::WITHDRAWN_SET,
     withdraw::WITHDRAWAL_TWIN,
@@ -845,6 +1266,8 @@ pub const ALL: &[Check] = &[
     describe::DESCRIBE_IS_THE_DECLARATION,
     describe::DESCRIBED_AS_SHOWN,
     describe::SCHEMA_TOLD_AS_RECORDED,
+    describe::FOLLOWS_WHAT_CHANGES_IT,
+    describe::FOLLOWS_ANOTHER_WRITER,
     made_of::KEYED_BY_HIDDEN,
     made_of::VIEW_KEY_AT_SOURCES,
     backings::OUTPUT_NOT_A_VALUE,
@@ -855,5 +1278,13 @@ pub const ALL: &[Check] = &[
     sealed::OUTPUT_EXACT,
     sealed::ANSWER_EXACT,
     export::INTEGER_DAMAGE,
+    sized::SEALED_BY_SIZE,
+    taken_lease::TAKEN_LEASE,
+    standby::STANDBY,
+    standby::STANDBY_FAILED,
     grid::GRID,
+    metered::METERED,
+    metered::METERED_LEASE,
+    window::WINDOW_AGGREGATE_JUDGES_A_LINKS_ENDS,
+    window::WINDOW_PAST_ITS_BOUNDS,
 ];

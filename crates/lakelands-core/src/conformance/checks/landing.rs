@@ -3,11 +3,9 @@
 //! (`docs/decisions/023-one-evaluator-decides-what-an-expression-means.md`,
 //! `docs/log-format.md` §1.2 and §1.3).
 
-use lakelands_api::{Find, Found, TypeName, Value};
-use serde_json::json;
+use lakelands_api::Value;
 
-use crate::conformance::fixture::{Lake, Must, aggregate, find_at, patch, refused_like};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     MEASURE_LANDS = a_measure_its_field_would_not_take_written_refuses_the_read,
@@ -235,7 +233,7 @@ async fn a_measure_its_field_would_not_take_written_refuses_the_read(store: Stor
     find.aggregate = serde_json::from_value(by).ok();
     find.at = find_at(Some(then)).at;
     let groups = read("entry", find).await.must("aggregating `entry`")?.data;
-    let Found::Groups { rows } = &groups else {
+    let Found::Groups { rows, .. } = &groups else {
         return Err(Failure::new(format!(
             "an aggregate answers groups: {groups:?}"
         )));

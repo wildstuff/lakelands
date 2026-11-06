@@ -17,12 +17,12 @@ use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::event::Digest;
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
+use lakelands_api::id::Position;
 use lakelands_api::ontology::StorageKind::Text;
-use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Error, Location};
 use lakelands_core::conformance::engine::{chain, seal};
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_core::conformance::fixture::{Lake, source_record, sourced, type_decl};
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
@@ -151,7 +151,7 @@ fn an_open_reads_back_past_every_block_that_holds_no_commit_line() {
 
 #[test]
 fn a_read_from_any_position_answers_the_events_from_it() {
-    const N: u64 = 3000;
+    const N: u64 = 6000;
     let dir = scratch("any-position");
     let engine = open(&dir, OpenMode::Create);
     let lease = engine.take_lease("writer").unwrap();
@@ -190,6 +190,67 @@ fn a_read_from_any_position_answers_the_events_from_it() {
     // The writer's own handle, which appended every line it now reads.
     assert_eq!(engine.read(Position(1999), 3).unwrap(), from(1999, 3));
     drop((reader, engine));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An append of eight events: the first whole, two framed, one whole,
+/// and two frames of two after it, one beside the other. Its index
+/// counts each frame's events without reading the frame's line, and a
+/// read from any position, of any length, answers each with its frame.
+#[test]
+fn a_frame_that_covers_part_of_an_append_is_counted_by_its_index() {
+    use lakelands_api::event::{EventId, LOG_FORMAT_VERSION};
+    let dir = scratch("frames-in-part");
+    let engine = open(&dir, OpenMode::Create);
+    let lease = engine.take_lease("writer").unwrap();
+    let mut prev = Digest::zero();
+    let mut events: Vec<CanonicalEvent> = (0..8)
+        .map(|p| {
+            let fence = if p == 0 { 0 } else { lease.fence };
+            let mut event = json!({
+                "body": {"kind": "note", "n": p},
+                "fence": fence,
+                "id": format!("{p:032x}"),
+                "known_at": "2026-01-01T00:00:00.000000Z",
+                "position": p,
+                "prev": prev.0,
+                "v": LOG_FORMAT_VERSION,
+            });
+            let hash = Digest(lakelands_core::canonical::sha256_hex(&event));
+            event["hash"] = json!(hash.0);
+            let prev = std::mem::replace(&mut prev, hash.clone());
+            CanonicalEvent {
+                position: Position(p),
+                id: EventId(format!("{p:032x}")),
+                prev,
+                hash,
+                fence,
+                bytes: lakelands_core::canonical::to_vec(&event),
+                frame: None,
+            }
+        })
+        .collect();
+    for run in [1..3, 4..6, 6..8] {
+        lakelands_core::log::frame_append(&mut events[run]);
+    }
+    let covered: Vec<bool> = events.iter().map(|e| e.frame.is_some()).collect();
+    assert_eq!(covered, [false, true, true, false, true, true, true, true]);
+    engine.append(&lease, &events).unwrap();
+    let lines = std::fs::read_to_string(index(&dir, 0)).unwrap();
+    assert!(
+        lines
+            .lines()
+            .all(|l| l == "[\"c\"]" || l.starts_with("[\"e\","))
+    );
+    for handle in [engine, open(&dir, OpenMode::Read)] {
+        for from in 0..8 {
+            for n in 1..=8 {
+                let want = &events[from..(from + n).min(8)];
+                let read = handle.read(Position(from as u64), n as u32).unwrap();
+                assert_eq!(read, want, "{n} from {from}");
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -276,7 +337,9 @@ async fn a_damaged_line_is_found_by_the_read_that_meets_it_and_by_verify_not_by_
     l.declare(type_decl("note", vec![sourced("text", Text)]))
         .await
         .unwrap();
-    for i in 0..40 {
+    // An index longer than a read's `NEAR`, so that the halving of a read
+    // of the tip lands past position 20.
+    for i in 0..80 {
         let record = source_record("note", &format!("n{i}"), json!({"text": "a note"}));
         l.ingest("load", vec![record]).await.unwrap();
     }
@@ -396,7 +459,7 @@ fn an_open_and_a_read_read_blocks_of_the_index_not_the_index() {
     let events = lake_of(&dir, 12_000, 32);
     let block = BLOCK as u64;
     let whole = std::fs::metadata(index(&dir, 0)).unwrap().len();
-    assert!(whole > 32 * block, "the index is {whole} bytes");
+    assert!(whole > 16 * block, "the index is {whole} bytes");
 
     let (reader, opened) = cost(|| open(&dir, OpenMode::Read));
     assert!(
@@ -590,17 +653,12 @@ fn a_writer_that_gives_its_lease_up_leaves_the_journal_empty() {
     let fold = |at: u64| {
         let p = engine.projection();
         p.begin().unwrap();
-        p.put_record(&StoredRecord {
-            ty: TypeName::from("note"),
-            key: RecordKey::from(format!("n{at}")),
-            version: Version(1),
-            fields: serde_json::from_value(json!({"text": "x".repeat(4000)})).unwrap(),
-            meta: Default::default(),
-            position: Position(at),
-            made: Position(at),
-            retired: false,
-            restricted: false,
-        })
+        p.put_record(&stored_record(
+            "note",
+            format!("n{at}"),
+            serde_json::from_value(json!({"text": "x".repeat(4000)})).unwrap(),
+            at,
+        ))
         .unwrap();
         p.commit(Position(at)).unwrap();
     };

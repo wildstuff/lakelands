@@ -15,10 +15,13 @@ use crate::describe::{LakeDescription, TypeDescription};
 use crate::error::Result;
 use crate::event::Digest;
 use crate::id::{
-    LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
+    LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName, Version,
 };
 use crate::ontology::FieldDecl;
 use crate::principal::{Principal, WriteContext};
+use crate::quarantine::{
+    HostRefused, QuarantineClose, QuarantineFilter, QuarantineId, Quarantined, Quarantining,
+};
 use crate::query::{Hits, Pattern, QueryResult, Search};
 use crate::read::{Find, Found, Get, ReadAt, Reply};
 use crate::record::{Patch, Record, SourceRecord};
@@ -148,7 +151,11 @@ pub trait Catalog: Send + Sync {
     /// Ranked retrieval over one type.
     async fn search(&self, who: &Principal, search: Search) -> Result<Reply<Hits>>;
 
-    /// Record a write as a proposal instead of applying it.
+    /// Record a write as a proposal instead of applying it. A proposal of
+    /// declarations all in force is not recorded: its accept would change
+    /// nothing, so it is answered `applied` at the head with how each
+    /// stands, as `apply` answers it
+    /// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome>;
 
     /// Accept a proposal: its write is applied as it was logged, whole,
@@ -159,7 +166,9 @@ pub trait Catalog: Send + Sync {
     /// reads a field the reviewer may not read among them (013, 006). An accepted external
     /// verb answers its executor's recorded `output`, as `call` does, and
     /// so does the accept sent again; any other accept sent again is
-    /// `decided`.
+    /// `decided`. An accepted proposal of declarations answers how each
+    /// stands after it, as `apply` does. A change of the ontology is
+    /// refused `grant_needed` to a reviewer without `restricted`.
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome>;
 
     /// `accept` of a proposed change to the ontology, only where the plan
@@ -195,9 +204,48 @@ pub trait Catalog: Send + Sync {
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>>;
 
+    /// Quarantined records at the head, in id order, each as its reader is
+    /// shown it: there to a holder of `ingest` as a proposal's write is,
+    /// a closed one with no cell
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    async fn quarantined(
+        &self,
+        who: &Principal,
+        filter: QuarantineFilter,
+    ) -> Result<Reply<Vec<Quarantined>>>;
+
+    /// Close a quarantined record as dismissed, erasing nothing. A repeat,
+    /// or one closed otherwise, answers its close and appends nothing; one
+    /// not there to its reader is `not_found` (085).
+    async fn dismiss_quarantined(
+        &self,
+        who: &Principal,
+        id: &QuarantineId,
+    ) -> Result<QuarantineClose>;
+
+    /// Quarantine a record the host refused before any ingest, as a
+    /// record the lake refused is quarantined, under `opts`' delivery,
+    /// seal and run: its cells sealed and shown as its type's, and its
+    /// life after the same. It is not judged by the type's rules; what
+    /// keeps a refused record from quarantine refuses it, as a one-record
+    /// stream's record. Needs the `ingest` grant (085, extended). A
+    /// catalog that does not carry it to the store refuses it, `invalid`.
+    async fn quarantine(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: IngestOpts,
+        refused: HostRefused,
+    ) -> Result<Quarantining> {
+        let _ = (who, source, opts, refused);
+        let case = crate::error::Case::HostQuarantineNotCarried;
+        Err(crate::Error::invalid(case))
+    }
+
     /// Add or revise a declaration that does not reshape stored records. One
     /// that is the declaration in force is answered at the head and appends
     /// nothing (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
+    /// Refused `grant_needed` to a caller without `restricted`.
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome>;
 
     /// Declare a set of declarations together, as a bundle is: validated as
@@ -207,6 +255,7 @@ pub trait Catalog: Send + Sync {
     /// The outcome names the position of the set's last declaration, from
     /// which all of it is in force. What is in force before the set is not
     /// appended again; a set wholly in force is answered at the head.
+    /// Refused `grant_needed` to a caller without `restricted`.
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome>;
 
     /// Compute again what a declaration in force computes: it is appended
@@ -215,10 +264,12 @@ pub trait Catalog: Send + Sync {
     /// settings and the time of that event, a call whose recorded output is
     /// a failure is made again, a field that waits for its backend is made.
     /// A deliberate act the log shows; an identical `declare` does none of
-    /// it (`docs/decisions/022-functions-are-declarations.md`).
+    /// it (`docs/decisions/022-functions-are-declarations.md`). Refused
+    /// `grant_needed` to a caller without `restricted`.
     async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome>;
 
-    /// Add one field to a type.
+    /// Add one field to a type. Refused `grant_needed` to a caller
+    /// without `restricted`.
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome>;
 
     /// The preflight of a migration: what it would do, changing nothing —
@@ -232,11 +283,11 @@ pub trait Catalog: Send + Sync {
         migration: Migration,
     ) -> Result<Reply<MigrationReport>>;
 
-    /// Apply a migration whose preflight the caller was shown. Refused if
-    /// the lake moved since (the report differs) or if it is not
-    /// lossless. One to the type in force that renames nothing is then
-    /// answered at the head and appends nothing only where it fills no
-    /// record (050).
+    /// Apply a migration whose preflight the caller was shown. Refused
+    /// `grant_needed` to a caller without `restricted`, if the lake moved
+    /// since (the report differs) or if it is not lossless. One to the
+    /// type in force that renames nothing is then answered at the head
+    /// and appends nothing only where it fills no record (050).
     async fn migrate_apply(
         &self,
         who: &Principal,
@@ -258,8 +309,9 @@ pub trait Catalog: Send + Sync {
     ) -> Result<Reply<ValueTypeReport>>;
 
     /// Put a value type's migration in force against the preflight the
-    /// caller was shown. Refused if the lake moved since, or while any
-    /// stored value would not fit; otherwise, without renames, one
+    /// caller was shown. Refused `grant_needed` to a caller without
+    /// `restricted`, if the lake moved since, or while any stored value
+    /// would not fit; otherwise, without renames, one
     /// `declared` at the next version, and no record changes; with them,
     /// one `value_type_migrated`, and every record holding an old value
     /// holds the new one.
@@ -277,7 +329,8 @@ pub trait Catalog: Send + Sync {
     async fn plan(&self, who: &Principal, change: Change) -> Result<Reply<Plan>>;
 
     /// Make a change whose plan the caller was shown: refused `plan_stale`
-    /// where the plan made now, as the caller is shown it, has another id.
+    /// where the plan made now, as the caller is shown it, has another id,
+    /// and `grant_needed` to a caller without `restricted`.
     /// Its outcome carries the plan that applied, as every change to the
     /// ontology's does.
     async fn enact(&self, who: &Principal, change: Change, plan_id: &str) -> Result<Outcome>;
@@ -298,8 +351,11 @@ pub trait Catalog: Send + Sync {
 
     /// [`Catalog::ingest`] under `opts`: its records in the delivery
     /// `opts` names, which every `record_ingested` of the call and every
-    /// [`Committed`] carries. A catalog that does not carry a delivery to
-    /// the store refuses one, rather than drop it.
+    /// [`Committed`] carries, sealed apart where `opts` asks it, in
+    /// windows of the size it asks, its refused records quarantined where
+    /// it asks. A catalog that does not carry a delivery, the seal, the
+    /// window or the quarantine to the store refuses each, rather than
+    /// drop it.
     async fn ingest_with(
         &self,
         who: &Principal,
@@ -307,12 +363,36 @@ pub trait Catalog: Send + Sync {
         opts: IngestOpts,
         records: SourceStream,
     ) -> Result<CommitStream> {
-        match opts.delivery {
-            Some(_) => Err(crate::Error::invalid(
-                crate::error::Case::DeliveryNotCarried,
-            )),
-            None => self.ingest(who, source, records).await,
+        use crate::error::Case;
+        if opts.quarantine_refused {
+            return Err(crate::Error::invalid(Case::QuarantineRefusedNotCarried));
         }
+        match (opts.delivery, opts.sealed_apart, opts.commit_window) {
+            (Some(_), _, _) => Err(crate::Error::invalid(Case::DeliveryNotCarried)),
+            (None, true, _) => Err(crate::Error::invalid(Case::SealedApartNotCarried)),
+            (None, false, Some(_)) => Err(crate::Error::invalid(Case::CommitWindowNotCarried)),
+            (None, false, None) => self.ingest(who, source, records).await,
+        }
+    }
+
+    /// Thin `ty`: take out of the projection every record whose field
+    /// `thin.by` is certainly before `thin.before`, as one act in parts
+    /// beside the writer, keeping the folds of the kept views over it; or,
+    /// on a `preflight`, say what the act would take, appending nothing.
+    /// The log keeps every value it took, and a key it took is refused
+    /// `thinned` at the write doors
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). A
+    /// handle that is no host's, this default, answers it unbound.
+    async fn thin(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        thin: &crate::write::Thin,
+        preflight: bool,
+    ) -> Result<Reply<crate::write::ThinReport>> {
+        let _ = (who, ty, thin, preflight);
+        let op = "thin".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
     }
 }
 
@@ -400,6 +480,22 @@ pub trait LakeStore: Send + Sync {
     /// that failed has not been done again.
     async fn head(&self) -> Result<Position>;
 
+    /// The head once it is at `at` or past it, waiting at most `within`
+    /// for it: what a read that must not answer from before a write at
+    /// `at` waits on. Past the bound it is `unavailable`, naming `at` and
+    /// the head reached
+    /// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`).
+    /// A handle that cannot wait, this default, answers at once.
+    async fn reaches(&self, at: Position, within: std::time::Duration) -> Result<Position> {
+        let _ = within;
+        let folded = self.head().await?;
+        if folded >= at {
+            return Ok(folded);
+        }
+        let situation = crate::error::Situation::NotFoldedYet { at, folded };
+        Err(crate::Error::unavailable(situation))
+    }
+
     /// The doors, for callers of this host. Writes through them carry
     /// `context` in the log; a door never lets a caller set it
     /// (`WriteContext` is the host's, never a caller's).
@@ -473,17 +569,24 @@ pub trait LakeStore: Send + Sync {
     /// the rules appended before it stand.
     async fn age(&self, today: crate::time::Timestamp) -> Result<crate::write::AgeReport>;
 
+    /// The zone the lake reads its calendar day in at the head: the IANA
+    /// name its `zone` setting holds, or `UTC` where it holds none
+    /// (`docs/decisions/101-a-lake-keeps-its-calendar-in-one-named-zone.md`).
+    /// A host reads it to find the date it ages the lake for.
+    async fn zone(&self) -> Result<String>;
+
     /// Retire, in one append, every live record the source brought in,
     /// across every type it reached, restricted ones included. A record
-    /// another hand also wrote refuses the whole purge as invalid, naming
-    /// it, and nothing is appended; a type that keeps no per-field
+    /// another hand made or also wrote refuses the whole purge as invalid,
+    /// naming it, and nothing is appended; a type that keeps no per-field
     /// provenance is not searched and is named in the report
     /// (`docs/decisions/039-a-source-is-retracted-as-one.md`). With `ty`,
     /// the purge is of what the source brought into that type and the
     /// link types of its relations, and all of this is said of that
     /// selection alone; a type that cannot be purged from is refused.
     /// With the `report_id` of a preflight, it is refused as invalid
-    /// unless that report is of this purge at this head.
+    /// unless that report is of this purge at the position it was read
+    /// at, and names the selection the act finds there.
     async fn purge_source(
         &self,
         source: &SourceId,
@@ -500,16 +603,40 @@ pub trait LakeStore: Send + Sync {
         ty: Option<&TypeName>,
     ) -> Result<crate::write::PurgeReport>;
 
+    /// What [`Catalog::upsert`] of `patch` by `who`, through the doors of
+    /// `context`, would answer, appending nothing: `Ok` for a write that
+    /// would land, and otherwise the refusal it would give, a rule of the
+    /// type broken among them, judged on the record the patch makes of the
+    /// live one. It reads the head as a read does and takes no
+    /// idempotency key: a retry, what the head becomes before the write,
+    /// and the writer's own state (its lease, a fold behind) are the
+    /// write's to answer. The host's, with no door.
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_preflight(
+        &self,
+        who: &Principal,
+        context: WriteContext,
+        ty: &TypeName,
+        key: &RecordKey,
+        patch: Patch,
+        expected: Option<Version>,
+    ) -> Result<()> {
+        let _ = (who, context, ty, key, patch, expected);
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "upsert_preflight".to_owned(),
+        }))
+    }
+
     /// Forget a source (`docs/decisions/058-a-source-may-be-forgotten.md`):
-    /// append `source_forgotten` with the records it alone brought retired,
-    /// destroy its keys, rebuild the projection, in which every value it
-    /// sealed reads as erased at every position, and reclaim the storage,
-    /// all under the writer's lock. Refused while the log holds its values
-    /// of an erasable field in plaintext. With a preflight's id, refused
-    /// unless that report is of this source at this head. A step a crash
-    /// left owed is finished by the next writer's open; a reclaim that
-    /// fails is not a failure of the act, which answers it in its report's
-    /// `reclaim_owed`.
+    /// append `source_forgotten` with the records it made and alone
+    /// brought retired, destroy its keys, rebuild the projection, in which
+    /// every value it sealed reads as erased at every position, and
+    /// reclaim the storage, all under the writer's lock. Refused while the
+    /// log holds its values of an erasable field in plaintext. With a
+    /// preflight's id, refused unless that report is of this source at
+    /// the position it was read at. A step a crash left owed is finished
+    /// by the next writer's open; a reclaim that fails is not a failure
+    /// of the act, which answers it in its report's `reclaim_owed`.
     async fn forget_source(
         &self,
         source: &SourceId,
@@ -521,10 +648,48 @@ pub trait LakeStore: Send + Sync {
     /// may repeat.
     async fn forget_preflight(&self, source: &SourceId) -> Result<crate::write::ForgetReport>;
 
+    /// Forget several sources in one act, as [`Self::forget_source`]
+    /// forgets one: one `source_forgotten` for each, appended together
+    /// with the records the set's sources made and alone brought retired,
+    /// their keys destroyed, one rebuild and one reclaim, under one hold
+    /// of the writer. A set that is empty, names a source twice, names one the
+    /// log holds no event of, or one whose values the log holds in
+    /// plaintext, is refused whole with nothing appended; the first two
+    /// before anything is read. With a preflight's id, refused unless
+    /// that report is of this set at the position it was read at. A
+    /// source of the set forgotten already appends nothing again; a set
+    /// whose every source is forgotten finishes what is owed and answers
+    /// it done, its id judged as any act's: one the log does not bear at
+    /// its position is refused `forget_report_stale`
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`, extended).
+    async fn forget_sources(
+        &self,
+        sources: &[SourceId],
+        report_id: Option<&str>,
+    ) -> Result<crate::write::ForgetSetReport> {
+        let _ = (sources, report_id);
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "forget_sources".to_owned(),
+        }))
+    }
+
+    /// What [`Self::forget_sources`] would do, appending nothing: each
+    /// source's report and the time the one act is expected to hold the
+    /// writer's lock, under one id the act may repeat.
+    async fn forget_sources_preflight(
+        &self,
+        sources: &[SourceId],
+    ) -> Result<crate::write::ForgetSetReport> {
+        let _ = sources;
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "forget_sources_preflight".to_owned(),
+        }))
+    }
+
     /// Take back part of a source
     /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): append
-    /// `values_removed` with the records left holding nothing of another
-    /// hand retired, rebuild the projection, in which each value a selected
+    /// `values_removed` with the records the source made left holding
+    /// nothing of another hand retired, rebuild the projection, in which each value a selected
     /// event of the source wrote reads as erased at every position, and
     /// reclaim the storage, all under the writer's lock. A key field and a
     /// reference field are never taken. The versions of the source's key
@@ -532,8 +697,9 @@ pub trait LakeStore: Send + Sync {
     /// destroyed, and what they sealed is shredded; with
     /// `require_shredded`, refused while a value of an erasable field would
     /// be redacted only. With a preflight's id, refused unless that report
-    /// is of this removal at this head. A step a crash left owed is
-    /// finished by the next writer's open; a reclaim that fails is
+    /// is of this removal at the position it was read at, and names the
+    /// selection the act finds there. A step a crash left owed is finished
+    /// by the road beside the next writer's open; a reclaim that fails is
     /// answered in the report's `reclaim_owed`, as for
     /// [`Self::forget_source`].
     async fn remove_values(
@@ -553,6 +719,25 @@ pub trait LakeStore: Send + Sync {
         selection: &crate::write::Selection,
     ) -> Result<crate::write::RemoveReport>;
 
+    /// Thin `ty`: take out of the projection every record whose field
+    /// `thin.by` is certainly before `thin.before`, as one act in parts
+    /// beside the writer, keeping the folds of the kept views over it; or,
+    /// on a `preflight`, say what the act would take, appending nothing.
+    /// The log keeps every value it took. A crash between parts is
+    /// finished by the next writer's open
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). A
+    /// handle that is no host's, this default, answers it unbound.
+    async fn thin_values(
+        &self,
+        ty: &TypeName,
+        thin: &crate::write::Thin,
+        preflight: bool,
+    ) -> Result<crate::write::ThinReport> {
+        let _ = (ty, thin, preflight);
+        let op = "thin_values".to_owned();
+        Err(crate::Error::unbound(crate::error::Seam::Operation { op }))
+    }
+
     /// Give back the storage the projection no longer uses. It appends
     /// nothing and changes no answer, no event and no byte of an export;
     /// it prunes no history and does not seal. Only the writer's handle
@@ -566,8 +751,10 @@ pub trait LakeStore: Send + Sync {
     /// searches read from now on, in place of the one bound at open or
     /// by an earlier bind, whatever its model. Nothing is recorded: the
     /// binding is the host's configuration, not a fact of the log. What
-    /// fell due while none was bound waits until its record is written
-    /// again or `recompute` names its type
+    /// fell due while none of its model was bound is made in a task of
+    /// the bind's own, as a writer's open with the backend makes it, a
+    /// recorded failure aside, which `recompute` calls again;
+    /// [`Self::vector_coverage`] counts it due until then
     /// (`docs/decisions/022-functions-are-declarations.md`, extended).
     fn bind_embed(&self, backend: Arc<dyn crate::seam::EmbedBackend>) -> Result<()>;
 

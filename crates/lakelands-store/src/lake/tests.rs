@@ -3,6 +3,7 @@ use lakelands_api::engine::EngineOpener;
 use lakelands_api::write::Rekey;
 use serde_json::json;
 
+use super::fold::Values;
 use super::*;
 
 fn ty(v: serde_json::Value) -> TypeDecl {
@@ -272,6 +273,7 @@ fn the_entries_of_a_recomputation_mirror_the_writers_ontology() {
             waiting: false,
             plans: &record::Plans::default(),
             keys: None,
+            apart: None,
         };
         record::rederive(o, &r, &event, &BTreeMap::new(), &mut outputs).unwrap()
     };
@@ -355,6 +357,7 @@ fn a_plan_stands_until_what_it_was_made_from_is_declared_again() {
             waiting: false,
             plans: &plans,
             keys: None,
+            apart: None,
         };
         let r = record::rederive(o, &r, &event, &BTreeMap::new(), &mut outputs).unwrap();
         r.unwrap().fields["twice"].clone()
@@ -411,6 +414,7 @@ fn a_type_that_cannot_be_ordered_fails_only_at_a_live_record() {
             waiting: false,
             plans: &record::Plans::default(),
             keys: None,
+            apart: None,
         };
         let r = StoredRecord {
             retired,
@@ -484,7 +488,11 @@ fn owned(
     };
     let lake = Lake::open(&Location::memory(name), seams, OpenMode::Create);
     let lake = Arc::new(lake.expect("the lake opens"));
-    let cat = crate::doors::Store { lake: lake.clone() }.catalog(Default::default());
+    let cat = crate::doors::Store {
+        lake: lake.clone(),
+        owns: false,
+    }
+    .catalog(Default::default());
     let owner = lakelands_api::Principal {
         kind: lakelands_api::principal::PrincipalKind::Human,
         id: "owner".into(),
@@ -534,6 +542,7 @@ async fn a_left_shape_is_the_one_the_projection_makes() {
     declare(text_type("t", &["a", "c"])).await;
     let at = lake.head().0;
     let left = lakelands_core::lock(&lake.shapes)
+        .held
         .iter()
         .any(|(range, held)| range.contains(&at) && matches!(held, HeldShape::Left(_)));
     assert!(left, "the last append left the shape");
@@ -574,7 +583,7 @@ async fn a_chain_of_left_shapes_is_bounded_and_unlinked_in_a_loop() {
             HeldShape::Left(left) if range.contains(&at) => Some(left.links),
             _ => None,
         };
-        held.iter().find_map(left)
+        held.held.iter().find_map(left)
     };
     let head = lake.head().0;
     assert_eq!((held(head - 1), held(head)), (Some(LEFT_LINKS), None));
@@ -599,4 +608,162 @@ async fn a_chain_of_left_shapes_is_bounded_and_unlinked_in_a_loop() {
         .unwrap()
         .join()
         .expect("read and dropped in 64 KiB");
+}
+
+/// Upsert a `t` of text `a` keyed `key`, and answer the head after it.
+async fn upserted(
+    lake: &Lake,
+    cat: &dyn lakelands_api::Catalog,
+    owner: &Principal,
+    key: &str,
+) -> u64 {
+    let fields = serde_json::from_value(json!({"a": key})).unwrap();
+    let (ty, key) = (TypeName::from("t"), key.into());
+    let up = cat.upsert(owner, &ty, &key, fields, Default::default());
+    up.await.unwrap();
+    lake.head().0
+}
+
+/// The shape at `at`.
+fn shape_at(lake: &Lake, at: u64) -> Arc<Shape> {
+    let view = lake.engine.view(Some(Position(at))).unwrap();
+    lake.shape(view.as_ref()).unwrap()
+}
+
+/// A read before a redeclaration is answered with the shape of its own
+/// position, not the head's; where the last event that ends a range
+/// stands is learnt from the projection at a build: a withdrawal, then a
+/// retired setting, each held at its own position (lakelands#1501).
+#[tokio::test]
+async fn a_read_before_a_range_ends_keeps_its_own_shape_and_the_ending_is_learnt() {
+    let (lake, cat, owner) = owned("ending");
+    let declare = async |d: serde_json::Value| cat.declare(&owner, declaration(d)).await.unwrap();
+    declare(text_type("t", &["a"])).await;
+    let old = upserted(&lake, cat.as_ref(), &owner, "k0").await;
+    let fields = |at: u64| {
+        let t = &shape_at(&lake, at).ontology.types[&TypeName::from("t")];
+        let names = t.decl.fields.iter().map(|f| f.name.to_string());
+        names.collect::<Vec<_>>()
+    };
+    declare(text_type("t", &["a", "b"])).await;
+    assert_eq!(
+        [fields(lake.head().0), fields(old)],
+        [&["a", "b"][..], &["a"]]
+    );
+    declare(text_type("u", &["a"])).await;
+    declare(json!({"declare": "withdraw", "kind": "type", "name": "u"})).await;
+    let withdrawn = lake.head().0;
+    let learnt = async |key: &str| {
+        let head = upserted(&lake, cat.as_ref(), &owner, key).await;
+        let mut shapes = lakelands_core::lock(&lake.shapes);
+        shapes.clear();
+        assert_eq!(shapes.ended, None, "a clear drops where the ending stands");
+        drop(shapes);
+        shape_at(&lake, head);
+        lakelands_core::lock(&lake.shapes).ended
+    };
+    assert_eq!(learnt("k1").await, Some((withdrawn, withdrawn + 1)));
+    let floor = serde_json::from_value(json!({"key": "floor", "value": 3})).unwrap();
+    let setting = (TypeName::from("sys.setting"), "floor".into());
+    let set = cat.upsert(&owner, &setting.0, &setting.1, floor, Default::default());
+    set.await.unwrap();
+    let retire = cat.retire(&owner, &setting.0, &setting.1, Default::default());
+    retire.await.unwrap();
+    let retired = lake.head().0;
+    assert_eq!(learnt("k2").await, Some((retired, retired + 1)));
+}
+
+/// Between an append's fold and its publish the head stands behind what a
+/// read finds and the writer keeps, which is not told at it (lakelands#1632).
+#[tokio::test]
+async fn a_description_kept_past_the_published_head_is_not_told_at_it() {
+    let (lake, cat, owner) = owned("unpublished");
+    let (head, before) = (lakelands_api::ReadAt::default(), lake.head());
+    let t = declaration(text_type("t", &["a"]));
+    cat.declare(&owner, t).await.unwrap();
+    let kept = cat.describe(&owner, head).await.unwrap();
+    lake.set_head(before.0);
+    let told = cat.describe(&owner, head).await.unwrap();
+    assert_eq!(told.position, kept.position);
+}
+
+/// A `declared` event of the type `t`, at `at`.
+fn declared_type(t: serde_json::Value, at: u64) -> Event {
+    let body = EventBody::Declared {
+        declaration: Declaration::Type(ty(t)),
+        schema_hash: None,
+        version: 1,
+        with_the_set: false,
+    };
+    let draft = Draft::system(Timestamp(5), body);
+    log::seal(&"l".into(), Position(at), &Digest::zero(), 1, draft).0
+}
+
+#[test]
+fn a_scoped_refold_walks_only_what_its_records_read() {
+    let to = |name: &str, target: &str| json!({"name": name, "type": {"kind": "reference", "target": target}});
+    let wide = [
+        declared_type(json!({"name": "country", "fields": []}), 1),
+        declared_type(json!({"name": "town", "fields": [to("in", "country")]}), 2),
+        declared_type(json!({"name": "person", "fields": [to("home", "town")]}), 3),
+        declared_type(json!({"name": "visit", "fields": [to("who", "person")]}), 4),
+        declared_type(json!({"name": "order", "fields": []}), 5),
+    ];
+    let types = BTreeSet::from([TypeName::from("person")]);
+    let names = |n: &[&str]| {
+        n.iter()
+            .map(|&t| TypeName::from(t))
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(
+        scrub::near(&types, &wide),
+        names(&["country", "person", "town"])
+    );
+}
+
+/// A removal's restate is the scoped pass where nothing else reads the
+/// records it takes: its way names the scoped refold, with no reason
+/// beside it, so the keys its walk gathered are all its pages fold (099).
+#[tokio::test]
+async fn a_removals_restate_is_scoped() {
+    use lakelands_api::LakeStore;
+    use lakelands_api::write::Selection;
+
+    let (lake, cat, owner) = owned("scoped-removal");
+    let t = declaration(
+        json!({"declare": "type", "name": "t", "key": ["id"], "fields": [
+        {"name": "id", "type": {"kind": "text"}, "authority": "source"},
+        {"name": "a", "type": {"kind": "text"}, "authority": "source"}]}),
+    );
+    cat.declare(&owner, t).await.unwrap();
+    let crm = SourceId::from("crm");
+    let record = |key: &str| lakelands_api::SourceRecord {
+        source: None,
+        upstream: None,
+        ty: "t".into(),
+        key: key.into(),
+        fields: serde_json::from_value(json!({"id": key, "a": "x"})).unwrap(),
+        seen_at: None,
+        delivery: None,
+        resubmits: None,
+        line: None,
+    };
+    let records = (0..20).map(|i| record(&format!("k{i}"))).collect();
+    let fed = lakelands_api::ingest_all(cat.as_ref(), &owner, &crm, records);
+    fed.await.expect("the records are written");
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let door = crate::doors::Store {
+        lake: lake.clone(),
+        owns: false,
+    };
+    let done = door.remove_values(&crm, &all, false, None).await;
+    assert_eq!(done.expect("the removal runs").events, 20);
+    let way = lake
+        .forget_way()
+        .expect("the removal restated the projection");
+    assert!(
+        way.scoped && way.why.is_empty() && way.records == 20,
+        "the removal restated its twenty records by the scoped refold, with no reason for the \
+         rebuild: {way:?}"
+    );
 }

@@ -1,5 +1,5 @@
 //! The drift check between this crate and the WIT package in `wit/`
-//! (`lakelands:data@0.16.1`). The crate is the source; the WIT mirrors it,
+//! (`lakelands:data@0.23.0`). The crate is the source; the WIT mirrors it,
 //! and this test fails as soon as the two disagree.
 //!
 //! Three things are compared:
@@ -22,32 +22,35 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use lakelands_api::describe::{
-    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept,
-    SettingValue, SortedWhole, TypeAccess, TypeDescription, TypeLifecycle, TypeLineage, TypeRights,
-    VerbDescription,
+    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept, SeriesTold,
+    SeriesToldState, SettingPeriod, SettingValue, SortedWhole, TypeAccess, TypeDescription,
+    TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::event::ChangeKind;
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Assignment, AtIngest, Authority, Cardinality, ComputedAt, ConstraintDecl, EmbedDecl, FieldDecl,
-    FieldType, FunctionInput, Measure, OnInputChange, RelationDecl, RetiredBy, Risk, StorageKind,
-    TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
-    ViewSource,
+    FieldType, FunctionInput, Measure, OnInputChange, Precondition, RelationDecl, RetiredBy, Risk,
+    StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
+    ViewParam, ViewSource,
 };
-use lakelands_api::principal::TypeGrants;
+use lakelands_api::principal::{HiddenWhere, Renamed, TypeGrants};
 use lakelands_api::query::{
-    Axis, Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start,
-    Step, VectorTerm, Walk,
+    Axis, Depth, Edge, Hit, Hits, Matched, Pattern, Projection, QueryResult, Search, SearchMode,
+    Span, Start, Step, Unranked, VectorTerm, Walk,
 };
-use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
+use lakelands_api::read::{
+    AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy, ThinnedAct,
+};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
-    AgeReport, Breach, Carried, Carrier, CompactReport, Declaration, DeclarationKind,
+    AgeReport, Breach, Carried, Carrier, CompactReport, DecidedAt, Declaration, DeclarationKind,
     FieldConversion, FieldFill, FunctionDecl, InForce, Migration, MigrationReport, Misfit,
-    ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RecordRef,
-    ReferenceRewrite, Rekeyed, RelationRename, Restated, RuleRun, TypeRetired, ValueRenamed,
-    ValueTypeMigration, ValueTypeReport, ValueTypeUse, Withdrawal,
+    ObjectSetDecl, Proposal, ProposalFilter, ProposalKind, ProposalState, ProposedWrite,
+    PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, Restated, RuleRun, Thin,
+    ThinReport, TypeRetired, ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse,
+    Withdrawal,
 };
 use lakelands_api::{
     Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, IngestOpts,
@@ -196,9 +199,14 @@ fn every_door_of_the_crate_is_a_function_of_the_wit_and_no_other() {
         .chain(fns("query"))
         .chain(fns("schema"))
         .collect();
+    // The quarantined records are a person's, worked through the host:
+    // their listing, their dismiss and the host's own quarantine stay off
+    // the guest door (085).
+    let mut doors = trait_methods(catalog_rs, "Catalog");
+    let off = ["quarantined", "dismiss_quarantined", "quarantine"];
+    doors.retain(|door| !off.contains(&door.as_str()));
     assert_eq!(
-        catalog,
-        trait_methods(catalog_rs, "Catalog"),
+        catalog, doors,
         "the catalog's doors: the `catalog` resource with `query` and `schema`, against `Catalog`"
     );
     // A door that binds a seam is the host's: the host binds the seams,
@@ -248,6 +256,7 @@ fn field_decl() -> FieldDecl {
         ty: field_type(),
         required: true,
         authority: Authority::Shared,
+        admits: vec!["crm".into()],
         derived: Some(cond()),
         function: Some("g".into()),
         computed_at: Some(ComputedAt::Read),
@@ -298,6 +307,14 @@ fn constraint_decl() -> ConstraintDecl {
         holds: cond(),
         description: Some("d".into()),
         at_ingest: AtIngest::Admit,
+    }
+}
+
+/// A verb's precondition with every member set.
+fn precondition() -> Precondition {
+    Precondition {
+        name: "paid_in_full".into(),
+        holds: cond(),
     }
 }
 
@@ -428,6 +445,7 @@ fn agg_measure() -> AggMeasure {
         name: "m".into(),
         func: AggFunc::Sum,
         field: Some("f".into()),
+        by: Some("g".into()),
     }
 }
 
@@ -438,7 +456,37 @@ fn record() -> Record {
         version: Version(1),
         fields: [("f".into(), json!(1))].into(),
         masked: vec!["g".into()],
+        stranded: true,
+        cut: Some("2024a".into()),
         meta: [("f".into(), field_meta())].into(),
+    }
+}
+
+fn thinned_act() -> ThinnedAct {
+    ThinnedAct {
+        ty: "invoice".into(),
+        by: "at".into(),
+        before: t(),
+        through: Position(9),
+        gone: 4,
+    }
+}
+
+fn thin() -> Thin {
+    Thin {
+        by: "at".into(),
+        before: t(),
+    }
+}
+
+fn thin_report() -> ThinReport {
+    ThinReport {
+        ty: "invoice".into(),
+        by: "at".into(),
+        before: t(),
+        records: 4,
+        through: Position(9),
+        reclaimed: Some(compact_report()),
     }
 }
 
@@ -458,9 +506,11 @@ fn field_meta() -> FieldMeta {
         position: Position(1),
         writer: "human:a".into(),
         source: Some("erp".into()),
+        procedure: Some("summarise".into()),
         procedure_version: Some("1".into()),
         error: Some("the backing failed".into()),
         erased: true,
+        on_behalf_of: Some("human:b".into()),
     }
 }
 
@@ -468,6 +518,7 @@ fn write_opts() -> WriteOpts {
     WriteOpts {
         expected_version: Some(Version(1)),
         idempotency_key: Some("i".into()),
+        defer_computed_fields: true,
     }
 }
 
@@ -486,7 +537,37 @@ fn plan() -> lakelands_api::write::Plan {
         types: vec![migration_report()],
         value_types: vec![lakelands_api::write::ValueTypeReport::default()],
         lossless: true,
+        records: Some(Box::new(records_plan())),
     }
+}
+
+fn records_plan() -> lakelands_api::write::RecordsPlan {
+    lakelands_api::write::RecordsPlan {
+        ty: "invoice".into(),
+        selected: 2,
+        sample_keys: vec!["k".into()],
+        fields: vec![field_changed()],
+        refused: vec![records_refused()],
+    }
+}
+
+fn field_changed() -> lakelands_api::write::FieldChanged {
+    lakelands_api::write::FieldChanged {
+        field: "f".into(),
+        records: 1,
+    }
+}
+
+fn records_refused() -> lakelands_api::write::RecordsRefused {
+    lakelands_api::write::RecordsRefused {
+        refusal: Box::new(Error::refused(None, Refusal::NotGranted)),
+        records: 1,
+        sample_keys: vec!["k".into()],
+    }
+}
+
+fn records_only() -> BTreeMap<lakelands_api::FieldName, Value> {
+    BTreeMap::from([("owner".into(), json!("a"))])
 }
 
 fn migration_report() -> MigrationReport {
@@ -567,6 +648,7 @@ fn object_set_decl() -> ObjectSetDecl {
         of: "invoice".into(),
         filter: cond(),
         description: Some("d".into()),
+        decided_at: DecidedAt::Read,
     }
 }
 
@@ -589,6 +671,7 @@ fn field_description() -> FieldDescription {
         ty: field_type(),
         required: true,
         authority: Authority::Source,
+        admits: vec!["crm".into()],
         access: Access::Read,
         derived: Some(cond()),
         function: Some("g".into()),
@@ -604,11 +687,23 @@ fn field_description() -> FieldDescription {
         description: Some("d".into()),
         label: Some("l".into()),
         embed: Some(embed_decl()),
+        hidden_where: vec![("g".into(), ["x".to_owned()].into())],
+    }
+}
+
+fn hidden_where() -> HiddenWhere {
+    HiddenWhere {
+        field: "g".into(),
+        values: ["x".to_owned()].into(),
+        fields: [("f".into(), Access::None)].into(),
     }
 }
 
 fn type_description() -> TypeDescription {
     TypeDescription {
+        thinned: vec![thinned_act()],
+        stranded: 1,
+        cut: vec!["2024a".into()],
         constraints: vec![constraint_decl()],
         value_types: vec![ValueTypeDecl {
             name: "money".into(),
@@ -642,16 +737,33 @@ fn type_description() -> TypeDescription {
             insert_only: true,
             retired_by: RetiredBy::Verbs,
             view_of: Some("t".into()),
+            renamed: vec![renamed()],
         },
         lifecycle: TypeLifecycle {
             version: 1,
             schema_hash: "h".into(),
             sorted: vec!["amount".into()],
+            chosen: vec!["due".into()],
+            building: vec!["paid".into()],
             sorted_whole: vec![sorted_whole()],
             indexed: vec!["embedding".into()],
             kept: Some(Kept::Kept),
             value_types: [("money".into(), 2)].into(),
         },
+        series: vec![SeriesTold {
+            series: "paid".into(),
+            order: "due".into(),
+            state: SeriesToldState::Building,
+        }],
+    }
+}
+
+fn renamed() -> Renamed {
+    Renamed {
+        at: Position(3),
+        ty: "invoice".into(),
+        renames: vec![("a".into(), "b".into())],
+        to: Some("bill".into()),
     }
 }
 
@@ -669,6 +781,98 @@ fn purge_moved() -> lakelands_api::write::PurgeMoved {
         field: "state".into(),
         records: 1,
         first: vec!["o1".into()],
+    }
+}
+
+fn compact_report() -> lakelands_api::write::CompactReport {
+    lakelands_api::write::CompactReport {
+        before: Some(2),
+        after: Some(1),
+        head: Position(3),
+    }
+}
+
+fn forget_report() -> lakelands_api::write::ForgetReport {
+    lakelands_api::write::ForgetReport {
+        source: "erp".into(),
+        types: vec![forget_records()],
+        fields: vec![forget_field()],
+        outputs: 1,
+        retired: vec![],
+        co_owned: vec![forget_records()],
+        recomputed: vec![record_field()],
+        views: vec!["v".into()],
+        plaintext: 0,
+        events: 9,
+        expected_ms: 1,
+        reclaim_untimed: true,
+        position: Position(3),
+        reclaimed: Some(compact_report()),
+        reclaim_owed: Some("busy".into()),
+        way: forget_way(),
+        report_id: "r".into(),
+        quarantined: vec![lakelands_api::quarantine::TypeQuarantined {
+            ty: "ord".into(),
+            quarantined: 1,
+        }],
+    }
+}
+
+fn forget_way() -> lakelands_api::write::ForgetWay {
+    lakelands_api::write::ForgetWay {
+        scoped: false,
+        why: vec!["asked".into()],
+        records: 1,
+        events: 2,
+        scoped_ms: 3,
+        rebuild_ms: 4,
+    }
+}
+
+fn removed_field() -> lakelands_api::write::RemovedField {
+    lakelands_api::write::RemovedField {
+        ty: "ord".into(),
+        field: "name".into(),
+        redacted: 2,
+        shredded: 1,
+    }
+}
+
+/// A removal's report, every member given, so a member the WIT lacks
+/// is named.
+fn remove_report() -> lakelands_api::write::RemoveReport {
+    lakelands_api::write::RemoveReport {
+        source: "erp".into(),
+        selection: lakelands_api::write::Selection::Delivery("d".into()),
+        before: Some(Position(2)),
+        events: 2,
+        undelivered: 1,
+        unseen: 1,
+        types: vec![forget_records()],
+        fields: vec![removed_field()],
+        retired: vec![TypeRetired {
+            ty: "ord".into(),
+            retired: 1,
+        }],
+        kept: vec![forget_records()],
+        recomputed: vec![record_field()],
+        views: vec!["v".into()],
+        breaches: vec![breach()],
+        references: vec![purge_reference()],
+        keys: vec!["k1".into()],
+        apart: vec!["a1".into()],
+        unshredded: 1,
+        log_events: 9,
+        expected_ms: 1,
+        reclaim_untimed: true,
+        position: Position(3),
+        reclaimed: Some(compact_report()),
+        reclaim_owed: Some("busy".into()),
+        report_id: "r".into(),
+        quarantined: vec![lakelands_api::quarantine::TypeQuarantined {
+            ty: "ord".into(),
+            quarantined: 1,
+        }],
     }
 }
 
@@ -704,12 +908,21 @@ fn purge_reference() -> lakelands_api::write::PurgeReference {
     }
 }
 
+/// A vector leg that did not rank, every member set.
+fn unranked() -> Unranked {
+    Unranked {
+        field: "v".into(),
+        why: Error::refused(None, Refusal::NotGranted),
+    }
+}
+
 fn search_mode() -> SearchMode {
     SearchMode::Hybrid {
         text: "t".into(),
         field: "f".into(),
         vector: Some(vec![1.0]),
         fields: Some(vec!["f".into()]),
+        text_fields: Some([("f".into(), 2.0)].into()),
         weight: None,
         text_weight: None,
         model: None,
@@ -754,6 +967,16 @@ fn setting_value() -> SettingValue {
         value: Some(serde_json::json!(["due"])),
         default: Value::Null,
         declared: Some(setting_decl()),
+        periods: vec![
+            SettingPeriod {
+                from: None,
+                value: serde_json::json!(16),
+            },
+            SettingPeriod {
+                from: Some("2026-07-01".into()),
+                value: serde_json::json!(19),
+            },
+        ],
     }
 }
 
@@ -762,6 +985,14 @@ fn rerank() -> lakelands_api::query::Rerank {
     lakelands_api::query::Rerank {
         top: 3,
         text: Some("t".into()),
+    }
+}
+
+/// Where a hit's text matched one field, every member given.
+fn matched() -> Matched {
+    Matched {
+        spans: vec![Span { start: 0, end: 1 }],
+        count: 1,
     }
 }
 
@@ -812,6 +1043,12 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         default: Some(Access::Read),
                         fields: [("f".into(), Access::Write)].into(),
                         only: [("o".into(), json!("a"))].into(),
+                        only_any: [("o".into(), ["a".into()].into())].into(),
+                        writes_only: [("w".into(), json!("a"))].into(),
+                        verbs: ["v".into()].into(),
+                        hide_where: vec![hidden_where()],
+                        dates_by_hidden_valid_time: true,
+                        whole_sets_only: true,
                     },
                 )]
                 .into(),
@@ -828,17 +1065,26 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     default: Some(Access::Read),
                     fields: [("f".into(), Access::Write)].into(),
                     only: [("o".into(), json!("a"))].into(),
+                    only_any: [("o".into(), ["a".into()].into())].into(),
+                    writes_only: [("w".into(), json!("a"))].into(),
+                    verbs: ["v".into()].into(),
+                    hide_where: vec![hidden_where()],
+                    dates_by_hidden_valid_time: true,
+                    whole_sets_only: true,
                 }),
                 &[],
                 &["type"],
             ),
         ),
+        ("hidden_where", members(&hidden_where())),
         (
             "write_context",
             members(&WriteContext {
                 cause: Some(Position(1)),
                 origin: WriteOrigin::Reactive,
                 depth: 1,
+                on_behalf_of: Some("human:b".into()),
+                occasion: Some("live".into()),
             }),
         ),
         ("field_type", members(&field_type())),
@@ -883,11 +1129,13 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     scope: VerbScope::Type,
                     payload: vec![field_decl()],
                     risk: Risk::Low,
+                    preconditions: vec![precondition()],
                     requires: Some(cond()),
                     effect: VerbEffect::External {
                         executor: "x".into(),
                     },
                     description: Some("d".into()),
+                    granted: true,
                 }),
                 &["executor"],
                 &[],
@@ -909,6 +1157,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ),
         ("migration_report", members(&migration_report())),
         ("constraint_decl", members(&constraint_decl())),
+        ("precondition", members(&precondition())),
         ("breach", members(&breach())),
         // A case is flattened into its object: its parameters (here `type`
         // and `field`) are members beside `at`, `code` and `message`, and
@@ -930,6 +1179,36 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ("upstream", members(&upstream())),
         ("field_meta", members(&field_meta())),
         ("record", members(&record())),
+        ("thinned_act", members(&thinned_act())),
+        (
+            "records_page",
+            adjusted(
+                members(&Found::Records {
+                    rows: vec![],
+                    next_cursor: Some(Cursor("c".into())),
+                    total: Some(3),
+                    retired: Some(1),
+                    thinned: vec![thinned_act()],
+                    stranded: Some(2),
+                }),
+                &["shape"],
+                &[],
+            ),
+        ),
+        (
+            "groups_page",
+            adjusted(
+                members(&Found::Groups {
+                    rows: vec![],
+                    thinned: vec![thinned_act()],
+                    stranded: Some(2),
+                }),
+                &["shape"],
+                &[],
+            ),
+        ),
+        ("thin", members(&thin())),
+        ("thin_report", members(&thin_report())),
         (
             "source_record",
             members(&SourceRecord {
@@ -939,6 +1218,12 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 key: "k".into(),
                 fields: [("f".into(), json!(1))].into(),
                 seen_at: Some(t()),
+                delivery: Some("item-1".into()),
+                resubmits: Some(lakelands_api::quarantine::Resubmits {
+                    delivery: "d1".into(),
+                    index: 1,
+                }),
+                line: Some(7),
             }),
         ),
         ("order", members(&order())),
@@ -971,6 +1256,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             members(&Group {
                 by: [("f".into(), json!(1))].into(),
                 values: [("m".into(), json!(1))].into(),
+                stranded: true,
             }),
         ),
         (
@@ -991,6 +1277,10 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             "ingest_opts",
             members(&IngestOpts {
                 delivery: Some("batch-7".into()),
+                sealed_apart: true,
+                commit_window: Some(1024),
+                quarantine_refused: true,
+                run: Some("run-1".into()),
             }),
         ),
         // The `applied` record is the variant's members beside its tag.
@@ -1031,6 +1321,32 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             m
         }),
         ("plan", members(&plan())),
+        ("records_plan", members(&records_plan())),
+        ("field_changed", members(&field_changed())),
+        ("records_refused", members(&records_refused())),
+        ("records_change", {
+            let mut m = members(&lakelands_api::write::Change::Records {
+                ty: "invoice".into(),
+                filter: Box::new(cond()),
+                to: lakelands_api::write::ChangeTo::Retire,
+                only: records_only(),
+                skip_restricted: true,
+            });
+            m.remove("change");
+            m
+        }),
+        ("records_write", {
+            let mut m = members(&ProposedWrite::Records {
+                ty: "invoice".into(),
+                filter: cond(),
+                to: lakelands_api::write::ChangeTo::Retire,
+                only: records_only(),
+                skip_restricted: true,
+                plan: Box::new(plan()),
+            });
+            m.remove("write");
+            m
+        }),
         ("unlive", members(&unlive())),
         ("in_force", members(&in_force())),
         (
@@ -1058,7 +1374,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 members(&ProposalFilter {
                     state: Some(ProposalState::Pending),
                     ty: Some("invoice".into()),
-                    kind: Some(lakelands_api::write::ProposalKind::Declare),
+                    kind: Some(ProposalKind::Declare),
                     limit: Some(1),
                     order_by: vec![order()],
                     cursor: Some(Cursor("c".into())),
@@ -1075,6 +1391,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 records: 1,
                 duplicates: 0,
                 delivery: Some("d1".into()),
+                quarantined: vec![1],
             }),
         ),
         ("depth", members(&Depth { min: 1, max: 2 })),
@@ -1108,6 +1425,10 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 filter: Some(cond()),
                 depth: Depth { min: 1, max: 2 },
                 named: Some("by".into()),
+                from: Some("a".into()),
+                join: Some("b".into()),
+                optional: true,
+                absent: true,
             }),
         ),
         (
@@ -1155,9 +1476,19 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     filter: Some(cond()),
                     rerank: Some(rerank()),
                     with_meta: true,
+                    matches: true,
+                    text_as_of: true,
                     at: read_at(),
                 }),
-                &["as_of", "valid_at", "text", "field", "vector", "fields"],
+                &[
+                    "as_of",
+                    "valid_at",
+                    "text",
+                    "field",
+                    "vector",
+                    "fields",
+                    "text_fields",
+                ],
                 &["at"],
             ),
         ),
@@ -1166,8 +1497,15 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             members(&Hit {
                 record: record(),
                 score: 1.0,
+                matches: [("f".into(), matched())].into(),
             }),
         ),
+        // The map's key is the record's `field`.
+        (
+            "field_match",
+            adjusted(members(&matched()), &[], &["field"]),
+        ),
+        ("span", members(&Span { start: 0, end: 1 })),
         (
             "hits",
             members(&Hits {
@@ -1176,8 +1514,10 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 ranked_by: "lexical".into(),
                 truncated: true,
                 axes: vec![],
+                unranked: Some(unranked()),
             }),
         ),
+        ("unranked", members(&unranked())),
         ("rerank", members(&rerank())),
         (
             "axis",
@@ -1203,13 +1543,24 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 create_why: Some("w".into()),
                 link: vec!["r".into()],
                 only: [("o".into(), json!("a"))].into(),
+                only_any: [("o".into(), ["a".into()].into())].into(),
+                writes_only: [("w".into(), json!("a"))].into(),
                 ..TypeRights::default()
             }),
         ),
         ("type_access", members(&type_description().access)),
         ("type_lineage", members(&type_description().lineage)),
+        ("renamed", members(&renamed())),
         ("type_lifecycle", members(&type_description().lifecycle)),
         ("sorted_whole", members(&sorted_whole())),
+        (
+            "series_told",
+            members(&SeriesTold {
+                series: "paid".into(),
+                order: "due".into(),
+                state: SeriesToldState::Building,
+            }),
+        ),
         ("field_description", members(&field_description())),
         ("type_description", members(&type_description())),
         (
@@ -1230,6 +1581,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("setting_value", members(&setting_value())),
+        ("setting_period", members(&setting_value().periods[1])),
         (
             "executor_description",
             members(&ExecutorDescription {
@@ -1385,33 +1737,31 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 report_id: "r".into(),
                 set_off: 1,
                 max_set_changes: 2,
+                quarantined: vec![lakelands_api::quarantine::TypeQuarantined {
+                    ty: "ord".into(),
+                    quarantined: 1,
+                }],
             }),
         ),
         ("purge_reference", members(&purge_reference())),
+        ("forget_report", members(&forget_report())),
         (
-            "forget_report",
-            members(&lakelands_api::write::ForgetReport {
-                source: "erp".into(),
-                types: vec![forget_records()],
-                fields: vec![forget_field()],
-                outputs: 1,
-                retired: vec![],
-                co_owned: vec![forget_records()],
-                recomputed: vec![record_field()],
-                views: vec!["v".into()],
-                plaintext: 0,
+            "forget_set_report",
+            members(&lakelands_api::write::ForgetSetReport {
+                sources: vec![forget_report()],
                 events: 9,
                 expected_ms: 1,
+                reclaim_untimed: true,
                 position: Position(3),
-                reclaimed: Some(lakelands_api::write::CompactReport {
-                    before: Some(2),
-                    after: Some(1),
-                    head: Position(3),
-                }),
+                reclaimed: Some(compact_report()),
                 reclaim_owed: Some("busy".into()),
+                way: forget_way(),
                 report_id: "r".into(),
             }),
         ),
+        ("forget_way", members(&forget_way())),
+        ("remove_report", members(&remove_report())),
+        ("removed_field", members(&removed_field())),
         ("forget_records", members(&forget_records())),
         ("forget_field", members(&forget_field())),
         ("record_field", members(&record_field())),
@@ -1447,10 +1797,27 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 max_depth: 3,
                 max_reactive_depth: 4,
                 commit_window_events: 5,
+                commit_window_max: 18,
                 max_graph_nodes: 6,
                 max_offset: 7,
                 max_set_changes: 8,
+                max_change_records: 17,
                 max_rerank_top: 9,
+                max_text_as_of: 20,
+                choose_order_index: true,
+                order_after_pages: 10,
+                order_window_secs: 11,
+                order_min_records: 12,
+                order_max_fields: 13,
+                order_unused_secs: 14,
+                order_chunk: 15,
+                window_keys: 24,
+                part_events: 21,
+                part_tail: 22,
+                page_events: 23,
+                forget_rebuild: true,
+                seal_after_bytes: 16,
+                quarantined_max: 19,
             }),
         ),
         (
@@ -1468,6 +1835,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 next: Position(1),
                 head: Position(1),
                 overruled: vec![Position(1)],
+                appends: vec![Position(1)],
             }),
         ),
     ];
@@ -1499,6 +1867,8 @@ fn case_names<T: Serialize>(values: &[T], tag: Option<&str>) -> BTreeSet<String>
             |v| match (serde_json::to_value(v).expect("serialises"), tag) {
                 (Value::String(s), _) => s,
                 (Value::Object(m), Some(tag)) => m[tag].as_str().expect("a tag").to_owned(),
+                // Externally tagged: the one member's name.
+                (Value::Object(m), None) if m.len() == 1 => m.keys().next().cloned().unwrap(),
                 (other, _) => panic!("{other} has no case name"),
             },
         )
@@ -1524,6 +1894,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     checks.push(("retired_by", case_names(&RetiredBy::ALL, None)));
     units!("on_input_change", OnInputChange, [Keep, Clear]);
     units!("computed_at", ComputedAt, [Write, Read]);
+    units!("decided_at", DecidedAt, [Write, Read]);
     units!(
         "cardinality",
         Cardinality,
@@ -1553,6 +1924,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         ),
     ));
     units!("verb_scope", VerbScope, [Record, Type]);
+    units!("series_told_state", SeriesToldState, [Building, Kept]);
     units!(
         "origin",
         Origin,
@@ -1560,11 +1932,29 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     );
     units!("direction", Direction, [Asc, Desc]);
     units!("order_by", OrderBy, [Value, KnownAt, SeenAt, Latest]);
-    units!("agg_func", AggFunc, [Count, Sum, Min, Max, Avg]);
+    units!(
+        "agg_func",
+        AggFunc,
+        [Count, Sum, Min, Max, Avg, First, Last]
+    );
     units!(
         "proposal_state",
         ProposalState,
         [Pending, Accepted, Rejected]
+    );
+    units!(
+        "proposal_kind",
+        ProposalKind,
+        [
+            Upsert,
+            Retire,
+            Call,
+            Declare,
+            Migrate,
+            MigrateValueType,
+            Compute,
+            Records
+        ]
     );
     units!(
         "principal_kind",
@@ -1575,8 +1965,28 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     units!("write_origin", WriteOrigin, [Direct, Reactive, Scheduled]);
     units!("walk", Walk, [Out, In, Both]);
     units!("carrier", Carrier, [Via, Links, Derived]);
+    {
+        use lakelands_api::write::Selection;
+        fn guard(s: &Selection) {
+            match s {
+                Selection::WrittenBefore(_)
+                | Selection::Delivery(_)
+                | Selection::SeenBefore(_)
+                | Selection::Deliveries(_) => {}
+            }
+        }
+        let _ = guard;
+        let t = Timestamp(0);
+        let all = [
+            Selection::WrittenBefore(t),
+            Selection::Delivery("d".into()),
+            Selection::SeenBefore(t),
+            Selection::Deliveries(Vec::new()),
+        ];
+        checks.push(("selection", case_names(&all, None)));
+    }
 
-    fn kept(k: &Kept) -> [NotKept; 5] {
+    fn kept(k: &Kept) -> [NotKept; 6] {
         match k {
             Kept::Kept | Kept::Computed { .. } => {}
         }
@@ -1587,11 +1997,15 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             NotKept::NotWhole { not_exact },
             NotKept::NotKeptHere,
             NotKept::OnlySome,
+            NotKept::Building,
         ];
         for why in &all {
             match why {
                 NotKept::NotAsked | NotKept::CannotBeKept { .. } => {}
-                NotKept::NotWhole { .. } | NotKept::NotKeptHere | NotKept::OnlySome => {}
+                NotKept::NotWhole { .. }
+                | NotKept::NotKeptHere
+                | NotKept::OnlySome
+                | NotKept::Building => {}
             }
         }
         all
@@ -1675,6 +2089,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     fn refusals(r: &Refusal) {
         match r {
             Refusal::NotGranted
+            | Refusal::GrantNeeded { .. }
             | Refusal::WrongDoor
             | Refusal::VerbsOnly { .. }
             | Refusal::Reserved
@@ -1699,6 +2114,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         case_names(
             &[
                 Refusal::NotGranted,
+                Refusal::GrantNeeded {
+                    grant: "restricted".into(),
+                },
                 Refusal::WrongDoor,
                 Refusal::VerbsOnly { verbs: vec![] },
                 Refusal::Reserved,
@@ -1725,7 +2143,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Missing::Record { .. }
             | Missing::Verb { .. }
             | Missing::Function { .. }
-            | Missing::Proposal { .. } => {}
+            | Missing::Proposal { .. }
+            | Missing::Quarantined { .. } => {}
             // A newer lake's kind, said by its error's message.
             Missing::Unknown(_) => {}
         }
@@ -1743,6 +2162,13 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Missing::Verb { name: "v".into() },
                 Missing::Function { name: "f".into() },
                 Missing::Proposal { id: "p".into() },
+                Missing::Quarantined {
+                    id: lakelands_api::quarantine::QuarantineId {
+                        source: "s".into(),
+                        delivery: "d".into(),
+                        index: 1,
+                    },
+                },
             ],
             Some("kind"),
         ),
@@ -1757,7 +2183,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | ProposedWrite::Migrate { .. }
             | ProposedWrite::MigrateValueType { .. }
             | ProposedWrite::Compute { .. }
-            | ProposedWrite::ComputeSweep { .. } => {}
+            | ProposedWrite::ComputeSweep { .. }
+            | ProposedWrite::Records { .. } => {}
         }
     }
     let _ = writes;
@@ -1811,6 +2238,14 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     count: 1,
                     first: vec!["k".into()],
                 },
+                ProposedWrite::Records {
+                    ty: "t".into(),
+                    filter: cond(),
+                    to: lakelands_api::write::ChangeTo::Set(Default::default()),
+                    only: BTreeMap::new(),
+                    skip_restricted: false,
+                    plan: Box::default(),
+                },
             ],
             Some("write"),
         ),
@@ -1831,8 +2266,14 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     next_cursor: None,
                     total: Some(3),
                     retired: Some(1),
+                    thinned: vec![thinned_act()],
+                    stranded: Some(2),
                 },
-                Found::Groups { rows: vec![] },
+                Found::Groups {
+                    rows: vec![],
+                    thinned: vec![thinned_act()],
+                    stranded: Some(2),
+                },
             ],
             Some("shape"),
         ),
@@ -1872,7 +2313,10 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Projection::Aggregate(_)
             | Projection::Degree
             | Projection::Components
-            | Projection::Reach => {}
+            | Projection::Reach
+            | Projection::PageRank
+            | Projection::Cheapest { .. }
+            | Projection::Communities => {}
         }
     }
     let _ = projections;
@@ -1886,6 +2330,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Projection::Degree,
                 Projection::Components,
                 Projection::Reach,
+                Projection::PageRank,
+                Projection::Cheapest { weight: "w".into() },
+                Projection::Communities,
             ],
             Some("as"),
         ),
@@ -1904,10 +2351,12 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 SearchMode::Lexical {
                     text: "t".into(),
                     fields: Some(vec!["f".into()]),
+                    text_fields: None,
                 },
                 SearchMode::Vector {
                     field: "f".into(),
                     vector: vec![],
+                    text: None,
                     weight: None,
                     also: Vec::new(),
                     model: None,
@@ -1969,9 +2418,11 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     scope: VerbScope::Record,
                     payload: vec![],
                     risk: Risk::Low,
+                    preconditions: Vec::new(),
                     requires: None,
                     effect: VerbEffect::Write { set: vec![] },
                     description: None,
+                    granted: false,
                 }),
                 Declaration::Trigger(TriggerDecl {
                     max_depth: Some(2),
@@ -1987,6 +2438,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     of: "t".into(),
                     filter: cond(),
                     description: None,
+                    decided_at: DecidedAt::Write,
                 }),
                 Declaration::Function(FunctionDecl {
                     name: "g".into(),

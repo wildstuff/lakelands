@@ -7,15 +7,9 @@
 //! every engine stores decimals differently, and a float anywhere on the
 //! way is invisible until a total is a cent off.
 
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::read::{AggFunc, Aggregate, Group, GroupKey};
-use lakelands_api::{Find, Found, TypeName};
-use serde_json::json;
+use lakelands_api::read::Group;
 
-use crate::conformance::fixture::{
-    Lake, Must, agg, all, dec, decimal, field, type_decl, value, view_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     AS_WRITTEN = a_decimal_reads_back_exactly_as_it_was_written,
@@ -48,7 +42,7 @@ async fn sum(l: &Lake, ty: &str, field: &str, what: &str) -> Result<Vec<Group>, 
         ..Find::default()
     };
     let reply = l.cat.find(&l.own, &TypeName::from(ty), find).await;
-    let Found::Groups { rows } = reply.must(what)?.data else {
+    let Found::Groups { rows, .. } = reply.must(what)?.data else {
         return Err(Failure::new(format!(
             "{what}: `find` with an aggregate must answer groups; it answered records"
         )));
@@ -229,7 +223,7 @@ async fn a_sum_reads_at_the_largest_scale_among_its_values(store: Store) -> Held
         ..Find::default()
     };
     let reply = cat.find(own, &TypeName::from("entry"), find).await;
-    let Found::Groups { rows } = reply.must("summing `amount` by `book`")?.data else {
+    let Found::Groups { rows, .. } = reply.must("summing `amount` by `book`")?.data else {
         return Err(Failure::new("`find` with an aggregate must answer groups"));
     };
     let got: Vec<String> = (rows.iter())

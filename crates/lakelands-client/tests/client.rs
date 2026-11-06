@@ -262,6 +262,9 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
         key: k.into(),
         fields: patch(&[("amount", json!(amount))]),
         seen_at: None,
+        delivery: None,
+        resubmits: None,
+        line: None,
     };
     let collect = |records: Vec<SourceRecord>| {
         let (c, who) = (f.catalog.clone(), f.cast.importer.clone());
@@ -315,6 +318,7 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
                     name: "nowhere".into()
                 }
             }),
+            quarantine_full: None,
         }),
         "the lake's own answer, not a failure of the wire"
     );
@@ -449,6 +453,9 @@ async fn a_poll_over_the_wire_that_matches_nothing_reaches_the_head() {
         key: RecordKey::from(format!("B-{i}").as_str()),
         fields: patch(&[("amount", json!(format!("{i}.00")))]),
         seen_at: None,
+        delivery: None,
+        resubmits: None,
+        line: None,
     });
     let records = lakelands_door_checks::stream::of(records.collect());
     let bank = SourceId::from("bank");
@@ -578,6 +585,33 @@ async fn every_host_operation_is_unbound_naming_it() {
             "forget_preflight",
             remote
                 .forget_preflight(&SourceId::from("bank"))
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "forget_sources",
+            remote
+                .forget_sources(&[SourceId::from("bank")], None)
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "upsert_preflight",
+            remote
+                .upsert_preflight(
+                    &owner(&lake),
+                    lakelands_api::WriteContext::default(),
+                    &ty,
+                    &key,
+                    lakelands_api::record::Patch::default(),
+                    None,
+                )
+                .await,
+        ),
+        (
+            "forget_sources_preflight",
+            remote
+                .forget_sources_preflight(&[SourceId::from("bank")])
                 .await
                 .map(|_| ()),
         ),
@@ -1033,11 +1067,15 @@ async fn an_ingests_delivery_id_goes_over_the_wire() {
         key: RecordKey::from(key),
         fields: patch(&[("amount", json!("1.00"))]),
         seen_at: None,
+        delivery: None,
+        resubmits: None,
+        line: None,
     };
     let (bank, who) = (SourceId::from("bank"), &f.cast.importer);
     let remote = remote.catalog(WriteContext::default());
     let opts = |d: &str| IngestOpts {
         delivery: Some(d.into()),
+        ..IngestOpts::default()
     };
     let said = lakelands_api::ingest_all_with(
         remote.as_ref(),
@@ -1057,4 +1095,259 @@ async fn an_ingests_delivery_id_goes_over_the_wire() {
         lakelands_api::ingest_all_with(remote.as_ref(), who, &bank, opts(""), vec![record("D-2")]);
     let refused = said.await.unwrap_err();
     assert!(refused.to_string().contains("delivery id"), "{refused}");
+}
+
+/// A key store in memory, each key its id's bytes repeated.
+#[derive(Default)]
+struct Held(std::sync::Mutex<Vec<(SourceId, lakelands_api::id::KeyId, bool)>>);
+
+impl Held {
+    fn made(&self, source: &SourceId, apart: bool) -> lakelands_api::id::KeyId {
+        let mut held = self.0.lock().unwrap();
+        let id = lakelands_api::id::KeyId::from(format!("k{}", held.len()));
+        held.push((source.clone(), id.clone(), apart));
+        id
+    }
+}
+
+impl lakelands_api::seam::KeyStore for Held {
+    fn create(
+        &self,
+        _: &LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<lakelands_api::id::KeyId> {
+        Ok(self.made(source, false))
+    }
+    fn key(
+        &self,
+        _: &LakeId,
+        source: &SourceId,
+        id: &lakelands_api::id::KeyId,
+    ) -> lakelands_api::Result<Option<lakelands_api::seam::DataKey>> {
+        let held = self.0.lock().unwrap();
+        let found = held.iter().any(|(s, i, _)| s == source && i == id);
+        Ok(found.then(|| lakelands_api::seam::DataKey([id.as_str().len() as u8; 32])))
+    }
+    fn destroy(&self, _: &LakeId, source: &SourceId) -> lakelands_api::Result<()> {
+        self.0.lock().unwrap().retain(|(s, _, _)| s != source);
+        Ok(())
+    }
+    fn ids(
+        &self,
+        _: &LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<Vec<lakelands_api::id::KeyId>> {
+        let held = self.0.lock().unwrap();
+        let versions = held.iter().filter(|(s, _, apart)| s == source && !apart);
+        Ok(versions.map(|(_, i, _)| i.clone()).collect())
+    }
+    fn create_apart(
+        &self,
+        _: &LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<lakelands_api::id::KeyId> {
+        Ok(self.made(source, true))
+    }
+}
+
+/// An ingest's `sealed_apart` goes over the wire: the events of an ingest
+/// through the remote catalog that asks it name a key apart in `sealed`
+/// (lakelands#1214).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ingests_sealed_apart_goes_over_the_wire() {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::event::EventBody;
+    use lakelands_api::ontology::{FieldDecl, StorageKind};
+    use lakelands_api::seam::Seams;
+    use lakelands_api::write::IngestOpts;
+    use lakelands_core::conformance::fixture::{self as fx, Lake};
+    let keys = Arc::new(Held::default());
+    let seams = Seams {
+        engines: vec![Arc::new(lakelands_engine_mem::MemoryOpener::new())],
+        keys: Some(keys.clone()),
+        ..Seams::default()
+    };
+    let location = lakelands_api::Location::memory("apart");
+    let store = lakelands_store::open(location, seams, OpenMode::Create)
+        .await
+        .expect("the lake opens");
+    let name = FieldDecl {
+        erasable: true,
+        ..fx::sourced("name", StorageKind::Text)
+    };
+    let id = FieldDecl {
+        required: true,
+        ..fx::sourced("id", StorageKind::Text)
+    };
+    let person = lakelands_api::ontology::TypeDecl {
+        key: vec!["id".into()],
+        ..fx::type_decl("person", vec![id, name])
+    };
+    Lake::of(store.as_ref()).declare(person).await.unwrap();
+    let (addr, api_keys) = common::serve(store.clone()).await;
+    let remote = common::remote(addr, store.lake(), api_keys);
+    let remote = remote.catalog(WriteContext::default());
+    let crm = SourceId::from("crm");
+    let p = |k: &str| fx::source_record("person", k, json!({"id": k, "name": "Ada"}));
+    let head = store.head().await.unwrap();
+    let ingest = async |apart: bool, k: &str| {
+        let opts = IngestOpts {
+            sealed_apart: apart,
+            ..IngestOpts::default()
+        };
+        let own = owner(store.lake());
+        lakelands_api::ingest_all_with(remote.as_ref(), &own, &crm, opts, vec![p(k)])
+            .await
+            .unwrap();
+    };
+    ingest(false, "p1").await;
+    ingest(true, "p2").await;
+    let events = fx::events_after(store.as_ref(), head).await.unwrap();
+    let apart: Vec<_> = (events.iter())
+        .filter(|e| matches!(e.body, EventBody::RecordIngested { .. }))
+        .map(|e| e.sealed.as_ref().map(|s| s.apart.len()))
+        .collect();
+    assert_eq!(apart, [Some(0), Some(1)], "{events:?}");
+}
+
+/// An ingest's `commit_window` goes over the wire: four records asked in
+/// windows of 2 answer two windows, and a window of 0 is refused on the
+/// option, naming the lake's ceiling (lakelands#1496).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ingests_commit_window_goes_over_the_wire() {
+    use lakelands_api::ontology::StorageKind;
+    use lakelands_api::write::IngestOpts;
+    use lakelands_core::conformance::fixture::{self as fx, Lake};
+    let store = common::memory_lake("window", Limits::default()).await;
+    let feed = fx::type_decl("feed", vec![fx::sourced("body", StorageKind::Text)]);
+    Lake::of(store.as_ref()).declare(feed).await.unwrap();
+    let (addr, keys) = common::serve(store.clone()).await;
+    let remote = common::remote(addr, store.lake(), keys);
+    let remote = remote.catalog(WriteContext::default());
+    let own = owner(store.lake());
+    let ingest = async |window: u32| {
+        let opts = IngestOpts {
+            commit_window: Some(window),
+            ..IngestOpts::default()
+        };
+        let records = (0..4)
+            .map(|i| fx::source_record("feed", &format!("k{i}"), json!({"body": "x"})))
+            .collect();
+        lakelands_api::ingest_all_with(remote.as_ref(), &own, &"wire".into(), opts, records).await
+    };
+    let windows = ingest(2).await.expect("the ingest is committed");
+    assert_eq!(windows.len(), 2, "{windows:?}");
+    let max = Limits::default().commit_window_max;
+    let err = ingest(0).await.expect_err("a window of 0 is refused");
+    assert!(
+        matches!(&err, Error::Refused { field: Some(f), .. } if f == "commit_window")
+            && matches!(err.case(), Some(Said { case: Case::LimitRange { max: m }, .. }) if *m == max),
+        "{err:?}"
+    );
+}
+
+/// A change to records goes over `schema/plan`, `schema/enact`, `proposals`
+/// and `proposals/{id}/accept_planned` as the server reads it: the plan the
+/// client returns is the plan the served store makes, the change enacted
+/// against its id is made, a stale id is refused `plan_stale`, and a
+/// proposal of the change comes back whole (081).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_to_records_is_planned_enacted_and_accepted_over_the_wire() {
+    use lakelands_api::expr::Condition;
+    use lakelands_api::write::{Change, ChangeTo, Outcome, ProposalFilter, ProposedWrite};
+    let store = common::memory_lake("finance", Limits::default()).await;
+    let (addr, keys) = common::serve(store.clone()).await;
+    let remote: Arc<dyn LakeStore> = Arc::new(common::remote(addr, store.lake(), keys));
+    let f = setup(store.clone()).await;
+    let (clerk, reviewer) = (&f.cast.clerk, &f.cast.owner);
+    let (near, far) = (remote.catalog(WriteContext::default()), &f.catalog);
+    let write = |k: &'static str, status: &'static str| {
+        let (far, who) = (far.clone(), clerk.clone());
+        async move {
+            let at = (&TypeName::from("invoice"), &RecordKey::from(k));
+            let put = far.upsert(
+                &who,
+                at.0,
+                at.1,
+                patch(&[("status", json!(status))]),
+                Default::default(),
+            );
+            put.await.unwrap();
+        }
+    };
+    for k in ["INV-1", "INV-2"] {
+        write(k, "open").await;
+    }
+    let change = Change::Records {
+        ty: "invoice".into(),
+        filter: Box::new(Condition::from("status = 'open'")),
+        to: ChangeTo::Set(patch(&[("status", json!("late"))])),
+        only: BTreeMap::new(),
+        skip_restricted: false,
+    };
+
+    let planned = near.plan(clerk, change.clone()).await.unwrap().data;
+    let served = far.plan(clerk, change.clone()).await.unwrap().data;
+    assert_eq!(planned, served);
+    let records = planned.records.as_deref().expect("a plan of records");
+    assert_eq!(records.selected, 2);
+
+    // A proposal of the change comes back whole, and lists as kind records.
+    let proposed = ProposedWrite::Records {
+        ty: "invoice".into(),
+        filter: Condition::from("status = 'open'"),
+        to: ChangeTo::Set(patch(&[("status", json!("late"))])),
+        only: BTreeMap::new(),
+        skip_restricted: false,
+        plan: Box::default(),
+    };
+    let Outcome::Proposed { proposal, .. } = near
+        .propose(clerk, proposed, "mark them late".into())
+        .await
+        .unwrap()
+    else {
+        panic!("a change to records is proposed whole");
+    };
+    let listed = near.proposals(reviewer, ProposalFilter::default()).await;
+    let held = listed.unwrap().data.into_iter().find(|p| p.id == proposal);
+    // The store answers `skip_restricted` for the proposer, as it holds it.
+    let mut held = held.and_then(|p| p.write).and_then(|w| w.change());
+    if let Some(Change::Records {
+        skip_restricted, ..
+    }) = &mut held
+    {
+        *skip_restricted = false;
+    }
+    assert_eq!(held, Some(change.clone()));
+
+    // A selected record changed after the plan: stale, appended nothing.
+    write("INV-2", "paid").await;
+    let head = store.head().await.unwrap();
+    let stale = near
+        .accept_planned(reviewer, &proposal, &planned.report_id)
+        .await;
+    assert!(matches!(stale, Err(Error::Refused { .. })), "{stale:?}");
+    assert_eq!(store.head().await.unwrap(), head);
+
+    let planned = near.plan(clerk, change.clone()).await.unwrap().data;
+    near.accept_planned(reviewer, &proposal, &planned.report_id)
+        .await
+        .unwrap();
+    let again = near.plan(clerk, change.clone()).await.unwrap().data;
+    assert_eq!(again.records.as_deref().map(|r| r.selected), Some(0));
+
+    // And enacted directly against a plan's id.
+    write("INV-3", "open").await;
+    let planned = near.plan(clerk, change.clone()).await.unwrap().data;
+    near.enact(clerk, change.clone(), &planned.report_id)
+        .await
+        .unwrap();
+    let after = far
+        .get(clerk, &"invoice".into(), get("INV-3"))
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(after.fields["status"], json!("late"));
+    let stale = near.enact(clerk, change, &planned.report_id).await;
+    assert!(matches!(stale, Err(Error::Refused { .. })), "{stale:?}");
 }

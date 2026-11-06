@@ -47,6 +47,16 @@ impl Unknown {
         &self.message
     }
 
+    /// A case of `code` with no parameter, said by `message`: what a
+    /// reader not shown a refusal's names is told of it (085).
+    pub(crate) fn bare(code: &str, message: String) -> Unknown {
+        Unknown {
+            code: code.into(),
+            params: Map::new(),
+            message,
+        }
+    }
+
     /// Kept with the sentence of the error that carried it, for a set
     /// whose cases carry no sentence of their own.
     pub(super) fn says(&mut self, message: String) {
@@ -97,6 +107,21 @@ impl Detail {
     /// The text.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+/// A count of requests, said with its noun: "1 request", "2 requests". On
+/// the wire it is the number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Requests(pub u64);
+
+impl fmt::Display for Requests {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            1 => f.write_str("1 request"),
+            n => write!(f, "{n} requests"),
+        }
     }
 }
 
@@ -354,6 +379,8 @@ catalog! {
         KeyStore => "a key store, which seals a source's values of an erasable field (the host bound none)",
         /// A key store that destroys a version of a source's key with those before it.
         KeyVersions => "a key store that destroys a version of a source's key with every older one (the bound one destroys only a whole source's)",
+        /// A key store that makes a source a key of its own for one delivery.
+        KeyApart => "a key store that makes a key of a source outside its versions, for a delivery sealed apart (the bound one makes none)",
         /// A reranker, the second stage of a search.
         Rerank => "a reranker, the second stage of a search (the host bound none)",
         /// A vector index, which this engine keeps none of.
@@ -511,6 +538,16 @@ named! {
         OtherKey = "other_key" => "sent again under its key, the call answers it",
         /// Accepted again, the proposal is answered.
         Propose = "propose" => "accepted again, the proposal answers it",
+    }
+}
+
+named! {
+    /// What a bound on the requests of a network door counts by.
+    pub enum Per {
+        /// One connection.
+        Connection = "connection" => "connection",
+        /// One principal.
+        Principal = "principal" => "principal",
     }
 }
 
@@ -674,26 +711,24 @@ catalog! {
         CreatedInAnother { format: u64, reads: u64 } => "its `lake_created` says log format {format}, another than its own line's or one this release does not read; it writes format {reads}",
         /// Its fence is below the fence of the event before it.
         FenceBelow { fence: u64, floor: u64 } => "it carries fence {fence}, below the fence {floor} of the event before it: fences never fall",
-        /// Its log format differs from the event's before it where no new writer upgraded the lake.
-        FormatStep { v: u64, before: u64 } => "written in log format {v} after an event in format {before}: a lake's format rises only at a new writer's `lease_taken`, whose next event is the `lake_upgraded` from the one to the other",
         /// `context` carries `cause`, which the envelope carries.
         CauseInContext => "`context` carries `cause`, which the envelope carries",
+        /// `context` carries `on_behalf_of`, which the envelope carries.
+        OnBehalfOfInContext => "`context` carries `on_behalf_of`, which the envelope carries",
         /// The envelope carries the origin `initial`, a field's alone.
         InitialOrigin => "the envelope carries the origin `initial`, a field's alone",
         /// An event other than `record_ingested` and `output_recorded` carries `sealed`.
         SealedOn { kind: String } => "a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries",
-        /// An event of a format before 16 carries `sealed`.
-        SealedBefore { v: u32 } => "an event of format {v} carries `sealed`, which format 16 added",
-        /// A `source_forgotten` in a format before the one that added it.
-        ForgottenBefore { v: u32 } => "an event of format {v} is a `source_forgotten`, which format 16 added",
-        /// A `trigger_fired` before format 17 carries `change` or `created`.
-        ChangeBefore { v: u32 } => "a `trigger_fired` of format {v} carries `change` or `created`, which format 17 added",
-        /// A `trigger_dropped` in a format before the one that added it.
-        DroppedBefore { v: u32 } => "an event of format {v} is a `trigger_dropped`, which format 17 added",
-        /// An event other than a `record_ingested` of format 17 on carries `delivery`.
-        DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries",
-        /// A `values_removed` event in a format before the one that added it.
-        RemovedBefore { v: u32 } => "an event of format {v} is a `values_removed`, which format 17 added",
+        /// A `record_ingested` whose `sealed` names another source than its envelope.
+        SealsAnother { sealed: SourceId } => "a `record_ingested` carries `sealed` naming the source `{sealed}`, which is not its own: an ingest is sealed under its own source's key",
+        /// An event other than a `record_ingested` or a `record_quarantined` carries `delivery`.
+        DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` or a `record_quarantined` carries",
+        /// An event other than a `record_ingested` carries `sealed.box`.
+        BoxedOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `sealed.box`, which only a `record_ingested` carries",
+        /// A `record_ingested`'s `sealed` with no box, or a box that names
+        /// no member, holds a member the patch holds too, or is not padded
+        /// base64 of at least the tag's 16 bytes.
+        BoxForm => "a `record_ingested` carries `sealed` with no `box`, or a `sealed.box` names no member in `sealed.fields`, or one the patch holds too, or is not padded base64 of at least 16 bytes",
         /// An event other than `record_ingested` carries `upstream`.
         UpstreamOn { kind: String } => "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries",
         /// The hash does not match the event.
@@ -708,6 +743,24 @@ catalog! {
         } => "[position {found} stands where |expected ]position {expected}[{?found} belongs]",
         /// It does not name the hash of the event before it.
         PrevHash => "it does not name the hash of the event before it",
+        /// A line holds `events` or `frame` and is no frame.
+        NotAFrame => "a line holds `events` or `frame` and is no frame: a frame holds those two and `v` alone, `events` a count from 1, and `frame` an object of the members a frame may hold",
+        /// A frame's log format is not its events'.
+        FrameOther { frame: u64, v: u64 } => "a frame of log format {frame} covers an event of format {v}: a frame holds its events' format",
+        /// A frame covers more events than its segment holds after it.
+        FrameShort { events: u64, held: u64 } => "a frame covers {events} events, and its segment holds {held} of them after it",
+        /// A frame line stands among the lines a frame covers.
+        FrameInFrame => "a frame line stands among the lines a frame covers",
+        /// An event's line holds a member its frame holds.
+        FramedTwice { member: String } => "its line holds `{member}`, which its frame holds",
+        /// A line holds `block` and is no block's first line.
+        NotABlock => "a line holds `block` and is no block's first line: it holds `block` and `v` alone, `block` an object of `end`, `events`, `first`, `hash`, `prev`, `raw` and `stored`, `events` a count from 1 and `end` no position before the block's last",
+        /// A block's bytes do not inflate to the lines its first line names.
+        BlockBytes => "a block's bytes do not inflate by zlib to the `raw` bytes of lines, each ended by a line feed, that its first line names",
+        /// An append's blocks end before its last position.
+        AppendShort { end: Position } => "an append's blocks end before its last position {end}",
+        /// A segment's first event line does not hold its `position` and its `prev`.
+        StartUnheld => "it is a segment's first event line, and does not hold both its `position` and its `prev`",
         /// Its `known_at` is before that of the event before it.
         KnownAtBack { known_at: Timestamp, before: Timestamp } => "its known_at {known_at} is before the {before} of the event before it",
         /// It holds a number written as an integer beyond ±(2^53 − 1).
@@ -820,6 +873,8 @@ catalog! {
         NoSegmentFile => "there is no segment file under log/",
         /// A segment has no index file beside it.
         IndexMissing { name: String } => "the segment {name} has no index file",
+        /// An event's `id` is not 32 lower-case hex digits.
+        IdNotOfForm => "its `id` is not 32 lower-case hex digits",
         /// An event carries another fence than its writer's lease had.
         FenceMismatch { carried: u64, lease: u64 } => "an event carries fence {carried}, and its writer's lease had fence {lease}",
         /// The engine and the file digest a segment differently.
@@ -874,6 +929,10 @@ catalog! {
         } => "there is no lake `{lake}` [in the schema `{schema}`|where its location says]; open it with `create` to make it",
         /// This server serves no lake of the name.
         NotServed { lake: String } => "this server serves no lake `{lake}`",
+        /// A connection or a principal sent more requests in a second than the server's bound on its rate.
+        RateBound { per: Per, most: Requests, retry_after: u64 } => "this {per} sent more than its bound of {most} a second; nothing was done: wait {retry_after} s and send it again",
+        /// A principal has as many requests being answered as the server's bound lets one have at once.
+        InFlightBound { most: Requests } => "the principal has its bound of {most} being answered at once; nothing was done: send it again once one is answered",
         /// A part every lake of this engine has is missing: something else made what is there.
         Unmade { part: Part } => "this engine did not create what is there: {part} is missing",
         /// The lake has no projection yet.
@@ -887,8 +946,8 @@ catalog! {
         } => "lake `{lake}`'s projection [has layout {found}|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild`",
         /// The lake's log is written in the format of another release: nothing reads it and nothing is appended.
         LogFormat { lake: String, found: u64, reads: u64, oldest: Option<u64> } => "lake `{lake}` is written in log format {found}, and this release reads log format[s {oldest} to] {reads} and writes {reads}; nothing was read from it and nothing appended",
-        /// The lake's log is written in an older format this release reads, and only a writer's open upgrades it.
-        LogUpgradeOwed { lake: String, found: u64, reads: u64 } => "lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade {lake}`, and it is read; nothing was read from it",
+        /// The lake holds a type of the host's vocabulary in an older form, one without fields the vocabulary has since added, and only a writer's open declares it again.
+        VocabularyUpgradeOwed { lake: String, #[serde(rename = "type")] ty: TypeName } => "lake `{lake}` holds `{ty}` without fields the host vocabulary has since added to it: a writer's open declares it again, so open it once for writing, and it is read; nothing was read from it",
         /// The lake could not be compacted while a reader holds a snapshot.
         Busy { lake: String } => "lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done",
         /// The projection is behind the log and could not catch up; nothing was appended.
@@ -904,10 +963,14 @@ catalog! {
         DecidedBehind => "this write was decided while the lake's projection was behind its log; nothing was appended",
         /// What was appended from a position is in the log and not folded yet.
         NotFolded { from: Position, cause: Box<Error> } => "what was appended is in the log from position {from} and is not folded yet; the next write folds it, and a write is sent again only under its idempotency key ({cause})",
+        /// An act of erasure is in the log through a position, and destroying its keys or restating the projection after it failed.
+        ActUnfinished { at: Position, cause: Box<Error> } => "the act is in the log through position {at}, and finishing it failed: {cause}; until it is finished its keys may be kept and the projection may hold what it erased, so repeat the act as it was, which appends nothing again, or open the lake for writing: either finishes it",
         /// The lake's names moved while the write waited; send it again.
         Moved => "the lake's names moved while this write waited; send it again",
         /// The types a write reads, or what its principal is shown of them, moved while the write waited; send it again.
         TypesMoved => "the lake's types moved while this write waited; send it again",
+        /// The lake was written faster than a job's view moved: at each try its tail was longer than one turn may read; nothing was appended.
+        TailOverran { tries: u32, bound: u32 } => "the lake was written faster than this work's view could move up: the writes past it were still more than one turn reads (`limits.part_tail`, {bound}) after {tries} attempt(s); nothing was appended, so send it again",
         /// A call of a verb that reaches outside the lake failed before its executor was handed it.
         Executor { retry: Retry, cause: Box<Error> } => "the verb's executor was not handed this call ({cause}); {retry}",
         /// A call's executor answered, recording its answer failed, and the answer is held and recorded before the next write; what sending it again answers, unless it has no key.
@@ -931,6 +994,12 @@ catalog! {
         } => "{part} is damaged[ at position {position}]: {flaw}",
         /// The storage failed.
         Storage { doing: Doing, part: Part, detail: Detail } => "the storage failed while {doing} {part}: {detail}",
+        /// The disk, the volume or the database server written to had no room left: free space there, then repeat what failed, a writer's open by opening the lake again. A writer's open refused with it, and not with it as the cause of `not_folded`, appended nothing.
+        NoRoom {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            part: Option<Part>,
+            detail: Detail,
+        } => "there is no room left to write [{part}|to the lake's storage]: {detail}; free space there, then repeat what failed: for a writer's open, open the lake again",
         /// An append to the log failed; what it left, and why the cut after it failed where it did.
         AppendFailed {
             detail: Detail,
@@ -946,12 +1015,26 @@ catalog! {
         SealedNotRead { last: Position, cause: Box<Error> } => "the segment through position {last} is sealed and the next one is in the log's files, synced; this handle then failed to read on: {cause}",
         /// A compaction failed, and the projection is as it was.
         CompactFailed { lake: String, detail: Detail } => "lake `{lake}` could not be compacted, and its projection is as it was: {detail}",
+        /// Another handle has the projection being built beside the lake's open.
+        Rebuilding { lake: String } => "lake `{lake}`'s projection is being built beside it by another handle; nothing was changed, so try again once that build has ended",
+        /// No projection built beside the lake's is marked built for this lake by this build.
+        NoScratch { lake: String } => "no projection built beside lake `{lake}`'s is marked built for this lake and this build's layout; nothing was changed",
+        /// The projection built beside the lake's does not reach the log's tip and its hash.
+        ScratchBehind {
+            lake: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            marked: Option<Position>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            tip: Option<Position>,
+        } => "the projection built beside lake `{lake}`'s reaches [position {marked}|no position], and the log [ends at position {tip}|is empty] or holds another hash there; nothing was changed: fold the scratch to the log's end and mark it built",
+        /// Another handle reads the projection a swap would replace.
+        SwapBusy { lake: String } => "lake `{lake}`'s projection is open on another handle, so the one built beside it was not put in its place; nothing was changed, so swap again once that handle is closed",
         /// Every event was imported, and folding the projection failed.
         ImportNotFolded { cause: Box<Error> } => "every event was imported, and folding the projection failed: {cause}; a writer's open folds it again",
         /// An import stopped part way, at the position it reached.
         ImportStopped { reached: Position, lake: String, cause: Box<Error> } => "the import stopped at position {reached}: {cause}; the lake `{lake}` holds the export's events before that position, a true prefix that is not the exported lake, and refuses another import; remove it and import again",
         /// The PostgreSQL server is older than the engine needs.
-        ServerTooOld { major: u32, minor: u32 } => "the server is PostgreSQL {major}.{minor}; the engine needs PostgreSQL 16 or newer, and nothing was created",
+        ServerTooOld { major: u32, minor: u32 } => "the server is PostgreSQL {major}.{minor}; the engine needs PostgreSQL 18 or newer, and nothing was created",
         /// A transaction-mode connection pooler seems to sit in front of the server.
         Pooler => "the connection does not keep its session; a transaction-mode connection pooler seems to sit in front of the server. The writer lease is a session lock, which such a pooler loses or hands to another client, so the lake was not opened for writing. Connect directly or through a session-mode pooler.",
         /// TLS cannot be set up for the lake's connection, with the library's words if it gave any.
@@ -965,6 +1048,21 @@ catalog! {
             #[serde(with = "closed::list")]
             problems: Vec<NameProblem>,
         } => "the lake's names cannot all become tools[: {problems}]",
+        /// No writer door named for the lake took a forwarded call; nothing was written.
+        NotForwarded {
+            lake: String,
+            doors: u32,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            last: Option<Box<Error>>,
+        } => "none of the {doors} writer door(s) named for lake `{lake}` took the call: each holds no lease or was not reached before the call was sent, so nothing was written[ (the last: {last})]",
+        /// A forwarded call was sent, and the writer was lost before it answered.
+        ForwardLost {
+            lake: String,
+            #[serde(with = "closed")]
+            exchange: Exchange,
+        } => "the call was sent to the writer of lake `{lake}`, which then {exchange}; whether it landed is not known, and it is not sent again: retry it under its idempotency key, which answers the first call's outcome if it landed, or read the lake to learn it",
+        /// The handle has not read the lake through a position its own write answered.
+        NotFoldedYet { at: Position, folded: Position } => "this handle has read the lake through position {folded} and not yet through position {at}, which a write through it answered; it answers no read from before its own write, so read again shortly",
         /// An exchange with a remote end failed.
         Remote {
             #[serde(with = "closed")]

@@ -82,6 +82,34 @@ fn adding_a_required_field_needs_a_migration() {
 }
 
 #[test]
+fn a_field_made_the_writer_s_needs_a_migration_and_one_made_another_is_declared() {
+    let writer = |t: &mut TypeDecl| t.fields[2].authority = Authority::Writer;
+    let made = Reason::FieldWriter { field: "c".into() };
+    assert_eq!(migrates(&base(), &with(writer)), vec![made.clone()]);
+    let mut added = field("d", StorageKind::Text, false);
+    added.authority = Authority::Writer;
+    let after = with(|t| t.fields.push(added));
+    let d = Reason::FieldAdded {
+        field: "d".into(),
+        relation: None,
+        required: false,
+    };
+    assert_eq!(
+        migrates(&base(), &after),
+        vec![Reason::FieldWriter { field: "d".into() }]
+    );
+    assert_eq!(
+        differences(&base(), &after),
+        vec![d, Reason::FieldWriter { field: "d".into() }]
+    );
+    assert!(matches!(
+        classify(&with(writer), &base()),
+        Change::Declare { .. }
+    ));
+    assert_ne!(schema_hash(&base()), schema_hash(&with(writer)));
+}
+
+#[test]
 fn adding_a_relation_is_declared() {
     let after = with(|t| t.relations.push(relation("links", "other")));
     assert_eq!(
@@ -289,7 +317,10 @@ fn a_stored_type_turned_into_a_view_needs_a_migration() {
     // Grouped by the fields that keyed it, it changes no key.
     let grouped = with(|t| {
         let mut view = view("b > 0").view;
-        view.as_mut().unwrap().group_by = std::mem::take(&mut t.key);
+        view.as_mut().unwrap().group_by = std::mem::take(&mut t.key)
+            .into_iter()
+            .map(Into::into)
+            .collect();
         t.view = view;
     });
     let reasons = migrates(&base(), &grouped);

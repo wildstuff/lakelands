@@ -20,17 +20,15 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 
 /// The log format version this release writes. Every event carries the
 /// version it was written in as `v`, and `lake_created.format` says the
-/// one the lake was made in. A lake written in a format from
-/// [`OLDEST_LOG_FORMAT`] up to this one is read, each older event through
-/// its format's converter, and a writer's open upgrades it; one in another
-/// format is refused by name, with both numbers, and nothing of it is read
-/// (`docs/log-format.md` §6,
+/// one the lake was made in. A lake in any other format is refused by name,
+/// with both numbers, and nothing of it is read (`docs/log-format.md` §6,
 /// `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-pub const LOG_FORMAT_VERSION: u32 = 17;
+pub const LOG_FORMAT_VERSION: u32 = 23;
 
-/// The oldest log format this release reads: 14, the format of the first
-/// release with real installations (054).
-pub const OLDEST_LOG_FORMAT: u32 = 14;
+/// The oldest log format this release reads: 23, the format this store's
+/// promise of reading starts from
+/// (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`).
+pub const OLDEST_LOG_FORMAT: u32 = 23;
 
 /// A SHA-256 digest, as 64 lower-case hexadecimal digits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -51,6 +49,14 @@ impl Digest {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EventId(pub String);
+
+impl EventId {
+    /// Whether it is of the one form an id has: 32 lower-case hex digits.
+    pub fn of_form(&self) -> bool {
+        let b = self.0.as_bytes();
+        b.len() == 32 && b.iter().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+    }
+}
 
 /// A procedure that produced a value: a verb, a function backing, a
 /// derivation.
@@ -82,6 +88,10 @@ pub struct Event {
     pub known_at: Timestamp,
     /// The principal it was written as, `<kind>:<id>`.
     pub writer: String,
+    /// The principal `writer` acted for, from format 21, where the host's
+    /// context named one (088).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
     /// Which authority wrote it.
     pub origin: Origin,
     /// The source, for an event from a source.
@@ -123,8 +133,9 @@ pub struct Event {
 
 /// The members of an event a source's key seals: the patch members it
 /// names, or the recorded output where `fields` is empty. Each holds the
-/// base64 of AES-256-GCM-SIV's output over the value's canonical bytes
-/// (`docs/log-format.md` §1.4).
+/// base64 of AES-256-GCM-SIV's output over the value's canonical bytes,
+/// or, from format 20, a record's members are left out of the patch and
+/// sealed together in `boxed` (`docs/log-format.md` §1.4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sealed {
@@ -137,6 +148,17 @@ pub struct Sealed {
     /// The patch members sealed, in name order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FieldName>,
+    /// The keys of the source outside its versions that seal them too,
+    /// in id order, each a delivery's sealed apart: the members are
+    /// sealed under one key derived from `key` and these, from format 18
+    /// on (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apart: Vec<crate::id::KeyId>,
+    /// From format 20, on a `record_ingested`: the base64 of the cipher's
+    /// output over the canonical bytes of the object of the members
+    /// `fields` names, which the patch leaves out.
+    #[serde(rename = "box", default, skip_serializing_if = "Option::is_none")]
+    pub boxed: Option<String>,
 }
 
 /// Every kind of event, and its payload. The set is closed per format
@@ -148,16 +170,6 @@ pub enum EventBody {
     LakeCreated {
         /// The log format version the lake was created with.
         format: u32,
-    },
-    /// A writer's open upgraded a lake written in an older format: from
-    /// this event on the lake is written in `to`. The events before it
-    /// stay as they were written, and are read through their format's
-    /// converter.
-    LakeUpgraded {
-        /// The format the lake was written in before.
-        from: u32,
-        /// The format it is written in from here on.
-        to: u32,
     },
     /// A writer took the lake's lease.
     LeaseTaken {
@@ -253,6 +265,11 @@ pub enum EventBody {
         source: SourceId,
         /// The versions of its key the act destroys.
         keys: Vec<crate::id::KeyId>,
+        /// The position of the act this event belongs to: the act's first
+        /// event, which its `act_whole` names. An act a crash left between
+        /// its turns may append past another act, so its events are not
+        /// the run of them that sits together (099).
+        act: Position,
     },
     /// A host took back part of a source's values: each one a selected
     /// `record_ingested` of the source before this event carries reads as
@@ -263,13 +280,36 @@ pub enum EventBody {
         source: SourceId,
         /// The selection, as asked.
         selection: crate::write::Selection,
-        /// For a time, the first position it does not reach.
+        /// For a time of the log's clock, the first position it does not
+        /// reach.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<Position>,
         /// The versions of the source's key it destroys, oldest first: the
         /// longest prefix whose values it all selects.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keys: Vec<crate::id::KeyId>,
+        /// The source's keys of deliveries sealed apart it destroys, in id
+        /// order: each whose values it all selects, from format 18 on.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        apart: Vec<crate::id::KeyId>,
+    },
+    /// One part of a thinning act: the records of a type a host thinned
+    /// past a horizon, each named by its key. The first part begins the
+    /// act and carries the horizon; a later part carries the same horizon
+    /// and the keys it takes. The log keeps every event, and a rebuild
+    /// folds the parts again
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    ValuesThinned {
+        /// The records' type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The field of instants or dates the act judged.
+        by: FieldName,
+        /// The horizon: every record whose field is certainly before it,
+        /// and whose key the act had not taken, is taken.
+        before: Timestamp,
+        /// The keys this part takes.
+        keys: Vec<RecordKey>,
     },
     /// A record was retired.
     RecordRetired {
@@ -429,6 +469,67 @@ pub enum EventBody {
         /// Every sealed segment so far, oldest first.
         segments: Vec<SegmentDigest>,
     },
+    /// A record an ingest was refused, quarantined at the call's asking,
+    /// from format 21 on: one version of its id, its envelope naming the
+    /// source and the call's delivery
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    RecordQuarantined {
+        /// The record's type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The key as sent.
+        key: RecordKey,
+        /// The quarantined record's id.
+        id: crate::quarantine::QuarantineId,
+        /// This version, from 1.
+        version: u32,
+        /// The cells as sent, each in its canonical form, those `sealed`
+        /// names left out.
+        cells: Patch,
+        /// What the source's key seals of the cells, in one box.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sealed: Option<Sealed>,
+        /// When the source observed the values.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen_at: Option<crate::Timestamp>,
+        /// Where the values were read from, for a mirror's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upstream: Option<crate::record::Upstream>,
+        /// The refusal its writer would have been answered.
+        refusal: crate::Error,
+    },
+    /// A quarantined record closed, in the append of what closed it, from
+    /// format 21 on (085).
+    QuarantineClosed {
+        /// The quarantined record's id.
+        id: crate::quarantine::QuarantineId,
+        /// Its type, as its last version names it.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// Its key as sent.
+        key: RecordKey,
+        /// Why it closed.
+        why: crate::quarantine::ClosedWhy,
+    },
+    /// A host began a purge of a source: every live record the source
+    /// brought in is retired, in parts, and the act ends with its
+    /// `ActWhole` (`docs/decisions/039-a-source-is-retracted-as-one.md`,
+    /// `docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    SourcePurged {
+        /// The source.
+        source: SourceId,
+        /// The one type the purge is of; absent for a purge of the source
+        /// whole.
+        #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+        ty: Option<TypeName>,
+    },
+    /// The last event of an act: every append the act makes is behind it
+    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    ActWhole {
+        /// The position of the act's first event: the `values_removed`,
+        /// `source_forgotten` or `source_purged` it began with.
+        act: Position,
+    },
 }
 
 /// The kinds of one format version: `EventBody::kind` and [`KINDS`] come
@@ -455,7 +556,6 @@ macro_rules! kinds {
 
 kinds! {
     LakeCreated => "lake_created",
-    LakeUpgraded => "lake_upgraded",
     LeaseTaken => "lease_taken",
     Declared => "declared",
     Migrated => "migrated",
@@ -476,6 +576,11 @@ kinds! {
     ObjectSetChanged => "object_set_changed",
     OutputRecorded => "output_recorded",
     Checkpoint => "checkpoint",
+    RecordQuarantined => "record_quarantined",
+    QuarantineClosed => "quarantine_closed",
+    SourcePurged => "source_purged",
+    ActWhole => "act_whole",
+    ValuesThinned => "values_thinned",
 }
 
 /// What kind of change fired a trigger (lakelands#1217): the write at the
@@ -490,7 +595,8 @@ pub enum ChangeKind {
     Ingested,
     /// A retirement, asked for or accepted, or a migration's of a link.
     Retired,
-    /// A retirement of a record a forgotten source alone brought in.
+    /// A retirement of a record a forgotten source made and alone brought
+    /// in.
     Forgotten,
     /// A retirement of a record a purged source brought in.
     Purged,

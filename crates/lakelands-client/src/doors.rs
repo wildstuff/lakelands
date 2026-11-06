@@ -14,17 +14,20 @@ use http_body_util::BodyExt;
 use hyper::Method;
 use hyper::body::{Body, Frame, Incoming};
 use hyper::header::HeaderValue;
-use lakelands_api::Catalog;
 use lakelands_api::catalog::{CommitStream, SourceStream};
 use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::error::{Case, Detail, Error, Exchange, Result, Segment};
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{
-    LakeId, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
+    Cursor, LakeId, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
 };
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::Principal;
-use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
+use lakelands_api::quarantine::{
+    HostRefused, QuarantineClose, QuarantineFilter, QuarantineId, Quarantined, Quarantining,
+};
+use lakelands_api::query::{Hits, Pattern, QueryResult, Search, StatementAnswer};
+use lakelands_api::read::{CONTEXT_HEADER, PRINCIPAL_HEADER};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
 use lakelands_api::write::{
@@ -32,24 +35,183 @@ use lakelands_api::write::{
     Proposal, ProposalFilter, ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport,
     WriteOpts,
 };
+use lakelands_api::{Catalog, Params, WriteContext};
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
+use crate::ApiKey;
 use crate::wire::{Call, Wire, query_of, seg};
 
 /// The doors of a lake another process serves.
 pub(crate) struct RemoteCatalog {
     wire: Arc<Wire>,
+    /// A forwarding handle's write context, as the link's header carries
+    /// it; every call names its principal beside it.
+    context: Option<String>,
 }
 
 impl RemoteCatalog {
     pub(crate) fn new(wire: Arc<Wire>) -> RemoteCatalog {
-        RemoteCatalog { wire }
+        RemoteCatalog {
+            wire,
+            context: None,
+        }
+    }
+
+    /// The doors over a forwarding handle's wire, carrying `context`.
+    pub(crate) fn forwarding(wire: Arc<Wire>, context: &WriteContext) -> RemoteCatalog {
+        let context = serde_json::to_string(context).expect("a write context prints");
+        RemoteCatalog {
+            wire,
+            context: Some(context),
+        }
+    }
+
+    /// The key `who` acts with, and `call` as `who` makes it.
+    fn as_who<'w>(&'w self, who: &Principal, mut call: Call) -> Result<(&'w ApiKey, Call)> {
+        let key = self.wire.key_of(who)?;
+        if let Some(context) = &self.context {
+            if HeaderValue::from_str(&who.id).is_err() {
+                return Err(crate::wire::not_granted());
+            }
+            call = call
+                .header(PRINCIPAL_HEADER, who.id.clone())
+                .header(CONTEXT_HEADER, context.clone());
+        }
+        Ok((key, call))
     }
 
     async fn go<T: serde::de::DeserializeOwned>(&self, who: &Principal, call: Call) -> Result<T> {
-        let key = self.wire.key_of(who)?;
+        let (key, call) = self.as_who(who, call)?;
         self.wire.exchange(key, call).await
+    }
+
+    /// A statement of the openCypher subset over `POST …/cypher`, with its
+    /// parameters beside it and never in its text, read at `at` and from
+    /// `cursor`, or enacting the plan `plan_id`.
+    pub(crate) async fn cypher(
+        &self,
+        who: &Principal,
+        statement: &str,
+        params: &Params,
+        at: ReadAt,
+        cursor: Option<&Cursor>,
+        plan_id: Option<&str>,
+    ) -> Result<StatementAnswer> {
+        let mut body = members(&at, &[]);
+        let o = body.as_object_mut().expect("the axes are an object");
+        o.insert("statement".into(), json!(statement));
+        o.insert("params".into(), json!(params));
+        if let Some(cursor) = cursor {
+            o.insert("cursor".into(), json!(cursor));
+        }
+        if let Some(id) = plan_id {
+            o.insert("plan_id".into(), json!(id));
+        }
+        let call = Call::new(Method::POST, "cypher".into()).json(&body);
+        self.go(who, call).await
+    }
+
+    /// An ingest whose source is held in `slot` and read only once the
+    /// answer's head says the door took the call; refused, the source is
+    /// still in `slot`, unread, for the next door.
+    pub(crate) async fn ingest_held(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: IngestOpts,
+        slot: Arc<Mutex<Option<SourceStream>>>,
+    ) -> Result<CommitStream> {
+        let gate = Arc::new(Gate::default());
+        let held = Held {
+            slot,
+            gate: gate.clone(),
+        };
+        self.upload(who, source, opts, Box::pin(held), Some(gate))
+            .await
+    }
+
+    async fn upload(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: IngestOpts,
+        records: SourceStream,
+        gate: Option<Arc<Gate>>,
+    ) -> Result<CommitStream> {
+        let path = format!("ingest/{}", seg(source.as_str(), Segment::Source)?);
+        let upload = Arc::new(Upload::default());
+        let body = Ndjson {
+            records,
+            upload: upload.clone(),
+            since: 0,
+            drained: false,
+        }
+        .boxed_unsync();
+        let call = Call::new(Method::POST, path.clone())
+            .query(crate::wire::query_of(&serde_json::json!(opts)))
+            .stream("application/x-ndjson", body);
+        let (key, call) = self.as_who(who, call)?;
+        let r = self.wire.send(key, call).await?;
+        if !r.status().is_success() {
+            // An ingest refused outright has no stream to end: its
+            // upload ends here.
+            upload.stop();
+            return Err(self.wire.failure(r).await);
+        }
+        if let Some(gate) = gate {
+            gate.open();
+        }
+        Ok(Box::pin(Commits {
+            silent: Box::pin(tokio::time::sleep(self.wire.silence)),
+            after: None,
+            last: None,
+            spoke: Instant::now(),
+            wire: self.wire.clone(),
+            body: r.into_body(),
+            upload,
+            buf: Vec::new(),
+            ended: false,
+        }))
+    }
+}
+
+/// Whether a held source may be read: once the answer's head has come.
+#[derive(Default)]
+struct Gate {
+    open: AtomicBool,
+    waiting: Mutex<Option<Waker>>,
+}
+
+impl Gate {
+    fn open(&self) {
+        self.open.store(true, Ordering::SeqCst);
+        wake(&self.waiting);
+    }
+}
+
+/// A source held for a door that may refuse the call: nothing is taken
+/// from it before its gate opens.
+struct Held {
+    slot: Arc<Mutex<Option<SourceStream>>>,
+    gate: Arc<Gate>,
+}
+
+impl Stream for Held {
+    type Item = lakelands_api::record::SourceRecord;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if !self.gate.open.load(Ordering::SeqCst) {
+            *self.gate.waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
+            if !self.gate.open.load(Ordering::SeqCst) {
+                return Poll::Pending;
+            }
+        }
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        match slot.as_mut() {
+            Some(s) => s.as_mut().poll_next(cx),
+            None => Poll::Ready(None),
+        }
     }
 }
 
@@ -85,7 +247,9 @@ fn members<T: serde::Serialize>(v: &T, less: &[&str]) -> Value {
 /// for. `PUT` says a record that must not exist yet as
 /// `If-None-Match: *`; every other write names the version it expects.
 /// An idempotency key a header cannot carry (a line break, say) is
-/// refused before anything is sent.
+/// refused before anything is sent: sent without it, a retry could apply
+/// twice. `defer_computed_fields` has no header and is not sent: the
+/// write waits for its computed fields, as the option allows.
 fn write_headers(mut call: Call, opts: &WriteOpts, put: bool) -> Result<Call> {
     match opts.expected_version {
         Some(v) if v.0 == 0 && put => call = call.header("if-none-match", "*".into()),
@@ -284,6 +448,40 @@ impl Catalog for RemoteCatalog {
         self.go(who, call).await
     }
 
+    async fn quarantined(
+        &self,
+        who: &Principal,
+        filter: QuarantineFilter,
+    ) -> Result<Reply<Vec<Quarantined>>> {
+        let call =
+            Call::new(Method::GET, "quarantined".into()).query(query_of(&members(&filter, &[])));
+        self.go(who, call).await
+    }
+
+    async fn dismiss_quarantined(
+        &self,
+        who: &Principal,
+        id: &QuarantineId,
+    ) -> Result<QuarantineClose> {
+        let call = Call::new(Method::POST, "quarantined/dismiss".into()).json(&json!(id));
+        self.go(who, call).await
+    }
+
+    async fn quarantine(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: IngestOpts,
+        refused: HostRefused,
+    ) -> Result<Quarantining> {
+        let body = json!({"source": source, "opts": opts, "refused": refused});
+        self.go(
+            who,
+            Call::new(Method::POST, "quarantined".into()).json(&body),
+        )
+        .await
+    }
+
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
         let call = Call::new(Method::POST, "schema/declare".into())
             .json(&json!({ "declaration": declaration }));
@@ -419,37 +617,7 @@ impl Catalog for RemoteCatalog {
         opts: IngestOpts,
         records: SourceStream,
     ) -> Result<CommitStream> {
-        let key = self.wire.key_of(who)?;
-        let path = format!("ingest/{}", seg(source.as_str(), Segment::Source)?);
-        let upload = Arc::new(Upload::default());
-        let body = Ndjson {
-            records,
-            upload: upload.clone(),
-            since: 0,
-            drained: false,
-        }
-        .boxed_unsync();
-        let call = Call::new(Method::POST, path.clone())
-            .query(crate::wire::query_of(&serde_json::json!(opts)))
-            .stream("application/x-ndjson", body);
-        let r = self.wire.send(key, call).await?;
-        if !r.status().is_success() {
-            // An ingest refused outright has no stream to end: its
-            // upload ends here.
-            upload.stop();
-            return Err(self.wire.failure(r).await);
-        }
-        Ok(Box::pin(Commits {
-            silent: Box::pin(tokio::time::sleep(self.wire.silence)),
-            after: None,
-            last: None,
-            spoke: Instant::now(),
-            wire: self.wire.clone(),
-            body: r.into_body(),
-            upload,
-            buf: Vec::new(),
-            ended: false,
-        }))
+        self.upload(who, source, opts, records, None).await
     }
 }
 
@@ -641,6 +809,7 @@ struct Commits {
 impl Commits {
     fn line(&mut self, text: &[u8]) -> Result<Committed> {
         if let Ok(c) = serde_json::from_slice::<Committed>(text) {
+            self.wire.saw(c.position);
             return Ok(c);
         }
         self.upload.stop();

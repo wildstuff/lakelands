@@ -4,18 +4,11 @@
 //! theirs, each ranking weighed as the search asks
 //! (`docs/decisions/046-a-hybrid-search-fuses-the-ranks-a-read-may-see.md`).
 
-use lakelands_api::error::{Aimless, Case};
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::query::{Hits, Search, SearchMode, VectorTerm};
-use lakelands_api::{LakeStore, Principal};
-use serde_json::json;
+use lakelands_api::error::Aimless;
+use lakelands_api::query::VectorTerm;
 
 use super::search::doc_search;
-use crate::conformance::fixture::{
-    Lake, Must, field, field_writer, refused_like, refused_on, restrict, searchable, type_decl,
-    vector,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     HIDDEN_MOVES_NO_SCORE = a_record_the_read_may_not_see_moves_no_hybrid_score,
@@ -231,6 +224,7 @@ pub(super) fn along(weight: Option<f64>, field: &str, also: Option<f64>) -> Sear
     SearchMode::Vector {
         field: "v".into(),
         vector: vector.clone(),
+        text: None,
         weight,
         also: vec![VectorTerm {
             field,
@@ -249,6 +243,7 @@ fn weighed(text_weight: Option<f64>, weight: Option<f64>) -> SearchMode {
         field: "v".into(),
         vector: Some(vec![1.0, 0.0]),
         fields: None,
+        text_fields: None,
         weight,
         text_weight,
         model: None,
@@ -318,6 +313,7 @@ async fn a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it(
     let lone = SearchMode::Vector {
         field: "v".into(),
         vector: vec![1.0, 0.0],
+        text: None,
         weight: Some(2.0),
         also: Vec::new(),
         model: None,

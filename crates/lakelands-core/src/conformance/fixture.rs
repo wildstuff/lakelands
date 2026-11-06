@@ -14,22 +14,24 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use lakelands_api::error::{Case, Said};
+use lakelands_api::error::{Case, Printed, Said};
 use lakelands_api::ontology::{
     Authority, EmbedDecl, FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl, ViewParam,
 };
 use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Depth, Pattern, Projection, Start, Step, Walk};
+use lakelands_api::query::{Depth, Pattern, Projection, Search, SearchMode, Start, Step, Walk};
 use lakelands_api::read::{AggFunc, AggMeasure, Direction, Order, OrderBy};
+use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Access, Catalog, Committed, Error, FieldName, Find, Found, Get, Grants, LakeStore, Outcome,
     Params, Patch, Position, Principal, PrincipalKind, ReadAt, Record, RecordKey, Refusal,
-    SourceId, SourceRecord, SourceStream, TypeName, Value, WriteContext, WriteOpts,
+    SourceId, SourceRecord, SourceStream, TypeName, Value, Version, WriteContext, WriteOpts,
 };
 use rust_decimal::Decimal;
 
-use super::{Failure, Held};
+use super::checks::erasable::{Keys, again, with};
+use super::{Failure, Given, Held, Reopen, Store};
 
 /// An answer a refusal may be in: an error, or a result that may hold one.
 pub trait Answer {
@@ -237,11 +239,50 @@ impl<T: Debug> Must<T> for lakelands_api::Result<T> {
     }
 }
 
+/// The refusal of `verb` on the `ty` `key` whose `requires` is unmet at
+/// `part`, which a reader not shown it is not told.
+pub fn requires_unmet<T>(verb: &str, ty: &str, key: &str, part: Option<&str>) -> Result<T, Error> {
+    let case = Case::RequiresUnmet {
+        verb: verb.into(),
+        ty: ty.into(),
+        key: key.into(),
+        part: part.map(|p| Box::new(Printed(p.into()))),
+    };
+    Err(Error::Refused {
+        field: None,
+        reason: Refusal::Precondition(Box::new(case.into())),
+    })
+}
+
 /// The limits every lake of the suite is opened with: the defaults, as
 /// [`Harness`](super::Harness) requires. A check that meets one reads it
 /// here; [`default_limits`] holds every lake to it before any check runs.
 pub fn limits() -> lakelands_api::location::Limits {
     lakelands_api::location::Limits::default()
+}
+
+/// The lake opened again with a ceiling of one membership change per
+/// write, naming `what` if that fails.
+pub async fn at_one_set_change(given: &Given, store: Store, what: &str) -> Result<Store, Failure> {
+    let lower = lakelands_api::location::Limits {
+        max_set_changes: 1,
+        ..limits()
+    };
+    (given.relimit)(store, lakelands_api::seam::Seams::default(), lower)
+        .await
+        .map_err(|e| Failure::new(format!("{what}: {e}")))
+}
+
+/// The lake opened again with a new, empty key store, which is answered
+/// beside it; `what` is named if that fails.
+pub async fn reopen_with_keys(
+    reopen: &Reopen,
+    store: Store,
+    what: &str,
+) -> Result<(Arc<Keys>, Store), Failure> {
+    let keys = Arc::new(Keys::default());
+    let store = again(reopen, store, with(&keys), what).await?;
+    Ok((keys, store))
 }
 
 /// Fail unless `store` was opened with the default limits, so a harness
@@ -371,6 +412,20 @@ impl Lake {
         self.cat.migrate_apply(&self.own, m, &id).await.must(&what)
     }
 
+    /// Links `from` of `ty` over `rel` to `to` as the owner, with no fields.
+    pub async fn link(
+        &self,
+        ty: &str,
+        from: &str,
+        rel: &str,
+        to: &str,
+    ) -> Result<Outcome, Failure> {
+        let (ty, rel, at, to) = (&ty.into(), &rel.into(), &from.into(), &to.into());
+        let fields = patch(serde_json::json!({}));
+        let linked = (self.cat).link(&self.own, ty, at, rel, to, fields, WriteOpts::default());
+        linked.await.must(&format!("linking {from} to {to}"))
+    }
+
     /// Retires one record as the owner.
     pub async fn retire(&self, ty: &str, key: &str) -> Result<Outcome, Failure> {
         let (t, k) = (TypeName::from(ty), RecordKey::from(key));
@@ -429,7 +484,7 @@ pub fn principal(
     }
 }
 
-/// A reviewer holding `review`, and `schema` when asked.
+/// A reviewer holding `review`, and `schema` with `restricted` when asked.
 pub fn reviewer(store: &dyn LakeStore, schema: bool) -> Principal {
     principal(
         store,
@@ -439,6 +494,7 @@ pub fn reviewer(store: &dyn LakeStore, schema: bool) -> Principal {
             default: Access::Read,
             review: true,
             schema,
+            restricted: schema,
             ..Grants::default()
         },
     )
@@ -568,6 +624,46 @@ pub fn searchable(name: &str) -> FieldDecl {
     }
 }
 
+/// The one function's ranking of `text` (`docs/seams.md` §`ranked`) over
+/// `heads` under `decl`, each a key and its fields, for a reader counted
+/// over every one of them: keys and scores, best first, ties by key. The
+/// search reads the fields `fields` names when it names any, weighed by
+/// `weights`.
+pub fn bm25f(
+    decl: &TypeDecl,
+    heads: &[(&str, Value)],
+    (text, fields): (&str, Option<&[&str]>),
+    weights: &[(&str, f64)],
+) -> Vec<(String, f64)> {
+    let head = |(key, fields): &(&str, Value)| lakelands_api::record::StoredRecord {
+        ty: decl.name.clone(),
+        key: RecordKey::from(*key),
+        version: lakelands_api::Version(1),
+        fields: serde_json::from_value(fields.clone()).unwrap_or_default(),
+        meta: Default::default(),
+        position: Position(1),
+        made: Position(1),
+        retired: false,
+        restricted: false,
+    };
+    let heads: Vec<_> = heads.iter().map(head).collect();
+    let fields: Option<Vec<FieldName>> = fields.map(|f| f.iter().map(|&f| f.into()).collect());
+    let weights = weights.iter().map(|&(f, w)| (f.into(), w)).collect();
+    let mut counts = lakelands_api::engine::TextCounts::default();
+    crate::engines::text_stats(decl, &heads, ("", None), &mut counts);
+    let counts = crate::engines::Counts::Kept(&counts.fields);
+    let ranked = crate::engines::lexical(
+        decl,
+        &heads,
+        text,
+        fields.as_deref(),
+        &weights,
+        counts,
+        u32::MAX,
+    );
+    ranked.into_iter().map(|(k, s)| (k.0, s)).collect()
+}
+
 /// A type whose records are keyed by the writer, with these fields.
 pub fn type_decl(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
     TypeDecl {
@@ -601,7 +697,7 @@ pub fn view_of(
             source: TypeName::from(source),
             params: Vec::new(),
             r#where: None,
-            group_by: by,
+            group_by: by.into_iter().map(Into::into).collect(),
             measures: measures.iter().map(|(n, e)| measure(n, e)).collect(),
             merge: Vec::new(),
         })),
@@ -658,6 +754,7 @@ pub fn agg(name: &str, func: AggFunc, field: Option<&str>) -> AggMeasure {
         name: FieldName::from(name),
         func,
         field: field.map(FieldName::from),
+        by: None,
     }
 }
 
@@ -700,9 +797,11 @@ pub fn write_verb(name: &str, on: &str, field: &str, value: &str) -> Declaration
         scope: Default::default(),
         payload: vec![],
         risk: Risk::Low,
+        preconditions: Vec::new(),
         requires: None,
         effect: VerbEffect::Write { set },
         description: None,
+        granted: false,
     })
 }
 
@@ -713,6 +812,7 @@ pub fn object_set_on(name: &str, of: &str, filter: &str) -> Declaration {
         of: of.into(),
         filter: filter.into(),
         description: None,
+        decided_at: Default::default(),
     })
 }
 
@@ -725,6 +825,26 @@ pub fn step(relation: &str, walk: Walk) -> Step {
         filter: None,
         depth: Depth::default(),
         named: None,
+        from: None,
+        join: None,
+        optional: false,
+        absent: false,
+    }
+}
+
+/// A search of `ty` by `mode` for `k` hits at the head, nothing else asked.
+pub fn searched(ty: impl Into<TypeName>, mode: SearchMode, k: u32) -> Search {
+    Search {
+        ty: ty.into(),
+        mode,
+        k,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        matches: false,
+        at: ReadAt::default(),
+        rerank: None,
+        text_as_of: false,
     }
 }
 
@@ -818,6 +938,7 @@ pub fn canonical_line(event: lakelands_api::event::Event) -> lakelands_api::engi
         hash,
         fence,
         bytes,
+        frame: None,
     }
 }
 
@@ -869,6 +990,8 @@ pub fn reactive(depth: u32, cause: Option<Position>) -> WriteContext {
         origin: lakelands_api::principal::WriteOrigin::Reactive,
         depth,
         cause,
+        on_behalf_of: None,
+        occasion: None,
     }
 }
 
@@ -1091,6 +1214,27 @@ pub fn dec(s: &str) -> Decimal {
     Decimal::from_str(s).unwrap_or_default()
 }
 
+/// A record as an engine holds it: its first version, made and last
+/// written at `at`, with no meta, neither retired nor restricted.
+pub fn stored_record(
+    ty: impl Into<TypeName>,
+    key: impl Into<RecordKey>,
+    fields: std::collections::BTreeMap<FieldName, Value>,
+    at: u64,
+) -> StoredRecord {
+    StoredRecord {
+        ty: ty.into(),
+        key: key.into(),
+        version: Version(1),
+        fields,
+        meta: Default::default(),
+        position: Position(at),
+        made: Position(at),
+        retired: false,
+        restricted: false,
+    }
+}
+
 /// One record from a source.
 pub fn source_record(ty: &str, key: &str, fields: Value) -> SourceRecord {
     SourceRecord {
@@ -1100,6 +1244,9 @@ pub fn source_record(ty: &str, key: &str, fields: Value) -> SourceRecord {
         key: RecordKey::from(key),
         fields: patch(fields),
         seen_at: None,
+        delivery: None,
+        resubmits: None,
+        line: None,
     }
 }
 
@@ -1270,8 +1417,8 @@ pub type Caller<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Drive every caller to its end together, in the check's one task, and
 /// answer their outputs in the callers' order. Each caller is polled
-/// whenever the task wakes, so while one waits on the lake (the store
-/// runs each write on its blocking pool, under its writer lock) the
+/// whenever the task wakes, so while one waits on the lake (a write
+/// waits its turn at the writer, then runs on the blocking pool) the
 /// others go on: the calls overlap at the store as the calls of many
 /// clients do. No runtime is needed beyond the one the engine's test
 /// brings.
@@ -1321,4 +1468,92 @@ pub async fn pause(d: std::time::Duration) {
         Poll::Pending
     })
     .await
+}
+
+/// Try `check` up to `tries` times, `every` apart, until it holds: what a
+/// check waits for where the road beside a writer's open, not the open
+/// itself, settles an owed act (099). Answers the last failure where it
+/// never holds, so the row says what it saw.
+pub async fn settles<F, Fut>(tries: u32, every: std::time::Duration, mut check: F) -> Held
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Held>,
+{
+    let mut last = Failure::new("the road's settle was never tried");
+    for n in 0..tries {
+        match check().await {
+            Ok(()) => return Ok(()),
+            Err(failure) => last = failure,
+        }
+        if n + 1 < tries {
+            pause(every).await;
+        }
+    }
+    Err(last)
+}
+
+/// `learning`, a text `kind` and `cites`, a `json` field carrying the
+/// relation `cites` to `learning`, many to many (091), and a `note` to
+/// move the head by; then each learning, `kind` open, citing what it is
+/// given.
+pub async fn learnings(l: &Lake, cited: &[(&str, Value)]) -> Held {
+    let fields = vec![
+        field("kind", StorageKind::Text),
+        field("cites", StorageKind::Json),
+    ];
+    let mut ty = type_decl("learning", fields);
+    ty.relations = vec![lakelands_api::ontology::RelationDecl {
+        cardinality: lakelands_api::ontology::Cardinality::ManyToMany,
+        via: Some("cites".into()),
+        ..lakelands_api::ontology::RelationDecl::to("cites", "learning")
+    }];
+    l.declare(ty).await?;
+    l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
+        .await?;
+    for (key, cites) in cited {
+        let fields = serde_json::json!({"kind": "open", "cites": cites});
+        l.upsert("learning", key, fields).await?;
+    }
+    Ok(())
+}
+
+/// A walk over `cites` from the learning `key`, at `at` or the head.
+pub fn cites(key: &str, walk: Walk, at: Option<Position>) -> Pattern {
+    let mut p = pattern(
+        "learning",
+        Some(key),
+        vec![step("cites", walk)],
+        Projection::Graph,
+    );
+    p.at.as_of = at;
+    p
+}
+
+/// What `p` answers `who`: its edges as `x>a`, then its nodes' keys, and
+/// its edges as the wire carries them.
+pub async fn walked(l: &Lake, who: &Principal, p: Pattern) -> Result<(String, String), Failure> {
+    let what = format!("{}'s walk {p:?}", who.id);
+    let answer = l.cat.query(who, p).await.must(&what)?.data;
+    let lakelands_api::query::QueryResult::Graph { nodes, edges, .. } = answer else {
+        return Err(Failure::new(format!("{what} answered no graph")));
+    };
+    let ends: Vec<String> = (edges.iter())
+        .map(|e| format!("{}>{}", e.from.1, e.to.1))
+        .collect();
+    let keys: Vec<&str> = nodes.iter().map(|n| n.key.as_str()).collect();
+    let told = format!("{} / {}", ends.join(" "), keys.join(" "));
+    Ok((told, serde_json::to_string(&edges).unwrap_or_default()))
+}
+
+/// What the walks over `cites` out of `x` and into `a` and `b` answer, at
+/// `at` or the head, with the edges as the wire carries them (091).
+pub async fn array_walks(store: &dyn LakeStore, at: Option<Position>) -> Vec<String> {
+    let l = Lake::of(store);
+    let mut told = Vec::new();
+    for (key, walk) in [("x", Walk::Out), ("a", Walk::In), ("b", Walk::In)] {
+        let walk = walked(&l, &l.own, cites(key, walk, at)).await;
+        let (got, wire) = walk.unwrap_or_else(|e| (e.message, String::new()));
+        told.push(format!("{got} {wire}"));
+    }
+    told
 }

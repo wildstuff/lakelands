@@ -1,6 +1,6 @@
-//! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
-//! `purge`, `forget`, `values remove`, `rebuild`, `compact`, `export` and
-//! `serve`. Each calls the library in-process and prints the position of
+//! The commands that open a lake: `apply`, `query`, `ingest`, `feed`, `age`,
+//! `purge`, `forget`, `values remove`, `thin`, `rebuild`, `compact`, `export`
+//! and `serve`. Each calls the library in-process and prints the position of
 //! every answer that has one.
 //! `import` makes a lake instead of opening one.
 //!
@@ -67,7 +67,7 @@ fn label(d: &Declaration) -> String {
         .as_str()
         .unwrap_or("declaration")
         .replace('_', " ");
-    match v["name"].as_str() {
+    match v["name"].as_str().or_else(|| v["key"].as_str()) {
         Some(name) => format!("{kind} `{name}`"),
         None => kind,
     }
@@ -100,6 +100,16 @@ pub async fn apply_bundle(
     // one append at one position, or refused whole. A bundle of aging
     // rules alone declares nothing.
     let what: Vec<String> = bundle.declarations.iter().map(label).collect();
+    // A setting whose first value the bundle gives is named once, by the
+    // line that says what became of the value; one already in force is
+    // named as well, for its position.
+    let valued: Vec<bool> = (bundle.declarations.iter())
+        .map(|d| {
+            let v = serde_json::to_value(d).unwrap_or_default();
+            v["declare"] == "setting"
+                && (bundle.settings.iter()).any(|s| s.get("key") == Some(&v["key"]))
+        })
+        .collect();
     if what.is_empty() && !bundle.aging_rules.is_empty() {
         return aging_rules(out, catalog, who, bundle.aging_rules).await;
     }
@@ -139,7 +149,11 @@ pub async fn apply_bundle(
                 ),
             };
             put(out, header)?;
-            for (i, w) in what.into_iter().enumerate() {
+            for (i, w) in what
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| !valued[*i] || held(*i).is_some())
+            {
                 match held(i) {
                     Some(since) => put(out, format!("  {w}, in force since position {since}"))?,
                     None => put(out, format!("  {w}"))?,
@@ -344,6 +358,146 @@ pub async fn recompute(
             outcome.position()
         ),
     )
+}
+
+/// `change`: the records of `ty` that `filter` selects, set to `set` or
+/// retired. Without a plan's id it prints the plan as one JSON document,
+/// its `report_id` the id to send back; with one it makes the change only
+/// against that plan and prints the outcome (`Catalog::plan` and
+/// `enact`, 081).
+pub async fn change(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    (ty, filter): (&str, &str),
+    (set, plan_id): (Option<Vec<String>>, Option<&str>),
+) -> Result<(), Failure> {
+    use lakelands_api::write::{Change, ChangeTo};
+    let to = match set {
+        Some(pairs) => {
+            let mut patch = lakelands_api::record::Patch::new();
+            for pair in pairs {
+                let bad = |what: &str| {
+                    Failure::new(
+                        format!("--set `{pair}`: {what}"),
+                        "give each as FIELD=JSON, such as status='\"done\"'",
+                    )
+                };
+                let (field, raw) = pair.split_once('=').ok_or_else(|| bad("no `=`"))?;
+                let value = serde_json::from_str(raw).map_err(|e| bad(&e.to_string()))?;
+                patch.insert(field.into(), value);
+            }
+            ChangeTo::Set(patch)
+        }
+        None => ChangeTo::Retire,
+    };
+    let change = Change::Records {
+        ty: ty.into(),
+        filter: Box::new(filter.into()),
+        to,
+        only: BTreeMap::new(),
+        skip_restricted: false,
+    };
+    let json = |e: serde_json::Error| Failure::new(e.to_string(), "report it as a bug");
+    let answer = match plan_id {
+        Some(id) => {
+            let outcome = catalog.enact(who, change, id).await;
+            serde_json::to_value(outcome.map_err(Failure::from)?).map_err(json)?
+        }
+        None => {
+            let plan = catalog.plan(who, change).await.map_err(Failure::from)?;
+            let mut v = serde_json::to_value(&plan.data).map_err(json)?;
+            v["said"] = say::plan(&plan.data).into();
+            v
+        }
+    };
+    put(out, answer)
+}
+
+/// `query`: the openCypher statement `statement` with the `params` given
+/// as `NAME=JSON`, run by [`lakelands_cypher::run`] at `--as-of` and
+/// `--valid-at` and from `--cursor`; the answer is printed as one JSON
+/// document. A statement that begins with `EXPLAIN` prints
+/// `{"pattern": …}` instead and reads nothing. A write prints its door's
+/// outcome; a `MATCH … SET`, `REMOVE` or `DELETE` prints its plan, as
+/// `change` does, and with `--plan` makes the change against it.
+pub async fn query(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    (statement, pairs): (&str, Vec<String>),
+    (as_of, valid_at, cursor, plan_id): (
+        Option<Position>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
+) -> Result<(), Failure> {
+    let mut params = lakelands_api::Params::new();
+    for pair in pairs {
+        let bad = |what: &str| {
+            Failure::new(
+                format!("--param `{pair}`: {what}"),
+                "give each as NAME=JSON, such as status='\"open\"'",
+            )
+        };
+        let (name, raw) = pair.split_once('=').ok_or_else(|| bad("no `=`"))?;
+        let value = serde_json::from_str(raw).map_err(|e| bad(&e.to_string()))?;
+        params.insert(name.into(), value);
+    }
+    let valid_at = flag("valid-at", valid_at)?;
+    let at = ReadAt {
+        as_of,
+        valid_at,
+        clock: None,
+    };
+    let cursor = flag("cursor", cursor)?;
+    let beside = lakelands_cypher::Beside {
+        at,
+        cursor,
+        plan_id,
+    };
+    let answer = lakelands_cypher::run(catalog, who, statement, &params, beside).await;
+    let answer = answer.map_err(Failure::from)?;
+    let json = |e: serde_json::Error| Failure::new(e.to_string(), "report it as a bug");
+    let mut v = serde_json::to_value(&answer).map_err(json)?;
+    if let lakelands_api::query::StatementAnswer::Planned(plan) = &answer {
+        v["said"] = say::plan(&plan.data).into();
+    }
+    put(out, v)
+}
+
+/// `search`: a lexical search, at `as_of` and `valid_at` where given, or
+/// the page after `cursor`, printed as the door answers it.
+pub async fn search(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    mut search: lakelands_api::query::Search,
+    (as_of, valid_at, cursor): (Option<Position>, Option<String>, Option<String>),
+) -> Result<(), Failure> {
+    search.at = ReadAt {
+        as_of,
+        valid_at: flag("valid-at", valid_at)?,
+        clock: None,
+    };
+    search.cursor = flag("cursor", cursor)?;
+    let hits = catalog.search(who, search).await.map_err(Failure::from)?;
+    let json = |e: serde_json::Error| Failure::new(e.to_string(), "report it as a bug");
+    put(out, serde_json::to_value(hits).map_err(json)?)
+}
+
+/// The value of `--<name>`, read as its JSON string reads.
+fn flag<T: serde::de::DeserializeOwned>(
+    name: &str,
+    given: Option<String>,
+) -> Result<Option<T>, Failure> {
+    let Some(given) = given else { return Ok(None) };
+    let read = serde_json::from_value(serde_json::Value::String(given.clone()));
+    read.map(Some).map_err(|e| {
+        let todo = "give an instant as RFC 3339, and a cursor as a page printed it";
+        Failure::new(format!("--{name} `{given}`: {e}"), todo)
+    })
 }
 
 /// Write a bundle's aging rules after its declarations, each as its
@@ -660,6 +814,9 @@ async fn csv(
             key: RecordKey::from(cell(key_col)),
             fields,
             seen_at,
+            delivery: None,
+            resubmits: None,
+            line: None,
         });
     }
     Ok(out)
@@ -862,7 +1019,7 @@ pub async fn forget(
         put(
             out,
             format!(
-                "{}: retires {} record(s) {source} alone brought",
+                "{}: retires {} record(s) {source} made and alone brought",
                 t.ty, t.retired
             ),
         )?;
@@ -870,7 +1027,7 @@ pub async fn forget(
     for t in &report.co_owned {
         let first: Vec<String> = t.first.iter().map(|k| k.to_string()).collect();
         let what = format!(
-            "{}: keeps {} record(s) another hand wrote too",
+            "{}: keeps {} record(s) another hand made or wrote too",
             t.ty, t.records
         );
         put(out, format!("{what}, first {}", first.join(", ")))?;
@@ -896,6 +1053,10 @@ pub async fn forget(
     if !report.report_id.is_empty() {
         let (head, id) = (report.position, &report.report_id);
         let seconds = report.expected_ms.div_ceil(1000);
+        let untimed = match report.reclaim_untimed {
+            true => lakelands_api::write::UNTIMED,
+            false => "",
+        };
         if let Some(why) = &report.reclaim_owed {
             put(out, format!("{source}: {}", owed(why)))?;
         }
@@ -903,7 +1064,7 @@ pub async fn forget(
             out,
             format!(
                 "{source}: preflight at position {head}; the act holds the writer about {seconds} s \
-                 ({} events); forget with --report {id}",
+                 ({} events){untimed}; forget with --report {id}",
                 report.events
             ),
         );
@@ -960,6 +1121,10 @@ pub async fn values_remove(
     if !report.report_id.is_empty() {
         let (head, id) = (report.position, &report.report_id);
         let seconds = report.expected_ms.div_ceil(1000);
+        let untimed = match report.reclaim_untimed {
+            true => lakelands_api::write::UNTIMED,
+            false => "",
+        };
         if let Some(why) = &report.reclaim_owed {
             put(out, format!("{source}: {}", owed(why)))?;
         }
@@ -967,7 +1132,7 @@ pub async fn values_remove(
             out,
             format!(
                 "{source}: preflight at position {head}; the act holds the writer about {seconds} s \
-                 ({} events); remove with --report {id}",
+                 ({} events){untimed}; remove with --report {id}",
                 report.log_events
             ),
         );
@@ -982,6 +1147,46 @@ pub async fn values_remove(
     )
 }
 
+/// `thin`: take out of the projection every record of `ty` whose field
+/// `by` is certainly before `before`, as one act in parts, keeping the
+/// folds of the kept views over it (`LakeStore::thin_values`). Without
+/// `--act` it prints the preflight, the act it would do and how many
+/// records it would take, appending nothing, as `values remove` does
+/// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+pub async fn thin(
+    out: Out<'_>,
+    store: &Arc<dyn LakeStore>,
+    (ty, by): (&str, &str),
+    (before, act): (lakelands_api::Timestamp, bool),
+) -> Result<(), Failure> {
+    let thin = lakelands_api::write::Thin {
+        by: by.into(),
+        before,
+    };
+    let report = store.thin_values(&TypeName::from(ty), &thin, !act).await?;
+    let records = report.records;
+    match act {
+        false => put(
+            out,
+            format!(
+                "{ty} by {by} before {before}: the preflight would take {records} records; \
+                 thin with --act"
+            ),
+        ),
+        true => {
+            let reclaimed = reclaimed(report.reclaimed.as_ref(), None);
+            put(
+                out,
+                format!(
+                    "took {records} records of {ty} by {by} before {before} through position \
+                     {}{reclaimed}",
+                    report.through
+                ),
+            )
+        }
+    }
+}
+
 /// `rebuild`: rebuild the projection from the log. The lake was opened
 /// for a rebuild, and that open folded the whole log again.
 pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Failure> {
@@ -992,109 +1197,77 @@ pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Fai
     )
 }
 
-/// `upgrade`: say which log format the lake is written in, as a
-/// read-only open finds it, and, where it is older than the one this
-/// release writes, open it for writing once: that open appends
-/// `lake_upgraded` and writes the new format from there; the events
-/// before stay as they were written. A lake in this release's format
-/// whose projection an older build laid out is opened for writing once
-/// too, which rebuilds the projection. `check` stops before that open.
-pub async fn upgrade(
+/// `build-ahead`: build the projection this release lays out beside the
+/// lake's, while an older release still serves it, saying first how much
+/// room it takes; this release's writer's open then folds only what was
+/// written since, and swaps it in. `discard` removes a build
+/// ahead instead.
+pub async fn build_ahead(
     out: Out<'_>,
     location: lakelands_api::Location,
     seams: lakelands_api::seam::Seams,
-    check: bool,
-    open: &crate::Opener<'_>,
+    discard: bool,
 ) -> Result<(), Failure> {
-    use lakelands_api::engine::OpenMode;
-    use lakelands_api::error::Situation;
-    use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION as TO};
     let lake = location.lake.clone();
-    // A lake already in this release's format opens to read; an older one
-    // is refused by its format, and a projection an older build laid out
-    // by its layout, which the refusal names.
-    let from = match open(location.clone(), OpenMode::Read, seams.clone()).await {
-        Ok(_) => {
-            return put(
-                out,
-                format!("{lake} is written in log format {TO}: nothing to upgrade"),
-            );
-        }
-        Err(e) => match e.situation() {
-            Some(Situation::LogUpgradeOwed { found, .. }) => *found,
-            Some(Situation::ProjectionLayout {
-                found: Some(found),
-                wanted,
-                ..
-            }) if found < wanted => {
-                let found = *found;
-                if check {
-                    let said = format!(
-                        "{lake} is written in log format {TO}, its projection in layout \
-                         {found}: an open for writing rebuilds it; nothing was opened for writing"
-                    );
-                    return put(out, said);
-                }
-                let started = std::time::Instant::now();
-                let store = open(location, OpenMode::Write, seams).await?;
-                let secs = started.elapsed().as_secs_f64();
-                // Another writer may have rebuilt it since the read-only open.
-                let said = match store.rebuilt_at_open() {
-                    Some(_) => {
-                        format!(
-                            "rebuilt the projection of {lake} from layout {found} in {secs:.1} s"
-                        )
-                    }
-                    None => format!(
-                        "{lake}'s projection: another writer rebuilt it from layout {found}"
-                    ),
-                };
-                return put(out, said);
-            }
-            _ => return Err(e.into()),
-        },
-    };
-    if check {
-        return put(
-            out,
-            format!(
-                "{lake} is written in log format {from}: an open for writing appends \
-                 `lake_upgraded` from {from} to {TO}, and rebuilds the projection where an \
-                 older build laid it out; nothing was opened for writing"
-            ),
-        );
+    if discard {
+        let said = match lakelands_store::discard_ahead(location, seams).await? {
+            true => format!("removed the projection built ahead beside {lake}"),
+            false => format!("{lake} kept no projection built ahead: nothing was removed"),
+        };
+        return put(out, said);
     }
+    put(out, room(&location, &seams).await?)?;
     let started = std::time::Instant::now();
-    let store = open(location, OpenMode::Write, seams).await?;
-    let head = store.head().await?;
+    let built = lakelands_store::build_ahead(location, seams).await?;
     let secs = started.elapsed().as_secs_f64();
-    // What this open appended: its own `lease_taken` is the last one in
-    // the log, and the marker, where it upgraded, is the event after it.
-    // Another writer may have upgraded the lake since the read-only open.
-    let from_tail = Position(head.0.saturating_sub(64));
-    let tail = store
-        .feed()
-        .poll(from_tail, &FeedFilter::default(), 128)
-        .await?;
-    let leased = (tail.events.iter()).rposition(|e| matches!(e.body, EventBody::LeaseTaken { .. }));
-    let marked = leased
-        .and_then(|i| tail.events.get(i + 1))
-        .and_then(|e| match e.body {
-            EventBody::LakeUpgraded { from, to } => Some((from, to)),
-            _ => None,
-        });
-    match marked {
-        Some((from, to)) => put(
-            out,
-            format!(
-                "upgraded {lake} from log format {from} to {to} through position {head} in {secs:.1} s"
-            ),
+    let (events, through) = (built.events, built.through.map_or(0, |p| p.0));
+    let from = match built.ahead {
+        Some(at) => format!(", on from position {at}"),
+        None => String::new(),
+    };
+    put(
+        out,
+        format!(
+            "built {lake}'s projection ahead through position {through}: {events} events \
+             folded in {secs:.1} s{from}; a writer's open with this release folds what is \
+             written after it and swaps it in"
         ),
-        None => put(
-            out,
-            format!("{lake} is written in log format {TO}: another writer upgraded it from {from}"),
-        ),
-    }
+    )
+}
+
+/// How much room a build ahead takes: about what the projection it is
+/// built beside takes, as the engine measures it without opening it.
+async fn room(
+    location: &lakelands_api::Location,
+    seams: &lakelands_api::seam::Seams,
+) -> Result<String, Failure> {
+    use lakelands_api::location::EngineConfig;
+    let bytes = match lakelands_store::room_ahead(location.clone(), seams.clone()).await {
+        Ok(bytes) => bytes,
+        Err(lakelands_api::Error::Unbound { .. }) => {
+            return Ok("building ahead keeps nothing on this engine".to_owned());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    let place = match &location.engine {
+        EngineConfig::Sqlite {
+            dir,
+            projection_dir,
+            ..
+        } => format!("in {}", projection_dir.as_ref().unwrap_or(dir).display()),
+        EngineConfig::Postgres { schema, .. } => {
+            let schema = schema
+                .clone()
+                .unwrap_or_else(|| format!("lakelands_{}", location.lake));
+            format!("in the database, in a schema of its own beside `{schema}`")
+        }
+        _ => "beside the projection".to_owned(),
+    };
+    Ok(format!(
+        "building ahead takes about {mib:.1} MiB {place}, as much as the projection beside it, \
+         until a writer's open puts it in that one's place"
+    ))
 }
 
 /// `compact`: give back the storage the projection no longer uses, and
@@ -1140,27 +1313,102 @@ pub async fn export(out: Out<'_>, store: &Arc<dyn LakeStore>, to: &Path) -> Resu
     )
 }
 
-/// The lake an export holds, as its first event names it: the manifest is
-/// never trusted. `None` when the first event cannot be read; the import's
-/// own verification then says why.
+/// `backup`: `to` brought up to the lake's head, and the lake's keyring
+/// file copied into `keys` where it is named, apart from the backup.
+pub async fn backup(
+    out: Out<'_>,
+    store: &Arc<dyn LakeStore>,
+    root: &crate::root::Root,
+    to: &Path,
+    keys: Option<&Path>,
+) -> Result<(), Failure> {
+    // The directories are judged before anything is written.
+    root.outside_the_lakes(to, "backup's")?;
+    let keyring = match keys {
+        Some(keys) => {
+            root.keys_apart(keys, to)?;
+            let Some(keyring) = root.file_keyring() else {
+                let what = "--keys-to was given, and the root names no file keyring";
+                let todo = "leave --keys-to out, and back the keys up as the key store's host does";
+                return Err(Failure::new(what, todo));
+            };
+            Some((keyring, keys))
+        }
+        None => None,
+    };
+    let b = export::backup(store.as_ref(), &*store.feed(), to).await?;
+    let since = b
+        .since
+        .map_or_else(|| "new".to_owned(), |p| format!("since {p}"));
+    let again = b.again.map_or_else(String::new, |p| {
+        format!(", the last append written again from {p}")
+    });
+    let line = format!(
+        "backed up {} through position {} ({} new event(s), {since}{again}) to {}",
+        b.lake,
+        b.through,
+        b.copied,
+        to.display()
+    );
+    put(out, line)?;
+    if let Some((keyring, keys)) = keyring {
+        let line = match keyring.back_up(&b.lake, keys)? {
+            Some(file) => format!("copied the lake's keys to {}", file.display()),
+            None => "the root's keyring holds no keys for the lake; none were copied".to_owned(),
+        };
+        put(out, line)?;
+    }
+    Ok(())
+}
+
+/// `restore --keys-from`: the lake's keyring file put back from `keys`,
+/// only where the root's keyring has none: the file it holds knows every
+/// destroy, and an older copy would bring back a forgotten source's keys.
+/// Answers the keyring, for the file to be taken out again where the
+/// import is refused.
+pub fn restore_keys(
+    out: Out<'_>,
+    root: &crate::root::Root,
+    lake: &lakelands_api::LakeId,
+    keys: &Path,
+) -> Result<lakelands_backings::keyring::FileKeyring, Failure> {
+    let Some(keyring) = root.file_keyring() else {
+        let what = "--keys-from was given, and the root names no file keyring";
+        return Err(Failure::new(
+            what,
+            "name the keyring in the keys section of the configuration",
+        ));
+    };
+    if !keyring.restore(lake, keys)? {
+        let what = format!("the root's keyring already holds a file for lake `{lake}`");
+        let todo = "leave --keys-from out: the keyring's own file knows every key destroyed since";
+        return Err(Failure::new(what, todo));
+    }
+    let line = format!("put the keys of lake `{lake}` back from {}", keys.display());
+    put(out, line).inspect_err(|_| drop(keyring.unrestore(lake)))?;
+    Ok(keyring)
+}
+
+/// The lake an export holds, as its first event names it, or the frame
+/// before it where that holds it: the manifest is never trusted. `None`
+/// when the first event cannot be read; the import's own verification
+/// then says why.
 pub fn exported_lake(dir: &Path) -> Option<String> {
-    let first = dir.join(export::file_name(lakelands_api::Position::GENESIS));
-    let file = std::fs::File::open(first).ok()?;
-    let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::BufReader::new(file), &mut line).ok()?;
-    let event: serde_json::Value = serde_json::from_str(&line).ok()?;
-    event["lake"].as_str().map(str::to_owned)
+    export::lake_of(dir)
 }
 
 /// `import`: the export in `dir` becomes the lake at `location`, which
 /// must hold nothing. A lake kept in memory is refused before anything is
 /// read: this process ends when the command answers, and the lake with it.
+/// The outer error is the import refused; the inner one is its line not
+/// written, after the lake was made.
 pub async fn import(
     out: Out<'_>,
     location: lakelands_api::Location,
     seams: lakelands_api::seam::Seams,
     dir: &Path,
-) -> Result<(), Failure> {
+    restoring: bool,
+) -> Result<Result<(), Failure>, Failure> {
     if location.engine == lakelands_api::EngineConfig::Memory {
         return Err(Failure::new(
             format!(
@@ -1173,6 +1421,27 @@ pub async fn import(
     let imported = lakelands_store::import(location, seams, dir.to_owned())
         .await
         .map_err(|e| {
+            // An archive of another release's log format is the operator's
+            // data, not damage: the way back is a release that reads it,
+            // and it is said here, not as damage. The intercept also
+            // answers the import target's own format, which the store
+            // judges before the archive is read; the advice is right for
+            // both.
+            if let Some(lakelands_api::error::Situation::LogFormat { found, .. }) = e.situation() {
+                let said = e.to_string();
+                let todo = if restoring {
+                    format!(
+                        "restore it with a release that reads log format {found}; it is not \
+                         damaged"
+                    )
+                } else {
+                    format!(
+                        "import it with a release that reads log format {found}; it is not \
+                         damaged"
+                    )
+                };
+                return Failure::new(said, todo);
+            }
             let todo = match &e {
                 lakelands_api::Error::Refused { .. } => {
                     "an export opens only as the lake it came from, into a lake that holds \
@@ -1180,19 +1449,46 @@ pub async fn import(
                      for PostgreSQL), remove a lake there that holds events (its file or \
                      schema), and import again"
                 }
+                _ if e.seam().is_some()
+                    || matches!(
+                        e.situation(),
+                        Some(lakelands_api::error::Situation::KeyMissing { .. })
+                    ) =>
+                {
+                    if restoring {
+                        "the lake's sealed values need its keys: name the keyring in the keys \
+                         section of the configuration, and restore with --keys-from the keys \
+                         file the backup copied"
+                    } else {
+                        "the lake's sealed values need its keys: name the keyring in the keys \
+                         section of the configuration, put the keys file in the keyring's place \
+                         there, and import again"
+                    }
+                }
+                _ if restoring => {
+                    "a damaged backup restores nothing: restore from another backup; a failure \
+                     of the target's storage leaves what it wrote, so remove that lake (its \
+                     file or schema) and restore again"
+                }
                 _ => {
                     "a damaged export imports nothing: export the lake again; a failure of the \
                      target's storage leaves what it wrote, so remove that lake (its file or \
                      schema) and import again"
                 }
             };
-            Failure::new(e.to_string(), todo)
+            let said = e.to_string();
+            let said = if restoring {
+                said.replacen("the export", "the backup", 1)
+            } else {
+                said
+            };
+            Failure::new(said, todo)
         })?;
-    put(
+    Ok(put(
         out,
         format!(
             "imported lake `{}`: {} event(s) from {} file(s), head {}, hash {}",
             imported.lake, imported.events, imported.files, imported.through, imported.hash.0
         ),
-    )
+    ))
 }

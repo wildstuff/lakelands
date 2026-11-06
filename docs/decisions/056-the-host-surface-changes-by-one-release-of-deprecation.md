@@ -30,7 +30,8 @@ An addition is free, and that includes the additions a tool counts as
 breaking:
 - a variant or a variant's field;
 - a field of a struct a host may build;
-- a variant's number moved by one added before it.
+- a variant's number, or its place in a derived order, moved by one
+  added before it.
 
 No deprecation can come before an addition, and the release notes'
 "Changes a host must make" name each one. A behaviour that a type does

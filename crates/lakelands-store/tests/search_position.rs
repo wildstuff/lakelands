@@ -25,7 +25,7 @@ use lakelands_api::write::{Migration, WriteOpts};
 use lakelands_api::{Access, Cursor, LakeStore, Location, Position, Principal, PrincipalKind};
 use lakelands_core::conformance::fixture::{
     Lake, doors, field, field_access, field_writer, owner, patch, pattern, principal, read_at,
-    restrict, searchable, step, type_decl, vector,
+    restrict, searchable, searched, step, type_decl, vector,
 };
 use lakelands_engine_mem::MemoryOpener;
 use probed::{Probe, ProbedOpener};
@@ -99,14 +99,10 @@ async fn search_of(
 ) -> lakelands_api::Result<Searched> {
     let (k, filter, cursor) = page;
     let s = Search {
-        ty: ty.into(),
-        mode: mode.clone(),
-        k,
         cursor,
         filter: filter.map(Into::into),
-        with_meta: false,
         at: read_at(at),
-        rerank: None,
+        ..searched(ty, mode.clone(), k)
     };
     let got = doors(store).search(who, s).await?;
     let scored = |h: &lakelands_api::query::Hit| {
@@ -155,7 +151,10 @@ fn searches() -> [(SearchMode, Option<i64>); 3] {
 /// record by its own text and vector, never by the held one's, as of the
 /// position before and at the head, where the answer is of the position
 /// the rankings were read at and names the record by its key there. The
-/// plan asks the same, so the engine is asked once.
+/// plan asks the same, so the engine is asked once, but for a vector read
+/// as of the position before: it was the head when the engine was first
+/// asked, and judged by the engine there, and is judged by the store once
+/// the head moved past it, so the engine is asked again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rekey_between_the_head_and_the_rankings_is_judged_where_they_were_read() {
     for as_of in [true, false] {
@@ -179,7 +178,8 @@ async fn a_rekey_between_the_head_and_the_rankings_is_judged_where_they_were_rea
             assert_eq!(hits, want, "as of: {as_of}, {mode:?}");
             assert_eq!(at, read_at, "as of: {as_of}, {mode:?}");
             assert!(head > p, "the migration landed in the pause");
-            assert_eq!(probe.ranked.load(Ordering::SeqCst), 1, "{mode:?}");
+            let asked = 1 + usize::from(as_of && score.is_some());
+            assert_eq!(probe.ranked.load(Ordering::SeqCst), asked, "{mode:?}");
         }
     }
 }
@@ -233,7 +233,8 @@ async fn a_hold_lifted_between_the_head_and_the_rankings_answers_its_record() {
         let w = field_writer(s, "w", "keyed", &[]);
         let mode = SearchMode::lexical("quay");
         let (hits, at, _) = search(s, &w, &mode, as_of.then_some(p), (10, None, None)).await;
-        assert_eq!(hits, [("v".to_owned(), 10_000)], "as of: {as_of}");
+        // ln(4/3): BM25F's idf of a token in the one record (025).
+        assert_eq!(hits, [("v".to_owned(), 2_877)], "as of: {as_of}");
         let head = s.head().await.unwrap();
         assert_eq!(at, if as_of { p } else { head }, "as of: {as_of}");
     }
@@ -496,7 +497,8 @@ async fn a_field_the_reader_may_not_read_declared_in_the_pause_matches_nothing_f
     assert_eq!((hits, at), (Vec::new(), s.head().await.unwrap()));
     assert_eq!(probe.ranked.load(Ordering::SeqCst), 2);
     let (hits, ..) = search(s, &owner(s), &mode, None, (10, None, None)).await;
-    assert_eq!(hits, [("v".to_owned(), 10_000)]);
+    // ln 2: one record over two searched fields, N = 2 (025).
+    assert_eq!(hits, [("v".to_owned(), 6_931)]);
 }
 
 /// A type renamed in the pause: a link type bears its relation's name,
@@ -588,14 +590,10 @@ async fn a_write_inside_a_reranked_searchs_window_read_loses_no_scored_hit() {
         .await;
     });
     let search = |cursor| Search {
-        ty: "keyed".into(),
-        mode: SearchMode::lexical("invoice overdue"),
-        k: 1,
         cursor,
-        filter: None,
-        with_meta: false,
         at: read_at(None),
         rerank: Some(lakelands_api::query::Rerank { top: 3, text: None }),
+        ..searched("keyed", SearchMode::lexical("invoice overdue"), 1)
     };
     let own = owner(store.as_ref());
     let (mut got, mut cursor) = (Vec::new(), None);

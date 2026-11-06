@@ -3,21 +3,11 @@
 //! link whose relation's fields it converts
 //! (`docs/decisions/004-the-change-feed-is-the-log.md`, extended).
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind::{self, Boolean, Text};
-use lakelands_api::ontology::{RelationDecl, TypeDecl};
-use lakelands_api::seam::Seams;
+use lakelands_api::ontology::StorageKind::{Boolean, Text};
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{LakeStore, Outcome, Position};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_from, field, find_where, log_events, object_set_on, patch, reference,
-    type_decl, type_of,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{reference, type_of};
+use crate::conformance::prelude::*;
 
 /// `name` with the required text fields `id` and `code`, keyed by `key`,
 /// and `more` fields.

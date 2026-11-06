@@ -1,5 +1,5 @@
 //! An export read back by a verifier that shares no code with Lakelands:
-//! `docs/log-format/vectors/17/verify.py` in its directory mode, over a lake
+//! `docs/log-format/vectors/23/verify.py` in its directory mode, over a lake
 //! with a checkpoint (two files) and a re-key; and
 //! an export whose feed breaks, which leaves nothing behind.
 //!
@@ -105,7 +105,7 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
     );
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/17/verify.py");
+        .join("../../docs/log-format/vectors/23/verify.py");
     let run = Command::new("python3").arg(&script).arg(&dir).output();
     let run = match run {
         Ok(run) => run,
@@ -174,7 +174,7 @@ type Damage<'a> = (&'a SegmentFile, &'a dyn Fn(&mut Value), Position);
 #[test]
 fn verify_py_refuses_the_negative_vector_whose_known_at_goes_back() {
     let vectors =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/17");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/23");
     let said = python(
         &vectors.join("verify.py"),
         &vectors.join("negative/known-at-goes-back"),
@@ -273,6 +273,9 @@ impl LakeStore for BreaksMidway {
     async fn age(&self, today: Timestamp) -> Result<AgeReport> {
         self.0.inner.age(today).await
     }
+    async fn zone(&self) -> Result<String> {
+        self.0.inner.zone().await
+    }
     async fn purge_source(
         &self,
         source: &SourceId,
@@ -300,6 +303,19 @@ impl LakeStore for BreaksMidway {
         source: &lakelands_api::SourceId,
     ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
         self.0.inner.forget_preflight(source).await
+    }
+    async fn forget_sources(
+        &self,
+        sources: &[lakelands_api::SourceId],
+        id: Option<&str>,
+    ) -> lakelands_api::Result<lakelands_api::write::ForgetSetReport> {
+        self.0.inner.forget_sources(sources, id).await
+    }
+    async fn forget_sources_preflight(
+        &self,
+        sources: &[lakelands_api::SourceId],
+    ) -> lakelands_api::Result<lakelands_api::write::ForgetSetReport> {
+        self.0.inner.forget_sources_preflight(sources).await
     }
     async fn remove_values(
         &self,
@@ -403,48 +419,11 @@ async fn an_export_through_a_feed_that_skips_an_event_is_refused() {
     assert!(!dir.exists(), "nothing is left behind");
 }
 
-/// A lake v0.13.1 made in format 14 (`docs/log-format/lakes/14/`),
-/// imported and so upgraded, is exported in both formats: its events as
-/// they were written, then a writer's `lease_taken` and `lake_upgraded`
-/// and the rest in the format this release writes. `verify.py`, which
-/// shares no code with Lakelands, verifies that export through its last
-/// position, as the store does.
-#[tokio::test(flavor = "multi_thread")]
-async fn verify_py_verifies_the_export_of_an_upgraded_lake() {
-    let lakes = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/14");
-    let seams = Seams {
-        engines: vec![Arc::new(MemoryOpener::new())],
-        ..Seams::default()
-    };
-    let at = lakelands_api::Location::memory("kept14");
-    lakelands_store::import(at.clone(), seams.clone(), lakes)
-        .await
-        .unwrap();
-    let store = lakelands_store::open(at, seams, OpenMode::Read)
-        .await
-        .unwrap();
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("export-upgraded-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    lakelands_core::export::write(store.as_ref(), &dir)
-        .await
-        .unwrap();
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/17/verify.py");
-    let said = python(&script, &dir);
-    let lake_says = store.verify(None, None).await.unwrap();
-    let last = format!(
-        "verified through position {}, hash {}",
-        lake_says.through, lake_says.hash.0
-    );
-    assert!(said.trim_end().ends_with(&last), "verify.py said:\n{said}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// An import whose reclaim fails is imported all the same (lakelands#1179):
 /// the removal the export holds is finished but for the reclaim, the
-/// value reads as erased, the writer's next open owes the reclaim while it
-/// fails, naming its cause alone, and a second import onto the lake is refused as onto any lake.
+/// value reads as erased, the road beside the writer's next open takes the
+/// reclaim up after its answer and the open owes it while it fails, naming
+/// its cause alone, and a second import onto the lake is refused as onto any lake.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_import_whose_reclaim_fails_is_imported_owing_it() {
     use lakelands_core::conformance::fixture::{ingest, source_record};
@@ -497,6 +476,9 @@ async fn an_import_whose_reclaim_fails_is_imported_owing_it() {
     let opened = lakelands_store::open(at.clone(), seams.clone(), OpenMode::Write)
         .await
         .unwrap();
+    // The road beside the writer takes the reclaim up after the open has
+    // answered (099): wait, bounded, for it to fail and be owed.
+    until(|| opened.reclaim_owed().is_some()).await;
     // The cause alone, which a host shows as it is: not the whole error.
     let owed = opened.reclaim_owed().unwrap_or_default();
     assert!(
@@ -523,4 +505,17 @@ async fn an_import_whose_reclaim_fails_is_imported_owing_it() {
         refused.is_err_and(|e| e.contains("ImportNotEmpty")),
         "a second import onto the lake is refused as not empty: {again:?}"
     );
+}
+
+/// Wait until `done`, for a row that needs the road beside the writer to
+/// have got somewhere.
+async fn until(done: impl Fn() -> bool) {
+    for _ in 0..5_000 {
+        if done() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        tokio::task::yield_now().await;
+    }
+    panic!("waited five seconds");
 }

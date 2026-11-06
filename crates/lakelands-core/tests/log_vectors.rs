@@ -15,17 +15,18 @@
 //! the two segments, then the events of `further.json`, each following the
 //! one before it and each named for what it shows. A format step copies
 //! the directory to the next number and stamps the copy
-//! (`verify.py --stamp N`); the directory of every format a release
-//! shipped stays as its tag holds it, and its own `verify.py` is run here.
+//! (`verify.py --stamp N`); the directory of every format from 23 on stays
+//! as its tag holds it, and its own `verify.py` is run here.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::error::{Flaw, Situation};
-use lakelands_api::event::{
-    ChangeKind, DepthBound, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
-};
+use lakelands_api::event::{ChangeKind, DepthBound, Digest, Event, EventBody, LOG_FORMAT_VERSION};
+use lakelands_api::expr::Condition;
+use lakelands_api::id::{KeyId, Position};
 use lakelands_api::ontology::{AtIngest, TypeDecl, VerbScope};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, ProposedWrite};
@@ -192,7 +193,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 538, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 793, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -394,7 +395,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 64] = [
+const SHOWN: [&str; 89] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -427,7 +428,7 @@ const SHOWN: [&str; 64] = [
     "date_value",
     "output_carried",
     "output_named",
-    "lake_upgraded",
+    "retired_date_record",
     "erasable",
     "sealed_ingest",
     "sealed_output",
@@ -459,19 +460,47 @@ const SHOWN: [&str; 64] = [
     "removed_before",
     "removal_by_time_retires",
     "proposed_migrate_recomputed",
+    "sealed_apart",
+    "sealed_apart_output",
+    "removed_apart",
+    "removal_apart_retires",
+    "admits",
+    "removed_seen_before",
+    "verb_granted",
+    "removed_deliveries",
+    "verb_preconditions",
+    "proposed_records",
+    "quarantined",
+    "quarantined_again",
+    "quarantined_sealed",
+    "resubmission_lands",
+    "closed_resubmitted",
+    "closed_dismissed",
+    "quarantined_constraint",
+    "lands",
+    "closed_landed",
+    "quarantined_removed",
+    "removes_quarantined",
+    "closed_removed",
+    "setting_dated",
+    "setting_corrected",
+    "setting_at",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 71;
+const LAST: u64 = 96;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
-const MISPLACED: [&str; 5] = [
+const MISPLACED: [&str; 8] = [
     "upstream_on_another_kind",
     "cause_in_context",
     "output_twice",
     "sealed_on_another_kind",
     "delivery_on_another_kind",
+    "sealed_for_another_source",
+    "on_behalf_of_in_context",
+    "sealed_without_box",
 ];
 
 /// Whether the event is what its entry of `further.json` says it shows,
@@ -527,13 +556,29 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         "proposed_migrate" => {
             matches!(proposed, Some(ProposedWrite::Migrate { report, .. }) if report.lossless)
         }
-        // A kept plan carries its own id: the plan's, at its head (062).
+        // A kept plan carries its own id: the plan's, at the position it
+        // was read at, over the plan's sections' own ids left empty and
+        // `at` at the genesis (062, 099).
         "proposed_plan" => matches!(proposed, Some(ProposedWrite::Declare { plan: Some(p), .. })
         if p.types.iter().any(|t| t.recomputed.is_some_and(|n| n > 0) && !t.unlive.is_empty())
-            && p.report_id == lakelands_core::canonical::sha256_hex(&serde_json::json!({
-                "plan": lakelands_api::write::Plan { report_id: String::new(), ..(**p).clone() },
-                "head": p.at.0,
-            }))),
+            && p.report_id == {
+                let mut said = (**p).clone();
+                said.report_id = String::new();
+                said.at = lakelands_api::Position::GENESIS;
+                for t in &mut said.types {
+                    t.report_id.clear();
+                }
+                for v in &mut said.value_types {
+                    v.report_id.clear();
+                }
+                format!("{}-{}", p.at.0,
+                    lakelands_core::canonical::sha256_hex(&serde_json::json!({"plan": said})))
+            }),
+        "proposed_records" => matches!(proposed, Some(ProposedWrite::Records { ty, to, plan, .. })
+            if ty.as_str() == "ticket"
+                && to == &lakelands_api::write::ChangeTo::Set(
+                    [("title".into(), serde_json::json!("closed"))].into_iter().collect())
+                && plan.records.as_ref().is_some_and(|r| r.selected == 2 && r.fields.len() == 1)),
         // Annotations are not shape.
         "annotations" => ty.is_some_and(|t| {
             let mut bare = t.clone();
@@ -620,10 +665,9 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                 ..
             }
         ),
-        "lake_upgraded" => matches!(
-            &event.body,
-            B::LakeUpgraded { from, to } if *to == event.v && *from + 1 == *to
-        ),
+        "retired_date_record" => {
+            matches!(&event.body, B::RecordRetired { key, version, .. } if key == "d1" && version.0 == 2)
+        }
         "constraints" => matches!(declared, Some(D::Type(t)) if {
             let at: Vec<_> = t.constraints.iter().map(|c| c.at_ingest).collect();
             at == [AtIngest::Admit, AtIngest::Refuse] && line.contains("previous(status)")
@@ -632,8 +676,10 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             matches!(declared, Some(D::Type(t)) if t.fields.iter().any(|f| f.erasable))
         }
         "sealed_ingest" => {
-            let sealed = event.sealed.as_ref().map(|s| s.fields.as_slice());
-            matches!(&event.body, B::RecordIngested { .. }) && sealed == Some(&["email".into()])
+            matches!(&event.body, B::RecordIngested { .. })
+                && event.sealed.as_ref().is_some_and(|s| {
+                    s.fields.len() == 1 && s.fields[0] == "email" && s.boxed.is_some()
+                })
         }
         "sealed_output" => {
             let source = event.sealed.as_ref().and_then(|s| s.source.as_ref());
@@ -655,13 +701,21 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         }
         "source_forgotten" => matches!(
             &event.body,
-            B::SourceForgotten { source, keys }
+            B::SourceForgotten { source, keys, .. }
                 if source == "crm" && keys.len() == 1 && keys[0].as_str() == "1"
         ),
         "verb_authority" => matches!(declared, Some(D::Type(t))
             if t.fields.iter().any(|f| f.authority == lakelands_api::ontology::Authority::Verb)),
+        "admits" => matches!(declared, Some(D::Type(t))
+            if t.fields.iter().any(|f| f.admits.iter().map(|s| s.as_str()).eq(["samples"]))),
         "retired_by_verbs" => matches!(declared, Some(D::Type(t))
             if t.retired_by == lakelands_api::ontology::RetiredBy::Verbs),
+        "verb_preconditions" => matches!(declared, Some(D::Verb(v))
+            if v.requires == Some(Condition::Text("payload.amount > 0".into()))
+                && v.preconditions.iter().map(|p| p.name.as_str()).eq(["not_overpaid"])),
+        "verb_granted" => {
+            matches!(declared, Some(D::Verb(v)) if v.granted && v.name.as_str() == "void")
+        }
         "retire_effect" => matches!(declared, Some(D::Verb(v))
             if v.effect == lakelands_api::ontology::VerbEffect::Retire),
         "setting_declared" => matches!(declared, Some(D::Setting(s))
@@ -669,6 +723,18 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         "setting_group" => matches!(&event.body, B::RecordUpserted { ty, patch, .. }
             if ty.as_str() == lakelands_api::seam::SETTING_TYPE
                 && patch.get("group").and_then(|g| g.as_str()) == Some("operator")),
+        "setting_dated" | "setting_corrected" => {
+            let value = if what == "setting_dated" {
+                "0.21"
+            } else {
+                "0.2"
+            };
+            let periods = serde_json::json!([{"from": "2027-01-01", "value": value}]);
+            matches!(&event.body, B::RecordUpserted { ty, patch, .. }
+                if ty.as_str() == lakelands_api::seam::SETTING_TYPE
+                    && patch.keys().eq(["periods"]) && patch["periods"] == periods)
+        }
+        "setting_at" => ty.is_some() && line.contains("setting('vat_rate', sold_on)"),
         "delivery" => {
             matches!(&event.body, B::RecordIngested { .. })
                 && event.delivery.as_ref().is_some_and(|d| d == "batch-7")
@@ -699,6 +765,8 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                 && t.when.as_ref().is_some_and(|w| matches!(w, lakelands_api::expr::Condition::Text(c) if c == "created()"))),
         "slip_write" => {
             matches!(&event.body, B::RecordUpserted { ty, made: true, .. } if ty.as_str() == "slip")
+                && event.on_behalf_of.as_deref() == Some("human:reader")
+                && event.context.occasion.as_deref() == Some("live")
         }
         "fired_change" => {
             matches!(&event.body, B::TriggerFired { trigger, change: Some(ChangeKind::Upserted), created: Some(true), .. }
@@ -725,8 +793,8 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         "untyped_input" => matches!(declared, Some(D::Function(f))
             if !f.inputs.is_empty() && f.inputs.iter().all(|i| i.any_kind)),
         "values_removed" => {
-            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys }
-            if source == "erp" && before.is_none() && keys.is_empty()
+            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys, apart }
+            if source == "erp" && before.is_none() && keys.is_empty() && apart.is_empty()
                 && *selection == lakelands_api::write::Selection::Delivery("batch-7".into()))
         }
         "removal_retires" => matches!(&event.body, B::RecordRetired { key, .. } if key == "INV-2"),
@@ -735,22 +803,113 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                 && event.delivery.as_ref().map(|d| d.as_str()) == Some("d68")
         }
         "removed_before" => {
-            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys }
-            if source == "erp" && *before == Some(lakelands_api::Position(69)) && keys.is_empty()
+            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys, apart }
+            if source == "erp" && *before == Some(lakelands_api::Position(69)) && keys.is_empty() && apart.is_empty()
                 && matches!(selection, lakelands_api::write::Selection::WrittenBefore(_)))
         }
         "removal_by_time_retires" => {
             matches!(&event.body, B::RecordRetired { key, .. } if key == "INV-3")
         }
-        // A report of format 17 counts what it computes again, under its
-        // own id at the head it was made at (062).
+        // A report counts what it computes again, under its own id at the
+        // position it was read at (062, 099).
         "proposed_migrate_recomputed" => {
             matches!(proposed, Some(ProposedWrite::Migrate { report, .. })
             if report.recomputed == Some(1)
-                && report.report_id == lakelands_core::canonical::sha256_hex(&serde_json::json!({
-                    "report": lakelands_api::write::MigrationReport { report_id: String::new(), ..(**report).clone() },
-                    "head": 70,
-                })))
+                && report.report_id == format!("70-{}",
+                    lakelands_core::canonical::sha256_hex(&serde_json::json!({
+                        "report": lakelands_api::write::MigrationReport { report_id: String::new(), ..(**report).clone() },
+                    }))))
+        }
+        // A delivery sealed apart, its output, and the act that shreds it
+        // alone (065, lakelands#1214).
+        "sealed_apart" => {
+            matches!(&event.body, B::RecordIngested { key, .. } if key == "c5")
+                && event.sealed.as_ref().is_some_and(|s| {
+                    s.key == "1" && s.apart == [KeyId::from("a1")] && s.boxed.is_some()
+                })
+                && event.delivery.as_ref().map(|d| d.as_str()) == Some("late")
+        }
+        "sealed_apart_output" => {
+            matches!(
+                &event.body,
+                B::OutputRecorded {
+                    output: Some(_),
+                    ..
+                }
+            ) && event.sealed.as_ref().is_some_and(|s| {
+                s.source.as_ref().is_some_and(|s| s == "hr") && s.apart == [KeyId::from("a1")]
+            })
+        }
+        "removed_apart" => {
+            matches!(&event.body, B::ValuesRemoved { source, keys, apart, .. }
+            if source == "hr" && keys.is_empty() && *apart == [KeyId::from("a1")])
+        }
+        "removal_apart_retires" => {
+            matches!(&event.body, B::RecordRetired { key, .. } if key == "c5")
+        }
+        // A selection by the source's own time names no position
+        // (065, lakelands#1166).
+        "removed_seen_before" => {
+            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys, apart }
+            if source == "erp" && before.is_none() && keys.is_empty() && apart.is_empty()
+                && matches!(selection, lakelands_api::write::Selection::SeenBefore(_)))
+        }
+        // A set of deliveries in one act, its ids in order (065, lakelands#1290).
+        "removed_deliveries" => {
+            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys, apart }
+            if source == "erp" && before.is_none() && keys.is_empty() && apart.is_empty()
+                && matches!(selection, lakelands_api::write::Selection::Deliveries(ds)
+                    if ds.iter().map(|d| d.as_str()).eq(["batch-7", "d68"])))
+        }
+        // A quarantined record's id is made over its id, the version
+        // before, its cells, its box and its refusal (log-format §3).
+        "quarantined"
+        | "quarantined_again"
+        | "quarantined_sealed"
+        | "quarantined_constraint"
+        | "quarantined_removed" => {
+            let B::RecordQuarantined {
+                id,
+                version,
+                cells,
+                sealed,
+                refusal,
+                ..
+            } = &event.body
+            else {
+                return false;
+            };
+            let boxed = sealed.as_ref().and_then(|s| s.boxed.as_deref());
+            let made = log::quarantined_id(id, version - 1, cells, boxed, refusal) == event.id;
+            let delivery = event.delivery.as_ref().map(|d| d.as_str());
+            made && match what {
+                "quarantined" => delivery == Some("q-1") && *version == 1,
+                "quarantined_again" => {
+                    delivery == Some("q-2") && id.delivery == "q-1" && *version == 2
+                }
+                "quarantined_sealed" => {
+                    boxed.is_some() && event.sealed.is_none() && !cells.contains_key("email")
+                }
+                "quarantined_constraint" => {
+                    serde_json::to_value(refusal).unwrap()["reason"]["refusal"] == "constraint"
+                }
+                _ => delivery == Some("q-7"),
+            }
+        }
+        "resubmission_lands" | "lands" => matches!(&event.body, B::RecordIngested { key, .. }
+            if key == if what == "lands" { "INV-10" } else { "INV-9" }),
+        "removes_quarantined" => matches!(&event.body, B::ValuesRemoved { selection, .. }
+            if matches!(selection, lakelands_api::write::Selection::Delivery(d) if d == "q-7")),
+        "closed_resubmitted" | "closed_dismissed" | "closed_landed" | "closed_removed" => {
+            use lakelands_api::quarantine::ClosedWhy as W;
+            let want = match what {
+                "closed_resubmitted" => W::Resubmitted,
+                "closed_dismissed" => W::Dismissed,
+                "closed_landed" => W::Landed,
+                _ => W::Removed,
+            };
+            matches!(&event.body, B::QuarantineClosed { why, .. } if *why == want)
+                && event.delivery.is_none()
         }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }
@@ -836,27 +995,429 @@ fn every_misplaced_line_is_refused_for_the_member_it_misplaces() {
         match entry.shows.as_str() {
             "upstream_on_another_kind" => assert!(why.contains("`record_retired`"), "{why}"),
             "cause_in_context" => assert!(why.contains("`context` carries `cause`"), "{why}"),
+            "on_behalf_of_in_context" => assert_eq!(flaw, Flaw::OnBehalfOfInContext),
             "output_twice" => assert_eq!(flaw, Flaw::OutputOnce),
             "sealed_on_another_kind" => assert!(why.contains("carries `sealed`"), "{why}"),
             "delivery_on_another_kind" => assert!(why.contains("carries `delivery`"), "{why}"),
+            "sealed_for_another_source" => assert_eq!(
+                flaw,
+                Flaw::SealsAnother {
+                    sealed: "web".into()
+                }
+            ),
+            "sealed_without_box" => assert_eq!(flaw, Flaw::BoxForm),
             other => panic!("`further.json` misplaces `{other}`, which this test has no check for"),
         }
     }
 }
 
-/// `delivery` on a `record_ingested` of a format before 17, which has no
-/// such member: the vectors' delivery line, its format set back, is
-/// refused naming its format.
-#[test]
-fn a_delivery_before_format_17_is_misplaced() {
-    let line = further("events")
-        .into_iter()
-        .find(|e| e.shows == "delivery");
-    let mut event: Event = serde_json::from_str(&line.expect("a delivery line").line).unwrap();
-    event.v = 16;
-    let flaw = log::misplaced(&event).expect("refused");
-    assert!(matches!(flaw, Flaw::DeliveryOn { v: 16, .. }), "{flaw}");
+/// The stored lines a segment holds from `stored`, read in order after
+/// the event `after` (none: at a segment's start) as a reader reads them:
+/// each line as `log::line_of` reads one, then `log::Lines`, and the
+/// segment's end. Answers the events restored, or the line refused (none:
+/// the end) and its flaw.
+fn read_stored(stored: &[Value], after: &Value) -> Result<Vec<Value>, (Option<usize>, Flaw)> {
+    let mut lines = log::Lines::default();
+    let mut before = after.as_object().map(|a| {
+        let at = Position(a["position"].as_u64().unwrap());
+        (at, Digest(str_of(after, "hash").to_owned()))
+    });
+    let mut events = Vec::new();
+    for (i, line) in stored.iter().enumerate() {
+        let read = log::line_of(line.as_str().unwrap().as_bytes())
+            .and_then(|l| lines.line(l, before.as_ref().map(|(p, h)| (*p, h))));
+        let Some((event, _)) = read.map_err(|flaw| (Some(i), flaw))? else {
+            continue;
+        };
+        let at = Position(event["position"].as_u64().unwrap());
+        before = Some((at, Digest(str_of(&event, "hash").to_owned())));
+        events.push(event);
+    }
+    lines.end().map_err(|flaw| (None, flaw))?;
+    Ok(events)
 }
+
+/// The append `append` holds after the event `last`: each event canonical,
+/// in the chain, its hash and its ingest id (under `v2` with its box, if
+/// it has one) recomputed; the writer's block of them holds its `stored`,
+/// each event's line less its `hash` and ingest id; and those restore, at
+/// the seam and as `stored` read in order, to the events byte for byte.
+/// Answers the events as the writer stores them.
+fn the_writers_lines(append: &Value, last: &Event) -> Vec<CanonicalEvent> {
+    assert_eq!(append["after"]["position"], last.position.0, "it follows");
+    assert_eq!(str_of(&append["after"], "hash"), last.hash.0, "it follows");
+    let (mut prev, mut appended) = (last.hash.clone(), Vec::new());
+    let lines: Vec<&str> = (append["events"].as_array().unwrap().iter())
+        .map(|e| str_of(e, "line"))
+        .collect();
+    for (entry, line) in append["events"].as_array().unwrap().iter().zip(&lines) {
+        let event: Event = serde_json::from_str(line).unwrap();
+        let at = event.position.0;
+        let value: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(canonical::to_vec(&value), line.as_bytes(), "at {at}");
+        assert_eq!(hash_of(line), event.hash.0, "at {at}: hash");
+        assert_eq!(str_of(entry, "hash"), event.hash.0, "at {at}: repeated");
+        assert_eq!(
+            (&event.prev, event.v),
+            (&prev, LOG_FORMAT_VERSION),
+            "at {at}"
+        );
+        let EventBody::RecordIngested {
+            ty,
+            key,
+            version,
+            patch,
+            ..
+        } = &event.body
+        else {
+            panic!("at {at}: an ingest");
+        };
+        let source = event.source.as_ref().unwrap();
+        let before = version.0 - 1;
+        let id = match event.sealed.as_ref().and_then(|s| s.boxed.as_deref()) {
+            Some(b) => log::boxed_ingest_id(source, ty, key, before, patch, b),
+            None => log::ingest_id(source, ty, key, before, patch),
+        };
+        assert_eq!(id, event.id, "at {at}: its ingest id");
+        prev = event.hash.clone();
+        appended.push(CanonicalEvent {
+            position: event.position,
+            id: event.id,
+            prev: event.prev,
+            hash: event.hash,
+            fence: event.fence,
+            bytes: line.as_bytes().to_vec(),
+            frame: None,
+        });
+    }
+    log::frame_append(&mut appended);
+    let frame = appended[0].frame.clone().expect("an append is a block");
+    assert_eq!(
+        (frame.first, frame.events),
+        (appended[0].position, lines.len() as u32)
+    );
+    // The writer's block holds the frame's lines, each event's leaving out
+    // its `hash`, its ingest id and its `v`, which the block decides.
+    let block = log::block_of(&frame).expect("a block").unwrap();
+    let head = frame.bytes.len() - block.stored as usize;
+    let inflated = log::inflate(&block, &frame.bytes[head..]).unwrap();
+    let written: Vec<&str> = std::str::from_utf8(&inflated).unwrap().lines().collect();
+    let stored = append["stored"].as_array().unwrap();
+    let less = |(i, l): (usize, &Value)| {
+        let mut line: Value = serde_json::from_str(l.as_str().unwrap()).unwrap();
+        if i > 0 {
+            line.as_object_mut()
+                .unwrap()
+                .retain(|k, _| !["hash", "id", "v"].contains(&k.as_str()));
+        }
+        String::from_utf8(canonical::to_vec(&line)).unwrap()
+    };
+    let said: Vec<String> = stored.iter().enumerate().map(less).collect();
+    assert_eq!(written, said, "the writer's block holds the frame's lines");
+    let held: Vec<&[u8]> = appended.iter().map(|e| &e.bytes[..]).collect();
+    assert_eq!(
+        held,
+        written[1..]
+            .iter()
+            .map(|l| l.as_bytes())
+            .collect::<Vec<_>>()
+    );
+    let mut restorer = log::Restorer::default();
+    for (event, line) in appended.iter().zip(&lines) {
+        let (restored, _) = restorer.restore(event).unwrap();
+        assert_eq!(
+            canonical::to_vec(&restored),
+            line.as_bytes(),
+            "restored at the seam"
+        );
+    }
+    let read = read_stored(stored, &append["after"]).unwrap();
+    let read: Vec<Vec<u8>> = read.iter().map(canonical::to_vec).collect();
+    let want: Vec<Vec<u8>> = lines.iter().map(|l| l.as_bytes().to_vec()).collect();
+    assert_eq!(read, want, "read in order");
+    appended
+}
+
+/// `framed.json`, one append in the stored form (§1.2) after the last
+/// event of `further.json`. Its events recompute; the store's writer puts
+/// its `stored` lines in a block, less what the block decides, and they
+/// restore to them byte for byte, at the seam and read in order; and each of its breaks is refused at its line
+/// for the flaw it names.
+#[test]
+fn a_framed_append_is_stored_as_the_writer_frames_it_and_every_break_is_refused() {
+    let framed = read_json("framed.json");
+    let last = chain().pop().unwrap();
+    assert_eq!(framed["after"]["position"], last.position.0, "it follows");
+    assert_eq!(str_of(&framed["after"], "hash"), last.hash.0, "it follows");
+    let appended = the_writers_lines(&framed, &last);
+    assert_eq!(appended.len(), 3, "an append of three is framed");
+
+    let breaks = framed["breaks"].as_array().unwrap();
+    let shown: Vec<&str> = breaks.iter().map(|b| str_of(b, "shows")).collect();
+    assert_eq!(shown, BREAKS, "one break for each flaw this test checks");
+    for entry in breaks {
+        let shows = str_of(entry, "shows");
+        let stored = entry["stored"].as_array().unwrap();
+        let (at, flaw) = read_stored(stored, &entry["after"])
+            .err()
+            .unwrap_or_else(|| panic!("the break `{shows}` is refused"));
+        let refused = &entry["refused"];
+        assert_eq!(
+            at.map(|i| i as u64),
+            refused["at"].as_u64(),
+            "`{shows}`: the line refused"
+        );
+        assert_eq!(
+            serde_json::to_value(&flaw).unwrap(),
+            refused["flaw"],
+            "`{shows}`: {flaw}"
+        );
+    }
+}
+
+/// `boxed.json`, an ingest whose sealed members are in one box (§1.4),
+/// after the framed append: its hash and place in the chain, its id made
+/// under `lakelands:ingest:v2` with the box, a patch that holds none of
+/// the members `sealed` names, and no flaw a reader refuses it for.
+#[test]
+fn an_ingest_whose_members_are_in_one_box_follows_the_framed_append() {
+    let boxed = read_json("boxed.json");
+    let framed = read_json("framed.json");
+    let events = framed["events"].as_array().unwrap();
+    let last: Event = serde_json::from_str(str_of(events.last().unwrap(), "line")).unwrap();
+    let line = str_of(&boxed, "line");
+    let event: Event = serde_json::from_str(line).unwrap();
+    let value: Value = serde_json::from_str(line).unwrap();
+    assert_eq!(canonical::to_vec(&value), line.as_bytes(), "canonical");
+    assert_eq!(boxed["after"]["position"], last.position.0, "it follows");
+    assert_eq!(str_of(&boxed["after"], "hash"), last.hash.0, "it follows");
+    assert_eq!(
+        (event.position, &event.prev),
+        (last.position.next(), &last.hash)
+    );
+    assert_eq!(hash_of(line), event.hash.0, "its hash");
+    assert_eq!(str_of(&boxed, "hash"), event.hash.0, "its hash repeated");
+    assert_eq!(event.v, LOG_FORMAT_VERSION, "its format");
+    assert_eq!(log::misplaced(&event), None);
+    let EventBody::RecordIngested {
+        ty,
+        key,
+        version,
+        patch,
+        ..
+    } = &event.body
+    else {
+        panic!("an ingest");
+    };
+    let sealed = event.sealed.as_ref().unwrap();
+    let boxed = sealed.boxed.as_deref().unwrap();
+    assert!(!sealed.fields.is_empty() && sealed.fields.iter().all(|f| !patch.contains_key(f)));
+    let source = event.source.as_ref().unwrap();
+    let id = log::boxed_ingest_id(source, ty, key, version.0 - 1, patch, boxed);
+    assert_eq!(id, event.id, "its ingest id");
+    assert_ne!(
+        log::ingest_id(source, ty, key, version.0 - 1, patch),
+        event.id
+    );
+}
+
+/// `apart.json`, one append of two ingests, each in a delivery of its own
+/// and sealed apart under its own key (065, 083), after the boxed ingest:
+/// its lines hold as `framed.json`'s do, and the frame leaves each line
+/// its `delivery` and its `sealed.apart`.
+#[test]
+fn an_append_of_two_deliveries_sealed_apart_is_stored_as_the_writer_frames_it() {
+    let apart = read_json("apart.json");
+    let last: Event = serde_json::from_str(str_of(&read_json("boxed.json"), "line")).unwrap();
+    assert_eq!(the_writers_lines(&apart, &last).len(), 2);
+    let held = apart["stored"].as_array().unwrap()[1..].iter();
+    let held: Vec<Value> = held
+        .map(|l| serde_json::from_str(l.as_str().unwrap()).unwrap())
+        .collect();
+    let own = |v: &Value| (v["sealed"]["apart"].clone(), v["delivery"].clone());
+    let (a, b) = (own(&held[0]), own(&held[1]));
+    assert!(!a.0.is_null() && !a.1.is_null() && a.0 != b.0 && a.1 != b.1);
+}
+
+/// The blocks lake's one segment file, `blocks/` or a negative vector's.
+fn blocks_file(dir: &str) -> Vec<u8> {
+    fs::read(
+        vectors()
+            .join(dir)
+            .join("log")
+            .join(format!("{:020}.jsonl", 0)),
+    )
+    .unwrap()
+}
+
+/// The units of a segment file's bytes, in order.
+fn units_of(file: &[u8]) -> Vec<log::Unit> {
+    let mut input = file;
+    std::iter::from_fn(|| log::read_unit(&mut input).unwrap()).collect()
+}
+
+/// `blocks/`, a lake the SQLite engine wrote whose delivery is more than a
+/// block holds (log-format §1.5): it verifies to its head; each append of
+/// one is a line holding its `hash`, and `position` and `prev` at position
+/// 0 alone; the delivery is two blocks naming its end; and each block is
+/// the store's writer's for the events it restores, its first line alike
+/// but for `stored` and its lines inflated alike, whatever zlib wrote them.
+#[test]
+fn the_blocks_lake_verifies_and_its_blocks_are_the_writers() {
+    let file = blocks_file("blocks");
+    let verified = lakelands_core::export::verify(&vectors().join("blocks")).unwrap();
+    let mut read = log::Restoring::new(&file[..], true);
+    let mut events = Vec::new();
+    while let Some(r) = read.next_event().unwrap() {
+        events.push(r.event);
+    }
+    read.end().unwrap();
+    let last = events.last().unwrap();
+    assert_eq!(
+        (verified.through.0, &verified.hash.0),
+        (
+            last["position"].as_u64().unwrap(),
+            &str_of(last, "hash").to_owned()
+        )
+    );
+    let (mut lines, mut blocks) = (Vec::new(), Vec::new());
+    for unit in units_of(&file) {
+        match unit {
+            log::Unit::Line(bytes) => lines.push(serde_json::from_slice::<Value>(&bytes).unwrap()),
+            log::Unit::Block(block, _, _, z) => blocks.push((block, z)),
+        }
+    }
+    // The append that makes the lake is whole lines, the only ones that
+    // hold `position` and `prev`; every line holds its `hash`.
+    let holds = |l: &Value, m: &str| l.get(m).is_some();
+    let whole: Vec<u64> = (lines.iter())
+        .filter(|l| holds(l, "position") || holds(l, "prev"))
+        .map(|l| l["position"].as_u64().unwrap())
+        .collect();
+    let made = (0..whole.len() as u64).collect::<Vec<_>>();
+    assert_eq!(whole, made, "the making append's lines alone are whole");
+    let chained = lines[..made.len()].iter().all(|l| holds(l, "prev"));
+    assert!(made.len() > 1 && chained && lines.iter().all(|l| holds(l, "hash")));
+    let [(one, _), (two, _)] = &blocks[..] else {
+        panic!("two blocks: {}", blocks.len());
+    };
+    assert_eq!(
+        (one.events, one.end, two.first, two.end),
+        (
+            log::BLOCK_EVENTS as u64,
+            two.last(),
+            one.last().next(),
+            two.last()
+        )
+    );
+    // The writer's blocks for the delivery's events.
+    let from = one.first.0 as usize;
+    let mut appended: Vec<CanonicalEvent> = events[from..=two.last().0 as usize]
+        .iter()
+        .map(|e| CanonicalEvent {
+            position: Position(e["position"].as_u64().unwrap()),
+            id: lakelands_api::event::EventId(str_of(e, "id").to_owned()),
+            prev: Digest(str_of(e, "prev").to_owned()),
+            hash: Digest(str_of(e, "hash").to_owned()),
+            fence: e["fence"].as_u64().unwrap(),
+            bytes: canonical::to_vec(e),
+            frame: None,
+        })
+        .collect();
+    log::frame_append(&mut appended);
+    for (block, z) in &blocks {
+        let frame = appended[(block.first.0 as usize) - from]
+            .frame
+            .clone()
+            .unwrap();
+        let written = log::block_of(&frame).unwrap().unwrap();
+        let head = frame.bytes.len() - written.stored as usize;
+        assert_eq!(
+            log::Block {
+                stored: 0,
+                ..written.clone()
+            },
+            log::Block {
+                stored: 0,
+                ..block.clone()
+            },
+            "at {}: its first line",
+            block.first
+        );
+        assert_eq!(
+            log::inflate(&written, &frame.bytes[head..]).unwrap(),
+            log::inflate(block, z).unwrap(),
+            "at {}: its lines",
+            block.first
+        );
+    }
+}
+
+/// The negative vector `negative/torn-between-blocks`: the blocks lake cut
+/// at its second block's first byte. `export::verify` refuses it at the
+/// second block's first position for an append whose blocks end before
+/// its last position, and so does `verify.py`.
+#[test]
+fn the_negative_vector_torn_between_blocks_is_refused_at_its_second_block() {
+    let (whole, torn) = (
+        blocks_file("blocks"),
+        blocks_file("negative/torn-between-blocks"),
+    );
+    let blocks: Vec<(log::Block, u64)> = {
+        let mut input = &whole[..];
+        let mut at = Vec::new();
+        loop {
+            let offset = (whole.len() - input.len()) as u64;
+            match log::read_unit(&mut input).unwrap() {
+                None => break at,
+                Some(log::Unit::Block(block, ..)) => at.push((block, offset)),
+                Some(_) => {}
+            }
+        }
+    };
+    let (second, cut) = &blocks[1];
+    assert_eq!(
+        torn,
+        whole[..*cut as usize],
+        "cut at the second block's first byte"
+    );
+    let dir = vectors().join("negative/torn-between-blocks");
+    match lakelands_core::export::verify(&dir) {
+        Err(lakelands_api::Error::Unavailable { situation }) => assert!(
+            matches!(
+                &*situation,
+                Situation::Damaged { position: Some(at), flaw: Flaw::AppendShort { end }, .. }
+                    if *at == second.first && *end == second.end
+            ),
+            "{situation}"
+        ),
+        other => panic!("an append torn between its blocks is refused, and it answered {other:?}"),
+    }
+    let run = std::process::Command::new("python3")
+        .arg(vectors().join("verify.py"))
+        .arg(&dir)
+        .output()
+        .expect("this test runs verify.py over a directory and needs python3");
+    let said = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(1), "{said}");
+    let want = format!(
+        "FAIL position {}: an append's blocks end before its last position {}",
+        second.first, second.end
+    );
+    assert!(said.lines().any(|l| l == want), "{want}:\n{said}");
+}
+
+/// The breaks of `framed.json`, by the code of the flaw each is refused for.
+const BREAKS: [&str; 8] = [
+    "frame_in_frame",
+    "framed_twice",
+    "frame_short",
+    "not_a_frame",
+    "format_other",
+    "position",
+    "prev_hash",
+    "start_unheld",
+];
 
 /// The negative vector `negative/known-at-goes-back`: the first segment
 /// of the vectors with the last event's `known_at` set before the one
@@ -891,7 +1452,7 @@ fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
 /// The negative vector `negative/another-format`: the first segment of
 /// the vectors with the last event written in the format before this
 /// release's, its hash made right. `export::verify` refuses it at that
-/// position by both numbers: a lake's format never falls
+/// position naming the format and what it reads
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`),
 /// and `verify.py`, which reads the one format, refuses it there too.
 #[test]
@@ -918,8 +1479,8 @@ fn the_negative_vector_in_another_format_is_refused_at_its_position() {
         Err(lakelands_api::Error::Unavailable { situation }) => assert!(
             matches!(
                 &*situation,
-                Situation::Damaged { position: Some(at), flaw: Flaw::FormatStep { v, before }, .. }
-                    if at.0 == 6 && *v == reads - 1 && *before == reads
+                Situation::Damaged { position: Some(at), flaw: Flaw::FormatOther { v, reads: r }, .. }
+                    if at.0 == 6 && *v == reads - 1 && *r == reads
             ),
             "{situation}"
         ),
@@ -929,11 +1490,11 @@ fn the_negative_vector_in_another_format_is_refused_at_its_position() {
     }
 }
 
-/// The vectors are kept for every format from 14, the first a release
-/// with real installations wrote, to the one this release writes, with no
-/// gap; and each directory's own `verify.py`, which reads that format
-/// alone, passes over its own log. `scripts/gates/vectors-kept.sh` holds
-/// that a shipped one is as its tag holds it.
+/// The vectors are kept for every format from 23 to the one this release
+/// writes, with no gap; and each directory's own `verify.py`, which reads
+/// that format alone, passes over its own log.
+/// `scripts/gates/vectors-kept.sh` holds that a shipped one is as its tag
+/// holds it.
 #[test]
 fn the_vectors_of_every_format_a_release_reads_are_kept_and_verify() {
     let mut formats: Vec<u32> = fs::read_dir(every_format())
@@ -941,7 +1502,7 @@ fn the_vectors_of_every_format_a_release_reads_are_kept_and_verify() {
         .filter_map(|e| e.unwrap().file_name().to_str()?.parse().ok())
         .collect();
     formats.sort_unstable();
-    let want: Vec<u32> = (14..=LOG_FORMAT_VERSION).collect();
+    let want: Vec<u32> = (23..=LOG_FORMAT_VERSION).collect();
     assert_eq!(formats, want, "the vector directories by format");
     for n in formats {
         let dir = every_format().join(n.to_string());
@@ -957,87 +1518,6 @@ fn the_vectors_of_every_format_a_release_reads_are_kept_and_verify() {
             "format {n}'s verify.py over its own vectors: {}{}",
             String::from_utf8_lossy(&run.stdout),
             String::from_utf8_lossy(&run.stderr)
-        );
-    }
-}
-
-/// Every line of a kept format's vectors, its log and `further.json`'s,
-/// as JSON.
-fn lines_of(n: u32) -> Vec<Value> {
-    let dir = every_format().join(n.to_string());
-    let mut lines = Vec::new();
-    for seg in ["00000000000000000000.jsonl", "00000000000000000007.jsonl"] {
-        let text = fs::read_to_string(dir.join("log").join(seg)).unwrap();
-        lines.extend(
-            text.lines()
-                .map(|l| serde_json::from_str::<Value>(l).unwrap()),
-        );
-    }
-    let further: Value =
-        serde_json::from_slice(&fs::read(dir.join("further.json")).unwrap()).unwrap();
-    for e in further["events"].as_array().unwrap() {
-        lines.push(serde_json::from_str(str_of(e, "line")).unwrap());
-    }
-    lines
-}
-
-/// The steps from each older format to this release's change no event:
-/// 14 → 15 lets a verb's path read across a reference or a relation's
-/// link (055), which a log of format 14 never declares, and 15 → 16 and
-/// 16 → 17 add forms a log of the format before never holds. So every
-/// line of each older format's vectors, of every kind they hold, is read
-/// as it was written, `v` included, and decodes into this release's
-/// structs; the kinds each holds are named, so a kind the vectors miss is
-/// seen.
-#[test]
-fn the_steps_from_every_older_format_change_no_event_of_any_kind() {
-    for n in OLDEST_LOG_FORMAT..LOG_FORMAT_VERSION {
-        the_step_from(n);
-    }
-}
-
-fn the_step_from(n: u32) {
-    let mut kinds = std::collections::BTreeSet::new();
-    for line in lines_of(n) {
-        let v = line["v"].as_u64().unwrap();
-        assert_eq!(v, u64::from(n));
-        let read = log::converted(v, line.clone());
-        assert_eq!(read, line, "the step from {n} changed {line}");
-        let event: Event = serde_json::from_value(read).unwrap();
-        assert_eq!(canonical::of(&event), canonical::to_vec(&line));
-        kinds.insert(event.body.kind());
-    }
-    let held: Vec<_> = kinds.iter().map(|k| k.to_string()).collect();
-    assert_eq!(held.len(), kinds.len());
-    let some = [
-        "lake_created",
-        "lease_taken",
-        "declared",
-        "migrated",
-        "record_ingested",
-        "record_upserted",
-        "checkpoint",
-        "write_proposed",
-    ];
-    for kind in some {
-        assert!(
-            held.iter().any(|k| k == kind),
-            "format {n}'s vectors hold no `{kind}`: {held:?}"
-        );
-    }
-}
-
-/// Each older format's vectors verify as an export does, through the
-/// converter: the chain, every hash over the bytes as written, and every
-/// rule of the format, by the same verifier an import runs.
-#[test]
-fn the_vectors_of_every_older_format_verify_as_an_export_of_that_format() {
-    for n in OLDEST_LOG_FORMAT..LOG_FORMAT_VERSION {
-        let dir = every_format().join(n.to_string());
-        let verified = lakelands_core::export::verify(&dir).unwrap();
-        assert_eq!(
-            verified.through.0, 7,
-            "format {n}: the two segments run through position 7"
         );
     }
 }
@@ -1075,4 +1555,85 @@ fn a_fence_that_falls_is_refused_where_it_falls() {
             } if at.0 == 6)),
         "{verified:?}"
     );
+}
+
+/// A block leaves out the id its event decides (`docs/log-format.md` §3),
+/// and a reader derives it from the event's members: on every ingest and
+/// every quarantined version of the vectors' lake and of `boxed.json`, in
+/// a box and not, the id derived is the one the writer's typed function
+/// gives, and the one the line holds.
+#[test]
+fn every_id_a_block_leaves_out_is_derived_as_the_writer_makes_it() {
+    let mut lines: Vec<String> = Vec::new();
+    for seg in read_json("expected.json")["segments"].as_array().unwrap() {
+        let text = fs::read_to_string(vectors().join(str_of(seg, "file"))).unwrap();
+        lines.extend(text.lines().map(str::to_owned));
+    }
+    lines.extend(further("events").into_iter().map(|e| e.line));
+    lines.push(str_of(&read_json("boxed.json"), "line").to_owned());
+    let mut seen: HashMap<(&str, bool), usize> = HashMap::new();
+    for line in &lines {
+        let value: Value = serde_json::from_str(line).unwrap();
+        let event: Event = serde_json::from_value(value.clone()).unwrap();
+        let at = event.position.0;
+        let (kind, made) = match &event.body {
+            EventBody::RecordIngested {
+                ty,
+                key,
+                version,
+                patch,
+                ..
+            } => {
+                let source = event.source.as_ref().expect("an ingest names its source");
+                let before = version.0 - 1;
+                let boxed = event
+                    .sealed
+                    .as_ref()
+                    .map(|s| s.boxed.as_deref().unwrap_or_default());
+                let made = match boxed {
+                    Some(b) => log::boxed_ingest_id(source, ty, key, before, patch, b),
+                    None => log::ingest_id(source, ty, key, before, patch),
+                };
+                (("ingest", boxed.is_some()), made)
+            }
+            EventBody::RecordQuarantined {
+                id,
+                version,
+                cells,
+                sealed,
+                refusal,
+                ..
+            } => {
+                let boxed = sealed.as_ref().and_then(|s| s.boxed.as_deref());
+                let made = log::quarantined_id(id, version - 1, cells, boxed, refusal);
+                (("quarantined", boxed.is_some()), made)
+            }
+            _ => {
+                assert_eq!(
+                    log::derived_id(&value),
+                    None,
+                    "position {at}: no id derived"
+                );
+                continue;
+            }
+        };
+        assert_eq!(made, event.id, "position {at}: the typed id is the line's");
+        assert_eq!(
+            log::derived_id(&value),
+            Some(made),
+            "position {at}: the id derived is the typed one"
+        );
+        *seen.entry(kind).or_default() += 1;
+    }
+    for kind in [
+        ("ingest", false),
+        ("ingest", true),
+        ("quarantined", false),
+        ("quarantined", true),
+    ] {
+        assert!(
+            seen.contains_key(&kind),
+            "the vectors hold no {kind:?}: {seen:?}"
+        );
+    }
 }

@@ -4,16 +4,9 @@
 //! each extended): `proposals` shows a proposed value where a read of the
 //! record would show it, and the accept applies the logged write whole.
 
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::write::{ProposalFilter, ProposedWrite};
-use lakelands_api::{
-    Access, Error, LakeStore, Missing, Outcome, Principal, ProposalId, Refusal, TypeName, WriteOpts,
-};
-use serde_json::{Value, json};
-
 use crate::conformance::backing::EXECUTOR;
-use crate::conformance::fixture::{Lake, Must, field_access, patch, type_of, value};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::type_of;
+use crate::conformance::prelude::*;
 
 check!(
     VALUES_AS_THE_READERS_VIEW =

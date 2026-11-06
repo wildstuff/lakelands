@@ -1,10 +1,8 @@
 //! Aggregates: expressions over a set of records rather than one.
 //!
-//! `count`, `sum`, `min`, `max` and `avg` fold a group of records. They
-//! appear in `find`'s aggregate and in a view's measures; a measure may
-//! also compute with the group's own values and with measures declared
-//! before it (`margin = sum(revenue) - sum(cost)`, then
-//! `rate = margin / sum(revenue)`).
+//! `count`, `sum`, `min`, `max` and `avg` fold a group of records, in
+//! `find`'s aggregate and in a view's measures; a measure may also use the
+//! group's own values and earlier measures (`rate = margin / sum(revenue)`).
 //!
 //! - `count()` counts the records; `count(x)` counts those where `x` is
 //!   not null.
@@ -16,6 +14,11 @@
 //!   (`crate::expr::eval`); nulls are skipped, no values give null.
 //! - `avg(x)` is `sum(x) / count(x)`, exactly, and null when nothing is
 //!   counted.
+//! - `first(x, by)` and `last(x, by)` are `x` on the member whose `by`
+//!   comes first (last) in the order `order_by` sorts by, the member with
+//!   the least key among equals: members are folded in key order, and an
+//!   equal `by` keeps the one before. A null `by` takes no part; a group
+//!   with none answers null, as does a holder whose `x` is null.
 //!
 //! Groups are formed by the values of the grouping fields (a null is a
 //! value like any other here) and returned in the order of their key's
@@ -66,33 +69,38 @@ impl Scope for GroupScope<'_> {
     }
 
     fn aggregate(&self, func: Func, args: &[Expr]) -> Option<Result<Val>> {
-        Some(self.folds.value(func, args.first()))
+        Some(self.folds.value(func, args))
     }
 }
 
 /// One aggregate call over a group, folded a record at a time: the count,
 /// the exact sum and the best value, kept instead of the records. It
-/// answers what folding the records at once would, errors included: an
-/// argument that fails on any record comes before a value that cannot be
-/// added or compared, and either before the result.
+/// answers what folding the records at once would, errors included: a
+/// failing argument comes before a value that cannot be added or compared,
+/// and either before the result.
 #[derive(Clone, Debug, Default)]
 struct Fold {
     count: usize,
     sum: Decimal,
     scales: Scales,
     best: Option<Val>,
+    /// For `first` and `last`: the sort key of the holder's `by`.
+    at: Option<Vec<u8>>,
     failed: Option<Case>,
     wrong: Option<Case>,
 }
 
 impl Fold {
-    fn add(&mut self, func: Func, arg: Option<&Expr>, scope: &RecordScope<'_>) {
-        let Some(arg) = arg else {
+    fn add(&mut self, func: Func, args: &[Expr], scope: &RecordScope<'_>) {
+        let Some(arg) = args.first() else {
             self.count += 1;
             return;
         };
         if self.failed.is_some() {
             return;
+        }
+        if let (Func::First | Func::Last, [_, by]) = (func, args) {
+            return self.order(func == Func::First, arg, by, scope);
         }
         let v = match eval(arg, scope) {
             Ok(Val::Null) => return,
@@ -128,8 +136,27 @@ impl Fold {
         self.wrong = folded.err();
     }
 
-    fn value(&self, func: Func, arg: Option<&Expr>) -> Result<Val> {
-        if arg.is_none() && func != Func::Count {
+    /// One member of a `first` (`least`) or a `last`: it holds where its
+    /// `by` comes strictly before the holder's.
+    fn order(&mut self, least: bool, arg: &Expr, by: &Expr, scope: &RecordScope<'_>) {
+        let (b, v) = match eval(by, scope).map(|b| (b, eval(arg, scope))) {
+            Ok((Val::Null, _)) => return,
+            Ok((b, Ok(v))) => (b, v),
+            Ok((_, Err(e))) | Err(e) => return self.failed = Some(e),
+        };
+        self.count += 1;
+        let key = crate::expr::order::val_key(&b);
+        if self
+            .at
+            .as_ref()
+            .is_none_or(|at| (key < *at) == least && key != *at)
+        {
+            (self.at, self.best) = (Some(key), Some(v));
+        }
+    }
+
+    fn value(&self, func: Func, args: &[Expr]) -> Result<Val> {
+        if args.is_empty() && func != Func::Count {
             let name = super::func_name(func).into();
             return err(Case::AggregateNeedsField { name });
         }
@@ -145,7 +172,9 @@ impl Fold {
             Func::Sum => Ok(Val::Num(sum)),
             Func::Avg if self.count == 0 => Ok(Val::Null),
             Func::Avg => (sum.checked_div(count).map(Val::Num)).ok_or(Case::Overflow),
-            Func::Min | Func::Max => Ok(self.best.clone().unwrap_or(Val::Null)),
+            Func::Min | Func::Max | Func::First | Func::Last => {
+                Ok(self.best.clone().unwrap_or(Val::Null))
+            }
             _ => err(Case::NotAggregate {
                 name: super::func_name(func).into(),
             }),
@@ -169,12 +198,12 @@ impl Fold {
 
 /// The numbers of a sum by the scale they carry: for each scale how many,
 /// their sum and the sum of their magnitudes, as integers. Where the
-/// magnitudes, written at the largest scale among the values, stay below
-/// 2^96, no order of additions rounds or fails, and the sum is exact at
-/// that scale: a function of its values, whatever order they came in, and
-/// one a number can be taken out of again. Adding them one to the next is
-/// not: a zero hands the other number back as it stands, so
-/// `1.10 - 1.10 + 5` read `5` or `5.00` by the order of the keys.
+/// magnitudes, at the largest scale among the values, stay below 2^96, no
+/// order of additions rounds or fails and the sum is exact at that scale:
+/// a function of its values, whatever their order, and one a number can be
+/// taken out of again. Adding one to the next is not: a zero hands the
+/// other number back as it stands, so `1.10 - 1.10 + 5` read `5` or `5.00`
+/// by the order of the keys.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Scales(BTreeMap<u32, (u64, Wide, Wide)>);
 
@@ -201,10 +230,9 @@ impl Scales {
     }
 
     /// Put a number in, or take one out. A scale no number carries has no
-    /// entry, so the numbers held say the same whatever was put and taken
-    /// on the way. Magnitudes past an integer's width, and a number taken
-    /// that was not put, leave the scale's magnitude at the width's end:
-    /// the sum is then not exact, and stays so.
+    /// entry. Magnitudes past an integer's width, and a number taken that
+    /// was not put, leave the scale's magnitude at the width's end: the sum
+    /// is then not exact, and stays so.
     fn fold(&mut self, n: Decimal, put: bool) {
         let (scale, m) = (n.scale(), n.mantissa());
         let (count, sum, size) = self.0.entry(scale).or_default();
@@ -244,16 +272,15 @@ impl Scales {
 /// its records as they come: what the group keeps instead of them. A call
 /// no record was folded into answers as over no records.
 #[derive(Clone, Debug, Default)]
-pub struct Folds(Vec<(Func, Option<Expr>, Fold)>);
+pub struct Folds(Vec<(Func, Vec<Expr>, Fold)>);
 
 impl Folds {
     fn of(measures: &[(FieldName, Expr)]) -> Folds {
         fn calls(e: &Expr, out: &mut Folds) {
             match e {
                 Expr::Call { func, args } if func.is_aggregate() => {
-                    let arg = args.first().cloned();
-                    if !out.0.iter().any(|(f, a, _)| f == func && *a == arg) {
-                        out.0.push((*func, arg, Fold::default()));
+                    if !out.0.iter().any(|(f, a, _)| f == func && a == args) {
+                        out.0.push((*func, args.clone(), Fold::default()));
                     }
                 }
                 e => super::children(e).for_each(|c| calls(c, out)),
@@ -271,15 +298,15 @@ impl Folds {
             settings,
             now,
         };
-        for (func, arg, fold) in &mut self.0 {
-            fold.add(*func, arg.as_ref(), &scope);
+        for (func, args, fold) in &mut self.0 {
+            fold.add(*func, args, &scope);
         }
     }
 
-    fn value(&self, func: Func, arg: Option<&Expr>) -> Result<Val> {
+    fn value(&self, func: Func, args: &[Expr]) -> Result<Val> {
         let none = Fold::default();
-        let held = (self.0.iter()).find(|(f, a, _)| *f == func && a.as_ref() == arg);
-        held.map_or(&none, |(_, _, fold)| fold).value(func, arg)
+        let held = (self.0.iter()).find(|(f, a, _)| *f == func && a == args);
+        held.map_or(&none, |(_, _, fold)| fold).value(func, args)
     }
 }
 
@@ -312,20 +339,8 @@ impl Grouping {
     /// an expression's. A value the expression cannot compute for the
     /// record is null, the missing group.
     pub fn add(&mut self, (row, meta): Member<'_>, settings: Settings<'_>) {
-        let value = |(name, expr): &(FieldName, Option<Expr>)| {
-            let v = match expr {
-                None => row.get(name).cloned().unwrap_or(Value::Null),
-                Some(e) => {
-                    let scope = RecordScope {
-                        fields: row,
-                        meta,
-                        settings,
-                        now: self.now,
-                    };
-                    eval(e, &scope).map_or(Value::Null, |v| to_value(&v))
-                }
-            };
-            (name.clone(), v)
+        let value = |k: &(FieldName, Option<Expr>)| {
+            (k.0.clone(), key_value(k, (row, meta), settings, self.now))
         };
         let key: Row = self.keys.iter().map(value).collect();
         let group = (self.groups.entry(crate::canonical::of(&key)))
@@ -336,6 +351,28 @@ impl Grouping {
     /// The groups, in canonical key order.
     pub fn groups(self) -> Vec<(Row, Folds)> {
         self.groups.into_values().collect()
+    }
+}
+
+/// One resolved group key's value for a record: its field's, or its
+/// expression's, null where the expression cannot compute it.
+pub fn key_value(
+    (name, expr): &(FieldName, Option<Expr>),
+    (fields, meta): Member<'_>,
+    settings: Settings<'_>,
+    now: Timestamp,
+) -> Value {
+    match expr {
+        None => fields.get(name).cloned().unwrap_or(Value::Null),
+        Some(e) => {
+            let scope = RecordScope {
+                fields,
+                meta,
+                settings,
+                now,
+            };
+            eval(e, &scope).map_or(Value::Null, |v| to_value(&v))
+        }
     }
 }
 
@@ -420,11 +457,11 @@ pub fn row_path(name: &str, bound: &dyn Fn(&str) -> bool) -> Answer<(String, Fie
 
 /// A pattern's aggregate read over its rows, which hold each value under
 /// its path, `<name>.<field>` or `<name>.key`, for each name `bound`
-/// (018, extended). A measure's field and a field key name a path whole.
-/// Each path of a named key reads the longest name bound, a field of its
-/// record, then members, and is rewritten to the row's one key. A path no
-/// bound name starts is refused. Answers the aggregate so read and each
-/// name and field it reads.
+/// (018, extended). A measure's field and `by` and a field key name a
+/// path whole. Each path of a named key reads the longest name bound, a
+/// field of its record, then members, and is rewritten to the row's one
+/// key. A path no bound name starts is refused. Answers the aggregate and
+/// each name and field it reads.
 pub fn over_rows(
     agg: &Aggregate,
     bound: &dyn Fn(&str) -> bool,
@@ -451,7 +488,7 @@ pub fn over_rows(
     };
     agg.measures
         .iter()
-        .filter_map(|m| m.field.as_ref())
+        .flat_map(|m| m.field.iter().chain(&m.by))
         .try_for_each(whole)?;
     let mut out = agg.clone();
     for (key, (_, e)) in out.group_by.iter_mut().zip(group_keys(&agg.group_by)?) {
@@ -495,7 +532,28 @@ pub fn aggregate(
 }
 
 /// The grouping `find`'s aggregate folds its records into as they come.
+/// `first` and `last` take a field and `by`, and no other function takes
+/// `by`.
 pub fn grouping(agg: &Aggregate, now: Timestamp) -> Answer<Grouping> {
+    for m in &agg.measures {
+        let Expr::Call { func, .. } = call(m).1 else {
+            continue;
+        };
+        let (name, by) = (
+            super::func_name(func).into(),
+            matches!(func, Func::First | Func::Last),
+        );
+        let case = match (&m.field, &m.by) {
+            (None, _) if by => Case::AggregateNeedsField { name },
+            (field, Some(_)) if !by => Case::CallArity {
+                name,
+                given: 1 + usize::from(field.is_some()),
+            },
+            (Some(_), None) if by => Case::CallArity { name, given: 1 },
+            _ => continue,
+        };
+        return Err(case.into());
+    }
     let calls: Vec<_> = agg.measures.iter().map(call).collect();
     Ok(Grouping::new(group_keys(&agg.group_by)?, &calls, now))
 }
@@ -510,7 +568,11 @@ pub fn answer(grouping: Grouping, agg: &Aggregate) -> Answer<Vec<Group>> {
     let group = |(by, folds): (Row, Folds)| -> Answer<Group> {
         // A measure of `find` names a field; no setting is read.
         let values = measures(&folds, &by, &calls, Row::new(), None, now)?;
-        Ok(Group { by, values })
+        Ok(Group {
+            by,
+            values,
+            stranded: false,
+        })
     };
     grouped.into_iter().map(group).collect()
 }
@@ -523,8 +585,10 @@ fn call(m: &AggMeasure) -> (FieldName, Expr) {
         AggFunc::Min => Func::Min,
         AggFunc::Max => Func::Max,
         AggFunc::Avg => Func::Avg,
+        AggFunc::First => Func::First,
+        AggFunc::Last => Func::Last,
     };
-    let args = m.field.iter().map(|f| Expr::Path {
+    let args = m.field.iter().chain(&m.by).map(|f| Expr::Path {
         path: vec![f.clone()],
     });
     let args = args.collect();

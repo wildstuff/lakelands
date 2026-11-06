@@ -74,6 +74,9 @@ fn records(csv: &str, map: &str) -> Vec<SourceRecord> {
                 seen_at: Some(
                     Timestamp::parse(cells[col(map["seen_at"].as_str().unwrap())]).unwrap(),
                 ),
+                delivery: None,
+                resubmits: None,
+                line: None,
             }
         })
         .collect()
@@ -108,6 +111,7 @@ fn overdue_by_partner(as_of: Option<Position>) -> Find {
                 name: "overdue_gross".into(),
                 func: AggFunc::Sum,
                 field: Some("gross".into()),
+                by: None,
             }],
             group_by: vec!["partner".into()],
         }),
@@ -146,7 +150,7 @@ async fn answer(
         .await
         .unwrap()
         .data;
-    let Found::Groups { rows } = found else {
+    let Found::Groups { rows, .. } = found else {
         panic!("an aggregate find answers groups, not {found:?}");
     };
     let mut out = BTreeMap::new();

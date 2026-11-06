@@ -103,8 +103,14 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         range: "a list of the type's fields of a kind an order index keeps: text, number, decimal, boolean, date-time, date or reference",
         says: "Keeps an order index on these fields, so a page ordered by one of them reads its page instead of sorting the type.",
-        cost: "each field indexed costs a write about 1–5 % on SQLite and 11 % on PostgreSQL; naming one rebuilds the type's rows while holding the writer, about 0.85 s at 100 000 records on SQLite and 2.4 s on PostgreSQL",
+        cost: "each field indexed costs a write about 1–5 % on SQLite and 11 % on PostgreSQL; naming one fills it beside the writer, a chunk of `order_chunk` records a turn, and taking it back clears its rows in chunks of that size",
         ..lake("sort_index", PerType::Only, "null")
+    },
+    Setting {
+        range: "a list of pairs of the type's fields, the series field first, as [[\"symbol\", \"at\"]]: its series field is text, reference, number or decimal, its order field text, number, decimal, boolean, date-time, date or reference",
+        says: "Keeps an order index within each series, so a read of one series' window seeks straight to it.",
+        cost: "each pair indexed costs a write a median 8.9 µs on SQLite at 100 000 records, 16.2 → 28.2 µs (measured), and an order field's 11 % on PostgreSQL; naming one fills it beside the writer, a chunk of `order_chunk` records a turn, and taking it back clears its rows whole in that write",
+        ..lake("series_index", PerType::Only, "null")
     },
     Setting {
         range: "a list of the type's vector fields",
@@ -112,8 +118,8 @@ pub const SETTINGS: &[Setting] = &[
         ..lake("vector_index", PerType::Only, "null")
     },
     Setting {
-        range: "a list of the type's text fields",
-        says: "Keeps an exact-text index on these fields beyond those the declarations look up by, so a read comparing one to a text reads its matches.",
+        range: "a list of the type's text, number and decimal fields",
+        says: "Keeps an exact-text index on these fields beyond those the declarations look up by, so a read comparing one to a text or a number reads its matches.",
         ..lake("lookup_index", PerType::Only, "null")
     },
     Setting {
@@ -131,6 +137,11 @@ pub const SETTINGS: &[Setting] = &[
         says: "Seals a source's values of each period under a version of its key of their own, made at the first value past the period's start, so a cut at a period's end can destroy the versions before it.",
         cost: "one new version of the source's key per period, made by the key store, so `day` makes 365 a year for each source; the file keyring rewrites its whole file at each, measured at 4.5 ms with 1 000 keys and 8.9 ms with 10 000; and the list of a source's versions, an entry a period, read once a window, so ten years of `day` (3 650 entries) add about 20 µs a record to an ingest on the memory engine (lakelands#1153)",
         ..lake("key_period", PerType::Source, "null")
+    },
+    Setting {
+        range: "a time zone as the IANA time-zone database names it, as `Europe/Berlin`",
+        says: "The zone the lake's calendar day is read in: `today()` in an expression, and the date `serve` ages the lake for. A write is judged in the zone in force where it is made. Unset or retired, the day is UTC's. A new lake starts in its location's `zone`, which the writer's first open records where the lake has recorded none.",
+        ..lake("zone", PerType::No, "\"UTC\"")
     },
     Setting {
         range: "a count, at most `max_limit`",
@@ -154,8 +165,14 @@ pub const SETTINGS: &[Setting] = &[
     },
     Setting {
         range: "a count, 1 at least",
-        says: "The most events one group-commit window of an ingest holds.",
-        ..location("limits.commit_window_events", "32")
+        says: "The most records one group-commit window of an ingest holds, or events one batch of record writes holds; a batch closes after the write that reaches it. A host with bulk deliveries of hundreds or thousands of records may raise it to 1024, or a delivery ask its own (`commit_window`), up to `limits.commit_window_max`.",
+        cost: "each window pays one log append and one projection commit, about 8 ms on Apple Silicon, so a delivery of 500 records takes 200 ms at 32 and 72 ms at 1024, and one of 1000 records 390 ms and 130 ms (SQLite, through a host's write door, `ingest_with`, sealed apart); a refused record rolls back its whole window, up to 255 records before it at the default and up to 1023 at 1024, and the crash check on open reads the last group, about 14 µs an event (decision 060): about 3.5 ms at the default, 14 ms at 1000",
+        ..location("limits.commit_window_events", "256")
+    },
+    Setting {
+        range: "a count",
+        says: "The largest commit window an ingest may ask for its own delivery (`commit_window`); a larger one, or 0, is refused, naming the option and this ceiling. A lake whose location sets `limits.commit_window_events` above it is not opened.",
+        ..location("limits.commit_window_max", "4096")
     },
     Setting {
         range: "a count",
@@ -173,9 +190,93 @@ pub const SETTINGS: &[Setting] = &[
         ..location("limits.max_set_changes", "20000")
     },
     Setting {
+        range: "a count",
+        says: "The most records one change to records may select; past it `plan` and `enact` refuse it, naming this setting, and never cut it.",
+        cost: "a change is enacted in one append that holds the writer alone: at 10 000 records the enact took 0.5–0.7 s on the memory engine, 0.7–0.8 s on SQLite and 4.3–4.8 s on PostgreSQL, its plan about a third of that",
+        ..location("limits.max_change_records", "10000")
+    },
+    Setting {
         range: "a count, 1 at least",
         says: "The largest `top` a search's `rerank` may ask for; a larger one is refused, naming this setting. A lake whose location sets 0 is not opened.",
         ..location("limits.max_rerank_top", "100")
+    },
+    Setting {
+        range: "a count, at most 1000000",
+        says: "The most records a search with `text_as_of` may rank: one whose `where` selects more at the position it reads is refused, naming this setting, and never cut. 0 turns `text_as_of` off: a search with it whose `where` selects any record is refused. A lake whose location sets more than 1 000 000 is not opened.",
+        ..location("limits.max_text_as_of", "10000")
+    },
+    Setting {
+        range: "`true` or `false`",
+        says: "Whether the lake chooses an order index itself, for a field a type is ordered by whole at least `limits.order_after_pages` times within `limits.order_window_secs`, beside what `sort_index` names; the host's own `sort_index` for a type always wins. Off, only what the host sets is indexed.",
+        cost: "each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records, in chunks of 10 000",
+        ..location("limits.choose_order_index", "true")
+    },
+    Setting {
+        range: "a count",
+        says: "How many pages ordered whole by one field of a type, within `limits.order_window_secs`, make the lake choose an index for it.",
+        ..location("limits.order_after_pages", "3")
+    },
+    Setting {
+        range: "seconds",
+        says: "The window the pages that make the lake choose an index are counted in.",
+        ..location("limits.order_window_secs", "600")
+    },
+    Setting {
+        range: "a count",
+        says: "The fewest live records a type holds for the lake to choose an index of its fields.",
+        ..location("limits.order_min_records", "2000")
+    },
+    Setting {
+        range: "a count",
+        says: "The most fields of one type the lake chooses an index for.",
+        ..location("limits.order_max_fields", "2")
+    },
+    Setting {
+        range: "seconds",
+        says: "How long a chosen index may go unused, in seconds of the writer's life, before the lake drops it.",
+        ..location("limits.order_unused_secs", "604800")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "The records one chunk of a chosen index's build writes while it holds the writer; a write waits for a chunk, never for the build.",
+        ..location("limits.order_chunk", "1000")
+    },
+    Setting {
+        range: "a count",
+        says: "The most rows of a filter's window an aggregate gathers and sorts to read by its keys. Past it the aggregate takes the other side, the holders with their probe or the type as before, and answers the same; only the counts are lost.",
+        ..location("limits.window_keys", "1048576")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "The most events one part of an act appends, each part a turn of the writer of its own, so a write sent meanwhile waits for at most the part in front of it. Purge appends in parts (decision 099, R2). A record's retirements are never split across parts, so one part may hold a few more than this for one record.",
+        ..location("limits.part_events", "500")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "The most events past the view it walked on that a job's first turn reads under the writer. A longer tail is read off the writer first; one that is still longer at the turn lets the writer go and moves the view up, and after three such tries the job answers unavailable, having appended nothing.",
+        cost: "the tail is read by source and by type from the log's index, 11 ms for 1 000 events at 2.5 million records (measured, decision 099)",
+        ..location("limits.part_tail", "1000")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "The most events one page of a scoped restate refolds, each page a turn of the writer of its own, so a write sent meanwhile waits for at most the page in front of it. A page over it takes the rebuild instead, and its report says so (decision 099, R4).",
+        ..location("limits.page_events", "2000")
+    },
+    Setting {
+        range: "`true` or `false`",
+        says: "Whether a forgetting always rebuilds the projection; off, it refolds only the records its sources wrote where nothing else the lake keeps reads them, and the preflight says which it chose.",
+        ..location("limits.forget_rebuild", "false")
+    },
+    Setting {
+        range: "bytes: 0 never seals by size, and a bound below 1048576 (1 MiB) is read as 1 MiB",
+        says: "The active segment's size, its lines and its blocks counted as they inflate (each block's `raw`, never what it stores), past which the writer seals it after an append, as `checkpoint` does, on an engine that reports the size (SQLite); a writer's open seals one already past it. PostgreSQL and memory never seal by size.",
+        cost: "each seal holds the writer as a `checkpoint` does while it restores and hashes every event of the segment: the write that crossed 64 MiB of ticks, 511 000 events in 8.8 MB of blocks, waited 9.3 s on SQLite under load 7 to 12, against 24 ms for a write of 249 ticks; every checkpoint lists each sealed segment, so a small bound makes many seals and long checkpoints",
+        ..location("limits.seal_after_bytes", "67108864")
+    },
+    Setting {
+        range: "a count; 0 quarantines nothing",
+        says: "The most open quarantined records one source keeps; a refusal an ingest asks to quarantine past it ends the stream, the record's own refusal with `quarantine_full` beside it. Closed ones are not counted.",
+        ..location("limits.quarantined_max", "10000")
     },
     Setting {
         range: "KiB",
@@ -184,7 +285,7 @@ pub const SETTINGS: &[Setting] = &[
     },
     Setting {
         range: "KiB",
-        says: "SQLite: each reader connection's page cache; it multiplies by the readers open at once.",
+        says: "SQLite: each reader connection's page cache. A handle keeps up to one reader per core open, at most 16: up to 16 times this (256 MiB at the default).",
         ..location("engine.tuning.reader_cache_kb", "16384")
     },
     Setting {
@@ -233,9 +334,35 @@ pub const SETTINGS: &[Setting] = &[
         ..root("server.feed_floor_millis", "10")
     },
     Setting {
-        range: "`Z`, or `+HH:MM` or `-HH:MM` within fourteen hours",
-        says: "The UTC offset `serve` reads the date at, to age each lake it writes once a day.",
-        ..root("aging.utc_offset", "\"Z\"")
+        range: "a count above zero",
+        says: "The threads `serve` runs its doors and sessions on; absent, the machine's cores, at most 8.",
+        ..root("server.workers", "null")
+    },
+    Setting {
+        range: "requests a second, or \"off\"",
+        says: "The most requests the HTTP door takes from one connection in a second, all at once or spread over it; a request over it is answered `429` with `Retry-After`.",
+        ..root("server.bounds.connection_rate", "1000")
+    },
+    Setting {
+        range: "requests a second, or \"off\"",
+        says: "The most requests the HTTP door takes from one principal in a second, over all its connections; a request over it is answered `429` with `Retry-After`.",
+        ..root("server.bounds.principal_rate", "1000")
+    },
+    Setting {
+        range: "a count above zero, or \"off\"",
+        says: "The most requests of one principal the HTTP door answers at once; one more is answered `429` with `Retry-After`.",
+        ..root("server.bounds.principal_in_flight", "128")
+    },
+    Setting {
+        range: "bytes, or \"off\"",
+        says: "The largest body the HTTP door reads whole, for MCP and REST, a larger one answered `413`; an ingest body is streamed, and only its lines are bounded.",
+        ..root("server.bounds.body_bytes", "4194304")
+    },
+    Setting {
+        range: "an address and port",
+        says: "Where `serve` answers `GET /metrics` in the Prometheus text format, apart from the door; absent, it measures nothing and listens for none.",
+        cost: "a write on the memory engine took 22.6 µs measured against 22.3 µs unmeasured with one caller, and 12.6 µs either way with sixteen; on SQLite the difference is inside a commit's noise; a scrape reads each lake's counters and takes nothing from its writer",
+        ..root("server.metrics.bind", "null")
     },
     Setting {
         range: "seconds",
@@ -332,6 +459,11 @@ pub const SETTINGS: &[Setting] = &[
         says: "The most events a mirror reads from its source's feed at once, and the most records per page of a snapshot.",
         ..root("mirror.batch", "100")
     },
+    Setting {
+        range: "milliseconds",
+        says: "How often a `serve` that stands by asks whether each lake's lease is free, to take it once the writer is gone; absent, `serve` takes each lease at its open.",
+        ..root("standby.try_millis", "1000")
+    },
 ];
 
 /// What says only where or how to connect: kept beside the settings, at
@@ -351,7 +483,12 @@ pub const BINDINGS: &[Binding] = &[
     Binding {
         key: "engine.dir",
         layer: Layer::Location,
-        says: "SQLite: the directory that holds the lake's log segments and its projection.",
+        says: "SQLite: the directory that holds the lake's log segments, and its projection where `engine.projection_dir` is absent.",
+    },
+    Binding {
+        key: "engine.projection_dir",
+        layer: Layer::Location,
+        says: "SQLite: the directory that holds the lake's projection and the one a rebuild builds beside it, one lake's alone.",
     },
     Binding {
         key: "engine.url",
@@ -369,9 +506,19 @@ pub const BINDINGS: &[Binding] = &[
         says: "PostgreSQL: how the connection is secured.",
     },
     Binding {
+        key: "engine.tablespaces",
+        layer: Layer::Location,
+        says: "PostgreSQL: the tablespaces the lake's `log`, `projection`, `indexes` and `vectors` are made in, each the database's default where it is absent.",
+    },
+    Binding {
         key: "key",
         layer: Layer::Location,
         says: "A handle naming the key the lake is encrypted with, which the host resolves.",
+    },
+    Binding {
+        key: "writers",
+        layer: Layer::Location,
+        says: "The REST doors of the processes that may hold the lake's writer lease, the writer first and then its standbys, each a `url` and an optional `ca_file`: where a handle that does not hold the lease forwards a write, the only places it sends one.",
     },
     Binding {
         key: "keys.keyring",
@@ -422,6 +569,26 @@ pub const BINDINGS: &[Binding] = &[
         key: "mirror.connections",
         layer: Layer::Root,
         says: "Each mirror's source lake, target lake, principal, the types that cross, and where a type with no position begins (`start`: a snapshot of its records, or the feed from now).",
+    },
+    Binding {
+        key: "server.hosts",
+        layer: Layer::Root,
+        says: "The other hosts that may forward a call to this server's doors, each an `id`, its `keys`, the `lakes` it may forward to (every lake when empty) and the `principals` it may act for (every one the lake knows when absent).",
+    },
+    Binding {
+        key: "lakes_dir",
+        layer: Layer::Root,
+        says: "Where `lake new` makes a SQLite lake's directory; `lakes` in the root when absent.",
+    },
+    Binding {
+        key: "exports_dir",
+        layer: Layer::Root,
+        says: "Where `export` writes when it is given no `--to`; `exports` in the root when absent.",
+    },
+    Binding {
+        key: "backups_dir",
+        layer: Layer::Root,
+        says: "Where the root's backups are to be kept, nothing yet; `backups` in the root when absent.",
     },
 ];
 
@@ -479,6 +646,7 @@ pub fn told(settings: &BTreeMap<String, Value>) -> Vec<SettingValue> {
             value: settings.get(s.key).cloned(),
             default: s.default_value(),
             declared: None,
+            periods: Vec::new(),
         });
     let typed = settings
         .iter()
@@ -488,6 +656,7 @@ pub fn told(settings: &BTreeMap<String, Value>) -> Vec<SettingValue> {
                 value: Some(value.clone()),
                 default: value_of(settings, s, None),
                 declared: None,
+                periods: Vec::new(),
             }),
             _ => None,
         });
@@ -562,7 +731,13 @@ const FIELD_MEMBERS: [&str; 2] = ["fields", "text_fields"];
 /// `stored` names that is hidden stays, after those written, so a write
 /// drops nothing its writer is not told; one the writer names itself (a
 /// field it is shown masked) stands once, as written. `written` as it is
-/// where `stored` names none.
+/// where `stored` names none. The store calls it no longer: a setting
+/// naming fields is told whole or not at all, and refused whole to a
+/// writer it is not told (063).
+#[deprecated(
+    since = "0.17.0",
+    note = "a writer is told such a setting whole or is refused it; write the value as told"
+)]
 pub fn kept(
     key: &str,
     stored: &Value,
@@ -621,3 +796,64 @@ pub fn kept(
 
 #[cfg(test)]
 mod tests;
+
+/// The key under which a map of the lake's settings by key holds, beside a
+/// host's setting, its values from dates after the first: the key and a
+/// NUL, which no record key holds. What hands an expression the lake's
+/// settings hands it both, so `setting('key')` reads the value in force
+/// on a day (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+pub fn periods_key(key: &str) -> String {
+    format!("{key}\0")
+}
+
+/// `settings` with the setting `key` as its record's `fields` hold it:
+/// its value, and beside it its values from dates ([`periods_key`]);
+/// without both where `fields` is `None`, a record retired.
+pub fn hold(
+    settings: &mut BTreeMap<String, Value>,
+    key: &str,
+    fields: Option<&BTreeMap<crate::FieldName, Value>>,
+) {
+    let field = |name: &str| fields.and_then(|f| f.get(name)).filter(|v| !v.is_null());
+    for (k, v) in [
+        (key.to_owned(), field("value")),
+        (periods_key(key), field("periods")),
+    ] {
+        match v {
+            Some(v) => settings.insert(k, v.clone()),
+            None => settings.remove(&k),
+        };
+    }
+}
+
+/// The value in force at `at` of a setting holding `value` from the start
+/// and `periods` from their dates: the last whose `from` is on or before
+/// the day of `at` in UTC (090).
+pub fn in_force(value: Value, periods: Option<&Value>, at: crate::Timestamp) -> Value {
+    let periods = periods.and_then(Value::as_array).into_iter().flatten();
+    let from = |p: &Value| crate::Timestamp::denoted(p.get("from")?.as_str()?).ok();
+    let held = periods
+        .take_while(|p| from(p).is_some_and(|f| f <= at))
+        .last();
+    held.and_then(|p| p.get("value")).cloned().unwrap_or(value)
+}
+
+/// A setting's values from dates, as `describe` tells them: the first from
+/// the start, then each of `periods` (090); none where it holds none.
+pub fn told_periods(
+    value: Option<&Value>,
+    periods: Option<&Value>,
+) -> Vec<crate::describe::SettingPeriod> {
+    let Some(later) = periods.and_then(Value::as_array).filter(|p| !p.is_empty()) else {
+        return Vec::new();
+    };
+    let first = crate::describe::SettingPeriod {
+        from: None,
+        value: value.cloned().unwrap_or(Value::Null),
+    };
+    let dated = later.iter().map(|p| crate::describe::SettingPeriod {
+        from: p.get("from").and_then(Value::as_str).map(str::to_owned),
+        value: p.get("value").cloned().unwrap_or(Value::Null),
+    });
+    std::iter::once(first).chain(dated).collect()
+}

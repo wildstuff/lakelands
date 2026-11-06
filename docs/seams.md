@@ -21,7 +21,7 @@ enforce them.
 
 ## The roster
 
-Nine seams, this roster and no other. Adding one is a change to the
+Ten seams, this roster and no other. Adding one is a change to the
 contract and to this page.
 
 | Seam | Trait(s) | Default in Lakelands | A host plugs in |
@@ -35,6 +35,7 @@ contract and to this page.
 | Change feed | `ChangeFeed` | The log, read by kind from a position | A relay of the feed onto its own bus, as its own code |
 | System vocabulary | `SystemVocabulary` | Lakelands' four `sys.` types, allowed in every lake | Its own `sys.` types and which lakes may hold them |
 | Keys | `KeyStore` | None: a source's value of an erasable field is refused as `Unbound` | Its KMS; `lakelands-backings` ships `FileKeyring`, a key file per lake |
+| Measurement | `Meter` | None: nothing is measured and no clock is read for it | Its metrics system; `lakelands-server` ships `Metrics`, which `serve` exports at `GET /metrics` |
 
 `Location` is not a seam. It is the configuration every seam and every
 engine is configured through, passed at the call site; Lakelands reads no
@@ -44,7 +45,7 @@ The seams do not all point the same way:
 
 - **A host implements and passes in** the engines (`Seams::engines`),
   function backings, an embedding backend, verb executors, a system
-  vocabulary and a key store. Every slot but `engines` may stay empty and has a default;
+  vocabulary, a key store and a meter. Every slot but `engines` may stay empty and has a default;
   `engines` needs at least the opener of the engine a lake's `Location`
   names, and Lakelands' own openers are what a host usually passes.
 - **The doors hold** the `PrincipalResolver`: the CLI and the server
@@ -64,12 +65,17 @@ Two rules shape the engine seam:
 
 - **The store canonicalises; the engine keeps bytes.** The store turns
   every event into its canonical bytes and hash (`docs/log-format.md`
-  §1.2) and hands the engine a `CanonicalEvent`: the bytes, with the
+  §1.2), writes them in the stored form, and hands the engine a
+  `CanonicalEvent`: the event's line, which leaves out what its frame
+  holds and what the event before it gives, and `frame`, the frame its
+  append shares, if any (its line, its first position and how many
+  events it covers, one value for every event it covers), with the
   position, id, `prev`, `hash` and `fence` beside them so the engine can
-  check an append without parsing. The engine stores the bytes and gives
-  back the same `CanonicalEvent`. The store parses and verifies what it
-  reads. Byte identity is checked through this seam by the conformance
-  suite.
+  check an append without parsing. The engine stores the line and the
+  frame and gives back the same `CanonicalEvent`. The store restores the
+  events and verifies what it reads; a segment's digest is over the
+  events restored (§4.2). Byte identity is checked through this seam by
+  the conformance suite, frames included.
 - **The projection keeps its history.** Every `put_*` adds a state valid
   from a position and keeps the state it supersedes. `view(as_of)` is a
   filter over kept states, never a replay: "what did the agent see at
@@ -109,9 +115,10 @@ promises that have no check yet.
 | `lake` | The lake this handle keeps. |
 | `take_lease(holder)` | Take the writer lease with a fencing token greater than every token this lake ever handed out. **Fails at once** while the lease is held — by another process, another handle, or this one — with `Unavailable` whose message names the holder; never waits. `Unavailable` on a handle opened read-only. |
 | `release_lease(lease)` | Give the lease up; the next taker gets a greater token. The lease is always released; an engine that also records the holder in storage reports a failure to clear that record as `Unavailable`, after releasing. Releasing a lease that is no longer the current one does nothing, so a writer that lost the lease cannot release its successor's. A handle that is dropped releases the lease it took and still holds, so a writer that ends without closing does not keep the lake from every later writer. |
+| `lease_free()` | Whether no handle holds the lease now, asked of any handle, one opened read-only included; it takes and changes nothing, and the answer is stale once given: a take made on it may still be refused as held. A standby asks it before it opens the lake for writing (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`). The default answers true: a standby over an engine that cannot tell tries the take itself. |
 | `tip` | The last event's position and hash, or none for an empty lake. |
-| `append(lease, events)` | Append a group of `CanonicalEvent`s, all or none, **durably before returning**: once it returns, the events survive a crash of the process and of the machine. `Unavailable` when `lease` is not the current lease, when this handle did not take it (another handle's lease, copied, appends nothing), or when the handle is read-only. `Invalid` when an event's fence differs from the lease's — except the event at position 0, which carries fence 0 — when the positions do not continue the tip without a gap, or when a `prev` is not the hash before it; nothing of a refused append is kept. An append that answers `Unavailable` because a write failed keeps nothing either: the handle goes on under its lease, and its next append is not written behind what the failed one left. An empty group appends nothing. Stores each event's bytes unchanged and never parses them. |
-| `read(from, limit)` | At most `limit` `CanonicalEvent`s from `from` on, in position order, exactly as appended: the same members, the same bytes. Empty when `from` is past the tip or `limit` is 0. |
+| `append(lease, events)` | Append a group of `CanonicalEvent`s, all or none, **durably before returning**: once it returns, the events survive a crash of the process and of the machine. `Unavailable` when `lease` is not the current lease, when this handle did not take it (another handle's lease, copied, appends nothing), or when the handle is read-only. `Invalid` when an event's fence differs from the lease's — except the event at position 0, which carries fence 0 — when the positions do not continue the tip without a gap, or when a `prev` is not the hash before it; `Invalid` as `append_frame`, naming the position, when the group does not hold each frame its events share whole and in order, from the frame's first position to its last; nothing of a refused append is kept. An append that answers `Unavailable` because a write failed keeps nothing either: the handle goes on under its lease, and its next append is not written behind what the failed one left. An empty group appends nothing. Stores each event's bytes and frame unchanged and never parses them. Each event's `bytes` hold its `id` as their own `id` member, as every line of the stored form does (`docs/log-format.md` §1.2): an engine may keep the id there only (SQLite does, `docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`), so an event whose bytes hold another id, or none, is outside the contract. |
+| `read(from, limit)` | At most `limit` `CanonicalEvent`s from `from` on, in position order, exactly as appended: the same members, the same bytes, each with its frame, also where the read begins inside one; the `id` answered is the one the event's line holds, which `append` requires to be the one it was handed. Empty when `from` is past the tip or `limit` is 0. |
 | `import(lease, events)` | Append events carried over from another lake's log, as an import does (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`): as `append`, all or none and durably, except that each event keeps the fence it was written under, 0 at position 0 and never below the fence of the event before it, instead of carrying the lease's. `Invalid` unless the log holds nothing but imported events (it is empty, or every event in it came through `import`), so a lake that was ever appended to is never imported into. Afterwards the next `take_lease` answers a token greater than every fence imported. The store checks, before it imports, that every fence is its writer's (log format §4.1). |
 | `seal_segment(lease, imported, first)` | Close the active segment at its last event and begin the next with the events `first` answers for the closed segment's range and digest, **in one step: both hold, or the log is as it was.** A segment after the first therefore never exists without its first event, after a failure and after a crash (`docs/log-format.md` §4.2; lakelands#623). The events enter as `append`'s do, or as `import`'s when `imported`: events that do not continue the log, imported events behind appended ones, and none are refused as `Invalid`, an error from `first` is answered as it is, and nothing is sealed. `first` is asked once, after the lease is found current, and **runs inside the step: it calls nothing of the engine**, which holds its log while it runs. None, and `first` is not asked, if the active segment is empty. Refused as `append` is for a stale lease, a lease this handle did not take or a read-only handle, before `first` is asked. The store's `checkpoint` hands the `checkpoint` event so; an import hands each later file's first events, after it has compared the digest with that file's. |
 | `segments` | Every sealed segment's range and digest (`docs/log-format.md` §4.2), oldest first; the ranges start at 0 and follow each other with no gap. |
@@ -119,6 +126,8 @@ promises that have no check yet.
 | `view(as_of)` | A read view at `folded_through` (`None`), or as the projection was right after folding `as_of`, served from kept states. `OutOfRange`, with `folded_through` (0 when nothing is folded) as the head, for a position past it. A view keeps answering its own position while the fold moves on. |
 | `ranked(type, asked, k)` | The rankings of one pull of a search, all read from one state of the head's indexes, with the position the projection is folded through there (§`ranked`, below). |
 | `vectors` | The vector index's write side, if the engine keeps one; a search that needs vectors is refused as `Unbound` on an engine that keeps none. |
+| `mark_built` | On a handle `open_scratch` opened: mark the scratch built through the position it is folded through, with the log's hash there, so it outlives the handle (`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`). An open transaction is abandoned. Answers the position marked; none, and no mark kept, for a scratch that folded nothing. `Unavailable` on any other handle (`no_scratch`) and where the log does not hold the position (`scratch_behind`). A scratch folded on and not marked again is removed when its handle is dropped. The memory engine refuses as `Unbound`. |
+| `swap(lease)` | Put the scratch in the projection's place in one step, once it is checked: this handle holds `lease`, no handle has the scratch open (`rebuilding`), the scratch is this lake's, laid out by this build, marked built and still folded through its mark (`no_scratch`), and the mark is the log's tip and its hash (`scratch_behind`). A refused swap leaves the projection and the scratch as they were. Afterwards this handle reads and folds the projection it put in place, and the one replaced and the scratch are gone. An open transaction is abandoned, by a swap refused as well as one done. Answers the position folded through. SQLite renames the scratch over `projection.db` under an exclusive lock on the lake's name file, which every other handle onto the projection holds shared from before it connects: the swap is refused `swap_busy` while one does, and a handle that opens during it waits and connects to the file put in place (a release before this one takes no such lock, and is stopped before a swap). PostgreSQL moves the scratch's tables into the lake's schema in one transaction, dropping the projection's and any a layout retired; a statement reads the old projection or the new one, and a transaction that reads across the swap may read tables of both, as across `clear`. The memory engine refuses as `Unbound`. |
 
 **The lease across processes.** An engine that keeps a lake in files
 holds the lease with a lock the operating system keeps, on a file that
@@ -246,12 +255,24 @@ and every statement names it; no connection's `search_path` is set.
   record an ingest writes once, and its applied id once, so an ingest
   costs about two round trips per record there and about fifteen per
   window on the other two connections.
-- **The log.** It is kept as rows holding each event's canonical bytes
-  unchanged, and an append is one transaction that checks the fence
-  against the lease row. `lakelands_engine_pg::export` writes the
-  segments as the §4.2 files, which verify without the engine, for a
-  lake whose store cannot be opened; they are the bytes the store's
-  export writes. It is a raw copy of the log's lines and judges none of
+- **The log.** It is kept a row a unit of the stored form, a block or a
+  line alone, its bytes unchanged in `STORAGE EXTERNAL`, keyed by the
+  unit's first position beside its last, the `prev` its first event
+  names and its last event's `hash`; a unit whose bytes do not give back
+  the events handed keeps those in its `kept` column. Each event's id is
+  a row of `ids (id, at)`, whose key answers an applied id. An append is
+  one transaction that checks the fence against the lease row and moves
+  the active segment's digest on, kept running on its row of `segments`,
+  so a seal restores nothing. Ids and hashes are kept as the bytes their
+  hex digits spell and read back as the same hex
+  (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
+  `lakelands_engine_pg::export` writes the segments as the §4.2 files,
+  which verify without the engine, for a lake whose store cannot be
+  opened, each row's bytes as the writer stored them, a block whole;
+  they hold the events the store's export writes, with the same
+  digests, in the writer's form where the store's export writes a
+  copy's (`docs/log-format.md` §4.2).
+  It is a raw copy of the log's lines and judges none of
   them, not their format either: what it writes is judged by whoever
   verifies or imports it.
 - **The connection.** It comes from `EngineConfig::Postgres`: the URL,
@@ -260,15 +281,16 @@ and every statement names it; no connection's `search_path` is set.
   carrying TLS keys, or naming no user, is refused. The driver reads no
   libpq variables and
   no `.pgpass`.
-- **The server** is PostgreSQL 16 or newer.
+- **The server** is PostgreSQL 18 or newer.
 
 An engine is found by name and opened through `EngineOpener`:
 
 | Method | Contract |
 |---|---|
 | `name` | The name the engine answers to in `EngineConfig`. |
-| `log_ends(location)` | The first and the last event of the lake's log, read without opening the lake: nothing is made or changed, in the log's files or tables or in the projection, nothing of a lake is judged, and a place with no lake stays with nothing (no directory, file or schema). None where there is no lake or its log is empty. An engine may refuse a place that holds something other than a lake, as its `open` does: PostgreSQL refuses a schema with tables that are not a lake's (`schema_not_a_lake`) or whose `meta` or `lease` table is not the one it wrote (`schema_meta_foreign`). Part of a lake without its events is not a place with no lake: SQLite refuses a segment without its index file (`index_missing`), a projection with no segment file (`no_segment_file`) and segments that do not follow each other (`position`, `prev_hash`) as `damaged`, and PostgreSQL answers `storage` for a schema whose `log` table is gone. The store asks this before every `open` and before an import, and opens only a lake written in the format it reads: it judges the first event's `v`, the format its `lake_created` says and the last event's `v`, and refuses another as `log_format` without calling `open`, in every mode; an import onto a lake of the format it reads is refused as `import_not_empty` from the tip, without calling `open` either (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`). A tip that moves between the two calls is harmless: its writer passed the same judgement, so it wrote the same format. The disk engines read the log alone: SQLite its files, PostgreSQL its table over a connection of its own. |
+| `log_ends(location)` | The first and the last event of the lake's log, read without opening the lake: nothing is made or changed, in the log's files or tables or in the projection, nothing of a lake is judged, and a place with no lake stays with nothing (no directory, file or schema). None where there is no lake or its log is empty. An engine may refuse a place that holds something other than a lake, as its `open` does: PostgreSQL refuses a schema with tables that are not a lake's (`schema_not_a_lake`) or whose `meta` or `lease` table is not the one it wrote (`schema_meta_foreign`). Part of a lake without its events is not a place with no lake: SQLite refuses a segment without its index file (`index_missing`), a projection with no segment file (`no_segment_file`) and segments that do not follow each other (`position`, `prev_hash`) as `damaged`, and PostgreSQL answers `storage` for a schema whose `log` table is gone. The store asks this before every `open` and before an import, and opens only a lake written in the format it reads: it judges the first event's `v`, the format its `lake_created` says and the last event's `v`, and refuses another as `log_format` without calling `open`, in every mode; where two ends contradict each other in a way no release writes — a `lake_created` whose format is not its own line's `v`, or a tip older than the first event — it refuses them as `damaged` at the end that carries it, again without calling `open`; an import onto a lake of the format it reads is refused as `import_not_empty` from the tip, without calling `open` either (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`). A tip that moves between the two calls is harmless: its writer passed the same judgement, so it wrote the same format. The disk engines read the log alone: SQLite its files, PostgreSQL its table over a connection of its own. |
 | `open(location, mode)` | Open the lake `Read`, `Write` or `Create` (write, creating it if absent, opening it if present). `Read` or `Write` of a lake that does not exist is `Unavailable`; a location configured for another engine is `Invalid`. Opening never takes the lease; a writer takes it afterwards with `take_lease`. A handle opened `Read` refuses `take_lease`, `append` and `seal_segment` as `Unavailable`, and writes nothing to the projection (`begin`, the puts, `clear` and `compact` are `Unavailable`), so any number of readers can hold the lake while one process writes (`docs/decisions/008-one-writer-per-lake.md`). A read-only open of a lake that does not exist creates nothing. The store folds only on the writer's handle; a reader reads what the writer folded. A disk engine's `Read`, `Write` and `Create` refuse a projection marked with another layout, or none, as `Unavailable` (`projection_layout`) before any of its tables is read or made; `Rebuild` opens an existing lake as `Write` does whatever layout made its projection, and nothing is read from it before `clear` makes it anew at the engine's layout (`docs/decisions/004-the-change-feed-is-the-log.md`). The memory engine opens `Rebuild` as `Write`. |
+| `open_scratch(location)` | Open the lake to build its projection beside the one it answers from, in a scratch (`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`): the handle reads the log as a `Read` handle does, refuses the lease and appends, and its projection, view, rankings and vector index are the scratch's. The projection the lake answers from is not opened, whatever layout made it: on PostgreSQL only the log's tables of the lake's schema are judged, and tables this build does not know are left to the layout that made them. A scratch marked built for this lake at this build's layout, still folded through its mark, whose mark the log holds, opens as it is, so the fold continues from the mark; any other is removed and made anew. `Unavailable` (`rebuilding`) while another handle has the scratch open. A scratch left by a builder that ended unmarked is removed by the next `Write`, `Create` or `Rebuild` open; one marked by a build of another layout, whose mark the log holds, is left for it. SQLite keeps the scratch in `projection.db.rebuild`, beside a locked `projection.db.rebuild.mark`, which is emptied and never removed; PostgreSQL in a schema `lakelands_rebuild_<hash of the lake's schema>`, reading the log from the lake's. The memory engine refuses as `Unbound`. |
 
 ### `ProjectionStore`: what the fold writes
 
@@ -347,14 +369,22 @@ state again); it never adds a second one.
 | `begin`, `commit(through)`, `rollback` | One transaction per append. |
 | `folded_through` | The last position the projection reflects. |
 | `put_declaration(declaration, version, schema_hash, at)` | A declaration in force from `at`, replacing, from there on, the earlier declaration with the same `declare` and name; the earlier one is kept. Put before any record of its type at or after `at` in the same transaction (above). |
-| `put_record(record)` | A record's whole state as of `record.position`: values, per-field meta, flags. The state it supersedes is kept, but under a head-only name (below). A put ends only the latest earlier state of its key, and a read of one record takes the latest state at or before its position: neither reads the key's other states, so a record written often is put and read as one written once. The engine derives its own indexes, full-text entries and edges from it and the declarations in force at that position. One form of name is the store's own: `sys:kept.<view>` (`lakelands_api::seam::KEPT_PREFIX`), under which the fold keeps a view's records, each put again at every write to its group; no declared type bears it, since no type name holds a `:`. An engine keeps such a record as any other, with the rows every record has, its order rows those the view's `sort_index.<view>` setting asks for of the fields the view declares at the head (lakelands#668), and tells the name by that prefix alone, as it tells a setting by `sys.setting`: SQLite and PostgreSQL read its pages, its counts and its records from the states with no end at the head, and at an earlier position step from key to key and seek each key's state there, where a stored type's statements read every state of the keys they pass. That changes no answer, only what reading keys that hold thousands of states costs. A second form is head-only: `sys:order.<view>` (`lakelands_api::seam::ORDER_PREFIX`, `is_head_only`), under which the fold keeps the order of a kept view's extremes, an entry for each member. An engine keeps one state for each of its keys: a put deletes whatever states the key held and keeps the new one, an ended record only deletes, and nothing else is written for it: no lookup, full-text, order-index, edge or vector row. Such a name is read at the head only, by the key-ordered page and `get` of any type, so its page after a key reads the next key's one row; a view at an earlier position shows no state for a key put after it, and the store never reads it so. A rollback leaves the states the key held. |
-| `end_head_only(name, at)` | Every key of a head-only name (`put_record`, above) ends at once, at `at`: whatever the keys held, put before the transaction or earlier in it, is deleted, and a key put after it in the same transaction is kept. A disk engine deletes them in one statement, whatever their number. The fold calls it where a kept view ends, so ending a view writes nothing for each entry of its order. A rollback leaves what the keys held. |
+| `put_record(record)` | A record's whole state as of `record.position`: values, per-field meta, flags. The state it supersedes is kept, but under a head-only name (below). A put ends only the latest earlier state of its key, and a read of one record takes the latest state at or before its position: neither reads the key's other states, so a record written often is put and read as one written once. That holds of a record's put and read; an act that drops a key's states, a thinning, reads them first through `states`, below. The engine derives its own indexes, full-text entries and edges from it and the declarations in force at that position. One form of name is the store's own: `sys:kept.<view>` (`lakelands_api::seam::KEPT_PREFIX`), under which the fold keeps a view's records, each put again at every write to its group; no declared type bears it, since no type name holds a `:`. An engine keeps such a record as any other, with the rows every record has, its order rows those the view's `sort_index.<view>` setting asks for of the fields the view declares at the head (lakelands#668), and tells the name by that prefix alone, as it tells a setting by `sys.setting`. It keeps one state for each of its keys: a put deletes the states the key held, with their rows, and keeps the new one, and an ended record only deletes (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`). The fold puts a key's states in the order it folds them, so an engine is never asked to put a state at a position earlier than one its key already holds. The store reads such a name at the head only and computes a kept view at an earlier position, as it computes a view no setting keeps; a view at an earlier position shows a key's latest state, or none for a key put after it, and the store never reads it so. A second form is head-only: `sys:order.<view>` (`lakelands_api::seam::ORDER_PREFIX`, `is_head_only`), under which an engine keeps one state for each of its keys, a put deleting whatever states the key held and an ended record only deleting, and nothing else written for it: no lookup, full-text, order-index, edge or vector row. Such a name is read at the head only, by the key-ordered page and `get` of any type. The fold puts no order through it: an order's entries are kept by `put_order`, apart from the records (`lakelands#1690`). |
+| `put_record_for(record, whole)` | A record's state as `put_record` puts it, for a caller that says whether a setting it puts must be made whole at its event (`whole`: a fold from the log, a rebuild or an import) or may be built beside the writer (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`). A setting put with `whole` false marks the fields it asks for as building in the projection (`Chosen`, below), and no read takes them until the build's `Keep`; the rows the fold derives for them are kept from that event on. A setting put with `whole` true is whole at its event, with no mark, as a rebuild, an import and a refold put it. A record of any other name is put as `put_record` puts it, whole or not. An engine that keeps no index for the setting puts it whole either way, as this default does. |
+| `end_head_only(name, at)` | Every key of a head-only name (`put_record`, above) ends at once, at `at`: whatever the keys held, put before the transaction or earlier in it, is deleted, and a key put after it in the same transaction is kept. A disk engine deletes them in one statement, whatever their number. The fold ends an order through `end_order` (`lakelands#1690`), one call for the whole name. A rollback leaves what the keys held. |
+| `put_order(name, key, entry)` | One entry of a kept view's order (`sys:order.<view>`, `lakelands_api::seam::ORDER_PREFIX`), for the key `key`: the bytes `entry` it was made with, opaque to the engine. The key names the source's extreme (its call), the group, the face, the member's place and the member's key; the bytes hold the member's value as the fold read it, the member's id and, for `first` and `last`, the value they carry. A put replaces the key's entry, and a put with no entry deletes it. The name is not judged: the store names it (`order_name`), and no door writes one. An engine keeps it in a place of its own, `view_order` on the disk engines and a map in the memory engine, one entry for each key, and no record table, index or full-text row holds it; an earlier entry is not kept. A rollback leaves the keys as they were (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`). |
+| `end_order(name)` | Every entry of the order `name` ends at once, whatever their number and whether put before the transaction or earlier in it: what ending a kept view does, so ending a view writes nothing for each entry of its order. A rollback leaves the entries as they were. |
 | `put_proposal(proposal, at)` | A proposal's state from `at`, the position of its latest event; earlier states kept. A view at a position inside a multi-event append sees each state from its own event, not from the commit. |
 | `put_membership(…, at)` | Whether a record is in an object set from a position on; earlier membership kept. |
-| `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. A later output for the same seam and input replaces the earlier one from its position on (022, extended: a redeclaration retries a failure). Two seam names are the store's own. Under `sys:renames` the fold keeps the lake's list of field renames, as one output, put at the position of each `migrated` event that renames. Under `sys:sealed` it keeps, for each source (its input the SHA-256 of the source id's canonical bytes), the versions of its key the log sealed with, in the order first used, put at the first `record_ingested` sealed under each (`docs/decisions/058-a-source-may-be-forgotten.md`). No seam records under either and no event holds them; an engine keeps them as any other (`docs/decisions/006-grants-not-roles.md`, extended). A read of an output takes the latest state of its seam and input at or before the view's position and reads none of their other states, so an output recorded often is read as one recorded once. |
-| `mark_applied(applied)` | Remember an applied event's id at its position, so a redelivery is recognised (the first position marked for an id is kept), and keep the feed's index of it: its kind, what it is about (`lakelands_core::feed::about`), one entry a type it concerns, and the source it is of: a `record_ingested`'s is its envelope's, and any other event's the one its seal names, as a recorded output's does, else its envelope's. `clear` takes the index with the rest; `compact` keeps it. |
-| `clear` | Delete everything, kept history and the vector index included, for a rebuild; `folded_through` is none afterwards. |
-| `compact` | Give back the storage the projection no longer uses, outside a transaction (`Invalid` inside one), and answer its size in bytes before and after as the engine measures it, or none. No view answers otherwise afterwards: no state, kept history included, no applied id and no recorded output goes. A compact that fails leaves every answer as it was (`docs/decisions/040-maintenance-never-changes-an-answer.md`). |
+| `put_thinned_act(act, at)` | A thinning act's row (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`): its type, the field and horizon it judged, the last position its parts had got through and how many records it had taken. A row already begun keeps the position it began at; each part moves `through` and `gone` alone. |
+| `put_thinned(type, key, before, at)` | A thinned record's tombstone: the horizon that took it and the position of the act's part that took it, one a key. A second put of the key keeps the first. |
+| `states(type, key, after, through, limit)` | The states `key` of `type` holds whose positions are after `after` and at or before `through`, oldest first, at most `limit`, the transaction's own puts included. A thinning reads a key's states page by page before `drop_states` deletes them, so every group of a kept view a state was a member of is marked stranded (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). No other read of a record takes more than its one state. |
+| `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. A later output for the same seam and input replaces the earlier one from its position on (022, extended: a redeclaration retries a failure). Four seam names are the store's own. Under `sys:purged` the fold keeps the acts a purge began, as one list keyed by each act's position and saying its source, the type if one was named and whether it is whole, put at each `source_purged` and put again at its `act_whole` (099). Under `sys:renames` the fold keeps the lake's list of field renames, as one output, put at the position of each `migrated` event that renames. Under `sys:sealed` it keeps, for each source (its input the SHA-256 of the source id's canonical bytes), the versions of its key the log sealed with, in the order first used, put at the first `record_ingested` sealed under each (`docs/decisions/058-a-source-may-be-forgotten.md`), and put again, the version's entry marked, at the first sealed under it by a delivery sealed apart. The keys apart an event a delivery sealed apart names are not kept: a recorded output reads them from the value's own event in the log, and only at a value whose version `sys:sealed` marks (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). Under `sys:timed` the store, not the fold, keeps as one output the rate of the last rebuild and the time of the last reclaim a handle ran, put at each reclaim, so that a preflight on another handle reckons the act with them (lakelands#1486); a rebuild keeps the last reclaim's time and puts it back in the projection it makes (lakelands#1508), and a lake that has timed no reclaim, as one upgraded from a release that kept none, says in its preflight that the reclaim is not counted. No seam records under `sys:renames`, `sys:sealed` or `sys:timed` and no event holds their outputs; an engine keeps them as any other (`docs/decisions/006-grants-not-roles.md`, extended). A read of an output takes the latest state of its seam and input at or before the view's position and reads none of their other states, so an output recorded often is read as one recorded once. |
+| `mark_applied(applied)` | Remember an applied event's id at its position, so a redelivery is recognised (the first position marked for an id is kept), and keep the feed's index of it: its kind, what it is about (`lakelands_core::feed::about`), one entry a type it concerns, and the source it is of: a `record_ingested`'s is its envelope's, and any other event's the one its seal names, as a recorded output's does, else its envelope's. `clear` takes the index with the rest; `compact` keeps it. The id it names is the id of the event the log holds at that position, and the store marks no other: its fold marks each event it folds, with its id. PostgreSQL keeps no id here and answers `applied` from the log (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`); SQLite and the memory engine keep the ids they are handed. |
+| `clear` | Delete everything, kept history and the vector index included, for a rebuild; `folded_through` is none afterwards, and `applied` answers none for an id until the refold reaches its position. On PostgreSQL a rebuild's `clear` also converts a log a release before 0.21.0 kept, as a writer's take of the lease does (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`). |
+| `compact(how)` | Give back the storage the projection no longer uses, outside a transaction (`Invalid` inside one), and answer its size in bytes before and after as the engine measures it, or none, and whether free storage is left for another step. `how` is `Whole` (`compact`: SQLite's `VACUUM`), `Beside` (what runs beside reads and writes, off the writer: PostgreSQL's plain `VACUUM`), `Journal` (SQLite truncates its journal) or `Pages(bytes)` (SQLite gives back at most that many bytes of free pages); a step the engine has not answers nothing (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`). No view answers otherwise afterwards: no state, kept history included, no applied id and no recorded output goes. A compact that fails leaves every answer as it was (`docs/decisions/040-maintenance-never-changes-an-answer.md`). |
+| `choose_order(type, step)` | One step of keeping an order index the lake chose beside the log (`docs/decisions/041-a-sorted-page-reads-its-page.md`), outside a transaction and under the writer's lock; it moves no position and changes no answer. `Start(field)`: the fold keeps the field's rows for every put from now on (a record put during the build has its row), and no read takes the field yet. `Fill { field, after, limit }`: write the field's rows of up to `limit` head records after the key `after`, in key order, and answer the key the chunk ended at, none once the type is filled. `Keep(field)`: the field's rows are whole and a read may take the index for it, while its mark equals the head. `DropChunk { field, after, limit }`: stop keeping the field, delete its rows of up to `limit` head records after the key `after`, in key order, and answer the key the chunk ended at, none once its rows are gone. The field is held in `dropping` from the first chunk, which no read looks at, and the last chunk, whose answer is none, removes the mark; a `Start` of a field a drop holds does nothing until the drop ends, so no build fills what the drop is clearing. `Drop(field)`, deprecated since 0.23.0 and kept for a caller built against it, clears the whole field in one step, answers none and takes the mark away with it. A setting set again between two chunks takes its field out of `dropping`: the drop's next chunk names a field a setting names and does nothing, and the setting's build fills and keeps it. The choice is a meta row of the projection (`chosen.<type>`) and never in the log, so a projection rebuilt from the log starts with none. A disk engine marks the position the lake's chosen fields were kept through (`chosen_through`), which its fold moves only from the position it folds from (PostgreSQL holds it only beside a twin row in `sort_index`, which a rebuild by such a writer drops): once a writer that keeps no chosen field folded past it or rebuilt the projection, no read takes a chosen field and no step is taken, and a writer's open drops the whole choice and its mark. A type whose `sort_index.<type>` setting names a field and the lake share the rows field by field: the setting's own write takes the lake's choice of the fields it names away, and leaves its choice of the others, and its build fills and keeps its fields through the same steps — a `Fill` or a `Keep` naming a field the setting is building does its work, and every other step naming a field the setting names does nothing, while a step naming another field is the lake's. An engine that keeps no order index refuses as unbound. |
+| `look_index(type, step)` | One step of building the exact-text index a type's `lookup_index.<type>` setting asks for (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`), outside a transaction and under the writer's lock, beside the writer: it moves no position and changes no answer. `Fill { fields, after, limit }`: write the fields' exact-text rows of up to `limit` head records after the key `after`, in key order, and answer the key the chunk ended at, none once the type is filled. `Keep { fields }`: the fields' rows are whole and a read may take the index for them, and the rows of a field the setting no longer asks for go. The fields coming and going are the projection's mark (`Chosen`, below), never the log: a field the setting now names is `looked_building` and no lookup takes it until its `Keep`, and one it no longer names is `looked_going` and a lookup still takes it until then. An engine that keeps no exact-text index has nothing to build and answers none at every step, as this default does. |
 
 Rebuilding a projection from the log produces the same state, byte for
 byte, as the projection it replaces
@@ -372,18 +402,27 @@ indexes describe the head, and `ranked` reads them (below).
 |---|---|
 | `position` | The position the view reflects. |
 | `declarations` | Every declaration in force: for each `declare` and name, the latest put at or before the position, with the position it is in force `since`. No order is promised. |
+| `chosen` | Each type's order index at the head, as the projection marks it (`Chosen`, `lakelands_api::engine::Chosen`): `kept`, the fields the lake chose and a read may take; `building`, the fields it chose and is building, which none may; `setting_building`, the fields a `sort_index.<type>` setting is having built, which none may until its `Keep`; `looked_building`, the fields a `lookup_index.<type>` setting is having built, which no lookup takes until its `Keep`; and `looked_going`, the fields that setting is dropping, which a lookup still takes until then; and `dropping`, the fields a `DropChunk` is clearing in parts, a setting's write that took a field back or the lake letting one go, which no read looks at and whose last chunk removes them, and a `Start` of a field it holds does nothing until the drop ends. Where a `sort_index.<type>` setting names a field of a type, that field is the setting's and the others stay the lake's: the two share the rows field by field. The mark is in the projection and never in the log, so a copy carries none of it. |
 | `replaced(from, to)` | Every state of a declaration that a later one replaced after `from` and by `to` (at most the view's position), as it was put, with its `since`. With those in force at `to`, the latest of each name at or before any position from `from` on is what `declarations` answers there: a read that judges many entries at their own positions asks once a range instead of once a position (lakelands#1064). No order is promised. An engine that keeps no such read answers `None` (the default), and the store reads each position's declarations. |
 | `get(type, key)` | One record's latest state at or before the position, retired and restricted included; none if it had none by then. |
+| `order(name, key)` | One entry of an order at the position, the bytes it was put with; none if it holds none. An order is read at the head only, and by the fold alone. |
+| `order_page(name, after, n)` | Up to `n` entries of an order after `after`, in byte order of their keys, each with its key: the page the fold reads an extreme's next holder from. A key with no entry is not read, so a page after one reads past an ended key between the ones beside it. An order is read at the head only. |
 | `get_many(type, keys)` | What `get` answers for each of the keys, in one read: each record once, in key order, a key with no record left out. The store's walks read the far ends of a page of links through it (lakelands#227). |
+| `thinned_acts(type)` | The acts that thinned `type`, oldest first by the position each began at, read at the head in every read: a read at an earlier position uses them to say what it cannot answer, and never as a value (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). |
+| `thinned_at(type, key)` | The horizon an act took the key past, if one did, read at the head in every read. |
 | `scan(type, scan)` | The records of `type` whose latest state at the position qualifies, as below. |
 | `count(type, scan)` | How many records `scan(type, scan)` would answer with its order, `after` and `limit` ignored: the flags, `valid_at`, `equal` and `filter` qualify them as below. Its cost is in **The ceiling of a count**, below. |
-| `edges(type, keys, relation, walk)` | The links of some records of one type, one list per key in the keys' order, each what the key alone answers; a link between two of the keys is in both lists. An engine answers them in one read, not one per key: the store's walks ask a page of records at a time (`lakelands_core::graph::PAGE`, 256), and PostgreSQL reads each page in a fixed number of statements (lakelands#227). For each record, its links over one relation or all: `Out` those it declares, `In` those that point at it, `Both` their union with each link once (a link from a record to itself included). Links to a retired or missing record are returned as they are; hiding that end is the store's (`docs/decisions/026-the-store-walks-the-graph.md`). No order is promised; the store's walks order their own answers. A relation with `via` is carried by that reference field: a record links to the target whose key is the field's text value, and `Edge.fields` is empty. A relation with neither `via` nor `derived` is carried by the live records of its link type `sys.link.<type>.<relation>` at the position (`docs/log-format.md` §2.3): `Out` gives the links whose `from` is the record, `In` those whose `to` is, and `Edge.fields` holds each link's own fields, `from` and `to` left out. A removed (retired) link is no edge. The rule is `lakelands_core::links::link_edges`: at the head an engine may find a link type's candidates through its own index (SQLite and PostgreSQL look `from` and `to` up in their exact-text index), and at an earlier position it reads the link type's records there. |
+| `window_keys(type, window, scan, after, n)` | A walk of at most `n` entries of the order index for `window.field` inside the window, in the index's order after `after`: the batch holds the keys among those rows whose records hold the scan's exact text where it asks one, and where it stopped is the last row walked whether it holds the text or not. A short walk means the whole window was walked, and the batch says `done`. It hands no record and adds nothing to `rows_read`; every index row it passes is added to `rows_walked`. An engine that keeps no window for the scan answers `None` (the default), and the store reads today's road (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The window's road, §Who counts and who admits). |
+| `window_sides(type, window, scan, l)` | One round of the choice between the window's road and the other side: the window's order rows, which its walk pays for one by one, counted to `l` and whether that was the whole window, and the other side counted to four times what the window counted — the exact text's holders under a text, the type's order rows otherwise. It adds what it passed to `rows_walked`, hands no record and adds nothing to `rows_read`. `None` when `window_keys` answers `None` (§The smaller side). |
+| `holders_inside(type, window, scan, after, n)` | At most `n` holders of the scan's exact text in key order after `after`, each with whether its order row for `window.field` lies inside the window: the probe the other side reads under a text. `None` when `window_keys` answers `None` (§The smaller side). |
+| `edges(type, keys, relation, walk)` | The links of some records of one type, one list per key in the keys' order, each what the key alone answers; a link between two of the keys is in both lists. An engine answers them in one read, not one per key: the store's walks ask a page of records at a time (`lakelands_core::graph::PAGE`, 256), and PostgreSQL reads each page in a fixed number of statements (lakelands#227). For each record, its links over one relation or all: `Out` those it declares, `In` those that point at it, `Both` their union with each link once (a link from a record to itself included). Links to a retired or missing record are returned as they are; hiding that end is the store's (`docs/decisions/026-the-store-walks-the-graph.md`). No order is promised; the store's walks order their own answers. A relation with `via` is carried by that field: a record links to the target whose key is the field's text value, or to each distinct string of a JSON array it holds, one edge per key, and `Edge.fields` is empty. The rule is `lakelands_core::engines::links_of`, which reads the value through `keys_of` (`docs/decisions/091-a-field-carried-relation-over-an-array-of-keys-yields-one-edge-per-key.md`). A relation with neither `via` nor `derived` is carried by the live records of its link type `sys.link.<type>.<relation>` at the position (`docs/log-format.md` §2.3): `Out` gives the links whose `from` is the record, `In` those whose `to` is, and `Edge.fields` holds each link's own fields, `from` and `to` left out. A removed (retired) link is no edge. The rule is `lakelands_core::links::link_edges`: at the head an engine may find a link type's candidates through its own index (SQLite and PostgreSQL look `from` and `to` up in their exact-text index), and at an earlier position it reads the link type's records there. |
 | `proposals(filter)` | Every proposal whose latest state at the position matches `filter.state`, `filter.kind` (`upsert`, `retire`, `call`, `declare` or `migrate`) and `filter.type` (a `call`'s type is its verb's `on` type in force at the position; a `declare` touches every type it declares or a declaration of it acts on, a `migrate` its type), newest first — by the position of that latest state, descending, then by id — and at most `filter.limit`. `order_by`, `cursor` and the read position in the filter are the store's and the engine ignores them: the store applies the caller's `order_by` to the engine's answer, and refuses as `Invalid` an `order_by` naming a member a proposal does not have. |
 | `proposals_before(filter, before)` | The proposals `proposals` answers, newest first, a page at a time (lakelands#1063): those whose latest state at the position matches `filter.state`, proposed before `before` (every one where none), at most `filter.limit`. A proposal's position is its own event's, so no two share one, and the last of a page continues the next. `filter.kind`, `filter.type`, `order_by` and `cursor` are not asked here: the store judges the kind and the type on the entry as its reader is shown it. SQLite and PostgreSQL read it on an index of the state's `position`, which the schema makes at a writer's open, so no projection is rebuilt for it. An engine that keeps no such read answers `None` (the default), and the store reads `proposals` whole. |
 | `is_member(set, type, key)` | Whether the record is in the object set at the position; false if never put. |
 | `members(set, type)` | The keys of the type's records that are in the object set at the position; empty for a set never put. One read: the store asks it once for a set before it walks a type (a set declared again, a migration, a re-key), where `is_member` for each record would be a statement each on PostgreSQL (lakelands#477). |
-| `applied(id)` | The position `id` was applied at, if that is at or before the view's position. |
-| `applied_many(ids)` | `applied` for many ids: one answer an id, in their order, an id asked twice answered twice. Provided, its default asks `applied` once an id; an engine answers them in one read, PostgreSQL in one statement, since an ingest window asks every id it judges in one call (lakelands#1036). |
+| `applied(id)` | The position `id` was applied at, if that is at or before the view's position, for an event the log holds: the first position marked for it. PostgreSQL answers from the key of `ids (id, at)`: the least position holding it, at or before the view's position and no further than the projection had folded in the same snapshot, so after a `clear` none until the refold reaches it, as on every engine (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`). |
+| `applied_many(ids)` | `applied` for many ids: one answer an id, in their order, an id asked twice answered twice. Provided, its default asks `applied` once an id; an engine answers them in one read, PostgreSQL in one statement over the key of `ids`, since an ingest window asks every id it judges in one call (lakelands#1036). |
+| `unused_bases()` | The ids of the bases no state names, ascending, as of the view: the list a sweep deletes a chunk at a time, each chunk tested again against the states put after the view (`drop_states` with `StatesOf::Bases`). Provided, its default answers none, for an engine that keeps no base apart. |
 | `matching(filter, from, through, limit)` | The positions in `[from, through]`, none past the view's position, whose applied events `filter` admits by the index `mark_applied` kept (`lakelands_core::feed::admits`), in order, each once, at most `limit`, and the last position decided: the last answered when `limit` is reached, else `through` or the view's position, or earlier where the engine bounds its work, and never past what the projection had folded where the index is read, in the same snapshot: a view taken before a rebuild's `clear` decides only what the refold has reached, and nothing (`through` none) where it has not reached `from`. An engine seeks a filter by its keys, else its types, else its kinds (`lakelands_core::feed::seek`), one ordered range a value, and checks the rest on each entry; one that checks a kind on every entry of a type decides at most `lakelands_core::feed::WINDOW` (65 536) positions at a time. |
 | `of_source(source, from, through, limit)` | The positions in `[from, through]` whose applied events are of `source`, by the same index, decided as `matching` decides them: in order, each once, at most `limit`, never past the view's position nor past what the projection had folded where the index is read. Forgetting a source reads its events by it, and walks the log from where it decides nothing (`docs/decisions/058-a-source-may-be-forgotten.md`). |
 | `output(seam, input)` | The recorded output valid at the position, if any, with the position it was recorded at: the latest recorded for that seam and input at or before it. The fold checks a fill that names an output by `output_at` against that position (`docs/decisions/053-a-recorded-output-is-recorded-once.md`). |
@@ -423,6 +462,21 @@ indexes describe the head, and `ranked` reads them (below).
   exactly that string can qualify, and at the head an engine may look
   them up in its exact-text index as it does for `equal`, by a field
   the index keeps; it still evaluates the whole filter on each.
+
+**A kept name's interval.** `scan.range` bounds the key of a kept view's
+records — the group's values in the declared order — from `from`,
+inclusive, to `until`, exclusive, either none for an end a filter leaves
+open (`lakelands_api::engine::KeyRange`,
+`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`).
+The store hands it only to a read of a kept name whose filter narrows to
+it (`lakelands_core::engines::key_range`) and only to a read that asks
+no other order: a page in a field's order reads the order index whole,
+as before. An engine seeks the interval on its key-ordered road and
+hands, and walks, no record past either end; `rows_walked` counts what
+it walked, which is how a read shows it narrowed. The interval is a
+superset of the keys the filter admits, and the rulebook above still
+decides every record. At an earlier position a kept view is computed,
+and the interval narrows none of it.
 
 The qualifying records come ordered by `scan.order_by` — each key the
 field's value, or its `known_at` or `seen_at`, or, with no field,
@@ -719,6 +773,17 @@ read through a view. `LakeEngine::ranked(type, asked, k)` reads them:
   a match in each field the store weighs, and each vector field with
   its query vector. The answer holds one list for each, the
   text's first, each cut at `k`.
+- **Whom the lists are for.** `asked.seen` is the reader's selection
+  (`Scan`: retired, `restricted`, its `only` pairs, `valid_at`, a
+  `where`), and `asked.exact` asks every vector list ranked exactly. An
+  engine that reads `seen` admits each vector candidate by it, on its
+  head record, through `engines::admits`, ranks the records holding
+  `seen.equal` exactly, and answers `Ranked.judged = true`: its vector
+  lists then hold only what the reader sees, and the store reads only
+  the page's records. One that does not answers `judged = false`, and
+  the store judges every candidate. Without `seen` the lists are of
+  every live candidate, ranked as for a reader holding `restricted`
+  (`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`).
 - **One state.** The engine reads the lists and the position the
   projection is folded through in one transaction (one lock on the
   memory engine): the lists are of the head at exactly that position,
@@ -742,25 +807,62 @@ read through a view. `LakeEngine::ranked(type, asked, k)` reads them:
   No search is refused or repeated for the writes beside it.
 
 **A text's list.** The engine answers from its full-text index as it
-stands at the head: the records live there, restricted ones included
-(the store applies the principal's grants to the hits, as for `find` and
-`get`); an engine is not required to keep a full-text index of earlier
-states. A record is a hit when one of its searchable fields' text at the
-head holds at least one token of the text. Tokens are what the store's one pipeline makes of the text
-(`lakelands_core::stem::stem_text`, stemmed by the type's `language`, or only
+stands at the head: the records live there of the reader's class
+`asked.text_stats` names (the store applies the principal's grants to
+the hits, as for `find` and `get`); an engine is not required to keep a
+full-text index of earlier states. A record is a hit when one of its
+searchable fields' text at the head holds at least one token of the
+text. Tokens are what the store's one pipeline makes of the text
+(`lakelands_core::stem::stem_tokens`, stemmed by the type's `language`, or only
 lower-cased and folded when it has none or the pipeline has no stemmer
 for it), applied the same way to the query and to the
 fields (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
 The set of hits, their order and their scores are the same on every
-engine: one function ranks (`lakelands_core::engines::lexical`). A hit
-scores each distinct query token it holds at the weight of the heaviest
-field holding it, summed in the tokens' order: `asked`'s `text_weights`
-give a field's weight under its name at the head, and a field they do
-not name weighs 1, so with none the score is the number of distinct
-query tokens the hit holds. Hits come best first, equal scores ordered
-by key ascending; at most `k`, cut by that score. A later
-release may score otherwise, on every engine at once, so a caller
-compares scores within one answer.
+engine: one function ranks (`lakelands_core::engines::lexical`), BM25F
+in its combined-field form, for every lake, with no switch per type: a
+token's frequency in each field, multiplied by the field's weight and
+scaled by the field's length against its average, summed over the
+fields and saturated once, times the token's rarity, in `f64` with `ln`
+from `libm`, the same bits on every engine (025 holds the formula and
+its constants). `asked`'s `text_weights` give a field's weight under its
+name at the head, and a field they do not name weighs 1. Hits come best
+first, equal scores ordered by key ascending; at most `k`, cut by that
+score. What the function reads:
+
+- **The class.** `asked.text_stats` absent: every live head, as for a
+  reader holding `restricted`. `Unheld`: the heads that are not held,
+  for a reader without it; a held record is no candidate and moves no
+  count. `Counted`: what the store counted for a reader with no class
+  (below); every live candidate ranks by it.
+- **`df`** is counted by the function over the candidates the engine
+  hands it, admitted to the reader's class, since every candidate that
+  holds a query token is handed. The engine keeps nothing for it.
+- **`n_f` and `L_f`**, the records of the class whose field `f` holds a
+  token and the tokens of `f` over them, are kept by the engine per
+  type, field and hold, one count for the heads that are not held and
+  one for the held: `Unheld` reads the first, an absent class the sum
+  of both. SQLite and PostgreSQL keep the counts and each record's
+  tokens per field in their projection (`text_stats` and
+  `text_lengths`), written in the fold's transaction beside the text
+  rows and taken out where a record is dropped, with a mark of the
+  position they are folded through (`text_stats` in `meta`); a writer
+  that finds the mark absent or behind counts them again at open, and a
+  read that finds it behind counts at the search. The memory engine
+  counts them in the same pass and keeps none.
+- **A reader with no class.** Where the store's sight of its reader
+  admits by `only` pairs, by a link's ends or by what it is told of a record
+  (078), the store counts `n_f`, `L_f` and each query token's `df` over
+  the heads it admits, as it is told them, through
+  `lakelands_core::engines::text_stats`, and hands them as
+  `TextStats::Counted`; an engine handed them ranks by them and not by
+  its own.
+
+They are taken at the head, as the lists are: a `where`, a `valid_at`
+and the position read do not shape them.
+
+Where the text matched (`Hit.matches`) is no engine's to answer: the
+store computes it over the page's records after the cut, by the same
+pipeline (025).
 With fields named, a record's text is only that of the named fields that are
 searchable in the type's declaration at the head: a record matching only
 in another field is no hit, and a record matching in a named field is a
@@ -794,7 +896,12 @@ vector, a page at a time, so its time is linear in them (suite:
 
 - `put` replaces a record's vector for the field; `remove` forgets it,
   and forgetting one that is absent does nothing. Inside the fold's
-  transaction both take effect when it commits, as its puts do.
+  transaction both take effect when it commits, as its puts do. Both
+  answer alike over a vector a state of the record holds, which a disk
+  engine indexes as it puts the state (072): a put of other elements
+  replaces the state's and a remove forgets them until the record's
+  next state, and a put of a field its type does not keep apart is
+  counted (suite: `put_and_remove_answer_alike_over_a_vector_a_state_holds`).
 - `count` is how many vectors the field holds.
 
 The store keeps the index in step while it folds: it puts a live
@@ -826,11 +933,18 @@ cosine ranks them, so an answer never depends on its arithmetic.
 The `sys.setting` `vector_index.<type>` names vector fields of a type. A
 search over one of them answers the index's set, ranked by the one
 cosine, ties by key, and says `ranked_by: index` (or `hybrid (index)`);
-`describe_type` names them as `indexed`. On PostgreSQL the index is
-pgvector's HNSW (`m = 16`, `ef_construction = 64`, `ef_search` at the
-candidates pulled, from 200 up to 1 000, iterative scans past it) over each vector's unit
-vector, used while its mark equals `folded`; SQLite and memory keep none
-and answer the exact ranking. Every other field answers the exact
+`describe_type` names them as `indexed`. On PostgreSQL the index is a
+graph per class of reader (078): B, of the live heads not held, and
+from the type's first hold A, of every live head, each a table of unit
+vectors under pgvector's HNSW (`m = 16`, `ef_construction = 64`), read
+as one stream at `ef_search` 1 000 in strict order while it is built
+and not stale; SQLite and memory keep none and answer the exact
+ranking. An engine that keeps an index promises that an indexed list
+is a prefix of the field's one sequence for the class `seen` names (the
+stream ranked by the one cosine, ties by key, then what the stream did
+not hand out, ranked alike), and that the graph it streams from holds
+nothing that class may not see; one that cannot keep that ranks the
+list exactly. Every other field answers the exact
 ranking on every engine. The suite holds the index's recall against the
 reference at each engine's floor (suite:
 `an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor`):
@@ -866,9 +980,14 @@ holds it to.
 | a held lease is refused at once, naming its holder | engine: `a_held_lease_is_refused_at_once_naming_its_holder` |
 | every take of the lease has a greater fence | engine: `every_take_of_the_lease_has_a_greater_fence` |
 | an append with a gap or a wrong `prev` is refused whole | engine: `an_append_with_a_gap_or_a_wrong_prev_is_refused_whole` |
-| a sealed segment's digest is over its lines, and it is what the seal hands `first`; sealing an empty segment answers none and adds nothing | engine: `a_sealed_segment_is_digested_as_its_lines` |
+| a sealed segment's digest is over its events as restored, and it is what the seal hands `first`; sealing an empty segment answers none and adds nothing | engine: `a_sealed_segment_is_digested_over_its_events_as_they_restore` |
+| a framed append comes back unchanged, each event with its frame, read from the frame's first position, from within it and one event at a time | engine: `a_framed_append_comes_back_unchanged_read_from_within_it` |
+| an append that holds a frame in part is refused as `append_frame`, whole | engine: `an_append_that_holds_a_frame_in_part_is_refused_whole` |
+| a segment of format-19 lines and framed ones reads back as appended and is digested over its events restored | engine: `a_segment_of_older_lines_and_framed_ones_is_digested_over_its_events_restored` |
+| a frame that is no frame, a line that holds what its frame holds, a line of another format than its frame's and a frame line among a frame's lines come back unchanged as handed, and sealing their segment is refused as `damaged` at the position that does not restore, naming its flaw | engine: `a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_where_it_is_restored` |
 | a dropped writer releases its lease | engine: `a_dropped_writer_releases_its_lease` |
 | a read-only handle refuses the lease, appends and sealing, and reads | engine: `a_read_only_handle_refuses_the_lease_and_appends` |
+| a read-only handle tells whether the lease is free, and takes nothing | engine: `a_read_only_handle_tells_whether_the_lease_is_free` |
 | a handle opened for writing that never took the lease is refused an append, an import and a seal under a copy of the writer's, and writes nothing | engine: `a_handle_that_never_took_the_lease_cannot_append_import_or_seal` |
 | a read-only open creates nothing and writes no projection | engine: `a_read_only_open_creates_and_changes_nothing` |
 | a view at a position reads the states valid there | engine: `a_view_at_a_position_sees_the_states_then`; suite: `a_read_as_of_a_write_sees_that_write_and_nothing_later`, `a_read_as_of_the_position_before_a_write_does_not_see_it`, `retiring_a_record_does_not_erase_its_history` |
@@ -878,6 +997,7 @@ holds it to.
 | edges of many keys: one list per key, each what the key alone answers, at the head and earlier; `get_many` what `get` answers key by key, once each, in key order | engine: `edges_over_many_keys_answer_each_key_as_it_answers_alone`, `get_many_answers_what_get_answers_key_by_key` |
 | edges from link records: `Out` and `In` by `from` and `to`, the link's fields in `Edge.fields`, a removed link gone, an earlier position's links | engine: `edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position`; doors: the nineteen `links` checks |
 | a rebuild answers every read as before | suite: `a_rebuilt_projection_answers_every_read_as_the_live_one_did` |
+| a rebuild leaves the projection answering until a checked swap; a second builder, a swap while one builds, of an unmarked scratch or of one behind the log are refused and change nothing; a scratch marked built is kept while the log holds its mark, and built beside a projection of another layout | engine: `a_rebuild_leaves_the_projection_answering_until_the_swap`, `a_scratch_marked_built_is_kept_while_the_log_holds_its_mark`; a builder killed halfway, and a scratch built beside a projection this build cannot read: SQLite and PostgreSQL `tests/rebuild_beside.rs`; a swap refused while another handle holds the file, a handle that opens during one, and a mark past the log's end: SQLite `tests/rebuild_beside.rs` |
 | ingest, the feed, an export and its verification, a rebuild (lakelands#130) and a reopen (lakelands#133) hold as much memory at four times a lake's size as at its first; so does each page of a walk of a type through `find` (lakelands#134) | suite: `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` |
 | a compact answers every read as before, appends nothing, and writes wait for it; the space it gives back | suite: the four `compact` checks; engine: SQLite `tests/compact.rs`, PostgreSQL `a_compact_vacuums_the_projection_beside_an_open_reader_and_reports_its_size` |
 | `scan` filters, the retired and restricted flags, `valid_at` | suite, through `find` and `get` (paging, restriction, views, decimals) |
@@ -893,7 +1013,7 @@ holds it to.
 | a commit backwards, or with a put past `through`, is `Invalid`; a view does not see an open transaction; a view keeps its position after later commits | engine: `a_commit_backwards_or_with_a_put_past_through_is_invalid`, `a_view_does_not_see_an_open_transaction`, `a_view_keeps_its_position_after_later_commits` |
 | a put of the same thing at the same position replaces it | engine: `a_put_at_the_same_position_replaces_the_state_there` |
 | a key put forty thousand times answers at the head, at an earlier position, in a page and in a count as a key put twice | engine: `a_much_written_key_is_put_and_read_as_one_written_twice`. What a put and a read of such a key cost is a count in each disk engine's own `tests/much_written.rs`, never a time: the steps SQLite's statements take, the tuples PostgreSQL fetches; the memory engine keeps a key's states in order and seeks by construction |
-| the same states under a view's kept name, `sys:kept.<view>`, and under an ordinary one answer alike through `get`, `get_many`, a walk by key across batches, a page under a filter, in a field's order and under `equal`, and a count, at the head and at an earlier position, over a key put thousands of times, keys first put after that position, and an ended, a retired and a restricted key; an output recorded as often is read at both | engine: `a_kept_name_answers_as_a_stored_type_holding_the_same_states`. The plan of each statement a kept name is read by, and what a read costs, are in each disk engine's own `tests/kept_name.rs`: the steps SQLite's statements take, the tuples PostgreSQL fetches and that it walks a name's heads, `records_head`, with a seek of each head's state, with statistics and without; SQLite's `src/projection/tests.rs` counts that two types put in turn are each read once |
+| the same states under a view's kept name, `sys:kept.<view>`, and under an ordinary one answer alike at the head through `get`, `get_many`, a walk by key across batches, a page under a filter, in a field's order and under `equal`, and a count, over a key put thousands of times, keys first put after an earlier position, and a retired and a restricted key; a key ended under the kept name answers as one never held; an output recorded as often is read at the head and at that position | engine: `a_kept_name_answers_as_a_stored_type_holding_the_same_states`. The plan of each statement a kept name is read by, and what a read costs, are in each disk engine's own `tests/kept_name.rs`: the steps SQLite's statements take, the tuples PostgreSQL fetches and that it walks a name's heads, `records_head`, with a seek of each head's state, with statistics and without; SQLite's `src/projection/tests.rs` counts that two types put in turn are each read once |
 | a transaction of more than a page of puts leaves what putting them one by one leaves: the head indexes, the earlier states, the memberships, an order index and a vector index asked for in it; a view opened in it after a page of its puts reads what was committed; one refused at its commit leaves nothing; on PostgreSQL a page the server refuses leaves nothing of its transaction and a commit after it leaves the session clean, a vector index asked for a page before the commit is built at the commit, and a search reads the committed vectors until then; the states of two records put record by record, below a declaration's position and at it, after the declaration, leave what position order leaves | engine: `a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves`; PostgreSQL: `tests/pages.rs`, `a_setting_written_a_page_before_its_commit_builds_the_index_at_the_commit`, `a_transaction_written_by_pages_is_counted_whole` |
 | `scan`'s order, `after` and `limit`, including a limit of 0 and values of mixed kinds | engine: `mixed_kinds_sort_the_same_on_every_engine`, `a_scan_continues_strictly_after_its_keyset_position` |
 | a key-ordered `scan` read in batches answers as one scan over every state | engine: `a_key_ordered_scan_answers_across_its_batches_as_one_scan` |
@@ -901,12 +1021,12 @@ holds it to.
 | `count` is the number of records its scan selects, across batches, at the head and earlier; `find`'s `count()` is a full walk's length, holding a batch | engine: `a_count_is_the_number_of_records_its_scan_selects`; suite: `a_count_answers_as_many_records_as_a_full_find_walk`, the streaming check's `count` rows |
 | a `find` page crosses the seam as about `limit` rows, with or without a filter only the store evaluates | store: `tests/find_pages.rs` |
 | `scan`'s filter matches the evaluator exactly, including comparisons across kinds and filters that error; the flags and `valid_at` | engine: `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors`, `scan_honours_retired_restricted_and_valid_at` |
-| `ranked`'s text list: its hit set, its language, searchable fields only, live at the head only (restricted included), ties by key, `k` | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_over_named_fields_is_the_pipelines_over_those_fields` |
+| `ranked`'s text list: its hit set, its language, searchable fields only, live at the head only (restricted included for a reader of every live head, none for one of the heads not held), its BM25F scores, weights and statistics, kept or counted at open, ties by key, `k` | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_over_named_fields_is_the_pipelines_over_those_fields`, `a_weighed_text_scores_each_fields_frequency_by_its_weight_before_the_cut`, `a_projection_without_statistics_counts_them_at_open`; suite: `lexical_score.rs` |
 | `ranked`'s lists are of one state, with its position: an open transaction moves neither, a commit both; a record retired at the head is no candidate | engine: `ranked_answers_every_list_from_one_state_and_says_its_position` |
 | a fold that commits between two statements of one `ranked` call is in none of its lists; on PostgreSQL the call holds every table it reads from its first statement, and a `clear` queued ahead of it is in its position | SQLite: `src/tests.rs`, `a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists` (the reader's statement trace commits the fold); PostgreSQL: `tests/ranked.rs`, `a_fold_committed_inside_one_call_is_in_none_of_its_lists`, `a_call_holds_every_table_it_reads_from_its_first_statement`, `a_clear_queued_ahead_of_a_call_is_in_its_position` |
 | A search's candidates are judged at the position they were read at: a re-key, a hold placed or lifted, a write between two pulls, a field or a link type renamed in between, a searchable field the reader may not read declared in between; a hold placed in between keeps its record out of a pattern started by a search and out of a fused search, and a record given to another is no hit of a holder of `only` | store: `tests/search_position.rs` (the memory engine, a write planted before `ranked` answers), the ten rows of the file |
-| `ranked`'s vector lists: the exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `clear_empties_the_projection_and_the_vector_index` |
-| `declarations`, `is_member`, `members`, `output`, `applied` and `applied_many` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
+| `ranked`'s vector lists: the exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces, also over a state's vector; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `put_and_remove_answer_alike_over_a_vector_a_state_holds`, `clear_empties_the_projection_and_the_vector_index` |
+| `declarations`, `is_member`, `members`, `output`, `applied` and `applied_many` at an earlier position; `mark_applied` keeps the first position; after a `clear` an id answers none until the refold reaches it | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept`, `after_a_clear_an_id_answers_none_until_the_refold_reaches_it` |
 | `replaced` with the head's declarations answers `declarations` at every earlier position, and two ranges that meet answer the one over both | engine: `what_was_replaced_since_a_position_and_what_is_in_force_hold_what_was_then` |
 | `of_source` answers a source's positions as `matching` answers a filter's | engine: `the_index_answers_a_sources_positions_in_order_to_its_through`; store: `forget_index`'s `a_preflight_reads_the_sources_events_as_a_walk_does`; suite: every row of 058 |
 | `matching` answers a filter's positions in order, each once, to its `through`, and nothing past the view or past what the projection has folded | engine: `the_index_answers_a_filters_positions_in_order_to_its_through`; store: `read_through`'s `past_the_views_position_a_poll_reads_the_log`; suite: `a_filtered_poll_answers_the_log_unmasked` and every row that follows the log through `the_index_answers_the_log` |
@@ -1068,7 +1188,9 @@ A lake reads the backend `Seams::embed` brings at open, or the one a
 host binds later on the open lake with `LakeStore::bind_embed`, which
 replaces it whatever its model
 (`docs/decisions/022-functions-are-declarations.md`, extended). A bind
-appends nothing and makes nothing due. A batch reads the bound backend
+appends nothing itself; it, and a writer's open with the backend, makes
+what waits on its model in a task of its own, a recorded failure aside.
+A batch reads the bound backend
 when it asks and holds it until it is answered, so a bind meanwhile
 reaches the next batch. `bind_embed` is the host's alone: the
 network doors answer it `Unbound` as a host operation, no tool of the
@@ -1078,13 +1200,17 @@ and nothing a guest holds can be one.
 
 The store calls the backend for two things.
 
-**A hybrid `search` without a caller's vector** embeds its query text
-through the bound backend and ranks over the result. That is a read,
-and nothing is recorded. A backend that answers other than one vector
-for the one text makes the search `Unavailable`, and so does a backend
-that cannot be reached or fails, whatever error it answers. The lexical
-fallback is for an absent backend, never a failing one, so the same
-query never ranks differently by the network's weather. A search over a
+**A hybrid `search` without a caller's vector, and a vector `search`
+that brings `text`,** embed the query text through the bound backend
+and rank over the result. That is a read, and nothing is recorded. A
+backend that is not bound, cannot be reached or fails, whatever error it
+answers, or answers other than one vector with a direction for the one
+text, leaves a hybrid search its text: it ranks by that alone and says
+so, naming the vector field and the error in `unranked`, and every page
+its cursor continues does the same. A vector search has no other leg, and
+is `Unbound` or `Unavailable`
+(`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`,
+lakelands#1566, lakelands#1567). A search over a
 field declared with `embed` whose model or dimensions are not the bound
 backend's is refused as `Unbound`, naming both: that is a configuration to
 fix, not weather. The search is judged for its caller first, as any
@@ -1092,11 +1218,11 @@ search is, by the shape of the lake it reads (lakelands#741): only one it
 may make has its field's model compared and its text embedded, so a search
 refused for its caller calls nothing and names no model. The model is the
 head's declaration even for a search as of an earlier position, since the
-engines index the head's vectors. A vector search, and a hybrid search
-that brings its own vector, never call the backend; a vector the caller
+engines index the head's vectors. A vector search that brings its
+`vector`, and a hybrid search that brings its own, never call the backend; a vector the caller
 says another model made than the field's is refused as `query_model`
 (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
-A hybrid search without a vector embeds only over a field declared
+A search whose text the lake embeds does so only over a field declared
 with `embed`: over a vector field its writers fill, whose space the
 lake does not know, it is refused as invalid on the field, with a
 backend bound or not, and over a field that holds no vectors as any
@@ -1139,9 +1265,10 @@ record (`docs/decisions/022-functions-are-declarations.md`, extended):
   since declared unchanged it makes nothing due; `recompute` of the type
   always needs one. A due embedding whose backend is
   gone, or names another model or other dimensions, when the call would
-  be made is not made; the field waits. It is made when its record is
-  written again, or `recompute` names its type, with the backend bound;
-  opening the lake calls nothing, and neither does a bind. A retried embedding waits the
+  be made is not made; the field waits. It is made, with the backend
+  bound, when its record is written again, `recompute` names its type,
+  or a writer's open or a bind brings that backend, which make the
+  waiting calls and call no failure again. A retried embedding waits the
   same way: it reads as waiting (no value, no metadata) though the
   log's latest output for its text is still the failure.
 - The text is the `from` fields' values, in declared order, joined with
@@ -1153,8 +1280,8 @@ record (`docs/decisions/022-functions-are-declarations.md`, extended):
   `embed:<model>`, keyed by the digest of `{"texts": [text]}`
   (`docs/log-format.md` §2.5), with the model as the procedure's name
   and the type's version that declared the `embed` as its version.
-  The field's `procedure_version` is the type's version when the vector
-  was produced. A later declaration of the type that leaves the vector's
+  The field's `procedure` is the model and its `procedure_version` the
+  type's version when the vector was produced. A later declaration of the type that leaves the vector's
   text and model as they are rewrites no record, so the metadata keeps
   that version. One
   text is embedded once per model in a lake; a replay, and every later
@@ -1292,7 +1419,8 @@ An executor that fails does not undo the verb: the event that made it
 due is in the log, and its position is real. The failure is the recorded
 output — the error as the wire carries it (`{"error": "refused",
 "reason": {…}, "message": "…"}` for a refusal; lakelands#812; before, `{"error": "<its text>"}`). A
-call the host declines by policy is answered `Error::declined(verb)`
+call the host declines by policy is answered `Error::declined(verb)`, or
+`Error::declined_because(verb, reason)` to record why
 (`docs/hosting.md`). The caller's outcome
 is `applied` at the position that made the verb due, and carries the
 recorded output in its `output` member, the error form included, so an
@@ -1371,8 +1499,14 @@ consumer waits for them: it answers the head once the log is past
 `after` or once `within` has passed, never past the head a `poll`
 reads, so a consumer caught up at `next` waits on `next - 1` and polls
 again (lakelands#1061). The store's feed wakes at the append its handle
-publishes. A read-only handle's head moves only when it opens again, so
-its wait ends at `within`, as its poll answers nothing new. The trait's
+publishes. A read-only handle follows the writer's fold: its poll reads
+up to where the writer has folded, and its wait looks there every
+`REACH_POLL` (10 ms) until it is past `after` or `within` has passed
+(lakelands#1394). Each waiting consumer reads the fold on its own, so
+a read-only handle with many feed streams open costs its engine about a
+hundred small queries a second for each of them while the lake is
+quiet; a host serving many subscribers serves them from the writer, or
+fans one feed out to them. The trait's
 own `wait` answers at once, so a feed written elsewhere keeps working. A filter that names
 something is answered from the projection's index of the log up to the
 view's position (`ProjectionView::matching`): only the events it names
@@ -1463,6 +1597,21 @@ matches nothing, one record's history and its checkpoints):
   tells none of them, the deliverer posts none, and the REST feed marks
   each with the comment `: overruled` (`docs/rest.md`)
   (suite: `REMOVED_FIRED`, `FORGOTTEN_FIRED`).
+- `appends`: the last position of each append that wrote one of
+  `events`, in order; `append_of` answers an event's. An append is a
+  write and its consequences, or one window of an ingest (§4.1 of
+  `docs/log-format.md`): a consumer that gathers what one append wrote,
+  such as the firings of one window's records, groups by it, whatever
+  `known_at` reads and however the caller named its deliveries, and
+  holds all of it once a batch's `next` passes the end. It is read from
+  the frames the log stores, so it costs no read and no byte more; an
+  event of a format before 20, or of the append that begins a lake's
+  format, stands as an append of its own
+  (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`;
+  suite: `APPEND_ENDS`, `APPEND_DELIVERIES`). The REST feed marks
+  each event with the comment `: append <position>`, the MCP pump names
+  as `append` the last position of the append the session is told, and
+  the deliverer as the header `Lakelands-Append`.
 
 The consumer keeps the position it has read up to. The store's own feed
 keeps no consumer state, and its `ack` is accepted and does nothing; `ack` exists for feeds
@@ -1513,6 +1662,8 @@ writer.
   headers:
   - `Lakelands-Lake` and `Lakelands-Position` (together the dedup key),
     `Lakelands-Event` (the event id) and `Lakelands-Attempt` (from 1);
+  - `Lakelands-Append`, the last position of the append that wrote the
+    event (`appends` above);
   - with `secret_file`, `Lakelands-Signature: sha256=<hex>`, the
     HMAC-SHA256 of the body's bytes.
 
@@ -1793,6 +1944,22 @@ and the lake does not hold yet, as system declarations in one append
 (at creation, together with `sys.setting`). A type the host adds later
 reaches an existing lake the next time a writer opens it.
 
+A type the lake holds is declared again where the host's form only adds
+optional fields to it, anywhere among its fields, or rewords it (its
+descriptions, labels, annotations, the order of its fields), in the
+same append: neither reshapes a record, so the records written before
+read as they did. Annotations are judged as a door judges them. A
+reader's open of a lake that holds a type without fields its
+vocabulary adds is refused as `unavailable`, `vocabulary_upgrade_owed`,
+naming the lake and the type, until a writer has opened it; one
+reworded only is read as held. A vocabulary that changes a held type
+in any other way, alone or beside a field added (a field removed,
+retyped or added as required, any other member of a field, the key, a
+relation, a constraint, the type's other members), is refused at every
+open as `invalid`, `vocabulary_changed`, naming the type and each
+difference; nothing is appended
+(`docs/decisions/003-reservation-by-namespace.md`).
+
 Two kinds of name are not a host's to take, and a vocabulary that names
 one is refused when a writer opens the lake. The name is reserved
 (`docs/decisions/003-reservation-by-namespace.md`), and the refusal is
@@ -1878,17 +2045,19 @@ kept where it declares no parameter and reads no clock, and every
 aggregate of its measures and of its merged sources' is a function of
 its values, whatever order they are folded in: any `count`; a `sum` or
 an `avg` of what is certainly a number; a `min` or a `max` of what is
-certainly a number or an instant, under group fields that are all text
-or references, of which there is one at least. A fold skips nulls, so
+certainly a number or an instant, and a `first(f, by)` or a
+`last(f, by)` whose `by` is, under any group fields its source's write
+fixes, or none (lakelands#1614). A fold skips nulls, so
 an `if` with `null` for one branch stands for its other branch
 (`lakelands_api::expr::keepable`). `false` and a retired setting ask for
 nothing. A view declared again so that it can no longer be kept is not
 refused under a standing setting: the setting stays, and `describe_type`
 says why the view computes. It changes no answer, only where a read of
 the view gets it. While an object set holds the view, or a view that
-reads it, the setting written `false` or retired and a declaration
-under which the view cannot be kept are refused `view_kept_for_set`,
-naming the set (`docs/decisions/066-a-set-holds-a-kept-view.md`).
+reads it, or a trigger watches one, the setting written `false` or
+retired and a declaration under which the view cannot be kept are
+refused `view_kept_for_set`, naming the set or the trigger
+(`docs/decisions/066-a-set-holds-a-kept-view.md`).
 
 Another is **`search_weights.<type>`**: it holds an object of `fields`,
 vector fields of `<type>` with their weights, `text_fields`, searchable
@@ -1897,20 +2066,21 @@ at least. `fields` and `text_weight` weigh each ranking a fused search
 of `<type>` gives no weight; `text_fields` weighs a match of the text by
 the field it is in, in every ranking of text: a lexical search's, a
 hybrid search's lexical half before the fusion, and its fallback to the
-text (§`ranked`, lakelands#1230). Each is read as the read finds it at
-its position. A write of it is refused as invalid when `<type>` is no
-declared stored type (`key`), when it names a field the type does not
-declare, in `fields` one it declares with a kind other than vector, in
-`text_fields` one it does not declare searchable, or a weight a search
-could not give (above 0, at most 1 000 000; the member named), and when
-its value is no such object or names nothing (`value`). A weight it
-holds that a search could not give, as a log the store did not write
-may hold, weighs nothing. A field a migration removed stays named and
-weighs nothing; declared again, it takes its weight again. A rename is
-not followed: the field is weighed by its old name at a position before
-it, and at the head by its new one, which the setting does not name
-until a host writes it again. The judge of
-all four settings is the contract's
+text (§`ranked`, lakelands#1230). A search's own `text_fields` wins
+over the setting's for each field it names (lakelands#1237). Each is
+read as the read finds it at its position. A write of it is refused as
+invalid when `<type>` is no declared stored type (`key`), when it names
+a field the type does not declare, in `fields` one it declares with a
+kind other than vector, in `text_fields` one it does not declare
+searchable, or a weight a search could not give (above 0, at most
+1 000 000; the member named), and when its value is no such object or
+names nothing (`value`). A weight it holds that a search could not give,
+as a log the store did not write may hold, weighs nothing. A field a
+migration removed stays named and weighs nothing; declared again, it
+takes its weight again. A rename is not followed: the field is weighed
+by its old name at a position before it, and at the head by its new one,
+which the setting does not name until a host writes it again. The judge
+of all four settings is the contract's
 (`lakelands_api::seam::check_setting`). It changes no answer's members,
 only the order a search ranks them in.
 
@@ -1919,15 +2089,16 @@ after the writer's grant on `sys.setting`
 (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 extended). The judge is handed `<type>` as `describe_type` answers it to
 the writer. A type the writer is not shown is refused as a name that is
-not declared, under every value, `null` and `false` too. A field the
-description does not name is one the type does not declare; a field it
-names masked or write-only is judged by its kind, which the description
-says. A view that cannot be kept is refused with its reason to a writer
+not declared, under every value, `null` and `false` too. A setting that
+names the type's fields, an index setting or `search_weights`, is
+written, retired or proposed only by a writer that reads the type whole;
+any other is refused it as not granted, naming no field, before anything
+of it is judged (`docs/decisions/063-every-setting-is-in-one-list.md`).
+A view that cannot be kept is refused with its reason to a writer
 shown the view as declared, and with no more than that it cannot be to
-one shown the view without its definition. The judge reads the value the
-write leaves, so a principal writes a setting only while it is shown
-everything the setting names, whoever wrote it first; retiring a setting
-is not judged. `propose` is judged as `upsert` is, as its proposer.
+one shown the view without its definition. The judge reads the value as
+its writer writes it. `propose` is judged as `upsert` is, as its
+proposer.
 
 `describe_type` says in a view's lifecycle (`kept`), and in no other
 type's, whether its records are kept, or computed at each read and why:
@@ -1936,7 +2107,10 @@ says, to a principal who is shown the view as declared and to no other,
 since it names what the view reads; `not_whole`, with the number of
 groups whose kept record is not exact for the reader (a measure that
 fails over one, which mends when its cause leaves, or an extreme given
-up, which only what makes the view again mends); or `not_kept_here`,
+up, which only what makes the view again mends); `building`, where a
+`view_kept.<view>` setting is in force and its build has not reached its
+`Keep`, so reads compute the view meanwhile and a build a runner left
+owed goes on at the next open; or `not_kept_here`,
 which is also
 what a lake that keeps no view answers for a view that is
 asked for and can be kept. Like `sorted` and `indexed`, `kept` describes
@@ -1944,9 +2118,9 @@ the projection and not the log; a rebuild leaves the state the live
 appends left, since the fold decides everything of a kept view in the
 fold of one event, but for the make after a declaration that computes a
 source's records again, which stands where those records are put and
-may come at a later position in a rebuild: as of a position between,
-`kept` may then say `not_kept_here` where the live lake said `kept`,
-and every read of the view's records answers alike (lakelands#631).
+may come at a later position in a rebuild. As of any earlier position
+`kept` says `not_kept_here`, since a kept view is read at the head
+alone (098), and every read of the view's records answers alike.
 
 The store keeps such a view in its fold
 (`docs/decisions/049-a-view-the-fold-keeps.md`): the view's records are
@@ -1954,10 +2128,16 @@ put in the projection under a name of the store's own,
 `sys:kept.<view>`, and its state under the seam name `sys:kept`, neither
 of which a type or a seam of a host can bear, and a read of the view
 answers them where the state at its position says they are the
-computation's own. There `describe_type` answers `kept`, `not_whole`
-with its number for the reader's face, or `not_kept_here` as of a
-position before the view was made and to a principal the view's read
-would refuse, who is told nothing of its groups.
+computation's own. The fold keeps a group's latest record alone, so
+only a read at the head answers them, and a read as of an earlier
+position computes the view (098). A state cut under another copy of the
+time-zone database than the binary's is read as none, until a writer's
+open folds the view again (098). There `describe_type` answers `kept`,
+`not_whole` with its number for the reader's face, `not_kept` with
+`building` while its build is marked, or `not_kept_here`
+as of an earlier position, under another copy of the time-zone
+database, and to a principal the view's read would refuse, who is told
+nothing of its groups.
 
 A `sys.aging_rule` record is one **aging rule**: on a date, move a field
 of every record of a type from one value to another when a condition
@@ -2047,12 +2227,15 @@ is held by the CLI's tests.
 the `aging` section of the root's `lakelands.json`:
 
 ```json
-"aging": { "utc_offset": "+01:00", "check_secs": 60 }
+"aging": { "check_secs": 60 }
 ```
 
-- **The date** is the host's clock at `utc_offset` (`Z`, or `+HH:MM` /
-  `-HH:MM` within fourteen hours; a fixed offset, not a zone), handed to
-  `age` at UTC midnight. The lake never reads a clock (002).
+- **The date** is the day of the lake's calendar holding the host's
+  clock: cut in the zone the lake names, its `zone` setting
+  (`LakeStore::zone`, `UTC` where it names none), read again at every
+  look, and handed to `age` at UTC midnight (101). The lake never reads
+  a clock (002). A root that still names the fixed `utc_offset` an
+  earlier release read is refused when it is opened, saying so.
 - **When:** once when `serve` starts, and again whenever that date rolls
   over, looked at every `check_secs` (60 by default). A second run on
   one date writes nothing new.
@@ -2085,10 +2268,12 @@ host's, never in the lake: not in its log, its projection or its export.
 | Method | Contract |
 |---|---|
 | `create(lake, source)` | Make a new version of the source's key and answer its id. A source whose keys were destroyed is never given one again (`key_destroyed`). |
-| `key(lake, source, id)` | The key of that version: 32 bytes, or none once destroyed. |
-| `destroy(lake, source)` | Destroy every version of the source's key. |
+| `key(lake, source, id)` | The key of that version, or of a key `create_apart` made: 32 bytes, or none once destroyed. |
+| `destroy(lake, source)` | Destroy every version of the source's key, and every key `create_apart` made of it. |
 | `destroy_version(lake, source, id)` | Destroy that version and every older one, never one alone; a version it does not hold is refused (`key_version_not_held`). The default refuses as `Unbound` (`key_versions`), for a store that destroys only whole sources. |
 | `ids(lake, source)` | The versions the store holds, oldest first; none once destroyed. |
+| `create_apart(lake, source)` | Make a key of the source outside its versions, for one delivery sealed apart, and answer its id: `key` answers it, `ids` never lists it, and `destroy` destroys it with the versions. The default refuses as `Unbound` (`key_apart`), and an ingest that asks `sealed_apart` is then refused. |
+| `destroy_apart(lake, source, id)` | Destroy that key alone; one it does not hold is no change. The default refuses as `Unbound` (`key_apart`). |
 
 The calls are synchronous: the writer makes them on the store's blocking
 threads, at a source's first sealed value of an open lake, and at a read
@@ -2132,6 +2317,33 @@ store bound. With none bound, it reads the export first: a source whose
 values are sealed and whose `source_forgotten` the export holds arrives
 erased, and any other refuses the import as `Unbound` before anything
 is written.
+
+## `Meter`
+
+A lake tells its meter what it does, and keeps no number of its own
+(`docs/decisions/079-a-lake-is-measured-through-a-meter-the-host-binds.md`).
+Each call is handed a `Metered`, the lake's id and its engine's name, and
+one number of a closed set, each `#[non_exhaustive]`, its `ALL` listing
+them and its `name()` the name a host exports it under.
+
+| Method | Contract |
+|---|---|
+| `count(at, Count, by)` | A number that only goes up went up by `by`: events appended, appends, appends that failed, writes, seals. |
+| `level(at, Level, value)` | A number stands at `value`: the queue's depth, the tip, the position folded through, a rebuild under way, the active segment's bytes, the lease held and its fence, both 0 whenever the lease goes. |
+| `observe(at, Spread, value)` | One value of a spread: an append's, a fold's, a commit's or a read's time in microseconds, or a batch's writes. |
+
+The calls are synchronous and are made inside the writer's turn, so a
+meter keeps its numbers in atomics or hands them off; it is never asked
+anything back. Each call is made under `catch_unwind`: a meter that
+panics loses that number and nothing else, and an append's counts are
+told only after its fold has committed. No number names a type, a
+record, a principal or a value. With no meter bound, nothing is told and
+no clock is read for one.
+
+`lakelands_server::Metrics` is the meter `serve` binds to every lake it
+opens where the root's `lakelands.json` sets `server.metrics.bind`, and
+answers `GET /metrics` there in the Prometheus text format
+(`docs/hosting.md`).
 
 ## The facade and the doors
 
@@ -2281,8 +2493,8 @@ yet, only the host's: `lakelands-client` answers it `unbound`, naming it
 values of erasable fields the log holds sealed
 (`docs/decisions/058-a-source-may-be-forgotten.md`): under the writer's
 lock it appends `source_forgotten` with the retirements of the records
-the source alone brought, has the key store destroy the source's keys,
-rebuilds the projection and reclaims the storage. `forget_preflight`
+the source made and alone brought, has the key store destroy the
+source's keys, rebuilds the projection and reclaims the storage. `forget_preflight`
 answers the same report, appending nothing, with the time the act is
 expected to hold the lock: an estimate, `events` at the rate the
 handle's last rebuild measured (its open's included), or at the
@@ -2301,13 +2513,25 @@ reclaim that fails is not a failure of the act: the report answers it in
 the writer's next open, a repeat or a `compact` that runs clears it
 (lakelands#1179).
 
+`LakeStore::forget_sources(sources, report_id)` and
+`forget_sources_preflight(sources)` do the same for a set of sources in
+one act (lakelands#1183): one `source_forgotten` for each in one append,
+one rebuild and one reclaim under one hold of the lock, one report id and
+one expected time, each source's report beside them. A set that is
+empty, names a source twice or names one the log holds no event of is
+refused whole, appending nothing. A set of one answers as
+`forget_preflight` does, its id included. They default to `unbound` for
+a facade that does not carry them, as `lakelands-client` does.
+
 `LakeStore::remove_values(source, selection, require_shredded,
-report_id)` takes back what a source wrote before a time or in one
-delivery (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`),
-in the same steps and with the same answer of an owed reclaim;
+report_id)` takes back what a source wrote before a time, in one
+delivery or a set of them, or of what it observed before a time
+(`docs/decisions/065-part-of-a-source-may-be-taken-back.md`), in the
+same steps and with the same answer of an owed reclaim;
 `remove_values_preflight` answers its report, appending nothing. It is
 no door's either. The CLI's `lakelands values remove --source <id>
-(--before <instant> | --delivery <id>) [--require-shredded]
+(--before <instant> | --delivery <id>… | --seen-before <instant>)
+[--require-shredded]
 [--preflight | --report <id>]` runs it. A mirror that meets
 `values_removed` stops each mapped type with a field its reader reads
 that a removal may take, past the act.
@@ -2372,6 +2596,21 @@ The suite's `purge` checks hold the sentences about what a purge retires
 and refuses on every engine; the lines `lakelands purge` prints are held
 by the CLI's tests.
 
+`LakeStore::thin_values(ty, thin, preflight)` takes a type's records
+whose field `thin.by` is certainly before `thin.before` out of the
+projection, as one act in parts beside the writer
+(`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`): every
+group a taken record's versions held is stranded on the kept views that
+read it, its row is replaced by a tombstone, and the log keeps every
+value, so a rebuild folds the same answers. A field of neither instants
+nor dates is refused `ThinBy`, and a kept view of the type holding a
+group that is not exact now `KeptNotExact`. With `preflight` at `true` it answers the
+same report, appending nothing; an act a writer's open finds owed is
+finished before it answers. The write doors' refusal of a taken key is
+S6's; the reclaim is S7's, so `reclaimed` is absent. The suite's
+thinning checks hold the act, its parts, the kept view's answers, the
+refused groups and an export between parts on every engine.
+
 `LakeStore::compact()` gives back the storage the projection no longer
 uses, when the host chooses
 (`docs/decisions/040-maintenance-never-changes-an-answer.md`). It runs
@@ -2430,7 +2669,8 @@ precondition naming it, and nothing is written. The suite's `export`
 checks hold the files, the verifier and the refusal on every engine;
 the client's tests hold that an export over the REST door is the
 served store's own, byte for byte, and the PostgreSQL engine's tests
-that `lakelands_engine_pg::export` writes the same bytes.
+that `lakelands_engine_pg::export` writes the same events, with the same
+digests.
 
 `Catalog::apply` declares a set of declarations as one: validated
 together, so a reference may point forward within the set, and appended

@@ -65,20 +65,22 @@ impl Folded {
     }
 
     /// One append, folded in one transaction; the events' positions.
-    fn try_append(&self, drafts: Vec<Draft>) -> lakelands_api::Result<Vec<Position>> {
-        let mut w = self.lake.for_write()?;
-        let events = self.lake.append(&mut w, drafts)?;
+    fn try_append(&mut self, drafts: Vec<Draft>) -> lakelands_api::Result<Vec<Position>> {
+        let lake = self.lake.turn();
+        let mut w = lake.for_write()?;
+        let events = lake.append(&mut w, drafts)?;
         Ok(events.iter().map(|e| e.position).collect())
     }
 
-    fn append(&self, drafts: Vec<Draft>) -> Vec<Position> {
+    fn append(&mut self, drafts: Vec<Draft>) -> Vec<Position> {
         let appended = self.try_append(drafts);
         appended.unwrap_or_else(|e| panic!("{}: the append must fold: {e}", self.name))
     }
 
     /// One append of events the store writes for itself.
-    fn bodies(&self, bodies: Vec<EventBody>) -> Vec<Position> {
-        let now = self.lake.clock(&mut self.lake.writer());
+    fn bodies(&mut self, bodies: Vec<EventBody>) -> Vec<Position> {
+        let lake = self.lake.turn();
+        let now = lake.clock(&mut lake.writer());
         self.append(bodies.into_iter().map(|b| Draft::system(now, b)).collect())
     }
 
@@ -106,8 +108,8 @@ impl Folded {
 
     /// The calls that are due, taken: cause, type, key, field, the call's
     /// inputs, and whether a recorded failure is called again.
-    fn due(&self) -> Vec<(u64, String, String, String, Value, bool)> {
-        let due = calls(&self.lake);
+    fn due(&mut self) -> Vec<(u64, String, String, String, Value, bool)> {
+        let due = calls(&self.lake.turn());
         let one = |d: backed::Due| {
             let inputs = match &d.call {
                 Call::Function { call, .. } => call.inputs.clone(),
@@ -168,11 +170,13 @@ fn context(n: u32) -> WriteContext {
         origin: WriteOrigin::Scheduled,
         depth: n,
         cause: None,
+        on_behalf_of: None,
+        occasion: None,
     }
 }
 
 /// The provenance `own(n, who, ..)` gives a field its fold computes, at
-/// `position`: by a function at `version`, or else by the event's own
+/// `position`: by the function `f` at `version`, or else by the event's own
 /// procedure.
 fn stamped(n: u32, who: &str, position: Position, version: Option<&str>) -> FieldMeta {
     FieldMeta {
@@ -182,10 +186,12 @@ fn stamped(n: u32, who: &str, position: Position, version: Option<&str>) -> Fiel
         position,
         writer: who.into(),
         source: Some(format!("source-{n}").as_str().into()),
+        procedure: Some(if version.is_some() { "f" } else { "by hand" }.into()),
         procedure_version: Some(version.map_or(format!("p{n}"), str::to_owned)),
         upstream: Some(upstream(n)),
         error: None,
         erased: false,
+        on_behalf_of: None,
     }
 }
 
@@ -297,7 +303,7 @@ fn summed(name: &str) -> TypeDecl {
 /// A lake that holds `f` as `n * 2`, `doc` and the records `docs`, each
 /// with its `n`.
 fn doubling(name: &str, docs: &[(&str, i64)]) -> (Folded, Vec<Position>) {
-    let l = Folded::new(name);
+    let mut l = Folded::new(name);
     let mut load = vec![expr("f", 1, "n * 2"), declared(doubled(), 1)];
     load.extend(
         docs.iter()
@@ -310,7 +316,7 @@ fn doubling(name: &str, docs: &[(&str, i64)]) -> (Folded, Vec<Position>) {
 /// A lake that holds `f`, computed outside the lake, `doc` and `memo`, and
 /// the records `held` (type, key, title), none with an output recorded.
 fn summing(name: &str, held: &[(&str, &str, &str)]) -> Folded {
-    let l = Folded::new(name);
+    let mut l = Folded::new(name);
     let mut load = vec![
         http(1, json!(1)),
         declared(summed("doc"), 1),
@@ -325,7 +331,7 @@ fn summing(name: &str, held: &[(&str, &str, &str)]) -> Folded {
 
 #[test]
 fn row_1_a_later_read_finds_the_record_as_the_step_left_it() {
-    let (l, _) = doubling("recompute-1", &[("a", 3)]);
+    let (mut l, _) = doubling("recompute-1", &[("a", 3)]);
     let q = l.append(vec![
         own(1, "user:ada", expr("f", 2, "n * 3")),
         own(2, "user:bob", restricted("doc", "a", 2)),
@@ -361,7 +367,7 @@ fn row_1_a_later_read_finds_the_record_as_the_step_left_it() {
 
 #[test]
 fn row_2_a_record_the_transaction_wrote_is_due_from_what_was_written() {
-    let l = summing("recompute-2", &[("doc", "a", "A"), ("doc", "c", "C")]);
+    let mut l = summing("recompute-2", &[("doc", "a", "A"), ("doc", "c", "C")]);
     let q = l.bodies(vec![
         wrote("doc", "a", 2, json!({"title": "fresh"})),
         http(2, json!(1)),
@@ -385,7 +391,7 @@ fn row_2_a_record_the_transaction_wrote_is_due_from_what_was_written() {
 
 #[test]
 fn row_2a_a_written_record_that_makes_nothing_due_hides_the_views_row() {
-    let l = summing("recompute-2a", &[("doc", "a", "A"), ("doc", "c", "C")]);
+    let mut l = summing("recompute-2a", &[("doc", "a", "A"), ("doc", "c", "C")]);
     l.probe.take();
     let q = l.bodies(vec![retired("doc", "a", 2), http(2, json!(1))]);
     let due: Vec<_> = l.due().into_iter().map(|d| (d.0, d.2, d.4)).collect();
@@ -408,7 +414,7 @@ fn row_2a_a_written_record_that_makes_nothing_due_hides_the_views_row() {
 
 #[test]
 fn row_3_an_output_recorded_later_fills_the_record_the_step_cleared() {
-    let l = summing("recompute-3", &[("doc", "a", "A")]);
+    let mut l = summing("recompute-3", &[("doc", "a", "A")]);
     l.bodies(vec![output(json!(1), "A", json!("S1"), Some(("doc", "a")))]);
     // The new version's configuration makes another call: no output is
     // recorded for it yet.
@@ -438,12 +444,12 @@ fn row_3_an_output_recorded_later_fills_the_record_the_step_cleared() {
         (json!([{"title": "A"}, 1, q[0].0]), None),
         "row 3: as of the `declared` the field is cleared, at the `declared`'s position"
     );
-    let owed: Vec<_> = (l.lake.writer().owed.iter())
+    let owed: Vec<_> = (l.lake.turn().writer().owed.iter())
         .map(|o| {
             (
                 o.cause,
                 o.ty.to_string(),
-                o.context,
+                o.context.clone(),
                 matches!(o.of, Of::Sweep { .. }),
             )
         })
@@ -480,7 +486,7 @@ fn row_3_an_output_for_the_call_the_step_made_finds_its_record() {
     };
     let m = computed_by("m", Number, "g", &["n"]);
     let sum = computed_by("sum", Text, "f", &["m"]);
-    let l = Folded::new("recompute-3-call");
+    let mut l = Folded::new("recompute-3-call");
     l.bodies(vec![
         expr("g", 1, "n * 2"),
         declaration(f.clone(), 1),
@@ -503,7 +509,7 @@ fn row_3_an_output_for_the_call_the_step_made_finds_its_record() {
 
 #[test]
 fn row_4_a_step_reads_the_outputs_recorded_before_it_whenever_it_is_asked() {
-    let l = summing("recompute-4", &[("doc", "a", "A"), ("doc", "b", "A")]);
+    let mut l = summing("recompute-4", &[("doc", "a", "A"), ("doc", "b", "A")]);
     let q = l.bodies(vec![
         output(json!(1), "A", json!("S"), None),
         http(2, json!(1)),
@@ -530,7 +536,7 @@ fn row_4_a_step_reads_the_outputs_recorded_before_it_whenever_it_is_asked() {
 
 #[test]
 fn row_4a_every_recording_of_one_call_is_kept_with_its_position() {
-    let l = summing(
+    let mut l = summing(
         "recompute-4a",
         &[("doc", "a", "X"), ("doc", "b", "X"), ("memo", "m", "X")],
     );
@@ -556,7 +562,7 @@ fn row_4a_every_recording_of_one_call_is_kept_with_its_position() {
 
 #[test]
 fn row_4b_an_output_recorded_between_a_declared_and_its_flush_is_not_read() {
-    let l = summing("recompute-4b", &[("doc", "a", "A")]);
+    let mut l = summing("recompute-4b", &[("doc", "a", "A")]);
     let q = l.bodies(vec![
         output(json!(1), "A", json!("S"), None),
         http(2, json!(1)),
@@ -579,7 +585,7 @@ fn doubled_plus(plus: &str) -> TypeDecl {
 
 #[test]
 fn row_5_each_step_computes_with_what_stood_at_its_own_event() {
-    let l = Folded::new("recompute-5");
+    let mut l = Folded::new("recompute-5");
     l.bodies(vec![
         expr("f", 1, "n * 2"),
         declared(doubled_plus("n + 1"), 1),
@@ -638,14 +644,14 @@ fn migrated(to: TypeDecl, moves: &[(&str, &str)]) -> EventBody {
 /// catches up carries it from where the last commit left it.
 #[test]
 fn a_migration_whose_fold_fails_carries_what_is_owed_once() {
-    let l = summing("recompute-carried", &[("doc", "b", "B")]);
+    let mut l = summing("recompute-carried", &[("doc", "b", "B")]);
     l.bodies(vec![wrote("doc", "a", 1, json!({"title": "A"}))]);
     *l.probe.refuse_commit.lock().unwrap() = Some(1);
     let chained = migrated(summed("doc"), &[("a", "b"), ("b", "c")]);
     l.try_append(vec![system(chained)])
         .expect_err("the fold fails");
     l.bodies(vec![wrote("doc", "z", 1, json!({"title": "Z"}))]);
-    let keys: Vec<String> = (l.lake.writer().owed.iter())
+    let keys: Vec<String> = (l.lake.turn().writer().owed.iter())
         .map(|o| match &o.of {
             Of::Record(key) => key.to_string(),
             Of::Sweep { .. } => "*".to_owned(),
@@ -656,7 +662,7 @@ fn a_migration_whose_fold_fails_carries_what_is_owed_once() {
 
 #[test]
 fn row_6_a_recomputation_after_a_rekey_lands_at_the_new_key() {
-    let (l, _) = doubling("recompute-6", &[("a", 3)]);
+    let (mut l, _) = doubling("recompute-6", &[("a", 3)]);
     let q = l.bodies(vec![
         migrated(doubled(), &[("a", "b")]),
         expr("f", 2, "n * 3"),
@@ -682,7 +688,7 @@ fn row_6_a_recomputation_after_a_rekey_lands_at_the_new_key() {
 
 #[test]
 fn row_7_a_migration_converts_the_record_as_the_recomputation_left_it() {
-    let (l, _) = doubling("recompute-7", &[("a", 12)]);
+    let (mut l, _) = doubling("recompute-7", &[("a", 12)]);
     let mut texted = doubled();
     texted.fields[0] = field("n", Text);
     let q = l.bodies(vec![expr("f", 2, "n * 3"), migrated(texted, &[])]);
@@ -705,7 +711,7 @@ fn key(i: i64) -> String {
 /// A lake that holds `f` as `n * 2`, `doc` and `MANY` records, each with
 /// the `n` that `n` gives its number.
 fn many(name: &str, n: impl Fn(i64) -> i64) -> Folded {
-    let l = Folded::new(name);
+    let mut l = Folded::new(name);
     let mut load = vec![expr("f", 1, "n * 2"), declared(doubled(), 1)];
     load.extend((1..=MANY).map(|i| wrote("doc", &key(i), 1, json!({"n": n(i)}))));
     l.bodies(load);
@@ -721,7 +727,7 @@ fn scans(asked: &[Asked]) -> usize {
 
 #[test]
 fn row_8_a_page_is_put_before_the_next_is_read() {
-    let l = many("recompute-8", |i| i);
+    let mut l = many("recompute-8", |i| i);
     let q = l.bodies(vec![expr("f", 2, "n * 3")]);
     let asked = l.probe.take();
     let first = |wanted: &dyn Fn(&Asked) -> bool, nth: usize| {
@@ -750,7 +756,7 @@ fn row_8_a_page_is_put_before_the_next_is_read() {
 
 #[test]
 fn row_9_the_flush_indexes_the_vectors_it_fills() {
-    let l = Folded::new("recompute-9");
+    let mut l = Folded::new("recompute-9");
     let embedded = || {
         let vec = embedding("vec", 3, &["title"], "m");
         type_decl("doc", vec![field("title", Text), vec])
@@ -815,7 +821,7 @@ fn row_9_the_flush_indexes_the_vectors_it_fills() {
 
 #[test]
 fn row_10_a_record_the_recomputation_leaves_as_it_is_keeps_its_position() {
-    let (l, p) = doubling("recompute-10", &[("a", 0), ("b", 3)]);
+    let (mut l, p) = doubling("recompute-10", &[("a", 0), ("b", 3)]);
     l.probe.take();
     let q = l.bodies(vec![
         wrote("doc", "w", 1, json!({"n": 0})),
@@ -849,7 +855,7 @@ fn row_10_a_record_the_recomputation_leaves_as_it_is_keeps_its_position() {
 
 #[test]
 fn row_11_a_retired_record_read_through_the_step_is_as_it_was() {
-    let (l, p) = doubling("recompute-11", &[("b", 3), ("r", 3)]);
+    let (mut l, p) = doubling("recompute-11", &[("b", 3), ("r", 3)]);
     l.bodies(vec![retired("doc", "r", 2)]);
     let q = l.bodies(vec![expr("f", 2, "n * 3"), restricted("doc", "r", 3)]);
     let r = l.record(None, "doc", "r").expect("the record");
@@ -863,7 +869,7 @@ fn row_11_a_retired_record_read_through_the_step_is_as_it_was() {
 
 #[test]
 fn row_12_a_restricted_record_is_computed_again_with_its_flags() {
-    let (l, _) = doubling("recompute-12", &[("h", 3)]);
+    let (mut l, _) = doubling("recompute-12", &[("h", 3)]);
     l.bodies(vec![restricted("doc", "h", 2)]);
     let q = l.bodies(vec![expr("f", 2, "n * 3")]);
     let h = l.record(None, "doc", "h").expect("the record");
@@ -882,7 +888,7 @@ fn row_12_a_restricted_record_is_computed_again_with_its_flags() {
 
 #[test]
 fn row_14_a_step_computes_with_the_value_types_and_settings_of_its_event() {
-    let l = Folded::new("recompute-14");
+    let mut l = Folded::new("recompute-14");
     let money = |scale: u32, version: u32| {
         let d = json!({"declare": "value_type", "name": "money", "kind": "decimal",
                        "scale": scale});
@@ -938,7 +944,7 @@ fn row_15_the_due_calls_come_by_step_type_and_key() {
         let by_f = |field: &str| computed_by(field, Text, "f", &["title"]);
         type_decl(name, vec![field("title", Text), by_f("zz"), by_f("aa")])
     };
-    let l = Folded::new("recompute-15");
+    let mut l = Folded::new("recompute-15");
     l.bodies(vec![
         http(1, json!(1)),
         declared(both("doc"), 1),
@@ -982,7 +988,7 @@ fn row_15_the_due_calls_come_by_step_type_and_key() {
 #[test]
 fn row_16_a_forced_settle_calls_again_for_a_recorded_failure() {
     let failure = || json!({"error": "boom"});
-    let check = |l: &Folded, at: Position, placement: &str| {
+    let check = |l: &mut Folded, at: Position, placement: &str| {
         assert_eq!(
             l.state(None, "doc", "a"),
             json!([{"title": "A"}, 1, at.0]),
@@ -1012,17 +1018,17 @@ fn row_16_a_forced_settle_calls_again_for_a_recorded_failure() {
         );
     };
     // The record written by the output's fill, in the same transaction.
-    let l = summing("recompute-16-written", &[("doc", "a", "A")]);
+    let mut l = summing("recompute-16-written", &[("doc", "a", "A")]);
     let q = l.append(vec![
         system(output(json!(1), "A", failure(), Some(("doc", "a")))),
         own(1, "user:ada", http(2, json!(1))),
     ]);
-    check(&l, q[1], "the record written by the fill");
+    check(&mut l, q[1], "the record written by the fill");
     // The record in the view only.
-    let l = summing("recompute-16-view", &[("doc", "a", "A")]);
+    let mut l = summing("recompute-16-view", &[("doc", "a", "A")]);
     l.bodies(vec![output(json!(1), "A", failure(), Some(("doc", "a")))]);
     let q = l.append(vec![own(1, "user:ada", http(2, json!(1)))]);
-    check(&l, q[0], "the record in the view only");
+    check(&mut l, q[0], "the record in the view only");
 }
 
 /// A backing that fails its first call and answers `again` from then on.
@@ -1103,7 +1109,7 @@ async fn row_16_the_recompute_door_calls_again_for_a_recorded_failure() {
 
 #[test]
 fn row_17_a_step_that_changed_one_record_of_the_first_page_is_kept() {
-    let l = many("recompute-17", |i| if i == 3 { 3 } else { 0 });
+    let mut l = many("recompute-17", |i| if i == 3 { 3 } else { 0 });
     let q = l.bodies(vec![expr("f", 2, "n * 3"), restricted("doc", &key(3), 2)]);
     assert_eq!(
         l.state(None, "doc", &key(3)),
@@ -1115,7 +1121,7 @@ fn row_17_a_step_that_changed_one_record_of_the_first_page_is_kept() {
 
 #[test]
 fn row_18_a_written_record_the_flush_leaves_as_it_is_stays_kept() {
-    let l = Folded::new("recompute-18");
+    let mut l = Folded::new("recompute-18");
     let mut noted = doubled();
     noted.fields.push(field("note", Text));
     l.bodies(vec![
@@ -1145,7 +1151,7 @@ fn row_18_a_written_record_the_flush_leaves_as_it_is_stays_kept() {
 
 #[test]
 fn row_19_a_record_of_another_type_is_as_it_was() {
-    let l = Folded::new("recompute-19");
+    let mut l = Folded::new("recompute-19");
     let p = l.bodies(vec![
         expr("f", 1, "n * 2"),
         declared(doubled(), 1),
@@ -1178,7 +1184,7 @@ fn tripled() -> TypeDecl {
 
 #[test]
 fn row_20_a_bundle_of_changed_functions_walks_its_type_once() {
-    let l = Folded::new("recompute-20");
+    let mut l = Folded::new("recompute-20");
     let mut load = vec![
         expr("f", 1, "n * 2"),
         expr("g", 1, "n + 1"),
@@ -1220,7 +1226,7 @@ fn row_20_a_bundle_of_changed_functions_walks_its_type_once() {
 /// Answers the lake, the write's position and every record's state at
 /// every position, as the live lake holds them.
 fn ten_appends(name: &str) -> (Folded, Position, Vec<Value>) {
-    let (l, _) = doubling(name, &[("a", 1), ("b", 2), ("c", 3)]);
+    let (mut l, _) = doubling(name, &[("a", 1), ("b", 2), ("c", 3)]);
     let mut written = None;
     for v in 2..=11 {
         l.bodies(vec![expr("f", v, &format!("n * {}", v + 1))]);
@@ -1245,9 +1251,9 @@ fn commits(asked: &[Asked]) -> Vec<Position> {
 
 #[test]
 fn row_21_a_rebuild_ends_its_transaction_after_a_flush_that_kept_a_step() {
-    let (l, written, live) = ten_appends("recompute-21");
+    let (mut l, written, live) = ten_appends("recompute-21");
     let head = l.lake.head();
-    assert_eq!(l.lake.rebuild().expect("the rebuild"), head);
+    assert_eq!(l.lake.turn().rebuild().expect("the rebuild"), head);
     assert_eq!(
         l.history(KEYS),
         live,
@@ -1265,8 +1271,8 @@ fn row_21_a_rebuild_ends_its_transaction_after_a_flush_that_kept_a_step() {
 fn a_commit_refused_inside_a_page_leaves_what_was_committed_before_it() {
     // The commit after the flush is refused: nothing of the page is
     // committed, and the next fold starts the page again.
-    let (l, written, live) = ten_appends("recompute-refused-first");
-    let folded = || {
+    let (mut l, written, live) = ten_appends("recompute-refused-first");
+    let folded = |l: &Folded| {
         l.lake
             .engine
             .projection()
@@ -1274,15 +1280,15 @@ fn a_commit_refused_inside_a_page_leaves_what_was_committed_before_it() {
             .expect("the mark")
     };
     *l.probe.refuse_commit.lock().unwrap() = Some(1);
-    let refused = l.lake.rebuild().expect_err("the rebuild fails");
+    let refused = l.lake.turn().rebuild().expect_err("the rebuild fails");
     assert!(refused.to_string().contains("planted"), "{refused}");
     assert_eq!(
-        (folded(), l.lake.head()),
+        (folded(&l), l.lake.head()),
         (None, Position(0)),
         "the commit after the flush was refused: the page's earlier events are not committed"
     );
     assert_eq!(l.state(None, "doc", "a"), json!("absent"));
-    l.lake.rebuild().expect("the next fold");
+    l.lake.turn().rebuild().expect("the next fold");
     assert_eq!(
         l.history(KEYS),
         live,
@@ -1291,9 +1297,9 @@ fn a_commit_refused_inside_a_page_leaves_what_was_committed_before_it() {
 
     // The page's last commit is refused: the page stands at the commit
     // after the flush, whole, and the next fold continues from there.
-    let (l, written_2, live) = ten_appends("recompute-refused-last");
+    let (mut l, written_2, live) = ten_appends("recompute-refused-last");
     assert_eq!(written, written_2);
-    let folded = || {
+    let folded = |l: &Folded| {
         l.lake
             .engine
             .projection()
@@ -1302,9 +1308,9 @@ fn a_commit_refused_inside_a_page_leaves_what_was_committed_before_it() {
     };
     let before = Position(written.0 - 1);
     *l.probe.refuse_commit.lock().unwrap() = Some(2);
-    l.lake.rebuild().expect_err("the rebuild fails");
+    l.lake.turn().rebuild().expect_err("the rebuild fails");
     assert_eq!(
-        (folded(), l.lake.head()),
+        (folded(&l), l.lake.head()),
         (Some(before), before),
         "the page's last commit was refused: the projection stands at the commit after the \
          flush, and the head names it"
@@ -1336,7 +1342,7 @@ fn a_commit_refused_inside_a_page_leaves_what_was_committed_before_it() {
 
 #[test]
 fn another_handle_reads_the_first_commit_whole_between_the_two_commits_of_a_page() {
-    let (l, written, live) = ten_appends("recompute-between");
+    let (mut l, written, live) = ten_appends("recompute-between");
     let before = Position(written.0 - 1);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (opener, location, into) = (
@@ -1361,7 +1367,7 @@ fn another_handle_reads_the_first_commit_whole_between_the_two_commits_of_a_page
             .unwrap()
             .push((through, folded, view.position(), read));
     }));
-    l.lake.rebuild().expect("the rebuild");
+    l.lake.turn().rebuild().expect("the rebuild");
     *l.probe.before_commit.lock().unwrap() = None;
     let seen = seen.lock().unwrap().clone();
     let head = l.lake.head();
@@ -1386,7 +1392,7 @@ fn another_handle_reads_the_first_commit_whole_between_the_two_commits_of_a_page
 
 #[test]
 fn a_live_append_commits_once_though_its_flush_keeps_a_step() {
-    let (l, _) = doubling("recompute-live-once", &[("a", 3)]);
+    let (mut l, _) = doubling("recompute-live-once", &[("a", 3)]);
     l.probe.take();
     let q = l.bodies(vec![expr("f", 2, "n * 3"), restricted("doc", "a", 2)]);
     assert_eq!(
@@ -1411,7 +1417,7 @@ fn the_dues_of_a_commit_inside_a_page_stay_due_when_the_page_fails_after_it() {
         // another call, a record is written, and `f` is declared again, in
         // one append whose fold fails at its commit: the lake is behind its
         // log, and the fold that catches up hands out that append's calls.
-        let l = summing(
+        let mut l = summing(
             &format!("recompute-dues-{plant}"),
             &[("doc", "a", "A"), ("doc", "c", "C")],
         );
@@ -1444,8 +1450,8 @@ fn the_dues_of_a_commit_inside_a_page_stay_due_when_the_page_fails_after_it() {
             .folded_through()
             .expect("the mark");
         assert_eq!(folded, Some(Position(w1 - 1)), "{failing} is refused");
-        let due = |l: &Folded| -> Vec<(u64, String)> {
-            let owed = std::mem::take(&mut l.lake.writer().owed);
+        let due = |l: &mut Folded| -> Vec<(u64, String)> {
+            let owed = std::mem::take(&mut l.lake.turn().writer().owed);
             let of = |o: &Owed| match &o.of {
                 Of::Record(key) => key.to_string(),
                 Of::Sweep { .. } => "*".to_owned(),
@@ -1454,7 +1460,7 @@ fn the_dues_of_a_commit_inside_a_page_stay_due_when_the_page_fails_after_it() {
         };
         let key = |at: u64, key: &str| (at, key.to_owned());
         assert_eq!(
-            due(&l),
+            due(&mut l),
             [key(d1, "*")],
             "{failing} is refused: what the commit inside the page holds stays owed, the \
              flush's sweep; what was rolled back does not"
@@ -1462,7 +1468,7 @@ fn the_dues_of_a_commit_inside_a_page_stay_due_when_the_page_fails_after_it() {
         // The next fold makes the calls of the rest, once.
         let appended = l.try_append(z()).expect("the next fold, and the append");
         assert_eq!(
-            due(&l),
+            due(&mut l),
             [key(w1, "w"), key(d2, "*"), key(appended[0].0, "z")],
             "after {failing} was refused, the next fold leaves owed what the rest of the page \
              owes"
@@ -1472,7 +1478,7 @@ fn the_dues_of_a_commit_inside_a_page_stay_due_when_the_page_fails_after_it() {
 
 #[test]
 fn a_type_declared_again_with_one_more_plain_field_is_not_walked() {
-    let l = many("recompute-plain-field", |i| i);
+    let mut l = many("recompute-plain-field", |i| i);
     let mut wider = doubled();
     wider.fields.push(field("note", Text));
     l.bodies(vec![declared(wider, 2)]);
@@ -1525,7 +1531,7 @@ fn tripled_moved() -> TypeDecl {
 /// as a set when `set`. Answers the lake, the positions of the records'
 /// writes and of the three declarations.
 fn three_again(name: &str, set: bool) -> (Folded, Vec<Position>, Vec<Position>) {
-    let l = Folded::new(name);
+    let mut l = Folded::new(name);
     let mut load = vec![
         expr("f", 1, "n * 2"),
         expr("g", 1, "n + 1"),
@@ -1565,12 +1571,16 @@ fn row_22_a_set_computes_its_records_again_once_at_its_last_declaration() {
         );
     }
     let meta = |name: &str| l.meta(None, "doc", &key(1), name).expect("provenance");
-    for name in ["x", "y", "z"] {
+    for (name, function) in [("x", "f"), ("y", "g"), ("z", "h")] {
         let m = meta(name);
         assert_eq!(
-            (m.position, m.procedure_version.as_deref()),
-            (q[2], Some("2")),
-            "row 22: `{name}` takes the set's last declaration and its function's version"
+            (
+                m.position,
+                m.procedure.as_deref(),
+                m.procedure_version.as_deref()
+            ),
+            (q[2], Some(function), Some("2")),
+            "row 22: `{name}` takes the set's last declaration and its function, by name and version"
         );
     }
     assert_eq!(
@@ -1597,7 +1607,7 @@ fn row_23_a_field_that_reads_its_change_is_computed_once_over_the_set() {
 
 #[test]
 fn row_24_a_page_of_a_rebuild_never_ends_inside_a_set() {
-    let (l, _) = doubling("recompute-24", &[("a", 1), ("b", 2), ("c", 3)]);
+    let (mut l, _) = doubling("recompute-24", &[("a", 1), ("b", 2), ("c", 3)]);
     let n = 1_100u32;
     let mut set: Vec<EventBody> = (2..=n).map(|v| going_on(expr("f", v, "n * 3"))).collect();
     set.push(expr("f", n + 1, "n * 4"));
@@ -1605,7 +1615,7 @@ fn row_24_a_page_of_a_rebuild_never_ends_inside_a_set() {
     let live = l.history(&KEYS[..3]);
     l.probe.take();
     let head = l.lake.head();
-    assert_eq!(l.lake.rebuild().expect("the rebuild"), head);
+    assert_eq!(l.lake.turn().rebuild().expect("the rebuild"), head);
     assert_eq!(
         l.history(&KEYS[..3]),
         live,
@@ -1626,7 +1636,7 @@ fn row_24_a_page_of_a_rebuild_never_ends_inside_a_set() {
 /// `second` such functions and one more. Answers the lake and the first
 /// set's last position.
 fn two_sets(name: &str, close: u64, second: u64) -> (Folded, Position) {
-    let (l, _) = doubling(name, &[("a", 1), ("b", 2), ("c", 3)]);
+    let (mut l, _) = doubling(name, &[("a", 1), ("b", 2), ("c", 3)]);
     let going = close - (l.lake.head().0 + 1);
     let v = |v: u64| u32::try_from(v).expect("a version");
     let functions =
@@ -1650,7 +1660,7 @@ fn two_sets(name: &str, close: u64, second: u64) -> (Folded, Position) {
 
 /// A rebuild of `l`, checked against the live lake: its commits, and the
 /// events the log's reads handed out by each.
-fn rebuilt(l: &Folded) -> (Vec<Position>, Vec<(Position, u64)>) {
+fn rebuilt(l: &mut Folded) -> (Vec<Position>, Vec<(Position, u64)>) {
     let live = l.history(&KEYS[..3]);
     l.probe.take();
     let (probe, read) = (l.probe.clone(), Arc::new(Mutex::new(Vec::new())));
@@ -1661,7 +1671,7 @@ fn rebuilt(l: &Folded) -> (Vec<Position>, Vec<(Position, u64)>) {
         into.lock().unwrap().push((through, n as u64));
     }));
     let head = l.lake.head();
-    assert_eq!(l.lake.rebuild().expect("the rebuild"), head);
+    assert_eq!(l.lake.turn().rebuild().expect("the rebuild"), head);
     *l.probe.before_commit.lock().unwrap() = None;
     assert_eq!(
         l.history(&KEYS[..3]),
@@ -1676,8 +1686,8 @@ fn rebuilt(l: &Folded) -> (Vec<Position>, Vec<(Position, u64)>) {
 fn row_29_a_page_of_a_rebuild_reads_on_only_to_the_end_of_its_set() {
     // The chunk the first page reads on closes the first set, at 1 200,
     // and goes on into the second, three pages long.
-    let (l, first) = two_sets("recompute-29", 1_200, 3 * 1_024);
-    let (commits, read) = rebuilt(&l);
+    let (mut l, first) = two_sets("recompute-29", 1_200, 3 * 1_024);
+    let (commits, read) = rebuilt(&mut l);
     // Each page reads what it holds and at most a chunk more, read again
     // by the next page.
     let mut at = (0, 0);
@@ -1701,8 +1711,8 @@ fn row_29_a_page_of_a_rebuild_reads_on_only_to_the_end_of_its_set() {
 fn row_30_a_page_whose_set_closes_at_a_chunks_end_reads_on_for_its_memberships() {
     // The first set's last `declared` is the last event of the chunk the
     // first page reads on; its memberships begin the next chunk.
-    let (l, first) = two_sets("recompute-30", 2 * 1_024 - 1, 10);
-    let (commits, _) = rebuilt(&l);
+    let (mut l, first) = two_sets("recompute-30", 2 * 1_024 - 1, 10);
+    let (commits, _) = rebuilt(&mut l);
     assert_eq!(
         commits,
         [first, l.lake.head()],
@@ -1713,8 +1723,11 @@ fn row_30_a_page_whose_set_closes_at_a_chunks_end_reads_on_for_its_memberships()
 
 #[test]
 fn row_25_a_log_that_ends_inside_a_set_is_not_folded() {
-    let (l, _) = doubling("recompute-25", &[("a", 1)]);
-    let now = l.lake.clock(&mut l.lake.writer());
+    let (mut l, _) = doubling("recompute-25", &[("a", 1)]);
+    let now = {
+        let lake = l.lake.turn();
+        lake.clock(&mut lake.writer())
+    };
     let refused = l.try_append(vec![Draft::system(now, going_on(expr("f", 2, "n * 3")))]);
     let why = refused
         .expect_err("the fold refuses a log that ends inside a set")
@@ -1727,7 +1740,7 @@ fn row_25_a_log_that_ends_inside_a_set_is_not_folded() {
 
 #[test]
 fn row_26_a_set_makes_one_call_due_for_a_record_at_its_last_declaration() {
-    let l = summing("recompute-26", &[("doc", "a", "A")]);
+    let mut l = summing("recompute-26", &[("doc", "a", "A")]);
     let failure = json!({"error": "boom"});
     l.bodies(vec![output(json!(1), "A", failure, Some(("doc", "a")))]);
     l.due();
@@ -1752,7 +1765,7 @@ fn row_26_a_set_makes_one_call_due_for_a_record_at_its_last_declaration() {
 
 #[test]
 fn row_27_a_kept_view_over_a_set_is_made_once_after_it() {
-    let (l, _) = doubling("recompute-27", &[("a", 1), ("b", 2), ("c", 3)]);
+    let (mut l, _) = doubling("recompute-27", &[("a", 1), ("b", 2), ("c", 3)]);
     let total = json!({"declare": "type", "name": "total", "key": ["n"],
         "fields": [{"name": "n", "type": {"kind": "number"}},
                    {"name": "t", "type": {"kind": "number"}}],
@@ -1779,10 +1792,10 @@ fn row_27_a_kept_view_over_a_set_is_made_once_after_it() {
     };
     assert_eq!(
         (puts(q[0]), puts(q[1])),
-        (3, 3),
-        "row 27: the set's first declaration ends the view's three records, and the view is \
-         made once, after the set's records are computed again, not again from the records \
-         before the set"
+        (0, 3),
+        "row 27: the view is building, so the set's first declaration has no records of it to \
+         end, and the view is made once, after the set's records are computed again, not \
+         again from the records before the set"
     );
     let t = |n: i64| {
         l.record(None, kept.as_str(), &n.to_string())
@@ -1797,7 +1810,7 @@ fn row_27_a_kept_view_over_a_set_is_made_once_after_it() {
 
 #[test]
 fn row_28_a_page_never_ends_inside_a_set_among_its_object_sets_memberships() {
-    let l = many("recompute-28", |i| i);
+    let mut l = many("recompute-28", |i| i);
     let joined = |i: i64| EventBody::ObjectSetChanged {
         set: "pos".into(),
         ty: "doc".into(),
@@ -1817,7 +1830,7 @@ fn row_28_a_page_never_ends_inside_a_set_among_its_object_sets_memberships() {
     let keys = [("doc", "k0005"), ("doc", "k2500")];
     let live = l.history(&keys);
     let head = l.lake.head();
-    assert_eq!(l.lake.rebuild().expect("the rebuild"), head);
+    assert_eq!(l.lake.turn().rebuild().expect("the rebuild"), head);
     assert_eq!(
         l.history(&keys),
         live,

@@ -6,8 +6,10 @@ MCP at `/lakes/<lake>/mcp`, and REST under every other path of
 root's `lakelands.json`, take the same API keys, and resolve them through
 the same resolver to the same principals. `lakelands serve --mcp` writes
 the address it listens on to standard error as
-`lakelands: serving HTTP at http://<address>/`, so a `bind` on port 0
-takes a free port and still says which.
+`lakelands: listening at http://<address>/ (starting)` once the door is
+bound, and as `lakelands: serving HTTP at http://<address>/` once every
+lake is open, so a `bind` on port 0 takes a free port and still says
+which.
 
 A REST route only translates. Its path, its query, its headers and its
 body become the arguments of one door, under the names that door's MCP
@@ -41,20 +43,77 @@ this page says only how a request reaches it.
 
   ```json
   {"error":"conflict","expected":1,"actual":2,
+   "message":"the record changed: expected version 1, found 2",
    "what":"the record changed: expected version 1, found 2",
    "todo":"read the record again and retry against its current version"}
   ```
 
   | Error | Status |
   |---|---|
-  | `refused`: `not_granted`, `wrong_door`, `verbs_only`, `reserved`, `declined` | 403 (401 for a missing or unknown key) |
-  | `refused`: `invalid`, `constraint`, `precondition`, `too_deep`, `too_large`, `migration`, `out_of_range` | 422 (400 for a request the server cannot read, 404 for no route, 405 for a method the route does not take, 413 for a body over 4 MiB, 415 for a body of another media type) |
+  | `refused`: `not_granted`, `grant_needed`, `wrong_door`, `verbs_only`, `reserved`, `declined` | 403 (401 for a missing or unknown key) |
+  | `refused`: `invalid`, `constraint`, `precondition`, `too_deep`, `too_large`, `migration`, `out_of_range` | 422 (400 for a request the server cannot read, 404 for no route, 405 for a method the route does not take, 413 for a body over `server.bounds.body_bytes`, 4 MiB unless set, 415 for a body of another media type) |
   | `refused`: `decided`, `unanswered` | 409 |
   | `not_found` | 404 |
-  | `conflict` | 412 — the version expected came in `If-Match` |
+  | `conflict` | 412 — a stale `If-Match`; `If-None-Match: *` on a key that exists (`expected` is 0, the message says the key already exists); an accept whose proposal's record moved since it was made |
   | `unbound` | 501 |
-  | `unavailable` | 503 |
+  | `unavailable` | 503 (429 with `Retry-After` for `rate_bound` and `in_flight_bound`) |
 
+- **Bounds.** A connection and a principal may send so many requests a
+  second, and a principal have so many answered at once
+  (`server.bounds`, `docs/decisions/095-the-http-door-bounds-what-one-caller-spends.md`).
+  A request over one is answered `429` with `Retry-After` in seconds,
+  as `unavailable` with the situation `rate_bound` or `in_flight_bound`;
+  MCP answers the same refusal as a JSON-RPC error's `data`. Nothing of
+  such a request was read or written. An ingest is counted until its
+  last window is committed; `/livez` and `/readyz` are not counted.
+- **Editing a record.** A record's version is one number for the whole
+  record, not one per field: a write that changes any field moves it. A
+  read of one record answers it as `ETag`. So does a `PUT` or `DELETE`
+  of a record, and its `ETag` is that record's next `If-Match`: a client
+  that edits twice sends it without reading in between. A link or an
+  unlink answers the version of the link record, not of either end, so
+  it is not the next `If-Match` of the record it was made from. A verb
+  answers the version of the record write it made, where it made one,
+  and none otherwise.
+
+  Two people editing different fields of one record therefore collide
+  by design: the second write answers 412. A client that edits only its
+  own fields can retry safely:
+
+  1. Read the record again with `with_meta`.
+  2. Compare the `meta.position` of each field the client edits with the
+     position it read those fields at.
+  3. If none of them moved, send the write again with the new `ETag` as
+     `If-Match`; the other person's fields are kept, because a `PUT`
+     changes only the fields it names.
+  4. If one moved, the client's value is stale: show the current value
+     and let the person decide.
+
+  `If-None-Match: *` creates a record and refuses an existing key with
+  the same 412, whose `expected` is 0.
+
+- **The link between hosts.** A key listed under `server.hosts` is a
+  host's, not a principal's: its request names the principal it is made
+  as in `Lakelands-Principal`, by id, and may carry the write context in
+  `Lakelands-Context`, as JSON, whose `on_behalf_of` names the principal
+  the write is made for: each event the write appends names it beside
+  its writer, and a read `with_meta` names it on each field it wrote
+  (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`);
+  its `occasion`, the host's word for why it wrote, lands in the
+  `context` of each event the write appends, and the store gives it no
+  meaning.
+  A missing principal, or a context that is not one, is `refused` as
+  `invalid` (400); an `on_behalf_of` that is not a principal of its form,
+  or is the writer, is `refused` as `invalid` (`on_behalf_of_form`,
+  naming `on_behalf_of`) at the write, as is an `occasion` that is empty,
+  over 128 bytes or holds a control character (`occasion_form`, naming
+  `occasion`); a principal the host may not
+  act for, or one the lake does not know, is `not_granted` (403). A
+  principal's key that sends either header is `refused` as `invalid`
+  (400): no caller sets a write context or acts as another. A process
+  that does not hold the lake's lease answers a host's request
+  `unavailable` as `read_only`, so the host tries the next writer
+  (`docs/hosting.md`).
 - **Browsers.** A request whose `Origin` is not on the configuration's
   `allowed_origins` is refused before anything else is read.
 - **The lake.** The lake's id is one path segment; one that decodes to
@@ -76,13 +135,17 @@ key may hold any character.
 | `POST …/verbs/<verb>/<key>` | a verb declared on a record | body: its payload (none is `{}`); `If-Match`, `Idempotency-Key` |
 | `POST …/verbs/<verb>` | a verb declared on its type | body: its payload (none is `{}`); `Idempotency-Key` |
 | `POST …/query` | the pattern query | body: the query tool's arguments |
-| `POST …/search` | search | body: the search tool's arguments |
+| `POST …/cypher` | an openCypher statement, run as the pattern or the one write door call it translates to | body: `statement`, `params`, `cursor`, `as_of`, `valid_at`, `plan_id` |
+| `POST …/search` | search | body: the search tool's arguments; `text_as_of: true` with `as_of` and `where` ranks the text the records held at `as_of` |
 | `GET …/describe` | describe the lake | query: `as_of`, `valid_at` |
 | `GET …/describe/<type>` | describe one type | query: `as_of`, `valid_at` |
+| `GET …/quarantined` | quarantined records | query: `source`, `type`, `delivery`, `index`, `state` (`open` or `closed`), `limit`, `after` (an id, as JSON) |
+| `POST …/quarantined/dismiss` | dismiss a quarantined record | body: the id, `source`, `delivery`, `index` |
+| `POST …/quarantined` | quarantine a record the host refused | body: `source`, `opts` (as an ingest's: `delivery`, `sealed_apart`, `run`), `refused` (`record`, `cause`, `reason`) |
 | `GET …/proposals` | proposals | query: `state`, `type`, `kind`, `limit`, `order_by`, `cursor`, `as_of`, `valid_at` |
-| `POST …/proposals` | propose | body: `write` (`upsert`, `retire`, `call`, `declare` with `declarations`, or `migrate` with `migration`), `why` |
+| `POST …/proposals` | propose | body: `write` (`upsert`, `retire`, `call`, `declare` with `declarations`, `migrate` with `migration`, or `records` with `type`, `where` and `to`), `why` |
 | `POST …/proposals/<id>/accept` | accept | — |
-| `POST …/proposals/<id>/accept_planned` | accept a proposed change to the ontology against the plan of its change at the head | body: `plan_id` |
+| `POST …/proposals/<id>/accept_planned` | accept a proposed change to the ontology, or to records, against the plan of its change at the head; a records proposal is accepted only so | body: `plan_id` |
 | `POST …/proposals/<id>/reject` | reject | body: `reason` (optional) |
 | `POST …/schema/declare_type` | declare a type | body: `type` |
 | `POST …/schema/declare` | declare anything that does not reshape stored records | body: `declaration` |
@@ -91,7 +154,7 @@ key may hold any character.
 | `POST …/schema/recompute` | compute again what a declaration in force computes | body: `function` or `type` |
 | `POST …/schema/migrate` | a migration's preflight | body: `to`, `renames` and `relation_renames`, or `value_type` |
 | `POST …/schema/migrate/apply` | apply a migration | body: `to`, `renames` and `relation_renames`, or `value_type`; and `report_id` |
-| `POST …/schema/plan` | a change's plan: what it would do, changing nothing | body: `change` (`declare` with `declarations`, `add_field` with `type` and `field`, `recompute` with `what`, `migrate` or `migrate_value_type` with `migration`) and its members |
+| `POST …/schema/plan` | a change's plan: what it would do, changing nothing | body: `change` (`declare` with `declarations`, `add_field` with `type` and `field`, `recompute` with `what`, `migrate` or `migrate_value_type` with `migration`, or `records`, below) and its members |
 | `POST …/schema/enact` | make a change against its plan | body: as `…/schema/plan`, and `plan_id` |
 | `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line; query: `delivery` |
 | `GET …/feed` | the change feed | query: `from`, `kinds`, `types`, `key` (repeated); `Last-Event-ID` |
@@ -139,6 +202,52 @@ what a principal may read is decided by its grants alone
 extended). A key without a namespace is refused as `invalid` (422), and
 one in `sys.` or `lakelands.` as `reserved` (403), naming the key.
 
+`cypher` is served here, as the CLI's `lakelands query --cypher`, and
+at the MCP door as the `cypher` read tool, listed where `query` is,
+with the same members but `plan_id`. The statement, in the openCypher
+subset `lakelands-cypher` takes, with the values of its `$name`s as
+`params`, is translated to a pattern and run as `POST …/query` runs it;
+its answer is that route's. How many rows a page holds is the
+statement's `LIMIT`, so the body takes no `limit`; `cursor` continues a
+page. A statement that begins with `EXPLAIN` answers `{"pattern": …}`,
+the pattern it translates to with `as_of`, `valid_at` and `cursor` set,
+and reads nothing. A statement that does not parse, a construct outside
+the subset, a condition nested more than 32 levels deep, and a parameter
+missing, unused or of a kind its place does not take are `invalid`
+(422), each by its own case, with the character offset where it has
+one. A member the route does not take is `invalid` (400), naming it.
+
+A statement that writes is one call of a typed write door
+(`docs/decisions/082-a-query-language-writes-only-through-the-typed-write-doors.md`),
+judged as that door judges it, and answers that door's outcome:
+
+- `CREATE (n:t {…})` or `MERGE (n:t {…})`, with `SET n.f = …`, is an
+  `upsert` of the record the map's key names: the type's declared key
+  fields, every one given, or `key` for a type keyed by its writer.
+  `MERGE`'s map holds the key alone, and `CREATE` expects no record
+  under it, refused `conflict` (412) as `If-None-Match: *` is.
+- `MATCH (a:t {…}), (b:u {…}) CREATE (a)-[:r {…}]->(b)`, or `MERGE`
+  without the map, is a `link` of the pair the two maps key, `CREATE`
+  expecting none.
+- `MATCH … SET`, `REMOVE` (set to null) or `DELETE` (retire, or unlink
+  a relationship's name) of one name is a change to the records the
+  `MATCH` selects. Sent without `plan_id` it answers the change's plan
+  and writes nothing; sent again with the plan's `report_id` as
+  `plan_id` it makes that change, refused `plan_stale` where the lake
+  moved.
+
+A write takes no `as_of`, `valid_at` or `cursor`, and a statement
+without a plan takes no `plan_id`: each is `invalid` (422),
+`cypher_member`, naming it. A statement that would need two door calls
+is refused `cypher_second_write`, naming its second updating clause; a
+`MERGE` on another field `cypher_merge_on`, a key field not given
+`cypher_key_missing` and one given as null `cypher_key_null`, and a field
+the lake computes `cypher_computed`; `ON CREATE`, a label, a schema change, `DETACH DELETE`, a computed
+value, `CALL`, `FOREACH` and a `RETURN` beside a write are
+`cypher_outside`, each named. Every one of them is refused before a
+record is read. The MCP `cypher` tool takes no write: it refuses one
+`cypher_tool_writes`, naming its clause.
+
 `schema/declare` and `schema/apply` are REST's alone: MCP offers
 `declare_type`, since an agent authors types, while a program may
 declare verbs, triggers, object sets and the rest. Each body member is
@@ -150,6 +259,21 @@ the ontology take `plan` and `plan_id` instead. A plan, and an answer
 that carries one (a change's outcome, a proposal's, a listed proposal),
 comes with `said`: a sentence per finding, for the person who decides
 on it (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+
+The same two routes carry a change to the records a condition selects
+(`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`):
+`{"change": "records", "type": …, "where": …, "to": …}`, with `to` either
+`{"set": {field: value, …}}`, the same values on every record selected, or
+`"retire"`. `schema/plan` answers the plan with a `records` section
+(`type`, `selected`, `sample_keys`, `fields` and `refused`) and changes
+nothing; `schema/enact`, with the plan's `report_id` as `plan_id`, makes
+exactly that change in one append, and is refused `plan_stale` (`invalid`, 422) if a
+selected record changed or the selection moved, and `too_large` (422) past the
+lake's `max_change_records`. A records proposal is filed on
+`POST …/proposals` as `{"write": "records", "type": …, "where": …, "to": …}`
+and accepted only on `…/accept_planned` with the `report_id` of the plan
+of its change now; `…/accept` of it is refused `plan_stale`. No route
+offers `only`.
 
 A trigger's `max_depth` caps the reactions to its firings: writes a
 host makes naming a firing as their cause
@@ -201,6 +325,13 @@ executor's recorded answer (`"output": null` when it answered `null`);
 while none is recorded it is `409` `unanswered`, and runs nothing
 (`docs/seams.md` §`VerbExecutor`).
 
+A `PUT` of a declared setting, `…/types/sys.setting/records/<key>`,
+carries `from: "<date>"` beside `value` to add a value that holds from
+that date, or `period: "start"` or `period: "<date>"` to correct one,
+never both; it never names `periods`, which the store writes
+(`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`). A
+proposal's `upsert` keeps them as written, resolved at its accept.
+
 A write answers its outcome: `200` with `{"outcome":"applied",…}`, or
 `202` with `{"outcome":"proposed","proposal":…,"why":…}` when it waits
 for review.
@@ -215,11 +346,31 @@ does not is the path's. One call so carries the batches of many sources,
 each record's event stamped with its own. The answer is NDJSON too: one line per commit
 window as it becomes durable,
 `{"position":…,"records":…,"duplicates":…,"delivery":…}`. `?delivery=`
-names the call's delivery, which every record's event carries; without
+names the call's delivery, which the event of every record that names
+none carries; without
 it the store names its own, `d` and the position of the call's first
 event, and a window before any event of the call names none
-(`docs/log-format.md` §1.1). Where a window is cut is
-the store's, and no answer turns on it: a record is judged over the
+(`docs/log-format.md` §1.1). A line may name its own `"delivery"`,
+formed as the call's is: its event carries that one, and `?delivery=`
+is the default for a line that names none; the window's line still
+names the call's
+(`docs/decisions/087-an-ingest-may-carry-a-delivery-per-record-each-sealed-apart-under-a-key-of-its-own.md`).
+`?sealed_apart` seals the call's values of erasable fields under a key
+of their own too, one per source and delivery, so that taking back a
+delivery shreds it alone
+(`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+`?quarantine_refused` keeps a record refused by a rule of the record as
+a quarantined record and goes on; each window's line then lists the
+`index` of each record it quarantined in `quarantined`, and a line may
+name what it `resubmits` (`{"delivery":…,"index":…}`). `?run=` names
+the host's run, which keys the call's quarantined records in place of
+their delivery, and a line's `line` keys its record in place of its
+place
+(`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`). `?commit_window=`
+is the most records one of the call's windows holds, between 1 and the
+lake's `limits.commit_window_max`; without it the lake's
+`commit_window_events` applies. Within that bound, where a window is
+cut is the store's, and no answer turns on it: a record is judged over the
 lake and the records before it, and a refused one is refused alike
 wherever the cut fell. What the cut decides is only the refusal's
 `from`, whether the records of its window before it were written; a
@@ -239,7 +390,8 @@ refuses ends the ingest with a last line that is its refusal, its own
 `error` code and shape kept, with `index` (its place among the body's
 records, from 0), `from` (the first record of its window: every record
 before it is committed, none from it on) and `record` (its `type` and
-`key`) beside it; send the body again from record `from`, the refused
+`key`) beside it, and `quarantine_full` (`{"max":…}`) where the record
+was refused past `limits.quarantined_max`; send the body again from record `from`, the refused
 one left out or mended. A refused ingest is
 answered even while the body is still arriving: the server reads the
 rest of the body and drops it, for at most fifteen seconds, before it
@@ -258,8 +410,10 @@ record's history), without them a key in any type (`docs/seams.md`
 §`ChangeFeed`). Each event's `id` is
 its position, its `event` its kind, its `data` the event as JSON; a
 reaction the batch names `overruled` carries the comment `: overruled`
-in its frame, after its `id`, which a reader that does not know the
-mark skips as it skips every comment
+in its frame, after its `id`, and every event the comment
+`: append <position>`, the last position of the append that wrote it
+(the batch's `appends`, `docs/seams.md` §`ChangeFeed`), each of which a
+reader that does not know the mark skips as it skips every comment
 (`docs/decisions/004-the-change-feed-is-the-log.md`). A
 reconnecting client sends `Last-Event-ID` and resumes after it. Each
 time the stream catches up at a position it has not named before, it
@@ -280,6 +434,32 @@ The feed is the log itself, unmasked, so only a principal that reads
 every field of every record, withheld records included
 (`Grants::reads_everything`), may open it
 (`docs/decisions/037-the-feed-over-a-network-door.md`).
+
+## Health and readiness
+
+Two routes answer outside any lake, at fixed paths, for a supervisor or a
+load balancer. They take no key and no `Origin` is checked; they carry no
+lake name, count or position, only `{"status": "<word>"}`; they read a few
+flags each lake holds in memory, with no fold and no scan; and they are
+not tools, so the catalog does not list them. `HEAD` is answered like
+`GET`; any other method answers `405`.
+
+| Route | Status | `status` | Meaning |
+|---|---|---|---|
+| `GET /livez` | `200` | `up` | The process is up and the door answers. |
+| `GET /readyz` | `200` | `ready` | Every lake it serves is open, holds its writer lease as its handle knows it, and answers its head. |
+| `GET /readyz` | `503` | `not_ready` | A lake's handle does not hold its lease, or does not answer its head. A lease another writer took shows from the first write it refuses, on every engine (see below). |
+| `GET /readyz` | `503` | `starting` | The lakes are not all open yet, for instance while the open of an upgrade rebuilds a projection. |
+
+`lakelands serve` binds the door before it opens the lakes, so `/livez`
+answers `200` and `/readyz` `503 starting` throughout an open. A lease
+lost to another writer, taken over the handle or gone with a PostgreSQL
+session, shows only once the engine has refused the handle something for
+it: an append, at a write that appends, or a rebuild's swap. Until then
+`/readyz` can still say `ready`; from then it says `not_ready` until a write
+takes the lease again. Nor does `/readyz` compare the projection's head with the end of
+the log; an open does not return before its fold is done, so a lake that is
+open has folded what the log held then.
 
 ## A client in Rust
 

@@ -1,4 +1,4 @@
-package lakelands:data@0.16.1;
+package lakelands:data@0.23.0;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.
@@ -42,6 +42,7 @@ interface types {
     type verb-name = string;
     type trigger-name = string;
     type constraint-name = string;
+    type precondition-name = string;
     type param-name = string;
     type value-type-name = string;
     type source-id = string;
@@ -88,6 +89,37 @@ interface types {
         /// Only the records whose fields hold these values are the
         /// principal's to read; it writes nothing that reaches the type.
         only: list<field-value>,
+        /// Beside `only`, only the records whose field holds one of its
+        /// values are the principal's to read; an empty set admits none.
+        only-any: list<field-values>,
+        /// Only the records whose fields hold these values are the
+        /// principal's to write; it reads what its other grants give.
+        writes-only: list<field-value>,
+        /// The verbs declared `granted` the principal may call, its field
+        /// rights permitting.
+        verbs: list<verb-name>,
+        /// Fields lowered on only the records a condition selects.
+        hide-where: list<hidden-where>,
+        /// A read at a valid time dates the type's records by their
+        /// stored bounds also where the principal may not read them.
+        dates-by-hidden-valid-time: bool,
+        /// Where `only` or `only-any` narrows the type, a view over it,
+        /// an aggregate and a count are refused.
+        whole-sets-only: bool,
+    }
+
+    /// One field and the text values it may hold.
+    record field-values {
+        field: field-name,
+        values: list<string>,
+    }
+
+    /// Fields lowered on the records whose `field` holds one of `values`;
+    /// on any other record the type's access stands.
+    record hidden-where {
+        field: field-name,
+        values: list<string>,
+        fields: list<field-access>,
     }
 
     record grants {
@@ -116,6 +148,14 @@ interface types {
         /// The position the write follows from, as the host names it; it
         /// lands in the envelope's `cause` of the write's own events.
         cause: option<position>,
+        /// The principal the write is made for, `<kind>:<id>`; it lands
+        /// in the envelope's `on_behalf_of` of the events written as the
+        /// writer, and is recorded, never trusted.
+        on-behalf-of: option<string>,
+        /// The host's word for why the write was made; it lands in the
+        /// `context` of the events written as the writer, and is
+        /// recorded, never judged.
+        occasion: option<string>,
     }
 
     // ------------------------------------------------------------------
@@ -146,7 +186,7 @@ interface types {
         dimensions: option<u32>,
     }
 
-    enum authority { authored, source, shared, derived, verb }
+    enum authority { authored, source, shared, derived, verb, writer }
 
     /// Who retires a type's records: its authors through `retire`, or
     /// only its verbs whose effect is `retire`.
@@ -164,6 +204,8 @@ interface types {
         %type: field-type,
         required: bool,
         authority: authority,
+        /// The sources an ingest may write an authored field under.
+        admits: list<source-id>,
         derived: option<condition>,
         function: option<string>,
         computed-at: option<computed-at>,
@@ -193,6 +235,8 @@ interface types {
         %type: option<field-type>,
         required: bool,
         authority: authority,
+        /// The sources an ingest may write an authored field under.
+        admits: list<source-id>,
         derived: option<condition>,
         function: option<string>,
         computed-at: option<computed-at>,
@@ -270,7 +314,9 @@ interface types {
         source: type-name,
         params: list<view-param>,
         where: option<condition>,
-        group-by: list<field-name>,
+        /// A source field, or one `date_bucket` term over one under a
+        /// name the view type declares.
+        group-by: list<group-key>,
         measures: list<measure>,
         /// Further sources merged on the view's key.
         merge: list<view-source>,
@@ -352,6 +398,12 @@ interface types {
     /// with no key.
     enum verb-scope { %record, %type }
 
+    /// A named condition a verb requires of its record and its call.
+    record precondition {
+        name: precondition-name,
+        holds: condition,
+    }
+
     record verb-decl {
         name: verb-name,
         on: type-name,
@@ -359,8 +411,12 @@ interface types {
         payload: list<field-decl>,
         risk: risk,
         requires: option<condition>,
+        /// Conditions judged after `requires`, in order, each by its name.
+        preconditions: list<precondition>,
         effect: verb-effect,
         description: option<string>,
+        /// Callable only by a principal whose grants on `on` name it.
+        granted: bool,
     }
 
     record trigger-decl {
@@ -389,11 +445,16 @@ interface types {
         recomputed,
     }
 
+    /// When an object set's membership is decided: at each write, kept;
+    /// or at every read that names it, at the read's clock, never kept.
+    enum decided-at { write, read }
+
     record object-set-decl {
         name: string,
         of: type-name,
         where: condition,
         description: option<string>,
+        decided-at: decided-at,
     }
 
     record function-decl {
@@ -429,8 +490,10 @@ interface types {
         withdraw(withdrawal),
     }
 
-    /// A trigger, a verb, an object set or a function taken out of force
-    /// from the withdrawal's position on; a read as of before still sees it.
+    /// A type, a trigger, a verb, an object set or a function taken out of
+    /// force from the withdrawal's position on; a read as of before still
+    /// sees it. A type leaves once it holds no live record and nothing in
+    /// force names it, the link types of its relations with it.
     record withdrawal {
         kind: declaration-kind,
         name: string,
@@ -594,7 +657,12 @@ interface types {
         seen-at: option<timestamp>,
         position: position,
         writer: string,
+        /// The principal the writer acted for, where its event names one.
+        on-behalf-of: option<string>,
         source: option<source-id>,
+        /// For a value a procedure produced: its name (a verb's, a
+        /// function's, an embedding's model).
+        procedure: option<string>,
         procedure-version: option<string>,
         /// For a value read from another lake's log: that lake and
         /// position.
@@ -631,6 +699,12 @@ interface types {
         version: version,
         fields: list<field-value>,
         masked: list<field-name>,
+        /// Whether this is a kept view's record for a group a thinning
+        /// stranded: the group answers it at the head alone.
+        stranded: bool,
+        /// For a stranded group a make carried under another copy of the
+        /// time-zone database: the copy that cut it.
+        cut: option<string>,
         meta: list<field-meta-entry>,
     }
 
@@ -647,6 +721,20 @@ interface types {
         /// The source this record comes from, where it is not the
         /// call's.
         source: option<source-id>,
+        /// The delivery this record is in, where it is not the call's.
+        delivery: option<delivery-id>,
+        /// The quarantined record of the same source this one runs again.
+        resubmits: option<resubmits>,
+        /// The record's line in its run: with the run, the key of its
+        /// quarantined record, so that sending it again replaces it.
+        line: option<u64>,
+    }
+
+    /// A quarantined record of a source record's own source, by the
+    /// delivery that first quarantined it and its place there.
+    record resubmits {
+        delivery: delivery-id,
+        index: u64,
     }
 
     // ------------------------------------------------------------------
@@ -663,12 +751,14 @@ interface types {
         dir: direction,
     }
 
-    enum agg-func { count, sum, min, max, avg }
+    enum agg-func { count, sum, min, max, avg, first, last }
 
     record agg-measure {
         name: field-name,
         %func: agg-func,
         field: option<field-name>,
+        /// For `first` and `last`: the field whose order picks the member.
+        by: option<field-name>,
     }
 
     record aggregate {
@@ -720,6 +810,21 @@ interface types {
     record group {
         by: list<field-value>,
         values: list<field-value>,
+        /// Whether the group held a member a thinning took, so that it
+        /// answers its kept record and never a computation.
+        stranded: bool,
+    }
+
+    /// One act that thinned a type past a horizon, as a read names what
+    /// it can no longer answer.
+    record thinned-act {
+        %type: type-name,
+        by: field-name,
+        before: timestamp,
+        /// The last position the act had got through.
+        through: position,
+        /// How many records it had taken.
+        gone: u64,
     }
 
     record records-page {
@@ -729,11 +834,26 @@ interface types {
         total: option<u64>,
         /// How many retired records match, when `retired` asked for it.
         retired: option<u64>,
+        /// The acts that thinned the type, oldest first.
+        thinned: list<thinned-act>,
+        /// How many groups a read at an earlier position could not answer
+        /// because they are stranded.
+        stranded: option<u64>,
+    }
+
+    record groups-page {
+        rows: list<group>,
+        /// The acts that thinned the type or the view's sources, oldest
+        /// first.
+        thinned: list<thinned-act>,
+        /// How many groups the read could not answer because they are
+        /// stranded.
+        stranded: option<u64>,
     }
 
     variant found {
         records(records-page),
-        groups(list<group>),
+        groups(groups-page),
     }
 
     record get {
@@ -750,11 +870,26 @@ interface types {
     record write-opts {
         expected-version: option<version>,
         idempotency-key: option<idempotency-key>,
+        /// Answer once the write is folded; its computed fields are
+        /// made after, by the lake.
+        defer-computed-fields: bool,
     }
 
     /// Options an `ingest` takes.
     record ingest-opts {
         delivery: option<delivery-id>,
+        /// Seal the delivery under a key of its own too, so that taking
+        /// it back shreds it alone.
+        sealed-apart: bool,
+        /// The most records one of the call's commit windows holds; none
+        /// for the lake's `commit-window-events`.
+        commit-window: option<u32>,
+        /// Quarantine a record refused by a rule of the record, and go on
+        /// with the stream.
+        quarantine-refused: bool,
+        /// The run the records are lines of, for a quarantined record's
+        /// key in place of the delivery.
+        run: option<delivery-id>,
     }
 
     record applied {
@@ -775,7 +910,9 @@ interface types {
         /// the one answered may know of them.
         renamed: list<tuple<field-name, field-name>>,
         /// For `declare` and `apply`: each declaration sent, in the order
-        /// sent, as it stands in force after the call.
+        /// sent, as it stands in force after the call; so for a `propose`
+        /// of declarations all in force, which files nothing, and for the
+        /// `accept` of proposed declarations.
         declared: list<in-force>,
         /// For a change to the ontology: the plan that applied.
         plan: option<plan>,
@@ -784,9 +921,9 @@ interface types {
     /// A declaration's kind. A later kind is an addition.
     enum declaration-kind { %type, value-type, verb, trigger, object-set, function, setting }
 
-    /// A declaration sent to `declare` or `apply`, as it stands in force
-    /// after the call: its version, the position it has stood from, and
-    /// whether this call appended it.
+    /// A declaration sent to `declare` or `apply`, or proposed, as it
+    /// stands in force after the call: its version, the position it has
+    /// stood from, and whether this call appended it.
     record in-force {
         kind: declaration-kind,
         name: string,
@@ -872,6 +1009,18 @@ interface types {
         first: list<record-key>,
     }
 
+    /// A change to records proposed whole, with its proposer's `only`,
+    /// whether restricted records are left out, and the plan its proposer
+    /// was shown; the store answers all three.
+    record records-write {
+        %type: type-name,
+        where: condition,
+        to: change-to,
+        only: list<field-value>,
+        skip-restricted: bool,
+        plan: plan,
+    }
+
     variant proposed-write {
         upsert(upsert-write),
         retire(retire-write),
@@ -881,9 +1030,10 @@ interface types {
         migrate-value-type(migrate-value-type-write),
         compute(compute-write),
         compute-sweep(compute-sweep-write),
+        records(records-write),
     }
 
-    enum proposal-kind { upsert, retire, call, declare, migrate, migrate-value-type, compute }
+    enum proposal-kind { upsert, retire, call, declare, migrate, migrate-value-type, compute, records }
 
     enum proposal-state { pending, accepted, rejected }
 
@@ -918,6 +1068,8 @@ interface types {
         records: u32,
         duplicates: u32,
         delivery: option<delivery-id>,
+        /// The stream index of each record the window quarantined.
+        quarantined: list<u64>,
     }
 
     // ------------------------------------------------------------------
@@ -934,6 +1086,9 @@ interface types {
     record lexical-search {
         text: string,
         fields: option<list<field-name>>,
+        /// A weight for a match of the text in each searchable field
+        /// named, over its type's `search_weights` setting's.
+        text-fields: option<list<tuple<field-name, f64>>>,
     }
 
     record vector-term {
@@ -946,7 +1101,11 @@ interface types {
 
     record vector-search {
         field: field-name,
+        /// Empty where `text` is given.
         vector: list<f32>,
+        /// Words the lake embeds into the query vector with the model of
+        /// `field`, which must be an embedding.
+        text: option<string>,
         weight: option<f64>,
         also: list<vector-term>,
         /// The model that made the vector, if the caller names it.
@@ -958,6 +1117,9 @@ interface types {
         field: field-name,
         vector: option<list<f32>>,
         fields: option<list<field-name>>,
+        /// A weight for a match of the text in each searchable field
+        /// named, over its type's `search_weights` setting's.
+        text-fields: option<list<tuple<field-name, f64>>>,
         weight: option<f64>,
         text-weight: option<f64>,
         /// The model that made the vector, if the caller names it.
@@ -971,8 +1133,8 @@ interface types {
     }
 
     record start {
-        /// Left out only by `components`, which then grows from every
-        /// linked record.
+        /// Left out only by `components`, `page-rank` and `communities`,
+        /// which then grow from every linked record.
         %type: option<type-name>,
         key: option<record-key>,
         where: option<condition>,
@@ -994,6 +1156,14 @@ interface types {
         /// The name a row binds the reached record under; its type's name
         /// when none.
         %as: option<string>,
+        /// The name the step walks from; the previous step's when none.
+        %from: option<string>,
+        /// A name bound before it, whose record the step must reach.
+        join: option<string>,
+        /// The row is kept, the name bound to null, where it has no match.
+        optional: bool,
+        /// The row is kept only where it has no match.
+        absent: bool,
     }
 
     variant projection {
@@ -1007,6 +1177,13 @@ interface types {
         components,
         /// What each step reaches, each record at the first step.
         reach,
+        /// PageRank of the graph the start records reach, in integers.
+        page-rank,
+        /// The walk to `to` that costs least, a link costing this field.
+        cheapest(field-name),
+        /// The communities of the graph the start records reach, in
+        /// integers, each one connected.
+        communities,
     }
 
     record pattern {
@@ -1057,6 +1234,8 @@ interface types {
         where: option<condition>,
         rerank: option<rerank>,
         with-meta: bool,
+        matches: bool,
+        text-as-of: bool,
         at: read-at,
     }
 
@@ -1070,6 +1249,22 @@ interface types {
     record hit {
         %record: %record,
         score: f64,
+        /// Each searched field its text matched; empty unless asked.
+        matches: list<field-match>,
+    }
+
+    /// Where a search's text matched one field of a hit: the first 32
+    /// matched tokens and the count of every one.
+    record field-match {
+        field: field-name,
+        spans: list<span>,
+        count: u32,
+    }
+
+    /// A matched token, in chars of the field's text, its end exclusive.
+    record span {
+        start: u32,
+        end: u32,
     }
 
     record hits {
@@ -1080,6 +1275,16 @@ interface types {
         /// window took.
         truncated: bool,
         axes: list<axis>,
+        /// The vector leg a hybrid search names that did not rank, and why.
+        unranked: option<unranked>,
+    }
+
+    /// A vector leg a search named that did not rank: its field, and what
+    /// its query vector met, no embedding backend bound (`unbound`) or the
+    /// backend's failure (`unavailable`).
+    record unranked {
+        field: field-name,
+        why: error,
     }
 
     /// One axis a search ranked by: `lexical`, `vector` or `rerank`, a vector
@@ -1120,6 +1325,12 @@ interface types {
         /// The values the principal's grant admits records by; empty
         /// where it admits every record.
         only: list<field-value>,
+        /// Beside `only`, the values one of which each field named holds
+        /// on a record the principal's grant admits.
+        only-any: list<field-values>,
+        /// The values the principal's grant admits records to write by;
+        /// empty where it may write every record it reads.
+        writes-only: list<field-value>,
     }
 
     record type-access {
@@ -1137,6 +1348,19 @@ interface types {
         /// Who retires its records: only its verbs, or its authors too.
         retired-by: retired-by,
         view-of: option<type-name>,
+        /// As of a position: the names the type bore from it on, oldest
+        /// first, the last `to` its name at the head. Empty at the head.
+        renamed: list<renamed>,
+    }
+
+    /// An entry of the lake's list of renames: one migration's renames of
+    /// a type's fields, or a type's new name (a link type's, when its
+    /// relation is renamed), with the position it took effect at.
+    record renamed {
+        at: position,
+        %type: type-name,
+        renames: list<tuple<field-name, field-name>>,
+        to: option<type-name>,
     }
 
     record type-lifecycle {
@@ -1146,6 +1370,13 @@ interface types {
         /// `sort_index.<type>` setting): a `find` ordered first by one of
         /// them reads its page, not the type.
         sorted: list<field-name>,
+        /// The fields the lake chose an order index for itself, from the
+        /// pages it had to sort whole; told to a holder of `schema` who
+        /// reads the field, and only at the head.
+        chosen: list<field-name>,
+        /// The fields an index build is filling in parts, which no read
+        /// looks at until its `Keep`: a setting's, or the lake's own.
+        building: list<field-name>,
         /// The fields a `find` ordered first by and the lake answered by
         /// sorting the type, since it was opened where it answers.
         sorted-whole: list<sorted-whole>,
@@ -1168,6 +1399,22 @@ interface types {
         millis: u64,
     }
 
+    /// One series pair a type's `series_index.<type>` setting asks for,
+    /// and whether its rows are whole.
+    record series-told {
+        series: field-name,
+        order: field-name,
+        state: series-told-state,
+    }
+
+    /// Whether a series pair's rows are whole.
+    enum series-told-state {
+        /// A build is filling the pair's rows: no read takes the pair.
+        building,
+        /// The pair's rows are whole: a read may take the pair.
+        kept,
+    }
+
     /// Whether a view's records are kept as its sources are written, or
     /// computed at each read.
     variant kept {
@@ -1178,13 +1425,18 @@ interface types {
     /// Why a view is computed at each read: no setting asks for it; it
     /// cannot be kept (the case that says why, to a principal shown the
     /// view as declared); its records are not whole (the groups that are not
-    /// exact for this reader); or its records are not kept at this
-    /// position, or by this lake; or its reader is admitted only some
-    /// records of it or of a type it reads.
+    /// exact for this reader); its records are being built, so a read
+    /// computes them until the build's `Keep`; or its records are not kept
+    /// at this position, or by this lake; or its reader is admitted only
+    /// some records of it or of a type it reads.
     variant not-kept {
         not-asked,
         cannot-be-kept(option<said>),
         not-whole(u64),
+        /// A `view_kept.<view>` setting is in force and its build has not
+        /// reached its `Keep`: reads compute the view meanwhile, and a
+        /// build a runner left owed goes on at the next open.
+        building,
         not-kept-here,
         only-some,
     }
@@ -1194,6 +1446,7 @@ interface types {
         %type: field-type,
         required: bool,
         authority: authority,
+        admits: list<source-id>,
         access: access,
         derived: option<condition>,
         /// The declared function that computes it.
@@ -1213,6 +1466,9 @@ interface types {
         description: option<string>,
         label: option<string>,
         embed: option<embed-decl>,
+        /// Where the holder's grant hides it: the field and values that
+        /// select each record it is hidden on.
+        hidden-where: list<tuple<field-name, list<string>>>,
         /// The host's own marks, to a principal who may see them.
         annotations: list<tuple<string, json>>,
     }
@@ -1232,6 +1488,10 @@ interface types {
         verbs: list<verb-name>,
         lineage: type-lineage,
         lifecycle: type-lifecycle,
+        /// The series pairs the type's `series_index.<type>` setting asks
+        /// for, kept pairs first: told to a holder of `schema` who reads
+        /// both fields, and only at the head.
+        series: list<series-told>,
         /// The host's own marks, to a principal who may see them.
         annotations: list<tuple<string, json>>,
         /// From `describe-type`: the declaration of each value type the
@@ -1239,6 +1499,14 @@ interface types {
         value-types: list<value-type-decl>,
         /// The constraints whose fields its reader reads.
         constraints: list<constraint-decl>,
+        /// The acts that thinned the type, oldest first; for a view,
+        /// those on its sources.
+        thinned: list<thinned-act>,
+        /// How many of the type's or the view's groups are stranded.
+        stranded: u64,
+        /// The copies of the time-zone database that cut a stranded group
+        /// a make carried.
+        cut: list<string>,
     }
 
     record verb-description {
@@ -1271,7 +1539,13 @@ interface types {
         /// A host's setting's declaration, told to a holder of the schema
         /// grant and to one who may write it.
         declared: option<setting-decl>,
+        /// A host's setting's values from dates, the first from the start;
+        /// empty where it holds none.
+        periods: list<setting-period>,
     }
+
+    /// One value of a setting and the date it holds from, none for the first.
+    record setting-period { %from: option<string>, value: json }
 
     record lake-description {
         lake: lake-id,
@@ -1304,6 +1578,7 @@ interface types {
     record hits-reply { position: position, data: hits }
     record proposals-reply { position: position, data: list<proposal> }
     record migration-report-reply { position: position, data: migration-report }
+    record thin-reply { position: position, data: thin-report }
 
     /// What a change to the ontology would do, before it does it (062).
     record plan {
@@ -1314,8 +1589,52 @@ interface types {
         value-types: list<value-type-report>,
         /// No section loses a value or breaks a constraint that refuses; a
         /// proposal's plan of declarations judges it on the records its
-        /// proposer is told of.
+        /// proposer is told of; a plan of records refuses no record.
         lossless: bool,
+        /// A change to records' section.
+        records: option<records-plan>,
+    }
+
+    /// What a change to records would do, as its caller is answered it.
+    record records-plan {
+        %type: type-name,
+        /// How many records the condition selects, and the first keys.
+        selected: u64,
+        sample-keys: list<record-key>,
+        /// Per field set, how many selected records it would change.
+        fields: list<field-changed>,
+        /// Every refusal a selected record would meet.
+        refused: list<records-refused>,
+    }
+
+    record field-changed {
+        field: field-name,
+        records: u64,
+    }
+
+    /// One refusal the records a change selects would meet: the first
+    /// one's, with how many records it refuses and their first keys.
+    record records-refused {
+        refusal: error,
+        records: u64,
+        sample-keys: list<record-key>,
+    }
+
+    /// What a change to records does to each record it selects.
+    variant change-to {
+        set(patch),
+        retire,
+    }
+
+    /// The records of one type a condition selects, and what is done to
+    /// each; `only` holds a proposer's pairs beside the condition, and
+    /// `skip-restricted` leaves restricted records out.
+    record records-change {
+        %type: type-name,
+        where: condition,
+        to: change-to,
+        only: list<field-value>,
+        skip-restricted: bool,
     }
 
     record plan-reply { position: position, data: plan }
@@ -1333,6 +1652,7 @@ interface types {
         recompute(recomputed),
         migrate(migration),
         migrate-value-type(value-type-migration),
+        records(records-change),
     }
 
     /// A value type's preflight: what its new declaration would refuse
@@ -1394,6 +1714,15 @@ interface types {
         verb(verb-name),
         function(string),
         proposal(proposal-id),
+        quarantined(quarantine-id),
+    }
+
+    /// A quarantined record's id: its source, the delivery that first
+    /// quarantined it, and its place in that delivery's stream.
+    record quarantine-id {
+        source: source-id,
+        delivery: delivery-id,
+        index: u64,
     }
 
     /// Why a call was refused. A refusal of `invalid`, `constraint`,
@@ -1401,6 +1730,7 @@ interface types {
     /// (`lakelands_api::error::Case`) and where it is said.
     variant refusal {
         not-granted,
+        grant-needed(string),
         wrong-door,
         verbs-only(list<verb-name>),
         reserved,
@@ -1454,10 +1784,13 @@ interface types {
     /// stream (from 0), the place of the first record of its window, from
     /// which nothing was written, and the record as its source named it.
     /// A refusal of the ingest itself, before any record, names none.
+    /// A refusal asked to be quarantined past the source's bound names
+    /// the bound, `quarantined-max`, that was full.
     record ingest-error {
         index: option<u64>,
         %from: option<u64>,
         %record: option<record-ref>,
+        quarantine-full: option<u32>,
         error: error,
     }
 
@@ -1520,6 +1853,7 @@ interface types {
         report-id: string,
         set-off: u32,
         max-set-changes: u32,
+        quarantined: list<type-quarantined>,
     }
 
     /// The records a purge takes whose one field with a declared
@@ -1562,6 +1896,12 @@ interface types {
         retired: u32,
     }
 
+    /// The open quarantined records of one type an act on a source closes.
+    record type-quarantined {
+        %type: type-name,
+        quarantined: u64,
+    }
+
     /// What one forgetting of a source erased, or its preflight says it
     /// would: the records and values it erases, the outputs, the records
     /// it retires and those it keeps co-owned, what is computed again,
@@ -1580,9 +1920,40 @@ interface types {
         plaintext: u64,
         events: u64,
         expected-ms: u64,
+        reclaim-untimed: bool,
         position: position,
         reclaimed: option<compact-report>,
         reclaim-owed: option<string>,
+        way: forget-way,
+        report-id: string,
+        quarantined: list<type-quarantined>,
+    }
+
+    /// How a forgetting restates the projection: by a scoped refold of
+    /// the records its sources wrote, or by the rebuild with why, the
+    /// records and events the refold takes, and each way's expected time.
+    record forget-way {
+        scoped: bool,
+        why: list<string>,
+        records: u64,
+        events: u64,
+        scoped-ms: u64,
+        rebuild-ms: u64,
+    }
+
+    /// What one forgetting of several sources erased, or its preflight
+    /// says it would: each source's report, the events its one rebuild
+    /// folds and the time it is expected to hold the writer's lock, the
+    /// position, the act's reclaim, and a preflight's id over the set.
+    record forget-set-report {
+        sources: list<forget-report>,
+        events: u64,
+        expected-ms: u64,
+        reclaim-untimed: bool,
+        position: position,
+        reclaimed: option<compact-report>,
+        reclaim-owed: option<string>,
+        way: forget-way,
         report-id: string,
     }
 
@@ -1601,10 +1972,13 @@ interface types {
     }
 
     /// Which of a source's values a removal takes back: what it wrote
-    /// before a time of the log's clock, or in one delivery.
+    /// before a time of the log's clock, in one delivery or any of a set,
+    /// or of what it says it observed before a time (its `seen-at`).
     variant selection {
         written-before(timestamp),
         delivery(delivery-id),
+        seen-before(timestamp),
+        deliveries(list<delivery-id>),
     }
 
     /// The values one field of one type loses to a removal.
@@ -1617,12 +1991,14 @@ interface types {
 
     /// What one removal took back, or its preflight says it would: the
     /// selection and the first position a time does not reach, the
-    /// events selected and, for a delivery, the source's events from
-    /// before format 17, which carry none and are never selected, the
+    /// events selected and, for deliveries, the source's events from
+    /// before format 17, which carry none and are never selected, and for
+    /// a time the source observed, its events that state no `seen-at`, the
     /// records and values it takes, redacted and shredded, the records it
     /// retires and those it keeps, what is computed again, the constraints
     /// and references it leaves broken, the versions of the source's key
-    /// it destroys and the values of erasable fields it redacts only, the
+    /// it destroys, the keys of deliveries sealed apart it destroys alone,
+    /// and the values of erasable fields it redacts only, the
     /// events its rebuild folds and the time it is
     /// expected to hold the writer's lock, the position, the act's
     /// reclaim, and a preflight's id.
@@ -1632,6 +2008,7 @@ interface types {
         before: option<position>,
         events: u64,
         undelivered: u64,
+        unseen: u64,
         types: list<forget-records>,
         fields: list<removed-field>,
         retired: list<type-retired>,
@@ -1641,13 +2018,36 @@ interface types {
         breaches: list<breach>,
         references: list<purge-reference>,
         keys: list<key-id>,
+        apart: list<key-id>,
         unshredded: u64,
         log-events: u64,
         expected-ms: u64,
+        reclaim-untimed: bool,
         position: position,
         reclaimed: option<compact-report>,
         reclaim-owed: option<string>,
         report-id: string,
+        quarantined: list<type-quarantined>,
+    }
+
+    /// A thinning act's cut: the field of instants or dates the host
+    /// judges, and the horizon past which the records are taken.
+    record thin {
+        by: field-name,
+        before: timestamp,
+    }
+
+    /// What `thin_values` took, or what it says it would with `preflight`:
+    /// the type, the field, the horizon, the records taken, the last
+    /// position the act had got through, and the act's reclaim. It
+    /// repeats no key: the log's parts name them.
+    record thin-report {
+        %type: type-name,
+        by: field-name,
+        before: timestamp,
+        records: u64,
+        through: position,
+        reclaimed: option<compact-report>,
     }
 
     /// A field of a type.
@@ -1662,10 +2062,27 @@ interface types {
         max-depth: u32,
         max-reactive-depth: u32,
         commit-window-events: u32,
+        commit-window-max: u32,
         max-graph-nodes: u32,
         max-offset: u32,
         max-set-changes: u32,
+        max-change-records: u32,
         max-rerank-top: u32,
+        max-text-as-of: u32,
+        choose-order-index: bool,
+        order-after-pages: u32,
+        order-window-secs: u32,
+        order-min-records: u32,
+        order-max-fields: u32,
+        order-unused-secs: u32,
+        order-chunk: u32,
+        window-keys: u32,
+        part-events: u32,
+        part-tail: u32,
+        page-events: u32,
+        forget-rebuild: bool,
+        seal-after-bytes: u64,
+        quarantined-max: u32,
     }
 
     record feed-filter {
@@ -1686,5 +2103,8 @@ interface types {
         /// The positions of the reactions among `events` an act overruled
         /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
         overruled: list<position>,
+        /// The last position of each append that wrote one of `events`, in
+        /// order (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`).
+        appends: list<position>,
     }
 }

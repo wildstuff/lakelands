@@ -10,11 +10,15 @@
 //! **Everything is read before anything is written.** The export is
 //! verified whole (`lakelands_core::export::verify`: canonical lines, consecutive
 //! positions, the hash chain, every checkpoint against the files before
-//! it, the one format), then read once more for what only an import needs:
-//! every event belongs to the lake the location names, and every fence is
-//! the one its writer held (`docs/log-format.md` §4.1: 0 at position 0,
-//! each `lease_taken` carrying the fence it names, every other event the
-//! fence of the `lease_taken` before it). A fault in the files refuses the
+//! it, the one format, no member where a reader refuses it: an ingest
+//! sealed under another source's key among them), then read once more
+//! for what only an import needs: every event belongs to the lake the
+//! location names, its `id` is of the form `docs/log-format.md` §3 gives
+//! it, which a reader does not judge and an engine keeps as its bytes,
+//! and every fence is the one its writer held
+//! (`docs/log-format.md` §4.1: 0 at position 0, each `lease_taken`
+//! carrying the fence it names, every other event the fence of the
+//! `lease_taken` before it). A fault in the files refuses the
 //! import before the new lake holds anything.
 //!
 //! **The target must be empty,** and a lake that is there is not opened.
@@ -30,17 +34,27 @@
 //! what is left of one, and refuses the import as damaged before an
 //! event is carried.
 //!
-//! **Then the files, as they are.** The first file's events go to
-//! `LakeEngine::import` in batches of at most [`BATCH`] bytes, an event
-//! larger than that alone. Each later file starts with its `checkpoint`:
+//! **Then the events, as they are.** Each file's events are restored from
+//! its lines and blocks (`docs/log-format.md` §1.2, §1.5) and appended as
+//! the lake it came from appended them: the blocks of one append are one
+//! append, and each event alone on its line one of its own, stored as the
+//! store stores one, so the imported lake's feed tells the same appends
+//! (083) and the stored form is the new lake's own. The first file's
+//! events go to `LakeEngine::import` in batches of at most [`BATCH`]
+//! bytes, each append whole, one larger than that alone, so what an
+//! import holds follows the copy's largest append. Each later file starts with its `checkpoint`:
 //! its first batch is handed to `LakeEngine::seal_segment`, which closes
 //! the segment before it and begins the next with that batch in one step,
-//! once the digest the engine takes of that segment is the file's; the
+//! once the digest the engine takes of that segment, over its restored
+//! events, is the file's; the
 //! rest follows through `import`.
 //! The projection is folded under the import's lease as a rebuild folds
-//! it, and nothing is appended: the head is the export's. The lease is
-//! given up, and the host opens the lake as always; that open takes a
-//! lease greater than every fence in the log and continues it.
+//! it, and nothing is appended: the head is the export's. No segment is
+//! sealed by size.
+//! The lease is given up, and the host opens the lake as always; that
+//! open takes a lease greater than every fence in the log and continues
+//! it, and may seal a segment past its bound
+//! (`docs/decisions/074-a-segment-is-sealed-by-size.md`).
 //!
 //! **A failure is loud.** Once the first event is written, what can still
 //! fail is the target's storage. The error names the position the import
@@ -51,16 +65,18 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, Lease, OpenMode};
 use lakelands_api::error::{Case, Detail, Doing, Flaw, Part, Said, Situation};
-use lakelands_api::event::{Digest, LOG_FORMAT_VERSION};
+use lakelands_api::event::Digest;
 use lakelands_api::location::Location;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Error, LakeId, Position, Result, SourceId};
+use lakelands_core::log::Fault;
+use serde::Deserialize as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::lake::Lake;
@@ -83,30 +99,59 @@ fn weight(event: &CanonicalEvent) -> usize {
     event.bytes.len() + event.id.0.len() + event.prev.0.len() + event.hash.0.len()
 }
 
-/// Hands `events` on in batches of at most `limit` bytes by [`weight`]: a
-/// batch is handed before the event that would take it over, so only an
-/// event heavier than `limit` makes a larger one, and goes alone.
+/// Hands `appends` on in batches of at most `limit` bytes by [`weight`],
+/// each append whole: a batch is handed before the append that would take
+/// it over, so only an append heavier than `limit` makes a larger one,
+/// and goes alone.
 fn batched(
-    events: impl Iterator<Item = Result<CanonicalEvent>>,
+    appends: impl Iterator<Item = Result<Vec<CanonicalEvent>>>,
     limit: usize,
     hand: &mut dyn FnMut(&[CanonicalEvent]) -> Result<()>,
 ) -> Result<()> {
     let (mut batch, mut weighed) = (Vec::new(), 0);
-    for event in events {
-        let event = event?;
-        let weighs = weight(&event);
+    for append in appends {
+        let append = append?;
+        let weighs: usize = append.iter().map(weight).sum();
         if !batch.is_empty() && weighed + weighs > limit {
             hand(&batch)?;
             batch.clear();
             weighed = 0;
         }
         weighed += weighs;
-        batch.push(event);
+        batch.extend(append);
     }
     if batch.is_empty() {
         return Ok(());
     }
     hand(&batch)
+}
+
+/// The appends of a file's `events`, each the events the blocks of one
+/// append hold or one event alone on its line, stored as the store's
+/// writer stores an append: an import keeps the appends the lake it came
+/// from wrote, as its feed tells them (083).
+fn appends(
+    mut events: impl Iterator<Item = Result<(CanonicalEvent, Position)>>,
+) -> impl Iterator<Item = Result<Vec<CanonicalEvent>>> {
+    std::iter::from_fn(move || {
+        let mut append = Vec::new();
+        for event in events.by_ref() {
+            let (event, end) = match event {
+                Ok(read) => read,
+                Err(e) => return Some(Err(e)),
+            };
+            let last = event.position >= end;
+            append.push(event);
+            if last {
+                break;
+            }
+        }
+        if append.is_empty() {
+            return None;
+        }
+        lakelands_core::log::frame_append(&mut append);
+        Some(Ok(append))
+    })
 }
 
 /// What an import made.
@@ -128,7 +173,7 @@ pub struct Imported {
 /// one it can make a lake from, and asking again changes nothing.
 fn precondition(said: impl Into<Said>) -> Error {
     let said = Box::new(said.into());
-    crate::writes::refused(lakelands_api::Refusal::Precondition(said))
+    Error::refused(None, lakelands_api::Refusal::Precondition(said))
 }
 
 /// The export's files failed `doing`; the path is the operator's, not
@@ -159,7 +204,7 @@ struct Envelope {
 
 /// Of an event's body, its kind, the fence a `lease_taken` names, the
 /// source a `source_forgotten` forgot or a `values_removed` took from, and
-/// the versions of its key the latter destroyed.
+/// the versions of its key and the keys sealed apart the latter destroyed.
 #[derive(serde::Deserialize)]
 struct Body {
     kind: String,
@@ -169,6 +214,8 @@ struct Body {
     source: Option<SourceId>,
     #[serde(default)]
     keys: Vec<lakelands_api::id::KeyId>,
+    #[serde(default)]
+    apart: Vec<lakelands_api::id::KeyId>,
 }
 
 /// Of an event's `sealed`, the version of the key and the source of a
@@ -178,29 +225,63 @@ struct Sealed {
     key: lakelands_api::id::KeyId,
     #[serde(default)]
     source: Option<SourceId>,
+    /// The keys of a delivery sealed apart it is sealed under too (065).
+    #[serde(default)]
+    apart: Vec<lakelands_api::id::KeyId>,
 }
 
-/// Each line of `path` as the event the store would append, with its
-/// envelope, in order.
-fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, Envelope)>> + '_> {
+/// An event of an export as [`events`] reads it.
+type Read = (CanonicalEvent, Envelope, Position);
+
+/// Each event of `path`, restored from its line or its block
+/// (`docs/log-format.md` §1.2, §1.5), as the event the store would append,
+/// its bytes the event's canonical bytes and framed by none, with its
+/// envelope and the last position of its append, its own where it is
+/// alone on its line, in order. A file that ends inside an append is
+/// refused.
+fn events(path: &Path) -> Result<impl Iterator<Item = Result<Read>> + '_> {
     let file = fs::File::open(path).map_err(|e| io(Doing::Open, path, e))?;
-    Ok(BufReader::new(file).split(b'\n').map(move |line| {
-        let line = line.map_err(|e| io(Doing::Read, path, e))?;
+    let mut events = lakelands_core::log::Restoring::new(BufReader::new(file), true);
+    let mut done = false;
+    let damaged = |flaw| lakelands_core::damaged(Part::Export, None, flaw);
+    Ok(std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        let read = match events.next_event() {
+            Ok(Some(read)) => read,
+            Ok(None) => {
+                done = true;
+                return events.end().err().map(|flaw| Err(damaged(flaw)));
+            }
+            Err(fault) => {
+                done = true;
+                return Some(Err(match fault {
+                    Fault::Io(e) => io(Doing::Read, path, e),
+                    Fault::Short => damaged(Flaw::Truncated),
+                    Fault::Flaw(flaw) => damaged(flaw),
+                }));
+            }
+        };
         // The parser's own words, which name the member it does not know:
         // an import's caller is the operator, and the export is its own.
-        let e: Envelope = serde_json::from_slice(&line).map_err(|err| {
-            let detail = Detail::scrubbed(err);
-            lakelands_core::damaged(Part::Export, None, Flaw::NotAnEvent { detail })
-        })?;
+        let e = match Envelope::deserialize(&read.event) {
+            Ok(e) => e,
+            Err(err) => {
+                let detail = Detail::scrubbed(err);
+                return Some(Err(damaged(Flaw::NotAnEvent { detail })));
+            }
+        };
         let stored = CanonicalEvent {
             position: e.position,
             id: e.id.clone(),
             prev: e.prev.clone(),
             hash: e.hash.clone(),
             fence: e.fence,
-            bytes: line,
+            bytes: read.bytes,
+            frame: None,
         };
-        Ok((stored, e))
+        Some(Ok((stored, e, read.end)))
     }))
 }
 
@@ -210,25 +291,49 @@ fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, En
 /// is one the bound key store gives. With none bound such a value is
 /// refused as unbound, and a key the store does not give as missing: the
 /// value would be lost (058). A forgotten source's values arrive erased,
-/// and so do those under a version an act of removal destroyed (065).
-/// Answers each file's digest.
+/// and so do those under a key an act of removal destroyed, a version or
+/// one of a delivery sealed apart, though their other keys are gone too
+/// (065).
+/// Answers each file's digest, over the events it restores.
 fn check(
     files: &[PathBuf],
     lake: &LakeId,
     keys: Option<&dyn lakelands_api::seam::KeyStore>,
 ) -> Result<Vec<Digest>> {
+    let (digests, needed) = scan(files, lake)?;
+    for (source, key) in needed {
+        let Some(keys) = keys else {
+            return Err(Error::unbound(lakelands_api::error::Seam::KeyStore));
+        };
+        if keys.key(lake, &source, &key)?.is_none() {
+            return Err(Error::unavailable(Situation::KeyMissing { source, key }));
+        }
+    }
+    Ok(digests)
+}
+
+/// Every event in the export in `dir` checked as an import checks it, for
+/// `lake`, without a key store: what `restore --check` runs after `verify`.
+pub fn check_events(dir: &Path, lake: &LakeId) -> Result<()> {
+    scan(&lakelands_core::export::segment_files(dir)?, lake).map(drop)
+}
+
+type Needed = BTreeSet<(SourceId, lakelands_api::id::KeyId)>;
+
+/// Each file's digest, and the keys the export's sealed values need.
+fn scan(files: &[PathBuf], lake: &LakeId) -> Result<(Vec<Digest>, Needed)> {
     let (mut sealed, mut forgot, mut shredded) =
         (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     let mut fence = 0;
     let mut digests = Vec::with_capacity(files.len());
     for path in files {
-        // Hashed as it is read, so a segment is never held whole.
+        // Over the events it restores, as an engine digests a segment
+        // (§4.2), hashed as they are read, so a segment is never held whole.
         let mut hasher = Sha256::new();
-        let mut file = fs::File::open(path).map_err(|e| io(Doing::Open, path, e))?;
-        std::io::copy(&mut file, &mut hasher).map_err(|e| io(Doing::Read, path, e))?;
-        digests.push(Digest(lakelands_core::canonical::hex(&hasher.finalize())));
         for event in events(path)? {
-            let (_, event) = event?;
+            let (stored, event, _) = event?;
+            hasher.update(&stored.bytes);
+            hasher.update(b"\n");
             if event.lake != *lake {
                 let (position, held) = (event.position, Box::new(event.lake.clone()));
                 let lake = Box::new(lake.clone());
@@ -247,7 +352,8 @@ fn check(
             if let Some(s) = &event.sealed
                 && let Some(source) = s.source.clone().or_else(|| event.source.clone())
             {
-                sealed.insert((source, s.key.clone()));
+                let keys: Vec<_> = std::iter::once(&s.key).chain(&s.apart).cloned().collect();
+                sealed.insert((source, keys));
             }
             if event.body.kind == "source_forgotten" {
                 forgot.extend(event.body.source.clone());
@@ -256,8 +362,15 @@ fn check(
             if event.body.kind == "values_removed"
                 && let Some(source) = &event.body.source
             {
-                let taken = event.body.keys.iter().map(|k| (source.clone(), k.clone()));
-                shredded.extend(taken);
+                let taken = (event.body.keys.iter()).chain(&event.body.apart);
+                shredded.extend(taken.map(|k| (source.clone(), k.clone())));
+            }
+            // PostgreSQL keeps an id as its 16 bytes (086); a log another
+            // writer made may hold one of another form.
+            if !event.id.of_form() {
+                let flaw = Flaw::IdNotOfForm;
+                let at = Some(event.position);
+                return Err(lakelands_core::damaged(Part::Export, at, flaw));
             }
             if event.fence != fence {
                 let (carried, lease) = (event.fence, fence);
@@ -269,19 +382,18 @@ fn check(
                 ));
             }
         }
+        digests.push(Digest(lakelands_core::canonical::hex(&hasher.finalize())));
     }
-    let kept = |(s, k): &(SourceId, lakelands_api::id::KeyId)| {
-        !forgot.contains(s) && !shredded.contains(&(s.clone(), k.clone()))
+    let kept = |(s, ks): &(SourceId, Vec<lakelands_api::id::KeyId>)| {
+        !forgot.contains(s)
+            && !ks
+                .iter()
+                .any(|k| shredded.contains(&(s.clone(), k.clone())))
     };
-    for (source, key) in sealed.into_iter().filter(kept) {
-        let Some(keys) = keys else {
-            return Err(Error::unbound(lakelands_api::error::Seam::KeyStore));
-        };
-        if keys.key(lake, &source, &key)?.is_none() {
-            return Err(Error::unavailable(Situation::KeyMissing { source, key }));
-        }
-    }
-    Ok(digests)
+    let needed: BTreeSet<_> = (sealed.into_iter().filter(kept))
+        .flat_map(|(s, ks)| ks.into_iter().map(move |k| (s.clone(), k)))
+        .collect();
+    Ok((digests, needed))
 }
 
 /// Import the export in `dir` as a new lake at `location` (module doc).
@@ -309,7 +421,8 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
             return Err(precondition(Case::ImportNotEmpty { lake, head }));
         }
         carry(engine.as_ref(), &lease, &files, &digests, location)?;
-        let lake = Lake::assemble(location, seams.clone(), engine.clone(), Some(lease.clone()));
+        let mut lake = Lake::assemble(location, seams.clone(), engine.clone(), Some(lease.clone()));
+        let lake = lake.turn();
         lake.catch_up().map_err(|e| {
             let cause = Box::new(e);
             Error::unavailable(Situation::ImportNotFolded { cause })
@@ -324,13 +437,6 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
     written?;
     released?;
     drop(engine);
-    // An export of an older format is upgraded as any lake is: by a
-    // writer's open, whose lease is above every fence the export holds
-    // (`docs/log-format.md` §6). Its events stay as they were written.
-    let ends = crate::lake::opener(location, &seams)?.log_ends(location)?;
-    if crate::log::one_format(&location.lake, ends.as_ref())? < LOG_FORMAT_VERSION {
-        Lake::open(location, seams, OpenMode::Write)?.close()?;
-    }
     Ok(Imported {
         lake: location.lake.clone(),
         through: verified.through,
@@ -364,6 +470,8 @@ fn carry(
         // with the seal of the one before, whose digest is checked against
         // that file's before anything is sealed.
         let mut seals = i > 0;
+        // Each batch holds whole appends, each framed as the store's
+        // writer frames one.
         let mut hand = |batch: &[CanonicalEvent]| -> Result<()> {
             if !std::mem::take(&mut seals) {
                 return engine.import(lease, batch);
@@ -381,8 +489,8 @@ fn carry(
                 .map(drop)
                 .ok_or_else(|| lakelands_core::damaged(Part::Log, None, Flaw::NothingToSeal))
         };
-        let read = events(path)?.map(|event| event.map(|(event, _)| event));
-        batched(read, BATCH, &mut |batch| {
+        let read = events(path)?.map(|event| event.map(|(event, _, end)| (event, end)));
+        batched(appends(read), BATCH, &mut |batch| {
             hand(batch).map_err(|e| stopped(path, reached, e))?;
             reached = batch.last().expect("not empty").position.next();
             Ok(())

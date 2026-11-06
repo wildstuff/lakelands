@@ -5,17 +5,12 @@
 //! calories of an entry. The view `energy_balance` sums the food by day,
 //! merges the workouts summed by their date, and nets the two.
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{StorageKind, TypeDecl, ViewParam, ViewSource};
+use lakelands_api::ontology::{ViewParam, ViewSource};
 use lakelands_api::read::Find;
-use lakelands_api::{Access, Error, FieldName, LakeStore, Params, Refusal, Value};
-use serde_json::json;
+use lakelands_api::{Params, Value};
 
-use crate::conformance::fixture::{
-    Lake, bound, field, field_access, invalid_case, invalid_like, measure, param, type_decl,
-    view_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{bound, measure, param};
+use crate::conformance::prelude::*;
 
 check!(
     MERGED_ON_KEY = a_view_merges_its_sources_on_their_key_and_keeps_a_key_only_one_has,

@@ -15,6 +15,7 @@ use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_cli::Opening;
+use lakelands_core::log;
 
 fn block_on<F: Future>(f: F) -> F::Output {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -182,15 +183,27 @@ impl Root {
             None => {
                 let segment =
                     find(&self.dir, "00000000000000000000.jsonl").expect("the lake's segment");
-                let text = fs::read_to_string(&segment).unwrap();
-                let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
-                let at = lines
-                    .iter()
-                    .position(|l| l.contains(NOTE))
-                    .expect("the declaration's line");
-                lines[at] = lines[at].replacen(NOTE, &NOTE.replacen('A', "B", 1), 1);
-                fs::write(&segment, lines.join("\n")).unwrap();
-                at as u64
+                let mut bytes = fs::read(&segment).unwrap();
+                let note = bytes.windows(NOTE.len()).position(|w| w == NOTE.as_bytes());
+                let note = note.expect("the declaration's line");
+                bytes[note] = b'B';
+                fs::write(&segment, &bytes).unwrap();
+                // The first segment begins at position 0, and each unit
+                // before the declaration's line holds its events: a line
+                // one, a frame line none, a block as many as it says.
+                let start = bytes[..note].iter().rposition(|b| *b == b'\n');
+                let mut before = &bytes[..start.map_or(0, |i| i + 1)];
+                let mut position = 0;
+                while let Some(unit) = log::read_unit(&mut before).unwrap() {
+                    position += match unit {
+                        log::Unit::Line(line) => {
+                            let line: serde_json::Value = serde_json::from_slice(&line).unwrap();
+                            u64::from(!log::is_frame(&line))
+                        }
+                        log::Unit::Block(block, ..) => block.events,
+                    };
+                }
+                position
             }
             Some((url, schema)) => {
                 let (url, schema) = (url.clone(), schema.clone());
@@ -198,10 +211,12 @@ impl Root {
                 // runtime of its own, which a test's runtime thread cannot.
                 std::thread::spawn(move || {
                     let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+                    // Bytewise: a row holding a block holds compressed bytes,
+                    // no text.
                     let sql = format!(
-                        "UPDATE \"{schema}\".log SET bytes = convert_to(replace(convert_from(bytes, 'UTF8'), \
-                         'A note', 'B note'), 'UTF8') WHERE convert_from(bytes, 'UTF8') LIKE '%A note%' \
-                         RETURNING position"
+                        "UPDATE \"{schema}\".log SET bytes = overlay(bytes PLACING 'B'::bytea \
+                         FROM position('A note'::bytea IN bytes)) \
+                         WHERE position('A note'::bytea IN bytes) > 0 RETURNING position"
                     );
                     let rows = client.query(&sql, &[]).unwrap();
                     assert_eq!(rows.len(), 1, "one event holds the note");
@@ -330,6 +345,47 @@ fn verify_finds_a_line_changed_by_hand_that_an_open_does_not() {
     }
 }
 
+/// A byte of a block's stored bytes changed by hand: the block does not
+/// inflate, and `verify` names its first position. A line written after
+/// it keeps it from the log's end, which an open reads.
+#[test]
+fn verify_finds_a_block_changed_by_hand_at_its_first_position() {
+    let root = Root::new("block", None);
+    root.fill();
+    let after = root.dir.join("after.ndjson");
+    fs::write(
+        &after,
+        "{\"type\": \"note\", \"key\": \"n4\", \"fields\": {\"text\": \"t4\"}}\n",
+    )
+    .unwrap();
+    let ingest = root.run(&["ingest", &after.display().to_string(), "--source", "erp"]);
+    assert_eq!(ingest.code, 0, "{}", ingest.err);
+    root.close();
+    let segment = find(&root.dir, "00000000000000000000.jsonl").expect("the lake's segment");
+    let mut bytes = fs::read(&segment).unwrap();
+    let (mut input, mut found) = (&bytes[..], None);
+    while let Some(unit) = log::read_unit(&mut input).unwrap() {
+        if let log::Unit::Block(block, ..) = unit {
+            // The middle of its stored bytes, which end where the unit does.
+            let end = bytes.len() - input.len() - 1;
+            found = Some((block.first, end - block.stored as usize / 2));
+            break;
+        }
+    }
+    let (first, at) = found.expect("the ingest of three notes is a block");
+    bytes[at] ^= 0x55;
+    fs::write(&segment, &bytes).unwrap();
+    let asked = Mutex::new(Vec::new());
+    let s = root.verify(&[], &asked);
+    let want = format!(
+        "lake `ledger`: a segment of the log is damaged at position {first}: \
+         a block's bytes do not inflate by zlib"
+    );
+    assert_eq!(s.code, 1, "{}{}", s.out, s.err);
+    assert!(s.out.starts_with(&want), "{want}\n{}", s.out);
+    assert_eq!(*asked.lock().unwrap(), [OpenMode::Read]);
+}
+
 #[test]
 fn verify_answers_a_log_the_open_refuses_as_damaged_and_a_lake_not_made_yet() {
     let root = Root::new("cut", None);
@@ -338,8 +394,10 @@ fn verify_answers_a_log_the_open_refuses_as_damaged_and_a_lake_not_made_yet() {
     // A line one letter longer: the engine's index of the log no longer
     // meets it, and the open refuses the lake.
     let segment = find(&root.dir, "00000000000000000000.jsonl").unwrap();
-    let text = fs::read_to_string(&segment).unwrap();
-    fs::write(&segment, text.replacen(NOTE, &format!("{NOTE}!"), 1)).unwrap();
+    let bytes = fs::read(&segment).unwrap();
+    let at = bytes.windows(NOTE.len()).position(|w| w == NOTE.as_bytes());
+    let at = at.expect("the declaration's line") + NOTE.len();
+    fs::write(&segment, [&bytes[..at], b"!", &bytes[at..]].concat()).unwrap();
     let asked = Mutex::new(Vec::new());
     let s = root.verify(&[], &asked);
     assert_eq!(s.code, 1, "{}{}", s.out, s.err);

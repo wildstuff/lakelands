@@ -2,17 +2,10 @@
 //! a model's embedding it must be that model (lakelands#994; 025, extended,
 //! and 006).
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::query::{Axis, Search, SearchMode, VectorTerm};
-use lakelands_api::{Access, Error, LakeStore, Principal, PrincipalKind, Refusal};
-use serde_json::json;
+use lakelands_api::query::{Axis, VectorTerm};
 
-use crate::conformance::backing::{self, EMBED_MODEL};
-use crate::conformance::fixture::{
-    Lake, Must, embedding, field, head_unmoved, principal, type_decl, vector,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::backing::EMBED_MODEL;
+use crate::conformance::prelude::*;
 
 check!(
     QUERY_MODEL_CHECKED = a_query_vector_of_another_model_than_its_fields_is_refused,

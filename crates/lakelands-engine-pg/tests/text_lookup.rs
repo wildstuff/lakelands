@@ -17,8 +17,11 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::Declaration;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_core::engines;
-use lakelands_engine_pg::{PgOpener, few_holders_statements, holding_statements};
+use lakelands_engine_pg::{
+    PgOpener, few_batch_statements, few_holders_statements, holding_statements,
+};
 use postgres::types::ToSql;
 use serde_json::json;
 
@@ -53,15 +56,13 @@ fn walked() -> Vec<StoredRecord> {
                 fields["x"] = json!(i % 7);
             }
             StoredRecord {
-                ty: "t".into(),
-                key: format!("k{i:05}").into(),
-                version: Version(1),
-                fields: serde_json::from_value(fields).unwrap(),
-                meta: Default::default(),
-                position: Position(1),
-                made: Position(1),
-                retired: false,
                 restricted: i % 13 == 4,
+                ..stored_record(
+                    "t",
+                    format!("k{i:05}"),
+                    serde_json::from_value(fields).unwrap(),
+                    1,
+                )
             }
         })
         .collect();
@@ -83,17 +84,12 @@ fn a_count_and_a_page_under_an_exact_text_are_handed_the_records_holding_it() {
     p.begin().unwrap();
     for i in 0..N {
         let v = if i % 1000 == 500 { "b" } else { "a" };
-        p.put_record(&StoredRecord {
-            ty: "t".into(),
-            key: format!("k{i:04}").into(),
-            version: Version(1),
-            fields: serde_json::from_value(json!({"v": v})).unwrap(),
-            meta: Default::default(),
-            position: Position(1),
-            made: Position(1),
-            retired: false,
-            restricted: false,
-        })
+        p.put_record(&stored_record(
+            "t",
+            format!("k{i:04}"),
+            serde_json::from_value(json!({"v": v})).unwrap(),
+            1,
+        ))
         .unwrap();
     }
     p.commit(Position(1)).unwrap();
@@ -218,13 +214,18 @@ fn walk_under_each_text(engine: &dyn LakeEngine, planned: impl FnOnce()) {
     // A page of one under a filter that passes over all but a fortieth of
     // the holders: each batch the engine answers may read every holder.
     // And pages of one under `at` that pass over its first holders in
-    // `w`'s order, none to eight of them.
+    // `w`'s order, none to eight of them. `w + 0` keeps the bound out of
+    // `engines::window`: a bound on the page's order field narrows its
+    // index (097), and these pages are here to ask for the batch growth a
+    // walk past the rejected rows does.
     let w = |r: &StoredRecord| r.fields.get("w").and_then(Value::as_u64);
     let held = |r: &&StoredRecord| r.fields.get("v") == Some(&json!("at"));
     let mut first: Vec<u64> = states.iter().filter(held).filter_map(w).collect();
     first.sort_unstable();
-    let passing = first[..9].iter().map(|w| format!("v = 'at' and w >= {w}"));
-    let rejecting = ["at", "past"].map(|text| format!("v = '{text}' and w > 40000"));
+    let passing = first[..9]
+        .iter()
+        .map(|w| format!("v = 'at' and w + 0 >= {w}"));
+    let rejecting = ["at", "past"].map(|text| format!("v = '{text}' and w + 0 > 40000"));
     let view = engine.view(None).unwrap();
     let mut asked_by_few = std::collections::BTreeSet::new();
     for filter in passing.chain(rejecting) {
@@ -360,10 +361,12 @@ fn keys(page: &[StoredRecord]) -> Vec<RecordKey> {
 /// The plan of each statement of a page under a text many records hold,
 /// the tables analysed first, so that the plan does not hang on whether
 /// the server's own analysis has run (lakelands#674): the order index's
-/// rows in its order, or the text index's in key order, and no sort.
+/// rows in its order, or the text index's in key order, and no sort. A
+/// page down walks the ascending order index backward, and sorts only a
+/// tie by key, incrementally: there is no descending index.
 ///
 /// The cursor a long page under a text few records hold declares
-/// (lakelands#695) has one plan, at five holders (`rare`) and at the
+/// (lakelands#695), and each batch before it (lakelands#840), have one plan, at five holders (`rare`) and at the
 /// ceiling (`at`, read while exactly `FEW_HOLDERS` hold it), in either
 /// direction: from the text's rows, each holder's order row sought by its
 /// key, sorted once, and each record sought by its key. It never reads a
@@ -386,11 +389,21 @@ fn planned_without_a_sort(url: &str, schema: &str) {
             |text| -> Vec<&(dyn ToSql + Sync)> { vec![&"t", &"w", &few, &"v", text, &after, &key] };
         let holding = holding_statements(&schema).map(|s| (s, many.clone()));
         let [up, down] = few_holders_statements(&schema);
-        let cursors = [&"at", &"rare"].map(|t| [(up.clone(), held(t)), (down.clone(), held(t))]);
+        let [batch_up, batch_down] = few_batch_statements(&schema);
+        let cursors = [&"at", &"rare"].map(|t| {
+            [
+                up.clone(),
+                down.clone(),
+                batch_up.clone(),
+                batch_down.clone(),
+            ]
+            .map(|s| (s, held(t)))
+        });
         (holding.iter().chain(cursors.as_flattened()))
             .map(|(statement, args)| {
-                let explain =
-                    format!("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}");
+                let explain = format!(
+                    "EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}"
+                );
                 let rows = client.query(&explain, args).unwrap();
                 rows.iter().map(|row| row.get(0)).collect()
             })
@@ -399,16 +412,27 @@ fn planned_without_a_sort(url: &str, schema: &str) {
     .join()
     .unwrap();
     let (holding, cursors) = plans.split_at(3);
-    for (plan, index) in
-        holding
-            .iter()
-            .zip(["sort_index_asc", "sort_index_desc", "text_index_value"])
-    {
+    let read = [
+        "using sort_index_asc",
+        "Backward using sort_index_asc",
+        "text_index_value",
+    ];
+    for ((plan, index), down) in holding.iter().zip(read).zip([false, true, false]) {
         let has = |step: &str| plan.iter().any(|line| line.contains(step));
+        let node = |line: &String| {
+            line.trim_start()
+                .trim_start_matches("->")
+                .trim_start()
+                .to_owned()
+        };
+        let sorted = plan
+            .iter()
+            .map(node)
+            .any(|n| n.starts_with("Sort (") || n == "Sort");
         assert!(
-            has(index) && !has("Sort") && !has("Seq Scan"),
-            "a page under a text many records hold is not read from `{index}` in its order, \
-             with no sort:\n{plan:#?}"
+            has(index) && !sorted && (down || !has("Sort")) && !has("Seq Scan"),
+            "a page under a text many records hold is not read by `{index}` in its order, \
+             with no sort but a tie's:\n{plan:#?}"
         );
     }
     for plan in cursors {
@@ -421,8 +445,8 @@ fn planned_without_a_sort(url: &str, schema: &str) {
                 && sorts == 1
                 && !has("Seq Scan")
                 && !has("never executed"),
-            "the cursor of a page under a text few records hold is not read from the text's \
-             rows, each holder's order row sought by its key, those sorted once, and each \
+            "the cursor or a batch of a page under a text few records hold is not read from \
+             the text's rows, each holder's order row sought by its key, those sorted once, and each \
              record sought by its key:\n{plan:#?}"
         );
     }
@@ -438,6 +462,123 @@ fn a_page_in_a_fields_order_under_an_exact_text_is_handed_its_page() {
         .open(&common::location(&url, "texts", &schema), OpenMode::Create)
         .unwrap();
     walk_under_each_text(engine.as_ref(), || planned_without_a_sort(&url, &schema));
+    drop(engine);
+    common::drop_schema(&url, &schema);
+}
+
+/// A find and a count whose `where` holds the type's key of one text
+/// field equal to a text read the state at the key the text makes, at the
+/// head and as of an earlier position, not the type (057, lakelands#1318).
+/// The exact-text index keeps no rows for that field, so a walk would
+/// hand the rulebook every record.
+fn read_by_key(engine: &dyn LakeEngine) {
+    let decl: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "t", "key": ["id"],
+        "fields": [{"name": "id", "type": {"kind": "text"}}, {"name": "n", "type": {"kind": "number"}}]
+    }))
+    .unwrap();
+    let state = |id: &str, n: u64| StoredRecord {
+        version: Version(n),
+        made: Position(1),
+        ..stored_record(
+            "t",
+            lakelands_api::key::key_component(&json!(id)).unwrap(),
+            serde_json::from_value(json!({"id": id, "n": n})).unwrap(),
+            n,
+        )
+    };
+    let ids = (0..N).map(|i| format!("k{i:04}"));
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.put_declaration(&decl, 1, None, Position(0)).unwrap();
+    for id in ids.chain(["a:b".into(), "50%".into()]) {
+        p.put_record(&state(&id, 1)).unwrap();
+    }
+    p.commit(Position(1)).unwrap();
+    p.begin().unwrap();
+    p.put_record(&state("a:b", 2)).unwrap();
+    p.commit(Position(2)).unwrap();
+    let ty = TypeName::from("t");
+    let by_n = || Order {
+        field: "n".into(),
+        by: OrderBy::Value,
+        dir: Direction::Asc,
+    };
+    for (at, n) in [(None, 2), (Some(Position(1)), 1)] {
+        let view = engine.view(at).unwrap();
+        let ask = |what: &str, scan: Scan, want: &[&str]| {
+            let before = engines::rows_read();
+            let counted = view.count(&ty, &scan).unwrap();
+            let page = view.scan(&ty, &scan).unwrap();
+            let sorted = view
+                .scan(
+                    &ty,
+                    &Scan {
+                        order_by: vec![by_n()],
+                        ..scan
+                    },
+                )
+                .unwrap();
+            let read = engines::rows_read() - before;
+            let found = |page: &[StoredRecord]| -> Vec<String> {
+                let mut found: Vec<String> = page.iter().map(|r| r.key.to_string()).collect();
+                found.sort();
+                found
+            };
+            let (listed, ordered) = (found(&page), found(&sorted));
+            // The count is not printed: CodeQL follows the engine's
+            // connection into it and calls that logging a certificate.
+            let count = match counted == want.len() as u64 {
+                true => "right",
+                false => "wrong",
+            };
+            assert!(
+                count == "right"
+                    && listed == want
+                    && ordered == want
+                    && read <= 3 * want.len().max(1) as u64,
+                "as of {at:?}, {what} counted {count}, found {listed:?}, and {ordered:?} in \
+                 `n`'s order, from {read} rows handed to the rulebook, of a type of {N}; the \
+                 records at the keys the texts make are read"
+            );
+        };
+        let held = format!("id = 'a:b' and n = {n}");
+        for (filter, want) in [
+            (held.as_str(), &["a%3Ab"][..]),
+            ("id = 'k0500'", &["k0500"]),
+            ("n = 1 and id = '50%'", &["50%25"]),
+            ("id = 'a:b' and n = 3", &[]),
+            ("id = 'absent'", &[]),
+        ] {
+            let scan = Scan {
+                filter: Some(lakelands_core::expr::parse(filter).unwrap()),
+                limit: 10,
+                ..Scan::default()
+            };
+            ask(&format!("`{filter}`"), scan, want);
+        }
+        // A derived relation's match asks for several texts at once.
+        let scan = Scan {
+            equal_any: ["k0500", "a:b", "absent"]
+                .map(|t| vec![("id".into(), json!(t))])
+                .into(),
+            limit: 10,
+            ..Scan::default()
+        };
+        ask("a match of three texts", scan, &["a%3Ab", "k0500"]);
+    }
+}
+
+#[test]
+fn a_find_and_a_count_by_a_text_key_read_its_record_by_key() {
+    let Some(url) = common::url_or_skip("the pg text-key test") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let engine = PgOpener
+        .open(&common::location(&url, "texts", &schema), OpenMode::Create)
+        .unwrap();
+    read_by_key(engine.as_ref());
     drop(engine);
     common::drop_schema(&url, &schema);
 }

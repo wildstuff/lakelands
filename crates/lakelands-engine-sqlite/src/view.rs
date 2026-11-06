@@ -8,17 +8,22 @@
 //! directly. Either way `lakelands_core::engines` decides what matches,
 //! where it sorts and what it scores, exactly as on every other engine.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
+use lakelands_api::engine::{
+    Chosen, Declared, HolderBatch, KeyRange, Matched, ProjectionView, Rankings, Scan, SeriesState,
+    WindowAt, WindowBatch, WindowSides,
+};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
 use lakelands_api::ontology::TypeDecl;
+use lakelands_api::quarantine::{QuarantineFilter, QuarantineState, Quarantined};
 use lakelands_api::query::{Edge, Walk};
-use lakelands_api::read::{Direction, Order};
+use lakelands_api::read::{Direction, Order, OrderBy, ThinnedAct};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{FeedFilter, is_kept_name};
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines::{self, Holders, decode};
 use lakelands_core::feed::{self, Seek};
@@ -49,6 +54,9 @@ type Asked<'a> = (
     &'a Option<(FieldName, String)>,
 );
 
+/// The field a window's walk narrows by, and the texts it must hold.
+type WindowText = Option<(FieldName, Vec<String>)>;
+
 /// The bound on the key `column` that every key-ordered page's statement
 /// carries: after the key bound as the parameter `after` numbers, or for
 /// the first page from the empty key, which every key passes. With no
@@ -61,79 +69,118 @@ fn key_from(column: &str, after: Option<usize>) -> String {
     }
 }
 
+/// The predicates on the key `column` that the interval `range` makes,
+/// each end bound from the parameter `at` up in the order `from`, `until`
+/// (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`).
+fn key_range(column: &str, range: Option<&KeyRange>, at: usize) -> String {
+    let Some(range) = range else {
+        return String::new();
+    };
+    let mut sql = String::new();
+    let mut n = at;
+    if range.from.is_some() {
+        sql.push_str(&format!(" AND {column} >= ?{n}"));
+        n += 1;
+    }
+    if range.until.is_some() {
+        sql.push_str(&format!(" AND {column} < ?{n}"));
+    }
+    sql
+}
+
+/// How many parameters [`key_range`] binds.
+fn key_range_len(range: Option<&KeyRange>) -> usize {
+    range.map_or(0, |r| {
+        usize::from(r.from.is_some()) + usize::from(r.until.is_some())
+    })
+}
+
 /// The statement that reads a kept name (`lakelands_api::seam::KEPT_PREFIX`):
 /// `select` of its states in force at the position `?2`, from the key
-/// that `after` numbers, with `tail` after them. A kept record is put at
-/// every write to its group, so a key may hold thousands of states, and a
-/// stored type's statements read every state of the keys they pass. At
-/// the head this reads the states with no end, in key order through
-/// `records_at`. At an earlier position it steps from key to key through
-/// the primary key and seeks each key's latest state at or before the
-/// position: the steps come in key order, which the statement answers in
-/// with no `ORDER BY`, and `step` is joined first, so a limit in `tail`
-/// counts the states answered and not the keys stepped over.
-fn kept_sql(head: bool, select: &str, after: Option<usize>, tail: &str) -> String {
+/// that `after` numbers, inside the interval `range` whose ends the
+/// parameters from `range_at` up hold, with `tail` after them. A kept
+/// record is put at every write to its group, so a key may hold thousands
+/// of states, and a stored type's statements read every state of the keys
+/// they pass. Both walk the name's keys in key order and seek one state of
+/// each: at the head the state with no end, through `records_at`; at an
+/// earlier position the latest at or before it, through the primary key.
+/// The keys are joined first, so a limit in `tail` counts the states
+/// answered.
+fn kept_sql(
+    head: bool,
+    select: &str,
+    after: Option<usize>,
+    range: Option<&KeyRange>,
+    range_at: usize,
+    tail: &str,
+) -> String {
+    let mut from = key_from("k.key", after);
+    from.push_str(&key_range("k.key", range, range_at));
     if head {
-        let from = key_from("r.key", after);
         return format!(
-            "SELECT {select} FROM records r WHERE r.ty = ?1 AND r.until IS NULL {from} {tail}"
+            "SELECT {select} FROM keys k CROSS JOIN records r \
+             ON r.ty = k.ty AND r.until IS NULL AND r.id = k.id WHERE k.ty = ?1 {from} {tail}"
         );
     }
     format!(
-        "WITH RECURSIVE step(key) AS (\
-         SELECT (SELECT key FROM records WHERE ty = ?1 {} ORDER BY key LIMIT 1) \
-         UNION ALL \
-         SELECT (SELECT key FROM records WHERE ty = ?1 AND key > step.key ORDER BY key LIMIT 1) \
-         FROM step WHERE step.key IS NOT NULL) \
-         SELECT {select} FROM step CROSS JOIN records r \
-         WHERE r.rowid = (SELECT rowid FROM records WHERE ty = ?1 AND key = step.key \
-         AND since <= ?2 ORDER BY since DESC LIMIT 1) AND (r.until IS NULL OR r.until > ?2) {tail}",
-        key_from("key", after)
+        "SELECT {select} FROM keys k CROSS JOIN records r \
+         WHERE k.ty = ?1 {from} AND r.rowid = (SELECT rowid FROM records WHERE id = k.id \
+         AND since <= ?2 ORDER BY since DESC LIMIT 1) AND (r.until IS NULL OR r.until > ?2) {tail}"
     )
 }
 
 /// The statement of [`Read::records_after`]: for a kept name
 /// [`kept_sql`]'s states, at most `?3` and every one when that is
-/// negative, the view at the head or not. `narrow`ed, a stored type's
-/// states whose field at the JSON path `?4` is the text `?5`: the scan by
-/// a text the exact-text index keeps no rows for.
-fn records_after_sql(ty: &TypeName, head: bool, after: bool, narrow: bool) -> String {
+/// negative, the view at the head or not, inside `range` where a read
+/// narrowed by the key. `narrow`ed, a stored type's states whose field at
+/// the JSON path `?4` is the text `?5`: the scan by a text the exact-text
+/// index keeps no rows for.
+fn records_after_sql(
+    ty: &TypeName,
+    head: bool,
+    after: bool,
+    narrow: bool,
+    range: Option<&KeyRange>,
+) -> String {
+    // The range's ends are bound where the statement binds none, and the
+    // page's `after` follows them ([`Read::page`] binds it last).
     if is_kept_name(ty) {
-        let tail = if head { "ORDER BY r.key " } else { "" };
         return kept_sql(
             head,
-            "r.state",
-            after.then_some(4),
-            &format!("{tail}LIMIT ?3"),
+            "r.ty, k.key, r.since, r.state",
+            after.then_some(4 + key_range_len(range)),
+            range,
+            4,
+            "ORDER BY k.key LIMIT ?3",
         );
     }
-    let (text, from) = match narrow {
-        true => ("AND json_extract(state, ?4) = ?5", 6),
-        false => ("", 4),
+    let (text, base) = match narrow {
+        true => ("AND json_extract(r.state, ?4) = ?5", 5),
+        false => ("", 3),
     };
     format!(
-        "SELECT state FROM records WHERE ty = ?1 AND {} {text} {} ORDER BY key LIMIT ?3",
+        "SELECT r.ty, k.key, r.since, r.state FROM keys k CROSS JOIN records r ON r.id = k.id \
+         WHERE k.ty = ?1 AND r.{} {text} {} {} ORDER BY k.key LIMIT ?3",
         holds_at(2),
-        key_from("key", after.then_some(from))
+        key_range("k.key", range, base + 1),
+        key_from("k.key", after.then_some(base + 1 + key_range_len(range)))
     )
 }
 
 /// The statement of [`Read::count_in_force`]: the states in force of a
-/// stored type, or [`kept_sql`]'s of a kept name, under the two flags.
-fn count_in_force_sql(ty: &TypeName, head: bool) -> String {
-    let flags = |state: &str| {
-        format!(
-            "AND (?3 OR json_extract({state}, '$.retired') = 0) \
-             AND (?4 OR json_extract({state}, '$.restricted') = 0)"
-        )
-    };
+/// stored type, or [`kept_sql`]'s of a kept name, under the two flags,
+/// which the row holds beside its state ([`projection::flags_of`]), and
+/// inside `range` where a read narrowed by the key.
+fn count_in_force_sql(ty: &TypeName, head: bool, range: Option<&KeyRange>) -> String {
+    let flags =
+        |row: &str| format!("AND (?3 OR {row}flags & 1 = 0) AND (?4 OR {row}flags & 2 = 0)");
     if is_kept_name(ty) {
-        return kept_sql(head, "COUNT(*)", None, &flags("r.state"));
+        return kept_sql(head, "COUNT(*)", None, range, 5, &flags("r."));
     }
     let holds = holds_at(2);
     format!(
         "SELECT COUNT(*) FROM records WHERE ty = ?1 AND {holds} {}",
-        flags("state")
+        flags("")
     )
 }
 
@@ -144,11 +191,11 @@ fn count_in_force_sql(ty: &TypeName, head: bool) -> String {
 /// `records` by a range of the key for every index row.
 fn holding_after_sql(after: bool) -> String {
     format!(
-        "SELECT r.state FROM \
+        "SELECT r.ty, t.key, r.since, r.state FROM \
          (SELECT t.key FROM text_index t \
           WHERE t.ty = ?1 AND t.field = ?2 AND t.value = ?4 {} ORDER BY t.key LIMIT ?3) t \
-         JOIN records r ON r.ty = ?1 AND r.key = t.key AND r.until IS NULL \
-         ORDER BY t.key",
+         CROSS JOIN keys k ON k.ty = ?1 AND k.key = t.key \
+         CROSS JOIN records r ON r.ty = ?1 AND r.until IS NULL AND r.id = k.id ORDER BY t.key",
         key_from("t.key", after.then_some(5))
     )
 }
@@ -166,22 +213,27 @@ fn holding_any_sql(after: bool) -> String {
 }
 
 /// The head records of a list of keys, in the list's order.
-const HEADS_OF: &str = "SELECT r.state FROM json_each(?2) k CROSS JOIN records r \
-     ON r.ty = ?1 AND r.key = k.value AND r.until IS NULL ORDER BY k.id";
+const HEADS_OF: &str = "SELECT r.ty, k.key, r.since, r.state FROM json_each(?2) j \
+     CROSS JOIN keys k ON k.ty = ?1 AND k.key = j.value \
+     CROSS JOIN records r ON r.ty = ?1 AND r.until IS NULL AND r.id = k.id ORDER BY j.id";
 
 /// The statement of [`Read::unsorted_after`].
 fn unsorted_after_sql(after: bool) -> String {
     format!(
-        "SELECT r.state FROM records r WHERE r.ty = ?1 AND r.until IS NULL {} \
-         AND NOT EXISTS (SELECT 1 FROM sort_index s \
-         WHERE s.ty = r.ty AND s.field = ?2 AND s.key = r.key) \
-         ORDER BY r.key LIMIT ?3",
-        key_from("r.key", after.then_some(4))
+        concat!(
+            projection::heads!(),
+            " {} AND NOT EXISTS (SELECT 1 FROM sort_index s \
+             WHERE s.ty = ?1 AND s.field = ?2 AND s.key = k.key) ORDER BY k.key LIMIT ?3"
+        ),
+        key_from("k.key", after.then_some(4))
     )
 }
 
 /// The seek past the sort key `?k` and key `?key` in the order index's
-/// order for `dir`, and that order.
+/// order for `dir`, and that order. The index is kept ascending: a window
+/// down walks it backwards and sorts each run of one sort key by its key,
+/// so ties still ascend; the bound `s.sort_key <= ?k` is where the walk
+/// starts.
 fn seek_in(dir: Direction, k: usize, key: usize) -> (String, &'static str) {
     match dir {
         Direction::Asc => (
@@ -189,7 +241,10 @@ fn seek_in(dir: Direction, k: usize, key: usize) -> (String, &'static str) {
             "s.sort_key, s.key",
         ),
         Direction::Desc => (
-            format!("AND (s.sort_key < ?{k} OR (s.sort_key = ?{k} AND s.key > ?{key}))"),
+            format!(
+                "AND s.sort_key <= ?{k} \
+                 AND (s.sort_key < ?{k} OR (s.sort_key = ?{k} AND s.key > ?{key}))"
+            ),
             "s.sort_key DESC, s.key",
         ),
     }
@@ -200,13 +255,26 @@ fn seek_in(dir: Direction, k: usize, key: usize) -> (String, &'static str) {
 /// they hold, and then the sort key and key bound to seek past when `from`
 /// is set. Many holders are read in the index's order, each kept where the
 /// text index holds its key; few are read from the text index and sorted.
-fn sorted_after_sql(dir: Direction, from: bool, holders: &Holders<'_>) -> String {
+fn sorted_after_sql(
+    dir: Direction,
+    from: bool,
+    holders: &Holders<'_>,
+    window: Option<&engines::Window>,
+) -> String {
     let (k, key) = match holders {
         Holders::All => (4, 5),
         _ => (6, 7),
     };
     let (seek, by) = seek_in(dir, k, key);
     let seek = if from { seek.as_str() } else { "" };
+    // The window's ends follow the parameters the statement does bind.
+    let at = match holders {
+        Holders::All if from => 6,
+        Holders::All => 4,
+        _ if from => 8,
+        _ => 6,
+    };
+    let window = window_sql(window, at, at + 1);
     let rows = match holders {
         Holders::All => "sort_index s WHERE s.ty = ?1 AND s.field = ?2",
         Holders::Many(..) => {
@@ -219,28 +287,78 @@ fn sorted_after_sql(dir: Direction, from: bool, holders: &Holders<'_>) -> String
         }
     };
     format!(
-        "SELECT s.sort_key, r.state FROM \
-         (SELECT s.sort_key, s.key FROM {rows} {seek} ORDER BY {by} LIMIT ?3) s \
-         JOIN records r ON r.ty = ?1 AND r.key = s.key AND r.until IS NULL \
+        "SELECT s.sort_key, r.ty, k.key, r.since, r.state FROM \
+         (SELECT s.sort_key, s.key FROM {rows} {seek} {window} ORDER BY {by} LIMIT ?3) s \
+         CROSS JOIN keys k ON k.ty = ?1 AND k.key = s.key \
+         CROSS JOIN records r ON r.ty = ?1 AND r.until IS NULL AND r.id = k.id \
          ORDER BY {by}"
     )
+}
+
+/// The statement's bound on the rows it reads, when the read is narrowed
+/// by a filter's window: `s.sort_key` between the window's ends, bound as
+/// `?lo` and `?hi`. Empty for a read with no window.
+fn window_sql(window: Option<&engines::Window>, lo: usize, hi: usize) -> String {
+    match window {
+        Some(_) => format!("AND s.sort_key >= ?{lo} AND s.sort_key <= ?{hi}"),
+        None => String::new(),
+    }
+}
+
+/// The stop of a walk counted for [`engines::rows_walked`]: rows up to
+/// the last one handed, in the order `dir` walks for `seek_in`. A
+/// descending walk's stop is the mirror of its seek.
+fn stop_in(dir: Direction, k: usize, key: usize) -> String {
+    match dir {
+        Direction::Asc => format!("AND (s.sort_key, s.key) <= (?{k}, ?{key})"),
+        Direction::Desc => format!(
+            "AND s.sort_key >= ?{k} \
+             AND (s.sort_key > ?{k} OR (s.sort_key = ?{k} AND s.key <= ?{key}))"
+        ),
+    }
 }
 
 /// The statement of [`Read::few_after`]'s one read a page: the order
 /// rows of `?2` of every record holding the text `?4` in `?3`, read from
 /// the text index and sorted, after the sort key and key `?5` and `?6`.
 /// Index rows only, at most [`engines::FEW_HOLDERS`].
-fn holders_in_order_sql(dir: Direction) -> String {
+fn holders_in_order_sql(dir: Direction, window: Option<&engines::Window>) -> String {
     let (seek, by) = seek_in(dir, 5, 6);
+    let window = window_sql(window, 7, 8);
     format!(
         "SELECT s.sort_key, s.key FROM text_index t CROSS JOIN sort_index s \
          WHERE t.ty = ?1 AND t.field = ?3 AND t.value = ?4 \
-         AND s.ty = ?1 AND s.key = t.key AND s.field = ?2 {seek} ORDER BY {by}"
+         AND s.ty = ?1 AND s.key = t.key AND s.field = ?2 {seek} {window} ORDER BY {by}"
+    )
+}
+
+/// The statement counting the order rows a page under a text many records
+/// hold walked, for [`engines::rows_walked`]: rows of `?2` whose keys the
+/// text index holds for `?3` and `?4`, from the seek beginning at the
+/// parameter `from`, to the stop beginning at `last` when the batch was
+/// full, inside the window beginning at `window`. Each part's parameters
+/// are the pair beginning at its index.
+fn walked_sql(
+    dir: Direction,
+    from: Option<usize>,
+    last: Option<usize>,
+    window: Option<usize>,
+) -> String {
+    let seek = from.map_or_else(String::new, |k| seek_in(dir, k, k + 1).0);
+    let stop = last.map_or_else(String::new, |k| stop_in(dir, k, k + 1));
+    let window = window.map_or_else(String::new, |k| {
+        format!("AND s.sort_key >= ?{k} AND s.sort_key <= ?{}", k + 1)
+    });
+    format!(
+        "SELECT COUNT(*) FROM sort_index s WHERE s.ty = ?1 AND s.field = ?2 \
+         AND EXISTS (SELECT 1 FROM text_index t \
+         WHERE t.ty = ?1 AND t.field = ?3 AND t.value = ?4 AND t.key = s.key) \
+         {seek} {stop} {window}"
     )
 }
 
 /// The statement of [`Read::few_after`]'s seek of one head record.
-const HEAD_RECORD: &str = "SELECT state FROM records WHERE ty = ?1 AND key = ?2 AND until IS NULL";
+const HEAD_RECORD: &str = concat!(projection::heads!(), " AND k.key = ?2");
 
 /// A page under a text few records hold: the batches it has read by
 /// statements of their own, and the order rows of the holders after them,
@@ -258,14 +376,14 @@ struct Held {
 /// are joined, as in [`holding_after_sql`].
 fn unsorted_holding_sql(after: bool) -> String {
     format!(
-        "SELECT r.state FROM \
+        "SELECT r.ty, t.key, r.since, r.state FROM \
          (SELECT t.key FROM text_index t \
           WHERE t.ty = ?1 AND t.field = ?4 AND t.value = ?5 {} \
           AND NOT EXISTS (SELECT 1 FROM sort_index s \
           WHERE s.ty = ?1 AND s.field = ?2 AND s.key = t.key) \
           ORDER BY t.key LIMIT ?3) t \
-         JOIN records r ON r.ty = ?1 AND r.key = t.key AND r.until IS NULL \
-         ORDER BY t.key",
+         CROSS JOIN keys k ON k.ty = ?1 AND k.key = t.key \
+         CROSS JOIN records r ON r.ty = ?1 AND r.until IS NULL AND r.id = k.id ORDER BY t.key",
         key_from("t.key", after.then_some(6))
     )
 }
@@ -278,8 +396,10 @@ const HOLDERS: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM text_index \
 /// The statement of [`Read::record`]: the latest state of the key at or
 /// before the position, and whether it still holds there. No other state
 /// of the key is read (lakelands#596).
-const RECORD_AT: &str = "SELECT state FROM (SELECT state, until FROM records WHERE ty = ?1 \
-     AND key = ?2 AND since <= ?3 ORDER BY since DESC LIMIT 1) WHERE until IS NULL OR until > ?3";
+pub(crate) const RECORD_AT: &str = "SELECT ty, key, since, state FROM (SELECT r.ty, k.key, r.since, \
+     r.state, r.until FROM keys k CROSS JOIN records r ON r.id = k.id WHERE k.ty = ?1 \
+     AND k.key = ?2 AND r.since <= ?3 ORDER BY r.since DESC LIMIT 1) \
+     WHERE until IS NULL OR until > ?3";
 
 /// The statement of a recorded output's read: the latest state of the
 /// seam and input at or before the position, and whether it still holds
@@ -290,11 +410,30 @@ const OUTPUT_AT: &str = "SELECT since, state FROM (SELECT since, state, until FR
 
 /// The statements that seek one record's state, as the engine runs them:
 /// the read of a record at a position and the end a put gives the state
-/// before it, each with the parameters type, key and position, for the
-/// engine's own test of what they cost. Neither reads the key's other
+/// before it, the one with the parameters type, key and position, the
+/// other with the key's id and the position, for the engine's own test of
+/// what they cost. Neither reads the key's other
 /// states (lakelands#596).
 pub fn seek_statements() -> [String; 2] {
     [RECORD_AT.to_owned(), projection::RECORDS.ends_latest()]
+}
+
+/// The plan of the feed read the view makes for the keys and types of
+/// `filter` through `matching`, as it runs it, for the engine's own test
+/// of the index it takes: the plan of the read by `key`, one line a step.
+#[doc(hidden)]
+pub fn keyed_routes_plan(
+    conn: &rusqlite::Connection,
+    filter: &FeedFilter,
+    key: &str,
+) -> Result<Option<Vec<String>>> {
+    projection::routes_plan(
+        conn,
+        filter,
+        Some(("key", key)),
+        [Position(1), Position(u64::MAX >> 1)],
+        100,
+    )
 }
 
 /// The statement of each first page the view reads from an index in the
@@ -308,13 +447,13 @@ pub fn first_page_statements() -> Vec<String> {
     let many = Holders::Many(&field, "x");
     vec![
         RECORD_AT.to_owned(),
-        records_after_sql(&TypeName::from("t"), true, false, false),
+        records_after_sql(&TypeName::from("t"), true, false, false, None),
         holding_after_sql(false),
         unsorted_after_sql(false),
-        sorted_after_sql(Direction::Asc, false, &Holders::All),
-        sorted_after_sql(Direction::Desc, false, &Holders::All),
-        sorted_after_sql(Direction::Asc, false, &many),
-        sorted_after_sql(Direction::Desc, false, &many),
+        sorted_after_sql(Direction::Asc, false, &Holders::All, None),
+        sorted_after_sql(Direction::Desc, false, &Holders::All, None),
+        sorted_after_sql(Direction::Asc, false, &many, None),
+        sorted_after_sql(Direction::Desc, false, &many, None),
         unsorted_holding_sql(false),
     ]
 }
@@ -328,8 +467,8 @@ pub fn first_page_statements() -> Vec<String> {
 /// most [`engines::FEW_HOLDERS`] rows.
 pub fn few_holders_statements() -> [String; 3] {
     [
-        holders_in_order_sql(Direction::Asc),
-        holders_in_order_sql(Direction::Desc),
+        holders_in_order_sql(Direction::Asc, None),
+        holders_in_order_sql(Direction::Desc, None),
         HEAD_RECORD.to_owned(),
     ]
 }
@@ -344,25 +483,39 @@ pub fn few_holders_statements() -> [String; 3] {
 /// input and position.
 pub fn read_statements(ty: &TypeName, head: bool) -> [String; 4] {
     [
-        records_after_sql(ty, head, false, false),
-        records_after_sql(ty, head, true, false),
-        count_in_force_sql(ty, head),
+        records_after_sql(ty, head, false, false, None),
+        records_after_sql(ty, head, true, false, None),
+        count_in_force_sql(ty, head, None),
         OUTPUT_AT.to_owned(),
     ]
 }
 
-/// The full-text hits of `text` over `ty` as the index holds them, at the
-/// head (`docs/seams.md` §`ranked`), each field weighed by `weights`,
-/// read through `conn`.
+/// The statements a page and a count of `ty` inside a key interval are, as
+/// the engine runs them, for the engine's own test of their plans: a kept
+/// name's read is a seek of `keys`' primary key inside the interval as
+/// well (`docs/decisions/103-a-filter-on-a-kept-view-narrows-by-the-group-key.md`).
+/// A page takes the name, the position, the limit and the interval's ends;
+/// the count the name, the position, the two flags and the ends.
+pub fn range_statements(ty: &TypeName, head: bool) -> [String; 2] {
+    let range = KeyRange {
+        from: Some(RecordKey::from("a")),
+        until: Some(RecordKey::from("z")),
+    };
+    [
+        records_after_sql(ty, head, false, false, Some(&range)),
+        count_in_force_sql(ty, head, Some(&range)),
+    ]
+}
+
+/// The full-text hits of `asked`'s text over `ty` as the index holds
+/// them, at the head (`docs/seams.md` §`ranked`), read through `conn`.
 pub(crate) fn lexical(
     conn: &Connection,
     ty: &TypeName,
-    text: &str,
-    fields: Option<&[FieldName]>,
-    weights: &BTreeMap<FieldName, f64>,
+    asked: &Rankings,
     k: u32,
 ) -> Result<Vec<(RecordKey, f64)>> {
-    let Some(decl) = projection::type_at(conn, ty, None)? else {
+    let (Some(decl), Some((text, _))) = (projection::type_at(conn, ty, None)?, &asked.text) else {
         return Ok(Vec::new());
     };
     let query = engines::tokens(text, decl.language.as_deref().unwrap_or(""));
@@ -390,7 +543,8 @@ pub(crate) fn lexical(
     for key in keys {
         head.extend(projection::head_record(conn, ty, &RecordKey::from(key))?);
     }
-    Ok(engines::lexical(&decl, &head, text, fields, weights, k))
+    let kept = |held| projection::text_counts(conn, ty, &decl, held);
+    engines::ranked_text(&decl, &head, asked, k, kept)
 }
 
 impl SqliteView<'_> {
@@ -400,7 +554,7 @@ impl SqliteView<'_> {
         let Some(at) = self.at else {
             return Ok(empty);
         };
-        let conn = crate::lock(&self.lake.reader);
+        let conn = self.lake.reader()?;
         conn.execute_batch("BEGIN").map_err(sql)?;
         let result = projection::folded(&conn).and_then(|folded| {
             f(&Read {
@@ -425,34 +579,31 @@ impl Read<'_> {
     }
 
     fn record(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
-        let state: Option<String> = one(
-            self.conn,
-            RECORD_AT,
-            params![ty.as_str(), key.as_str(), self.at()],
-        )?;
-        state.as_deref().map(decode_record).transpose()
+        let at = params![ty.as_str(), key.as_str(), self.at()];
+        Ok(projection::records(self.conn, RECORD_AT, at)?.pop())
     }
 
     /// Every record of a type at the view's position, in key order.
     fn records(&self, ty: &TypeName) -> Result<Vec<StoredRecord>> {
         if is_kept_name(ty) {
-            let statement = records_after_sql(ty, self.head, false, false);
+            let statement = records_after_sql(ty, self.head, false, false, None);
             return self.page(&statement, &[&ty.as_str(), &self.at(), &-1], None);
         }
-        column(
+        projection::records(
             self.conn,
             &format!(
-                "SELECT state FROM records WHERE ty = ?1 AND {} ORDER BY key",
+                "SELECT r.ty, k.key, r.since, r.state FROM keys k CROSS JOIN records r \
+                 ON r.id = k.id WHERE k.ty = ?1 AND r.{} ORDER BY k.key",
                 holds_at(2)
             ),
             params![ty.as_str(), self.at()],
-            |s: String| decode_record(&s),
         )
     }
 
     /// At most `n` records of a type at the view's position after the key
     /// `after` (from the first when `None`), in key order: a seek into the
-    /// primary key `(ty, key, since)`, which sorts bytewise as keys do. The
+    /// primary key `(ty, key)` of `keys`, which sorts bytewise as keys do,
+    /// and of each key's state by its id. The
     /// first page and a later one are two statements, so that neither
     /// hides the seek behind an `OR`.
     fn records_after(
@@ -460,6 +611,7 @@ impl Read<'_> {
         ty: &TypeName,
         narrow: Option<&(FieldName, String)>,
         after: Option<&str>,
+        range: Option<&KeyRange>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         let narrow = narrow.filter(|_| !is_kept_name(ty));
@@ -468,7 +620,11 @@ impl Read<'_> {
         let mut args: Vec<&dyn ToSql> = vec![&name, &at, &n];
         args.extend(path.as_ref().map(|p| p as &dyn ToSql));
         args.extend(narrow.map(|(_, t)| t as &dyn ToSql));
-        let statement = records_after_sql(ty, self.head, after.is_some(), narrow.is_some());
+        let from = range.and_then(|r| r.from.as_ref()).map(RecordKey::as_str);
+        let until = range.and_then(|r| r.until.as_ref()).map(RecordKey::as_str);
+        args.extend(from.as_ref().map(|k| k as &dyn ToSql));
+        args.extend(until.as_ref().map(|k| k as &dyn ToSql));
+        let statement = records_after_sql(ty, self.head, after.is_some(), narrow.is_some(), range);
         self.page(&statement, &args, after)
     }
 
@@ -500,10 +656,11 @@ impl Read<'_> {
         (lookup, narrow): Asked<'_>,
         held: &mut Option<Vec<String>>,
         after: Option<&str>,
+        range: Option<&KeyRange>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         let Some((field, texts)) = lookup else {
-            return self.records_after(ty, narrow.as_ref(), after, n);
+            return self.records_after(ty, narrow.as_ref(), after, range, n);
         };
         if let [text] = texts.as_slice() {
             return self.page(
@@ -534,11 +691,23 @@ impl Read<'_> {
     /// How many records of a type are in force at the view's position, the
     /// retired and the restricted ones only when asked, their flags read
     /// from the stored state.
-    fn count_in_force(&self, ty: &TypeName, retired: bool, restricted: bool) -> Result<u64> {
+    fn count_in_force(
+        &self,
+        ty: &TypeName,
+        retired: bool,
+        restricted: bool,
+        range: Option<&KeyRange>,
+    ) -> Result<u64> {
+        let (name, at) = (ty.as_str(), self.at());
+        let from = range.and_then(|r| r.from.as_ref()).map(RecordKey::as_str);
+        let until = range.and_then(|r| r.until.as_ref()).map(RecordKey::as_str);
+        let mut args: Vec<&dyn ToSql> = vec![&name, &at, &retired, &restricted];
+        args.extend(from.as_ref().map(|k| k as &dyn ToSql));
+        args.extend(until.as_ref().map(|k| k as &dyn ToSql));
         let counted: Vec<i64> = column(
             self.conn,
-            &count_in_force_sql(ty, self.head),
-            params![ty.as_str(), self.at(), retired, restricted],
+            &count_in_force_sql(ty, self.head, range),
+            args.as_slice(),
             Ok,
         )?;
         Ok(counted.first().map_or(0, |n| n.unsigned_abs()))
@@ -551,7 +720,7 @@ impl Read<'_> {
         if self.folded.is_none() || projection::sorted(self.conn, ty)? != self.folded {
             return Ok(Vec::new());
         }
-        projection::sorted_fields(self.conn, ty, decl)
+        projection::sorted_fields(self.conn, ty, decl, false)
     }
 
     /// The keys of `ty` with a state put or ended after the view's
@@ -564,13 +733,15 @@ impl Read<'_> {
         let args = params![ty.as_str(), self.at(), ceiling as i64 + 1];
         let put: Vec<String> = column(
             self.conn,
-            "SELECT key FROM records WHERE ty = ?1 AND since > ?2 ORDER BY since LIMIT ?3",
+            "SELECT k.key FROM records r CROSS JOIN keys k ON k.id = r.id \
+             WHERE r.ty = ?1 AND r.since > ?2 ORDER BY r.since LIMIT ?3",
             args,
             Ok,
         )?;
         let ended: Vec<String> = column(
             self.conn,
-            "SELECT key FROM records WHERE ty = ?1 AND until > ?2 AND since <= ?2 ORDER BY until LIMIT ?3",
+            "SELECT k.key FROM records r CROSS JOIN keys k ON k.id = r.id \
+             WHERE r.ty = ?1 AND r.until > ?2 AND r.since <= ?2 ORDER BY r.until LIMIT ?3",
             args,
             Ok,
         )?;
@@ -586,20 +757,26 @@ impl Read<'_> {
 
     /// At most `n` head records of a type with a row in the order index for
     /// `order`'s field, with their sort keys, in the index's order for its
-    /// direction, strictly after `from`: a seek into `sort_index_asc` or
-    /// `sort_index_desc`, or, of few holders of a text, the text index's
-    /// rows sorted.
+    /// direction, strictly after `from`: a seek into `sort_index_asc`, walked
+    /// up or down, or, of few holders of a text, the text index's rows
+    /// sorted.
     fn sorted_after(
         &self,
         ty: &TypeName,
         order: &Order,
         holders: &Holders<'_>,
+        window: Option<&engines::Window>,
         from: Option<(&[u8], &str)>,
         n: u32,
     ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
         let mut stmt = self
             .conn
-            .prepare_cached(&sorted_after_sql(order.dir, from.is_some(), holders))
+            .prepare_cached(&sorted_after_sql(
+                order.dir,
+                from.is_some(),
+                holders,
+                window,
+            ))
             .map_err(sql)?;
         let (ty, field) = (ty.as_str(), order.field.as_str());
         let mut args: Vec<&dyn ToSql> = vec![&ty, &field, &n];
@@ -611,14 +788,183 @@ impl Read<'_> {
         if from.is_some() {
             args.extend([&k as &dyn ToSql, &key]);
         }
-        let row = |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?));
-        let rows: Vec<(Vec<u8>, String)> = stmt
+        if let Some(w) = window {
+            args.extend([&w.lo as &dyn ToSql, &w.hi]);
+        }
+        let row =
+            |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, projection::record_at(r, 1)?));
+        let rows: Vec<(Vec<u8>, projection::Kept4)> = stmt
             .query_map(args.as_slice(), row)
             .and_then(Iterator::collect)
             .map_err(sql)?;
+        self.count_walked(ty, order, holders, window, from, n, &rows)?;
         rows.into_iter()
-            .map(|(k, state)| Ok((k, decode_record(&state)?)))
+            .map(|(k, state)| Ok((k, decode_record(self.conn, &state)?)))
             .collect()
+    }
+
+    /// Counts the index rows the statement [`Read::sorted_after`] just ran
+    /// walked, for [`engines::rows_walked`]: a range of the order index
+    /// walks what it hands; a text's few holders walk their own rows once
+    /// a statement; a text's many holders run a `count(*)` of the same
+    /// range, from the seek to the last row handed or, on a short batch,
+    /// to the range's end, only while a check asked for walks.
+    #[allow(clippy::too_many_arguments)]
+    fn count_walked(
+        &self,
+        ty: &str,
+        order: &Order,
+        holders: &Holders<'_>,
+        window: Option<&engines::Window>,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+        rows: &[(Vec<u8>, projection::Kept4)],
+    ) -> Result<()> {
+        match holders {
+            Holders::All => engines::count_walk(rows.len()),
+            Holders::Few(_, _, held) => engines::count_walk(*held as usize),
+            Holders::Many(..) if engines::counting_walks() => {
+                let last = (rows.len() == n as usize)
+                    .then(|| rows.last())
+                    .flatten()
+                    .map(|(k, (_, key, _, _))| (k.clone(), key.clone()));
+                let field = order.field.as_str();
+                let (f, t) = holders.text().unwrap_or_default();
+                let mut args: Vec<&dyn ToSql> = vec![&ty, &field, &f, &t];
+                let mut next = 5;
+                let (k, key) = from.unzip();
+                if from.is_some() {
+                    args.extend([&k as &dyn ToSql, &key]);
+                    next += 2;
+                }
+                let from_at = from.is_some().then_some(5);
+                let (lk, lkey) = last.as_ref().map_or((None, None), |(k, key)| {
+                    (Some(k.as_slice()), Some(key.as_str()))
+                });
+                let last_at = last.is_some().then_some(next);
+                if last.is_some() {
+                    args.extend([&lk as &dyn ToSql, &lkey]);
+                    next += 2;
+                }
+                let window_at = window.is_some().then_some(next);
+                if let Some(w) = window {
+                    args.extend([&w.lo as &dyn ToSql, &w.hi]);
+                }
+                let walked: Option<i64> = one(
+                    self.conn,
+                    &walked_sql(order.dir, from_at, last_at, window_at),
+                    args.as_slice(),
+                )?;
+                engines::count_walk(walked.unwrap_or(0).unsigned_abs() as usize);
+            }
+            Holders::Many(..) => {}
+        }
+        Ok(())
+    }
+
+    /// The kept pair a scan of `field` seeks, with the series it names
+    /// exactly ([`engines::series_seek`]); `None` without one, where the
+    /// read takes the road without a pair.
+    fn series_seek(
+        &self,
+        ty: &TypeName,
+        decl: &TypeDecl,
+        field: &FieldName,
+        scan: &Scan,
+    ) -> Result<Option<engines::SeriesSeek>> {
+        Ok(engines::series_seek(
+            decl,
+            &projection::series_state(self.conn, ty)?,
+            field,
+            scan,
+        ))
+    }
+
+    /// At most `n` index rows of `field` inside `window` after `from`, in
+    /// key order: the sides' count, and no record read.
+    fn count_rows(
+        &self,
+        ty: &TypeName,
+        field: &FieldName,
+        window: &engines::Window,
+        cap: u64,
+    ) -> Result<u64> {
+        let bound = i64::try_from(cap).unwrap_or(i64::MAX);
+        let q = "SELECT COUNT(*) FROM (SELECT s.key FROM sort_index s \
+                 WHERE s.ty = ?1 AND s.field = ?2 AND s.sort_key >= ?3 \
+                 AND s.sort_key <= ?4 LIMIT ?5) x";
+        let args: [&dyn ToSql; 5] = [
+            &ty.as_str(),
+            &field.as_str(),
+            &window.lo,
+            &window.hi,
+            &bound,
+        ];
+        self.counted(q, &args)
+    }
+
+    /// A page of a pair's rows in the field's order: each named series'
+    /// rows read under its prefix and merged, the records without an order
+    /// value read after them in key order
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+    /// series index, §`in`).
+    fn scan_series(
+        &self,
+        ty: &TypeName,
+        decl: &TypeDecl,
+        scan: &Scan,
+        seek: &engines::SeriesSeek,
+        first: &Order,
+    ) -> Result<Vec<StoredRecord>> {
+        let order = Order {
+            field: seek.field.clone(),
+            by: OrderBy::Value,
+            dir: first.dir,
+        };
+        let window = engines::field_kind(decl, &first.field)
+            .zip(scan.filter.as_ref())
+            .and_then(|(kind, filter)| engines::window(filter, &first.field, kind));
+        let mut merged = engines::MergedRows::new(seek.series.len(), first.dir, false);
+        let sorted = |from: Option<(&[u8], &str)>, n: u32| {
+            merged.next(from, n, |i: usize, from: Option<(&[u8], &str)>, n: u32| {
+                let at =
+                    from.map(|(k, key)| (engines::prefixed(&seek.series[i], k), key.to_owned()));
+                let at = at.as_ref().map(|(k, key)| (k.as_slice(), key.as_str()));
+                let window = seek.bounds(i, window.as_ref());
+                let rows = self.sorted_after(ty, &order, &Holders::All, Some(&window), at, n)?;
+                Ok::<Vec<(Vec<u8>, StoredRecord)>, lakelands_api::error::Error>(
+                    rows.into_iter()
+                        .map(|(k, r)| (k[8..].to_vec(), r))
+                        .collect(),
+                )
+            })
+        };
+        let mut tails = engines::MergedRows::new(seek.series.len(), Direction::Asc, true);
+        let missing = |after: Option<&str>, n: u32| match window {
+            Some(_) => Ok(Vec::new()),
+            None => {
+                let rows = tails.next(
+                    after.map(|a| (&[][..], a)),
+                    n,
+                    |i: usize, from: Option<(&[u8], &str)>, n: u32| {
+                        let tail = seek.tail(i);
+                        let window = engines::Window {
+                            field: seek.field.clone(),
+                            lo: tail.clone(),
+                            hi: tail.clone(),
+                        };
+                        let at = from.map(|(_, key)| (tail.as_slice(), key));
+                        let rows =
+                            self.sorted_after(ty, &order, &Holders::All, Some(&window), at, n)?;
+                        Ok::<Vec<(Vec<u8>, StoredRecord)>, lakelands_api::error::Error>(
+                            rows.into_iter().map(|(_, r)| (Vec::new(), r)).collect(),
+                        )
+                    },
+                )?;
+                Ok(rows.into_iter().map(|(_, r)| r).collect())
+            }
+        };
+        engines::scan_in_field_order(Some(decl), scan, sorted, missing)
     }
 
     /// At most `n` of the head records holding the text `holders` names, in
@@ -631,11 +977,13 @@ impl Read<'_> {
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended).
     /// The batches and the held rows are of one snapshot: the page's read
     /// transaction.
+    #[allow(clippy::too_many_arguments)]
     fn few_after(
         &self,
         ty: &TypeName,
         order: &Order,
         holders: &Holders<'_>,
+        window: Option<&engines::Window>,
         held: &mut Held,
         from: Option<(&[u8], &str)>,
         n: u32,
@@ -643,22 +991,27 @@ impl Read<'_> {
         // A batch with no row to continue after is a page's first.
         let (Some((k, key)), true) = (from, held.batches >= engines::BATCHES_BEFORE_HELD) else {
             held.batches += 1;
-            return self.sorted_after(ty, order, holders, from, n);
+            return self.sorted_after(ty, order, holders, window, from, n);
         };
         if held.rows.is_none() {
             let mut stmt = self
                 .conn
-                .prepare_cached(&holders_in_order_sql(order.dir))
+                .prepare_cached(&holders_in_order_sql(order.dir, window))
                 .map_err(sql)?;
             let (f, t) = holders.text().unwrap_or_default();
+            let (name, field) = (ty.as_str(), order.field.as_str());
             let row = |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?));
+            let mut args: Vec<&dyn ToSql> = vec![&name, &field, &f, &t, &k, &key];
+            if let Some(w) = window {
+                args.extend([&w.lo as &dyn ToSql, &w.hi]);
+            }
             let rows = stmt
-                .query_map(
-                    params![ty.as_str(), order.field.as_str(), f, t, k, key],
-                    row,
-                )
+                .query_map(args.as_slice(), row)
                 .and_then(Iterator::collect)
                 .map_err(sql)?;
+            if let Holders::Few(_, _, held_rows) = holders {
+                engines::count_walk(*held_rows as usize);
+            }
             engines::count_holder_read();
             (held.rows, held.taken) = (Some(rows), 0);
         }
@@ -666,10 +1019,8 @@ impl Read<'_> {
         let end = (held.taken + n as usize).min(rows.len());
         let mut out = Vec::with_capacity(end - held.taken);
         for (k, key) in &rows[held.taken..end] {
-            let state: Option<String> = one(self.conn, HEAD_RECORD, params![ty.as_str(), key])?;
-            if let Some(state) = state {
-                out.push((k.clone(), decode_record(&state)?));
-            }
+            let head = projection::records(self.conn, HEAD_RECORD, params![ty.as_str(), key])?;
+            out.extend(head.into_iter().map(|r| (k.clone(), r)));
         }
         held.taken = end;
         Ok(out)
@@ -686,6 +1037,291 @@ impl Read<'_> {
         Ok(counted.map_or(0, i64::unsigned_abs))
     }
 
+    /// The field and texts a window walk narrows by, as the scan asks for
+    /// them and the exact-text index keeps them: `Some(None)` where the
+    /// scan holds no text. `None` where it holds one the index keeps none
+    /// of: no walk can answer it.
+    fn window_text(
+        &self,
+        ty: &TypeName,
+        decl: Option<&TypeDecl>,
+        scan: &Scan,
+    ) -> Result<Option<WindowText>> {
+        let looked = self.looked(ty, decl)?;
+        let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
+        let kind = |f: &FieldName| decl.and_then(|d| engines::field_kind(d, f)).copied();
+        if engines::text_lookups(scan, &|_| true, &kind).is_some()
+            && engines::text_lookups(scan, &kept, &kind).is_none()
+        {
+            return Ok(None);
+        }
+        Ok(Some(engines::text_lookups(scan, &kept, &kind)))
+    }
+
+    /// At most `n` order rows of `window.field` inside the window after
+    /// the index position `after`, with the keys among them holding the
+    /// scan's exact text: a walk of `n` rows of the ascending order index,
+    /// each row kept where the text index holds its key. The walk is the
+    /// batch: a short one was the whole window, and where it stopped is
+    /// the last row it passed, whether that row holds the text or not.
+    fn window_keys(
+        &self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        after: Option<&WindowAt>,
+        n: u32,
+    ) -> Result<Option<WindowBatch>> {
+        let Some(decl) = self.type_decl(ty)? else {
+            return Ok(None);
+        };
+        if !self.head {
+            return Ok(None);
+        }
+        // A series the scan names exactly seeks the pair's rows alone: each
+        // series' window under its prefix, walked one after another. The
+        // pair's own index is enough; the order field needs no index of its
+        // own for the walk.
+        if scan.range.is_none()
+            && let Some(seek) = self.series_seek(ty, &decl, &window.field, scan)?
+        {
+            let order = Order {
+                field: seek.field.clone(),
+                by: OrderBy::Value,
+                dir: Direction::Asc,
+            };
+            let batch =
+                engines::series_window_keys(&seek, window, after, n, |_i, bounds, from, n| {
+                    let rows =
+                        self.sorted_after(ty, &order, &Holders::All, Some(bounds), from, n)?;
+                    Ok::<Vec<(Vec<u8>, RecordKey)>, lakelands_api::error::Error>(
+                        rows.into_iter().map(|(k, r)| (k, r.key)).collect(),
+                    )
+                })?;
+            return Ok(Some(batch));
+        }
+        if !self.sorted_fields(ty, Some(&decl))?.contains(&window.field) {
+            return Ok(None);
+        }
+        let Some(text) = self.window_text(ty, Some(&decl), scan)? else {
+            return Ok(None);
+        };
+        let (ty_name, field) = (ty.as_str(), window.field.as_str());
+        let after_key: Option<String> = after.map(|a| a.key.to_string());
+        let mut args: Vec<&dyn ToSql> = vec![&ty_name, &field, &window.lo, &window.hi];
+        let mut next = 5;
+        let mut walk = String::from(
+            "SELECT s.sort_key, s.key FROM sort_index s WHERE s.ty = ?1 AND s.field = ?2 \
+             AND s.sort_key >= ?3 AND s.sort_key <= ?4",
+        );
+        if let Some(at) = after {
+            walk.push_str(&format!(
+                " AND (s.sort_key, s.key) > (?{next}, ?{})",
+                next + 1
+            ));
+            args.extend([&at.sort_key as &dyn ToSql, &after_key]);
+            next += 2;
+        }
+        walk.push_str(&format!(" ORDER BY s.sort_key, s.key LIMIT ?{next}"));
+        args.push(&n);
+        let text_field: Option<String> = text.as_ref().map(|(f, _)| f.to_string());
+        let text_json: Option<String> = text
+            .as_ref()
+            .map(|(_, t)| serde_json::to_string(t).expect("the texts serialise"));
+        let query = if let Some((_, texts)) = &text {
+            args.push(text_field.as_ref().expect("a text's field") as &dyn ToSql);
+            let (field_at, value_at) = (next + 1, next + 2);
+            if texts.len() == 1 {
+                args.push(&texts[0] as &dyn ToSql);
+                format!(
+                    "SELECT w.sort_key, w.key, EXISTS (SELECT 1 FROM text_index t WHERE t.ty = ?1 \
+                     AND t.field = ?{field_at} AND t.value = ?{value_at} AND t.key = w.key) \
+                     FROM ({walk}) w ORDER BY w.sort_key, w.key"
+                )
+            } else {
+                args.push(text_json.as_ref().expect("the texts") as &dyn ToSql);
+                format!(
+                    "SELECT w.sort_key, w.key, EXISTS (SELECT 1 FROM text_index t WHERE t.ty = ?1 \
+                     AND t.field = ?{field_at} AND t.value IN (SELECT value FROM json_each(?{value_at})) \
+                     AND t.key = w.key) FROM ({walk}) w ORDER BY w.sort_key, w.key"
+                )
+            }
+        } else {
+            format!("SELECT w.sort_key, w.key, 1 FROM ({walk}) w ORDER BY w.sort_key, w.key")
+        };
+        let mut stmt = self.conn.prepare_cached(&query).map_err(sql)?;
+        let rows: Vec<(Vec<u8>, String, i64)> = stmt
+            .query_map(args.as_slice(), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .and_then(Iterator::collect)
+            .map_err(sql)?;
+        engines::count_walk(rows.len());
+        Ok(Some(WindowBatch {
+            done: rows.len() < n as usize,
+            after: rows.last().map(|(sort_key, key, _)| WindowAt {
+                sort_key: sort_key.clone(),
+                key: key.as_str().into(),
+            }),
+            keys: rows
+                .into_iter()
+                .filter(|(_, _, holds)| *holds != 0)
+                .map(|(_, key, _)| key.as_str().into())
+                .collect(),
+        }))
+    }
+
+    /// One round of the choice: the window's index rows counted to `l + 1`,
+    /// and the other side, the text's holders or the type's rows, to four
+    /// times the window's count. Index-only.
+    fn window_sides(
+        &self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        l: u64,
+    ) -> Result<Option<WindowSides>> {
+        let Some(decl) = self.type_decl(ty)? else {
+            return Ok(None);
+        };
+        if !self.head {
+            return Ok(None);
+        }
+        // The pair's window, and the other side, are its series' rows
+        // counted under their prefixes; the order field needs no index of
+        // its own.
+        if scan.range.is_none()
+            && let Some(seek) = self.series_seek(ty, &decl, &window.field, scan)?
+        {
+            let sides = engines::series_window_sides(&seek, window, l, |_, bounds, cap| {
+                self.count_rows(ty, &seek.field, bounds, cap)
+            })?;
+            return Ok(Some(sides));
+        }
+        if !self.sorted_fields(ty, Some(&decl))?.contains(&window.field) {
+            return Ok(None);
+        }
+        let Some(text) = self.window_text(ty, Some(&decl), scan)? else {
+            return Ok(None);
+        };
+        let (ty_name, field) = (ty.as_str(), window.field.as_str());
+        // The window's side is the rows its road walks, the index's rows in
+        // the window, whether the scan holds a text or not: the walk pays
+        // for each of them and the probe only says which to read. A count
+        // of the text's holders inside would price the road by its answer,
+        // and take it where it walks the whole type.
+        let inside = self.count_rows(ty, &window.field, window, l.saturating_add(1))?;
+        let whole = inside <= l;
+        let cap = i64::try_from(inside.saturating_mul(engines::WINDOW_RATIO)).unwrap_or(i64::MAX);
+        let other = match &text {
+            None => {
+                let q = "SELECT COUNT(*) FROM (SELECT s.key FROM sort_index s \
+                         WHERE s.ty = ?1 AND s.field = ?2 LIMIT ?3) x";
+                let args: [&dyn ToSql; 3] = [&ty_name, &field, &cap];
+                self.counted(q, &args)?
+            }
+            Some((text_field, texts)) if texts.len() == 1 => {
+                let q = "SELECT COUNT(*) FROM (SELECT t.key FROM text_index t \
+                         WHERE t.ty = ?1 AND t.field = ?2 AND t.value = ?3 LIMIT ?4) x";
+                let args: [&dyn ToSql; 4] = [&ty_name, &text_field.as_str(), &texts[0], &cap];
+                self.counted(q, &args)?
+            }
+            Some((text_field, texts)) => {
+                let q = "SELECT COUNT(*) FROM (SELECT t.key FROM text_index t \
+                         WHERE t.ty = ?1 AND t.field = ?2 AND t.value IN \
+                         (SELECT value FROM json_each(?3)) LIMIT ?4) x";
+                let keyed = serde_json::to_string(texts).expect("the texts serialise");
+                let args: [&dyn ToSql; 4] = [&ty_name, &text_field.as_str(), &keyed, &cap];
+                self.counted(q, &args)?
+            }
+        };
+        engines::count_walk(inside as usize + other as usize);
+        Ok(Some(WindowSides {
+            inside,
+            whole,
+            other,
+        }))
+    }
+
+    /// A statement's count, read as a number.
+    fn counted(&self, statement: &str, args: &[&dyn ToSql]) -> Result<u64> {
+        let n: Option<i64> = one(self.conn, statement, args)?;
+        Ok(n.map_or(0, i64::unsigned_abs))
+    }
+
+    /// At most `n` holders of the scan's exact text in key order after
+    /// `after`, each with whether its order row for `window.field` lies
+    /// inside the window: the text index's rows, each joined to its order
+    /// row, a holder with none outside.
+    fn holders_inside(
+        &self,
+        ty: &TypeName,
+        window: &engines::Window,
+        scan: &Scan,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Option<HolderBatch>> {
+        let Some(decl) = self.type_decl(ty)? else {
+            return Ok(None);
+        };
+        let Some(text) = self.window_text(ty, Some(&decl), scan)? else {
+            return Ok(None);
+        };
+        let Some((text_field, texts)) = text else {
+            return Ok(None);
+        };
+        if !self.head {
+            return Ok(None);
+        }
+        let (ty_name, text_field, field) = (
+            ty.as_str(),
+            text_field.as_str().to_string(),
+            window.field.as_str().to_string(),
+        );
+        let mut query = String::from(
+            "SELECT t.key, s.sort_key FROM (SELECT t.key FROM text_index t \
+             WHERE t.ty = ?1 AND t.field = ?2 AND ",
+        );
+        let mut args: Vec<&dyn ToSql> = vec![&ty_name, &text_field];
+        let keyed = serde_json::to_string(&texts).expect("the texts serialise");
+        let after_key: Option<String> = after.map(|a| a.to_string());
+        if texts.len() == 1 {
+            query.push_str("t.value = ?3");
+            args.push(&texts[0]);
+        } else {
+            query.push_str("t.value IN (SELECT value FROM json_each(?3))");
+            args.push(&keyed);
+        }
+        let mut next = 4;
+        if after.is_some() {
+            query.push_str(&format!(" AND t.key > ?{next}"));
+            args.push(&after_key);
+            next += 1;
+        }
+        query.push_str(&format!(
+            " ORDER BY t.key LIMIT ?{next}) t LEFT JOIN sort_index s \
+             ON s.ty = ?1 AND s.field = ?{} AND s.key = t.key ORDER BY t.key",
+            next + 1
+        ));
+        args.push(&n);
+        args.push(&field);
+        let mut stmt = self.conn.prepare_cached(&query).map_err(sql)?;
+        let rows: Vec<(String, Option<Vec<u8>>)> = stmt
+            .query_map(args.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))
+            .and_then(Iterator::collect)
+            .map_err(sql)?;
+        engines::count_walk(rows.len());
+        Ok(Some(HolderBatch {
+            done: rows.len() < n as usize,
+            after: rows.last().map(|(key, _)| key.as_str().into()),
+            holders: rows
+                .into_iter()
+                .map(|(key, sort_key)| {
+                    let inside = sort_key.is_some_and(|k| window.holds(&k));
+                    (key.as_str().into(), inside)
+                })
+                .collect(),
+        }))
+    }
+
     /// At most `n` head records of a type without a row in the order index
     /// for `field`, in key order after `after`: those `holders` names.
     fn unsorted_after(
@@ -696,18 +1332,22 @@ impl Read<'_> {
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        if let Some((f, t)) = holders.text() {
-            return self.page(
+        let rows = if let Some((f, t)) = holders.text() {
+            self.page(
                 &unsorted_holding_sql(after.is_some()),
                 &[&ty.as_str(), &field.as_str(), &n, &f, &t],
                 after,
-            );
-        }
-        self.page(
-            &unsorted_after_sql(after.is_some()),
-            &[&ty.as_str(), &field.as_str(), &n],
-            after,
-        )
+            )?
+        } else {
+            self.page(
+                &unsorted_after_sql(after.is_some()),
+                &[&ty.as_str(), &field.as_str(), &n],
+                after,
+            )?
+        };
+        // A range of the key index walks what it hands.
+        engines::count_walk(rows.len());
+        Ok(rows)
     }
 
     /// The records a page's statement answers, `after` bound as its last
@@ -720,8 +1360,7 @@ impl Read<'_> {
     ) -> Result<Vec<StoredRecord>> {
         let mut args = args.to_vec();
         args.extend(after.as_ref().map(|a| a as &dyn ToSql));
-        let rows: Vec<String> = column(self.conn, statement, args.as_slice(), Ok)?;
-        rows.iter().map(|r| decode_record(r)).collect()
+        projection::records(self.conn, statement, args.as_slice())
     }
 
     /// Records of a type by their keys, at the view's position.
@@ -803,6 +1442,16 @@ impl ProjectionView for SqliteView<'_> {
         self.at
     }
 
+    fn chosen(&self, ty: &TypeName) -> Result<Chosen> {
+        self.read(Chosen::default(), |r| projection::chosen_kept(r.conn, ty))
+    }
+
+    fn series(&self, ty: &TypeName) -> Result<SeriesState> {
+        self.read(SeriesState::default(), |r| {
+            projection::series_state(r.conn, ty)
+        })
+    }
+
     fn declarations(&self) -> Result<Vec<Declared>> {
         self.read(Vec::new(), |r| {
             column(
@@ -834,6 +1483,21 @@ impl ProjectionView for SqliteView<'_> {
         self.read(None, |r| r.record(ty, key))
     }
 
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        self.read(None, |r| projection::order(r.conn, name, key))
+    }
+
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        self.read(Vec::new(), |r| {
+            projection::order_page(r.conn, name, after, n)
+        })
+    }
+
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             r.records_by_key(ty, keys.iter().map(|k| k.to_string()).collect())
@@ -851,37 +1515,123 @@ impl ProjectionView for SqliteView<'_> {
                 && scan.equal.is_empty()
                 && scan.equal_any.is_empty()
                 && scan.valid_at.is_none()
+                && (scan.range.is_none() || is_kept_name(ty))
             {
-                return r.count_in_force(ty, scan.retired, scan.restricted);
+                return r.count_in_force(ty, scan.retired, scan.restricted, scan.range.as_ref());
             }
-            // At the head, a count that must hold a text reads the records
-            // holding it, not the type.
+            // A count that must hold a text in a text key reads the records
+            // at the keys it makes; at the head, one that must hold another
+            // text reads the records holding it, not the type. A kept name's
+            // interval seeks the key-ordered road instead: a text lookup
+            // would read the keys holding the text and walk past its bound.
             let decl = r.type_decl(ty)?;
+            if scan.range.is_none()
+                && let Some(keys) = engines::key_lookup(decl.as_ref(), scan)
+            {
+                let records = r.records_by_key(ty, keys)?;
+                return Ok(engines::count_of(decl.as_ref(), &records, scan));
+            }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
-            let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
-            let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
+            let kind = |f: &FieldName| {
+                decl.as_ref()
+                    .and_then(|d| engines::field_kind(d, f))
+                    .copied()
+            };
+            // A text narrowing is the storage's own: `json_extract` reads a
+            // number as a number, not as the token the lookup keeps.
+            let text = |f: &FieldName| engines::text_kind(kind(f));
+            let lookup = engines::text_lookups(scan, &kept, &kind)
+                .filter(|_| r.head && scan.range.is_none());
+            let (narrow, mut held) = (engines::text_lookup(scan, &|_| true, &text), None);
             engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
-                r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)
+                r.in_key_order(
+                    ty,
+                    (&lookup, &narrow),
+                    &mut held,
+                    after,
+                    scan.range.as_ref(),
+                    n,
+                )
             })
         })
+    }
+
+    fn window_keys(
+        &self,
+        ty: &TypeName,
+        window: &lakelands_api::engine::Window,
+        scan: &Scan,
+        after: Option<&WindowAt>,
+        n: u32,
+    ) -> Result<Option<WindowBatch>> {
+        self.read(None, |r| r.window_keys(ty, window, scan, after, n))
+    }
+
+    fn window_sides(
+        &self,
+        ty: &TypeName,
+        window: &lakelands_api::engine::Window,
+        scan: &Scan,
+        l: u64,
+    ) -> Result<Option<WindowSides>> {
+        self.read(None, |r| r.window_sides(ty, window, scan, l))
+    }
+
+    fn holders_inside(
+        &self,
+        ty: &TypeName,
+        window: &lakelands_api::engine::Window,
+        scan: &Scan,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Option<HolderBatch>> {
+        self.read(None, |r| r.holders_inside(ty, window, scan, after, n))
     }
 
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
+            // A kept name's interval seeks the key-ordered road; a text
+            // lookup would read the keys holding the text and walk past its
+            // bound.
+            if scan.range.is_none()
+                && let Some(keys) = engines::key_lookup(decl.as_ref(), scan)
+            {
+                let records = r.records_by_key(ty, keys)?;
+                return Ok(engines::scan(decl.as_ref(), &records, scan));
+            }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
-            let lookup = engines::text_lookup(scan, &kept).filter(|_| r.head);
+            let kind = |f: &FieldName| decl.as_ref().and_then(|d| engines::field_kind(d, f)).copied();
+            let text = |f: &FieldName| engines::text_kind(kind(f));
+            let lookup = engines::text_lookup(scan, &kept, &kind).filter(|_| r.head);
             // Ordered by the key alone, the page is read from `after` in
             // key order and stops when it is full: at the head, with a text
             // the scan must hold, from the records holding it.
             if scan.order_by.is_empty() {
-                let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
-                let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
+                let lookup = engines::text_lookups(scan, &kept, &kind)
+                    .filter(|_| r.head && scan.range.is_none());
+                let (narrow, mut held) = (engines::text_lookup(scan, &|_| true, &text), None);
                 return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
-                    r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)
+                    let range = scan.range.as_ref();
+                    let rows = r.in_key_order(ty, (&lookup, &narrow), &mut held, after, range, n)?;
+                    // A range of the key index walks what it hands.
+                    engines::count_walk(rows.len());
+                    Ok(rows)
                 });
+            }
+            // A series the scan names exactly reads the pair's rows alone,
+            // each series' window under its prefix: the pair's own index
+            // answers the field's order, whether or not the order field has
+            // an index of its own.
+            if r.head
+                && scan.range.is_none()
+                && let Some(decl) = decl.as_ref()
+                && let Some(first) = scan.order_by.first().filter(|o| o.by == OrderBy::Value)
+                && let Some(seek) = r.series_seek(ty, decl, &first.field, scan)?
+            {
+                return r.scan_series(ty, decl, scan, &seek, first);
             }
             let sorted = r.sorted_fields(ty, decl.as_ref())?;
             let records = match engines::by_order_index(&sorted, scan) {
@@ -893,18 +1643,37 @@ impl ProjectionView for SqliteView<'_> {
                     let holders = Holders::of(lookup.as_ref(), |f, t, n| {
                         r.holders(ty, f, t, n)
                     })?;
+                    // A filter that bounds the page's own order field
+                    // narrows the index to its window; the rulebook still
+                    // admits each row, and no record without a value can
+                    // be admitted, so the walk past the index has no tail.
+                    let window = decl
+                        .as_ref()
+                        .and_then(|d| engines::field_kind(d, &first.field))
+                        .zip(scan.filter.as_ref())
+                        .and_then(|(kind, filter)| engines::window(filter, &first.field, kind));
                     // Under a text few hold, a page that asks for many
                     // batches reads the holders left once.
                     let mut held = Held::default();
-                    return engines::scan_in_field_order(
-                        decl.as_ref(),
-                        scan,
-                        |from, n| match holders {
-                            Holders::Few(..) => r.few_after(ty, first, &holders, &mut held, from, n),
-                            _ => r.sorted_after(ty, first, &holders, from, n),
-                        },
-                        |after, n| r.unsorted_after(ty, &first.field, &holders, after, n),
-                    );
+                    let sorted = |from: Option<(&[u8], &str)>, n: u32| match holders {
+                        Holders::Few(..) => {
+                            r.few_after(ty, first, &holders, window.as_ref(), &mut held, from, n)
+                        }
+                        _ => r.sorted_after(ty, first, &holders, window.as_ref(), from, n),
+                    };
+                    let missing = |after: Option<&str>, n: u32| {
+                        r.unsorted_after(ty, &first.field, &holders, after, n)
+                    };
+                    // A page inside a window reads no record without the
+                    // field: the comparison is false with no value.
+                    return match window {
+                        Some(_) => {
+                            engines::scan_in_field_order(decl.as_ref(), scan, sorted, |_, _| {
+                                Ok(Vec::new())
+                            })
+                        }
+                        None => engines::scan_in_field_order(decl.as_ref(), scan, sorted, missing),
+                    };
                 }
                 // At an earlier position, the head's index with the keys
                 // changed since; past the ceiling, the sort.
@@ -914,7 +1683,9 @@ impl ProjectionView for SqliteView<'_> {
                             decl.as_ref(),
                             scan,
                             &changed,
-                            |from, n| r.sorted_after(ty, first, &Holders::All, from, n),
+                            |from, n| {
+                                r.sorted_after(ty, first, &Holders::All, None, from, n)
+                            },
                             |after, n| r.unsorted_after(ty, &first.field, &Holders::All, after, n),
                         );
                     }
@@ -1045,6 +1816,43 @@ impl ProjectionView for SqliteView<'_> {
         })
     }
 
+    fn quarantined(&self, filter: &QuarantineFilter) -> Result<Vec<Quarantined>> {
+        let open = filter.state.map(|s| i64::from(s == QuarantineState::Open));
+        let after = filter.after.as_ref();
+        let limit = filter.limit.map_or(-1, i64::from);
+        self.read(Vec::new(), |r| {
+            let rows: Vec<Quarantined> = column(
+                r.conn,
+                &format!(
+                    "SELECT state FROM quarantined WHERE {} \
+                     AND (?2 IS NULL OR source = ?2) AND (?3 IS NULL OR delivery = ?3) \
+                     AND (?4 IS NULL OR ix = ?4) \
+                     AND (?5 IS NULL OR json_extract(state, '$.type') = ?5) \
+                     AND (?6 IS NULL OR json_extract(state, '$.key') = ?6) \
+                     AND (?7 IS NULL OR (json_extract(state, '$.closed') IS NULL) = ?7) \
+                     AND (?8 IS NULL OR (source, delivery, ix) > (?8, ?9, ?10)) \
+                     ORDER BY source, delivery, ix LIMIT ?11",
+                    holds_at(1)
+                ),
+                params![
+                    r.at(),
+                    filter.source.as_ref().map(|s| s.as_str()),
+                    filter.delivery.as_ref().map(|d| d.as_str()),
+                    filter.index.map(|i| i as i64),
+                    filter.ty.as_ref().map(|t| t.as_str()),
+                    filter.key.as_ref().map(|k| k.as_str()),
+                    open,
+                    after.map(|a| a.source.as_str()),
+                    after.map(|a| a.delivery.as_str()),
+                    after.map(|a| a.index as i64),
+                    limit,
+                ],
+                |s: String| decode(&s, "a quarantined record"),
+            )?;
+            Ok(filter.answer(rows))
+        })
+    }
+
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.read(false, |r| {
             one(
@@ -1080,9 +1888,14 @@ impl ProjectionView for SqliteView<'_> {
     fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
         // One read for every id, each its seek of the cached statement.
         self.read(vec![None; ids.len()], |r| {
-            let at = |id: &EventId| {
-                let query = "SELECT at FROM applied WHERE id = ?1 AND at <= ?2";
-                one(r.conn, query, params![id.0, r.at()])
+            // An id is held as its 16 bytes; one not of its form is held
+            // by no log this build keeps.
+            let at = |id: &EventId| match id.of_form() {
+                true => {
+                    let query = "SELECT at FROM applied WHERE id = unhex(?1) AND at <= ?2";
+                    one(r.conn, query, params![id.0, r.at()])
+                }
+                false => Ok(None),
             };
             let at = |id| at(id).map(|p: Option<i64>| p.map(|p| Position(p as u64)));
             ids.iter().map(at).collect()
@@ -1103,6 +1916,10 @@ impl ProjectionView for SqliteView<'_> {
                 row.map(|(since, s)| Ok((Position(since as u64), decode(&s, "a state")?)));
             decoded.transpose()
         })
+    }
+
+    fn unused_bases(&self) -> Result<Vec<u64>> {
+        self.read(Vec::new(), |r| projection::unused_bases(r.conn))
     }
 
     fn matching(
@@ -1149,6 +1966,43 @@ impl ProjectionView for SqliteView<'_> {
             let all = &FeedFilter::default();
             let positions = projection::routes(r.conn, all, by, [from, last], limit)?;
             Ok(feed::merged([positions], limit, last))
+        })
+    }
+
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<ThinnedAct>> {
+        // Read at the head in every read, oldest first by the position
+        // each act began at.
+        self.read(Vec::new(), |r| {
+            let mut stmt = r
+                .conn
+                .prepare_cached(
+                    "SELECT ty, \"by\", \"before\", at, through, gone FROM thinned_types \
+                     WHERE ty = ?1 ORDER BY at, \"by\", \"before\"",
+                )
+                .map_err(sql)?;
+            let rows = stmt
+                .query_map(params![ty.as_str()], |row| {
+                    Ok(ThinnedAct {
+                        ty: row.get::<_, String>(0)?.into(),
+                        by: row.get::<_, String>(1)?.into(),
+                        before: Timestamp(row.get(2)?),
+                        through: Position(row.get::<_, i64>(4)? as u64),
+                        gone: row.get::<_, i64>(5)? as u64,
+                    })
+                })
+                .map_err(sql)?;
+            rows.map(|r| r.map_err(sql)).collect()
+        })
+    }
+
+    fn thinned_at(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<Timestamp>> {
+        self.read(None, |r| {
+            one(
+                r.conn,
+                "SELECT \"before\" FROM thinned WHERE ty = ?1 AND key = ?2",
+                params![ty.as_str(), key.as_str()],
+            )
+            .map(|row: Option<i64>| row.map(Timestamp))
         })
     }
 }

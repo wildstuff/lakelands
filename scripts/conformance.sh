@@ -2,7 +2,7 @@
 # Runs the conformance suite against one engine, or against every
 # required engine of conformance/roster when none is named. An engine
 # whose entry point runs the suite fails on zero tests; only an empty
-# engine, whose entry point does not call the runner yet (`run_all(`
+# engine, whose entry point does not call the runner yet (`run_all(` or `run_checks(`
 # outside a `//` comment), passes on none. An engine with
 # tests/engine_seam.rs runs the engine-seam harness in the same job.
 # Usage: scripts/conformance.sh [engine]      (--list prints the roster)
@@ -15,11 +15,11 @@ required() { awk '!/^[[:space:]]*(#|$)/ && $2 == "required" { print $1 }' confor
 # do: its harness reads LAKELANDS_TEST_PG_URL.
 needs_server() { [ "$1" = pg ]; }
 
-# Whether an entry point calls the suite's runner: `run_all(` outside a
+# Whether an entry point calls the suite's runner: `run_all(` or `run_checks(` outside a
 # `//` comment. A mention in a comment is not a call. grep reads to the
 # end (no -q): stopping at the first match would cut sed off, and under
 # pipefail its broken pipe would fail the pipeline.
-runs_suite() { sed 's|//.*||' "$1" | grep 'run_all[[:space:]]*(' >/dev/null; }
+runs_suite() { sed 's|//.*||' "$1" | grep -E 'run_(all|checks)[[:space:]]*\(' >/dev/null; }
 
 if [ "${1:-}" = "--list" ]; then
     required
@@ -69,12 +69,23 @@ for engine in ${engines[@]+"${engines[@]}"}; do
     echo "conformance: $engine runs ${tests[*]}"
     cargo nextest run --locked ${flags[@]+"${flags[@]}"} \
         -p "lakelands-engine-$engine" "${tests[@]}"
-    # The mirror's and `verify`'s checks run on every engine the CLI
-    # carries; the workspace job has no server, so their PostgreSQL rows
-    # run here.
+    # The mirror's, `verify`'s and the two-process report checks run on
+    # every engine the CLI carries; the workspace job has no server, so
+    # their PostgreSQL rows run here.
     if needs_server "$engine"; then
-        echo "conformance: $engine runs the CLI's mirror and verify checks"
-        cargo nextest run --locked -p lakelands-cli --test mirror --test verify
+        echo "conformance: $engine runs the CLI's mirror, verify and report checks"
+        cargo nextest run --locked -p lakelands-cli --test mirror --test verify \
+            --test report_across_processes
+        # The door checks through a forwarding handle beside a writer on
+        # this engine (lakelands#1394).
+        echo "conformance: $engine runs the door checks through a forwarding handle"
+        cargo nextest run --locked -p lakelands-client --test forwarding
+        # The road's runner under the store's test job, on this engine
+        # (099, lakelands#1675): a store unit test reaches it, and the
+        # workspace job runs it with no server.
+        echo "conformance: $engine runs the road's runner under its test job"
+        # Its measured figures are printed by tests that pass.
+        cargo nextest run --locked -p lakelands-store --lib road:: --success-output final
         # Last, once every test above has ended: none left its schema
         # behind (lakelands#1011). This holds only where this run owns the
         # database, as CI's job and a worktree's own container running one

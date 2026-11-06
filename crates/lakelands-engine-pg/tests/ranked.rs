@@ -14,11 +14,18 @@
 mod common;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode, Ranked, Rankings};
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
-use lakelands_api::record::StoredRecord;
+use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::write::Declaration;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_pg::PgOpener;
 use serde_json::json;
+
+/// The `pg_locks` of the server are one table, and a relation's OID is
+/// unique only within its database: a lock another database holds joins
+/// this database's `pg_class` by coincidence when the OIDs are equal, and
+/// reads as this schema's table. Every query below names this database's
+/// locks alone.
+const CURRENT_DATABASE: &str = "(SELECT oid FROM pg_database WHERE datname = current_database())";
 
 fn declaration() -> Declaration {
     serde_json::from_value(json!({
@@ -49,17 +56,12 @@ fn lake(url: &str, schema: &str) -> Box<dyn LakeEngine> {
     p.begin().unwrap();
     p.put_declaration(&declaration(), 1, None, Position(0))
         .unwrap();
-    p.put_record(&StoredRecord {
-        ty: ty.clone(),
-        key: RecordKey::from("a"),
-        version: Version(1),
-        fields: serde_json::from_value(json!({"body": "quay", "e": [1.0, 0.0]})).unwrap(),
-        meta: Default::default(),
-        position: Position(1),
-        made: Position(1),
-        retired: false,
-        restricted: false,
-    })
+    p.put_record(&stored_record(
+        ty.clone(),
+        "a",
+        serde_json::from_value(json!({"body": "quay", "e": [1.0, 0.0]})).unwrap(),
+        1,
+    ))
     .unwrap();
     let index = engine.vectors().expect("the engine keeps vectors");
     index.put(&ty, &"a".into(), "e", &[1.0, 0.0]).unwrap();
@@ -90,7 +92,8 @@ fn held_inside_ranked(
         let call = s.spawn(|| engine.ranked(&TypeName::from("t"), &asked(), 10));
         // Until the call waits for the index.
         let waiting = format!(
-            "SELECT count(*) FROM pg_locks WHERE NOT granted \
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'relation' \
+             AND database = {CURRENT_DATABASE} AND NOT granted \
              AND relation = '\"{schema}\".full_text_key'::regclass"
         );
         let asked_at = std::time::Instant::now();
@@ -149,21 +152,25 @@ fn a_call_holds_every_table_it_reads_from_its_first_statement() {
     let engine = lake(&url, &schema);
     let mut held = Vec::new();
     held_inside_ranked(&url, &schema, engine.as_ref(), |side| {
-        let rows = side
-            .query(
-                "SELECT c.relname FROM pg_locks l JOIN pg_class c ON c.oid = l.relation \
-                 JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = $1 AND c.relkind = 'r' AND l.granted \
-                 AND l.mode = 'AccessShareLock' AND l.pid <> pg_backend_pid() ORDER BY 1",
-                &[&schema],
-            )
-            .unwrap();
+        // A table may be held more than once: a parallel worker takes its
+        // own lock row under its pid, and another session may hold it too.
+        // The claim is which tables the call holds, not how many rows say
+        // so.
+        let locks = format!(
+            "SELECT DISTINCT c.relname FROM pg_locks l JOIN pg_class c ON c.oid = l.relation \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE l.locktype = 'relation' AND l.database = {CURRENT_DATABASE} \
+             AND n.nspname = $1 AND c.relkind = 'r' AND l.granted \
+             AND l.mode = 'AccessShareLock' AND l.pid <> pg_backend_pid() ORDER BY 1"
+        );
+        let rows = side.query(&locks, &[&schema]).unwrap();
         held = rows.iter().map(|r| r.get::<_, String>(0)).collect();
     });
     let read = [
         "declarations",
         "declarations_head",
         "full_text",
+        "graphs",
         "meta",
         "records",
         "records_head",
@@ -194,7 +201,8 @@ fn a_clear_queued_ahead_of_a_call_is_in_its_position() {
     ))
     .unwrap();
     let waiting = format!(
-        "SELECT count(*) FROM pg_locks WHERE NOT granted \
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'relation' \
+         AND database = {CURRENT_DATABASE} AND NOT granted \
          AND relation = '\"{schema}\".declarations'::regclass"
     );
     let ranked = std::thread::scope(|s| {

@@ -22,6 +22,13 @@ a declaration may call is the log format's concern: the log keeps a
 declaration's expressions, and the format closes the functions they may
 call (`docs/log-format.md` Appendix B).
 
+`setting` takes one argument, a quoted key, or two: the key and `at`,
+any expression, whose UTC day picks the value the key holds on it. An
+`at` that is null answers null, one that is no instant is a misfit, and
+one the kind checker knows to be a boolean, a number or a duration is
+refused where it is written. It is an argument and no new function
+(`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+
 ### In what the fold evaluates, `now()` and `today()` are the event's `known_at`
 
 In anything the fold evaluates (derived fields, constraints, guards),
@@ -33,6 +40,12 @@ at the write (052), the `known_at` of the event folded: a derived "days
 overdue" is as of the record's last write. A read that computes it asks
 as of the read: under the instant `valid_at` names, else as of a
 position under that event's `known_at`, else the wall clock (052).
+
+`in_set('<set>')` binds the set's `where` where it is read. In a read
+that is the read's clock, so a set decided at the read, which keeps no
+membership, may call `now()` and `today()`; a kept set, whose members
+the fold decides, may not
+(`066 § A set may be decided at the read`).
 
 ### A duration divides by a duration, and multiplies and divides by a number
 
@@ -84,8 +97,25 @@ before it falls in the window that starts before it, and none is lost.
   from 1970, a week would begin on a Thursday and thirty days on a date
   nobody picked. `date_bucket(x, 30d)` is refused, naming the form with
   three arguments.
-- **A calendar unit takes none.** A month has no width to count from an
-  origin; `date_bucket(x, 'month', origin)` is refused.
+- **A calendar unit takes no origin, but may take a zone.** A month has
+  no width to count from an origin. A third argument after a unit is
+  the time zone the calendar is cut in, quoted as the IANA time-zone
+  database names it: `date_bucket(x, 'day', 'Europe/Berlin')` answers
+  the instant of the local midnight that starts `x`'s local day, so a
+  day is 23 or 25 hours long where the offset changes, a `week` starts
+  on the local Monday and a `month` on the local first. A `date` has no
+  time of day: it is that same date in the zone, never the instant its
+  UTC midnight names, so `2030-07-15` is a day of July 15th in New York
+  as in Berlin. Only the copy of that database built into Lakelands is
+  read, never the host's, so every engine and every host cuts the same
+  instant. That copy is pinned with the release. A kept view a zone
+  cuts records the copy that cut it, and a writer's open under another
+  folds it again (098); a derived field a zone cut at the write is cut
+  again only by a rebuild. A zone the
+  database does not name is refused `bucket_zone` where the expression
+  is declared or read, naming it; a quoted origin after a unit is
+  refused so. A width takes no zone: its windows are counted from an
+  instant.
 
 It is the one function with two arguments more, and no new unit. A read
 and a declaration may call it.
@@ -132,6 +162,12 @@ that pushes filters down into its own query language, complete.
 - The sentences that said in which format version a declaration's call
   of `date_bucket` is written left: a lake is written in one format a
   release (lakelands#801).
+- A calendar unit may take a time zone, read from the database built
+  in; until then every calendar bucket was cut in UTC. A `date` is the
+  same date in the zone (lakelands#1667).
+- A kept view a zone cuts records the copy of the time-zone database
+  that cut it, and a writer under another copy folds it again at its
+  open (098, lakelands#1677).
 - Corrected at the rewrite (lakelands#817): "`now()` and `today()` are
   the fold's clock in a derived field" was said of every derived field;
   052 computes one at the read, with the read's clock.
@@ -141,3 +177,5 @@ that pushes filters down into its own query language, complete.
 - `exists(<relation>)`, in a verb's `requires` and set values only:
   whether a path that begins at the relation reaches its one record
   (lakelands#960).
+- `in_set` binds a set's `where` where it is read, and a set decided at
+  the read may read the clock (lakelands#1412).

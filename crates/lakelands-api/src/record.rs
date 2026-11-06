@@ -46,9 +46,17 @@ pub struct FieldMeta {
     pub position: Position,
     /// The principal that wrote it, as `<kind>:<id>`.
     pub writer: String,
+    /// The principal `writer` acted for, where its event names one
+    /// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
     /// The source it came from, for a value from a source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceId>,
+    /// For a value a procedure produced: its name, as the log's
+    /// procedure gives it (a verb's, a function's, an embedding's model).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure: Option<String>,
     /// For a value a procedure produced: which version of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure_version: Option<String>,
@@ -83,6 +91,15 @@ pub struct Record {
     /// Fields that hold a value this principal may not read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masked: Vec<FieldName>,
+    /// Whether this is a kept view's record for a group that a thinning
+    /// stranded: the group answers its kept record, and at the head alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stranded: bool,
+    /// For a stranded group a make carried under another copy of the
+    /// time-zone database: the copy that cut it, whose members are gone
+    /// to cut again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut: Option<String>,
     /// Per-field provenance, filled when the read asked `with: meta`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub meta: BTreeMap<FieldName, FieldMeta>,
@@ -173,6 +190,19 @@ pub struct SourceRecord {
     /// ingest may carry many sources, each record stamped with its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceId>,
+    /// The delivery this record is in, where it is not the call's: one
+    /// ingest may carry many deliveries, each taken back alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<crate::id::DeliveryId>,
+    /// The quarantined record of the same source this one runs again,
+    /// which it closes once written or counted as a duplicate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resubmits: Option<crate::quarantine::Resubmits>,
+    /// The record's ordinal in its delivery, as the host counts it, which
+    /// keys it when quarantined in place of its place among the call's
+    /// records: the same `(run, line)` again is the same quarantined record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u64>,
 }
 
 /// Where values read from another lake's log came from: that lake, and

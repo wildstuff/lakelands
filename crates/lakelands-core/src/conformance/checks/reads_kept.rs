@@ -4,19 +4,11 @@
 //! (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! extended).
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::StorageKind::{self, Json, Text};
-use lakelands_api::ontology::{RelationDecl, TypeDecl};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Declaration, Migration, Outcome, ProposedWrite};
-use lakelands_api::{Access, PrincipalKind};
-use serde_json::{Value, json};
+use lakelands_api::ontology::StorageKind::{Json, Text};
+use lakelands_api::write::Outcome;
 
-use crate::conformance::fixture::{
-    Lake, Must, derived, field, field_access, field_writer, head_unmoved, migration, principal,
-    reads_all, refused_like, said_like, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, said_like};
+use crate::conformance::prelude::*;
 
 /// A place a case is said at, on the wire: a declaration by its kind
 /// (`type`, `object_set`, `trigger`, `verb`) and its name.
@@ -211,7 +203,7 @@ async fn a_relation_stays_while_a_verb_is_declared_on_its_link_type(store: Store
     // neither the link type nor a verb. It is told that a declaration
     // stands on the link type its relation names, and not which: at every
     // door, beside the owner, who is named the verb.
-    let grants = json!({"default": "write", "schema": true, "review": true,
+    let grants = json!({"default": "write", "schema": true, "review": true, "restricted": true,
         "types": {LT: {"default": "none"}}});
     let grants = serde_json::from_value(grants).expect("grants read");
     let kept = principal(store.as_ref(), PrincipalKind::Agent, "kept", grants);
@@ -384,7 +376,7 @@ async fn a_relation_stays_while_another_relation_targets_its_link_type(store: St
     // relation, whose target it is kept from. Each is told that a
     // relation targets the link type, and not which, at every door.
     let schema = |name: &str, none: &str| {
-        let grants = json!({"default": "write", "schema": true, "review": true,
+        let grants = json!({"default": "write", "schema": true, "review": true, "restricted": true,
             "types": {none: {"default": "none"}}});
         let grants = serde_json::from_value(grants).expect("grants read");
         principal(store.as_ref(), PrincipalKind::Agent, name, grants)
@@ -666,7 +658,7 @@ async fn a_declaration_reads_only_fields_its_type_has(store: Store) -> Held {
         verb("note", "status = setting('mode')", "payload.note"),
         verb("own", "status = 'x'", "concat(payload, payload.note)"),
         trigger("retired() or changed(status) and previous(status) = 'x'"),
-        set("status = 'x' and now() > today()"),
+        set("status = 'x' and upper(old) = 'Y'"),
     ] {
         l.declare_json(d).await?;
     }

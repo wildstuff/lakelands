@@ -14,22 +14,34 @@
 //! follows its reader's grants itself, to the position an entry was
 //! proposed at. What is shown depends on nothing else a read asks for: a
 //! valid time filters records, and the read that filters by it probes its
-//! fields.
+//! fields, or, where its grant says so, dates them by bounds it does not
+//! read.
+//!
+//! A read and a write are judged apart
+//! (`docs/decisions/092-reading-is-judged-apart-from-writing.md`): a read
+//! door makes its sight with [`Sight::reading`], which holds at `none`
+//! each type a write is shown and a read is not, so every read door answers
+//! it as undeclared by the one judgement the others ask.
 
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::Declared;
-use lakelands_api::ontology::{RelationDecl, TypeDecl, VerbDecl, VerbEffect};
+use lakelands_api::ontology::{FieldDecl, RelationDecl, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
 use lakelands_api::{
-    Error, FieldName, Missing, Position, Principal, RecordKey, TypeName, Value, ValueTypeName,
+    Access, Error, FieldName, Missing, Position, Principal, RecordKey, TypeName, Value,
+    ValueTypeName,
 };
 
 use crate::{describe, rights};
+
+/// What a door names beside its sight: the door a write comes through,
+/// what a grant admits of a type's records, and a type found by its name.
+pub use crate::rights::{Admit, Door, Find};
 
 /// The declarations in force, as a sight asks for them.
 pub trait InForce {
@@ -70,17 +82,27 @@ pub struct Sight<'o> {
     who: Cow<'o, Principal>,
     pub(crate) force: &'o dyn InForce,
     hidden: Vec<(TypeName, FieldName)>,
+    /// Of a reading sight that holds a type a write is shown at `none`,
+    /// the principal as a write to such a type sees it, which `describe`
+    /// answers it by (092).
+    writer: Option<Box<Principal>>,
+    /// Whether it is a read's: a shape judged before it stands is judged
+    /// as a read is ([`Self::would_show`]).
+    reading: bool,
     /// Each type asked for, judged once.
     shown: RefCell<BTreeMap<TypeName, bool>>,
     /// The value types a use of which it is shown, found in one pass.
     pub(crate) used: OnceCell<BTreeSet<ValueTypeName>>,
+    /// What each type's hidings lower, by which of them select a record.
+    pub(crate) lowerings: RefCell<rights::Lowerings>,
 }
 
 impl<'o> Sight<'o> {
     /// The sight of `who` over `force`: its grants held through `renames`
-    /// (`Grants::follow`), for a read at `at` or at the head, and each
+    /// (`Grants::follow`), for a read at `at` or at the head, each
     /// reference to a type it is not shown held at `none` (024 and 051,
-    /// extended).
+    /// extended), and each field paired at the read held by what it pairs
+    /// by (052, extended).
     pub fn new(
         mut who: Principal,
         renames: &[Renamed],
@@ -89,13 +111,50 @@ impl<'o> Sight<'o> {
     ) -> Sight<'o> {
         who.grants.follow(renames, at);
         let hidden = rights::hide_unshown_references(&mut who, force);
+        rights::hold_paired(&mut who, force);
         Sight {
             who: Cow::Owned(who),
             force,
             hidden,
+            writer: None,
+            reading: false,
             shown: RefCell::default(),
             used: OnceCell::new(),
+            lowerings: RefCell::default(),
         }
+    }
+
+    /// The sight of a read door's `who` over `force`, as [`Self::new`]
+    /// makes a write's, and each type a write is shown and a read is not,
+    /// keyed by a field it may only write or with no field it reads, held
+    /// at `none`, with every reference to it, so that every read door
+    /// answers it as a type that is not declared
+    /// (`docs/decisions/092-reading-is-judged-apart-from-writing.md`).
+    pub fn reading(
+        who: Principal,
+        renames: &[Renamed],
+        at: Option<Position>,
+        force: &'o dyn InForce,
+    ) -> Sight<'o> {
+        let mut sight = Sight::new(who, renames, at, force);
+        sight.reading = true;
+        let mut who = sight.who.clone().into_owned();
+        let Some(more) = rights::hide_unread_types(&mut who, force) else {
+            return sight;
+        };
+        rights::hold_paired(&mut who, force);
+        sight.writer = Some(Box::new(rights::writing_unread(&sight.who, &who, force)));
+        sight.hidden.extend(more);
+        sight.who = Cow::Owned(who);
+        sight
+    }
+
+    /// The sight `describe` answers a type a write is shown and its read is
+    /// not by: each field of such a type its principal may write is
+    /// `write_only`, every other one it may not know of (092).
+    pub(crate) fn writing(&self) -> Option<Sight<'_>> {
+        let writer = self.writer.as_deref()?;
+        Some(Sight::held(writer, self.force))
     }
 
     /// The sight of `who` as it stands, over `force`: of a principal a
@@ -108,8 +167,11 @@ impl<'o> Sight<'o> {
             who: Cow::Borrowed(who),
             force,
             hidden: Vec::new(),
+            writer: None,
+            reading: false,
             shown: RefCell::default(),
             used: OnceCell::new(),
+            lowerings: RefCell::default(),
         }
     }
 
@@ -131,7 +193,7 @@ impl<'o> Sight<'o> {
         let known = self.shown.borrow().get(name).copied();
         let t = self.force.ty(name).filter(|t| {
             known.unwrap_or_else(|| {
-                let shown = describe::type_shown(t, &|n| self.force.ty(n), &self.who);
+                let shown = describe::type_shown(t, &|n| self.force.ty(n), &self.who, false);
                 self.shown.borrow_mut().insert(name.clone(), shown);
                 shown
             })
@@ -141,26 +203,29 @@ impl<'o> Sight<'o> {
     }
 
     /// Whether its principal would be shown `t` once it stood in force
-    /// under its name: a proposed shape is judged before it is.
+    /// under its name: a proposed shape is judged before it is, by a
+    /// reading sight as a read is (092).
     pub fn would_show(&self, t: &TypeDecl) -> bool {
         let find = |n: &TypeName| match n == &t.name {
             true => Some(t),
             false => self.force.ty(n),
         };
-        describe::type_shown(t, &find, &self.who)
+        describe::type_shown(t, &find, &self.who, self.reading)
     }
 
     /// Whether its principal reads `field` of `ty`: a field the type
     /// declares, of a type it is shown.
     pub fn reads(&self, ty: &TypeName, field: &FieldName) -> bool {
         let t = self.ty(ty).ok();
-        let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
+        let f = t.and_then(|t| Some((t, t.field(field)?)));
         f.is_some_and(|(t, f)| rights::field_access(&self.who, t, f).reads())
     }
 
-    /// What its principal's grants admit of the records of `ty` (051).
-    pub fn admit(&self, ty: &TypeName) -> rights::Admit {
-        rights::admit(&self.who, ty, &|n| self.force.ty(n))
+    /// Whether a read at a valid time dates the records of `ty` by its
+    /// bounds where its principal may not read them: its grant on the type
+    /// says `dates_by_hidden_valid_time` (092).
+    pub fn dates_unread(&self, ty: &TypeName) -> bool {
+        (self.who.grants.types.get(ty)).is_some_and(|g| g.dates_by_hidden_valid_time)
     }
 
     /// Whether `r` is held from its principal: a restricted record, to
@@ -176,22 +241,41 @@ impl<'o> Sight<'o> {
         !self.withheld(r) && self.admit(ty).holds(&r.fields)
     }
 
-    /// Whether its principal may be told some records of `ty` narrowed or
-    /// not at all, as [`Self::setting`] tells them: `ty` is `sys.setting`
-    /// and something is held from the principal.
+    /// Whether its principal may be told some records of `ty` otherwise
+    /// than they are held ([`Self::told`]): `ty` is `sys.setting` and
+    /// something is held from the principal, or its grant hides a field of
+    /// `ty` on some records.
     pub fn narrows(&self, ty: &TypeName) -> bool {
+        self.narrows_settings(ty) || self.hides(ty)
+    }
+
+    /// Whether a read of `ty` that reads the fields `read` is evaluated
+    /// over the records as told, never by an engine: [`Self::narrows`],
+    /// where a hiding narrows it, only when it reads a field one lowers.
+    pub fn narrows_reading<'f>(
+        &self,
+        ty: &TypeName,
+        read: impl IntoIterator<Item = &'f FieldName>,
+    ) -> bool {
+        let lowers = |d| read.into_iter().any(|f| self.lowers_somewhere(d, f));
+        self.narrows_settings(ty) || self.force.ty(ty).is_some_and(lowers)
+    }
+
+    /// Whether `ty` is `sys.setting` and something is held from its
+    /// principal, so it may be told a setting otherwise than it is held.
+    pub fn narrows_settings(&self, ty: &TypeName) -> bool {
         ty.as_str() == lakelands_api::seam::SETTING_TYPE && !self.holds_all()
     }
 
     /// Whether nothing is held from its principal: it holds `restricted`
     /// and reads every field of every type.
-    fn holds_all(&self) -> bool {
+    pub fn holds_all(&self) -> bool {
         self.who.grants.reads_everything()
     }
 
     /// The value of the setting `key` as its principal is told it: one of
-    /// a type it is not shown is not told, and one that names fields only
-    /// those it reads, none left being not told
+    /// a type it is not shown is not told, and one that names fields is
+    /// told whole or not at all, as [`Self::setting_told`] says
     /// (`docs/decisions/063-every-setting-is-in-one-list.md`). One for a
     /// source is told only where nothing is held from it, since a source
     /// may feed any type and the lake keeps no list of what it feeds
@@ -201,25 +285,30 @@ impl<'o> Sight<'o> {
             return None;
         }
         let shown = |ty: &str| self.ty(&ty.into()).is_ok();
-        let reads = |ty: &str, f: &str| self.reads(&ty.into(), &f.into());
-        lakelands_api::settings::narrowed(key, value, &shown, &reads)
+        lakelands_api::settings::narrowed(key, value, &shown, &|_, _| true)
     }
 
     /// `r` as its principal is told it: a record of `sys.setting` with its
     /// value as [`Self::setting`] tells it, none where it is not told;
-    /// any other record as it is.
+    /// without each field a hiding lowers on it ([`Self::lowered`]), so
+    /// every read over it reads such a field as null (006); any other
+    /// record as it is.
     pub fn told<'r>(&self, r: &'r StoredRecord) -> Option<Cow<'r, StoredRecord>> {
-        if !self.narrows(&r.ty) {
-            return Some(Cow::Borrowed(r));
+        let lowered = self.lowered(&r.ty, &r.fields);
+        let mut told = Cow::Borrowed(r);
+        for f in lowered.keys() {
+            told.to_mut().fields.remove(f);
+            told.to_mut().meta.remove(f);
+        }
+        if !self.narrows_settings(&r.ty) {
+            return Some(told);
         }
         let value = r.fields.get("value").cloned().unwrap_or(Value::Null);
-        let told = self.setting(r.key.as_str(), value.clone())?;
-        if told == value {
-            return Some(Cow::Borrowed(r));
+        let said = self.setting(r.key.as_str(), value.clone())?;
+        if said != value {
+            told.to_mut().fields.insert("value".into(), said);
         }
-        let mut r = r.clone();
-        r.fields.insert("value".into(), told);
-        Some(Cow::Owned(r))
+        Some(told)
     }
 
     /// The settings `all` as its principal is told them, each as
@@ -229,7 +318,7 @@ impl<'o> Sight<'o> {
         &self,
         all: &'s BTreeMap<String, Value>,
     ) -> Cow<'s, BTreeMap<String, Value>> {
-        let whole = rights::reads_all(&self.who) && all.keys().all(|k| self.setting_told(k));
+        let whole = self.reads_all_fields() && all.keys().all(|k| self.setting_told(k));
         if whole || !self.narrows(&lakelands_api::seam::SETTING_TYPE.into()) {
             return Cow::Borrowed(all);
         }
@@ -239,14 +328,59 @@ impl<'o> Sight<'o> {
         Cow::Owned(told.collect())
     }
 
-    /// Whether its principal is told the setting `key` at all by its
-    /// layer: any but one for a source, and that one where nothing is held
-    /// from it ([`Self::setting`]).
+    /// Whether its principal is told the setting `key` at all, before its
+    /// value is read: one for a source where nothing is held from it
+    /// ([`Self::setting`]); one naming fields of a type it is shown where
+    /// it reads that type whole ([`Self::reads_whole`]), so its version
+    /// counts no entry it is not told; any other.
     pub fn setting_told(&self, key: &str) -> bool {
         use lakelands_api::settings::{PerType, lake_setting};
-        let source =
-            lake_setting(key).is_some_and(|(s, on)| on.is_some() && s.per_type == PerType::Source);
-        !source || self.holds_all()
+        match lake_setting(key) {
+            Some((s, Some(_))) if s.per_type == PerType::Source => self.holds_all(),
+            Some((_, Some(ty))) if names_fields(key) => {
+                let ty = TypeName::from(ty);
+                self.ty(&ty).is_err() || self.reads_whole(&ty)
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether its principal is told every setting `e` reads, each as
+    /// [`Self::setting`] tells it. What an expression judged once for
+    /// every reader decides is told only to such a principal: it read
+    /// the setting as the lake holds it (063, extended).
+    pub fn told_settings(&self, e: &lakelands_api::expr::Expr) -> bool {
+        let mut keys = BTreeSet::new();
+        crate::derive::settings(e, &mut keys);
+        keys.iter().all(|k| self.setting(k, Value::Null).is_some())
+    }
+
+    /// Whether its principal is told every setting `verb`'s conditions and
+    /// the values it sets read ([`Self::told_settings`]): judged once for
+    /// every caller, what they decide is told only to such a principal.
+    pub fn told_verb(&self, verb: &VerbDecl) -> bool {
+        let told = |c: &lakelands_api::expr::Condition| {
+            describe::parsed(c).is_some_and(|e| self.told_settings(&e))
+        };
+        let values = match &verb.effect {
+            VerbEffect::Write { set } => set.iter().map(|a| &a.value).collect(),
+            _ => Vec::new(),
+        };
+        verb.conditions().chain(values).all(told)
+    }
+
+    /// Whether its principal reads `ty` whole: its grants keep no field of
+    /// the type back, by the type's default or by name, whatever the type
+    /// declares, and it reads every field the type declares.
+    fn reads_whole(&self, ty: &TypeName) -> bool {
+        let grants = self.who.grants.types.get(ty);
+        let default = grants
+            .and_then(|t| t.default)
+            .unwrap_or(self.who.grants.default);
+        let named = grants.is_none_or(|t| t.fields.values().all(|a| a.reads()));
+        let declared = self.force.ty(ty).map(|t| &t.fields);
+        let fields = declared.into_iter().flatten();
+        default.reads() && named && fields.into_iter().all(|f| self.reads(ty, &f.name))
     }
 
     /// Whether a link of `decl` is judged by its ends for its principal:
@@ -314,10 +448,15 @@ impl<'o> Sight<'o> {
     /// effect writes a field, and every one it writes is granted to it,
     /// or, for a verb that reaches outside the lake, it may write the type
     /// as a whole, or, for one that retires, it may retire the type's
-    /// records; and it reads every field the verb reads (024, extended).
+    /// records; and it reads every field the verb reads (024, extended);
+    /// and it holds the verb's own grant, where it is declared to need one
+    /// (070); and it is told every setting the verb reads
+    /// ([`Self::told_verb`]).
     pub fn callable(&self, on: &TypeDecl, verb: &VerbDecl) -> bool {
         let writes = |f: &FieldName| self.who.grants.access(&on.name, f).writes();
-        rights::reads_what_verb_reads(&self.who, on, verb, &|n| self.force.ty(n))
+        self.verb_granted(verb)
+            && self.reads_what_verb_reads(on, verb, &|n| self.force.ty(n))
+            && self.told_verb(verb)
             && match &verb.effect {
                 VerbEffect::Write { set } => {
                     !set.is_empty() && set.iter().all(|a| writes(&a.field))
@@ -325,10 +464,75 @@ impl<'o> Sight<'o> {
                 VerbEffect::External { .. } => rights::type_access(&self.who, &on.name).writes(),
                 // A retirement is called as `retire` is used: by one who
                 // may write every field of the type (lakelands#1148).
-                VerbEffect::Retire => rights::may_retire(&self.who, on),
+                VerbEffect::Retire => self.may_retire(on),
                 _ => false,
             }
     }
+
+    /// Whether its principal may change a shape: it holds `schema`, and no
+    /// `only` or `writes_only` on any type, since a shape changes every
+    /// record of its type. A `writes_only` holder proposes one instead.
+    pub fn authors(&self) -> bool {
+        self.who.grants.schema && !self.holds_only() && !self.holds_writes_only()
+    }
+
+    /// Whether its principal sees every record: it holds `restricted`, and
+    /// no `only` on any type (006, 051).
+    pub fn sees_all(&self) -> bool {
+        self.who.grants.restricted && !self.holds_only()
+    }
+
+    /// Whether its principal may not know of some field: only a `none` its
+    /// grants give, to the lake, a type or a field, hides one.
+    pub fn hides_some(&self) -> bool {
+        rights::hides_some(&self.who)
+    }
+
+    /// Whether its principal is shown restricted records: it holds
+    /// `restricted`, its `only` aside, which admits records of their own
+    /// (006). [`Self::sees_all`] asks no `only` beside it.
+    pub fn sees_restricted(&self) -> bool {
+        self.who.grants.restricted
+    }
+
+    /// What its principal may do with `field` of `decl`: its grant, read no
+    /// further than every field `field` is built from (024).
+    pub fn field_access(&self, decl: &TypeDecl, field: &FieldDecl) -> Access {
+        rights::field_access(&self.who, decl, field)
+    }
+
+    /// Whether its principal is kept from some of `t`: whether
+    /// [`Self::known_fields`] takes anything out.
+    pub fn keeps_from(&self, t: &TypeDecl, find: Find<'_, '_>) -> bool {
+        rights::keeps_from(&self.who, t, find)
+    }
+
+    /// `t` as its principal may know it: without the fields and relations it
+    /// may not know of.
+    pub fn known_fields(&self, t: &mut TypeDecl, find: Find<'_, '_>) {
+        rights::known_fields(&self.who, t, find)
+    }
+
+    /// `t`'s fields as `describe` shows them to its principal, a relation's
+    /// link fields too.
+    pub fn described_fields(&self, t: &mut TypeDecl, find: Find<'_, '_>) {
+        rights::described_fields(&self.who, t, find)
+    }
+}
+
+/// Whether the setting `key` names fields of its type in its value: the
+/// index settings and `search_weights` (063).
+fn names_fields(key: &str) -> bool {
+    use lakelands_api::seam::{
+        LOOKUP_INDEX_SETTING, SEARCH_WEIGHTS_SETTING, SORT_INDEX_SETTING, VECTOR_INDEX_SETTING,
+    };
+    let naming = [
+        SORT_INDEX_SETTING,
+        VECTOR_INDEX_SETTING,
+        LOOKUP_INDEX_SETTING,
+        SEARCH_WEIGHTS_SETTING,
+    ];
+    naming.iter().any(|p| key.starts_with(p))
 }
 
 #[cfg(test)]

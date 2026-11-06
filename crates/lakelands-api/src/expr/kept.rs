@@ -19,12 +19,10 @@ use crate::{FieldName, TypeName};
 /// parameter and reads no clock, nor a field computed at the read, and every aggregate call of its measures
 /// and of its merged sources' is a function of its values: any `count`, a
 /// `sum` or `avg` of what is certainly a number, a `min` or `max` of what
-/// is certainly a number or an instant, and that only under group fields
-/// that are all text or references, of which there is one at least, so
-/// that a group whose extreme left is found again by its fields' values.
-/// Otherwise why not, said at the measure where it is one's: which call,
-/// and what of it. Whether a source that is itself a view is kept is not
-/// said here.
+/// is certainly a number or an instant, a `first` or `last` whose `by` is,
+/// under any group fields the write fixes, or none. Otherwise why not,
+/// said at the measure where it is one's: which call, and what of it.
+/// Whether a source that is itself a view is kept is not said here.
 pub fn keepable<'a>(
     view: &ViewDecl,
     declared: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
@@ -33,8 +31,14 @@ pub fn keepable<'a>(
         let name = p.name.clone();
         return Err(Case::KeptParam { name }.into());
     }
-    let own = (&view.source, &view.r#where, &view.group_by, &view.measures);
-    let merged = (view.merge.iter()).map(|s| (&s.source, &s.r#where, &s.group_by, &s.measures));
+    let own = (
+        &view.source,
+        &view.r#where,
+        view.group_sources(),
+        &view.measures,
+    );
+    let merged =
+        (view.merge.iter()).map(|s| (&s.source, &s.r#where, s.group_by.clone(), &s.measures));
     for (source, filter, group_by, measures) in std::iter::once(own).chain(merged) {
         let fields = declared(source).map_or(&[][..], |t| &t.fields);
         // A field computed at the read moves with the clock as well.
@@ -74,7 +78,7 @@ pub fn keepable<'a>(
                 let Expr::Call { func, args } = call else {
                     continue;
                 };
-                folds(*func, print(call), args.first(), fields, group_by).map_err(said)?;
+                folds(*func, print(call), args, fields).map_err(said)?;
             }
         }
     }
@@ -94,22 +98,23 @@ fn calls<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
 }
 
 /// Whether one aggregate call, printed `call`, is a function of its
-/// values, over a source with these fields grouped by `group_by`; or what
-/// of it is not.
-fn folds(
-    func: Func,
-    call: String,
-    arg: Option<&Expr>,
-    fields: &[FieldDecl],
-    group_by: &[FieldName],
-) -> Result<(), Case> {
+/// values, over a source with these fields; or what of it is not. An
+/// extreme is, under whatever group: a group field is fixed by the write
+/// or refused before (`KeptGroupAtRead`), and the next holder is sought
+/// by the group's digest, whatever its fields' kinds.
+fn folds(func: Func, call: String, args: &[Expr], fields: &[FieldDecl]) -> Result<(), Case> {
     let declared = |f: &FieldName| fields.iter().find(|d| d.name == *f).map(|d| d.ty.kind);
-    let certain = match (func, arg) {
+    // `first` and `last` are extremes of their `by`, which orders.
+    let extreme = matches!(func, Func::Min | Func::Max | Func::First | Func::Last);
+    let ordered = match func {
+        Func::First | Func::Last => args.get(1),
+        _ => args.first(),
+    };
+    let certain = match (func, ordered) {
         (Func::Count, _) => return Ok(()),
         (_, None) => return Err(Case::KeptNoArgument { call }),
         (_, Some(arg)) => folded_kind(arg, &declared),
     };
-    let extreme = matches!(func, Func::Min | Func::Max);
     match (certain, extreme) {
         (Some(Kind::Number), _) | (Some(Kind::Instant), true) => {}
         (Some(kind), true) => return Err(Case::KeptOrdersKind { call, kind }),
@@ -117,23 +122,7 @@ fn folds(
         (Some(kind), false) => return Err(Case::KeptAddsKind { call, kind }),
         (None, false) => return Err(Case::KeptAddsUncertain { call }),
     }
-    if !extreme {
-        return Ok(());
-    }
-    let other = |f: &&FieldName| {
-        !matches!(
-            declared(f),
-            Some(StorageKind::Text | StorageKind::Reference)
-        )
-    };
-    match group_by.iter().find(other) {
-        Some(field) => Err(Case::KeptExtremeGroupedBy {
-            call,
-            field: field.clone(),
-        }),
-        None if group_by.is_empty() => Err(Case::KeptExtremeUngrouped { call }),
-        None => Ok(()),
-    }
+    Ok(())
 }
 
 /// The kind a fold's argument certainly is among the values it folds. A

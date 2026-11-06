@@ -151,11 +151,17 @@ def page(settings, bound):
         "keys under `sys.setting`, which its expressions read as `setting('<key>')`, are its "
         "own and not listed here; a key under the prefix of a listed lake setting that names "
         "none of them is refused. A host may declare its own keys in the lake, with a kind, "
-        "a unit, a meaning and a group (`lakelands settings` lists them for a lake). Any "
+        "a unit, a meaning and a group (`lakelands settings` lists them for a lake). A "
+        "declared key may hold values from dates: a write with `from: <date>` adds one "
+        "(`lakelands settings set <key> <value> --from <date>`), one with `period: start` or "
+        "`period: <date>` corrects one (`--period`), and `setting('<key>', <date>)` reads the "
+        "value that holds on that date's UTC day, `setting('<key>')` the one of the clock's "
+        "day; `lakelands settings` lists them, one a line "
+        "(`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`). Any "
         "expression reads any setting, whatever its reader's grants, save a lake setting for "
-        "a type, which a read tells its reader as were the types and fields it is kept from "
-        "absent: a value that must be kept from a reader, a secret above all, is never a "
-        "setting.",
+        "a type, which a read tells only a reader shown the type, and one naming a type's "
+        "fields only whole, to a reader that reads the type whole: a value that must be "
+        "kept from a reader, a secret above all, is never a setting.",
     ]
     for layer, (title, intro) in LAYERS.items():
         lines += ["", f"## {title}", "", intro]
@@ -191,7 +197,9 @@ def page(settings, bound):
         "setting: it steers no behaviour of the lake, and a lake moved or restored names it "
         "anew. Each is kept beside the settings of its layer. The rest of `lakelands.json` is "
         "neither: `lakelands` is the file's format number, and `owner` and `principals` say "
-        "who the root's callers are and what each may do.",
+        "who the root's callers are and what each may do; a grant holding a key this build "
+        "does not know stops the root, and one naming a type no lake declares is told at "
+        "start-up (`docs/decisions/006-grants-not-roles.md`).",
         "",
     ]
     for b in bound:

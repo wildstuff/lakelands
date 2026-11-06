@@ -11,17 +11,8 @@
 //! later than the head, whose event's `known_at` is at or before it
 //! (`docs/log-format.md` §1.3).
 
-use std::collections::BTreeMap;
-
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::{Error, Find, LakeStore, Missing, Position, ReadAt, Refusal, TypeName};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, all, all_found, before, declare, doors, field, get_at, log_events, owner, read_at,
-    reason, type_decl, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{before, doors, get_at, owner};
+use crate::conformance::prelude::*;
 
 check!(
     POSITION_AT_AN_INSTANT = position_at_answers_the_last_position_at_or_before_an_instant,

@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use lakelands_api::event::{Event, EventBody};
+use base64::engine::general_purpose::STANDARD;
+use lakelands_api::error::Situation;
+use lakelands_api::event::{Event, EventBody, Sealed};
 use lakelands_api::seam::DataKey;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -9,12 +11,12 @@ use lakelands_api::id::KeyId;
 use lakelands_api::seam::KeyStore;
 use lakelands_api::{LakeId, Result, SourceId, Timestamp};
 
-use super::{Keys, List, digest, open, rotates, seal, turns};
+use super::{Apart, Ciphers, Keys, List, cipher, digest, open, rotates, seal, turns};
 
-/// The lines of `vectors/17/further.json` that show `shows`.
+/// The lines of `vectors/23/further.json` that show `shows`.
 fn line(shows: &str) -> Event {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/17/further.json");
+        .join("../../docs/log-format/vectors/23/further.json");
     let further: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let entries = further["events"].as_array().unwrap();
     let entry = entries.iter().find(|e| e["shows"] == shows).unwrap();
@@ -27,19 +29,110 @@ fn key() -> DataKey {
 }
 
 /// The vectors' sealed ingest opens under their key to its plaintext,
-/// and sealing the plaintext again gives the bytes the log holds.
+/// and sealing it again gives the box the log holds (083).
 #[test]
-fn the_vectors_sealed_ingest_opens_and_seals_to_the_same_bytes() {
+fn the_vectors_sealed_ingest_opens_and_seals_again_to_its_box() {
     let stored = line("sealed_ingest");
     let mut plain = stored.clone();
-    open(&mut plain, &key()).unwrap();
-    let EventBody::RecordIngested { patch, .. } = &plain.body else {
-        panic!("an ingest")
+    open(&mut plain, &cipher(&key())).unwrap();
+    assert_eq!(patch_of(&plain)["email"], json!("ada@example.org"));
+    let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+    seal(&mut plain.body, &mut sealed, &source, &cipher(&key()));
+    assert_eq!((plain.body, Some(sealed)), (stored.body, stored.sealed));
+}
+
+/// The patch of an ingest.
+fn patch_of(e: &Event) -> &lakelands_api::Patch {
+    match &e.body {
+        EventBody::RecordIngested { patch, .. } => patch,
+        _ => panic!("an ingest"),
+    }
+}
+
+/// `boxed.json`'s ingest, its members sealed in one box.
+fn boxed() -> Event {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/vectors/23/boxed.json");
+    let boxed: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    serde_json::from_str(boxed["line"].as_str().unwrap()).unwrap()
+}
+
+/// The vectors' box opens under their key to the members `sealed` names,
+/// and sealing them again gives the box the log holds (083).
+#[test]
+fn the_vectors_box_opens_and_seals_to_the_same_bytes() {
+    let stored = boxed();
+    let mut plain = stored.clone();
+    open(&mut plain, &cipher(&key())).unwrap();
+    assert_eq!(patch_of(&plain)["email"], json!("cleo@example.org"));
+    let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+    seal(&mut plain.body, &mut sealed, &source, &cipher(&key()));
+    assert_eq!((plain.body, Some(sealed)), (stored.body, stored.sealed));
+}
+
+/// An ingest of `name` and `city`, both sealed, and `id` plain, at
+/// `version`.
+fn two_sealed(version: u64) -> (Event, Sealed) {
+    let mut e = boxed();
+    if let EventBody::RecordIngested {
+        patch, version: v, ..
+    } = &mut e.body
+    {
+        *patch =
+            serde_json::from_value(json!({"id": "c6", "name": "Cleo", "city": "Oslo"})).unwrap();
+        *v = lakelands_api::Version(version);
+    }
+    let mut sealed = e.sealed.clone().unwrap();
+    sealed.fields = vec!["city".into(), "name".into()];
+    sealed.boxed = None;
+    (e, sealed)
+}
+
+/// A record's sealed members go into one box, of one tag: the patch keeps
+/// only what is plain, the box opens back to the whole patch, and the same
+/// values at the same version seal to the same box, at another version
+/// to another; a box moved to another record, or beside a member it holds,
+/// does not open; erased, every member it holds is null.
+#[test]
+fn a_records_sealed_members_are_sealed_in_one_box() {
+    let (plain, sealed) = two_sealed(1);
+    let source = plain.source.clone().unwrap();
+    let sealing = |(mut e, mut s): (Event, Sealed)| {
+        seal(&mut e.body, &mut s, &source, &cipher(&key()));
+        e.sealed = Some(s);
+        e
     };
-    assert_eq!(patch["email"], json!("ada@example.org"));
-    let (sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
-    seal(&mut plain.body, &sealed, &source, &key());
-    assert_eq!(plain.body, stored.body);
+    let e = sealing((plain.clone(), sealed.clone()));
+    assert_eq!(
+        serde_json::to_value(patch_of(&e)).unwrap(),
+        json!({"id": "c6"})
+    );
+    let boxed = e.sealed.as_ref().and_then(|s| s.boxed.clone()).unwrap();
+    let members = br#"{"city":"Oslo","name":"Cleo"}"#;
+    assert_eq!(
+        base64::Engine::decode(&STANDARD, &boxed).unwrap().len(),
+        members.len() + 16
+    );
+    let mut opened = e.clone();
+    open(&mut opened, &cipher(&key())).unwrap();
+    assert_eq!(opened.body, plain.body);
+    assert_eq!(sealing((plain.clone(), sealed.clone())), e);
+    let later = sealing(two_sealed(2));
+    assert_ne!(later.sealed.and_then(|s| s.boxed), Some(boxed));
+    let mut moved = e.clone();
+    if let EventBody::RecordIngested { key, .. } = &mut moved.body {
+        *key = "c7".into();
+    }
+    assert!(open(&mut moved, &cipher(&key())).is_err());
+    let mut beside = e.clone();
+    if let EventBody::RecordIngested { patch, .. } = &mut beside.body {
+        patch.insert("name".into(), json!("Cleo"));
+    }
+    assert!(open(&mut beside, &cipher(&key())).is_err());
+    let mut erased = e.clone();
+    assert_eq!(super::erase(&mut erased), sealed.fields);
+    let want = json!({"id": "c6", "city": null, "name": null});
+    assert_eq!(serde_json::to_value(patch_of(&erased)).unwrap(), want);
 }
 
 /// The vectors' sealed output opens under their key, and its input is
@@ -52,11 +145,63 @@ fn the_vectors_sealed_output_opens_and_its_input_is_the_hmac_of_the_call() {
         panic!("an output")
     };
     assert_eq!(*input, digest(&key(), &call));
-    open(&mut e, &key()).unwrap();
+    open(&mut e, &cipher(&key())).unwrap();
     let EventBody::OutputRecorded { output, .. } = &e.body else {
         panic!("an output")
     };
     assert_eq!(output.as_ref(), Some(&json!("ADA@EXAMPLE.ORG")));
+}
+
+/// The vectors' key of `hr`'s delivery sealed apart, as their README
+/// names it.
+fn apart() -> DataKey {
+    DataKey(Sha256::digest(b"lakelands:vectors:apart").into())
+}
+
+/// The vectors' ingest sealed apart opens under its version composed
+/// with the delivery's key, to its plaintext, and under neither alone;
+/// sealed again it gives the box the log holds; and its output's input
+/// is the HMAC of the call under the composed key (065, lakelands#1214).
+#[test]
+fn the_vectors_ingest_sealed_apart_opens_only_under_both_keys() {
+    let both = super::compose(&key(), &[apart()]);
+    let stored = line("sealed_apart");
+    for alone in [key(), apart()] {
+        assert!(open(&mut stored.clone(), &cipher(&alone)).is_err());
+    }
+    let mut plain = stored.clone();
+    open(&mut plain, &cipher(&both)).unwrap();
+    assert_eq!(patch_of(&plain)["email"], json!("bea@example.org"));
+    let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+    seal(&mut plain.body, &mut sealed, &source, &cipher(&both));
+    assert_eq!((plain.body, Some(sealed)), (stored.body, stored.sealed));
+    let mut e = line("sealed_apart_output");
+    let call = json!({"function": "shout", "inputs": {"email": "bea@example.org"}, "config": {}});
+    let EventBody::OutputRecorded { input, .. } = &e.body else {
+        panic!("an output")
+    };
+    assert_eq!(*input, digest(&both, &call));
+    assert_ne!(*input, digest(&key(), &call));
+    open(&mut e, &cipher(&both)).unwrap();
+    let EventBody::OutputRecorded { output, .. } = &e.body else {
+        panic!("an output")
+    };
+    assert_eq!(output.as_ref(), Some(&json!("BEA@EXAMPLE.ORG")));
+}
+
+/// A version composed with no key apart is the version itself; composed
+/// with keys apart it depends on each of them and on their order.
+#[test]
+fn a_version_composed_with_no_key_apart_is_itself() {
+    let other = DataKey(Sha256::digest(b"another").into());
+    assert_eq!(super::compose(&key(), &[]).0, key().0);
+    let one = super::compose(&key(), &[apart()]).0;
+    assert_ne!(one, key().0);
+    assert_ne!(one, super::compose(&key(), std::slice::from_ref(&other)).0);
+    assert_ne!(
+        super::compose(&key(), &[apart(), other.clone()]).0,
+        super::compose(&key(), &[other, apart()]).0
+    );
 }
 
 /// A sealed value moved to another record does not open: its nonce is
@@ -67,7 +212,7 @@ fn a_sealed_value_moved_to_another_record_does_not_open() {
     if let EventBody::RecordIngested { key, .. } = &mut e.body {
         *key = "c2".into();
     }
-    assert!(open(&mut e, &key()).is_err());
+    assert!(open(&mut e, &cipher(&key())).is_err());
 }
 
 /// A key store of counted versions, each with the vectors' key.
@@ -91,13 +236,84 @@ impl KeyStore for Two {
     }
 }
 
+/// A key store whose every key is the hash of its id, so each version
+/// and each key apart seals to bytes of its own; it gives none for `gone`.
+struct Hashed;
+impl KeyStore for Hashed {
+    fn create(&self, _: &LakeId, _: &SourceId) -> Result<KeyId> {
+        unreachable!("the test names its keys")
+    }
+    fn key(&self, _: &LakeId, _: &SourceId, id: &KeyId) -> Result<Option<DataKey>> {
+        Ok((id.as_str() != "gone").then(|| hashed(id)))
+    }
+    fn destroy(&self, _: &LakeId, _: &SourceId) -> Result<()> {
+        Ok(())
+    }
+    fn ids(&self, _: &LakeId, _: &SourceId) -> Result<Vec<KeyId>> {
+        Ok(Vec::new())
+    }
+}
+
+/// [`Hashed`]'s key of `id`.
+fn hashed(id: &KeyId) -> DataKey {
+    DataKey(Sha256::digest(id.as_str()).into())
+}
+
+/// A key's cipher, built once in a pass and kept for its every value,
+/// seals each value to the bytes a cipher built for that value alone
+/// does, under each version and each composition with keys apart the
+/// pass meets in turn; a key the store does not give fails closed,
+/// naming it.
+#[test]
+fn a_kept_cipher_seals_to_the_bytes_of_one_built_a_value() {
+    let keys = Keys::new(LakeId::from("l"), Some(std::sync::Arc::new(Hashed)), None);
+    let (e, _) = two_sealed(1);
+    let source = e.source.clone().unwrap();
+    let mut ciphers = Ciphers::default();
+    let seals = [
+        ("k1", None),
+        ("k2", None),
+        ("k1", Some("a1")),
+        ("k2", Some("a1")),
+    ];
+    let mut sealed = Vec::new();
+    for round in 0..2 {
+        for (i, (version, apart)) in seals.iter().enumerate() {
+            let (e, mut each) = two_sealed(1 + i as u64);
+            each.key = KeyId::from(*version);
+            each.apart = apart.iter().map(|a| KeyId::from(*a)).collect();
+            let apart: Vec<_> = each.apart.iter().map(hashed).collect();
+            let alone = cipher(&super::compose(&hashed(&each.key), &apart));
+            let (mut by_alone, mut body, mut once) = (e.body.clone(), e.body, each.clone());
+            seal(&mut by_alone, &mut each, &source, &alone);
+            let kept = ciphers.sealed(&keys, &source, &once).unwrap();
+            seal(&mut body, &mut once, &source, kept);
+            assert_eq!((&by_alone, &each), (&body, &once));
+            match round {
+                0 => sealed.push(each.boxed),
+                _ => assert_eq!(sealed[i], each.boxed),
+            }
+        }
+        // One cipher a key the pass met, built at its first value.
+        assert_eq!(ciphers.0.len(), seals.len());
+    }
+    let (_, mut lost) = two_sealed(1);
+    lost.apart = vec![KeyId::from("gone")];
+    let failed = ciphers.sealed(&keys, &source, &lost).map(drop);
+    let missing = failed.as_ref().err().and_then(|e| e.situation());
+    assert!(
+        matches!(missing, Some(Situation::KeyMissing { key, .. }) if key == "gone"),
+        "{failed:?}"
+    );
+}
+
 /// A version the log has moved past since a writer chose its own, as
 /// another writer sealed with a newer one, is chosen again.
 #[test]
 fn a_version_the_log_moved_past_is_chosen_again() {
     let store = std::sync::Arc::new(Two::default());
     let (lake, crm) = (LakeId::from("l"), SourceId::from("crm"));
-    let keys = Keys::new(lake.clone(), Some(store.clone()));
+    let keys = Keys::new(lake.clone(), Some(store.clone()), None);
     let (first, _) = keys.sealing(&crm, None, false).unwrap();
     let second = store.create(&lake, &crm).unwrap();
     let (kept, _) = keys.sealing(&crm, Some(&first), false).unwrap();
@@ -170,7 +386,7 @@ fn a_key_period_turns_at_each_boundary() {
 fn a_writer_turned_seals_its_window_under_one_new_version() {
     let store = std::sync::Arc::new(Two::default());
     let (lake, crm) = (LakeId::from("l"), SourceId::from("crm"));
-    let keys = Keys::new(lake.clone(), Some(store.clone()));
+    let keys = Keys::new(lake.clone(), Some(store.clone()), None);
     let (first, _) = keys.sealing(&crm, None, false).unwrap();
     let used = Some(&first);
     let (turned, _) = keys.sealing(&crm, used, true).unwrap();
@@ -190,7 +406,7 @@ fn a_version_made_and_not_used_is_the_turned_period_s() {
     let (lake, crm) = (LakeId::from("l"), SourceId::from("crm"));
     let k1 = store.create(&lake, &crm).unwrap();
     let k2 = store.create(&lake, &crm).unwrap();
-    let keys = Keys::new(lake.clone(), Some(store.clone()));
+    let keys = Keys::new(lake.clone(), Some(store.clone()), None);
     let (turned, _) = keys.sealing(&crm, Some(&k1), true).unwrap();
     assert_eq!(turned, k2, "the version made and not used");
     assert_eq!(store.ids(&lake, &crm).unwrap().len(), 2, "no new version");
@@ -253,42 +469,57 @@ fn a_key_store_without_versions_refuses_to_destroy_one() {
     );
 }
 
+/// A memory lake on `keys` with a `person` type whose `name` is sealed,
+/// its catalog and its owner.
+async fn person_lake(
+    name: &str,
+    keys: std::sync::Arc<dyn KeyStore>,
+) -> (
+    std::sync::Arc<crate::lake::Lake>,
+    std::sync::Arc<dyn lakelands_api::Catalog>,
+    lakelands_api::Principal,
+) {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::seam::Seams;
+    use lakelands_api::{Grants, LakeStore, Location, Principal, PrincipalKind, WriteContext};
+    let seams = Seams {
+        engines: vec![std::sync::Arc::new(
+            lakelands_engine_mem::MemoryOpener::new(),
+        )],
+        keys: Some(keys),
+        backings: lakelands_core::conformance::backing::backings(),
+        ..Seams::default()
+    };
+    let lake = crate::lake::Lake::open(&Location::memory(name), seams, OpenMode::Create);
+    let lake = std::sync::Arc::new(lake.expect("the lake opens"));
+    let doors = crate::doors::Store {
+        lake: lake.clone(),
+        owns: false,
+    };
+    let cat = doors.catalog(WriteContext::default());
+    let owner = Principal {
+        kind: PrincipalKind::Human,
+        id: "owner".into(),
+        lake: name.into(),
+        grants: Grants::owner(),
+    };
+    let person = serde_json::from_value(json!({
+        "declare": "type", "name": "person", "key": ["id"], "fields": [
+            {"name": "id", "type": {"kind": "text"}, "authority": "source"},
+            {"name": "name", "type": {"kind": "text"}, "authority": "source", "erasable": true}]
+    }));
+    cat.declare(&owner, person.unwrap()).await.unwrap();
+    (lake, cat, owner)
+}
+
 /// An ingest turns by its source's key period from the newest version's
 /// first use as the list keeps it: one first used on an earlier day, as
 /// an imported line from that day leaves it, has the source's next value
 /// under `day` sealed under a new version, which the list then names.
 #[tokio::test]
 async fn an_ingest_past_its_newest_version_s_day_seals_under_a_new_one() {
-    use crate::doors::Store;
-    use crate::lake::Lake;
-    use lakelands_api::engine::OpenMode;
-    use lakelands_api::seam::Seams;
-    use lakelands_api::write::Declaration;
-    use lakelands_api::{Grants, LakeStore, Location, Principal, PrincipalKind, WriteContext};
     let store = std::sync::Arc::new(Two::default());
-    let seams = Seams {
-        engines: vec![std::sync::Arc::new(
-            lakelands_engine_mem::MemoryOpener::new(),
-        )],
-        keys: Some(store.clone()),
-        ..Seams::default()
-    };
-    let lake = Lake::open(&Location::memory("turn"), seams, OpenMode::Create);
-    let lake = std::sync::Arc::new(lake.expect("the lake opens"));
-    let cat = Store { lake: lake.clone() }.catalog(WriteContext::default());
-    let owner = Principal {
-        kind: PrincipalKind::Human,
-        id: "owner".into(),
-        lake: "turn".into(),
-        grants: Grants::owner(),
-    };
-    let person: Declaration = serde_json::from_value(json!({
-        "declare": "type", "name": "person", "key": ["id"], "fields": [
-            {"name": "id", "type": {"kind": "text"}, "authority": "source"},
-            {"name": "name", "type": {"kind": "text"}, "authority": "source", "erasable": true}]
-    }))
-    .unwrap();
-    cat.declare(&owner, person).await.unwrap();
+    let (lake, cat, owner) = person_lake("turn", store.clone()).await;
     let period = serde_json::from_value(json!({"key": "key_period.crm", "value": "day"}));
     let (ty, key) = ("sys.setting".into(), "key_period.crm".into());
     (cat.upsert(&owner, &ty, &key, period.unwrap(), Default::default())
@@ -303,6 +534,9 @@ async fn an_ingest_past_its_newest_version_s_day_seals_under_a_new_one() {
             key: id.into(),
             fields: serde_json::from_value(json!({"id": id, "name": id})).unwrap(),
             seen_at: None,
+            delivery: None,
+            resubmits: None,
+            line: None,
         };
         let fed = lakelands_api::ingest_all(cat.as_ref(), &owner, &crm, vec![record]);
         fed.await.unwrap();
@@ -364,7 +598,234 @@ impl KeyStore for Bare {
 #[test]
 fn a_source_with_no_version_left_is_destroyed_all_the_same() {
     let store = std::sync::Arc::new(Bare::default());
-    let keys = Keys::new(LakeId::from("l"), Some(store.clone()));
+    let keys = Keys::new(LakeId::from("l"), Some(store.clone()), None);
     keys.destroy(&SourceId::from("crm")).unwrap();
     assert_eq!(store.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// The list marks a version a delivery sealed apart sealed under with a
+/// fourth member, and only those (065).
+#[test]
+fn the_list_marks_the_versions_a_delivery_sealed_apart_sealed_under() {
+    let list = List::of(json!([["k1", 3, 7], ["k2", 9, 8, true], ["k3", 12]]));
+    assert_eq!(list.apart, [KeyId::from("k2")]);
+    assert_eq!(list.firsts.len(), 3);
+    assert!(List::of(json!([["k1", 3, 7]])).apart.is_empty());
+}
+
+/// A key apart a write's plan staged for its own ingest is answered as
+/// staged, for its source alone, with no log to read (065).
+#[test]
+fn a_key_apart_staged_for_an_ingest_not_in_the_log_is_answered_as_staged() {
+    let keys = Keys::new(LakeId::from("l"), None, None);
+    let (crm, at) = (SourceId::from("crm"), lakelands_api::Position(7));
+    let known = Apart::default();
+    known.stage(&crm, at, &[KeyId::from("a1")]);
+    assert_eq!(
+        keys.apart_named(&known, &crm, at).unwrap(),
+        [KeyId::from("a1")]
+    );
+    let erp = SourceId::from("erp");
+    assert!(keys.apart_named(&known, &erp, at).unwrap().is_empty());
+    let other = lakelands_api::Position(8);
+    assert!(keys.apart_named(&known, &crm, other).unwrap().is_empty());
+}
+
+/// A key store that makes keys apart too, each its own bytes, and
+/// destroys them.
+#[derive(Default)]
+struct Apiece(Two, std::sync::Mutex<(u32, Vec<KeyId>)>);
+impl KeyStore for Apiece {
+    fn create(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId> {
+        self.0.create(lake, source)
+    }
+    fn key(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<Option<DataKey>> {
+        if !id.as_str().starts_with('a') {
+            return self.0.key(lake, source, id);
+        }
+        let destroyed = self.1.lock().unwrap().1.contains(id);
+        Ok((!destroyed).then(|| DataKey(Sha256::digest(id.as_str()).into())))
+    }
+    fn destroy(&self, lake: &LakeId, source: &SourceId) -> Result<()> {
+        self.0.destroy(lake, source)
+    }
+    fn ids(&self, lake: &LakeId, source: &SourceId) -> Result<Vec<KeyId>> {
+        self.0.ids(lake, source)
+    }
+    fn create_apart(&self, _: &LakeId, _: &SourceId) -> Result<KeyId> {
+        let mut made = self.1.lock().unwrap();
+        made.0 += 1;
+        Ok(KeyId::from(format!("a{}", made.0)))
+    }
+    fn destroy_apart(&self, _: &LakeId, _: &SourceId, id: &KeyId) -> Result<()> {
+        self.1.lock().unwrap().1.push(id.clone());
+        Ok(())
+    }
+}
+
+/// An ingest sealed apart keeps no `sys:apart` output: an output a later
+/// event computes over its value reads its key apart from its event in
+/// the log. Over a row a projection built by 0.19 left under that name,
+/// naming another key, the output of `p1`'s city written after its name
+/// is sealed under the version and the delivery's key, reads the name,
+/// and dies when the delivery is taken back, which destroys its key
+/// alone (065).
+#[tokio::test]
+async fn an_output_over_an_ingest_sealed_apart_does_not_read_a_leftover_row() {
+    use lakelands_api::write::{IngestOpts, Selection};
+    use lakelands_core::conformance::backing;
+    let (lake, cat, owner) = person_lake("apart", std::sync::Arc::new(Apiece::default())).await;
+    let text = json!({"kind": "text"});
+    let pair = json!({"declare": "function", "name": "pair", "backing": backing::KIND,
+        "inputs": [{"name": "name", "type": text}, {"name": "city", "type": text}],
+        "config": {"token": "leftover", "echo": "name"}});
+    let person = json!({"declare": "type", "name": "person", "key": ["id"], "fields": [
+        {"name": "id", "type": text, "authority": "source"},
+        {"name": "name", "type": text, "authority": "source", "erasable": true},
+        {"name": "city", "type": text, "authority": "source"},
+        {"name": "loud", "type": text, "authority": "derived", "function": "pair",
+         "depends_on": ["name", "city"]}]});
+    for d in [pair, person] {
+        let declared = cat.declare(&owner, serde_json::from_value(d).unwrap());
+        declared.await.unwrap();
+    }
+    let crm = SourceId::from("crm");
+    let ingest = async |id: &str, fields: Value, opts: IngestOpts| {
+        let record = lakelands_api::SourceRecord {
+            source: None,
+            upstream: None,
+            ty: "person".into(),
+            key: id.into(),
+            fields: serde_json::from_value(fields).unwrap(),
+            seen_at: None,
+            delivery: None,
+            resubmits: None,
+            line: None,
+        };
+        let fed = lakelands_api::ingest_all_with(cat.as_ref(), &owner, &crm, opts, vec![record]);
+        fed.await.unwrap();
+    };
+    // `p0`, sealed under the version alone, so the act destroys no version.
+    let p0 = json!({"id": "p0", "name": "Bo"});
+    ingest("p0", p0, IngestOpts::default()).await;
+    let at = lakelands_api::Position(lake.head().0 + 1);
+    let late = IngestOpts {
+        delivery: Some("late".into()),
+        sealed_apart: true,
+        ..IngestOpts::default()
+    };
+    ingest("p1", json!({"id": "p1", "name": "Ada"}), late).await;
+    let row = crate::backed::digest(&json!([crm, at]));
+    let held = || {
+        let view = lake.engine.view(None).unwrap();
+        view.output("sys:apart", &row).unwrap()
+    };
+    assert!(held().is_none(), "no output names the key apart");
+    let a1 = vec![KeyId::from("a1")];
+    let named = lake.keys.apart_named(&Apart::default(), &crm, at).unwrap();
+    assert_eq!(named, a1, "the ingest of `p1` is at {at:?}");
+    // The row 0.19 kept for the ingest, naming a key it did not seal with.
+    let (p, head) = (lake.engine.projection(), lake.head());
+    (p.begin()
+        .and_then(|()| p.put_output("sys:apart", &row, &json!(["a9"]), head)))
+    .and_then(|()| p.commit(head))
+    .unwrap();
+    assert!(held().is_some());
+    let city = lakelands_api::Position(lake.head().0 + 1);
+    ingest(
+        "p1",
+        json!({"id": "p1", "city": "Oslo"}),
+        IngestOpts::default(),
+    )
+    .await;
+    let through = u32::try_from(lake.head().0 + 1 - city.0).unwrap();
+    let read = lake.engine.read(city, through).unwrap();
+    let mut restorer = lakelands_core::log::Restorer::default();
+    let events = read.iter().map(|e| crate::log::open_with(&mut restorer, e));
+    let outputs: Vec<_> = (events.map(Result::unwrap))
+        .filter(|e| matches!(e.body, EventBody::OutputRecorded { .. }))
+        .map(|e| e.sealed.map(|s| (s.key, s.apart)))
+        .collect();
+    let k1 = KeyId::from("k1");
+    assert_eq!(
+        outputs,
+        [Some((k1, a1.clone()))],
+        "the output over Ada and Oslo"
+    );
+    let loud = || {
+        let view = lake.engine.view(None).unwrap();
+        let p1 = view.get(&"person".into(), &"p1".into()).unwrap().unwrap();
+        p1.fields.get("loud").cloned()
+    };
+    assert_eq!(loud(), Some(json!("Ada")));
+    let doors = crate::doors::Store {
+        lake: lake.clone(),
+        owns: false,
+    };
+    let late = Selection::Delivery("late".into());
+    let done = lakelands_api::LakeStore::remove_values(&doors, &crm, &late, true, None);
+    let done = done.await.unwrap();
+    assert_eq!((done.keys.is_empty(), done.apart), (true, a1));
+    assert_eq!(loud(), None, "the output dies with the key apart");
+}
+
+/// The vectors' sealed quarantined record opens under their key to its
+/// cell, read where a `record_ingested` carries its box, and sealing the
+/// cell again gives the box the log holds; the same cell of an ingest of
+/// that key and version seals to another box, the nonce being of its own
+/// domain (085).
+#[test]
+fn the_vectors_quarantined_box_opens_and_seals_to_the_same_bytes() {
+    let stored = line("quarantined_sealed");
+    let mut plain = super::lifted(&stored).unwrap();
+    open(&mut plain, &cipher(&key())).unwrap();
+    let EventBody::RecordQuarantined { cells, .. } = &plain.body else {
+        panic!("a quarantined record")
+    };
+    assert_eq!(cells["email"], json!("dan@example.org"));
+    let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+    let mut body = plain.body.clone();
+    seal(&mut body, &mut sealed, &source, &cipher(&key()));
+    let EventBody::RecordQuarantined { sealed: kept, .. } = &stored.body else {
+        panic!("a quarantined record")
+    };
+    assert_eq!(sealed.boxed, kept.as_ref().and_then(|s| s.boxed.clone()));
+    let mut ingest = boxed().body;
+    if let EventBody::RecordIngested { patch, key, .. } = &mut ingest {
+        *patch = serde_json::from_value(json!({"id": "c7", "email": "dan@example.org"})).unwrap();
+        *key = "c7".into();
+    }
+    let mut other = sealed.clone();
+    seal(&mut ingest, &mut other, &source, &cipher(&key()));
+    assert_ne!(other.boxed, sealed.boxed);
+}
+
+/// Each box of `apart.json`, the append of two deliveries sealed apart,
+/// opens under the vectors' key composed with its own key apart, `a2` and
+/// `a3`, to its member, and under the other's or the version alone it does
+/// not; sealed again it gives the box the log holds (065).
+#[test]
+fn each_box_of_two_deliveries_sealed_apart_opens_under_its_own_composed_key() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/vectors/23/apart.json");
+    let apart: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let composed = |name: &str| {
+        let apart = DataKey(Sha256::digest(name.as_bytes()).into());
+        cipher(&super::compose(&key(), &[apart]))
+    };
+    let own = [
+        ("lakelands:vectors:apart2", "dora@example.org"),
+        ("lakelands:vectors:apart3", "emil@example.org"),
+    ];
+    for (i, entry) in apart["events"].as_array().unwrap().iter().enumerate() {
+        let event: Event = serde_json::from_str(entry["line"].as_str().unwrap()).unwrap();
+        let mut plain = event.clone();
+        open(&mut plain, &composed(own[i].0)).unwrap();
+        assert_eq!(patch_of(&plain)["email"], json!(own[i].1));
+        open(&mut event.clone(), &composed(own[1 - i].0)).unwrap_err();
+        open(&mut event.clone(), &cipher(&key())).unwrap_err();
+        let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+        seal(&mut plain.body, &mut sealed, &source, &composed(own[i].0));
+        assert_eq!((plain.body, Some(sealed)), (event.body, event.sealed));
+    }
 }

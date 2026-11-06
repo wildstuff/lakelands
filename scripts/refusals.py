@@ -262,9 +262,10 @@ its own sentence. The other types:
 
 - **text** (`String`), a **name** (`TypeName`, `FieldName`, `RelationName`,
   `VerbName`, `ParamName`, `TriggerName`, `ConstraintName`,
-  `ValueTypeName`, `LakeId`, `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
-- a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`) or
-  a **position** (`Position`): a JSON number;
+  `PreconditionName`, `ValueTypeName`, `LakeId`, `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
+- a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`), a
+  **position** (`Position`) or a **count of requests** (`Requests`, said
+  "1 request", "2 requests"): a JSON number;
 - an **instant** (`Timestamp`): an RFC 3339 string in UTC; a
   **proposal's identifier** (`ProposalId`): a string;
 - a **field's type** (`FieldType`): an object as a declaration writes
@@ -274,6 +275,8 @@ its own sentence. The other types:
 - **`Detail`**: an operating system's, a database's or a library's own
   words, scrubbed at their source; never a key, a value or a host path;
 - **`Value`**: a JSON value the caller gave;
+- **`Printed`**: a part of a declared condition in its text form, a
+  string;
 - **`Error`**: a nested error, as the error's own JSON;
 - **`bool`**: a flag, said only by the segment it switches.
 
@@ -284,9 +287,10 @@ These types are said by a name of a closed list:
 SCALARS = {
     "String", "char", "u16", "u32", "u64", "usize", "i64", "bool", "Number", "Value",
     "Position", "TypeName", "FieldName", "RelationName", "VerbName", "RecordKey",
-    "ParamName", "TriggerName", "ConstraintName", "ValueTypeName", "LakeId", "SourceId", "KeyId",
+    "ParamName", "TriggerName", "ConstraintName", "PreconditionName", "ValueTypeName", "LakeId", "SourceId", "KeyId",
     "Names",
     "Detail", "Error", "i32", "Timestamp", "ProposalId", "FieldType", "Bound",
+    "Printed", "Requests",
 }
 
 
@@ -585,10 +589,10 @@ SAMPLE = {
     "String": "s", "char": "c", "u16": 1, "u32": 1, "u64": 1, "usize": 1, "i32": 1, "i64": 1,
     "bool": True, "Number": 1, "Value": 1, "Position": 1, "TypeName": "t", "FieldName": "f",
     "RelationName": "r", "VerbName": "v", "RecordKey": "k", "ParamName": "p",
-    "TriggerName": "g", "ConstraintName": "c", "ValueTypeName": "vt", "LakeId": "lake", "SourceId": "src", "KeyId": "1",
+    "TriggerName": "g", "ConstraintName": "c", "PreconditionName": "pc", "ValueTypeName": "vt", "LakeId": "lake", "SourceId": "src", "KeyId": "1",
     "Names": ["a"], "Detail": "d", "Error": {"error": "refused", "reason": {"refusal": "not_granted"}},
     "Timestamp": "2026-01-01T00:00:00Z", "ProposalId": "p-1", "FieldType": {"kind": "text"},
-    "Bound": {"model": "m", "dimensions": 2},
+    "Bound": {"model": "m", "dimensions": 2}, "Printed": "a = 1", "Requests": 1,
 }
 
 

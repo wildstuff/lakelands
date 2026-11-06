@@ -3,24 +3,10 @@
 //! of the view would answer the set's condition
 //! (`docs/decisions/066-a-set-holds-a-kept-view.md`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use lakelands_api::seam::AGING_RULE_TYPE;
 
-use lakelands_api::event::EventBody;
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::seam::{AGING_RULE_TYPE, Seams};
-use lakelands_api::write::ProposedWrite;
-use lakelands_api::{
-    Access, Grants, LakeStore, Outcome, Position, PrincipalKind, Refusal, SourceId, Timestamp,
-    TypeName, WriteOpts,
-};
-use serde_json::{Value, json};
-
-use crate::conformance::fixture::{
-    Lake, Must, all_found, events_from, find_where, head_unmoved, ingest, limits, migration, patch,
-    principal, refused_on, restrict, source_record,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{ingest, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     KEPT_SET = a_set_of_a_kept_view_moves_in_the_append_of_every_write_that_moves_its_group,
@@ -874,13 +860,7 @@ async fn what_a_set_of_a_kept_view_moves_is_held_to_the_ceiling(
     }
     let rule = json!({"on": "invoice", "field": "status", "from": "open", "to": "closed", "when": "amount < 100"});
     l.upsert(AGING_RULE_TYPE, "close_small", rule).await?;
-    let lower = Limits {
-        max_set_changes: 1,
-        ..limits()
-    };
-    let store = (given.relimit)(store, Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening at a ceiling of one: {e}")))?;
+    let store = at_one_set_change(&given, store, "opening at a ceiling of one").await?;
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let before = s.head().await.must("the head")?;
     let large = |r: &lakelands_api::Result<Outcome>| {

@@ -16,8 +16,8 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake, LARGE_LAKE, Meter,
-    Relimit, Reopen, Twin, below, continue_below, run_all, run_one,
+    Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake,
+    LARGE_LAKE, Meter, Relimit, Reopen, Standby, Twin, below, continue_below, run_all, run_one,
 };
 use lakelands_engine_mem::MemoryOpener;
 use peak_alloc::PeakAlloc;
@@ -183,6 +183,7 @@ impl Harness for Memory {
                 };
                 lakelands_store::import(location.clone(), seams.clone(), dir).await?;
                 let store = lakelands_store::open(location.clone(), seams, OpenMode::Read).await?;
+                let at = location.clone();
                 let writer: Reopen = Arc::new(move |store, host| {
                     let (target, location) = (target.clone(), location.clone());
                     Box::pin(async move {
@@ -194,7 +195,51 @@ impl Harness for Memory {
                         lakelands_store::open(location, seams, OpenMode::Write).await
                     })
                 });
-                Ok(ImportedLake { store, writer })
+                Ok(ImportedLake {
+                    store,
+                    writer,
+                    location: at,
+                })
+            })
+        })
+    }
+
+    fn location(&self, lake: &lakelands_api::LakeId) -> Option<Location> {
+        Some(Location::memory(lake.as_str()))
+    }
+
+    fn standbyer(&self) -> Standby {
+        let opener = self.opener.clone();
+        Arc::new(move |lake, host, every, wrap| {
+            let opener = opener.clone();
+            Box::pin(async move {
+                let seams = Seams {
+                    engines: vec![wrap(Arc::new(opener))],
+                    ..host
+                };
+                let location = Location::memory(lake.to_string());
+                let (store, standing) = lakelands_store::standby(location, seams, every).await?;
+                Ok((store as Arc<dyn LakeStore>, standing))
+            })
+        })
+    }
+
+    fn aheader(&self) -> Ahead {
+        let opener = self.opener.clone();
+        Arc::new(move |location, host| {
+            let opener = opener.clone();
+            Box::pin(async move {
+                // The memory engine keeps no scratch: the store refuses it.
+                let seams = Seams {
+                    engines: vec![Arc::new(opener)],
+                    ..host
+                };
+                let built = lakelands_store::build_ahead(location, seams).await?;
+                Ok(BuiltAhead {
+                    ahead: built.ahead,
+                    through: built.through,
+                    events: built.events,
+                })
             })
         })
     }

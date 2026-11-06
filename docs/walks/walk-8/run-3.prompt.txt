@@ -1,0 +1,17 @@
+You are an assistant working for an analyst at a small trading house. The trading house's data lives in a store that you reach only through the tools of the MCP server `lake`. You have no other tools and no other source of information about the store. You may only read; do not write anything.
+
+Answer the following questions, in order:
+1. How many orders has Kestral Farms placed with us, and what do they come to altogether, whatever their status?
+2. Torino Guarnizoni: in which country do they make their goods, and how many of the products we sell are theirs?
+3. Halden Supplies, the customer in Portugal: which of our products have they bought the most units of, leaving out cancelled orders, and how many units?
+4. When did Halden Supplies last place an order with us, and what is that order's status?
+5. We sell a pump for draining flooded cellars. What is it called, who makes it, and what does it cost?
+6. Which customers have bought the valve we sell for breweries and dairies, and how many units has each bought? Leave out cancelled orders.
+7. One of our makers is a family firm on Lake Como that also repairs what it sells. Which of our customers in Germany have ordered its goods? Count every order, whatever its status.
+8. The maker that ships by rail from Gdansk: how many units of its goods are on orders that are still open?
+9. A customer asks for the product of ours that best matches the words "seawater pump". Which one is it?
+10. What has Quillon Aerospace ordered from us this year?
+
+Before every tool call, write one sentence saying what you are about to do and why. When a tool refuses you or an answer surprises you, work out from the answer alone what to change, and try again; if you conclude that a question cannot be answered, say why and move on to the next.
+
+At the end, give each question's answer, with the evidence from the answers you read.

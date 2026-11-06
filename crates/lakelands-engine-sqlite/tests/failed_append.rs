@@ -323,3 +323,27 @@ fn the_cut_takes_the_index_before_the_segment() {
     s.writer.append(&s.lease, &more).unwrap();
     s.holds(&[&s.committed[..], &more].concat(), "the segment is back");
 }
+
+/// A seal that finds no room to write is refused as that, telling the
+/// operator to free space and repeat it (lakelands#1568). The
+/// lack of room is a real one: the next segment's index is the kernel's
+/// full device, every write to which answers that it has no room left.
+/// The seal leaves the log as it was, and once there is room it seals.
+#[test]
+fn a_seal_with_no_room_left_is_refused_naming_it() {
+    let s = Scene::new("no-room");
+    let committed = s.lengths();
+    let index = s.dir.join("index").join(format!("{:020}.idx", 6));
+    std::os::unix::fs::symlink("/dev/full", &index).unwrap();
+    let next = s.next(1, "the next segment's first");
+    let refused = seal(s.writer.as_ref(), &s.lease, &next).unwrap_err();
+    let said = refused.to_string();
+    assert!(
+        said.contains("there is no room left to write the log index"),
+        "{said}"
+    );
+    assert!(said.contains("free space there, then repeat what failed"));
+    assert!(!index.exists(), "the refused seal left its index");
+    assert_eq!(s.lengths(), committed, "the refused seal wrote or cut");
+    assert!(seal(s.writer.as_ref(), &s.lease, &next).unwrap().is_some());
+}

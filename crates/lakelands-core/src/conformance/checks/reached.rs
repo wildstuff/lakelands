@@ -9,21 +9,12 @@
 //! overruled where the history without it does not make it: the feed
 //! names it, and a replayed write does not tell it (lakelands#1238).
 
-use std::sync::Arc;
-
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::TypeDecl;
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::{ForgetReport, Outcome, RemoveReport, Selection, WriteOpts};
-use lakelands_api::{LakeStore, Position, SourceId, Timestamp};
-use serde_json::{Value, json};
+use lakelands_api::write::{ForgetReport, Outcome, RemoveReport, WriteOpts};
 
 use super::erasable::{Keys, again, person, with};
 use super::removed::{at, erased};
-use crate::conformance::fixture::{
-    Lake, Must, events_after, events_from, find_at, object_set_on, patch, source_record, trigger_on,
-};
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::fixture::source_record;
+use crate::conformance::prelude::*;
 
 check!(
     REMOVED_REKEYED = a_value_taken_back_is_followed_through_a_rekeying,
@@ -50,13 +41,19 @@ check!(
 
 check!(
     REMOVED_FIRED = a_reaction_decided_over_a_value_taken_back_is_overruled,
-    "065 (lakelands#1238): `stop` holds `place` from `tracker`, and `call` names a stop; the triggers `in_rome` (`place = 'Rome'`), `rome_or_open` (`place = 'Rome' or open`), `wrote` (no `when`) and, on `call`, `call_in_rome` (`stop.place = 'Rome'`), the set `at_rome` (`stop.place = 'Rome'`), on `stop` the set `romans` (`place = 'Rome'`), and the set `late` of stops whose note is older than 0.3 s; `s1` is opened by its author and named by `c1` before `tracker` writes the `place` of `s1` and `s2` Rome, `s2` its alone, then `s1` is written again by its author and named by `c2`, those two with an idempotency key; once what `tracker` wrote is taken back, a poll of the feed from 0 names overruled the firings of `in_rome` and `call_in_rome`, those of `rome_or_open` on `s2`, at `tracker`'s write and at the act's retirement of `s2`, the `at_rome` joins, and the `romans` joins and `s2` leaving it at that retirement, and not those of `wrote`, of `rome_or_open` on the open `s1`, nor `s1` joining `late`, which reads the clock; the reactions it does not overrule are those of a twin lake where `tracker` never wrote a `place`, by kind, name and key, and the two keyed writes sent again answer what they set off as the twin's first writes were told; every reaction names the record event it reacts to as its cause, the act's retirement of `s2` included",
+    "065 (lakelands#1238): `stop` holds `place` from `tracker`, and `call` names a stop; the triggers `in_rome` (`place = 'Rome'`), `rome_or_open` (`place = 'Rome' or open`), `wrote` (no `when`) and, on `call`, `call_in_rome` (`stop.place = 'Rome'`), the set `at_rome` (`stop.place = 'Rome'`), on `stop` the set `romans` (`place = 'Rome'`), and the set `late` of stops whose `code` was learned after their note; `s1` is opened by its author and named by `c1` before `tracker` writes the `place` of `s1` and `s2` Rome, `s2` its alone, then `s1` is written again by its author and named by `c2`, those two with an idempotency key; once what `tracker` wrote is taken back, a poll of the feed from 0 names overruled the firings of `in_rome` and `call_in_rome`, those of `rome_or_open` on `s2`, at `tracker`'s write and at the act's retirement of `s2`, the `at_rome` joins, and the `romans` joins and `s2` leaving it at that retirement, and not those of `wrote`, of `rome_or_open` on the open `s1`, nor `s1` joining `late`, which reads when `code` was learned; the reactions it does not overrule are those of a twin lake where `tracker` never wrote a `place`, by kind, name and key, and the two keyed writes sent again answer what they set off as the twin's first writes were told; every reaction names the record event it reacts to as its cause, the act's retirement of `s2` included",
     given
 );
 
 check!(
     FORGOTTEN_FIRED = a_reaction_decided_over_a_forgotten_value_is_overruled,
     "058 (lakelands#1238): the lake of `a_reaction_decided_over_a_value_taken_back_is_overruled`, `place` erasable and `tracker` forgotten in place of the values taken back: the feed names the same reactions overruled, those it does not are the twin's, and the keyed writes sent again answer as the twin's first writes",
+    given
+);
+
+check!(
+    ACT_WHOLE_FOLLOWS_ITS_PARTS_FIRED = a_reaction_its_first_part_fires_is_followed_to_the_acts_end,
+    "099: with `part_events` 1, `tracker`'s records are retired a part at a time, and the retirement of one in an earlier part fires `in_rome` over the `place` it takes, before the act's `act_whole` lands in a later append; a poll of the feed from 0 names that firing overruled, as it names one the act's first append set off, and names it overruled again when the lake is opened once more and the act's end is read from the log, so an act ends for its reactions where its `act_whole` is",
     given
 );
 
@@ -225,8 +222,7 @@ async fn a_value_taken_back_is_followed_through_a_rekeying(store: Store) -> Held
 }
 
 async fn a_forgotten_source_is_followed_through_a_rekeying(store: Store, reopen: Reopen) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (_, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let p = |k: &str, name: &str, city: &str| {
@@ -530,9 +526,10 @@ async fn fired(store: &Store, act: Act, placed: bool) -> Result<[Vec<Vec<String>
     let (name, filter) = SETS[0];
     l.declare_as(object_set_on(name, "call", filter), name)
         .await?;
-    // `late` reads the clock, and no erased value: `s1` joins it at
-    // `tracker`'s write, which decided it was not a member before.
-    let late = object_set_on("late", "stop", "now() - known_at(note) > 0.3s");
+    // `late` reads when `code` was learned, and no erased value: `s1`
+    // joins it at `tracker`'s write, which decided it was not a member
+    // before.
+    let late = object_set_on("late", "stop", "known_at(code) > known_at(note)");
     l.declare_as(late, "late").await?;
     // `romans` reads the stop's own erased field, by its `where`.
     let romans = object_set_on("romans", "stop", "place = 'Rome'");
@@ -645,6 +642,7 @@ async fn overruled(store: Store, given: crate::conformance::Given, act: Act) -> 
         reactions(store.as_ref()).await?,
         reactions(twin.as_ref()).await?,
     );
+
     let mut overruled = overruled;
     overruled.sort();
     let want = [
@@ -714,4 +712,128 @@ async fn a_reaction_decided_over_a_forgotten_value_is_overruled(
     given: crate::conformance::Given,
 ) -> Held {
     overruled(store, given, Act::Forget).await
+}
+
+/// A firing a retirement in an act's earlier part set off, judged when
+/// the act's `act_whole` lands: the act's end, and not its first append
+/// alone, is where the feed ends it for its reactions — in the act's own
+/// handle, and again in one opened after it, which reads the end from the
+/// log.
+async fn a_reaction_its_first_part_fires_is_followed_to_the_acts_end(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let store = again(&given.reopen, store, with(&keys), "with a key store").await?;
+    let mut few = limits();
+    few.part_events = 1;
+    let store = (given.relimit)(store, with(&keys), few)
+        .await
+        .map_err(|e| Failure::new(format!("the harness opened no lake: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let text = json!({"kind": "text"});
+    l.declare_json(json!({"declare": "type", "name": "stop", "fields": [
+        {"name": "code", "type": text, "authority": "source"},
+        {"name": "place", "type": text, "authority": "source", "erasable": true}]}))
+        .await?;
+    l.declare_as(
+        trigger_on("in_rome", "stop", Some("place = 'Rome'")),
+        "in_rome",
+    )
+    .await?;
+    l.ingest(
+        "tracker",
+        vec![
+            source_record("stop", "s1", json!({"code": "s1", "place": "Rome"})),
+            source_record("stop", "s2", json!({"code": "s2", "place": "Rome"})),
+        ],
+    )
+    .await
+    .must("tracker writing")?;
+    drop(
+        store
+            .forget_source(&"tracker".into(), None)
+            .await
+            .must("forgetting")?,
+    );
+    let log = events_from(store.as_ref(), Position::GENESIS).await?;
+    let whole = (log.iter())
+        .find(|e| matches!(e.body, EventBody::ActWhole { .. }))
+        .map(|e| e.position);
+    let Some(whole) = whole else {
+        return Err(Failure::new("the act appends no `act_whole`"));
+    };
+    let retired: Vec<Position> = (log.iter())
+        .filter(|e| matches!(e.body, EventBody::RecordRetired { .. }))
+        .map(|e| e.position)
+        .collect();
+    ensure!(
+        retired.len() == 2,
+        "the act retires both records: {retired:?}"
+    );
+    let fired: Vec<Position> = (log.iter())
+        .filter(|e| {
+            matches!(
+                e.body,
+                EventBody::TriggerFired { .. } | EventBody::TriggerDropped { .. }
+            ) && e.cause.is_some_and(|c| retired.contains(&c))
+        })
+        .map(|e| e.position)
+        .collect();
+    let before: Vec<Position> = (fired.iter().copied()).filter(|p| *p < whole).collect();
+    ensure!(
+        !before.is_empty(),
+        "a retirement before `act_whole` sets off a reaction: firings {fired:?}, the act whole at \
+         {whole:?}"
+    );
+    let filter = FeedFilter {
+        kinds: vec!["trigger_fired".into(), "trigger_dropped".into()],
+        ..FeedFilter::default()
+    };
+    let (mut from, mut overruled) = (Position::GENESIS, Vec::new());
+    loop {
+        let b = store
+            .feed()
+            .poll(from, &filter, 1024)
+            .await
+            .must("polling the feed")?;
+        overruled.extend(b.overruled.iter().copied());
+        if b.next > b.head {
+            break;
+        }
+        from = b.next;
+    }
+    let unnamed: Vec<Position> = (before.iter().copied())
+        .filter(|p| !overruled.contains(p))
+        .collect();
+    ensure!(
+        unnamed.is_empty(),
+        "the feed names overruled every reaction a part set off before the act's end: not \
+         {unnamed:?}, the act whole at {whole:?}, overruled {overruled:?}"
+    );
+    // Opened again after the act, as a later process does: the feed reads
+    // the act's end from the log (`last_act`), not from the fold it made.
+    let store = again(&given.reopen, store, with(&keys), "after the act").await?;
+    let (mut from, mut overruled) = (Position::GENESIS, Vec::new());
+    loop {
+        let b = store
+            .feed()
+            .poll(from, &filter, 1024)
+            .await
+            .must("polling the reopened feed")?;
+        overruled.extend(b.overruled.iter().copied());
+        if b.next > b.head {
+            break;
+        }
+        from = b.next;
+    }
+    let unnamed: Vec<Position> = (before.iter().copied())
+        .filter(|p| !overruled.contains(p))
+        .collect();
+    ensure!(
+        unnamed.is_empty(),
+        "opened again after the act, the feed still names overruled every reaction a part set \
+         off: not {unnamed:?}, the act whole at {whole:?}, overruled {overruled:?}"
+    );
+    Ok(())
 }

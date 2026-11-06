@@ -52,7 +52,7 @@ exits 1:
    same engine and read alike at the head and as of three earlier
    positions;
 4. the model's sums: `debtor` and `cash_position` against the driver's
-   own fold, the set `overdue` against its filter;
+   own fold, `days_overdue` against its fold;
 5. the feed: a gap or a repeat in its positions across the kills;
 6. a refusal the driver did not ask for;
 7. the reader with `only` answered a record outside it, or a restricted

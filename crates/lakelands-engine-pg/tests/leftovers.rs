@@ -25,9 +25,13 @@ fn no_test_schema_is_left() {
         )
         .expect("listing the schemas");
     let left: Vec<String> = rows.iter().map(|r| r.get(0)).collect();
+    // Whatever a failed drop said, where the test that dropped it could not
+    // show it (lakelands#1740): the schema's name and the server's message
+    // stand beside the leftovers so the run says why, not only what.
+    let failed = common::failed_drops();
     assert!(
         left.is_empty(),
-        "a test left its schema behind: {left:?}; this holds only where one run owns the \
+        "a test left its schema behind: {left:?}{failed}; this holds only where one run owns the \
          database, and another run in this database also leaves schemas while it runs"
     );
 }

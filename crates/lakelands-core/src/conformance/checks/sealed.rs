@@ -10,21 +10,12 @@
 //! through, and names no place: a row here is red when only the seal
 //! holds.
 
-use lakelands_api::error::{Case, Place, Situation};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind;
 use lakelands_api::record::Upstream;
-use lakelands_api::write::{Declaration, ProposedWrite};
-use lakelands_api::{Error, LakeStore, Position, Refusal, Timestamp, WriteOpts};
-use serde_json::{Value, json};
 
 use crate::canonical::integer_too_large;
 use crate::conformance::backing::{EMBED_MODEL, EXECUTOR, KIND, VAST, executed};
-use crate::conformance::fixture::{
-    Answer, Lake, Must, computed_by, embedding, field, head_unmoved, invalid_said, log_events,
-    outputs_from, patch, source_record, sourced, type_decl, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{Answer, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     SEEN_AT_IN_THE_YEARS = an_ingest_whose_seen_at_leaves_the_years_is_refused_naming_it,
@@ -180,7 +171,7 @@ async fn a_declaration_that_holds_an_integer_no_reader_reads_exactly_is_refused_
     let set = |name: &str, filter: Value| {
         read(json!({"declare": "object_set", "name": name, "of": "parcel", "where": filter}))
     };
-    let old = |micros: u64| typed("now() - known_at(code) > 1d", micros);
+    let old = |micros: u64| typed("known_at(sent) - known_at(code) > 1d", micros);
     let late = |derived: Value, initial: f64| {
         read(json!({"declare": "type", "name": "parcel", "fields": [
             {"name": "code", "type": {"kind": "text"}},
@@ -194,7 +185,7 @@ async fn a_declaration_that_holds_an_integer_no_reader_reads_exactly_is_refused_
         function("fits", json!({"most": MAX, "more": 1e21})),
         late(typed("sent + 1d", MAX), MAX as f64),
         set("old", old(MAX)),
-        set("older", json!("now() - known_at(code) > 104249d")),
+        set("older", json!("known_at(sent) - known_at(code) > 104249d")),
     ] {
         l.declare_as(fits, "a declaration within the range").await?;
     }
@@ -223,7 +214,10 @@ async fn a_declaration_that_holds_an_integer_no_reader_reads_exactly_is_refused_
             "where.rhs.value.value",
         ),
         (
-            set("ancient", json!("now() - known_at(code) > 104250d")),
+            set(
+                "ancient",
+                json!("known_at(sent) - known_at(code) > 104250d"),
+            ),
             &ancient,
             "where",
         ),

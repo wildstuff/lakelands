@@ -27,8 +27,11 @@ tower-service = "0.3"
 lakelands-core.workspace = true
 lakelands-door-checks.workspace = true
 lakelands-engine-mem.workspace = true
+lakelands-engine-pg.workspace = true
+lakelands-engine-sqlite.workspace = true
 lakelands-server = { path = "../lakelands-server" }
 lakelands-store.workspace = true
+postgres = "0.19"
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "test-util"] }
 
 [lints]

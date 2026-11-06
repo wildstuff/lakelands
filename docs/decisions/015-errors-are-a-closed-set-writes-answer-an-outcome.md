@@ -124,6 +124,14 @@ which remote end failed and in what exchange, which seam and which name.
   PostgreSQL error as its severity, SQLSTATE and primary message, never
   its `DETAIL`; SQLite's messages, which name columns, never a row's
   values.
+- **A host's reason is a `Detail` too (lakelands#1284).** A call a
+  host's executor declines carries the host's own policy words as the
+  case's `reason`, made by the host through `Detail::scrubbed` in code
+  outside this repository. The host scrubs it and keeps it short: no
+  record's key or values, no path on the host. The `detail-sources` gate
+  does not see host code, so nothing here checks those words, and the
+  store applies no length bound to them, as to no other `Detail`; the
+  text is written to the log as it comes.
 - **A `Detail` is read from JSON only by the client,** which reads a
   lake's answer. The `detail-sources` gate refuses a read of an `Error`,
   a `Situation` or a `Detail` by name anywhere else. A read whose type
@@ -208,7 +216,10 @@ its parameters and `message`.
   JSON-RPC protocol errors of MCP, which are the protocol's, not a
   refusal. A `not_granted` refusal carries no case on purpose: it never
   says which grant is missing, and its door words say only how to
-  authenticate. A door's advice (`todo`) is a function of the case.
+  authenticate. `grant_needed` names one, where a door needs it of
+  every caller whatever the lake holds, so naming it tells nothing of
+  the data: `restricted`, for changing the lake's types (062). A door's
+  advice (`todo`) is a function of the case.
 
 ## Why
 
@@ -266,4 +277,6 @@ engine will never produce.
   out.
 - A refusal's reason gained `verbs_only`, naming the verbs that alone write a field (lakelands#1130).
 - A refusal's reason gained `declined`, with the case `call_declined`, for a call a host's executor declines by policy (lakelands#812).
+- `call_declined` gained an optional `reason`, a `Detail` of the host's own words, scrubbed and kept short by the host, which neither the gate nor the store checks or bounds (lakelands#1284).
 - `verbs_only` also answers a retirement of a type only its verbs retire, with no field, and its sentence and `wrong_door`'s no longer say "field" (lakelands#1148).
+- A refusal's reason gained `grant_needed`, naming the grant a door needs of every caller: `restricted`, for changing the lake's types (062).

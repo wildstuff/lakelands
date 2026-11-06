@@ -4,7 +4,7 @@
 
 Every setting that steers a lake, and where it is kept. A setting lives where what it steers lives: what every host that opens the lake must find the same is kept in the lake; a bound on what one host spends, in the lake's location; how the root's processes serve, age, deliver, embed, call a backing and mirror, in the root's `lakelands.json` (`docs/decisions/063-every-setting-is-in-one-list.md`).
 
-`lakelands settings` shows each one with the value it has for a lake. A host's own keys under `sys.setting`, which its expressions read as `setting('<key>')`, are its own and not listed here; a key under the prefix of a listed lake setting that names none of them is refused. A host may declare its own keys in the lake, with a kind, a unit, a meaning and a group (`lakelands settings` lists them for a lake). Any expression reads any setting, whatever its reader's grants, save a lake setting for a type, which a read tells its reader as were the types and fields it is kept from absent: a value that must be kept from a reader, a secret above all, is never a setting.
+`lakelands settings` shows each one with the value it has for a lake. A host's own keys under `sys.setting`, which its expressions read as `setting('<key>')`, are its own and not listed here; a key under the prefix of a listed lake setting that names none of them is refused. A host may declare its own keys in the lake, with a kind, a unit, a meaning and a group (`lakelands settings` lists them for a lake). A declared key may hold values from dates: a write with `from: <date>` adds one (`lakelands settings set <key> <value> --from <date>`), one with `period: start` or `period: <date>` corrects one (`--period`), and `setting('<key>', <date>)` reads the value that holds on that date's UTC day, `setting('<key>')` the one of the clock's day; `lakelands settings` lists them, one a line (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`). Any expression reads any setting, whatever its reader's grants, save a lake setting for a type, which a read tells only a reader shown the type, and one naming a type's fields only whole, to a reader that reads the type whole: a value that must be kept from a reader, a secret above all, is never a setting.
 
 ## Kept in the lake
 
@@ -17,7 +17,16 @@ Keeps an order index on these fields, so a page ordered by one of them reads its
 - **Takes:** a list of the type's fields of a kind an order index keeps: text, number, decimal, boolean, date-time, date or reference.
 - **Default:** `null`.
 - **Per type:** one value per type, and none for the lake.
-- **Cost:** each field indexed costs a write about 1–5 % on SQLite and 11 % on PostgreSQL; naming one rebuilds the type's rows while holding the writer, about 0.85 s at 100 000 records on SQLite and 2.4 s on PostgreSQL.
+- **Cost:** each field indexed costs a write about 1–5 % on SQLite and 11 % on PostgreSQL; naming one fills it beside the writer, a chunk of `order_chunk` records a turn, and taking it back clears its rows in chunks of that size.
+
+### `series_index.<type>`
+
+Keeps an order index within each series, so a read of one series' window seeks straight to it.
+
+- **Takes:** a list of pairs of the type's fields, the series field first, as [["symbol", "at"]]: its series field is text, reference, number or decimal, its order field text, number, decimal, boolean, date-time, date or reference.
+- **Default:** `null`.
+- **Per type:** one value per type, and none for the lake.
+- **Cost:** each pair indexed costs a write a median 8.9 µs on SQLite at 100 000 records, 16.2 → 28.2 µs (measured), and an order field's 11 % on PostgreSQL; naming one fills it beside the writer, a chunk of `order_chunk` records a turn, and taking it back clears its rows whole in that write.
 
 ### `vector_index.<type>`
 
@@ -29,9 +38,9 @@ Keeps a vector index on these fields; a search on one answers the index's set.
 
 ### `lookup_index.<type>`
 
-Keeps an exact-text index on these fields beyond those the declarations look up by, so a read comparing one to a text reads its matches.
+Keeps an exact-text index on these fields beyond those the declarations look up by, so a read comparing one to a text or a number reads its matches.
 
-- **Takes:** a list of the type's text fields.
+- **Takes:** a list of the type's text, number and decimal fields.
 - **Default:** `null`.
 - **Per type:** one value per type, and none for the lake.
 
@@ -59,6 +68,13 @@ Seals a source's values of each period under a version of its key of their own, 
 - **Default:** `null`.
 - **Per source:** `key_period.<source>` overrides `key_period` for that source; retired, the source has the lake's value again.
 - **Cost:** one new version of the source's key per period, made by the key store, so `day` makes 365 a year for each source; the file keyring rewrites its whole file at each, measured at 4.5 ms with 1 000 keys and 8.9 ms with 10 000; and the list of a source's versions, an entry a period, read once a window, so ten years of `day` (3 650 entries) add about 20 µs a record to an ingest on the memory engine (lakelands#1153).
+
+### `zone`
+
+The zone the lake's calendar day is read in: `today()` in an expression, and the date `serve` ages the lake for. A write is judged in the zone in force where it is made. Unset or retired, the day is UTC's. A new lake starts in its location's `zone`, which the writer's first open records where the lake has recorded none.
+
+- **Takes:** a time zone as the IANA time-zone database names it, as `Europe/Berlin`.
+- **Default:** `"UTC"`.
 
 ## Kept in the lake's location
 
@@ -94,10 +110,18 @@ The deepest a chain of reactive writes may go.
 
 ### `limits.commit_window_events`
 
-The most events one group-commit window of an ingest holds.
+The most records one group-commit window of an ingest holds, or events one batch of record writes holds; a batch closes after the write that reaches it. A host with bulk deliveries of hundreds or thousands of records may raise it to 1024, or a delivery ask its own (`commit_window`), up to `limits.commit_window_max`.
 
 - **Takes:** a count, 1 at least.
-- **Default:** `32`.
+- **Default:** `256`.
+- **Cost:** each window pays one log append and one projection commit, about 8 ms on Apple Silicon, so a delivery of 500 records takes 200 ms at 32 and 72 ms at 1024, and one of 1000 records 390 ms and 130 ms (SQLite, through a host's write door, `ingest_with`, sealed apart); a refused record rolls back its whole window, up to 255 records before it at the default and up to 1023 at 1024, and the crash check on open reads the last group, about 14 µs an event (decision 060): about 3.5 ms at the default, 14 ms at 1000.
+
+### `limits.commit_window_max`
+
+The largest commit window an ingest may ask for its own delivery (`commit_window`); a larger one, or 0, is refused, naming the option and this ceiling. A lake whose location sets `limits.commit_window_events` above it is not opened.
+
+- **Takes:** a count.
+- **Default:** `4096`.
 
 ### `limits.max_graph_nodes`
 
@@ -120,12 +144,128 @@ The most memberships one declaration of an object set may change over the record
 - **Takes:** a count.
 - **Default:** `20000`.
 
+### `limits.max_change_records`
+
+The most records one change to records may select; past it `plan` and `enact` refuse it, naming this setting, and never cut it.
+
+- **Takes:** a count.
+- **Default:** `10000`.
+- **Cost:** a change is enacted in one append that holds the writer alone: at 10 000 records the enact took 0.5–0.7 s on the memory engine, 0.7–0.8 s on SQLite and 4.3–4.8 s on PostgreSQL, its plan about a third of that.
+
 ### `limits.max_rerank_top`
 
 The largest `top` a search's `rerank` may ask for; a larger one is refused, naming this setting. A lake whose location sets 0 is not opened.
 
 - **Takes:** a count, 1 at least.
 - **Default:** `100`.
+
+### `limits.max_text_as_of`
+
+The most records a search with `text_as_of` may rank: one whose `where` selects more at the position it reads is refused, naming this setting, and never cut. 0 turns `text_as_of` off: a search with it whose `where` selects any record is refused. A lake whose location sets more than 1 000 000 is not opened.
+
+- **Takes:** a count, at most 1000000.
+- **Default:** `10000`.
+
+### `limits.choose_order_index`
+
+Whether the lake chooses an order index itself, for a field a type is ordered by whole at least `limits.order_after_pages` times within `limits.order_window_secs`, beside what `sort_index` names; the host's own `sort_index` for a type always wins. Off, only what the host sets is indexed.
+
+- **Takes:** `true` or `false`.
+- **Default:** `true`.
+- **Cost:** each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records, in chunks of 10 000.
+
+### `limits.order_after_pages`
+
+How many pages ordered whole by one field of a type, within `limits.order_window_secs`, make the lake choose an index for it.
+
+- **Takes:** a count.
+- **Default:** `3`.
+
+### `limits.order_window_secs`
+
+The window the pages that make the lake choose an index are counted in.
+
+- **Takes:** seconds.
+- **Default:** `600`.
+
+### `limits.order_min_records`
+
+The fewest live records a type holds for the lake to choose an index of its fields.
+
+- **Takes:** a count.
+- **Default:** `2000`.
+
+### `limits.order_max_fields`
+
+The most fields of one type the lake chooses an index for.
+
+- **Takes:** a count.
+- **Default:** `2`.
+
+### `limits.order_unused_secs`
+
+How long a chosen index may go unused, in seconds of the writer's life, before the lake drops it.
+
+- **Takes:** seconds.
+- **Default:** `604800`.
+
+### `limits.order_chunk`
+
+The records one chunk of a chosen index's build writes while it holds the writer; a write waits for a chunk, never for the build.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `1000`.
+
+### `limits.window_keys`
+
+The most rows of a filter's window an aggregate gathers and sorts to read by its keys. Past it the aggregate takes the other side, the holders with their probe or the type as before, and answers the same; only the counts are lost.
+
+- **Takes:** a count.
+- **Default:** `1048576`.
+
+### `limits.part_events`
+
+The most events one part of an act appends, each part a turn of the writer of its own, so a write sent meanwhile waits for at most the part in front of it. Purge appends in parts (decision 099, R2). A record's retirements are never split across parts, so one part may hold a few more than this for one record.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `500`.
+
+### `limits.part_tail`
+
+The most events past the view it walked on that a job's first turn reads under the writer. A longer tail is read off the writer first; one that is still longer at the turn lets the writer go and moves the view up, and after three such tries the job answers unavailable, having appended nothing.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `1000`.
+- **Cost:** the tail is read by source and by type from the log's index, 11 ms for 1 000 events at 2.5 million records (measured, decision 099).
+
+### `limits.page_events`
+
+The most events one page of a scoped restate refolds, each page a turn of the writer of its own, so a write sent meanwhile waits for at most the page in front of it. A page over it takes the rebuild instead, and its report says so (decision 099, R4).
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `2000`.
+
+### `limits.forget_rebuild`
+
+Whether a forgetting always rebuilds the projection; off, it refolds only the records its sources wrote where nothing else the lake keeps reads them, and the preflight says which it chose.
+
+- **Takes:** `true` or `false`.
+- **Default:** `false`.
+
+### `limits.seal_after_bytes`
+
+The active segment's size, its lines and its blocks counted as they inflate (each block's `raw`, never what it stores), past which the writer seals it after an append, as `checkpoint` does, on an engine that reports the size (SQLite); a writer's open seals one already past it. PostgreSQL and memory never seal by size.
+
+- **Takes:** bytes: 0 never seals by size, and a bound below 1048576 (1 MiB) is read as 1 MiB.
+- **Default:** `67108864`.
+- **Cost:** each seal holds the writer as a `checkpoint` does while it restores and hashes every event of the segment: the write that crossed 64 MiB of ticks, 511 000 events in 8.8 MB of blocks, waited 9.3 s on SQLite under load 7 to 12, against 24 ms for a write of 249 ticks; every checkpoint lists each sealed segment, so a small bound makes many seals and long checkpoints.
+
+### `limits.quarantined_max`
+
+The most open quarantined records one source keeps; a refusal an ingest asks to quarantine past it ends the stream, the record's own refusal with `quarantine_full` beside it. Closed ones are not counted.
+
+- **Takes:** a count; 0 quarantines nothing.
+- **Default:** `10000`.
 
 ### `engine.tuning.writer_cache_kb`
 
@@ -136,7 +276,7 @@ SQLite: the writer connection's page cache.
 
 ### `engine.tuning.reader_cache_kb`
 
-SQLite: each reader connection's page cache; it multiplies by the readers open at once.
+SQLite: each reader connection's page cache. A handle keeps up to one reader per core open, at most 16: up to 16 times this (256 MiB at the default).
 
 - **Takes:** KiB.
 - **Default:** `16384`.
@@ -208,12 +348,48 @@ How often, at most, the log is read for the feeds that follow one lake with one 
 - **Takes:** milliseconds.
 - **Default:** `10`.
 
-### `aging.utc_offset`
+### `server.workers`
 
-The UTC offset `serve` reads the date at, to age each lake it writes once a day.
+The threads `serve` runs its doors and sessions on; absent, the machine's cores, at most 8.
 
-- **Takes:** `Z`, or `+HH:MM` or `-HH:MM` within fourteen hours.
-- **Default:** `"Z"`.
+- **Takes:** a count above zero.
+- **Default:** `null`.
+
+### `server.bounds.connection_rate`
+
+The most requests the HTTP door takes from one connection in a second, all at once or spread over it; a request over it is answered `429` with `Retry-After`.
+
+- **Takes:** requests a second, or "off".
+- **Default:** `1000`.
+
+### `server.bounds.principal_rate`
+
+The most requests the HTTP door takes from one principal in a second, over all its connections; a request over it is answered `429` with `Retry-After`.
+
+- **Takes:** requests a second, or "off".
+- **Default:** `1000`.
+
+### `server.bounds.principal_in_flight`
+
+The most requests of one principal the HTTP door answers at once; one more is answered `429` with `Retry-After`.
+
+- **Takes:** a count above zero, or "off".
+- **Default:** `128`.
+
+### `server.bounds.body_bytes`
+
+The largest body the HTTP door reads whole, for MCP and REST, a larger one answered `413`; an ingest body is streamed, and only its lines are bounded.
+
+- **Takes:** bytes, or "off".
+- **Default:** `4194304`.
+
+### `server.metrics.bind`
+
+Where `serve` answers `GET /metrics` in the Prometheus text format, apart from the door; absent, it measures nothing and listens for none.
+
+- **Takes:** an address and port.
+- **Default:** `null`.
+- **Cost:** a write on the memory engine took 22.6 µs measured against 22.3 µs unmeasured with one caller, and 12.6 µs either way with sixteen; on SQLite the difference is inside a commit's noise; a scrape reads each lake's counters and takes nothing from its writer.
 
 ### `aging.check_secs`
 
@@ -348,15 +524,25 @@ The most events a mirror reads from its source's feed at once, and the most reco
 - **Takes:** a count.
 - **Default:** `100`.
 
+### `standby.try_millis`
+
+How often a `serve` that stands by asks whether each lake's lease is free, to take it once the writer is gone; absent, `serve` takes each lease at its open.
+
+- **Takes:** milliseconds.
+- **Default:** `1000`.
+
 ## Bindings
 
-What says only where or how to connect, or which keys to use, is a binding and no setting: it steers no behaviour of the lake, and a lake moved or restored names it anew. Each is kept beside the settings of its layer. The rest of `lakelands.json` is neither: `lakelands` is the file's format number, and `owner` and `principals` say who the root's callers are and what each may do.
+What says only where or how to connect, or which keys to use, is a binding and no setting: it steers no behaviour of the lake, and a lake moved or restored names it anew. Each is kept beside the settings of its layer. The rest of `lakelands.json` is neither: `lakelands` is the file's format number, and `owner` and `principals` say who the root's callers are and what each may do; a grant holding a key this build does not know stops the root, and one naming a type no lake declares is told at start-up (`docs/decisions/006-grants-not-roles.md`).
 
-- **`engine.dir`** (the location): SQLite: the directory that holds the lake's log segments and its projection.
+- **`engine.dir`** (the location): SQLite: the directory that holds the lake's log segments, and its projection where `engine.projection_dir` is absent.
+- **`engine.projection_dir`** (the location): SQLite: the directory that holds the lake's projection and the one a rebuild builds beside it, one lake's alone.
 - **`engine.url`** (the location): PostgreSQL: the database the lake is kept in, as a `postgres://` URL.
 - **`engine.schema`** (the location): PostgreSQL: the schema that holds the lake; `lakelands_<lake>` when absent.
 - **`engine.tls`** (the location): PostgreSQL: how the connection is secured.
+- **`engine.tablespaces`** (the location): PostgreSQL: the tablespaces the lake's `log`, `projection`, `indexes` and `vectors` are made in, each the database's default where it is absent.
 - **`key`** (the location): A handle naming the key the lake is encrypted with, which the host resolves.
+- **`writers`** (the location): The REST doors of the processes that may hold the lake's writer lease, the writer first and then its standbys, each a `url` and an optional `ca_file`: where a handle that does not hold the lease forwards a write, the only places it sends one.
 - **`keys.keyring`** (`lakelands.json`): The directory of the key store that seals a source's values of erasable fields.
 - **`deliver.endpoints`** (`lakelands.json`): The endpoints `serve` delivers fired triggers and object-set changes to, the only places a deliverer sends anything.
 - **`deliver.ca_file`** (`lakelands.json`): The certificate authorities a deliverer trusts over `https`.
@@ -367,3 +553,7 @@ What says only where or how to connect, or which keys to use, is a binding and n
 - **`backings.http.ca_file`** (`lakelands.json`): The certificate authorities the `http` backing trusts over `https`.
 - **`backings.exec.commands`** (`lakelands.json`): The commands a function may name, each a program and its arguments, the only ones the `exec` backing runs.
 - **`mirror.connections`** (`lakelands.json`): Each mirror's source lake, target lake, principal, the types that cross, and where a type with no position begins (`start`: a snapshot of its records, or the feed from now).
+- **`server.hosts`** (`lakelands.json`): The other hosts that may forward a call to this server's doors, each an `id`, its `keys`, the `lakes` it may forward to (every lake when empty) and the `principals` it may act for (every one the lake knows when absent).
+- **`lakes_dir`** (`lakelands.json`): Where `lake new` makes a SQLite lake's directory; `lakes` in the root when absent.
+- **`exports_dir`** (`lakelands.json`): Where `export` writes when it is given no `--to`; `exports` in the root when absent.
+- **`backups_dir`** (`lakelands.json`): Where the root's backups are to be kept, nothing yet; `backups` in the root when absent.

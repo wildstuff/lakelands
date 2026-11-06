@@ -15,7 +15,7 @@
 //! type and the relation, since relation names are unique per type only. Per verb: the
 //! verb's name. Generic: `describe`, `query`, `search`, `propose`,
 //! `proposals`, `accept`, `reject`, `declare_type`, `add_field`, `recompute`,
-//! `migrate`, each only if the principal may use it, and the MCP session's
+//! `migrate`, `thin`, each only if the principal may use it, and the MCP session's
 //! doors: `pin`, for `as_of` across a turn, and `subscribe` and `unsubscribe`,
 //! for being told of changes. A 20-type lake offers about 80 tools.
 //!
@@ -34,6 +34,7 @@ use serde_json::{Map, Value, json};
 use crate::describe::{FieldDescription, LakeDescription, TypeDescription, VerbDescription};
 use crate::error::{catalog, closed};
 use crate::id::{RelationName, TypeName, VerbName};
+use crate::key::LINK_PREFIX;
 use crate::ontology::{FieldType, StorageKind};
 
 /// The door a tool leads to.
@@ -54,6 +55,13 @@ pub enum Door {
     },
     /// `upsert` on one type.
     Upsert {
+        /// The type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+    },
+    /// `change` on one type: a change to the records a condition selects,
+    /// planned first (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
+    Change {
         /// The type.
         #[serde(rename = "type")]
         ty: TypeName,
@@ -98,6 +106,10 @@ pub enum Door {
     Unsubscribe,
     /// `query`.
     Query,
+    /// `cypher`: a statement of the openCypher subset, translated into one
+    /// pattern and run as `query` runs it; a read tool, listed where
+    /// `query` is.
+    Cypher,
     /// `search`.
     Search,
     /// `propose`.
@@ -123,6 +135,9 @@ pub enum Door {
     /// `migrate`: the preflight, or with a `report_id` argument the
     /// `migrate_apply` door.
     Migrate,
+    /// `thin`: the preflight, or with `act` the thinning act itself
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    Thin,
     /// `plan`: a change's plan. Served over REST only; the tools that make
     /// a change take `plan` and `plan_id` instead
     /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
@@ -152,6 +167,7 @@ const PIN: &str = "pin";
 const SUBSCRIBE: &str = "subscribe";
 const UNSUBSCRIBE: &str = "unsubscribe";
 const QUERY: &str = "query";
+const CYPHER: &str = "cypher";
 const SEARCH: &str = "search";
 
 /// The second stage a search or a pattern's start asks for.
@@ -171,6 +187,7 @@ const DECLARE_TYPE: &str = "declare_type";
 const ADD_FIELD: &str = "add_field";
 const RECOMPUTE: &str = "recompute";
 const MIGRATE: &str = "migrate";
+const THIN: &str = "thin";
 
 /// The kinds of change a session may subscribe to: the log's event kinds
 /// that change a record, or say something happened to one.
@@ -186,12 +203,13 @@ pub const CHANGE_KINDS: [&str; 7] = [
 
 /// The names of the generic tools, which no type or verb may produce.
 /// The generator emits these constants and no other generic name.
-pub const GENERIC_TOOLS: [&str; 14] = [
+pub const GENERIC_TOOLS: [&str; 16] = [
     DESCRIBE,
     PIN,
     SUBSCRIBE,
     UNSUBSCRIBE,
     QUERY,
+    CYPHER,
     SEARCH,
     PROPOSE,
     PROPOSALS,
@@ -201,6 +219,7 @@ pub const GENERIC_TOOLS: [&str; 14] = [
     ADD_FIELD,
     RECOMPUTE,
     MIGRATE,
+    THIN,
 ];
 
 /// The longest name an MCP client is guaranteed to accept.
@@ -221,7 +240,7 @@ pub fn tool_base(name: &str) -> String {
         .collect()
 }
 
-const DOOR_SUFFIXES: [&str; 4] = ["find", "get", "upsert", "retire"];
+const DOOR_SUFFIXES: [&str; 5] = ["find", "get", "upsert", "retire", "change"];
 
 catalog! {
     join = " and ";
@@ -255,8 +274,12 @@ catalog! {
             #[serde(with = "closed::list")]
             from: Vec<NameSource>,
         } => "the tool name `{name}` would come from {from}",
-        /// A tool name would be longer than [`MAX_TOOL_NAME`].
-        TooLong { name: String } => "the tool name `{name}` is longer than 64 characters",
+        /// A tool name would be longer than [`MAX_TOOL_NAME`]; one problem for each declaration it comes from.
+        TooLong {
+            name: String,
+            #[serde(default, skip_serializing_if = "Option::is_none", with = "closed::option")]
+            from: Option<NameSource>,
+        } => "the tool name `{name}`[ of {from}] is longer than 64 characters",
         /// A declaration's name has nothing left once made a tool name.
         Empty {
             #[serde(with = "closed")]
@@ -338,7 +361,10 @@ pub fn name_problems(
             continue;
         }
         if name.len() > MAX_TOOL_NAME {
-            problems.push(NameProblem::TooLong { name: name.clone() });
+            problems.extend(from.iter().map(|from| NameProblem::TooLong {
+                name: name.clone(),
+                from: Some(from.clone()),
+            }));
         }
         if from.len() > 1 {
             problems.push(NameProblem::Collision { name, from });
@@ -506,7 +532,7 @@ fn record_schema(ty: &TypeDescription, lake: &LakeDescription) -> Value {
             "fields": {"type": "object", "properties": fields},
             "masked": {"type": "array", "items": {"type": "string"}},
             "meta": {"type": "object",
-                     "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value."},
+                     "description": "Per field: origin, known_at, seen_at, position, writer, on_behalf_of (the principal the writer acted for, where it acted for one), source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value."},
         },
         "required": ["type", "key", "version", "fields"],
     })
@@ -592,7 +618,7 @@ fn outcome_schema() -> Value {
                                        "appended": {"type": "boolean"},
                                    },
                                    "required": ["kind", "name", "version", "since", "appended"]},
-                         "description": "For `declare` and `apply`: each declaration sent, as it stands in force after the call, and whether this call appended it."},
+                         "description": "For `declare`, `apply`, a `propose` of declarations all in force and the `accept` of proposed declarations: each declaration sent, as it stands in force after the call, and whether this call appended it."},
             "proposal": {"type": "string"},
             "why": {"type": "string"},
         },
@@ -623,6 +649,19 @@ fn plan_schema() -> Value {
                              "description": "Per constraint: the live records that would break it."},
             }}},
             "value_types": {"type": "array", "items": {"type": "object"}},
+            "records": {"type": "object",
+                        "description": "For a change to records (081): what it selects, changes and is refused.",
+                        "properties": {
+                            "type": {"type": "string"},
+                            "selected": {"type": "integer",
+                                         "description": "How many records the condition selects."},
+                            "sample_keys": {"type": "array", "items": {"type": "string"}},
+                            "fields": count("Per field set: how many selected records it would change."),
+                            "refused": {"type": "array", "items": {"type": "object", "properties": {
+                                "refusal": {"type": "object"}, "records": {"type": "integer"},
+                                "sample_keys": {"type": "array", "items": {"type": "string"}}}},
+                                "description": "Each refusal a selected record would meet; one is enough that the change cannot be enacted."}},
+                        "required": ["type", "selected", "sample_keys"]},
             "lossless": {"type": "boolean"},
         },
         "required": ["report_id", "at", "lossless"],
@@ -684,6 +723,31 @@ fn key_schema(ty: &TypeDescription, writes: bool) -> Value {
     json!({"type": "string", "description": description})
 }
 
+/// The schemas of the fields a principal may write on a type. A setting's
+/// `periods` are written by `from` and `period`, never named (090).
+fn writable_fields(ty: &TypeDescription, lake: &LakeDescription) -> Map<String, Value> {
+    let setting = ty.name.as_str() == crate::seam::SETTING_TYPE;
+    let mut out: Map<String, Value> = (ty.fields.iter())
+        .filter(|f| f.authored_writable() && !(setting && f.name.as_str() == "periods"))
+        .map(|f| {
+            let s = described(field_schema(&f.ty, lake), f);
+            (f.name.to_string(), json!({"anyOf": [s, {"type": "null"}]}))
+        })
+        .collect();
+    if setting
+        && ty
+            .fields
+            .iter()
+            .any(|f| f.name.as_str() == "periods" && f.authored_writable())
+    {
+        out.insert("from".into(), json!({"type": "string", "format": "date",
+            "description": "A date from which `value` holds, a value added to a declared setting."}));
+        out.insert("period".into(), json!({"type": "string",
+            "description": "The value to correct: `start` for the first, or the date one holds from."}));
+    }
+    out
+}
+
 fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     let base = tool_base(ty.name.as_str());
     let record = record_schema(ty, lake);
@@ -699,7 +763,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             (
                 "where",
                 json!({"type": "string",
-                       "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100."}),
+                       "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100; a list is written in parentheses, status in ('open', 'paid'), not in brackets as a `cypher` statement writes it; a text is matched by a function, contains(name, 'Kest') or starts_with(name, 'Kest'), not by a word between its operands."}),
             ),
             (
                 "order_by",
@@ -711,7 +775,11 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 },
             ),
             ("limit", json!({"type": "integer", "minimum": 1})),
-            ("cursor", json!({"type": "string"})),
+            (
+                "cursor",
+                json!({"type": "string",
+                       "description": "The `next_cursor` of an earlier answer, for the next page. Send it with the same `where` and `order_by` as the page it came from."}),
+            ),
             (
                 "offset",
                 json!({"type": "integer", "minimum": 0,
@@ -738,11 +806,14 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             (
                 "aggregate",
                 json!({"type": "object", "properties": {
-                    "measures": {"type": "array", "items": {
+                    "measures": {"type": "array",
+                                 "description": "`first` and `last` answer `field` on the record whose `by` is least (greatest), ties by key, and need both; no other function takes `by`.",
+                                 "items": {
                         "type": "object",
                         "properties": {"name": {"type": "string"},
-                                       "func": {"enum": ["count", "sum", "min", "max", "avg"]},
-                                       "field": one_of(filterable())},
+                                       "func": {"enum": ["count", "sum", "min", "max", "avg", "first", "last"]},
+                                       "field": one_of(filterable()),
+                                       "by": one_of(filterable())},
                         "required": ["name", "func"], "additionalProperties": false}},
                     "group_by": {"type": "array", "items": {"anyOf": [
                         one_of(filterable()),
@@ -792,15 +863,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         });
     }
     if ty.may.upsert {
-        let writable: Map<String, Value> = ty
-            .fields
-            .iter()
-            .filter(|f| f.authored_writable())
-            .map(|f| {
-                let s = described(field_schema(&f.ty, lake), f);
-                (f.name.to_string(), json!({"anyOf": [s, {"type": "null"}]}))
-            })
-            .collect();
+        let writable = writable_fields(ty, lake);
         // A create must send what a constraint needs of it (lakelands#1169);
         // where none it can send is taken, the tool changes records only
         // (lakelands#1188).
@@ -842,6 +905,60 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             input_schema: obj(p, &["key", "fields"]),
             output_schema: outcome_schema(),
             door: Door::Upsert { ty: ty.name.clone() },
+        });
+    }
+    if ty.may.find && (ty.may.upsert || ty.may.retire) {
+        // A link type's ends name the link: a change sets its own fields or
+        // unlinks, and never names an end.
+        let link = ty.name.as_str().starts_with(LINK_PREFIX);
+        let mut set_fields = writable_fields(ty, lake);
+        if link {
+            set_fields.retain(|name, _| name != "from" && name != "to");
+        }
+        let mut p = props([(
+            "where",
+            json!({"type": "string",
+                   "description": "The records to change: a condition in the expression grammar, read as `find` reads it."}),
+        )]);
+        if ty.may.upsert {
+            p.insert(
+                "set".into(),
+                json!({"type": "object", "properties": set_fields,
+                       "additionalProperties": false,
+                       "description": "The values to set, the same on every record selected. Send this or `retire`."}),
+            );
+        }
+        if ty.may.retire {
+            p.insert(
+                "retire".into(),
+                json!({"const": true, "description": if link {
+                    "Unlink every link selected. Send this or `set`."
+                } else {
+                    "Retire every record selected. Send this or `set`."
+                }}),
+            );
+        }
+        let (mut input, _) = planned(obj(p, &["where"]));
+        input["properties"]["plan"]["description"] = json!(
+            "Answer the change's plan and change nothing. Also what a call without `plan` or `plan_id` does."
+        );
+        out.push(ToolSpec {
+            name: format!("{base}_change"),
+            description: format!(
+                "{} every {} record a condition selects. It is planned first and enacted only against that plan: `plan: true`, or a call with neither `plan` nor `plan_id`, answers how many records it selects, the first keys, the records each field would change and each refusal a record would meet, and changes nothing; call it again with that plan's `report_id` as `plan_id` to make exactly that change in one append, refused `plan_stale` if a selected record changed or the selection moved, and `too_large` past the lake's `max_change_records`, never cut. A refusal of one record refuses the whole change.",
+                match (ty.may.upsert, ty.may.retire, link) {
+                    (true, true, false) => "Set values on, or retire,",
+                    (true, true, true) => "Set the link's own fields on, or unlink (`retire`),",
+                    (true, false, false) => "Set values on",
+                    (true, false, true) => "Set the link's own fields on",
+                    (false, _, false) => "Retire",
+                    (false, _, true) => "Unlink (`retire`)",
+                },
+                label(ty)
+            ),
+            input_schema: input,
+            output_schema: json!({"anyOf": [outcome_schema(), plan_schema()]}),
+            door: Door::Change { ty: ty.name.clone() },
         });
     }
     if ty.may.retire {
@@ -1020,6 +1137,19 @@ const BINDING: &str = "The name a row binds this record under, `<name>.<field>`;
 /// [`BINDING`] for a step, which may reach several types.
 const STEP_BINDING: &str = "The name a row binds this step's records under, `<name>.<field>`, with `<name>.key`, `<name>._type` and `<name>._depth`; its type's name when left out, or its relation's where it reaches several types. Name a step that may reach several types: left out, its name follows the types its reader is shown.";
 
+/// What a step's `from`, `join`, `optional` and `absent` say: a pattern
+/// of rows is a tree (`docs/decisions/080-a-pattern-may-branch-and-join.md`).
+const STEP_FROM: &str = "The name this step walks from: the start's, or one an earlier step binds; the one the step before it binds when left out. Two steps from one name branch, and a row is a match of every branch. Rows and an aggregate only.";
+
+/// [`STEP_FROM`] for a join.
+const STEP_JOIN: &str = "A name an earlier step binds: the step holds only where it reaches that name's record, closing a cycle. It binds no name and takes no `as`, `type` or `where`.";
+
+/// [`STEP_FROM`] for an optional step.
+const STEP_OPTIONAL: &str = "Keep the row where the step has no match: its name's `key`, `_type` and `_depth` are null. A step from or joining it says `optional` too, and they match whole or are null whole.";
+
+/// [`STEP_FROM`] for an absent step.
+const STEP_ABSENT: &str = "Keep the row only where the step has no match from its `from`; with `join`, only where no walk reaches the joined record. It binds no name and takes no `as`.";
+
 fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     let names = |pick: fn(&TypeDescription) -> bool| -> Value {
         one_of(
@@ -1071,7 +1201,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
 
     out.push(ToolSpec {
         name: SUBSCRIBE.into(),
-        description: "Be told of changes without polling: from `from` on (by default, from now), this session is sent a `notifications/lakelands/changed` for every change of a record it may read, of the kinds, types and keys asked (by default every kind, every type it may read when the change happens, and every record). A notification names the position, the kind, the type, the key and the changed fields it may read; never a value. Subscribing again replaces the subscription; it ends with the session.".into(),
+        description: "Be told of changes without polling: from `from` on (by default, from now), this session is sent a `notifications/lakelands/changed` for every change of a record it may read, of the kinds, types and keys asked (by default every kind, every type it may read when the change happens, and every record). A notification names the position, the last position of the append that wrote it that this session is told (`append`), the kind, the type, the key and the changed fields it may read; never a value. Subscribing again replaces the subscription; it ends with the session.".into(),
         input_schema: obj(
             props([
                 (
@@ -1143,9 +1273,17 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "relation": {"type": "string"}, "walk": {"enum": ["out", "in", "both"]},
                     "type": {"type": "string"}, "where": {"type": "string"},
                     "depth": {"type": "object", "properties": {
-                        "min": {"type": "integer", "minimum": 0},
-                        "max": {"type": "integer", "minimum": 0}}},
-                    "as": {"type": "string", "description": STEP_BINDING}},
+                        "min": {"type": "integer", "minimum": 0,
+                                "description": "The fewest hops; 0 keeps the record the step starts from."},
+                        "max": {"type": "integer", "minimum": 0,
+                                "description": "The most hops, at most the lake's `max_depth`."}},
+                        "required": ["min", "max"],
+                        "description": "How many hops the step takes, `min` to `max`; one hop when left out. Give both members, as {\"min\": 0, \"max\": 6}. A graph or a path (`to`) whose steps all have `min` 0 is one walk over their relations, in any order; a step with `min` 1 or more makes it a chain, each step walking on from where the one before it stopped."},
+                    "as": {"type": "string", "description": STEP_BINDING},
+                    "from": {"type": "string", "description": STEP_FROM},
+                    "join": {"type": "string", "description": STEP_JOIN},
+                    "optional": {"type": "boolean", "description": STEP_OPTIONAL},
+                    "absent": {"type": "boolean", "description": STEP_ABSENT}},
                     "required": ["relation"]}}),
             ),
             (
@@ -1157,39 +1295,102 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             (
                 "project",
                 json!({"type": "object", "properties": {
-                "as": {"enum": ["rows", "graph", "aggregate", "degree", "components", "reach"],
-                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first; with no start `type` it grows from every linked record, in every type. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`. `reach` answers rows of `step`, `depth`, `type` and `key`: what each step reaches from what the step before it kept, dead ends included, each record at the first step that reaches it."},
-                "fields": {"type": "array", "items": {"type": "string"}}}}),
+                "as": {"enum": ["rows", "graph", "aggregate", "degree", "components", "reach", "page_rank", "cheapest", "communities"],
+                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first; with no start `type` it grows from every linked record, in every type. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`. `reach` answers rows of `step`, `depth`, `type` and `key`: what each step reaches from what the step before it kept, dead ends included, each record at the first step that reaches it. `page_rank` answers rows of `type`, `key` and `page_rank` over the graph the start reaches, each step in its own direction, highest first, the same on every engine; like `components` it takes steps without `depth`, `where` or `type`, and may leave the start `type` out. `cheapest` needs `to` and one start: rows of `hop`, `type`, `key`, `relation`, `walk` and `cost` along the walk that costs least, a link costing its `weight` field, then the fewest hops. `communities` answers rows of `community`, `size`, `type` and `key`, as `components` does, each component cut into groups more linked within than between, the same on every engine; it takes the steps `components` takes."},
+                "fields": {"type": "array", "items": {"type": "string"},
+                           "description": "For `rows`: the paths a row holds; every bound name's fields when left out."},
+                "group_by": {"type": "array", "items": {"type": "string"},
+                             "description": "For `aggregate`: the paths a group is told apart by, as a row holds them (`customer.country`)."},
+                "measures": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"},
+                                   "func": {"enum": ["count", "sum", "min", "max", "avg", "first", "last"]},
+                                   "field": {"type": "string"},
+                                   "by": {"type": "string", "description": "For `first` and `last` only, and required there: the path whose least (greatest) value picks the row whose `field` they answer."}},
+                    "required": ["name", "func"], "additionalProperties": false},
+                             "description": "For `aggregate`: what each group answers, named."},
+                "weight": {"type": "string", "description": "For `cheapest`: the number or decimal field of every step's link type that a link costs."}}}),
             ),
             (
                 "order_by",
                 value_order_schema(json!({"type": "string"}), "the rows: a path they hold"),
             ),
             ("limit", json!({"type": "integer", "minimum": 1})),
-            ("cursor", json!({"type": "string"})),
+            (
+                "cursor",
+                json!({"type": "string",
+                       "description": "The `next_cursor` of an earlier answer, for the next page. Send it with the same pattern as the page it came from."}),
+            ),
         ]);
         time_axes(&mut p);
         out.push(ToolSpec {
             name: QUERY.into(),
-            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, and two whole-graph measures: degree centrality and connected components. A graph whose steps all start at depth 0 is one walk over their relations, each in its own step's direction and depth; any other is a chain, as rows walk it; a graph cut by `limit` pages with `next_cursor`. A path (`to`) has one start and answers a graph. A measure is computed whole for every page: read it in one page, with `limit` up to the lake's `max_graph_nodes`.".into(),
+            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, whole-graph measures (degree centrality, connected components, PageRank and communities) and the cheapest walk. A graph whose steps all start at depth 0 is one walk over their relations, each in its own step's direction and depth; any other is a chain, as rows walk it; a graph cut by `limit` pages with `next_cursor`. Rows and an aggregate may branch and join: a step's `from` names an earlier name, `join` closes a cycle, `optional` binds null where nothing matches and `absent` keeps a row only where nothing does. A path (`to`) has one start and answers a graph, or with `cheapest` rows. A measure is computed whole for every page: read it in one page, with `limit` up to the lake's `max_graph_nodes`.".into(),
             input_schema: obj(p, &["start"]),
             output_schema: reply_schema(json!({"type": "object"})),
             door: Door::Query,
         });
 
+        // The subset read beside `query`, never in its place: what it
+        // cannot spell, `query` can.
+        let mut p = props([
+            (
+                "statement",
+                json!({"type": "string", "minLength": 1,
+                       "description": "One statement of the openCypher subset, as in `MATCH (c:customer {name: $name})<-[:placed_by]-(o:order) RETURN o.id, o.total ORDER BY o.total DESC LIMIT 20`."}),
+            ),
+            (
+                "params",
+                json!({"type": "object",
+                       "description": "The value of every `$name` the statement reads, by name; a value given and not read is refused."}),
+            ),
+            (
+                "cursor",
+                json!({"type": "string",
+                       "description": "The `next_cursor` of the page before, given with the same statement and parameters, to read the next page."}),
+            ),
+        ]);
+        time_axes(&mut p);
+        out.push(ToolSpec {
+            name: CYPHER.into(),
+            description: "Read the lake with one statement of the openCypher subset: `MATCH`, `OPTIONAL MATCH`, `WHERE` and `RETURN`, with `ORDER BY` and `LIMIT`. It is translated into one pattern of `query` and read as `query` reads it, under the same rights; it never writes. The first node names its type, as in `(o:order)`, and a node may carry a map of field values, as in `(c:customer {name: $name})`. A relationship names a declared relation and is walked in its direction, `(o:order)-[:placed_by]->(c:customer)`, or against it, `(c)<-[:placed_by]-(o)`; `-[:r*1..3]->` walks it 1 to 3 hops, its upper bound written. A further part, after a comma or in a further `MATCH`, begins at a name bound before it. `WHERE` takes the lake's expression grammar with Cypher's operators (`=`, `<>`, `<`, `AND`, `OR`, `NOT`, `IN [...]`, `STARTS WITH`, `CONTAINS`, `IS NULL`), and `NOT (p)<-[:r]-(:t)` keeps a row only where no such link is. `RETURN` names fields of bound names (`o.total`), or `*` for every bound name. An aggregate (`count(*)`, `count(x)`, `sum(x.f)`, `min(x.f)`, `max(x.f)`, `avg(x.f)`, `first(x.f, x.by)` and `last(x.f, x.by)`, the value of `x.f` where `x.by` is least or greatest, each named with `AS`) answers one group per value of the fields returned beside it, the groups in one fixed order by those fields, so `ORDER BY` beside an aggregate is refused: leave it out. Without one, `ORDER BY` names fields of bound names (`o.total DESC`), never an alias or an expression. `LIMIT` takes a whole number and caps the rows of a page; `SKIP` past 0 is refused: to read the next page, pass the answer's `next_cursor` as `cursor` with the same statement and parameters. An aggregate answers every group in one page with no cursor, ignoring `LIMIT`: for the largest few, read every group and pick them. Give values as `$name` with `params`. Refused, naming the construct at its character offset: `WITH`, `DISTINCT`, `UNWIND`, `UNION`, a named path, a function the grammar lacks, and every write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`), refused naming its clause: write through the typed write tools. The subset cannot spell a shortest or cheapest walk, a path to a record, degree, components, reach, PageRank or communities: `query` reads those. A statement that begins with `EXPLAIN` answers the `query` pattern it translates to and reads nothing.".into(),
+            input_schema: obj(p, &["statement"]),
+            output_schema: reply_schema(json!({"type": "object"})),
+            door: Door::Cypher,
+        });
+
         let mut p = props([
             ("type", names(|t| t.may.find)),
-            ("mode", json!({"enum": ["lexical", "vector", "hybrid"]})),
-            ("text", json!({"type": "string"})),
+            (
+                "mode",
+                json!({"enum": ["lexical", "vector", "hybrid"],
+                "description": "lexical ranks `text` in the searchable fields; vector ranks `vector` against `field`, or `text` the lake embeds where `field` is an embedding; hybrid fuses both and needs `text` and `field`, its `vector` optional."}),
+            ),
+            (
+                "text",
+                json!({"type": "string",
+                "description": "vector: in place of `vector`, words the lake embeds with the model of `field`. lexical and hybrid: the words ranked; a word matches a field's word as written, its case and accents aside and stemmed where the type declares a `language`, so a misspelled word matches nothing: for a name half known, a find's `where` with starts_with or contains."}),
+            ),
             (
                 "fields",
                 json!({"type": "array", "items": {"type": "string"}, "minItems": 1,
                 "description": "lexical and hybrid: match the text only in these searchable fields."}),
             ),
-            ("field", json!({"type": "string"})),
+            (
+                "text_fields",
+                json!({"type": "object", "minProperties": 1,
+                "additionalProperties": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000000},
+                "description": "lexical and hybrid: a weight for a match of the text in each searchable field named, over the type's `search_weights` setting; a field it leaves out takes the setting's, else 1."}),
+            ),
+            (
+                "field",
+                json!({"type": "string",
+                "description": "vector and hybrid, which both need it: the vector field searched, one the type declares."}),
+            ),
             (
                 "vector",
-                json!({"type": "array", "items": {"type": "number"}}),
+                json!({"type": "array", "items": {"type": "number"},
+                "description": "vector, unless it gives `text`, and hybrid where the caller has one: the query vector."}),
             ),
             (
                 "model",
@@ -1215,6 +1416,16 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ("where", json!({"type": "string"})),
             ("rerank", rerank_schema()),
             ("with_meta", json!({"type": "boolean"})),
+            (
+                "matches",
+                json!({"type": "boolean",
+                "description": format!("Answer on each hit the searched fields its text matched, each with the char spans of its first {} matched tokens and their count; needs a text.", crate::query::MATCH_SPANS)}),
+            ),
+            (
+                "text_as_of",
+                json!({"type": "boolean",
+                "description": "lexical only: rank by the text the records `where` selects held at `as_of`, not by the head's, so a record that held the words then is found; needs `as_of` and `where`, takes no `rerank`, and is refused past the lake's `limits.max_text_as_of` records, never cut."}),
+            ),
         ]);
         time_axes(&mut p);
         out.push(ToolSpec {
@@ -1223,6 +1434,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             input_schema: obj(p, &["type", "mode"]),
             output_schema: reply_schema(json!({"type": "object", "properties": {
                 "hits": {"type": "array"}, "ranked_by": {"type": "string"},
+                "unranked": {"type": "object", "description": "A hybrid search only: its vector leg did not rank, as the lake could not embed its text, and the hits are its text's alone; `field` names the leg and `why` the error its query vector met."},
                 "truncated": {"type": "boolean", "description": "A reranked search only: the first stage holds more hits than the window, unranked and not answered."},
                 "axes": {"type": "array"}, "next_cursor": {"type": "string"}}})),
             door: Door::Search,
@@ -1252,6 +1464,10 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                                   "opts": opts}), &["type", "key", "patch"]),
             kind("retire", json!({"type": names(|t| t.may.retire), "key": {"type": "string"},
                                   "opts": opts}), &["type", "key"]),
+            kind("records", json!({"type": names(|t| t.may.find && (t.may.upsert || t.may.retire)),
+                                   "where": {"type": "string", "description": "The condition, as `<type>_change` takes it."},
+                                   "to": {"description": "`{\"set\": {fields}}` or `\"retire\"`, as `<type>_change` takes `set` and `retire`."}}),
+                 &["type", "where", "to"]),
             kind("call", json!({"verb": verbs, "key": {"type": "string",
                                 "description": "The record's key; left out for a verb called on its type."},
                                 "payload": {"type": "object"}, "opts": opts}), &["verb", "payload"]),
@@ -1272,7 +1488,10 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 rename values. A record write or a verb call needs the grants it would need \
                 applied: a proposal waits for review, it does not lift a grant. Declarations \
                 and a migration need no `schema` grant to propose; a reviewer holding it \
-                accepts them."
+                accepts them. Declarations all in force, and a migration to the type in \
+                force that renames and fills nothing, are not filed: they are answered \
+                applied at the head with `declared` naming what stands, and nothing is \
+                appended."
                 .into(),
             input_schema: obj(
                 props([("write", write), ("why", json!({"type": "string"}))]),
@@ -1292,7 +1511,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ("type", names(|_| true)),
             (
                 "kind",
-                json!({"enum": ["upsert", "retire", "call", "declare", "migrate", "migrate_value_type", "compute"]}),
+                json!({"enum": ["upsert", "retire", "call", "declare", "migrate", "migrate_value_type", "compute", "records"]}),
             ),
             (
                 "order_by",
@@ -1314,7 +1533,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         });
         out.push(ToolSpec {
             name: ACCEPT.into(),
-            description: "Accept a proposal: its write is applied. For a change to the ontology, `plan_id` accepts it only if the plan of its change made now has that id: call the change's own tool with `plan: true` for it. The plan `proposals` lists was made when it was proposed, and its id is not one to send.".into(),
+            description: "Accept a proposal: its write is applied. For a change to the ontology, `plan_id` accepts it only if the plan of its change made now has that id: call the change's own tool with `plan: true` for it. A change to records is accepted only with `plan_id`, the `report_id` of the plan `<type>_change` answers now, and is refused `plan_stale` otherwise, the proposal left pending. The plan `proposals` lists was made when it was proposed, and its id is not one to send.".into(),
             input_schema: obj(
                 props([
                     ("proposal", json!({"type": "string"})),
@@ -1394,12 +1613,32 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     ("relation_renames", pairs),
                     ("fill", json!({"type": "array", "items": {"type": "string"},
                         "description": "Fields of `to` whose `initial` each live record that holds no value takes; the report counts them (`filled`)."})),
+                    ("views", json!({"type": "array", "items": {"type": "object"},
+                        "description": "Views over the type, each declared again as it reads after the migration: judged with it, and declared in its append."})),
                     ("report_id", json!({"type": "string"})),
                 ]),
                 &[],
             ),
             output_schema: json!({"type": "object"}),
             door: Door::Migrate,
+        });
+        out.push(ToolSpec {
+            name: THIN.into(),
+            description: "Thin a type's series past a horizon: take out of the projection every record whose `by` field is certainly before `before`, keeping the folds of the kept views over it. The log keeps every value it took, and a write, an ingest or a retirement at a key it took is refused `thinned`, a key a later part has not reached included. Without `act` it answers what it would take, appending nothing.".into(),
+            input_schema: obj(
+                props([
+                    ("type", names(|_| true)),
+                    ("by", json!({"type": "string",
+                        "description": "The field whose instant or date is judged against `before`; a field of dates is judged by the end of its day in every zone."})),
+                    ("before", json!({"type": "string",
+                        "description": "The horizon: an instant, or a date judged by its day's end."})),
+                    ("act", json!({"type": "boolean",
+                        "description": "Whether to append the act; false, or left out, answers the preflight and appends nothing."})),
+                ]),
+                &["type", "by", "before"],
+            ),
+            output_schema: reply_schema(json!({"type": "object"})),
+            door: Door::Thin,
         });
     }
 }

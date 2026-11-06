@@ -5,7 +5,8 @@
 //! One file per lake, `<lake>.keys.json`, in a directory the operator
 //! names and keeps outside every lake directory: a key in the lake could
 //! not be destroyed. The file holds each source's keys, a version each, as
-//! hex, and whether the source's keys were destroyed. It is written whole,
+//! hex, the keys of its deliveries sealed apart (065), and whether the
+//! source's keys were destroyed. It is written whole,
 //! to a file beside it that then takes its name, readable by its owner
 //! alone. A destroyed source keeps its entry with no key, so it is never
 //! given one again; a destroyed version goes with every older one, and
@@ -46,6 +47,9 @@ struct Ring {
 struct Versions {
     /// Each version's id and key, oldest first; empty once destroyed.
     keys: Vec<(KeyId, String)>,
+    /// Each key of a delivery sealed apart, by id, outside the versions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    apart: Vec<(KeyId, String)>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     destroyed: bool,
 }
@@ -53,7 +57,7 @@ struct Versions {
 /// A file's keys are wiped from memory once read or written.
 impl Drop for Versions {
     fn drop(&mut self) {
-        for (_, key) in &mut self.keys {
+        for (_, key) in self.keys.iter_mut().chain(&mut self.apart) {
             key.zeroize();
         }
     }
@@ -105,7 +109,7 @@ impl FileKeyring {
             fs::rename(&next, path)?;
             fs::File::open(&self.dir)?.sync_all()
         })();
-        written.map_err(|e| failed(Doing::Write, Detail::io(&e)))
+        written.map_err(|e| lakelands_core::io_failed(Doing::Write, Part::File, &e))
     }
 
     /// Change one lake's file under the lock and write it back.
@@ -118,9 +122,80 @@ impl FileKeyring {
         Ok(out)
     }
 
+    /// Copy `lake`'s file into `dir`, written as this keyring writes its
+    /// own, and answer the file written; `None`, and nothing written,
+    /// where this keyring holds no file for the lake. `dir` is kept apart
+    /// from the lake's backup: a backup that holds both holds what
+    /// forgetting destroys
+    /// (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
+    pub fn back_up(&self, lake: &LakeId, dir: &Path) -> Result<Option<PathBuf>> {
+        let _held = lakelands_core::lock(&self.lock);
+        let from = self.path(lake);
+        if !from.exists() {
+            return Ok(None);
+        }
+        let (ring, to) = (self.read(&from)?, FileKeyring::new(dir));
+        to.write(&to.path(lake), &ring)?;
+        Ok(Some(to.path(lake)))
+    }
+
+    /// Remove `lake`'s file, which [`Self::restore`] put back for an
+    /// import that was then refused.
+    pub fn unrestore(&self, lake: &LakeId) -> Result<()> {
+        let _held = lakelands_core::lock(&self.lock);
+        let path = self.path(lake);
+        fs::remove_file(&path).map_err(|e| failed(Doing::Write, Detail::io(&e)))
+    }
+
+    /// Put `lake`'s file back from the copy in `dir`, only where this
+    /// keyring holds none: its own file holds destroys an older copy may
+    /// not. `false`, and nothing written, where it holds one.
+    pub fn restore(&self, lake: &LakeId, dir: &Path) -> Result<bool> {
+        let _held = lakelands_core::lock(&self.lock);
+        let (path, from) = (self.path(lake), FileKeyring::new(dir).path(lake));
+        if path.exists() {
+            return Ok(false);
+        }
+        // A copy that is not there restores nothing, rather than no keys.
+        fs::metadata(&from).map_err(|e| failed(Doing::Read, Detail::io(&e)))?;
+        self.write(&path, &self.read(&from)?)?;
+        Ok(true)
+    }
+
     fn versions(&self, lake: &LakeId, source: &SourceId) -> Result<Option<Versions>> {
         let _held = lakelands_core::lock(&self.lock);
         Ok(self.read(&self.path(lake))?.sources.remove(source))
+    }
+
+    /// Make a key of each of `sources`, a version or one apart, as `apart`
+    /// says, in one write of the file.
+    fn made(&self, lake: &LakeId, sources: &[SourceId], apart: bool) -> Result<Vec<KeyId>> {
+        let random = ring::rand::SystemRandom::new();
+        let mut made = Vec::with_capacity(sources.len());
+        for _ in sources {
+            // A key's id is random too, so a keyring that lost its file
+            // never gives a new key the id of one it lost.
+            let (mut key, mut id) = (Zeroizing::new([0u8; 32]), [0u8; 16]);
+            let filled = random.fill(&mut *key).and_then(|()| random.fill(&mut id));
+            let io = || failed(Doing::Create, Detail::io(&std::io::ErrorKind::Other.into()));
+            filled.map_err(|_| io())?;
+            let hex = lakelands_api::canonical::hex(&*key);
+            made.push((KeyId::from(lakelands_api::canonical::hex(&id)), hex));
+        }
+        self.change(lake, |ring| {
+            for (source, (id, hex)) in sources.iter().zip(&made) {
+                let versions = ring.sources.entry(source.clone()).or_default();
+                if versions.destroyed {
+                    let source = source.clone();
+                    return Err(lakelands_api::Error::invalid(Case::KeyDestroyed { source }));
+                }
+                match apart {
+                    true => versions.apart.push((id.clone(), hex.clone())),
+                    false => versions.keys.push((id.clone(), hex.clone())),
+                }
+            }
+            Ok(made.iter().map(|(id, _)| id.clone()).collect())
+        })
     }
 }
 
@@ -136,28 +211,14 @@ fn failed(doing: Doing, detail: Detail) -> Error {
 
 impl KeyStore for FileKeyring {
     fn create(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId> {
-        // A version's id is random too, so a keyring that lost its file
-        // never gives a new key the id of one it lost.
-        let (mut key, mut id) = (Zeroizing::new([0u8; 32]), [0u8; 16]);
-        let random = ring::rand::SystemRandom::new();
-        let filled = random.fill(&mut *key).and_then(|()| random.fill(&mut id));
-        filled.map_err(|_| failed(Doing::Create, Detail::io(&std::io::ErrorKind::Other.into())))?;
-        let hex = lakelands_api::canonical::hex(&*key);
-        let id = KeyId::from(lakelands_api::canonical::hex(&id));
-        self.change(lake, |ring| {
-            let versions = ring.sources.entry(source.clone()).or_default();
-            if versions.destroyed {
-                let source = source.clone();
-                return Err(lakelands_core::invalid(Case::KeyDestroyed { source }));
-            }
-            versions.keys.push((id.clone(), hex));
-            Ok(id)
-        })
+        let made = self.made(lake, std::slice::from_ref(source), false)?;
+        Ok(made.into_iter().next().expect("one key made"))
     }
 
     fn key(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<Option<DataKey>> {
         let versions = self.versions(lake, source)?.unwrap_or_default();
-        let Some((_, hex)) = versions.keys.iter().find(|(i, _)| i == id) else {
+        let mut all = versions.keys.iter().chain(&versions.apart);
+        let Some((_, hex)) = all.find(|(i, _)| i == id) else {
             return Ok(None);
         };
         let bytes: Option<Vec<u8>> = (0..hex.len())
@@ -178,6 +239,7 @@ impl KeyStore for FileKeyring {
         self.change(lake, |ring| {
             let versions = ring.sources.entry(source.clone()).or_default();
             versions.keys.clear();
+            versions.apart.clear();
             versions.destroyed = true;
             Ok(())
         })
@@ -191,7 +253,7 @@ impl KeyStore for FileKeyring {
                 .and_then(|k| k.iter().position(|(i, _)| i == id));
             let (Some(keys), Some(i)) = (keys, at) else {
                 let (source, key) = (source.clone(), id.clone());
-                return Err(lakelands_core::invalid(Case::KeyVersionNotHeld {
+                return Err(lakelands_api::Error::invalid(Case::KeyVersionNotHeld {
                     source,
                     key,
                 }));
@@ -208,6 +270,33 @@ impl KeyStore for FileKeyring {
     fn ids(&self, lake: &LakeId, source: &SourceId) -> Result<Vec<KeyId>> {
         let versions = self.versions(lake, source)?.unwrap_or_default();
         Ok(versions.keys.iter().map(|(id, _)| id.clone()).collect())
+    }
+
+    fn create_apart(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId> {
+        let made = self.made(lake, std::slice::from_ref(source), true)?;
+        Ok(made.into_iter().next().expect("one key made"))
+    }
+
+    /// Every key in one write of the file, so a window's keys cost one
+    /// sync.
+    fn create_apart_many(&self, lake: &LakeId, sources: &[SourceId]) -> Result<Vec<KeyId>> {
+        self.made(lake, sources, true)
+    }
+
+    fn destroy_apart(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<()> {
+        self.change(lake, |ring| {
+            if let Some(versions) = ring.sources.get_mut(source) {
+                let gone = |(i, key): &mut (KeyId, String)| {
+                    let gone = i == id;
+                    if gone {
+                        key.zeroize();
+                    }
+                    !gone
+                };
+                versions.apart.retain_mut(gone);
+            }
+            Ok(())
+        })
     }
 }
 

@@ -11,9 +11,11 @@ aggregates). `neighbors`, `traverse`, `path` and `subgraph` are named
 constructions of it, not doors of their own. Every answer carries its
 position and can be pinned with `as_of` and `valid_at`.
 
-Any later query language a caller writes in (a read-only openCypher or
-GQL subset, for example) is translated into this query. There is never a
-second planner and never a write path through a query language.
+Any later query language a caller writes in (an openCypher or GQL
+subset, for example) is translated into this query. There is never a
+second planner, and a query language writes only through the typed
+write doors: each write statement is one call of a door that exists
+(`docs/decisions/082-a-query-language-writes-only-through-the-typed-write-doors.md`).
 
 ### Too deep is refused, not shortened
 
@@ -94,8 +96,9 @@ A path has one start, so a pattern whose start names several records
 is refused as invalid, as is one with a step that does not start at
 depth 0. A path is a graph, and a pattern with `to` that asks for rows
 or an aggregate is refused as invalid: an answer that ignored what it
-was asked would look like more than it is. Where no path is, the answer
-is an empty graph. A path and an aggregate answer in one page and hand
+was asked would look like more than it is. `cheapest` alone is a path
+answered as rows (below). Where no path is, the answer is an empty
+graph. A path and an aggregate answer in one page and hand
 out no cursor, so a cursor handed to either is another read's, and is
 refused as such. A path or a neighbourhood with no steps walks no
 relation: the neighbourhood is its start alone, and a path reaches no
@@ -104,6 +107,48 @@ other record.
 A pattern with `to` that asks for rows or an aggregate is told so before
 its steps are judged: a path's steps start at depth 0, and rows would
 refuse them for that.
+
+`cheapest` is the walk to `to` that costs least, where a link costs its
+`weight`: a field of the link type that carries its step's relation
+(035), an inverse's being its owner's. It is accepted for 0.20.0
+(lakelands#1412). It is a path in every other respect: one start, steps
+from depth 0, a relation used at a hop only within its step's depth,
+every hop within `max_depth`, and records kept by each step's `type` and
+`where`. Least cost wins, then fewest hops, then at each hop the least
+record it came from by type and key over the least link (026), so a
+cheaper walk of more hops than the steps allow is not taken, and the
+walk chosen never passes a record twice. Its rows are the records along
+the walk in hop order: `hop` (0 for the start), `type`, `key`, the
+`relation` and `walk` of the link that reached it (null at hop 0), and
+`cost`, the sum so far. `cost` is a number where every step's weight
+field is of kind `number`, and a decimal read as a decimal field reads
+otherwise. Where no walk is, it answers no rows; a walk from a record to
+itself is that record alone, at cost 0. It answers in one page with no
+cursor, as a path does.
+
+Its refusals come in this order, every one before a record is read but
+`path_starts` for a filter start and the last: `cheapest` without `to`
+is refused `cheapest_needs_to`; `order_by` as a measure refuses it; each
+step as a path's is judged; then each step's weight field, in the steps'
+order; then several starts `path_starts`, where `path` judges them.
+Several starts are known only once a filter start's records are read, so
+this one comes after the steps and the weight fields, not before them. A
+relation carried by `via` or `derived` holds no link record, so its
+weight is refused `weight_not_on_link`, naming the relation and the
+field, and so is a field its link type does not declare or hides from
+the caller (006). A field the caller is shown and may not read is
+refused `not_granted`, as a probe is (024), and a field whose kind is
+neither `number` nor `decimal`, through any value type built on them,
+`weight_not_number`. Once records are read, a link the walk weighs whose
+weight is null or absent is refused `weight_missing` and a negative one
+`weight_negative`, each naming the relation and the link's ends; past
+`max_graph_nodes` the walk is refused `too_large` and a cost past its
+number type `overflow` (026). A missing weight is not skipped and not
+read as 0 or 1: a walk that dropped or re-priced a link would look
+cheaper or dearer than it is, and a host that wants a weight by default
+declares it on the field (050). A negative weight is refused because
+over a cycle of negative cost no walk is cheapest; a weight of 0 is a
+weight.
 
 ### An `order_by` orders rows and nothing else
 
@@ -158,39 +203,57 @@ means nothing to a graph, a path, a degree or components, which answer
 nodes or fixed columns, so it is refused there, as `to` is outside a
 graph.
 
-### Under one name a record has one type where a path reads its fields, so a step whose fields are read reaches one type or names its `type`
+### Under one name a field reads alike on every type, so a step over several types reads only what they declare alike
 
-A type the pattern binds is the one type each step reaches. Under one
-name a record has one type where a path reads one of its fields, so a
-step whose records rows or an aggregate bind reaches one type or names
-its `type`, as it does when it reads a `where`, and is refused where it
-does not (`step_several_types`, naming every type it reaches): under
-each name a row's paths are read against one type.
+A type the pattern binds is the one type each step reaches, or the
+types a step reaches where it names none. Under one name a path reads a
+field the same way on every record it binds, so a step over several
+types reads, in its `where`, an order, `fields`, a group key or a
+measure, only a field each type it reaches and its reader is shown
+declares alike: in one storage kind and, where one is named, one value
+type, a reference to one target type and a vector of one length.
+Anything else is refused `step_several_types`, naming every type the
+step reaches, the field, the types that lack it and those that declare
+it otherwise than most of them do (than the first type's, by name,
+where they split evenly), so the odd one is the one named. A field the
+reader may not know of on one of the types is one that type lacks, so
+the refusal tells it nothing a typed read would not. Which types a step
+reaches is the planner's alone, the types an inverse reaches included;
+nothing else reckons them. A `where` that reads through a relation, not
+a field, is read against one type and names the step's `type`. An open
+name's row is shaped from the types it binds, never from the type a
+range's first hop reaches.
 
-A last step over several types that names no `type` and reads no
-`where` may be bound all the same, where nothing reads its fields. Its
-records are bound under the step's `as`, or under its relation as the
-caller wrote it (the inverse's name where it named the inverse), and a
-row holds their `key`, `_type` and `_depth` alone, since a field would
-be read against one of the types. Its key is the record's key, whatever
-field `key` one of the types declares. An order, `fields`, a group key
-or a measure that reads one of its fields is refused as above. A plain
+A field read over several types is read against each as a typed read
+of that type reads it. Its reader masked from it, or allowed to write
+it alone, on any of them is refused as that typed read is, the field
+named by its type (`<type>.<field>`): no type is left out of the answer
+without a word, and the answer never turns on which types happen to
+hold a record. `fields` leaves a field masked on one type out of that
+type's rows, as it does on a typed read.
+
+The answer is one: one order, one cursor, one measure over every type,
+and `<name>._type` names each row's type. A decimal sum adds as decimals
+across the types, as over one. Its records are bound under the step's
+`as`, or under its relation as the caller wrote it (the inverse's name
+where it named the inverse), and a row holds their `key`, `_type`,
+`_depth` and the fields the types declare alike. Its key, `_type` and
+`_depth` are the lake's columns, read against no type and never probed,
+so a field `key` one of the types declares turns nothing. A plain
 `count` reads no field, so it counts what the step reaches over every
 type, and grouped by `<name>._type` it counts each type: the answer a
 caller would otherwise add up from one typed query a type. A step
 another follows still reaches one type or names it: the next step is
-read from one type. Its key, `_type` and `_depth` are the lake's
-columns, read against no type and never probed, so a field `key` one
-of the types declares turns nothing. A host names with `as` a step that
-may reach several types: left out, its name follows the types its
-reader is shown, so a reader shown one of them binds under that type's
-name, as on a lake without the others, and one query would not give two
-readers the same columns. With its `type` the step binds that type's
-records alone, and the step after it is read from that type. Were a
-chain's step to bind only the first type that declares its relation,
-which paths its rows could be read by would depend on the order of the
-declarations, and its `where` would be read against that first type and
-drop the other's records without a word.
+read from one type. A host names with `as` a step that may reach
+several types: left out, its name follows the types its reader is
+shown, so a reader shown one of them binds under that type's name, as
+on a lake without the others, and one query would not give two readers
+the same columns. With its `type` the step binds that type's records
+alone, and the step after it is read from that type. Were a step to
+bind only the first type that declares its relation, which paths its
+rows could be read by would depend on the order of the declarations,
+and its `where` would be read against that first type and drop the
+other's records without a word.
 
 The `type` of a step of rows, an aggregate or a graph may be any type it
 reaches from where it stands, over its whole range in a chain. A measure
@@ -282,40 +345,66 @@ projected field is judged. The first fault in that order is the answer.
 
 ### A whole-graph measure is a projection
 
-Degree centrality and connected components are two more projections of
-the one query, `degree` and `components`, not doors of their own. The
-start picks the records measured; each step names a relation and a
-direction. The answer is rows with fixed columns (`type`, `key`,
-`degree`; or `component`, `size`, `type`, `key`), paged like any rows,
-so a caller learns no new result shape. A measure refuses a step
-`depth`, `where` or `type`, `to` and `order_by`, and `components`
-refuses a step that does not walk `both`: each would be ignored
-otherwise, and an answer that ignored what it was asked would look like
-more than it is. A measure reads every link of a relation, whatever type
-it reaches. The refusal of a step's `type` is judged before the step's
-type is looked up, so it says nothing of whether that type exists.
-Components hold every record they reach, so the lake bounds them by its
-`max_graph_nodes`; past it they are refused `too_large`, naming the
-ceiling, for the reason a step too deep is refused: a partition of part
-of the graph would look like the whole of it.
+Degree centrality, connected components, PageRank and communities are
+projections of the one query, `degree`, `components`, `page_rank` and
+`communities`, not doors of their own. The start picks the records
+measured; each step names a relation and a direction. The answer is
+rows with fixed columns (`type`, `key`, `degree`; `component`, `size`,
+`type`, `key`; `type`, `key`, `page_rank`; or `community`, `size`,
+`type`, `key`, numbered and ordered as components are), paged like any
+rows, so a caller learns no new result shape. A measure refuses a step
+`depth`, `where` or `type`, `to` and `order_by`, and `components` and
+`communities` refuse a step that does not walk `both`: each would be
+ignored otherwise, and an answer that ignored what it was asked would
+look like more than it is. A measure reads every link of a relation,
+whatever type it reaches. The refusal of a step's `type` is judged
+before the step's type is looked up, so it says nothing of whether that
+type exists. Components, PageRank and communities hold every record
+they reach, so the lake bounds them by its `max_graph_nodes`; past it
+they are refused `too_large`, naming the ceiling, for the reason a step
+too deep is refused: a partition or a ranking of part of the graph
+would look like the whole of it.
 
-`components` alone may leave its start's `type` out. A host that asks
-for the components of the graph a set of relations spans, across every
-type that holds such a link, would otherwise ask once per type and merge
-partitions it cannot number by the lake's rule without computing them
-again; only the lake can number the merged partition. With no type, every
+`page_rank` and `communities` are accepted (lakelands#1412); `page_rank`
+is built for 0.20.0 and `communities` for 0.21.0 (lakelands#1514).
+
+`page_rank` ranks the graph its starts reach over the steps' relations,
+each walked in its own step's direction (`both` walks a link each way),
+closed under those walks, so the far end of every link it counts is in
+the graph. Its rows come by `page_rank`, highest first, then by type and
+key. Damping, the number of rounds and the starting mass are the lake's
+fixed rule (026), and no member of the query sets them: a rule a caller
+tuned would make two reads of one lake rank alike only where they had
+tuned alike. A start with no link is a record of the graph that sends
+its mass to every record evenly, as every record with no link out does.
+
+`communities` partitions the graph `components` walks into groups more
+linked within than between, each connected (026). Its answer is a
+function of the graph and of the records' keys, never of the engine, but
+where two partitions are equally good the keys decide between them, so
+renaming a key may move a record from one community to another.
+
+`components`, `page_rank` and `communities` alone may leave their
+start's `type` out.
+A host that asks for the components of the graph a set of relations
+spans, across every type that holds such a link, would otherwise ask
+once per type and merge partitions it cannot number by the lake's rule
+without computing them again; only the lake can number the merged
+partition, and only the lake can rank the merged graph, since a
+record's rank moves with every record linked to it. With no type, every
 record that holds a link the caller may see over a step's relation is a
 start, in every type it is shown that declares one; a link's owning end
 is always in such a type, whatever carries it. A record with no such
-link is no component and counts nothing against `max_graph_nodes`, and
-neither is a record whose links reach only a record the caller may not
-see, which answered alone would tell of that link; a record linked to
-itself is a component of one. Any other projection needs the start's
-type, and so do a `key`, a `where`, a `search` and `params`, each of
-which picks records of one type: each is refused `start_no_type`, naming
-what needs it. A step's relation is one that a type the caller is shown
-declares, or that relation's `inverse`; another is refused
-`no_relation_anywhere`, whether it is absent or hidden.
+link is no component and no record of the graph, and counts nothing
+against `max_graph_nodes`, and neither is a record whose links reach
+only a record the caller may not see, which answered alone would tell
+of that link; a record linked to itself is a component of one. Any
+other projection needs the start's type, and so do a `key`, a `where`,
+a `search` and `params`, each of which picks records of one type: each
+is refused `start_no_type`, naming what needs it. A step's relation is
+one that a type the caller is shown declares, or that relation's
+`inverse`; another is refused `no_relation_anywhere`, whether it is
+absent or hidden.
 
 ### What each step reaches is a projection
 
@@ -323,18 +412,18 @@ declares, or that relation's `inverse`; another is refused
 walks from every record step `i - 1` kept, the start for the first, and
 a record no later step continues from stays in the answer. Rows are
 matches, a record for every step; rows that held a prefix would make a
-match mean two things and repeat a record once for every path to it,
-and a graph neither pages by step nor says which step reached a record.
-So `reach` is a projection of its own, as a measure is: rows with fixed
+match mean two things and repeat a record once for every path to it, and
+a graph neither pages by step nor says which step reached a record. So
+`reach` is a projection of its own, as a measure is: rows with fixed
 columns `step` (from 1), `depth`, `type` and `key`, one per record, at
 the first step that reaches it with that step's fewest hops from any
 record it walked from. The start is listed only where a step reaches it:
 at depth 0 where that step's range begins at 0, and at the hop a walk
 comes back to it, as a chain reports a cycle back to its start; a step
 walked `both` comes back over its own link at 2. Each step honours its
-`depth`, `type` and `where` as a chain's does. Its
-order is `(step, depth, type, key)`, so it refuses `order_by`, and `as`,
-which names no column of it, and `to`, as every projection but a graph
+`depth`, `type` and `where` as a chain's does. Its order is `(step,
+depth, type, key)`, so it refuses `order_by`, and `as`, which names no
+column of it, and `to`, as every projection but a graph and `cheapest`
 does, and a reach of no steps, which could never answer a row, as a
 measure of none is. It holds every record it reached, so a page whose
 walk would pass the lake's `max_graph_nodes` is refused `too_large`; a
@@ -370,6 +459,27 @@ included: a pattern that starts on a view, or a walk that reaches one
 over a derived relation, finds the records `find` would, and never asks
 an engine for records it does not keep.
 
+### `first` and `last` answer one field by another's order
+
+Where `min` and `max` are answered, in a `find`'s aggregate, grouped or
+not, and in a view's measures, `first(f, by)` and `last(f, by)` are
+too: `f` on the member whose `by` is the least (the greatest), equal
+`by`s taken in key order, as an order takes them everywhere else. A
+member with no `by` is passed over; the answer is null where the
+member it picks has no `f` and where no member has a `by`. So a grouped
+`first` answers what a `find` of the group's members with a `by`,
+ordered by it ascending with a `limit` of 1, finds first, at the same
+position, and `last` what the same `find` descending finds: the
+opening and closing reading of a meter in an hour is one read, not one
+for each group. A measure of `find` names `by` beside its `field`; a
+`first` or `last` without either is refused, as is a `by` on any other
+function, naming the call. A pattern's aggregate answers them over its
+rows' paths, `first(reading.v, reading.at)`, and Cypher's
+`first(x.v, x.at)` is that aggregate. Over a pattern of its start type
+alone, started by no search, equal `by`s are taken in key order, as a
+`find` takes them; over the rows of a walk or of a search's hits they
+are taken in the order the rows come, which nothing fixes.
+
 ### A view declares the fields it computes and no other, and its `key` names its `group_by`
 
 A view declares the fields it computes, one for each `group_by` field
@@ -395,12 +505,12 @@ field that is searchable, carries an embedding or is a vector is
 refused when the view is declared, and a search on a view is refused,
 naming it; neither is answered empty. For the same reason a declaration
 that could never act on a view is refused when declared, naming both.
-A trigger on a view would never fire, since no write has the view's
-type. An object set holds stored records, or the groups of a view the
-lake keeps, decided at every write that moves one
+An object set holds stored records, or the groups of a view the lake
+keeps, decided at every write that moves one, and a trigger on a view
+the lake keeps fires at every write that puts a group's row
 (`docs/decisions/066-a-set-holds-a-kept-view.md`); of a view the lake
-does not keep no write would decide it. A relation on a view is
-refused unless it is derived from matching values. A link names a live,
+does not keep no write would decide the one or fire the other. A
+relation on a view is refused unless it is derived from matching values. A link names a live,
 written record as its `from` (035), so a relation carried by link
 records could never hold an edge. A view has no stored field for `via`
 to read. The refusal names the view and the relation.
@@ -550,7 +660,8 @@ used.
   merge sources on its key (lakelands#278).
 - A view without `group_by` holds one record, keyed `all`
   (lakelands#346); a trigger, an object set and a relation that is not
-  derived are refused on a view; a step that arrives at a view with
+  derived are refused on a view (a set and a trigger on a kept view are
+  taken since lakelands#1185); a step that arrives at a view with
   parameters is refused before any record is read.
 - Every door that writes or holds a record refuses a view alike, and a
   verb on a record of a view is refused when declared. Until 0.8.0
@@ -640,3 +751,29 @@ used.
 - An object set may hold the groups of a view the lake keeps, decided
   at every write that moves one; before, every set of a view was refused
   (lakelands#1185).
+- Patterns that branch and join were accepted as
+  `docs/decisions/080-a-pattern-may-branch-and-join.md`
+  (lakelands#1404): a tree of steps, a join that closes a cycle, an
+  optional and an absent step, for rows and an aggregate.
+- A query language that writes only through the typed write doors was
+  accepted as
+  `docs/decisions/082-a-query-language-writes-only-through-the-typed-write-doors.md`
+  (lakelands#1404), for 0.21.0.
+- With its build (lakelands#1513), "never a write path through a query
+  language" became "a query language writes only through the typed
+  write doors": the openCypher subset's `CREATE`, `MERGE`, `SET`,
+  `REMOVE` and `DELETE` are each one `upsert`, `link`, or the plan and
+  enact of a change, at REST, the CLI and the client.
+- PageRank and communities were accepted as measures and the cheapest
+  walk as a path answered as rows (lakelands#1412); `page_rank` may
+  leave its start's type out, as `components` may, and the rule that a
+  pattern with `to` answers no rows gained `cheapest` as its exception.
+- A cheapest walk judges `path_starts` after its steps and its weight
+  fields, where `path` judges it, not before them: several starts are
+  known only once a filter start's records are read (lakelands#1422).
+- `communities` was built and, as `components` and `page_rank` may, may
+  leave its start's type out; a step that does not walk `both` is
+  refused `components_both_ways`, whose words now name both measures
+  (lakelands#1514).
+- `first(f, by)` and `last(f, by)` answer one field by another's order
+  wherever `min` and `max` are answered (lakelands#1603).

@@ -13,11 +13,11 @@
 use std::time::{Duration, Instant};
 
 use lakelands_api::Error;
-use lakelands_api::engine::{CanonicalEvent, LakeEngine, OpenMode};
-use lakelands_api::error::Situation;
+use lakelands_api::engine::{CanonicalEvent, Frame, LakeEngine, OpenMode};
+use lakelands_api::error::{Flaw, Situation};
 use lakelands_api::event::Digest;
 use lakelands_api::id::Position;
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
 use super::{EngineHarness, chain, event, seal};
@@ -60,8 +60,29 @@ engine_check!(
 );
 
 engine_check!(
-    SEGMENT_DIGEST = a_sealed_segment_is_digested_as_its_lines,
-    "log format §4.2: a segment's digest is SHA-256 over its file's bytes, each event's canonical bytes followed by a line feed, whatever the engine keeps them in"
+    SEGMENT_DIGEST = a_sealed_segment_is_digested_over_its_events_as_they_restore,
+    "log format §4.2: a segment's digest is SHA-256 over its events as they restore, each event's canonical bytes followed by a line feed, which for whole lines are its file's bytes, whatever the engine keeps them in"
+);
+
+engine_check!(
+    FRAMED_UNCHANGED = a_framed_append_comes_back_unchanged_read_from_within_it,
+    "log format §1.5: an append stored as a block, its events' lines leaving out what the block decides, comes back unchanged, each event with its block, read from the block's first position, from within it and one event at a time, and restores to the events it was made from"
+);
+
+engine_check!(
+    FRAME_HELD_WHOLE = an_append_that_holds_a_frame_in_part_is_refused_whole,
+    "log format §4.1 and §1.5: an append that does not hold each block its events share whole and in order, from the block's first position to its last, is refused as `append_frame` naming the position, and none of it is appended"
+);
+
+engine_check!(
+    BLOCK_DIGEST_OVER_RESTORED_EVENTS = reopening
+        a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored,
+    "log format §1.5 and §4.2: a segment holding whole lines and blocks reads back as appended, and its digest is SHA-256 over its events as they restore, each event's canonical bytes followed by a line feed, never over a block's stored bytes, sealed by a writer that took the lease in the middle of the segment as by the one that began it"
+);
+
+engine_check!(
+    BLOCK_CHANGED_IS_A_BREAK = reopening a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_where_it_is_restored,
+    "log format §1.5 and §4.2: the engine keeps a block and its lines as they are handed, so a line in a block that holds `hash`, `v` or a member its frame holds, and a frame line among a block's event lines, come back unchanged and do not restore, and a seal of their segment, which digests its events as restored, is refused as `damaged` at the position of the event that does not restore, naming its flaw, and seals nothing"
 );
 
 engine_check!(
@@ -105,8 +126,18 @@ engine_check!(
 );
 
 engine_check!(
+    HELD_LEASE_BESIDE_A_FOLD = reopening a_writer_opened_beside_a_folding_holder_is_refused_at_once,
+    "008 (lakelands#1777): a handle opened for writing while the lease's holder is inside a projection transaction opens, and its take of the lease fails at once naming the holder; the holder's lock on the projection never makes it wait"
+);
+
+engine_check!(
     READ_ONLY_HANDLE = reopening a_read_only_handle_refuses_the_lease_and_appends,
     "008: any number of readers may open a lake, and none of them can take the lease, append or seal, so only the writer extends the chain"
+);
+
+engine_check!(
+    LEASE_FREE = reopening a_read_only_handle_tells_whether_the_lease_is_free,
+    "076 (lakelands#1395): `lease_free`, asked of a handle opened read-only, answers true while no handle holds the lease and false while one does, without taking it: the holder goes on appending, and once it gives the lease up, or its handle is dropped, the answer is true again"
 );
 
 engine_check!(
@@ -116,7 +147,7 @@ engine_check!(
 
 engine_check!(
     APPENDED_OUTLIVES_ITS_HANDLE = reopening an_append_that_returned_is_read_by_the_next_handle,
-    "seams, append: an append is durable before it returns, so the events are there, byte for byte, for a handle opened after the writer's handle was dropped without closing"
+    "seams, append, and 086: an append is durable before it returns, so the events are there, byte for byte and with the id, `prev`, `hash` and fence they were handed in with, for a handle opened after the writer's handle was dropped without closing: one event, a framed run, and a run across a seal"
 );
 
 fn an_append_that_returned_is_read_by_the_next_handle(
@@ -127,25 +158,33 @@ fn an_append_that_returned_is_read_by_the_next_handle(
         .reopen(engine.lake(), OpenMode::Write)
         .map_err(|e| Failure::new(format!("opening a handle for writing: {e}")))?;
     let lease = writer.take_lease("the writer").must("taking the lease")?;
-    let events = chain(0, 3, &Digest::zero(), &lease);
-    writer
-        .append(&lease, &events)
-        .must("appending three events")?;
+    // One event, a framed run, and a run across a seal (086).
+    let mut events = chain(0, 1, &Digest::zero(), &lease);
+    let (run, _) = framed(FORMAT, 1, 4, &events[0].hash, &lease);
+    let first = chain(5, 2, &run[3].hash, &lease);
+    let more = chain(7, 2, &first[1].hash, &lease);
+    (writer.append(&lease, &events))
+        .and_then(|()| writer.append(&lease, &run))
+        .and_then(|()| seal(writer.as_ref(), &lease, &first).map(drop))
+        .and_then(|()| writer.append(&lease, &more))
+        .must("appending one event, a framed run and a run across a seal")?;
+    events.extend(run.into_iter().chain(first).chain(more));
     // The writer ends without releasing its lease or closing the lake.
     drop(writer);
     let next = harness
         .reopen(engine.lake(), OpenMode::Read)
         .map_err(|e| Failure::new(format!("opening the next handle: {e}")))?;
     let read = next
-        .read(Position(0), 10)
+        .read(Position(0), 100)
         .must("reading through the next handle")?;
     ensure!(
         read == events,
-        "three events were appended and the append returned; the writer's handle was then \
-         dropped without closing, and a handle opened after it reads {} event(s){}",
+        "one event, a framed run and a run across a seal were appended and the appends \
+         returned; the writer's handle was then dropped without closing, and a handle opened \
+         after it reads {} event(s){}",
         read.len(),
         if read.len() == events.len() {
-            " whose bytes differ"
+            " whose id, prev, hash, fence or bytes differ"
         } else {
             ""
         }
@@ -170,6 +209,36 @@ fn a_dropped_writer_releases_its_lease(
              lease again was refused: {e}; a dropped handle must give its lease up"
         ))
     })?;
+    Ok(())
+}
+
+fn a_writer_opened_beside_a_folding_holder_is_refused_at_once(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    let holder = "writer 7 on host lake-a";
+    engine.take_lease(holder).must("taking the lease")?;
+    let projection = engine.projection();
+    projection
+        .begin()
+        .must("beginning a projection transaction")?;
+    let started = Instant::now();
+    let answer = harness
+        .reopen(engine.lake(), OpenMode::Write)
+        .and_then(|second| second.take_lease("a second writer"));
+    let waited = started.elapsed();
+    projection.rollback();
+    let refused = answer.must_fail("opening a second writer and taking the held lease")?;
+    ensure!(
+        match refused.situation() {
+            Some(Situation::LeaseHeld { holder: h, .. }) => h == holder,
+            Some(Situation::LeaseLocked { holder: h, .. }) => h.as_deref() == Some(holder),
+            _ => false,
+        } && waited < Duration::from_secs(1),
+        "the holder `{holder}` is inside a projection transaction, and a second writer's open \
+         and take of the lease answered \"{refused}\" after {waited:?}; it must be the lease's \
+         refusal naming the holder, at once"
+    );
     Ok(())
 }
 
@@ -208,6 +277,54 @@ fn a_read_only_handle_refuses_the_lease_and_appends(
         log == first,
         "the log holds {} events after the reader's refused append; it must hold the writer's 2",
         log.len()
+    );
+    Ok(())
+}
+
+fn a_read_only_handle_tells_whether_the_lease_is_free(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    let reader = harness
+        .reopen(engine.lake(), OpenMode::Read)
+        .map_err(|e| Failure::new(format!("opening a read-only handle: {e}")))?;
+    let free = |when: &str| reader.lease_free().must(&format!("asking {when}"));
+    ensure!(
+        free("before any writer took the lease")?,
+        "no handle took the lease, yet a read-only handle says it is held"
+    );
+    let lease = engine.take_lease("the writer").must("taking the lease")?;
+    ensure!(
+        !free("while the writer holds the lease")?,
+        "the writer holds the lease, yet a read-only handle says it is free"
+    );
+    let events = chain(0, 2, &Digest::zero(), &lease);
+    engine
+        .append(&lease, &events)
+        .must("appending under the lease after it was asked about")?;
+    ensure!(
+        !free("again while the writer holds the lease")?,
+        "the writer still holds the lease, yet asked again a read-only handle says it is free"
+    );
+    engine.release_lease(&lease).must("giving the lease up")?;
+    ensure!(
+        free("once the writer gave the lease up")?,
+        "the writer gave the lease up, yet a read-only handle says it is held"
+    );
+    let writer = harness
+        .reopen(engine.lake(), OpenMode::Write)
+        .map_err(|e| Failure::new(format!("opening a second handle for writing: {e}")))?;
+    writer
+        .take_lease("the next writer")
+        .must("taking the lease on the second handle")?;
+    ensure!(
+        !free("while the second handle holds the lease")?,
+        "a second handle holds the lease, yet a read-only handle says it is free"
+    );
+    drop(writer);
+    ensure!(
+        free("once the second handle was dropped")?,
+        "the handle that held the lease was dropped, yet a read-only handle says it is held"
     );
     Ok(())
 }
@@ -431,7 +548,7 @@ fn an_append_with_a_gap_or_a_wrong_prev_is_refused_whole(engine: &dyn LakeEngine
     Ok(())
 }
 
-fn a_sealed_segment_is_digested_as_its_lines(engine: &dyn LakeEngine) -> Held {
+fn a_sealed_segment_is_digested_over_its_events_as_they_restore(engine: &dyn LakeEngine) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let events = chain(0, 3, &Digest::zero(), &lease);
     let empty = seal(engine, &lease, &events).must("sealing an empty segment")?;
@@ -796,5 +913,367 @@ fn an_import_is_refused_once_the_log_holds_an_appended_event(engine: &dyn LakeEn
         "the log holds {} events after the refused import; it must hold the one appended",
         log.len()
     );
+    Ok(())
+}
+
+/// The format the frames here are written in.
+const FORMAT: u64 = lakelands_api::event::LOG_FORMAT_VERSION as u64;
+
+/// `n` chained events of format `v` from position `start`, following
+/// `prev`, under `lease`, sharing `known_at` and their body's `kind`, as
+/// one append stores them (`crate::log::frame_append`), and the events
+/// they restore to.
+fn framed(
+    v: u64,
+    start: u64,
+    n: u64,
+    prev: &Digest,
+    lease: &lakelands_api::engine::Lease,
+) -> (Vec<CanonicalEvent>, Vec<serde_json::Value>) {
+    let mut prev = prev.clone();
+    let (mut stored, mut events) = (Vec::new(), Vec::new());
+    for p in start..start + n {
+        // Position 0 is written before any lease exists, under fence 0.
+        let fence = if p == 0 { 0 } else { lease.fence };
+        let mut event = json!({
+            "body": {"kind": "note", "n": p},
+            "fence": fence,
+            "id": format!("{p:032x}"),
+            "known_at": "2026-01-01T00:00:00.000000Z",
+            "position": p,
+            "prev": prev.0,
+            "v": v,
+        });
+        let hash = Digest(crate::canonical::sha256_hex(&event));
+        event["hash"] = json!(hash.0);
+        stored.push(CanonicalEvent {
+            position: Position(p),
+            id: lakelands_api::event::EventId(format!("{p:032x}")),
+            prev: prev.clone(),
+            hash: hash.clone(),
+            fence,
+            bytes: crate::canonical::to_vec(&event),
+            frame: None,
+        });
+        events.push(event);
+        prev = hash;
+    }
+    crate::log::frame_append(&mut stored);
+    (stored, events)
+}
+
+/// The events `stored` restore to, or the first flaw.
+fn restored_all(
+    stored: &[CanonicalEvent],
+) -> std::result::Result<Vec<serde_json::Value>, lakelands_api::error::Flaw> {
+    let mut restorer = crate::log::Restorer::default();
+    stored
+        .iter()
+        .map(|e| restorer.restore_json(e).map(|(event, _)| event))
+        .collect()
+}
+
+fn a_framed_append_comes_back_unchanged_read_from_within_it(engine: &dyn LakeEngine) -> Held {
+    let lease = engine.take_lease("conformance").must("taking the lease")?;
+    let first = chain(0, 1, &Digest::zero(), &lease);
+    engine.append(&lease, &first).must("appending one event")?;
+    let (stored, events) = framed(FORMAT, 1, 4, &first[0].hash, &lease);
+    ensure!(
+        stored.iter().all(|e| e.frame.is_some()),
+        "four events that share members are stored with a frame, and they are \
+         stored as {:?}",
+        render(&stored)
+    );
+    engine
+        .append(&lease, &stored)
+        .must("appending four events framed")?;
+    let whole = [first, stored.clone()].concat();
+    for (from, limit) in [(0, 10), (1, 10), (2, 2), (4, 10)] {
+        let read = engine
+            .read(Position(from), limit)
+            .must(&format!("reading from position {from}"))?;
+        let want = &whole[from as usize..whole.len().min(from as usize + limit as usize)];
+        ensure!(
+            read == want,
+            "reading {limit} from position {from} answered {:?}; it must answer the events as \
+             appended, each with its frame, {:?}",
+            render(&read),
+            render(want)
+        );
+    }
+    for at in 1..5 {
+        let one = engine
+            .read(Position(at), 1)
+            .must(&format!("reading position {at}"))?;
+        let back = restored_all(&one);
+        ensure!(
+            one == whole[at as usize..=at as usize]
+                && back.as_ref().ok() == Some(&events[at as usize - 1..at as usize].to_vec()),
+            "the event at {at}, read alone, comes back with its frame and restores to the event \
+             it was made from; it answered {:?}, which restores to {back:?}",
+            render(&one)
+        );
+    }
+    Ok(())
+}
+
+fn an_append_that_holds_a_frame_in_part_is_refused_whole(engine: &dyn LakeEngine) -> Held {
+    let lease = engine.take_lease("conformance").must("taking the lease")?;
+    let (stored, _) = framed(FORMAT, 0, 3, &Digest::zero(), &lease);
+    let refused = |answer: lakelands_api::Result<()>, position: u64, what: &str| -> Held {
+        let case = crate::conformance::fixture::invalid_case(&answer);
+        ensure!(
+            case == Some(&lakelands_api::error::Case::AppendFrame {
+                position: Position(position)
+            }),
+            "{what} is refused as `append_frame` at {position}, and it answered {answer:?}"
+        );
+        Ok(())
+    };
+    refused(
+        engine.append(&lease, &stored[..2]),
+        0,
+        "an append of two of the three events a frame covers",
+    )?;
+    let mut unframed = stored.clone();
+    unframed[1].frame = None;
+    refused(
+        engine.append(&lease, &unframed),
+        1,
+        "an append whose second event lacks the frame its first carries",
+    )?;
+    let tip = engine.tip().must("reading the tip")?;
+    ensure!(
+        tip.is_none(),
+        "a refused append appends nothing, and the tip is {tip:?}"
+    );
+    // The first event alone, whole, and then the frame's later events.
+    let mut whole = stored[0].clone();
+    (whole.bytes, whole.frame) = (
+        crate::canonical::to_vec(
+            &restored_all(&stored[..1]).map_err(|f| Failure::new(format!("{f:?}")))?[0],
+        ),
+        None,
+    );
+    engine
+        .append(&lease, &[whole])
+        .must("appending the first event whole")?;
+    refused(
+        engine.append(&lease, &stored[1..]),
+        1,
+        "an append of a frame's events after its first",
+    )?;
+    let log = engine.read(Position(0), 10).must("reading the log")?;
+    ensure!(
+        log.len() == 1,
+        "a refused append appends nothing, and the log holds {} events",
+        log.len()
+    );
+    Ok(())
+}
+
+fn a_segment_of_whole_lines_and_framed_ones_is_digested_over_its_events_restored(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    let lease = engine.take_lease("conformance").must("taking the lease")?;
+    let whole = chain(0, 2, &Digest::zero(), &lease);
+    let read = |e: &CanonicalEvent| serde_json::from_slice::<serde_json::Value>(&e.bytes);
+    let events: std::result::Result<Vec<_>, _> = whole.iter().map(read).collect();
+    let mut events = events.map_err(|e| Failure::new(format!("a line is JSON: {e}")))?;
+    ensure!(
+        whole.iter().all(|e| e.frame.is_none()),
+        "events appended one by one are stored as whole lines, and they are stored as {:?}",
+        render(&whole)
+    );
+    for line in whole.chunks(1) {
+        engine.append(&lease, line).must("appending one event")?;
+    }
+    let (newer, more) = framed(FORMAT, 2, 3, &whole[1].hash, &lease);
+    engine
+        .append(&lease, &newer)
+        .must("appending three events framed")?;
+    events.extend(more);
+    // The writer stops in the middle of the segment; another handle takes
+    // the lease, appends the rest and seals it.
+    engine.release_lease(&lease).must("releasing the lease")?;
+    let writer = harness
+        .reopen(engine.lake(), OpenMode::Write)
+        .map_err(|e| Failure::new(format!("opening a second handle for writing: {e}")))?;
+    let lease = writer
+        .take_lease("the next writer")
+        .must("taking the lease on the second handle")?;
+    let (later, more) = framed(FORMAT, 5, 3, &newer[2].hash, &lease);
+    writer
+        .append(&lease, &later)
+        .must("appending three more events framed")?;
+    events.extend(more);
+    let next = chain(8, 1, &later[2].hash, &lease);
+    let sealed = seal(writer.as_ref(), &lease, &next)
+        .must("sealing the segment")?
+        .ok_or_else(|| Failure::new("sealing a segment of eight events answered none"))?;
+    let mut file = Vec::new();
+    for e in &events {
+        file.extend(crate::canonical::to_vec(e));
+        file.push(b'\n');
+    }
+    let digest = crate::canonical::hex(&Sha256::digest(&file));
+    ensure!(
+        (sealed.first, sealed.last, &sealed.digest.0) == (Position(0), Position(7), &digest),
+        "the sealed segment is {sealed:?}; it must run from 0 to 7 with the digest of its events \
+         as restored, {digest}"
+    );
+    let log = writer.read(Position(0), 10).must("reading the log")?;
+    let want = [whole, newer, later, next].concat();
+    ensure!(
+        log == want,
+        "the log reads back {:?}; it must be what was appended, {:?}",
+        render(&log),
+        render(&want)
+    );
+    Ok(())
+}
+
+/// The line of the event at `at` among `stored`, edited by `edit`, both
+/// as its event holds it and inside the block they share, whose stored
+/// bytes are compressed again and its `raw` and `stored` theirs, so that
+/// only the line is wrong.
+fn edit_line(stored: &mut [CanonicalEvent], at: usize, edit: impl FnOnce(&mut Value)) -> Held {
+    use std::io::Write as _;
+    let broken = |what: &str| Failure::new(format!("a framed append's block {what}"));
+    let mut line: Value = serde_json::from_slice(&stored[at].bytes)
+        .map_err(|e| Failure::new(format!("a stored line is JSON: {e}")))?;
+    edit(&mut line);
+    let edited = crate::canonical::to_vec(&line);
+    let frame = stored[at]
+        .frame
+        .clone()
+        .ok_or_else(|| broken("is carried"))?;
+    let block = crate::log::block_of(&frame).and_then(|b| b.ok());
+    let block = block.ok_or_else(|| broken("is one"))?;
+    let feed = frame.bytes.iter().position(|b| *b == b'\n').unwrap_or(0);
+    let raw =
+        crate::log::inflate(&block, &frame.bytes[feed + 1..]).map_err(|_| broken("inflates"))?;
+    let mut lines: Vec<&[u8]> = raw[..raw.len() - 1].split(|b| *b == b'\n').collect();
+    let framed = usize::from(
+        lines
+            .first()
+            .is_some_and(|l| l.starts_with(b"{\"events\":")),
+    );
+    lines[at - (frame.first.0 - stored[0].position.0) as usize + framed] = &edited;
+    let mut raw = Vec::new();
+    for l in lines {
+        raw.extend_from_slice(l);
+        raw.push(b'\n');
+    }
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+    let z = z
+        .write_all(&raw)
+        .and_then(|()| z.finish())
+        .map_err(|_| broken("compresses"))?;
+    let (raw, stored_bytes) = (raw.len() as u64, z.len() as u64);
+    let mut bytes = crate::log::Block {
+        raw,
+        stored: stored_bytes,
+        ..block
+    }
+    .line(FORMAT);
+    bytes.push(b'\n');
+    bytes.extend(z);
+    let edited_frame = std::sync::Arc::new(Frame {
+        bytes,
+        ..Frame::clone(&frame)
+    });
+    stored[at].bytes = edited;
+    for e in stored
+        .iter_mut()
+        .filter(|e| e.frame.as_ref() == Some(&frame))
+    {
+        e.frame = Some(edited_frame.clone());
+    }
+    Ok(())
+}
+
+fn a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_where_it_is_restored(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    type Plant = fn(&mut [CanonicalEvent]) -> Held;
+    let breaks: [(&str, u64, Flaw, Plant); 4] = [
+        (
+            "the second event's line holds `known_at`, which its frame holds",
+            1,
+            Flaw::FramedTwice {
+                member: "known_at".into(),
+            },
+            |s| {
+                edit_line(s, 1, |l| {
+                    l["known_at"] = json!("2026-01-01T00:00:00.000000Z")
+                })
+            },
+        ),
+        (
+            "the second event's line holds `hash`, which its block decides",
+            1,
+            Flaw::FramedTwice {
+                member: "hash".into(),
+            },
+            |s| edit_line(s, 1, |l| l["hash"] = json!(Digest::zero().0)),
+        ),
+        (
+            "the second event's line holds `v`, which its block decides",
+            1,
+            Flaw::FramedTwice { member: "v".into() },
+            |s| edit_line(s, 1, |l| l["v"] = json!(FORMAT - 1)),
+        ),
+        (
+            "the second event's line holds `frame`, as a frame line does",
+            1,
+            Flaw::FrameInFrame,
+            |s| edit_line(s, 1, |l| l["frame"] = json!({})),
+        ),
+    ];
+    for (i, (what, at, flaw, plant)) in breaks.into_iter().enumerate() {
+        // Each break on a lake of its own: a seal refused leaves it active.
+        let own = match i {
+            0 => None,
+            _ => Some(
+                harness
+                    .fresh()
+                    .map_err(|e| Failure::new(format!("opening a fresh lake: {e}")))?,
+            ),
+        };
+        let engine = own.as_deref().unwrap_or(engine);
+        let lease = engine.take_lease("conformance").must("taking the lease")?;
+        let (mut stored, _) = framed(FORMAT, 0, 3, &Digest::zero(), &lease);
+        plant(&mut stored)?;
+        engine
+            .append(&lease, &stored)
+            .must(&format!("appending three events framed where {what}"))?;
+        let read = engine.read(Position(0), 10).must("reading the log")?;
+        let back = crate::log::restore_json(&read[at as usize]);
+        ensure!(
+            read == stored && back.as_ref().err() == Some(&flaw),
+            "where {what}, the log reads back {:?}, as appended, and the event at {at} is \
+             refused as {flaw:?} where it is restored; it restores to {back:?}",
+            render(&read)
+        );
+        let next = chain(3, 1, &stored[2].hash, &lease);
+        let sealed = seal(engine, &lease, &next);
+        let damaged = match sealed.as_ref().err().and_then(Error::situation) {
+            Some(Situation::Damaged { position, flaw, .. }) => Some((*position, flaw)),
+            _ => None,
+        };
+        let segments = engine.segments().must("listing the segments")?;
+        let tip = engine.tip().must("reading the tip")?;
+        ensure!(
+            damaged == Some((Some(Position(at)), &flaw))
+                && segments.is_empty()
+                && tip.as_ref().map(|(p, _)| *p) == Some(Position(2)),
+            "where {what}, sealing the segment is refused as `damaged` at {at}, naming \
+             {flaw:?}, and seals nothing; it answered {sealed:?}, with the segments {segments:?} \
+             and the tip {tip:?}"
+        );
+    }
     Ok(())
 }

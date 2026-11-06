@@ -10,23 +10,12 @@
 //! cardinality over live links, live ends, and the doors each link goes
 //! through.
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{
-    Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
-};
 use lakelands_api::principal::PrincipalKind;
-use lakelands_api::query::{Edge, Projection, QueryResult, Walk};
-use lakelands_api::write::{Outcome, ProposedWrite, WriteOpts};
-use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::query::Edge;
+use lakelands_api::write::{Outcome, WriteOpts};
 
-use crate::conformance::fixture::{
-    Lake, Must, all, doors, fed, field, field_writer, head_unmoved, invalid_case, migration,
-    no_such_field, patch, pattern, principal, reads_all, reason, reference, refused_on, restrict,
-    source_record, step, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
-use crate::links::{link_key, link_type_name};
+use crate::conformance::fixture::{doors, fed, reference, source_record, step};
+use crate::conformance::prelude::*;
 
 check!(
     WRITTEN_AND_WALKED = a_link_is_written_and_walked_with_its_fields,
@@ -60,7 +49,7 @@ check!(
 
 check!(
     REMOVED_RETIRES_LINKS = a_migration_that_removes_a_relation_retires_its_live_links,
-    "027 and 035, extended (lakelands#938): the migration that removes a relation carried by link records retires every live link of it in its own append, each by an event caused by the `migrated`, links a source brought and authored ones alike and a restricted one with them; its report lists the relation under `dropped` with that number, and an unlinked link is not in it; to an author without `restricted` the report is whole and the same whether a link is held or none is, and its apply retires the held link too; afterwards `get` answers no link at the head and `find` none with a total of none, and a read as of before the migration answers each; a removal proposed is applied by its accept, which retires the links live then, one linked since among them; the relation declared again starts with none"
+    "027 and 035, extended (lakelands#938): the migration that removes a relation carried by link records retires every live link of it in its own append, each by an event caused by the `migrated`, links a source brought and authored ones alike and a restricted one with them; its report lists the relation under `dropped` with that number, and an unlinked link is not in it; to an author without `restricted` the report is whole and the same whether a link is held or none is, its apply is refused `grant_needed` (062), and the owner's retires the held link too; afterwards `get` answers no link at the head and `find` none with a total of none, and a read as of before the migration answers each; a removal proposed is applied by its accept, which retires the links live then, one linked since among them; the relation declared again starts with none"
 );
 
 check!(
@@ -137,7 +126,7 @@ const LT: &str = "sys.link.invoice.approved_by";
 pub(super) const SEPT: &str = "2026-09-01T00:00:00.000000Z";
 const OCT: &str = "2026-10-01T00:00:00.000000Z";
 
-fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
+pub(super) fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
     RelationDecl {
         name: "approved_by".into(),
         target: "partner".into(),
@@ -184,7 +173,8 @@ pub(super) async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
     Ok(l)
 }
 
-async fn link(
+/// Links `from` to `to` over `approved_by` as `who`.
+pub(super) async fn link(
     cat: &dyn Catalog,
     who: &Principal,
     from: &str,
@@ -215,7 +205,7 @@ pub(super) async fn link_ok(
 }
 
 /// Unlinks `from` from `to` over `approved_by` as the owner.
-async fn unlink(l: &Lake, from: &str, to: &str) -> lakelands_api::Result<Outcome> {
+pub(super) async fn unlink(l: &Lake, from: &str, to: &str) -> lakelands_api::Result<Outcome> {
     let (ty, rel) = ("invoice".into(), "approved_by".into());
     let opts = WriteOpts::default();
     l.cat
@@ -224,7 +214,7 @@ async fn unlink(l: &Lake, from: &str, to: &str) -> lakelands_api::Result<Outcome
 }
 
 /// The edges a one-hop walk over `approved_by` answers from `key` of `ty`.
-async fn walked(
+pub(super) async fn walked(
     cat: &dyn Catalog,
     who: &Principal,
     ty: &str,
@@ -1239,7 +1229,7 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     let Outcome::Proposed { proposal, .. } = proposed.must("proposing the set for `pact`")? else {
         return Err(Failure::new("a proposal answers `proposed`"));
     };
-    let blind = json!({"default": "read", "review": true, "schema": true, "types": {
+    let blind = json!({"default": "read", "review": true, "schema": true, "restricted": true, "types": {
         "sys.link.pact.with": {"default": "none"}, "sys.link.bare.with": {"default": "none"}}});
     let blind = serde_json::from_value(blind).expect("grants read");
     let blind = principal(store.as_ref(), PrincipalKind::Agent, "blind", blind);
@@ -1380,7 +1370,7 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     // An author kept from a link type the lake holds names it in no set,
     // with its owner beside it or without (006).
     let lt = "sys.link.deal.with";
-    let grants = json!({"default": "write", "schema": true, "types": {lt: {"default": "none"}}});
+    let grants = json!({"default": "write", "schema": true, "restricted": true, "types": {lt: {"default": "none"}}});
     let grants = serde_json::from_value(grants).expect("grants read");
     let kept = principal(store.as_ref(), PrincipalKind::Agent, "kept", grants);
     // It sends `deal` as it is described it: the relation without the
@@ -1413,7 +1403,7 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     // An author kept from a field of a link type the lake holds reads it in
     // no set: a set over it is refused at the set, alone and, word for
     // word, with the owner that names the field beside it.
-    let grants = json!({"default": "write", "schema": true,
+    let grants = json!({"default": "write", "schema": true, "restricted": true,
         "types": {lt: {"default": "write", "fields": {"since": "none"}}}});
     let grants = serde_json::from_value(grants).expect("grants read");
     let blind = principal(store.as_ref(), PrincipalKind::Agent, "fieldless", grants);
@@ -1522,13 +1512,23 @@ async fn a_migration_that_removes_a_relation_retires_its_live_links(store: Store
             Ok::<_, Failure>(keys)
         }
     };
-    // `fed` removed by the author without `restricted`: the held link too.
+    // `fed` removed: refused to the author without `restricted`, and by
+    // the owner, the held link too.
     let before = store.head().await.must("reading the head")?;
     let removal = migration(with(false, true));
     let seen = cat.migrate(&plain, removal.clone()).await;
     let seen = seen.must("the preflight of removing `fed`")?.data;
-    let applied = cat.migrate_apply(&plain, removal, &seen.report_id).await;
-    applied.must("removing `fed`, by an author without `restricted`")?;
+    let refused = cat
+        .migrate_apply(&plain, removal.clone(), &seen.report_id)
+        .await;
+    ensure!(
+        matches!(reason(&refused), Some(Refusal::GrantNeeded { .. })),
+        "removing `fed` by an author without `restricted` is refused `grant_needed`; it answered {refused:?}"
+    );
+    let seen = cat.migrate(own, removal.clone()).await;
+    let seen = seen.must("the owner's preflight of removing `fed`")?.data;
+    let applied = cat.migrate_apply(own, removal, &seen.report_id).await;
+    applied.must("removing `fed`, by the owner")?;
     let gone = retired(before, FED).await?;
     ensure!(
         gone == [("i1:p1".to_owned(), true), ("i2:p2".to_owned(), true)],

@@ -80,6 +80,8 @@ pub(super) struct FieldBody {
     pub required: bool,
     #[serde(default)]
     pub authority: Authority,
+    #[serde(default)]
+    pub admits: OneOrMany,
     pub derived: Option<Cond>,
     pub function: Option<String>,
     pub computed_at: Option<ComputedAt>,
@@ -188,11 +190,16 @@ pub(super) struct VerbDoc {
     #[serde(default)]
     pub payload: Named<FieldDoc>,
     pub requires: Option<Cond>,
+    /// Each precondition's name and what it holds, in order.
+    #[serde(default)]
+    pub preconditions: Named<Cond>,
     pub set: Option<Named<Cond>>,
     pub executor: Option<String>,
     #[serde(default)]
     pub retire: bool,
     pub description: Option<String>,
+    #[serde(default)]
+    pub granted: bool,
 }
 
 /// `triggers/<name>.yaml`.

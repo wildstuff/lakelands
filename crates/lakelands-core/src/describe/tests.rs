@@ -37,6 +37,7 @@ fn declared() -> Vec<Declared> {
         scope: Default::default(),
         payload: vec![],
         risk: Risk::Low,
+        preconditions: Vec::new(),
         requires: None,
         effect: VerbEffect::Write {
             set: vec![Assignment {
@@ -45,6 +46,7 @@ fn declared() -> Vec<Declared> {
             }],
         },
         description: None,
+        granted: false,
     };
     [
         Declaration::Type(invoice),

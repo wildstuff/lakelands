@@ -176,6 +176,61 @@ async fn declare_memo(store: &dyn LakeStore) {
         .unwrap();
 }
 
+/// Reads everything, but holds the key field of `ward` `write_only`.
+fn keyless() -> Principal {
+    let ward = TypeGrants {
+        default: None,
+        fields: [("k".into(), Access::WriteOnly)].into(),
+        ..Default::default()
+    };
+    Principal {
+        kind: PrincipalKind::Agent,
+        id: "keyless".into(),
+        lake: "finance".into(),
+        grants: Grants {
+            default: Access::Read,
+            types: [("ward".into(), ward)].into(),
+            ..Grants::default()
+        },
+    }
+}
+
+#[tokio::test]
+async fn a_session_is_not_told_of_a_record_keyed_by_a_field_it_holds_write_only() {
+    for backend in BACKENDS {
+        let store = common::lake_on(backend).await;
+        let ward = serde_json::from_value(json!({
+            "name": "ward", "key": ["k"],
+            "fields": [{"name": "k", "type": {"kind": "text"}},
+                       {"name": "name", "type": {"kind": "text"}}]
+        }))
+        .unwrap();
+        let cat = store.catalog(WriteContext::default());
+        cat.declare(&common::owner(), Declaration::Type(ward))
+            .await
+            .unwrap();
+        let mut s = Stdio::open(store.clone(), keyless()).await;
+        s.call("subscribe", json!({})).await;
+        write(
+            store.as_ref(),
+            "ward",
+            "sekrit",
+            json!({"k": "sekrit", "name": "Ada"}),
+        )
+        .await;
+        let p = write(
+            store.as_ref(),
+            "invoice",
+            "INV-1",
+            json!({"status": "open"}),
+        )
+        .await;
+        let got = s.change().await;
+        assert_eq!(got["params"]["position"], json!(p), "{backend:?}: {got}");
+        assert_eq!(got["params"]["key"], "INV-1", "{backend:?}");
+    }
+}
+
 #[tokio::test]
 async fn a_subscribed_session_is_told_what_it_may_see_and_nothing_else() {
     for backend in BACKENDS {
@@ -202,7 +257,7 @@ async fn told_what_it_may_see(backend: Backend) {
     assert_eq!(
         got,
         changed(
-            json!({"lake": "finance", "position": p, "kind": "record_upserted",
+            json!({"lake": "finance", "position": p, "append": p, "kind": "record_upserted",
                        "type": "invoice", "key": "INV-1", "fields": ["note", "status"]})
         ),
         "{backend:?}"
@@ -233,7 +288,7 @@ async fn told_what_it_may_see(backend: Backend) {
     assert_eq!(
         s.change().await,
         changed(
-            json!({"lake": "finance", "position": p, "kind": "record_upserted",
+            json!({"lake": "finance", "position": p, "append": p, "kind": "record_upserted",
                        "type": "memo", "key": "M-1", "fields": ["text"]})
         ),
         "{backend:?}"
@@ -255,7 +310,7 @@ async fn told_what_it_may_see(backend: Backend) {
     assert_eq!(
         s.change().await,
         changed(
-            json!({"lake": "finance", "position": p, "kind": "record_retired",
+            json!({"lake": "finance", "position": p, "append": p, "kind": "record_retired",
                        "type": "invoice", "key": "INV-2"})
         ),
         "{backend:?}"
@@ -459,29 +514,15 @@ async fn through_the_hub_a_pump_tells_what_its_principal_may_see_alike_of_twins(
     assert_eq!(told[0].len(), 2, "of INV-1 and INV-2 only: {:?}", told[0]);
 }
 
-/// A setting naming `secret`, which the watcher may not read, is told it
-/// as in a twin lake whose setting never named it (lakelands#1198): a
-/// change of `secret` alone is not told, a record left naming only
-/// `secret` is told as retired, one that comes to name more as made, and
-/// the retire of a record it is not told not at all; a subscription to
-/// retirements alone is told that retirement, and a set over the settings
-/// is never told it.
+/// A setting naming the fields of `invoice`, which the watcher does not
+/// read whole, is told it as in a twin lake that never wrote it (063):
+/// none of its writes or its retire is told, whatever it names, a
+/// subscription to retirements is told only the retirement of a record it
+/// is told, and a set over the settings is never told it.
 #[tokio::test]
 async fn a_setting_s_changes_are_told_as_of_its_twin_without_what_is_not_told() {
     let k = "sort_index.invoice";
     let set = |v: Value| json!({"key": k, "value": v});
-    // The owner's writes, and those of the twin that never named `secret`:
-    // `None` writes nothing there, and `Some(None)` retires.
-    let steps = [
-        (Some(json!(["secret"])), None),
-        (
-            Some(json!(["status", "secret"])),
-            Some(Some(json!(["status"]))),
-        ),
-        (Some(json!(["secret", "status"])), None),
-        (Some(json!(["secret"])), Some(None)),
-        (None, None),
-    ];
     let mut told = Vec::new();
     for twin in [false, true] {
         let store = common::lake_on(Backend::Memory).await;
@@ -497,46 +538,49 @@ async fn a_setting_s_changes_are_told_as_of_its_twin_without_what_is_not_told() 
         retired
             .call("subscribe", json!({"kinds": ["record_retired"]}))
             .await;
-        for (hidden, bare) in &steps {
-            let step = match (twin, hidden, bare) {
-                (false, Some(v), _) => Some(Some(v.clone())),
-                (false, None, _) => Some(None),
-                (true, _, step) => step.clone(),
-            };
-            match step {
-                Some(Some(v)) => {
-                    write(store.as_ref(), "sys.setting", k, set(v)).await;
-                }
-                Some(None) => {
-                    let (c, ty) = (store.catalog(WriteContext::default()), "sys.setting".into());
-                    let opts = WriteOpts::default();
-                    c.retire(&common::owner(), &ty, &k.into(), opts)
-                        .await
-                        .unwrap();
-                }
-                None => {}
+        let (c, opts) = (store.catalog(WriteContext::default()), WriteOpts::default);
+        if !twin {
+            for v in [
+                json!(["secret"]),
+                json!(["status", "secret"]),
+                json!(["status"]),
+            ] {
+                write(store.as_ref(), "sys.setting", k, set(v)).await;
             }
+            let ty = "sys.setting".into();
+            c.retire(&common::owner(), &ty, &k.into(), opts())
+                .await
+                .unwrap();
         }
-        let last = write(
+        write(
             store.as_ref(),
             "invoice",
-            "INV-1",
-            json!({"status": "paid"}),
+            "INV-9",
+            json!({"status": "open"}),
         )
         .await;
+        let ty = "invoice".into();
+        let gone = c
+            .retire(&common::owner(), &ty, &"INV-9".into(), opts())
+            .await;
+        let gone = gone.unwrap().position();
         let mut changes = Vec::new();
         while changes
             .last()
-            .is_none_or(|m: &Value| m["params"]["position"] != json!(last))
+            .is_none_or(|m: &Value| m["params"]["position"] != json!(gone))
         {
             changes.push(all.change().await);
         }
-        // The retirement is the first change of its kind either twin has.
+        // The retirement is the first change of its kind either twin tells.
         let retirement = retired.change().await;
-        // Positions differ between the twins: what each change says.
+        // Positions differ between the twins: what each change says, and
+        // how far past it its append reaches.
         let said = |m: &Value| {
             let mut p = m["params"].clone();
-            p.as_object_mut().unwrap().remove("position");
+            let o = p.as_object_mut().unwrap();
+            let at = o.remove("position").unwrap().as_u64().unwrap();
+            let end = o["append"].as_u64().unwrap();
+            o.insert("append".into(), json!(end - at));
             p
         };
         told.push((
@@ -548,12 +592,8 @@ async fn a_setting_s_changes_are_told_as_of_its_twin_without_what_is_not_told() 
     let kinds: Vec<_> = (told[0].0.iter()).map(|p| p["kind"].clone()).collect();
     assert_eq!(
         kinds,
-        [
-            json!("record_upserted"),
-            json!("record_retired"),
-            json!("record_upserted")
-        ],
-        "the setting made, retired, and the invoice: {:?}",
+        [json!("record_upserted"), json!("record_retired")],
+        "the invoice made and retired, and no setting: {:?}",
         told[0]
     );
 }
@@ -666,7 +706,7 @@ async fn a_new_subscription_follows_the_hub_of_its_kinds() {
 
 async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let open = Arc::new(
-        move |_: &lakelands_api::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
+        move |_: &lakelands_api::id::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
             Ok(store.clone())
         },
     );
@@ -676,6 +716,10 @@ async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandl
         session_idle_secs: 1800,
         feed_poll_millis: 50,
         feed_floor_millis: 25,
+        workers: None,
+        metrics: None,
+        hosts: Vec::new(),
+        bounds: Default::default(),
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();
@@ -1053,11 +1097,14 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
         .await;
         // The owner is told of the write, the firing, the firing dropped
         // and the set change.
-        let mut told = Vec::new();
+        let (mut told, mut ends) = (Vec::new(), std::collections::BTreeSet::new());
         while told.len() < 4 {
             let m = owner.change().await;
             told.push(m["params"]["kind"].as_str().unwrap().to_owned());
+            ends.insert(m["params"]["append"].as_u64());
         }
+        // All four are the write's one append (083).
+        assert_eq!(ends.len(), 1, "{backend:?}: {ends:?}");
         told.sort();
         assert_eq!(
             told,
@@ -1070,13 +1117,18 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
             "{backend:?}"
         );
         // The watcher, who may not read `secret`, is told of the write's
-        // `status` only; of a partner, which it is not shown, it is told
-        // neither the firing nor the drop; the next thing it is told is a
-        // later write.
+        // `status` only, and its append ends there: what it is not told
+        // of the append moves no mark (083). Of a partner, which it is not
+        // shown, it is told neither the firing nor the drop; the next
+        // thing it is told is a later write.
         let m = watcher.change().await;
         assert_eq!(
-            (&m["params"]["kind"], &m["params"]["position"]),
-            (&json!("record_upserted"), &json!(p)),
+            (
+                &m["params"]["kind"],
+                &m["params"]["position"],
+                &m["params"]["append"]
+            ),
+            (&json!("record_upserted"), &json!(p), &json!(p)),
             "{backend:?}: {m}"
         );
         write(store.as_ref(), "partner", "P-1", json!({"name": "Acme"})).await;
@@ -1125,6 +1177,9 @@ async fn a_firing_an_act_overruled_is_not_told() {
         key: "s1".into(),
         fields: serde_json::from_value(json!({"place": "Rome"})).unwrap(),
         seen_at: None,
+        delivery: None,
+        resubmits: None,
+        line: None,
     };
     let (cat, tracker) = (store.catalog(WriteContext::default()), "tracker".into());
     let own = common::owner();
@@ -1354,6 +1409,61 @@ async fn a_create_is_told_as_a_change_of_each_field_it_filled() {
     }
 }
 
+/// A field hidden where a condition holds is a change told only of a
+/// record the condition selects neither before the write nor after it.
+#[tokio::test]
+async fn a_field_hidden_where_a_condition_holds_is_told_only_where_it_is_not() {
+    use lakelands_api::principal::HiddenWhere;
+    for backend in BACKENDS {
+        let store = common::lake_on(backend).await;
+        declare(
+            store.as_ref(),
+            json!({"declare": "type", "name": "chunk", "fields": [
+                {"name": "kind", "type": {"kind": "text"}},
+                {"name": "body", "type": {"kind": "text"}}]}),
+        )
+        .await;
+        let clerk = Principal {
+            kind: PrincipalKind::Agent,
+            id: "clerk".into(),
+            lake: "finance".into(),
+            grants: Grants {
+                default: Access::Read,
+                types: [(
+                    "chunk".into(),
+                    TypeGrants {
+                        hide_where: vec![HiddenWhere {
+                            field: "kind".into(),
+                            values: ["secret".to_owned()].into(),
+                            fields: [("body".into(), Access::None)].into(),
+                        }],
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+                ..Grants::default()
+            },
+        };
+        let mut clerk = Stdio::open(store.clone(), clerk).await;
+        clerk
+            .call("subscribe", json!({"kinds": ["record_upserted"]}))
+            .await;
+        let s = store.as_ref();
+        let made = write(s, "chunk", "c1", json!({"kind": "secret", "body": "x"})).await;
+        write(s, "chunk", "c1", json!({"body": "y"})).await;
+        let opened = write(s, "chunk", "c1", json!({"kind": "open", "body": "z"})).await;
+        let shown = write(s, "chunk", "c1", json!({"body": "w"})).await;
+        for (want, told) in [(made, ["kind"]), (opened, ["kind"]), (shown, ["body"])] {
+            let m = clerk.change().await;
+            assert_eq!(
+                (&m["params"]["position"], &m["params"]["fields"]),
+                (&json!(want), &json!(told)),
+                "{backend:?}: {m}"
+            );
+        }
+    }
+}
+
 /// An output a function backing records fills its field: a change of that
 /// field, told with its name.
 #[tokio::test]
@@ -1408,6 +1518,118 @@ async fn an_output_that_fills_a_field_is_told_as_a_change_of_it() {
         ),
         (&json!("output_recorded"), &json!("p1"), &json!(["name"])),
         "{m}"
+    );
+}
+
+/// One key of each source, random, kept while the lake is open.
+#[derive(Default)]
+struct OneKey(std::sync::Mutex<Option<[u8; 32]>>);
+
+impl lakelands_api::seam::KeyStore for OneKey {
+    fn create(
+        &self,
+        _: &lakelands_api::id::LakeId,
+        _: &lakelands_api::id::SourceId,
+    ) -> lakelands_api::Result<lakelands_api::id::KeyId> {
+        let mut k = [0; 32];
+        getrandom::fill(&mut k).unwrap();
+        *self.0.lock().unwrap() = Some(k);
+        Ok("k1".into())
+    }
+
+    fn key(
+        &self,
+        _: &lakelands_api::id::LakeId,
+        _: &lakelands_api::id::SourceId,
+        _: &lakelands_api::id::KeyId,
+    ) -> lakelands_api::Result<Option<lakelands_api::seam::DataKey>> {
+        Ok(self.0.lock().unwrap().map(lakelands_api::seam::DataKey))
+    }
+
+    fn destroy(
+        &self,
+        _: &lakelands_api::id::LakeId,
+        _: &lakelands_api::id::SourceId,
+    ) -> lakelands_api::Result<()> {
+        *self.0.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn ids(
+        &self,
+        _: &lakelands_api::id::LakeId,
+        _: &lakelands_api::id::SourceId,
+    ) -> lakelands_api::Result<Vec<lakelands_api::id::KeyId>> {
+        Ok(self.0.lock().unwrap().iter().map(|_| "k1".into()).collect())
+    }
+}
+
+/// A source's ingest seals its erasable members in one box, out of its
+/// patch: it is told as a change of each, also where it changes nothing
+/// else (lakelands#1452).
+#[tokio::test]
+async fn an_ingest_is_told_as_a_change_of_the_members_it_seals() {
+    use lakelands_api::seam::Seams;
+    let store = lakelands_store::open(
+        lakelands_api::Location::memory("finance"),
+        Seams {
+            engines: vec![Arc::new(lakelands_engine_mem::MemoryOpener::new())],
+            keys: Some(Arc::new(OneKey::default())),
+            ..Seams::default()
+        },
+        lakelands_api::engine::OpenMode::Create,
+    )
+    .await
+    .unwrap();
+    declare_memo(store.as_ref()).await;
+    let text = json!({"kind": "text"});
+    declare(
+        store.as_ref(),
+        json!({"declare": "type", "name": "person", "key": ["id"], "fields": [
+            {"name": "id", "type": text, "authority": "source"},
+            {"name": "name", "type": text, "authority": "source", "erasable": true},
+            {"name": "city", "type": text, "authority": "source"}]}),
+    )
+    .await;
+    let mut s = Stdio::open(store.clone(), common::owner()).await;
+    s.call(
+        "subscribe",
+        json!({"kinds": ["record_ingested", "record_upserted"]}),
+    )
+    .await;
+    let cat = store.catalog(WriteContext::default());
+    let (own, crm) = (common::owner(), "crm".into());
+    for fields in [
+        json!({"id": "p1", "name": "Ada", "city": "Oslo"}),
+        json!({"id": "p1", "name": "Bob"}),
+    ] {
+        let record = lakelands_api::SourceRecord {
+            source: None,
+            upstream: None,
+            ty: "person".into(),
+            key: "p1".into(),
+            fields: serde_json::from_value(fields).unwrap(),
+            seen_at: None,
+            delivery: None,
+            resubmits: None,
+            line: None,
+        };
+        let fed = lakelands_api::ingest_all(cat.as_ref(), &own, &crm, vec![record]);
+        fed.await.unwrap();
+    }
+    write(store.as_ref(), "memo", "m1", json!({"text": "after"})).await;
+    let mut told = Vec::new();
+    for _ in 0..3 {
+        let m = s.change().await;
+        told.push((m["params"]["kind"].clone(), m["params"]["fields"].clone()));
+    }
+    assert_eq!(
+        told,
+        [
+            (json!("record_ingested"), json!(["city", "id", "name"])),
+            (json!("record_ingested"), json!(["id", "name"])),
+            (json!("record_upserted"), json!(["text"])),
+        ],
     );
 }
 
@@ -1534,6 +1756,65 @@ async fn a_lake_that_fails_for_a_moment_delays_a_notification_and_loses_none() {
             "{backend:?}"
         );
     }
+}
+
+/// An append that changes a record and then declares is told in its own
+/// order: the change, then `tools/list_changed` (083). The feed reads
+/// both as one append, as a migration's is.
+#[tokio::test]
+async fn a_declaration_after_a_change_of_its_append_is_told_after_it() {
+    use std::sync::atomic::Ordering;
+    let inner = common::lake_on(Backend::Memory).await;
+    let faults = Arc::new(flaky::Faults::default());
+    let store: Arc<dyn LakeStore> = Arc::new(flaky::Store {
+        inner: inner.clone(),
+        faults: faults.clone(),
+    });
+    let mut s = Stdio::open(store, common::owner()).await;
+    s.call("subscribe", json!({"kinds": ["record_upserted"]}))
+        .await;
+    faults.one_append.store(1, Ordering::SeqCst);
+    faults.poll.store(1_000, Ordering::SeqCst);
+    write(inner.as_ref(), "invoice", "O-1", json!({"status": "open"})).await;
+    declare_memo(inner.as_ref()).await;
+    faults.poll.store(0, Ordering::SeqCst);
+    let told = s.next(|m| m.get("method").is_some()).await;
+    assert_eq!(told["method"], "notifications/lakelands/changed", "{told}");
+    let then = s.next(|m| m.get("method").is_some()).await;
+    assert_eq!(then["method"], "notifications/tools/list_changed");
+}
+
+/// A declaration held with the changes before it is told even when the
+/// session subscribes again before the append's end: it is not read
+/// again.
+#[tokio::test]
+async fn a_held_declaration_is_told_when_the_session_resubscribes() {
+    use std::sync::atomic::Ordering;
+    let inner = common::lake_on(Backend::Memory).await;
+    let faults = Arc::new(flaky::Faults::default());
+    let store: Arc<dyn LakeStore> = Arc::new(flaky::Store {
+        inner: inner.clone(),
+        faults: faults.clone(),
+    });
+    let mut s = Stdio::open(store, common::owner()).await;
+    let kinds = json!({"kinds": ["record_upserted"]});
+    s.call("subscribe", kinds.clone()).await;
+    faults.one_append.store(1, Ordering::SeqCst);
+    faults.poll.store(1_000, Ordering::SeqCst);
+    write(inner.as_ref(), "invoice", "H-1", json!({"status": "open"})).await;
+    declare_memo(inner.as_ref()).await;
+    for key in ["H-2", "H-3"] {
+        write(inner.as_ref(), "invoice", key, json!({"status": "open"})).await;
+    }
+    faults.get_millis.store(300, Ordering::SeqCst);
+    faults.poll.store(0, Ordering::SeqCst);
+    // The pump is reading the second change when the session subscribes.
+    tokio::time::sleep(Duration::from_millis(450)).await;
+    s.call("subscribe", kinds).await;
+    let told = s
+        .next(|m| m["method"] == "notifications/tools/list_changed")
+        .await;
+    assert_eq!(told["method"], "notifications/tools/list_changed");
 }
 
 /// Each change told costs one read, the record at its position; what a

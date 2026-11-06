@@ -8,7 +8,7 @@
 //! and runs through exactly one blocking hand-off, in `exec`.
 //!
 //! A host builds on `open`, `import` and the [`Imported`] it answers,
-//! `written_in` and [`ExprBacking`]. The modules are the store's own; those
+//! and [`ExprBacking`]. The modules are the store's own; those
 //! the workspace's tests reach are `#[doc(hidden)]`, and a release changes
 //! them without notice.
 
@@ -18,6 +18,10 @@ mod aging;
 #[doc(hidden)]
 pub mod backed;
 mod backing;
+#[doc(hidden)]
+pub mod batch;
+mod build;
+mod choose;
 mod declare;
 mod doors;
 mod exec;
@@ -30,17 +34,24 @@ pub mod lake;
 #[doc(hidden)]
 pub mod log;
 mod ontology;
+mod parts;
 mod purge;
+mod quarantine;
 mod reads;
 mod record;
 mod rekey;
 mod remove;
+mod restate;
+mod road;
 mod sealing;
+mod thin;
 #[doc(hidden)]
 pub mod writes;
 
 pub use backing::ExprBacking;
-pub use doors::{import, open, written_in};
-pub use import::Imported;
+pub use doors::{
+    REACH_POLL, Standing, build_ahead, discard_ahead, import, open, room_ahead, standby,
+};
+pub use import::{Imported, check_events};
 #[doc(hidden)]
 pub use lakelands_core::export;

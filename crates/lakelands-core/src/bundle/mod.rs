@@ -74,7 +74,8 @@
 //! kind's name.
 //!
 //! The full form of a field carries `type` and, all optional, `required`,
-//! `authority` (`authored`, `source`, `shared`, `derived`), `derived`,
+//! `authority` (`authored`, `source`, `shared`, `derived`, `verb`, `writer`), `admits`
+//! (the sources an `ingest` may write an authored field under), `derived`,
 //! `computed_at` (`write`, `read`), `depends_on`, `on_input_change` (`keep`, `clear`), `initial`,
 //! `sensitive`, `searchable`, `erasable`, `description` and `label`.
 //!
@@ -743,13 +744,13 @@ fn check_references(
         if let Some(v) = &t.view
             && let Some(source) = by_name.get(v.source.as_str())
         {
-            for g in &v.group_by {
+            for g in &v.group_names() {
                 want("view, `group_by`".into(), g.as_str(), source);
             }
         }
         if let Some(v) = &t.view
             && !t.key.is_empty()
-            && t.key != v.group_by
+            && t.key != v.group_names()
         {
             fail(
                 Problem::Contradiction,
@@ -983,8 +984,8 @@ fn tool_error(file: &str, problems: &[NameProblem], other: Option<&str>) -> Bund
         let s = if names.len() == 1 { "" } else { "s" };
         format!("tool name{s} {list}")
     };
+    let limit = lakelands_api::tools::MAX_TOOL_NAME;
     let mut collisions: BTreeMap<String, Vec<&String>> = BTreeMap::new();
-    let mut too_long = Vec::new();
     let mut parts = Vec::new();
     for p in problems {
         match p {
@@ -992,7 +993,14 @@ fn tool_error(file: &str, problems: &[NameProblem], other: Option<&str>) -> Bund
                 let from: Vec<String> = from.iter().map(ToString::to_string).collect();
                 collisions.entry(from.join(" and ")).or_default().push(name)
             }
-            NameProblem::TooLong { name } => too_long.push(name),
+            NameProblem::TooLong { name, from } => {
+                let by = from
+                    .as_ref()
+                    .map_or(String::new(), |f| format!("{f} would make "));
+                parts.push(format!(
+                    "{by}the tool name `{name}`, longer than {limit} characters"
+                ))
+            }
             NameProblem::Empty { from } => {
                 parts.push(format!("{from} leaves nothing to make a tool name of"))
             }
@@ -1001,13 +1009,6 @@ fn tool_error(file: &str, problems: &[NameProblem], other: Option<&str>) -> Bund
     }
     for (from, names) in collisions {
         parts.push(format!("{from} would make the same {}", quoted(&names)));
-    }
-    if !too_long.is_empty() {
-        parts.push(format!(
-            "{} would be longer than {} characters",
-            quoted(&too_long),
-            lakelands_api::tools::MAX_TOOL_NAME
-        ));
     }
     let mut message = parts.join("; ");
     if let Some(other) = other {

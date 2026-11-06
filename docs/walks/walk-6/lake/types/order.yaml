@@ -1,0 +1,15 @@
+name: order
+description: An order a customer placed, with its total over its lines.
+key: id
+fields:
+  id: { type: text, authority: source }
+  customer: { type: reference(customer), authority: source }
+  placed_on: { type: date_time, authority: source }
+  total: { type: decimal, authority: source }
+  status: { type: text, authority: source }
+relations:
+  placed_by:
+    target: customer
+    cardinality: many_to_one
+    via: customer
+    inverse: orders

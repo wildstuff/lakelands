@@ -65,10 +65,19 @@ base_number() {
     base="$(gate_base)"
     [ -n "$base" ] || return 0
     if [ -n "$name" ]; then
-        git show "$base:$file" 2>/dev/null | sed -n "s/^$name=\([0-9][0-9]*\).*/\1/p" | head -n 1
+        git show "$base:$file" 2>/dev/null | sed -n "/^$name=[0-9]/{s/^$name=\([0-9][0-9]*\).*/\1/p;q;}"
     else
         git show "$base:$file" 2>/dev/null | tr -d '[:space:]' | grep -x '[0-9][0-9]*' || true
     fi
+}
+
+# As base_number, but 0 when there is a base and FILE or NAME is not on
+# it: a budget the pull request opens stood at 0 before it.
+base_number_or_zero() {
+    local n
+    n="$(base_number "$@")"
+    [ -z "$n" ] && [ -n "$(gate_base)" ] && n=0
+    printf '%s\n' "$n"
 }
 
 # A budget's number goes down by itself and is raised only by a recorded

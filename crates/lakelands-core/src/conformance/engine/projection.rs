@@ -12,13 +12,16 @@
 
 use std::collections::BTreeMap;
 
+use crate::conformance::fixture::stored_record;
 use lakelands_api::Refusal;
 use lakelands_api::engine::{LakeEngine, OpenMode, ProjectionStore, ProjectionView};
 use lakelands_api::error::Situation;
 use lakelands_api::event::Digest;
-use lakelands_api::id::{LakeId, Position, RecordKey, RelationName, TypeName, Version};
+use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName, Version};
 use lakelands_api::query::Walk;
+use lakelands_api::read::ThinnedAct;
 use lakelands_api::record::StoredRecord;
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::Declaration;
 use serde_json::{Value, json};
 
@@ -87,8 +90,23 @@ engine_check!(
 );
 
 engine_check!(
+    THINNED_TABLES = thinned_acts_and_tombstones_read_at_the_head,
+    "102 §What is decided, seams §ProjectionStore and §ProjectionView: an act's row keeps the position it began at while each part moves `through` and `gone`, and a thinned record's tombstone answers its horizon at the head in every read"
+);
+
+engine_check!(
+    A_KEYS_STATES = a_keys_states_read_in_order_within_their_bounds,
+    "102, seams §ProjectionStore: `states` reads a key's states after `after` and at or before `through`, oldest first, at most `limit`, the transaction's own puts with them — one before a later state in its order, one at a state's position in its place — and none once they are dropped"
+);
+
+engine_check!(
     PUT_BEFORE_A_LATER_STATE = a_put_before_a_later_state_ends_where_that_state_begins,
     "seams §ProjectionStore: a state put at a position before a later state of the same thing is valid until that later state begins, which stays the latest"
+);
+
+engine_check!(
+    VECTOR_PUT_BEFORE_A_LATER_STATE = a_vector_put_before_a_later_state_reads_as_put,
+    "072, seams §ProjectionStore: a state put again before a later state with another vector reads that vector at its position, while the later state, which named the elements the earlier one stored, still reads them"
 );
 
 engine_check!(
@@ -105,6 +123,21 @@ engine_check!(
 engine_check!(
     HEAD_ONLY_NAME = a_head_only_name_keeps_one_state_for_each_key,
     "seams §ProjectionStore (lakelands#629): under a head-only name, `sys:order.<view>`, a put replaces its key's state and an end deletes it, a rollback leaves what the key held, and a page in key order after a key reads the next key's one row, an ended key between them read as none; it is read at the head only. `end_head_only` deletes every key's state at once, whether put before or earlier in the transaction, and keeps a key put after it in the same transaction, also where the transaction's puts are written a page at a time around it (2 600 puts); it leaves a sibling name (`sys:order.vx`) as it was, and refuses a name that is not head-only as invalid, leaving that type's records"
+);
+
+engine_check!(
+    ORDER_ENTRY = an_order_entry_keeps_one_state_for_each_key,
+    "seams §ProjectionStore and §ProjectionView (lakelands#1690): an order entry put at a key is read by `order` as the bytes it was put with, a put replaces the key's entry and a put with no entry deletes it, and `order_page` answers the entries after a key in key order, a page from the start skipping the empty key; a rolled-back transaction leaves the entries as they were; `end_order` deletes every entry of its name alone, keeping a sibling order and what is put after it in the same transaction, and the order holds none of the records"
+);
+
+engine_check!(
+    WITHDRAWAL_IS_A_DECLARATION = a_withdrawal_is_a_declaration_in_force_under_the_same_name,
+    "seams §ProjectionView (lakelands#1503): after a withdrawal is put at a position, `declarations()` answers it, and not the declaration it withdrew, as the one declaration in force under that name, since its own position"
+);
+
+engine_check!(
+    RETIRED_SETTING_POSITION = a_retired_setting_scanned_in_the_past_carries_its_last_change,
+    "seams §ProjectionView (lakelands#1503): a scan with retired records at a view behind the head answers a setting retired by then with `retired` set and the position of the retirement, and a setting retired after it as live at its own earlier position"
 );
 
 engine_check!(
@@ -203,17 +236,12 @@ fn refused_for_its_layout(
 
 /// A record state of `ty` at `position`, with version 1 and no flags.
 pub(super) fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {
-    StoredRecord {
-        ty: TypeName::from(ty),
-        key: RecordKey::from(key),
-        version: Version(1),
-        fields: serde_json::from_value(fields).unwrap_or_default(),
-        meta: BTreeMap::new(),
-        position: Position(position),
-        made: Position(position),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(
+        ty,
+        key,
+        serde_json::from_value(fields).unwrap_or_default(),
+        position,
+    )
 }
 
 /// A view at `as_of`, or a failure saying which view could not open.
@@ -694,6 +722,69 @@ fn a_put_at_the_same_position_replaces_the_state_there(engine: &dyn LakeEngine) 
     Ok(())
 }
 
+fn a_withdrawal_is_a_declaration_in_force_under_the_same_name(engine: &dyn LakeEngine) -> Held {
+    let declared = |d: Value| {
+        serde_json::from_value::<Declaration>(d)
+            .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))
+    };
+    let ty = declared(json!({"declare": "type", "name": "t", "fields": []}))?;
+    let withdrawn = declared(json!({"declare": "withdraw", "kind": "type", "name": "t"}))?;
+    fold(engine, 1, |p| p.put_declaration(&ty, 1, None, Position(1)))?;
+    fold(engine, 3, |p| {
+        p.put_declaration(&withdrawn, 2, None, Position(3))
+    })?;
+    let at = |as_of| {
+        view(engine, as_of)?
+            .declarations()
+            .must("reading the declarations")
+    };
+    let (now, then) = (at(None)?, at(Some(Position(2)))?);
+    ensure!(
+        now.len() == 1
+            && now[0].declaration == withdrawn
+            && now[0].since == Position(3)
+            && then.len() == 1
+            && then[0].declaration == ty
+            && then[0].since == Position(1),
+        "after a declaration at 1 and its withdrawal at 3, the declarations in force were \
+         {now:?} at the head and {then:?} at 2; they must be the withdrawal alone, since 3, \
+         and the type alone, since 1"
+    );
+    Ok(())
+}
+
+fn a_retired_setting_scanned_in_the_past_carries_its_last_change(engine: &dyn LakeEngine) -> Held {
+    let ty = TypeName::from("sys.setting");
+    let state = |key: &str, at: u64, retired: bool| {
+        let mut r = record("sys.setting", key, json!({"value": at}), at);
+        (r.retired, r.version) = (retired, Version(if retired { 2 } else { 1 }));
+        r
+    };
+    fold(engine, 1, |p| {
+        p.put_record(&state("floor", 1, false))?;
+        p.put_record(&state("ceiling", 1, false))
+    })?;
+    fold(engine, 3, |p| p.put_record(&state("floor", 3, true)))?;
+    fold(engine, 5, |p| p.put_record(&state("ceiling", 5, true)))?;
+    let scan = lakelands_api::engine::Scan {
+        limit: u32::MAX,
+        retired: true,
+        ..Default::default()
+    };
+    let seen = view(engine, Some(Position(4)))?
+        .scan(&ty, &scan)
+        .must("scanning the settings at 4")?;
+    let seen: Vec<_> = (seen.iter())
+        .map(|r| (r.key.as_str(), r.retired, r.position.0))
+        .collect();
+    ensure!(
+        seen == [("ceiling", false, 1), ("floor", true, 3)],
+        "a scan with retired records at 4 of settings retired at 3 and at 5 answered {seen:?}; \
+         it must answer `ceiling` live at 1 and `floor` retired at 3"
+    );
+    Ok(())
+}
+
 fn clear_empties_the_projection_and_the_vector_index(engine: &dyn LakeEngine) -> Held {
     let ty = TypeName::from("t");
     fold_one(engine, 1, record("t", "a", json!({}), 1))?;
@@ -768,6 +859,34 @@ fn a_put_before_a_later_state_ends_where_that_state_begins(engine: &dyn LakeEngi
         "at the head, `five` answered {five:?} and `three` {three:?}; the state put at 3 is \
          not the latest, so the head still reads `five`"
     );
+    Ok(())
+}
+
+fn a_vector_put_before_a_later_state_reads_as_put(engine: &dyn LakeEngine) -> Held {
+    let vectors: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "t",
+        "fields": [{"name": "v", "type": {"kind": "vector", "dimensions": 2}}]
+    }))
+    .expect("a declaration in the check is well-formed");
+    let (a, b) = (json!([0.5, 0.25]), json!([0.75, 0.125]));
+    fold(engine, 3, |p| {
+        p.put_declaration(&vectors, 1, None, Position(0))?;
+        p.put_record(&record("t", "a", json!({"v": a}), 3))
+    })?;
+    fold_one(engine, 5, record("t", "a", json!({"v": a}), 5))?;
+    fold_one(engine, 5, record("t", "a", json!({"v": b}), 3))?;
+    let (ty, key) = (TypeName::from("t"), RecordKey::from("a"));
+    for (as_of, expected) in [(Some(3), &b), (Some(4), &b), (Some(5), &a), (None, &a)] {
+        let got = view(engine, as_of.map(Position))?
+            .get(&ty, &key)
+            .must("reading the record")?
+            .and_then(|r| r.fields.get("v").cloned());
+        ensure!(
+            got.as_ref() == Some(expected),
+            "`a` was put with v = {a} at 3 and again at 5, then with v = {b} at 3; a view at \
+             {as_of:?} read {got:?}, but the state valid there holds {expected}"
+        );
+    }
     Ok(())
 }
 
@@ -1130,6 +1249,227 @@ fn a_head_only_name_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Hel
          invalid, and `d` reads {doc:?}",
         counts.0,
         counts.1
+    );
+    Ok(())
+}
+
+fn thinned_acts_and_tombstones_read_at_the_head(engine: &dyn LakeEngine) -> Held {
+    let ty = TypeName::from("t");
+    let key = RecordKey::from("a");
+    let by = FieldName::from("at");
+    let early = Timestamp(1_000);
+    let late = Timestamp(2_000);
+    let row = |before: Timestamp, through: u64, gone: u64| ThinnedAct {
+        ty: ty.clone(),
+        by: by.clone(),
+        before,
+        through: Position(through),
+        gone,
+    };
+    // The later act is written first and carries the earlier horizon, so the
+    // order the read answers is the position each act began at, not its
+    // horizon nor the order the puts came in.
+    fold(engine, 4, |p| {
+        p.put_thinned_act(&row(early, 4, 6), Position(4))
+    })?;
+    fold(engine, 5, |p| {
+        p.put_thinned_act(&row(late, 1, 2), Position(2))
+    })?;
+    fold(engine, 6, |p| {
+        let part = p.put_thinned_act(&row(late, 3, 5), Position(3));
+        part.and_then(|()| p.put_thinned(&ty, &key, early, Position(3)))
+    })?;
+    fold(engine, 7, |p| p.put_thinned(&ty, &key, late, Position(5)))?;
+    let read = |as_of| {
+        let v = view(engine, as_of)?;
+        Ok((
+            v.thinned_acts(&ty)
+                .must("reading the type's thinning acts")?,
+            v.thinned_at(&ty, &key).must("reading the key's horizon")?,
+        ))
+    };
+    let (acts, taken) = read(None)?;
+    let (earlier, taken_earlier) = read(Some(Position(1)))?;
+    let want = vec![row(late, 3, 5), row(early, 4, 6)];
+    ensure!(
+        acts == want && taken == Some(early) && earlier == want && taken_earlier == Some(early),
+        "an act beginning at 2 (horizon 2 000, through 1, gone 2, moved to through 3 and gone \
+         5) and one beginning at 4 (horizon 1 000, through 4, gone 6), the later written first, \
+         with a tombstone for `a` at 3 and a second put of the key with the other horizon at 5, \
+         read {acts:?} and {taken:?} at the head, and {earlier:?} and {taken_earlier:?} at 1; \
+         both reads must answer the acts oldest by the position each began at, and `a`'s first \
+         horizon, since the marks are read at the head in every read"
+    );
+    Ok(())
+}
+
+fn a_keys_states_read_in_order_within_their_bounds(engine: &dyn LakeEngine) -> Held {
+    let (ty, key) = (TypeName::from("t"), RecordKey::from("a"));
+    for at in [1, 2, 4] {
+        fold_one(engine, at, record("t", "a", json!({"n": at}), at))?;
+    }
+    fold_one(engine, 5, record("t", "b", json!({"n": 5}), 5))?;
+    let positions =
+        |rs: Vec<StoredRecord>| -> Vec<u64> { rs.iter().map(|r| r.position.0).collect() };
+    let mut red = Vec::new();
+    fold(engine, 7, |p| {
+        // One after the latest, one before a later state, one in its place.
+        for (n, at) in [(6, 6), (3, 3), (40, 4)] {
+            p.put_record(&record("t", "a", json!({ "n": n }), at))?;
+        }
+        let read = |after: Option<u64>, through: u64, limit: u32| {
+            let rs = p.states(&ty, &key, after.map(Position), Position(through), limit);
+            rs.map(positions)
+        };
+        let fourth = p.states(&ty, &key, Some(Position(3)), Position(4), 1)?;
+        let n = fourth.first().and_then(|r| r.fields.get("n").cloned());
+        if n != Some(json!(40)) {
+            red.push(format!(
+                "the state at 4 holds `n` {n:?}, not the 40 put in its place"
+            ));
+        }
+        for (after, through, limit, want) in [
+            (None, 7, 10, vec![1, 2, 3, 4, 6]),
+            (None, 7, 2, vec![1, 2]),
+            (Some(2), 7, 10, vec![3, 4, 6]),
+            (Some(1), 4, 10, vec![2, 3, 4]),
+            (None, 3, 10, vec![1, 2, 3]),
+        ] {
+            let got = read(after, through, limit)?;
+            if got != want {
+                red.push(format!(
+                    "after {after:?} through {through}, at most {limit}: {got:?}, not {want:?}"
+                ));
+            }
+        }
+        p.drop_states(lakelands_api::engine::StatesOf::Record(&ty, &key))?;
+        let got = read(None, 7, 10)?;
+        if !got.is_empty() {
+            red.push(format!("after the drop: {got:?}, not none"));
+        }
+        Ok(())
+    })?;
+    ensure!(
+        red.is_empty(),
+        "`a`, put at 1, 2 and 4 and in the open transaction at 6, 3 and 4 again, beside `b` at 5, read: {}",
+        red.join("; ")
+    );
+    Ok(())
+}
+
+fn an_order_entry_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Held {
+    let ty = TypeName::from(format!("{}pk", lakelands_api::seam::ORDER_PREFIX));
+    let sibling = TypeName::from(format!("{}px", lakelands_api::seam::ORDER_PREFIX));
+    let key = RecordKey::from;
+    fold(engine, 1, |p| {
+        p.put_order(&ty, &key("b"), Some(b"b1"))?;
+        p.put_order(&ty, &key("a"), Some(b"a1"))?;
+        p.put_order(&ty, &key("c"), Some(b"c1"))?;
+        p.put_order(&sibling, &key("a"), Some(b"s1"))
+    })?;
+    fold(engine, 2, |p| {
+        p.put_order(&ty, &key(""), Some(b"z0"))?;
+        p.put_order(&ty, &key("b"), Some(b"b2"))?;
+        p.put_order(&ty, &key("c"), None)
+    })?;
+    let p = engine.projection();
+    let v = view(engine, None)?;
+    let read = |name: &TypeName, k: &str| {
+        v.order(name, &RecordKey::from(k))
+            .must("reading an order entry")
+    };
+    let (a, b, c, s) = (
+        read(&ty, "a")?,
+        read(&ty, "b")?,
+        read(&ty, "c")?,
+        read(&sibling, "a")?,
+    );
+    ensure!(
+        (a.as_deref(), b.as_deref(), c.as_deref(), s.as_deref())
+            == (Some(&b"a1"[..]), Some(&b"b2"[..]), None, Some(&b"s1"[..])),
+        "entries a, b and c were put at 1, then b again and c as none at 2: a, b and c read \
+         {a:?}, {b:?} and {c:?}, and the sibling's a reads {s:?}, where a put replaces the \
+         key's entry and a put with no entry deletes it"
+    );
+    let page = |after: Option<&str>, n: u32| {
+        let after = after.map(RecordKey::from);
+        let rows = v
+            .order_page(&ty, after.as_ref(), n)
+            .must("reading a page of the order")?;
+        Ok::<_, Failure>(
+            rows.into_iter()
+                .map(|(k, e)| (k.as_str().to_owned(), e))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let first = page(None, 1)?;
+    let next = page(Some("a"), 5)?;
+    ensure!(
+        (first.as_slice(), next.as_slice())
+            == (
+                [("a".to_owned(), b"a1".to_vec())].as_slice(),
+                [("b".to_owned(), b"b2".to_vec())].as_slice()
+            ),
+        "a page of one from the start answered {first:?}, and a page after a answered \
+         {next:?}, where a page is the entries after a key in key order"
+    );
+    // The order holds an entry at the empty key; a page from the start
+    // skips it, as a page after the empty key does.
+    let empty = read(&ty, "")?;
+    let from_start = page(None, 5)?;
+    let after_empty = page(Some(""), 5)?;
+    ensure!(
+        empty.as_deref() == Some(&b"z0"[..])
+            && from_start == after_empty
+            && from_start.len() == 2
+            && from_start.iter().all(|(k, _)| !k.is_empty()),
+        "the order holds an entry at the empty key: `order` reads {empty:?}, a page from the \
+         start answers {from_start:?} and a page after the empty key {after_empty:?}, where a \
+         page from the start skips the empty key and agrees with a page after it"
+    );
+    let records = v
+        .count(&ty, &lakelands_api::engine::Scan::default())
+        .must("counting the order's records")?;
+    let record = v
+        .get(&ty, &RecordKey::from("a"))
+        .must("reading the order as a record")?;
+    ensure!(
+        (records, &record) == (0, &None),
+        "the order `{ty}` holds entries a and b: its record table reads {record:?} and counts \
+         {records}, where the entries are kept apart from the records"
+    );
+    // A rollback leaves what the order held.
+    p.begin().must("beginning a transaction")?;
+    p.put_order(&ty, &RecordKey::from("d"), Some(b"d3"))
+        .must("putting d")?;
+    p.end_order(&ty).must("ending the name")?;
+    p.put_order(&ty, &RecordKey::from("e"), Some(b"e3"))
+        .must("putting e")?;
+    p.rollback();
+    let (a, d, e) = (read(&ty, "a")?, read(&ty, "d")?, read(&ty, "e")?);
+    ensure!(
+        (a.as_deref(), &d, &e) == (Some(&b"a1"[..]), &None, &None),
+        "a rolled-back transaction put d, ended the name and put e: a, d and e read {a:?}, \
+         {d:?} and {e:?}, where the rollback leaves a alone"
+    );
+    // `end_order` deletes its name alone and keeps what follows it.
+    fold(engine, 3, |p| {
+        p.end_order(&ty)?;
+        p.put_order(&ty, &RecordKey::from("e"), Some(b"e4"))
+    })?;
+    let (a, e, s) = (read(&ty, "a")?, read(&ty, "e")?, read(&sibling, "a")?);
+    let left = page(None, 5)?;
+    ensure!(
+        (a.as_deref(), e.as_deref(), s.as_deref(), left.as_slice())
+            == (
+                None,
+                Some(&b"e4"[..]),
+                Some(&b"s1"[..]),
+                [("e".to_owned(), b"e4".to_vec())].as_slice()
+            ),
+        "a transaction ended the order and put e: a and e read {a:?} and {e:?}, the page holds \
+         {left:?}, and the sibling's a reads {s:?}, where ending the order deletes its entries \
+         alone and keeps what is put after it"
     );
     Ok(())
 }

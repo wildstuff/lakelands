@@ -3,23 +3,19 @@
 //! its event, else the wall clock; one clock wherever the read evaluates
 //! `now()` and `today()`, and one for every page a cursor continues.
 
-use std::collections::BTreeSet;
-use std::time::Duration;
-
-use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
-use lakelands_api::read::{AggFunc, Found, GroupKey};
-use lakelands_api::{Catalog, Cursor, Find, Position, Principal, ReadAt, Record, Timestamp};
-use serde_json::{Value, json};
+use lakelands_api::read::Found;
 
 use super::only::{de, holder};
-use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, all_found, log_events, pattern, pause, restrict,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     READ_CLOCK = a_read_takes_its_clock_from_the_instant_or_the_position_it_names,
     "052, lakelands#571: a read's clock, the one `now()` and `today()` read in a `where`, a field computed at the read, a group key, a measure and a view's `where`, is the instant `valid_at` names, at the head and as of a position; else the host's clock (`ReadAt::clock`, a pin of the head); else, as of a position, the `known_at` of the event there, so a record due between that event and the read is not due as of it and is at the head; else the wall clock; every page a cursor continues, of `find`, `query` and `search`, reads the clock its first page read; and a listing of proposals judges what a proposed call reaches under the host's clock, else the clock of the position it reads, never `valid_at`: a call whose target turns held after a cutoff is listed to a reviewer without `restricted` as of its proposal, read after the cutoff, also `valid_at` an instant after it, and not at the head, also `valid_at` an instant before it, but is at the head under the host's clock before it; and to a holder of `only`, a write whose record's owner is derived from the clock is judged alike with and without `valid_at`"
+);
+
+check!(
+    TODAY_RULES_OUT = a_read_answers_which_of_its_keys_a_condition_reading_today_rules_out,
+    "052, lakelands#1411: a `find` whose `where` names the keys it holds and reads `today()`, `id in (…) and not(due >= today())`, answers exactly the keys the condition rules out at the read's clock: at the head the keys due before today, `valid_at` an instant in 2500 also those due before then, as of a position those due before the day of its event, and a key written after that position or outside the list is not answered"
 );
 
 /// The instant `valid_at` names: after `b3` falls due, long after the
@@ -173,7 +169,7 @@ async fn a_read_takes_its_clock_from_the_instant_or_the_position_it_names(store:
             .find(own, &"bill".into(), by)
             .await
             .must("grouping by `today()`")?;
-        let Found::Groups { rows } = groups.data else {
+        let Found::Groups { rows, .. } = groups.data else {
             return Err(Failure::new(format!("{when}, an aggregate answers groups")));
         };
         let said = |v: &Value| v.as_str().and_then(|s| s.parse::<Timestamp>().ok());
@@ -318,6 +314,89 @@ async fn a_read_takes_its_clock_from_the_instant_or_the_position_it_names(store:
     Ok(())
 }
 
+async fn a_read_answers_which_of_its_keys_a_condition_reading_today_rules_out(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let (c, own) = (&l.cat, &l.own);
+    l.declare_json(
+        json!({"declare": "type", "name": "slip", "key": ["id"], "fields": [
+            {"name": "id", "type": {"kind": "text"}},
+            {"name": "due", "type": {"kind": "date"}},
+        ]}),
+    )
+    .await?;
+    // `s1` is due long ago, `s2` in 2400, `s3` in 2999; `s4`, long ago too,
+    // is written after the position the earlier reads name, and `s5`,
+    // long ago, is outside the keys the reads name.
+    let mut at = Position::GENESIS;
+    for (key, due) in [
+        ("s1", "2000-01-01"),
+        ("s2", "2400-01-01"),
+        ("s3", "2999-01-01"),
+        ("s5", "2000-01-01"),
+    ] {
+        at = l
+            .upsert("slip", key, json!({"id": key, "due": due}))
+            .await?
+            .position();
+    }
+    l.upsert("slip", "s4", json!({"id": "s4", "due": "2000-01-01"}))
+        .await?;
+    let valid: Timestamp = VALID.parse().map_err(|_| Failure::new("an instant"))?;
+    let host: Timestamp = HOST.parse().map_err(|_| Failure::new("an instant"))?;
+    let asked = [
+        ("at the head", None, None, None, vec!["s1", "s4"]),
+        (
+            "as of the last of `s1`..`s5`",
+            Some(at),
+            None,
+            None,
+            vec!["s1"],
+        ),
+        (
+            "at the head, valid at 2500",
+            None,
+            Some(valid),
+            None,
+            vec!["s1", "s2", "s4"],
+        ),
+        (
+            "as of the last of `s1`..`s5`, valid at 2500",
+            Some(at),
+            Some(valid),
+            None,
+            vec!["s1", "s2"],
+        ),
+        (
+            "at the head, the host's clock",
+            None,
+            None,
+            Some(host),
+            vec!["s1", "s2", "s4"],
+        ),
+    ];
+    let filter = "id in ('s1', 's2', 's3', 's4') and not(due >= today())";
+    for (when, as_of, valid_at, clock, want) in asked {
+        let find = Find {
+            filter: Some(filter.into()),
+            at: ReadAt {
+                as_of,
+                valid_at,
+                clock,
+            },
+            ..Find::default()
+        };
+        let found = keys(&all_found(c.as_ref(), own, "slip", find).await?);
+        let want: BTreeSet<String> = want.into_iter().map(String::from).collect();
+        ensure!(
+            found == want,
+            "{when}, `{filter}` rules out {want:?} at the read's clock, and found {found:?}"
+        );
+    }
+    Ok(())
+}
+
 /// The `read_at` each page of one read of `bill` through `door` reads,
 /// a bill a page, pausing between pages so a clock read again would move.
 async fn page_clocks(
@@ -362,14 +441,8 @@ async fn page_clocks(
             }
             _ => {
                 let search = Search {
-                    ty: "bill".into(),
-                    mode: SearchMode::lexical("bill"),
-                    k: 1,
                     cursor,
-                    filter: None,
-                    with_meta: false,
-                    at: ReadAt::default(),
-                    rerank: None,
+                    ..searched("bill", SearchMode::lexical("bill"), 1)
                 };
                 let hits = c.search(own, search).await.must("a page of `search`")?.data;
                 (

@@ -14,8 +14,12 @@ which every engine calls, decide which of them answer the engine's
 caller, in what order and with which score
 (`docs/decisions/031-engines-share-one-rulebook.md`); the store then
 applies its reader's grants and fuses the rankings, as the rules below
-say. The one case where an engine's index decides which records answer
-is a vector field the lake asks an index for, and the answer says so.
+say. Under the `ranked` seam an engine handed its reader's selection
+applies those functions itself, to each vector candidate on its head
+record, and says so (`Ranked.judged`); the store judges the page's hits
+again and keeps the rest. The one case where an engine's index decides
+which records answer is a vector field the lake asks an index for, and
+the answer says so.
 
 ### Text is tokenised by the store's one pipeline, so a query matches the same records on every engine
 
@@ -45,14 +49,68 @@ a workload ever asks for it.
 ### A lexical hit's set, order and score are the same on every engine
 
 One function ranks a lexical search on every engine
-(`lakelands_core::engines::lexical`): a hit scores each distinct query
-token its text holds, at the weight of the heaviest searched field
-holding it, summed in the tokens' order; best first, ties by key. A
-field the type's setting does not weigh weighs 1 (below), so a type
-that weighs none scores the count of the tokens held, as it always has.
-So the set, the order and the score are the same on every engine. A
-weight is above 0, so it never changes which records are hits, only
-their order and scores. The suite holds it: a
+(`lakelands_core::engines::lexical`): BM25F in its combined-field form,
+best first, ties by key. It replaces today's score for every lake from
+0.20.0 (lakelands#1412), as the operator decided on lakelands#1400
+(2026-10-25), and comes in force with the issue that builds it; until
+then a hit scores each distinct query token its text holds, at the
+weight of the heaviest searched field holding it, summed in the
+tokens' order.
+
+There is no switch, per type or per lake: a type that weighs no field
+is ranked by it too, so every lake's lexical order and scores move at
+the upgrade, and the release notes of 0.20.0 say so. A switch would
+keep two functions held to the same bits on every engine, and a
+setting that changes every ranking of a type; a score is compared
+within one answer and never across releases (below), so the move
+breaks nothing a caller may hold.
+
+For each searched field `f`, `n_f` is the number of live heads of the
+reader's class whose `f` holds a token, `L_f` the tokens of `f` over
+them, repeats counted, and `avg_f = L_f / n_f`; `N` is the sum of the
+`n_f`. A query token `t` is in `df_t` live heads of the class, in any
+searched field. For a hit, `tf` counts `t` in its field `f` and `len_f`
+that field's tokens, and `w_f` is the field's weight (below):
+
+```
+K1 = 1.2, B = 0.75
+idf_t = ln((2N + 2) / (2·df_t + 1))
+x_t   = Σ_f w_f · tf_{t,f} / (1 − B + B · len_f / avg_f)
+s_t   = idf_t · x_t · (K1 + 1) / (x_t + K1)
+score = Σ_t s_t
+```
+
+The fields are summed in their declaration's order, a field `t` is not
+in adding nothing, and the tokens in their sorted order, from 0. A rarer
+token weighs more than a common one, and a match in a short field more
+than one in a long field at the same frequency.
+
+`N` is a sum, and not the greatest `n_f`, so that no token weighs less
+than nothing. A head that holds `t` in a searched field is counted in
+that field's `n_f`, so `df_t` is never above `N`, and
+`2N + 2 > 2·df_t + 1` holds: `idf_t` is above 0, and a hit that holds
+one more query token, its other matches the same, scores more for it.
+With the greatest `n_f`, a token found in the title of some heads and
+the body of others could be in more heads than `N`, its `idf_t` below 0,
+and a common word would lower every hit that holds it. The sum needs no
+count beyond the `n_f` that are kept; a count of the heads with any
+searched text would need one for each set of fields a search may name.
+
+A token is saturated once over all its fields, not once a field: its
+share `s_t` stays below `(K1 + 1)·idf_t` however many fields hold it
+and however often, where a share per field would grow with every field
+it is in. That bounds one word; it does not order words against each
+other. A hit that repeats one word in several short fields may outrank
+one that holds two words of the query once each, the more so where the
+repeated word is the rarer.
+
+Its bits are the same on every engine and every target. It is computed
+in `f64`, in one function with one expression tree, so no engine
+reorders a sum (031); every count is below `2^53`, so it enters `f64`
+exactly; and `ln` is the `libm` crate's, written in Rust, not the
+platform's, whose last bit may differ between targets. A weight is
+above 0, so it never changes which records are hits, only their order
+and scores. The suite holds it: a
 search limited to named fields answers the same keys and scores through
 the doors and at the engine seam
 (`a_search_limited_to_named_fields_matches_and_ranks_in_those_only`,
@@ -68,19 +126,98 @@ may score otherwise, on every engine at once and with the suite's rows
 changed with it. A caller compares scores within one answer, and not
 across releases.
 
-A token counts once, at its heaviest field, and not once a field it is
-in. Summed over the fields, a word in both a title and a body would
-score 2 where it scores 1 today, and every lake that weighs nothing
-would rank otherwise. BM25F, a sum over fields scaled by their lengths
-and the corpus's frequencies, was not taken: the one function holds no
-statistics of the lake, and keeping them would put a second structure,
-changed at every write, into every engine's projection. The engines'
-own rankers, `bm25()` in SQLite and `ts_rank` with its four `setweight`
-classes in PostgreSQL, score differently from each other and from the
-memory engine, and four classes cannot hold the weights a host writes.
-Neither engine's index knows which field a token came from; the
-function reads each candidate's fields from the record, so a weight
-changes no projection.
+**What is counted and what is kept.** A ranking by rarity and length
+reads statistics of the lake, and keeping statistics puts a structure
+changed at every write into every engine's projection; so the function
+keeps only what it cannot count from what a search already reads.
+
+- **`df` is counted, never kept.** Every engine hands the function
+  every candidate that holds a query token, in any field, so the count
+  of the candidates its reader's class admits that hold `t` in a
+  searched field is `df_t`, exactly. For a reader with no class it is
+  counted over the candidates the store admits that reader, as it is
+  told them (below): a token a selected record holds only in a field
+  hidden there does not count.
+- **`n_f` and `L_f` are kept,** per type, field and hold: one count for
+  the heads that are not held and one for the held, the two classes 078
+  splits a reader into. A reader without `restricted` reads the first,
+  one with it both. SQLite and PostgreSQL keep them in their projection,
+  with each record's tokens per field so that a write takes out exactly
+  what it put in, written in the fold's transaction as the text rows
+  are; every path that re-indexes a record (a migration, a re-key, a
+  forgotten source, a rebuild) goes through the same two writes. The
+  memory engine keeps nothing and counts them in the same pass; it is
+  the reference.
+- **A reader with no class is counted for.** A reader whose `only`
+  admits some records of the type, or whom a link's ends judge, or who
+  is told a record its own way, or who has a field hidden on the
+  records a condition selects (006), is ranked over what it is
+  admitted (078). The store counts `n_f` and `L_f` over the heads it
+  admits that reader, as it is told them, and hands them to the
+  function, so that no record and no text the reader may not see moves
+  its score; a hidden field brings a selected record no match. A held
+  record is a candidate of a reader without `restricted` that the
+  store drops (below); its frequency and its length reach none of that
+  reader's scores.
+- **Statistics are of the head.** A `where`, a `valid_at` and the
+  position read do not shape them, as they do not shape the ranking
+  (below), and a field the reader is not shown is not searched, so its
+  counts move nothing.
+- **A lake written before is counted once.** The counts carry the
+  position they are folded through. A writer that opens a projection
+  whose mark is absent or behind counts them again from the head, and a
+  reader that finds the mark behind counts at the search instead of
+  trusting them. The log does not change and the layout does not move.
+
+The engines' own rankers, `bm25()` in SQLite and `ts_rank` with its
+four `setweight` classes in PostgreSQL, score differently from each
+other and from the memory engine, and four classes cannot hold the
+weights a host writes. Neither engine's index knows which field a token
+came from; the function reads each candidate's fields from the record,
+so a weight changes no projection.
+
+### A hit says where its text matched, and only in fields its reader is shown
+
+A search that asks for `matches` is answered, on each hit, the searched
+fields its text matched, by name, and in each the spans of the tokens
+that matched, in text order, with the count of every matched token in
+the field. It is accepted for 0.20.0 (lakelands#1412). A host that
+wanted to show why a hit is a hit ran one more search a hit, field by
+field.
+
+- **A span is counted in characters,** Unicode scalar values of the
+  field's text, its end exclusive, the unit refusals already count
+  offsets in. A field answers at most 32 spans, a constant of the core,
+  and its count says how many it held, so a caller knows the spans were
+  cut. The span does not say which query word it matched; that is a
+  member a later release may add.
+- **It is computed by the store over the answered record,** after the
+  page is cut, for the page's hits only, by the one token pipeline that
+  ranks: a token of the text is a span where the pipeline makes of it a
+  term the query holds, so a stem and a folded letter match as they
+  rank. The language is the one the ranking used, and the fields are
+  the first stage's searched fields; a second stage's text moves no
+  span. No engine computes it: each would need a positional index to
+  hand back what the store computes over at most a page of records it
+  already holds.
+- **It reads the record answered, at the position read.** A search
+  ranks by the head (below), so a record whose text changed since that
+  position is ranked by text it is not answered with, and may answer no
+  matches.
+- **Only fields its reader is shown.** A field is named only where it
+  is searched, which its reader is shown, and present in the record as
+  its reader is told it: a field hidden, masked or not shown at the
+  position read, or hidden on the record by a condition, is never
+  named, so `matches` is bounded by the record and says nothing a `get`
+  of it would not.
+- **It says nothing of the axes.** A hybrid hit reports the text it
+  matched whichever axis brought it, so a hit a vector brought may
+  still name matches; what each axis brought stays the axes' (below).
+- **A search with no text cannot ask for it.** `matches` on a search
+  with no text is refused by its shape, before any right is judged,
+  as a model named with no vector is. A pattern that starts from a
+  search answers rows, not hits, and has no `matches`. Without the
+  member a hit answers as it always has.
 
 ### A vector ranking is the cosine, best first, exact to the bit
 
@@ -94,7 +231,9 @@ selection (`lakelands_core::engines::TopK`): a search keeps its best `k`
 while it scans the field, never the field, and answers the reference
 ranking's keys, order and scores to the bit. A field the lake asks an
 index for answers the index's set instead, ranked by the same cosine,
-and says `ranked_by: index`; everything else answers the reference.
+best first within the stream its graph hands out and within the rest
+after it (below), and says `ranked_by: index`; everything else answers
+the reference.
 
 A record's vector is not held to a direction. A record may have nothing
 to say along a field, and a vector of zeros scores 0 against every
@@ -108,6 +247,14 @@ An engine's full-text and vector candidates include restricted records
 to the hits, as it does for `find` and `get`. A principal holding the
 `restricted` grant finds a restricted record by search; one without it
 never sees it.
+
+Under an index a vector candidate is its reader's class's: a held
+record is no candidate of a reader without `restricted`, which is
+streamed from a graph that holds no held record, and a reader holding
+`only` on the type is ranked exactly over the records that hold its
+pairs (below). Under the seam the engine applies the grants to its
+vector candidates by the shared functions, and the store judges the
+page's hits again.
 
 ### Several rankings are fused by weighted reciprocal rank, among the hits the read may see
 
@@ -130,8 +277,11 @@ list's. Equal sums are ordered by key.
   ranking therefore depends on the query, the position and the read's
   visibility, never on the page asked for. Every page through a cursor
   is a page of that one ranking while no write lands between the pages:
-  each pull ranks by the head as it stands (below). An indexed field
-  pages by the index's own rule (below).
+  each pull ranks by the head as it stands (below). An indexed field's
+  list is a prefix of the one sequence of its reader's class (below),
+  so it is one ranking for every page too, and under the seam the
+  engine counts each list's `max_limit` among the candidates its reader
+  may see.
 - **A fused list is read to its window.** The store reads the lists in
   growing batches: a first pull of `max(4 · (offset + k + 1),
   max_limit)` candidates, and four times as many while a list is
@@ -226,7 +376,12 @@ in its title no higher than one mentioning it in a note.
 - **It weighs what a search does not.** A fused search that gives a
   vector field no `weight` takes the setting's `fields` weight, and a
   hybrid search with no `text_weight` takes the setting's; a weight the
-  search gives wins, and a ranking neither names weighs 1. Each fused
+  search gives wins, and a ranking neither names weighs 1. A lexical or
+  hybrid search may give its own `text_fields` as well: its weight for a
+  field wins over the setting's for that field, and a field it does not
+  name takes the setting's, else 1, so a host that wants another
+  weighting for one search does not rewrite how every other search of
+  the type ranks (lakelands#1237). Each fused
   axis names the weight it ranked by. A search of one axis is not fused,
   and `fields` and `text_weight` change nothing there. A restricted setting's value
   shows only as the weight of an axis its reader is shown, as any
@@ -240,20 +395,35 @@ in its title no higher than one mentioning it in a note.
   the writer is shown in `text_fields`, and every weight is one a search
   may give, above 0 and at most 1 000 000. Anything else, an unknown
   member, an empty object or empty `fields` or `text_fields`, is
-  refused when it is written, naming the member; a field the writer is
-  not shown is refused as one the type does not declare, before its
-  weight is judged.
+  refused when it is written, naming the member. A writer that does not
+  read the type whole is refused the setting as not granted, naming no
+  field, before anything of it is judged
+  (`docs/decisions/063-every-setting-is-in-one-list.md`).
 - **`text_fields` weighs every ranking of text,** a lexical search's
   and a hybrid search's lexical half alike, and its fallback to the
-  text: it weighs a match by the field it is in, inside the ranking,
-  and not a ranking against another, so it is read where nothing is
-  fused too. A hybrid search's lexical half is ranked by it before the
-  fusion, which reads that half's ranks. The axes do not name it: it
-  is the type's, not an axis's. A field is weighed only where the
-  search reads it, under its name at the head: a field it does not
-  name, or whose reader is not shown it, brings no weight, and no
-  weight is scaled by another's, so a field its reader is not shown
-  moves no score of the fields it is (lakelands#1230).
+  text: it weighs a match by the field it is in, inside the ranking, a
+  token's frequency in the field multiplied by it once BM25F is in force
+  (above), and not a ranking against another, so it is read where
+  nothing is fused too. A hybrid search's lexical half is ranked by it
+  before the fusion, which reads that half's ranks. The axes do not name
+  it: it is the type's or the search's, not an axis's. A field is
+  weighed only where the search reads it, under its name at the head: a
+  field it does not name, or whose reader is not shown it, brings no
+  weight, and no weight is scaled by another's, so a field its reader is
+  not shown moves no score of the fields it is (lakelands#1230).
+- **A search's own `text_fields` is judged as the setting's is,** at
+  the search. Each field it names, in name order, is probed as a field
+  a search names (024), so one the type does not declare and one the
+  reader is not shown are refused alike, as `unknown_field`, and one
+  shown masked is not granted; then it must be searchable
+  (`not_searchable`), and only then is its weight judged
+  (`weight_range`), so a refusal of a weight never tells a reader of a
+  field it is not shown. The first faulty field in that order is the
+  one named. An empty object is refused as an empty
+  `fields` is (`search_text_fields_empty`). A field the search's
+  `fields` leaves out is judged too, and weighs nothing, since it is
+  not searched. The weights are part of the search a cursor is bound
+  to, so a cursor continues no search of other weights.
 - **A weight a search could not give weighs nothing.** The store reads
   the setting through the same bound it is written under, so a log
   that came another way, by an import, cannot make a search rank by a
@@ -308,16 +478,18 @@ ranks by, so every hit scored `NaN`.
   vector search that names no other field, a field named twice), before
   the principal's rights: "`v`'s vector has no direction: every
   component is 0", or "has a component that is not a finite number".
-- **A vector the embedding backend makes for a hybrid search is held to
-  the same rule,** and one without a direction makes the search
-  unavailable, as a backend that fails does: the caller did not write
-  it.
+- **A vector the embedding backend makes for a search is held to the
+  same rule,** and one without a direction is the backend's failure, as
+  a backend that fails is: the caller did not write it
+  (`§ A hybrid search whose query the lake cannot embed ranks by its
+  text, and says why`).
 
-A query vector is always the caller's: the store makes no model call of
-its own accord. A hybrid search without one, over a field a model
-fills, has its text embedded by the bound backend, or falls back to its
-text where none is bound. So a vector with no direction is the caller's
-mistake, and a refusal that names the field says so. An axis that
+A query vector is the caller's, or made of the caller's words: the
+store makes no model call of its own accord. A hybrid search without
+one, or a vector search that brings `text`, over a field a model fills,
+has its text embedded by the bound backend. So a vector the caller
+brings with no direction is the caller's mistake, and a refusal that
+names the field says so. An axis that
 ranked nothing would answer no hits for a lone search, which reads as
 "nothing is near". The rule is exact: a cosine over finite 32-bit
 floats, summed in doubles, neither overflows nor underflows.
@@ -339,9 +511,10 @@ name its `model`.
   so `model` is not judged; the field's axis names it, as it names it
   wherever it was given.
 - **A vector without `model`** is ranked as before.
-- **A hybrid search that brings no `vector`** takes no `model`: the
-  lake makes that vector of the field's own model, so a `model` there
-  names nothing the caller brought. It is refused by the search's shape
+- **A hybrid search that brings no `vector`, and a vector search that
+  brings `text`,** take no `model`: the lake makes that vector of the
+  field's own model, so a `model` there names nothing the caller
+  brought. It is refused by the search's shape
   alone (`model_without_vector`), with the other misfits and before any
   field is judged for the caller, so the answer tells nothing of the
   field.
@@ -361,7 +534,8 @@ one of other dimensions it spent the call and was then refused.
   is not of kind `vector` is refused as invalid on that field, naming
   its kind (`search_not_vector`). The caller named a ranking, and an
   answer that drops it says something the store did not do.
-- **A hybrid search without a vector reads a field a model fills.** Over
+- **A hybrid search without a vector reads a field a model fills,** and
+  so does a vector search that brings `text`. Over
   a vector field without `embed` it is refused as invalid on that field
   (`search_needs_vector`), whether or not a backend is bound: the fault
   is in the request read against the declaration, not in the host's
@@ -371,17 +545,118 @@ one of other dimensions it spent the call and was then refused.
   call.** A hidden field answers as an absent one and a masked one as
   not granted, as lakelands#741 orders them; a refused search costs no
   call. A field declared with `embed` keeps its comparison with the
-  bound backend and its fallback to the text where none is bound, and a
-  caller's vector over a plain vector field is ranked by the one cosine.
+  bound backend, and a caller's vector over a plain vector field is
+  ranked by the one cosine.
+
+### A vector search may bring words, and the lake embeds them with the field's model
+
+A host that wanted a pure cosine ranking over a field the lake embeds
+had to embed the query itself, through a second route to a model
+configured apart from the one that made the field's vectors, and the
+two could drift. A hybrid search could not drop its text: a search of
+no text fields and a text weight of 0 are both refused.
+
+- **A vector search brings `vector` or `text`, not both**
+  (`vector_with_text`). With `text`, over a field declared with `embed`,
+  the lake embeds it in one call through the bound backend, the path a
+  hybrid search's text takes, with the field's model as the head
+  declares it, and ranks it as the same search bringing that vector:
+  under the same rights, with the same `also`, weights, index, cursor
+  and second stage, whose `rerank.text` it needs as a vector search
+  does (067).
+- **It is a member of the vector search, not a mode of its own.** The
+  ranking is the vector search's in every rule; only where its vector
+  comes from differs, and the door makes the vector before the read, so
+  the read ranks exactly what a caller's vector would. A mode of its own
+  would restate every rule of the vector search for one member, and a
+  host reads the vector search it knew with the member absent.
+- **Its refusals are those of a hybrid search without a vector.** Beside
+  a `vector` it is `vector_with_text` and beside a `model`
+  `model_without_vector`, by its shape alone, before any field is judged
+  for the caller; over a vector field no model fills it is
+  `search_needs_vector`, over a field that holds no vectors
+  `search_not_vector`, after the caller's rights; all before any call.
+  A bound backend of another model or length is `Unbound`, naming both.
+  With no backend bound it is `Unbound`, and a backend that fails makes
+  it unavailable: it has no other leg to answer through.
+- **A pattern's start does not take it** (`start_needs_vector`). A
+  pattern's read makes no embedding call, and its rows have no member that
+  could say a vector was not made. A start brings its vector.
+
+### A hybrid search whose query the lake cannot embed ranks by its text, and says why
+
+A hybrid search whose vector the backend failed to make was refused
+whole, so that one query never ranked differently by the network's
+weather. An embedding server is often down together with everything
+around it, and then a keyword search that worked answered nothing;
+every host rebuilt the floor itself, catching the refusal and searching
+again by text, with a ranking it had to describe on its own. The
+answer now says which ranking it is, which keeps what the old rule
+protected: a caller never mistakes one ranking for the other.
+
+- **A hybrid search without a vector whose vector the lake cannot make
+  ranks by its text alone:** where no backend is bound, and where the
+  bound backend cannot be reached, fails or refuses, whatever error it
+  answers, or answers a vector without a direction or other than one
+  vector. It is the default, with no member to ask for it: a host that
+  wants the refusal reads the answer's marker as one.
+- **The answer names the leg in `unranked`:** its vector field, `field`,
+  and the error its query vector met, `why`: `Unbound` naming the model
+  where no backend is bound, `Unavailable` naming the backend and what
+  it answered where it failed. `ranked_by` says `lexical`, and `axes`
+  lists the lexical axis alone, its own score kept
+  (`§ Several rankings are fused by weighted reciprocal rank, among the
+  hits the read may see`). A search whose vector ranked has no
+  `unranked`.
+- **A bound backend of another model or length stays a refusal**
+  (`Unbound`, naming both): that is a configuration to fix, not
+  weather, and no ranking answers it. The search is judged for its
+  caller before any call, as before.
+- **A vector search has no other leg:** one whose `text` cannot be
+  embedded is refused, as above.
+- **Every page of an answer its text alone ranked is ranked so.** Its
+  cursor carries `unranked`, and a later page asks the backend nothing
+  and repeats it, though the backend is up again: the pages are of one
+  ranking. A cursor of an answer its vector ranked carries none, and its
+  page asks the backend again; where that fails the page is
+  unavailable, since its text alone would continue another order than
+  the pages before it. Where no backend is bound, a page whose cursor
+  carries none ranks by its text and says so, as the first page would,
+  so a cursor handed out before the marker, of an answer its text
+  ranked, goes on as it did. A cursor of an answer its vector ranked
+  names that vector in the read it continues, and a page without it is
+  another read (`cursor_other_read`).
+- **The read writes the marker.** The search door hands its read why the
+  vector was not made, and the read puts it in its answer and in the
+  cursor it hands out, once, as a second stage's order is handed. With no
+  backend bound the door makes no read of its own to judge the search
+  first: there is no call to spare, and the read judges it.
+- **A cursor's marker is the caller's own.** A cursor is not signed; one
+  that carries a marker it was not handed changes only how its caller's
+  own pages say they ranked, never what a record shows. The read takes a
+  marker only from a cursor of its own read, of a hybrid search without a
+  vector.
+- **A second stage ranks the text's window,** says `lexical + rerank`,
+  and every page repeats `unranked`, as it repeats the first stage's
+  `ranked_by` (067).
+- **As of an earlier position the same holds:** the head's model makes
+  the vector (`§ A search at an earlier position ranks by the head`),
+  and where it cannot, the text alone ranks, by the head, as any search
+  at that position does.
 
 ### A field the lake asks an index for answers the index's set, and says so
 
 A vector search reads every vector of its field and answers the exact
 ranking, unless the lake asks for an index on that field. A field the
-lake asks an index for answers **the index's set**: the candidates the
-engine's index returns, ranked by the one cosine, ties by key. That set
-may miss a neighbour the exact ranking finds. The answer says so, and
-how often it misses is held by the conformance suite, per engine.
+lake asks an index for answers **the index's set**: the sequence of its
+reader's class, what the class's graph hands out in its stream and then
+the rest of the field (below), ranked by the one cosine, ties by key. A
+pull of `k` may miss a neighbour the exact ranking puts among its first
+`k`, where the stream hands it out later or the rest holds it. The
+answer says so, and how often it misses is held by the conformance
+suite, per engine. A reader ranked exactly, one holding `only` or judged
+by a link's ends, or one whose graph is not built, is answered the
+reference, and the answer still says `index`.
 
 - **Asked for per field.** The `sys.setting` record `vector_index.<type>`
   holds a JSON array of the type's vector fields. The store refuses, as
@@ -421,43 +696,53 @@ What an agent cannot see is how good the set is; the suite holds that,
 as recall against the reference the scan still computes, on every
 engine that runs it.
 
-### PostgreSQL keeps the index, and uses it only while it describes the head
+### PostgreSQL keeps a graph per class of reader, and uses it only while it describes the head
 
-- **PostgreSQL** keeps pgvector's HNSW index in the server: the unit
-  vector of every vector of the field, `v / |v|` taken in `f64` and
-  rounded to `f32`, in a column beside it, and one partial index per
-  field over it by L2 distance, which on unit vectors is cosine's order
-  (`m = 16`, `ef_construction = 64`, pgvector's defaults). A search asks
-  it for as many candidates as the store asks the engine for and one
-  more, with `ef_search` at that number, at least 200 and at most 1 000,
-  and iterative scans past that. A vector of zeros has no direction
-  and is never a candidate of an indexed field, whether the index
-  answers the search or the exact scan does: answered by the scan
-  alone, it would show a reader that the field is smaller than the
-  pull, and so how far the field goes beyond what the reader is shown.
-  A field without the setting scores it 0, and so does a field the
-  engine has no index to read for: on a server without pgvector, or
-  while the field's mark is behind the head. Neither turns on the pull
-  or on the field's size. Which way answered still shows by a neighbour
-  the index misses and the scan finds; that is left to lakelands#870.
+- **PostgreSQL** keeps pgvector's HNSW index in the server, as a graph
+  per class of reader
+  (`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`).
+  An indexed field of a record type keeps B, of its live heads that are
+  not held, and A, of every live head, from the type's first hold; one
+  of a link type keeps one graph, of every live head. A reader without
+  `restricted` is streamed from B, one with it from A, and a reader
+  holding `only` on the type, or one whose sight judges a link by its
+  ends, is ranked exactly. Each graph is a table per generation: the
+  record's key and its unit vector, `v / |v|` taken in `f64` and
+  rounded to `f32`, with one HNSW index over it by L2 distance, which on
+  unit vectors is cosine's order (`m = 16`, `ef_construction = 64`,
+  pgvector's defaults). `vectors` keeps every position's elements and
+  no unit vector. A search reads one stream of its class's graph at
+  settings it sets itself: `hnsw.iterative_scan = strict_order`,
+  `ef_search` 1 000 for every search, the tuple bound lifted, and the
+  memory bound at 4 000 MiB a search. A vector of zeros has no
+  direction and is never a candidate of an indexed field, whether the
+  stream answers the search, the rest after it, or the exact ranking. A
+  field without the setting scores it 0, and so does a field on a
+  server the engine keeps no graph on. Which way a reader was answered
+  turns on nothing its class may not see: its graph holds only what its
+  class may see, and an exact ranking follows the cosine alone. What a
+  hold still tells a reader without `restricted` is stated in 078.
 - **SQLite and memory** keep no such index. They accept the setting,
   say `index` and `indexed`, and answer the exact ranking: the index's
   set is the reference there. A SQLite lake that needs an index moves
   to PostgreSQL by export and import (lakelands#215).
-- **Only while it describes the head.** On PostgreSQL each indexed field
-  has a mark (`vindex.<type>.<field>`) the fold keeps at `folded`, as the
-  order index's (041). A search uses the index only while the mark equals
-  `folded`; otherwise it scans, and answers the reference. The setting's
-  write builds its type's indexes in the fold's transaction, at its
-  commit, so no search waits on a build before then; a
-  redeclaration of the type builds them again; a writer's open builds
-  those whose mark is behind; `rebuild` and `clear` take them with the
-  projection.
+- **Only while it describes the head.** On PostgreSQL each graph has a
+  row that names its type, field and class, the generation read and the
+  one being built, and the position from which B is stale. A search
+  reads a graph only while its row names a generation and B is not
+  stale; otherwise that graph's readers are ranked exactly, and
+  answered the reference. The setting's write builds the field's B, and
+  A where a head of the type is held, in the fold's transaction, at its
+  commit, so no search waits on a build before then; a redeclaration of
+  the type builds them again. The hold of a record B held marks B
+  stale, and the writer builds B again beside the old one and swaps it
+  in, as 078 says; a writer's open drops a half-built graph and starts
+  it again; `rebuild` and `clear` take the graphs with the projection.
 - **A server without pgvector** (or with a version before 0.8, which has
-  no iterative scans) keeps no index: nothing is marked and every search
-  answers the reference. A writer's open tries `CREATE EXTENSION IF NOT
-  EXISTS vector` and, when the lake asks for an index it cannot keep,
-  says once on standard error why. It never refuses the lake.
+  no iterative scans) keeps no graph: every search answers the
+  reference. A writer's open tries `CREATE EXTENSION IF NOT EXISTS
+  vector` and, when the lake asks for an index it cannot keep, says once
+  on standard error why. It never refuses the lake.
 
 The index is kept in PostgreSQL only. One installation runs one engine;
 the memory engine is for tests and small lakes, and a SQLite lake is a
@@ -467,130 +752,90 @@ search for lakes that rarely need one, and a second graph to keep
 consistent across processes and crashes. A SQLite lake that grows into
 the need moves to PostgreSQL.
 
-The unit vectors are the index's, not the answer's: the candidates are
-ranked by the one cosine over the stored vectors, as every other search
-is, so the index decides which records are candidates and never how
-they score or in which order ties fall.
+The unit vectors are the graphs', not the answer's: what a stream hands
+out is ranked by the one cosine over the stored vectors, as every other
+search is. A graph decides which vectors its stream hands out and which
+come after it, and never how they score.
 
-### Under an index a tie at the boundary is pulled deeper
+### Under an index a tie at the boundary is read within a margin
 
 The index hands out equal distances in its graph's order, not the keys'.
-Cut at `k` and then ordered by key, a group of equal scores larger than
-the pull answered some of its records twice across two pages and others
-never. So a search asks the index for one candidate more than it
-answers, and while that one scores as the last one answered it asks for
-twice as many: the members of the tie the index hands out at that depth
-are all pulled before the keys cut it, and come once and in key order
-at that depth.
+So a pull reads the stream's first `k` rows its reader may see, then
+every row after them whose `1 − d²/2` is within the margin of the
+`k`th row's, and ranks those by the cosine, equal scores by key. The
+margin is `(dimensions + 8) / 2²²` of the cosine: pgvector keeps each
+unit vector in single precision and sums the distance in single
+precision, and over `n` dimensions `1 − d²/2` is within `(n + 4) / 2²³`
+of the cosine the lake takes in double, so a cut that compares two rows
+needs more than twice that. A row past the margin scores below each of
+the first `k`, at this pull and at every deeper one.
 
-That is not the group whole. The index often hands a group out in part
-and goes on with farther vectors: of 30 vectors alike among 400 others
-the first 65 candidates held between 2 and 30 over sixteen builds, and
-of 700 alike put after the build beside a thousand others, paged by ten
-and by a hundred, 21 hits came twice and 21 never. The pull is then not
-short and no tie is seen cut; a member left out is a neighbour the
-index misses, as any other, and a deeper pull may bring it. Beside
-those thousand others, with the index built over the group and no
-`where`, a group of every size from 2 to 4 097 was answered exactly;
-the 30 among 400 were built over too. What an index hands out of a
-group moves with its build and with what stands beside it, and no rule
-is drawn from either measure.
+So every member of a tie at the `k`th row that the stream hands out is
+read before the pull is cut, and the keys order it; no deeper pull is
+asked. A member the stream does not hand out is in the rest (below).
+Under an index the graph decides on which side of the stream's end a
+member of a tie falls, and the score rises where the rest begins: the
+sequence is best first within the stream and within the rest.
 
-Where the first pull cuts no tie the answer is the first `k` candidates
-the index handed out, and the one more only showed it; from 200 to 999
-candidates that pull is searched one candidate wider than a pull of `k`
-was. After a deeper pull the answer is the best `k` of all it pulled. A
-tie still cut at 4 096 candidates is the exact scan's. Each time the
-store asks, the engine's pulls of the index double from the first, what
-the store asked for and one, to 4 096: one pull where the first is that
-deep, seven where it is 65 to 127, and 4 096 to 12 097 candidates
-together for first pulls of 65 to 4 096. 65 is the least for a search
-of one ranking. A fused search asks for
-`max(4 · (offset + k + 1), max_limit)` at first, so in a lake whose
-`max_limit` is under 64 the engine may start below 65, and pull more
-often. Where the store asks for 4 096 or more the engine pulls once,
-at that depth, and a tie at its boundary is the exact scan's too; a
-page past a thousand hits and a filter that hides most candidates ask
-for that. The number is the engine's. The deepening looks at scores
-alone, never at what a reader may see.
+### Under an index the rest of the field follows the stream
 
-### Under an index a pull that comes back short is answered by the exact scan
+A strict stream drops a vector it finds after a farther one was handed
+out, and a graph may not reach every vector: of a large group of
+identical vectors pgvector reaches a part, however many are asked for.
+So where a pull reaches the stream's end, the engine ranks the graph's
+other entries after it, exactly, by the vectors the lake holds, leaving
+out the keys the stream handed out and every entry without a unit
+vector. A pull that comes back short is the field's end. The stream's
+tuple bound is lifted, so the stream ends where the graph's reach ends
+or at the memory bound, over entries its reader's class may see, never
+at a count that follows from what its reader may not see. On a field of
+100 000 at `ef_search` 1 000, a stream read to its end handed out
+59 768 to 84 870 of its vectors in 1.5 to 1.7 s; the rest follows.
 
-The index hands out fewer candidates than it was asked for where the
-field holds no more, and also where it holds more. Two such places were
-measured:
+A reader whose filter keeps few records of a large field is answered by
+the stream and then the rest, not by the exact scan, and the stream's
+drops are its recall: on that field, a reader that sees 900 of it was
+answered 0.981 of the exact ranking's first 10 and 0.924 of its first
+100 (078). `docs/hosting.md` states it.
 
-- **A large group of identical vectors.** pgvector reaches a part of
-  it, however many are asked for (measured on a field of 8
-  dimensions that holds the group alone):
+### Under an index the pages of one query are one sequence of its reader's class
 
-  | vectors alike | index built over them | put after the build |
-  |---|---|---|
-  | 70, 200, 330 | all | |
-  | 340 | 330 | |
-  | 700 | 330 | 680 |
-  | 3 000 | 1 175 | 2 878 |
+While its graph does not change, a field the lake asks an index for is
+ranked, for one query and one class of reader, by one sequence: what
+the class's graph hands out in its stream, and after it the rest of the
+field the class may see. A pull of `k` answers the first `k` of that
+sequence, so it is the first `k` of every deeper pull, as a pull of the
+exact ranking is, and the store pages it as it pages the exact ranking.
+**The pages of one query are parts of one sequence while the graph of
+the reader's class and the reader's class do not change:** each hit the
+reader may see once, none twice, none left out. A hidden candidate moves
+no hit's place; it costs the time of reading past it.
 
-  There it hands out that part and ends, short of the pull, and so
-  it did with 400 other vectors beside the 700. Beside a thousand
-  others it went on with farther vectors instead: that pull is not
-  short, and the index's answer stands.
+A graph changes at a write its class sees, committed or open, at a
+build, at the swap of a B built again, and at `VACUUM`, autovacuum
+included. A page continued after such a change may read another stream,
+and a hit may then come twice or be left out, as an unindexed field's
+order moves across a write. A grant changed between two pages moves its
+reader to another class. A write its class does not see changes no graph
+its reader reads. After the hold of a record B held, B's readers are
+ranked exactly until B is built again, and then read the new
+generation.
 
-- **A pull past `hnsw.max_scan_tuples`,** where an iterative scan
-  ends. A search whose filter keeps few records pulls that deep:
-  over 25 000 vectors, a `where` that kept the five farthest was
-  answered no hit. A search sets the number itself, to pgvector's
-  default of 20 000, so that where a pull comes back short does not
-  move with the server's value of it. pgvector also ends such a scan
-  at its memory limit (`hnsw.scan_mem_multiplier` times `work_mem`),
-  which stays the server's; a pull that ends there is short too, and
-  the scan's.
-
-In both the store took the short pull for the end of the field and
-said there was no more. The engine cannot tell the cases apart by
-what came, so **a pull that comes back short is answered by the
-exact scan**. A search the index fills pays one candidate more. A pull
-larger than what the index hands out reads the field a second time:
-every search of a field smaller than its pull, and every search
-whose filter drives the pull past the field, which has read the
-field through the index by then. Measured: the search of
-the 25 000 answers its five in 2.7 s where it answered none in 1.8
-to 3.0 s; the same over 5 000 vectors takes 813 ms for 694 ms; a
-search of ten without a filter takes 7 to 12 ms either way. The
-engine looks at how many candidates came, never at who reads.
-
-### Under an index a page is the index's answer at the depth that page asks for
-
-A page is the index's answer at the depth that page asks for, or the
-exact ranking where that pull is the scan's. The
-store pages a search by asking the engine for more candidates than
-the page before did: the pages before it, the page, and what a filter
-or the grants hide. Under an index two pulls of different depth are
-two answers: the deeper one is searched wider and may find a
-neighbour the shallower one missed. **The pages of one query are so
-not promised to be parts of one sequence: a hit may come twice or be
-left out** where the index answers another set at another depth.
-Measured on the suite's corpus, each of the 50 queries paged by ten to
-its end: of 206 000 hits 14 came a second time and 14 records never,
-in two of the queries and none of them in a tie. The count moves with
-the build of the graph: within the first twelve pages 14, 26, 40 and
-43 hits came a second time on four builds here (the 40 with 67
-records left out), and 26 with 53 left out on the reviewer's. The
-suite's check prints it and judges
-nothing. What the suite holds is a tie the index hands out at each
-page's depth, each member once and in key order, and a group it
-hands out in part
-(`under_an_index_a_tie_it_hands_out_is_paged_once_and_by_key`). A host
-that needs a ranked result whole and in order reads it in one page, up to
-`max_limit`, or leaves the field without the setting
-(`docs/hosting.md`). Pages that are one sequence under an index need
-an index that answers the candidates its reader may see, which is
-another design (lakelands#870).
+The suite holds it for every reader:
+`under_an_index_a_search_pages_one_ranking_per_class`,
+`a_write_the_reader_may_not_see_moves_none_of_its_pages`,
+`a_reader_holding_only_is_ranked_exactly_over_its_pairs` and
+`a_hold_keeps_the_readers_sequence_across_its_swap`; and a tie the
+stream hands out, each member once and in key order, with what it does
+not hand out after it
+(`under_an_index_a_tie_it_hands_out_is_paged_once_and_by_key`).
 
 ### An indexed field's set is stable between writes, and its recall is held at a floor
 
-The same query answers the same set as long as no write and no index
-build comes between. On PostgreSQL the set can also move under
+The same query answers one class of reader the same sequence as long
+as no write that class sees, no build and no swap comes between; an open
+write moves it as its commit will, at one position. On PostgreSQL the
+set can also move under
 `VACUUM`, which repairs the graph after deletes, autovacuum included;
 that is the one exception to 040 (maintenance never changes an answer),
 and it holds for pgvector-indexed fields only. What holds through
@@ -601,13 +846,15 @@ centres with 50 fixed queries, for k = 1, 10 and 100, with and without
 a filter, at the head and at an earlier position, and holds the share
 of the reference's hits the index finds, averaged over the queries, at
 or above the engine's floor: 0.95 at k = 1 and 10 and 0.98 at k = 100
-on PostgreSQL, 1 on an engine without an approximate index. PostgreSQL
-measured 0.98, 0.97 to 0.98 and 1.00 there over several builds, and at
-least 0.996 with a filter. With `ef_search = max(k, 64)`, pgvector's
-own default, it measured 0.90 at k = 10, 0.86 at an earlier position: a
-query between two clusters is where a narrow search stays in one of
-them, so the wider search is the price of the floor. Recall is measured
-on this corpus; another lake's vectors may be easier or harder.
+on PostgreSQL, 1 on an engine without an approximate index, at the head
+of each sequence. Every search reads at `ef_search` 1 000: at 200 a
+strict stream measured 0.974 at k = 100 under a filter, below the
+floor, and at 1 000 it holds 1.00 there (078). With
+`ef_search = max(k, 64)`, pgvector's own default, an index measured 0.90
+at k = 10, 0.86 at an earlier position: a query between two clusters is
+where a narrow search stays in one of them, so the wider search is the
+price of the floor. Recall is measured on this corpus; another lake's
+vectors may be easier or harder.
 
 ### A search at an earlier position ranks by the head
 
@@ -616,14 +863,24 @@ the current text or vectors rank. A search at an earlier position ranks
 by the full-text and vector indexes as they stand at the head, and keeps
 only the records visible at that position; a record that did not exist
 then is never a hit, and a record whose text or vector changed since is
-ranked by the newer one. Keeping full-text and vector indexes for every
+ranked by the newer one. An indexed field ranks by the head's graph of
+its reader's class: the hold that stands at the head governs every
+position (006), so that graph holds nothing the class may see at no
+position. Keeping full-text and vector indexes for every
 earlier state would make each engine carry a second history of its
-largest structures, for a ranking no caller has asked for; if one ever
-does, it is a later, additive change.
+largest structures. A lexical search bounded by a `where` may instead
+ask, with `text_as_of`, to be ranked by the text its records held at
+that position: the store reads them there and ranks them with the same
+pipeline and function, its statistics over those records, each field it
+ranks searchable both there and at the head and tokenised in the
+language its type declared there, and keeps no index of the past
+(`docs/decisions/089-a-search-may-rank-by-the-text-at-the-position-it-reads.md`).
+A vector ranking stays the head's.
 
 So a search reads its names, its caller's rights and its `where` at the
 position it reads, and its rankings by the head's declaration, whose
-indexes they read. A field's kind, its dimensions, and
+indexes they read; one with `text_as_of` reads no index, and tokenises
+by the declaration of the position, as above. A field's kind, its dimensions, and
 whether a model fills it and which are the head's: a query embedded by
 the model of the earlier position, or a query vector of its length, would
 be ranked against vectors of another space or length. Each field a
@@ -634,7 +891,13 @@ candidate and a hybrid search without a vector over it is refused as
 needing one. Following a name never lets a ranking reach a field its
 caller is not shown at the head: one shown at the earlier position and
 hidden at the head answers as one the head does not declare, and one
-hidden at the earlier position is refused as it is there. A field the
+hidden at the earlier position is refused as it is there. A field
+hidden on only the records a condition selects (006) is judged per
+record the same way: a ranking reaches it on a record only where its
+reader is shown it there both at the earlier position and at the head,
+the record taken back to its key and its type and fields to their names
+at that position, so a record selected at either is neither matched nor
+ranked by it, in text or by vector. A field the
 head declares and the earlier position does not is unknown, as every
 name is read there. For the head's indexes to hold the head's names, a
 migration re-indexes each record of its type by the declaration it puts
@@ -675,6 +938,12 @@ the reader's grants are read from one view of it.
   moves.
 - Each pull of a search stands alone: a page is judged from one pull, at
   that pull's position, so no page holds a record of two states.
+- **Under the seam the engine judges each vector candidate on the head
+  record it reads in the statement that ranks it,** so its candidates
+  and its judgement are of the one position it answers, and the store
+  judges the page's hits again at that position. A hit the engine
+  admits and the store does not leaves the page short, and the store
+  pulls deeper, as for any hidden candidate.
 
 Reading the indexes again until no write landed in between was the other
 way, and was not taken: a ranking over a large field is a scan, an
@@ -709,7 +978,9 @@ the answer and the same on every engine:
   by their ends (`docs/decisions/026-the-store-walks-the-graph.md`).
 - **Graph measures** order degrees highest first, ties by type and key;
   components largest first, ties by their least type and key, numbered
-  from 0 in that order, and a component's records by type and key.
+  from 0 in that order, and a component's records by type and key;
+  PageRank highest first, ties by type and key, and communities as
+  components (018).
 - **Ranked search** answers best first and breaks equal scores by key
   (below).
 - **Groups** come in the order of their key's canonical bytes; a
@@ -724,10 +995,10 @@ order an engine cuts a list at `k` in, and so the order a cursor
 follows. A search as of a position before a re-key answers each record
 under its key there, and still in that order, so every page is whole;
 sorting a page again by the keys answered would answer some of a large
-tie twice and some never. A vector field the lake asks an index for is
-the exception: there a page is the index's answer at the depth that
-page asks for, and the pages of one query are not promised to be parts
-of one sequence.
+tie twice and some never. Under an index the equal scores the stream
+hands out follow the keys too; the graph decides only on which side of
+the stream's end a member of a tie falls, and the pages are one
+sequence while the graph of the reader's class does not change.
 
 **A fused tie** is broken by the key answered, the one the record bears
 at the read's position. A fused list is computed whole for every page,
@@ -779,8 +1050,8 @@ keeps every engine's pages identical.
   index holds the pipeline's output.
 - It does not forbid an engine from using its own indexes, as long as the
   answer comes out in this order. A vector field the lake asks an index
-  for answers the index's set, still in this order; which records are in
-  it is the index's.
+  for answers the index's set, still in this order; which vectors its
+  stream hands out, and which come after it, is the graph's.
 - It is not a promise that a score means the same in a later release; a
   caller compares scores within one answer.
 
@@ -791,11 +1062,14 @@ Of an index asked for:
   differ between engines, and between a lake before and after an index
   build. An unindexed field's answer never does.
 - **Never a different answer for a field nobody asked for.**
-- **Not one sequence across pages.** An unindexed field's pages are
-  parts of one order while no write lands between them; an indexed
-  field's are not promised to be.
-- **Not a seam method.** `nearest` keeps its signature; the engine
-  decides from the setting and its mark which path a search takes.
+- **Not one sequence across a change of the graph.** An unindexed
+  field's pages are parts of one order while no write lands between
+  them; an indexed field's while nothing changes the graph of the
+  reader's class: a write its class sees, a build, a swap, or `VACUUM`.
+- **Not a seam method.** `nearest` and `ranked` keep their signatures;
+  `Rankings` and `Ranked` gained fields (078). The engine decides from
+  the setting, the graph's row and its reader's class which path a
+  search takes.
 - **Not a declaration.** Nothing in a type says which fields are
   indexed; the setting does, and the log format does not change.
 - **Not sqlite-vec.** Its `vec0` is a scan in C over `f32`: a constant
@@ -834,6 +1108,8 @@ Of an index asked for:
   it is in, `text_fields`, each token at its heaviest field, in every
   ranking of text; a lexical hit scored the count of its tokens before,
   which is its score where nothing is weighed (lakelands#1230).
+- Added: a lexical or hybrid search gives its own `text_fields`, each
+  weight winning over the setting's for its field (lakelands#1237).
 - 046 added: a query vector has a direction (lakelands#696).
 - 046 added: a vector ranking reads a vector field, which replaced the
   fallback of a hybrid search over a field no model fills
@@ -891,7 +1167,7 @@ Of an index asked for:
   for; the function that compares sort values is
   `lakelands_core::expr::order::cmp_values`.
 - Corrected at the rewrite (lakelands#817), of the index's pulls: the
-  passage on a vector of zeros says what is left to lakelands#870; a
+  passage on a vector of zeros says what is left to lakelands#1254; a
   fused search "starts at `max_limit` and one" only where `max_limit`
   is the larger of the two; "4 096 to 12 097 candidates" holds for
   first pulls of 65 to 4 096, and a deeper first pull is one pull.
@@ -907,3 +1183,37 @@ Of an index asked for:
   hits of its ranking and ends the answer at them
   (`docs/decisions/067-a-search-may-take-a-second-stage.md`,
   lakelands#993).
+- Rewritten in place at the acceptance of
+  `docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`
+  (lakelands#1254): under an index the pages of one query are one
+  sequence of its reader's class. The tie pulled deeper, the short
+  pull answered by the exact scan, and a page as the index's answer at
+  the depth it asks for gave way to the margin, the rest after the
+  stream, and the one sequence; PostgreSQL keeps a graph per class of
+  reader in place of one partial index per field and its mark, at a
+  fixed `ef_search`; under the seam the engine judges its vector
+  candidates.
+- Accepted (lakelands#1412): a hit says where its text matched, in
+  characters of the fields its reader is shown, computed by the store
+  after the page is cut. Decided by the operator on lakelands#1400: the
+  lexical score is BM25F in its combined-field form, which replaces the
+  count of tokens at their heaviest field for every lake from 0.20.0,
+  with no switch per type. BM25F had been refused because the function
+  kept no statistics; that reason now decides what is kept: `df` counted
+  over the candidates, `n_f` and `L_f` kept per class. `N` is the sum of
+  the `n_f`, so that no token weighs less than nothing.
+- Extended: a field hidden on only the records a condition selects is
+  judged at the earlier position and at the head, per record, as a
+  field hidden on the whole type is (lakelands#1456).
+- Extended by 089 (lakelands#1541): a lexical search bounded by a
+  `where` may rank by the text at the position it reads, `text_as_of`;
+  without it a search at an earlier position ranks by the head, as
+  before.
+- Extended (lakelands#1567): a vector search may bring `text` the lake
+  embeds with the field's model, as a member of the vector search; a
+  pattern's start does not take it.
+- Extended (lakelands#1566): a hybrid search whose query the lake cannot
+  embed ranks by its text and names the leg in `unranked`, where a
+  failing backend made it unavailable; a backend of another model stays
+  a refusal. Both extend the rules 046 held, which moved here at
+  lakelands#817.

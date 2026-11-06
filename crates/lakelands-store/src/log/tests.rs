@@ -35,10 +35,11 @@ fn the_hash_covers_the_event_without_its_top_level_hash() {
 #[test]
 fn a_changed_byte_is_caught() {
     let (_, mut stored) = created();
-    let text = String::from_utf8(stored.bytes.clone())
-        .unwrap()
-        .replace("\"format\":1", "\"format\":2");
-    stored.bytes = text.into_bytes();
+    let was = format!("\"format\":{LOG_FORMAT_VERSION}");
+    let text = String::from_utf8(stored.bytes.clone()).unwrap();
+    assert!(text.contains(&was));
+    let older = format!("\"format\":{}", LOG_FORMAT_VERSION - 1);
+    stored.bytes = text.replace(&was, &older).into_bytes();
     assert!(open(&stored).is_err());
 }
 
@@ -70,9 +71,10 @@ fn a_member_in_another_written_form_is_refused_even_with_a_matching_hash() {
 /// Every read of the log (the feed, `verify`, a rebuild, an import)
 /// opens its events here, so each refuses an event of a format this
 /// release does not read, older or newer, naming it and the one this
-/// release writes; and a lake whose first or last event is in such a
-/// format is refused by the lake, where nothing is damaged, and so is
-/// one whose newest event is in a format older than its first's.
+/// release writes; and a lake whose tip another release took one format
+/// further is refused by the lake as `log_format`, where nothing is
+/// damaged. A tip older than the first event is damage, not another
+/// format (below).
 #[test]
 fn an_event_of_another_format_is_refused_by_both_numbers() {
     use lakelands_api::error::{Flaw, Situation};
@@ -91,64 +93,87 @@ fn an_event_of_another_format_is_refused_by_both_numbers() {
             }) if *v == other && *r == reads),
             "{e}"
         );
-        // At the tip and at position 0 alike.
-        for ends in [(good.clone(), stored.clone()), (stored, good.clone())] {
-            let e = one_format(&"finance".into(), Some(&ends)).unwrap_err();
-            assert!(
-                matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads: r, oldest: o })
-                    if lake == "finance" && *found == other && *r == reads && *o == Some(oldest)),
-                "{e}"
-            );
-            let said = format!(
-                "lake `finance` is written in log format {other}, and this release reads log \
-                 formats {oldest} to {reads} and writes {reads}; nothing was read from it and \
-                 nothing appended"
-            );
-            assert!(e.to_string().contains(&said), "{e}");
-        }
+        // A lake of another release's format alone, both ends the same:
+        // `log_format`, naming the first number this release does not read.
+        let mut elsewhere = good.clone();
+        let mut v: serde_json::Value = serde_json::from_slice(&elsewhere.bytes).unwrap();
+        v["v"] = json!(other);
+        v["body"]["format"] = json!(other);
+        elsewhere.bytes = canonical::to_vec(&v);
+        let e = one_format(&"finance".into(), Some(&(elsewhere.clone(), elsewhere))).unwrap_err();
+        assert!(
+            matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads: r, oldest: o })
+                if lake == "finance" && *found == other && *r == reads && *o == Some(oldest)),
+            "{e}"
+        );
+        let said = format!(
+            "lake `finance` is written in log format {other}, and this release reads log \
+             formats {oldest} to {reads} and writes {reads}; nothing was read from it and \
+             nothing appended"
+        );
+        assert!(e.to_string().contains(&said), "{e}");
     }
-    // An older format this release reads opens, at its own number; a tip
-    // below the first event's format is not read in any.
-    let mut older = good.clone();
-    let mut v: serde_json::Value = serde_json::from_slice(&older.bytes).unwrap();
-    (v["v"], v["body"]["format"]) = (json!(oldest), json!(oldest));
-    v.as_object_mut().unwrap().remove("hash");
-    let hash = canonical::sha256_hex(&v);
-    v["hash"] = json!(hash);
-    (older.hash, older.bytes) = (Digest(hash), canonical::to_vec(&v));
-    assert_eq!(open(&older).map(|e| e.v), Ok(OLDEST_LOG_FORMAT));
-    let ends = (older.clone(), older.clone());
-    assert_eq!(
-        one_format(&"finance".into(), Some(&ends)).ok(),
-        Some(OLDEST_LOG_FORMAT)
-    );
-    let fell = one_format(&"finance".into(), Some(&(good.clone(), older))).unwrap_err();
+    // A tip a later release took one format further, its first event this
+    // release's: another release's lake, refused as `log_format`.
+    let mut newer = good.clone();
+    let mut v: serde_json::Value = serde_json::from_slice(&newer.bytes).unwrap();
+    v["v"] = json!(reads + 1);
+    newer.bytes = canonical::to_vec(&v);
+    let e = one_format(&"finance".into(), Some(&(good.clone(), newer))).unwrap_err();
     assert!(
-        matches!(fell.situation(), Some(Situation::LogFormat { found, oldest: Some(o), .. })
-            if *found == oldest && *o == oldest),
-        "{fell}"
+        matches!(e.situation(), Some(Situation::LogFormat { found, reads: r, .. })
+            if *found == reads + 1 && *r == reads),
+        "{e}"
     );
     let ends = (good.clone(), good);
-    assert_eq!(
-        one_format(&"finance".into(), Some(&ends)).ok(),
-        Some(LOG_FORMAT_VERSION)
-    );
-    assert_eq!(
-        one_format(&"finance".into(), None).ok(),
-        Some(LOG_FORMAT_VERSION)
-    );
+    assert!(one_format(&"finance".into(), Some(&ends)).is_ok());
+    assert!(one_format(&"finance".into(), None).is_ok());
 }
 
-/// A lake says the format it was created in at position 0. One that
-/// says another than its release reads was made by another release,
-/// though every line carries the release's `v`: a read of the event
-/// refuses it by its own flaw, and the lake is not opened.
+/// A tip older than the first event is a contradiction no release
+/// writes: a release refuses a lake whose first event it does not read,
+/// so it never appends an older format onto a newer lake. The open
+/// refuses it as damage at the tip, naming its format and the one this
+/// release writes.
 #[test]
-fn a_lake_created_in_another_format_is_refused_though_its_lines_are_in_this_one() {
+fn a_tip_older_than_the_first_event_is_damaged_at_the_tip() {
+    use lakelands_api::error::{Flaw, Situation};
+    use lakelands_api::event::OLDEST_LOG_FORMAT;
+    let (reads, oldest) = (u64::from(LOG_FORMAT_VERSION), u64::from(OLDEST_LOG_FORMAT));
+    let (_, good) = created();
+    let at = Position(7);
+    for other in [oldest - 1, 0] {
+        let taken = draft(EventBody::LeaseTaken {
+            fence: 1,
+            holder: "another release".into(),
+        });
+        let (_, mut tip) = seal(&"finance".into(), at, &Digest::zero(), 1, taken);
+        let mut v: serde_json::Value = serde_json::from_slice(&tip.bytes).unwrap();
+        v["v"] = json!(other);
+        tip.bytes = canonical::to_vec(&v);
+        let e = one_format(&"finance".into(), Some(&(good.clone(), tip))).unwrap_err();
+        assert!(
+            matches!(e.situation(), Some(Situation::Damaged {
+                position: Some(p),
+                flaw: Flaw::FormatOther { v, reads: r },
+                ..
+            }) if *p == at && *v == other && *r == reads),
+            "{e}"
+        );
+    }
+}
+
+/// A `lake_created` says the format its own line carries: one release
+/// wrote both at once. One that says another contradicts itself, so no
+/// release wrote it, and the lake is damaged at position 0; a read of
+/// the event refuses it by its own flaw, and the open refuses it by the
+/// lake.
+#[test]
+fn a_lake_created_in_another_format_is_damaged_though_its_lines_are_in_this_one() {
     use lakelands_api::error::{Flaw, Situation};
     let reads = u64::from(LOG_FORMAT_VERSION);
     let (_, good) = created();
-    for other in [reads - 1, reads + 1] {
+    for other in [reads - 1, reads + 1, 0] {
         let mut v: serde_json::Value = serde_json::from_slice(&good.bytes).unwrap();
         v["body"]["format"] = json!(other);
         v.as_object_mut().unwrap().remove("hash");
@@ -168,8 +193,11 @@ fn a_lake_created_in_another_format_is_refused_though_its_lines_are_in_this_one(
         );
         let e = one_format(&"finance".into(), Some(&(stored, good.clone()))).unwrap_err();
         assert!(
-            matches!(e.situation(), Some(Situation::LogFormat { found, reads: r, .. })
-                if *found == other && *r == reads),
+            matches!(e.situation(), Some(Situation::Damaged {
+                position: Some(p),
+                flaw: Flaw::CreatedInAnother { format, reads: r },
+                ..
+            }) if *p == Position(0) && *format == other && *r == reads),
             "{e}"
         );
     }
@@ -208,4 +236,35 @@ fn links_are_checked() {
     assert!(check_link(Some((&first.position, &first.hash)), &second).is_ok());
     let (bad, _) = seal(&"finance".into(), Position(1), &Digest::zero(), 1, d);
     assert!(check_link(Some((&first.position, &first.hash)), &bad).is_err());
+}
+
+/// A record carrying a 384-element vector of doubles, f32 widened and
+/// short decimals among them, seals and opens to itself: the open pass
+/// that checks the converted value is skipped where the conversion
+/// changed nothing, and the bytes still verify.
+#[test]
+fn a_vector_record_opens_to_itself() {
+    let vector: Vec<serde_json::Value> = (0..384_u32)
+        .map(|i| match i % 3 {
+            0 => json!(f64::from(i as f32 / 7.0 + 0.5)),
+            1 => json!(f64::from(i) / 1000.0 - 0.1003),
+            _ => json!(-(f64::from(i)) * 1e-9),
+        })
+        .collect();
+    let mut patch = std::collections::BTreeMap::new();
+    patch.insert("embedding".into(), serde_json::Value::Array(vector));
+    let d = draft(EventBody::RecordUpserted {
+        ty: "note".into(),
+        key: "n1".into(),
+        version: lakelands_api::Version(1),
+        patch,
+        made: true,
+    });
+    let (event, stored) = seal(&"finance".into(), Position(0), &Digest::zero(), 1, d);
+    assert_eq!(open(&stored).unwrap(), event);
+    // A flipped digit in the vector is still caught.
+    let mut bad = stored.clone();
+    let at = bad.bytes.iter().position(|&b| b == b'.').unwrap() + 1;
+    bad.bytes[at] = if bad.bytes[at] == b'1' { b'2' } else { b'1' };
+    assert!(open(&bad).is_err());
 }

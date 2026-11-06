@@ -1,13 +1,10 @@
 //! A reference given another target names a live record of it
 //! (`docs/decisions/032-a-reference-names-a-live-record.md`, extended).
 
-use lakelands_api::write::{Migration, Outcome, ProposedWrite, WriteOpts};
-use lakelands_api::{Error, Principal, ProposalId, ReadAt, Refusal};
-use serde_json::json;
+use lakelands_api::write::{Outcome, WriteOpts};
 
 use super::only::{de, holder, not_found};
-use crate::conformance::fixture::{Lake, Must, migration};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     RETARGET_JUDGES_REFERENCES = a_retarget_converts_a_reference_only_onto_a_live_record,

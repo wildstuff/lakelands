@@ -2,23 +2,11 @@
 //! a field there: a verb's `requires` and the values it sets read so, at
 //! the call, the record as a write that sends the reference would find it.
 
-use lakelands_api::error::{Case, Missing};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{Cardinality, FieldDecl, RelationDecl, StorageKind};
-use lakelands_api::write::ProposalFilter;
-use lakelands_api::{
-    Access, Error, Find, LakeStore, Outcome, Principal, ProposalId, ReadAt, Record, Refusal,
-    Version, WriteOpts,
-};
-use serde_json::{Value, json};
+use lakelands_api::error::Missing;
 
 use super::only::holder;
-use crate::conformance::fixture::{
-    Lake, Must, derived, events_after, field, field_access, get_at, head_unmoved, invalid_case,
-    limits, migration, patch, reference, refused_like, refused_on, restrict, source_record,
-    sourced, try_upsert, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, get_at, reference, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     PATH_STEPS = a_verbs_condition_reads_a_field_of_the_record_a_reference_names,
@@ -41,14 +29,10 @@ pub(super) async fn call(
     }
 }
 
-/// The refusal of `verb` on the invoice `key` whose `requires` is unmet.
-pub(super) fn unmet(verb: &str, key: &str) -> Result<&'static str, Error> {
-    let (verb, ty, key) = (verb.into(), "invoice".into(), key.into());
-    let case = Case::RequiresUnmet { verb, ty, key };
-    Err(Error::Refused {
-        field: None,
-        reason: Refusal::Precondition(Box::new(case.into())),
-    })
+/// The refusal of `verb` on the invoice `key` whose `requires` is unmet
+/// at `part`.
+pub(super) fn unmet(verb: &str, key: &str, part: &str) -> Result<&'static str, Error> {
+    requires_unmet(verb, "invoice", key, Some(part))
 }
 
 /// A write verb on `invoice`, declared as JSON.
@@ -192,20 +176,17 @@ async fn a_verb_on_a_link_type_reads_its_ends(store: Store) -> Held {
         let found = links.iter().find(of).map(|r| r.key.as_str().to_owned());
         found.unwrap_or_default()
     };
-    let unmet = |deal: &str| {
-        let (verb, ty, key) = ("seal".into(), LT.into(), key(deal).as_str().into());
-        let case = Case::RequiresUnmet { verb, ty, key };
-        Err(Error::Refused {
-            field: None,
-            reason: Refusal::Precondition(Box::new(case.into())),
-        })
-    };
+    let unmet = |deal: &str, part: &str| requires_unmet("seal", LT, &key(deal), Some(part));
     let plain = holder(s, "plain", json!({"default": "write"}));
     let mut got = Vec::new();
     for deal in ["d1", "d2", "d3"] {
         got.push(call(&l, &plain, "seal", &key(deal)).await);
     }
-    let want = [Ok("applied"), unmet("d2"), unmet("d3")];
+    let want = [
+        Ok("applied"),
+        unmet("d2", "to.discount_days >= 10"),
+        unmet("d3", "from.grade = 'a'"),
+    ];
     ensure!(
         got == want,
         "a verb on a link type reads both ends of its link: {got:?}, expected {want:?}"
@@ -381,7 +362,7 @@ async fn a_proposed_call_reads_across_again_at_its_accept(store: Store) -> Held 
         .await?;
     let fresh = accept(&l, &plain, &p).await;
     ensure!(
-        stale == unmet("vet", "i1") && fresh == Ok("applied"),
+        stale == unmet("vet", "i1", "customer.discount_days >= days") && fresh == Ok("applied"),
         "an accept reads the customer as it stands: unmet while it does not meet `requires`, \
          the proposal left pending, and applied once it does; {stale:?}, then {fresh:?}"
     );
@@ -641,7 +622,7 @@ async fn a_call_that_reads_across_to_a_record_its_caller_is_not_answered_is_refu
     );
     let shut = call(&l, &a, "shut", "ih").await;
     ensure!(
-        shut == unmet("shut", "ih"),
+        shut == unmet("shut", "ih", "status = 'shut'"),
         "a condition decided before its path reads no record; {shut:?}"
     );
     head_unmoved(
@@ -663,7 +644,8 @@ async fn a_call_that_reads_across_to_a_record_its_caller_is_not_answered_is_refu
         call(&l, &l.own, "take", "io").await,
         call(&l, &l.own, "free", "ir").await,
     ];
-    let want = [Ok("applied"), unmet("take", "io"), sent[2].clone()];
+    let far = "customer.discount_days >= days";
+    let want = [Ok("applied"), unmet("take", "io", far), sent[2].clone()];
     ensure!(
         got == want,
         "a caller answered the customers calls as they hold, and a retired one is live to none: \
@@ -794,13 +776,13 @@ async fn a_verbs_condition_reads_a_field_of_the_record_a_reference_names(store: 
     for verb in ["take", "term"] {
         got.push(call(&l, &l.own, verb, "i2").await);
     }
-    let (applied, unmet2) = (Ok("applied"), |v| unmet(v, "i2"));
+    let (applied, unmet2) = (Ok("applied"), |v, part| unmet(v, "i2", part));
     let want = [
-        unmet2("take"),
+        unmet2("take", "customer.discount_days >= days"),
         applied.clone(),
-        unmet2("term"),
+        unmet2("term", "customer.term.days >= days"),
         applied.clone(),
-        unmet2("free"),
+        unmet2("free", "customer.discount_days is null"),
         applied.clone(),
         applied.clone(),
         applied.clone(),

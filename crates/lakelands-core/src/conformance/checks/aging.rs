@@ -7,19 +7,13 @@
 //! rule, each with an id made from the rule, the record and the date, so
 //! aging a date twice writes it once.
 
-use lakelands_api::event::{EventBody, Procedure};
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::WriteOrigin;
+use lakelands_api::event::Procedure;
 use lakelands_api::seam::AGING_RULE_TYPE;
-use lakelands_api::write::{AgeReport, Declaration};
-use lakelands_api::{Catalog, LakeStore, Origin, Principal, Refusal, Timestamp, WriteOrigin};
-use serde_json::{Value, json};
+use lakelands_api::write::AgeReport;
 
-use crate::conformance::fixture::{
-    Lake, Must, alike_renamed, count_view, derived, events_after, field, field_access,
-    head_unmoved, no_such_field, reference, refused_on, restrict, sourced, trigger_on, type_decl,
-    upsert,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, reference, upsert};
+use crate::conformance::prelude::*;
 
 check!(
     MOVES_WHAT_HOLDS_FROM = a_rule_moves_only_the_records_holding_from_whose_condition_holds,
@@ -334,6 +328,7 @@ async fn a_move_is_written_by_the_system_as_its_rule(store: Store) -> Held {
     ensure!(
         m.origin == Origin::System
             && m.writer == "system:lakelands"
+            && m.procedure.as_deref() == Some("aging:overdue")
             && m.procedure_version.as_deref() == Some("2"),
         "the moved field's provenance is {m:?}"
     );

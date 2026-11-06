@@ -1,4 +1,4 @@
-package lakelands:data@0.16.1;
+package lakelands:data@0.23.0;
 
 /// One open lake and its data doors: the store facade (`LakeStore`),
 /// the per-type doors, proposals and ingest of the catalog (`Catalog`),
@@ -14,10 +14,11 @@ interface store {
     use types.{
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
-        compact-report, vector-coverage, forget-report, selection, remove-report,
+        compact-report, vector-coverage, forget-report, forget-set-report, selection, remove-report,
+        thin, thin-report, thin-reply,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
-        feed-filter, feed-batch,
+        feed-filter, feed-batch, version,
     };
 
     /// The lake `lake`, opened by the host. Which lakes a caller may
@@ -38,6 +39,9 @@ interface store {
         limits: func() -> limits;
         /// The lake's last position.
         head: func() -> result<position, error>;
+        /// The head once it is at `at` or past it, waiting at most
+        /// `within-millis` for it; past the bound, unavailable.
+        reaches: func(at: position, within-millis: u64) -> result<position, error>;
         /// The doors of this lake, writing under `context`.
         catalog: func(context: write-context) -> catalog;
         /// The change feed: the log filtered by kind
@@ -51,9 +55,13 @@ interface store {
         /// grant (a retention hold).
         restrict: func(%type: type-name, key: record-key, reason: string) -> result<position, error>;
         unrestrict: func(%type: type-name, key: record-key) -> result<position, error>;
-        /// Run every aging rule once for `today`, a date at UTC midnight,
-        /// and answer what it moved.
+        /// Run every aging rule once for `today`, a date held at its UTC
+        /// midnight, and answer what it moved.
         age: func(today: timestamp) -> result<age-report, error>;
+        /// The zone the lake reads its calendar day in at the head, as the
+        /// IANA database names it: its `zone` setting, `UTC` where it names
+        /// none (101).
+        zone: func() -> result<string, error>;
         /// Retire, in one append, every live record the source brought in,
         /// into the one type named where one is; a co-owned record refuses
         /// the whole purge. With a preflight's id, refused unless that
@@ -61,26 +69,47 @@ interface store {
         purge-source: func(source: source-id, %type: option<type-name>, report-id: option<string>) -> result<purge-report, error>;
         /// What `purge-source` would do, appending nothing.
         purge-preflight: func(source: source-id, %type: option<type-name>) -> result<purge-report, error>;
+        /// What `upsert` of the patch by `who`, through the doors of
+        /// `context`, would answer, appending nothing: ok for a write that
+        /// would land, else the refusal it would give, a broken constraint
+        /// among them. The host's.
+        upsert-preflight: func(who: principal, context: write-context, %type: type-name, key: record-key, patch: patch, expected: option<version>) -> result<_, error>;
         /// Forget a source: its keys destroyed, every value it sealed
         /// erased at every position, the storage reclaimed, in one act
         /// under the writer's lock. With a preflight's id, refused unless
-        /// that report is of this source at this head.
+        /// that report is of this source at the position it was read at.
         forget-source: func(source: source-id, report-id: option<string>) -> result<forget-report, error>;
         /// What `forget-source` would do, appending nothing, with the time
         /// it is expected to hold the writer's lock.
         forget-preflight: func(source: source-id) -> result<forget-report, error>;
+        /// Forget several sources in one act: one `source-forgotten` for
+        /// each, one rebuild and one reclaim under one hold of the
+        /// writer. A set empty, naming a source twice or one the log
+        /// holds no event of is refused whole. With a preflight's id,
+        /// refused unless that report is of this set at the position it
+        /// was read at.
+        forget-sources: func(sources: list<source-id>, report-id: option<string>) -> result<forget-set-report, error>;
+        /// What `forget-sources` would do, appending nothing, with the
+        /// time the one act is expected to hold the writer's lock.
+        forget-sources-preflight: func(sources: list<source-id>) -> result<forget-set-report, error>;
         /// Take back part of a source: each value a selected event of it
-        /// wrote erased at every position, the records left holding
-        /// nothing of another hand retired, the storage reclaimed, in one
-        /// act under the writer's lock; the versions of its key whose
-        /// values it all selects are destroyed. With `require-shredded`,
-        /// refused while a value of an erasable field would be redacted
-        /// only. With a preflight's id, refused unless that report is of
-        /// this removal at this head.
+        /// wrote erased at every position, the records the source made
+        /// left holding nothing of another hand retired, the storage
+        /// reclaimed, in one act under the writer's lock; the versions of
+        /// its key whose values it all selects are destroyed. With
+        /// `require-shredded`, refused while a value of an erasable field
+        /// would be redacted only. With a preflight's id, refused unless
+        /// that report is of this removal at the position it was read at.
         remove-values: func(source: source-id, selection: selection, require-shredded: bool, report-id: option<string>) -> result<remove-report, error>;
         /// What `remove-values` would do, appending nothing, with the time
         /// it is expected to hold the writer's lock.
         remove-values-preflight: func(source: source-id, selection: selection) -> result<remove-report, error>;
+        /// Thin a type: take out of the projection every record whose field
+        /// `thin.by` is certainly before `thin.before`, as one act in parts
+        /// beside the writer, keeping the folds of the kept views over it;
+        /// the log keeps every value it took. With `preflight`, say what
+        /// the act would take, appending nothing.
+        thin-values: func(%type: type-name, thin: thin, preflight: bool) -> result<thin-report, error>;
         /// Give back the storage the projection no longer uses; appends
         /// nothing and changes no answer.
         compact: func() -> result<compact-report, error>;
@@ -120,12 +149,19 @@ interface store {
         accept-planned: func(who: principal, proposal: proposal-id, plan-id: string) -> result<outcome, error>;
         reject: func(who: principal, proposal: proposal-id, reason: string) -> result<outcome, error>;
         proposals: func(who: principal, filter: proposal-filter) -> result<proposals-reply, error>;
-        /// Feed the lake the records of one delivery from a source. The
-        /// crate takes a stream; here the delivery is a list, and the
-        /// answer lists every commit window it was written in.
+        /// Feed the lake the records of one delivery from a source, each
+        /// record in another where it names its own. The crate takes a
+        /// stream; here the delivery is a list, and the answer lists
+        /// every commit window it was written in.
         ingest: func(who: principal, source: source-id, records: list<source-record>) -> result<list<committed>, ingest-error>;
         /// `ingest` in the delivery `opts` names.
         ingest-with: func(who: principal, source: source-id, opts: ingest-opts, records: list<source-record>) -> result<list<committed>, ingest-error>;
+        /// Thin a type: take out of the projection every record whose
+        /// field `thin.by` is certainly before `thin.before`, as one act
+        /// in parts beside the writer, keeping the folds of the kept views
+        /// over it; the log keeps every value it took. With `preflight`,
+        /// say what the act would take, appending nothing.
+        thin: func(who: principal, %type: type-name, thin: thin, preflight: bool) -> result<thin-reply, error>;
     }
 
     /// The change feed (`ChangeFeed`): the consumer keeps its own

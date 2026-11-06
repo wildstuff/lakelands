@@ -6,6 +6,7 @@
 
 `ingest` is how a source feeds the lake. It takes a stream of records,
 each from the call's source or from the source the record names, and
+in the call's delivery or in the delivery the record names (087), and
 chunks it into group-commit windows, answering one
 acknowledgement per window with the position it is durable at. It writes
 only fields whose authority is `source` or `shared`. It is
@@ -50,8 +51,14 @@ admits a create where the field's `initial` is the value it names.
 | door ↓ / authority → | `authored` | `source` | `shared` | `derived` | `verb` |
 |---|---|---|---|---|---|
 | `upsert`, `link`, an accepted `upsert` | ✓ | | ✓ | | refused |
-| `ingest`, a mirror's copy | | ✓ | ✓ | | refused |
+| `ingest`, a mirror's copy | a source it `admits` | ✓ | ✓ | | refused |
 | a declared verb's `set`, `initial`, aging | ✓ | | ✓ | | ✓ |
+
+An authored field may name the sources it `admits` (069): `ingest`
+writes it under such a source, and only where no other hand wrote it
+last: no hand, its `initial`, or that source itself. Any other source,
+and an admitted one over an author's or another source's write, is
+refused the field as `wrong_door`, and its window appends nothing.
 
 The refusal is `verbs_only`, naming the verbs that set the field which
 its writer is shown and may call, so it knows the way; where it is shown
@@ -105,13 +112,15 @@ marking a type, or taking the mark off, is a change of meaning (027).
 ### A window is decided whole, and a record that changes nothing is a duplicate
 
 `ingest` takes its stream in group-commit windows: a window closes when it
-holds the lake's `commit_window_events` records or 2 ms after its first,
+holds the call's `commit_window` records, else the lake's
+`commit_window_events`, or 2 ms after its first,
 and is decided whole. A record whose content id is already in the log, or
 earlier in its window, appends nothing; so does a record that would change
 no field — a re-import of unchanged data appends nothing — and both count
 as duplicates. A window with a refused record appends nothing; the
 refusal is the stream's next item and the stream ends there, and the
-caller's own offset says where to resume. The refusal says where that
+caller's own offset says where to resume, unless the delivery asked
+that the record be quarantined (below). The refusal says where that
 is (lakelands#1043): it names the record, by the type and key its source
 sent, its place in the stream (`index`, counted from 0 over every record
 the stream handed out) and the place of the first record of its window
@@ -129,6 +138,48 @@ is only `from`: whether the records of the refused record's window
 before it were written. The host's move is the same either way: resume
 at `from` without the refused record. A record sent again lands with the
 id it would have had, or counts as a duplicate where it was written.
+
+**A delivery may ask the size of its windows, and the lake bounds it**
+(lakelands#1496). Each window pays one durable append and one projection
+commit, a cost that barely moves with the window's size, and a refused
+record takes back its whole window. Which of the two matters more is a
+property of the delivery, not of the lake: a supplier handing over a
+thousand records it can send again whole wants them in one append, while
+a feed of records arriving one by one wants a refusal to take back
+little. Only the supplier knows which it is sending, so an ingest may
+name `commit_window`, for that call alone; without it the lake's
+`commit_window_events` applies, and a batch of record writes (073)
+keeps the lake's value whatever an ingest asked. The lake bounds the
+request with `limits.commit_window_max`, because a window is held in
+memory whole while it is decided and a crash check on open reads the
+last append whole: the host, not a supplier, decides what those may
+cost. A window of 0 or above the bound is refused as `limit_range` on
+`commit_window`, naming the bound, before anything is read, and a lake
+whose own `commit_window_events` is above its bound is not opened. The
+size changes only where the store cuts, which no answer turns on.
+
+### A delivery may ask that a refused record be quarantined, and its stream go on
+
+From lakelands#1502
+(`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`):
+an ingest may set `quarantine_refused`, for that call alone. A record
+then refused by a rule of the record, every check of the order below
+from the key's form on but a key holding `0x00`, an outage and a full
+quarantine, is kept as a quarantined record with its cells and its
+refusal, and the stream goes on. The window is decided without it, as
+the host would resume at `from` without it, and its `Committed` lists
+the stream `index` of each record it quarantined. A refusal of the
+call, of the source, of the delivery's form or of a type not declared,
+and one past
+`limits.quarantined_max`, ends the stream as without the option; the
+last carries `quarantine_full` beside `index`, `from` and `record`.
+
+A record may name what it `resubmits`, a quarantined record of its
+source by its first delivery and its place there. It is judged as any record; one
+written or counted as a duplicate closes what it names, and a duplicate
+that does so appends that close and nothing else: the one case where a
+duplicate appends. A redelivery that names no open quarantined record
+appends nothing, as before.
 
 ### A type may be written once by its source
 
@@ -264,7 +315,9 @@ not a view (`invalid`), the principal may write every field of it
 (`not_granted`), when it is called, before it takes the stream; each
 window checks the context again. Then each record, in stream order: the
 type is declared (`not_found`); the key's form (`invalid`); the door and
-the grants, field by field (record check 4); every value fits (5); a
+the grants, field by field (record check 4); the form of a source and
+then of a delivery the record names in place of the call's (`invalid`,
+`source_id_form`, `delivery_id_form`); every value fits (5); a
 record of a link type no relation carries, its relation renamed or
 removed, is `invalid`, naming the type (lakelands#761); then the
 duplicate test, which counts a record and checks nothing further; then
@@ -277,6 +330,10 @@ same order (`constraint`, naming `to`). The refusal is
 `linked_already_from` or `linked_already_to`, naming the other link's
 end by one rule. The link found does not depend on which side of the
 cut it stands, so the cut changes no answer, `one_to_one` included.
+Under `quarantine_refused`, a record refused at any of these checks
+from the key's form on is quarantined unless the quarantine of its
+source is full (085), and a record named by `resubmits` that names no
+open quarantined record there to its writer is `not_found`.
 
 ### A door decides over everything the log holds
 
@@ -366,4 +423,7 @@ is just another caller later, not a change to the contract.
 - A source id is formed as a key is, not empty and holding no NUL, and a source record with a member it does not have is refused, never read without it (lakelands#1081).
 - A window is the store's: no rule is judged over one, and a link that breaks its relation's cardinality with an earlier link of its window is answered as over the lake, the other end named by the same rule; `window_links_already` is never answered from 0.15.0 (lakelands#886).
 - A field may be written by its type's verbs alone, `authority: verb`; the other doors are refused it as `verbs_only`, naming the verbs its writer is shown, or `wrong_door` (lakelands#1130).
+- An authored field may admit named sources, `admits`, which `ingest` writes it under where no other hand's value stands (069, lakelands#1264).
 - A type's records may be retired by its verbs alone, `retired_by: verbs`; `retire`, a proposed `retire` and its accept are refused as `verbs_only`, naming the retire verbs its writer is shown, or `wrong_door`, and the system's retirements stay (lakelands#1148).
+- An ingest may ask its own commit window, `commit_window`, up to the lake's `limits.commit_window_max`; record writes sharing one append keep the lake's `commit_window_events` (lakelands#1496).
+- One ingest may carry many deliveries: a record may name its own `delivery`, which its event takes in place of the call's, its form judged as the call's beside the record's source form (087, lakelands#1528).

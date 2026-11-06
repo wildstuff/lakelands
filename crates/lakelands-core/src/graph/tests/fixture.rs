@@ -56,6 +56,10 @@ pub(in crate::graph) fn over(relations: &[&str], walk: Walk, max: u32) -> Vec<St
         filter: None,
         depth,
         named: None,
+        from: None,
+        join: None,
+        optional: false,
+        absent: false,
     };
     relations.iter().map(step).collect()
 }

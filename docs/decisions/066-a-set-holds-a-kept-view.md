@@ -74,7 +74,68 @@ event; so does a set of declarations that stamps such a setting again.
 A membership answers what a read's `in_set` answers (below), which reads
 the setting as it is.
 
+### A set's `where` does not read the clock unless it is decided at the read
+
+A set keeps the memberships it decided at the write, and nothing writes
+again when a clock passes a boundary; a read's `in_set` evaluates `now()`
+and `today()` at the read's clock (052). A `where` that read the clock
+would let the two drift apart as time passes, so a kept set whose
+`where` calls `now()` or `today()`, at any depth, is refused
+`set_reads_clock`, naming the set and the call, whether it is a set of a
+type or of a kept view. No ticker re-decides memberships as time
+passes. A set whose membership moves with the clock is declared decided
+at the read (below), which keeps no membership to drift from; a host
+may also keep a time window in a view's `where`, which a read evaluates
+at its own clock, or in a computed field. A trigger's `when` is not
+touched: it is decided once, at the write that fires it.
+
+The check is made where a declaration is judged. A log written before
+holds such a set and opens and replays as it did, as a kept set; the
+lake meets the refusal only when it declares that set again.
+
+### A set may be decided at the read
+
+A set declares when it is decided, `decided_at`: `write`, which it is
+unless it says otherwise and which keeps its members as this record
+says, or `read`. It is accepted for 0.20.0 (lakelands#1412). A host
+asked which of the records it shows a condition reading `today()` rules
+out, by a name a model can carry, and a kept set could not hold it.
+
+- **It keeps no membership.** No write decides it, the fold holds no
+  member of it, and no `object_set_changed` is appended for it, so
+  nothing of it is in the feed, a subscription or the bound
+  `max_set_changes` counts.
+- **It is expanded at the read.** `in_set('<set>')` of it, in a read, is
+  its `where` over the record read, evaluated at the read's clock (052):
+  two reads at two clocks may answer differently, and each answers what
+  a `find` with that `where` answers at its own. Its `where` may call
+  `now()` and `today()` and may name a field computed at the read.
+- **It steps through no reference.** A read evaluates no path through a
+  reference (055), so a `where` that steps across one, or calls
+  `exists`, is refused, naming the set and the path. A kept set it
+  names by `in_set` answers by its kept membership, whatever that set's
+  `where` reads; the set decided at the read steps through nothing by
+  naming it.
+- **Nothing decided at a write names it.** A kept set's `where`, every
+  view's `where` and its merged sources' `where`s, kept or not, a
+  trigger's `when` and a verb's `requires` that name it by `in_set` are
+  refused, naming the set and what names it: what a
+  write decides by it would drift from what a read of it answers, the
+  reason a kept set does not read the clock.
+- **Declared again, it changes how it is decided.** A kept set declared
+  again as decided at the read ends its members in that append, as a
+  withdrawal does; one decided at the read declared again as kept
+  decides the records already there
+  (`004 § A set's declaration decides the records already there`), and
+  is refused if its `where` reads the clock.
+- **Its rights are a named set's.** It is read by its filter's right
+  (`006 § A named set is read by its filter's right`), and `describe`
+  shows `decided_at`.
+
 ### What would leave a set of a view without its rows is refused
+
+099 adds one refusal, `view_building`: a set or trigger over a view
+whose build is not whole.
 
 While a set holds a view, through any view it reads too:
 
@@ -103,13 +164,48 @@ author not shown the set the refusal names no set: one that moves a
 source is refused `no_longer_declarable`, naming the source the author
 is changing, and any other `not_granted`.
 
+### A trigger on a kept view fires where a group's row is put
+
+A trigger's `on` may name a view the lake keeps (lakelands#1185), as a
+set's `of` may; on a view the lake does not keep it is refused
+`watches_view`, naming the trigger and saying to set `view_kept.<view>`
+first, judged where a set of declarations is decided, as a set's is.
+
+It fires from the run of the fold's hooks that decides the sets: at a
+write, for each group the hooks put, where the group arrived or a field
+of its row on the whole face moved, and its `when` holds over the row
+after. `previous` and `changed` read the row before; `created()` holds,
+and the firing says `created`, where the group had no row on the whole
+face before, again after it ended. A group that ends fires nothing:
+there is no row after. Where the fold had flagged the group as not
+exact, or a view it reads through holds such a group, the row before
+is none, since a read computes that face from members the write has
+moved since: a trigger there fires as on a group that arrived, except
+that the firing does not say `created`. The guard reads the settings as
+they stand before the write, as at a record, while the row after is
+computed under the settings the write leaves. The firing names the view
+and the group's key, is caused by the write's event, lands after the
+sets' memberships, as across an edge, and says the write's kind of
+change; `on_changes`, `when_strict` and the depth bound (021) apply as
+at a record. A write of a setting a view's
+measure names puts every group's row again, and fires where a row
+moved. A set of declarations that makes the view again fires nothing:
+a trigger fires at a write, as at a record.
+
+What would leave the view without its rows is refused while a trigger
+watches it as while a set holds it, naming the trigger
+(`view_kept_for_set`, `view_source_stepped`; their to-do says to
+withdraw it first). Its firings count toward the bound, and the trigger
+is a reader's only where nothing of a source is held from it, by the
+same rule as a set: its `trigger_fired` is told to no other reader.
+
 ### The bound counts them
 
-Every membership these decisions move counts toward the lake's
-`max_set_changes` (055), with what the same append moves across an edge,
-and so does every group a remake moves. Past it the write is refused
-`too_large`, naming the set to a caller shown it and nothing to another,
-and nothing is appended.
+Every membership these decisions move, and every firing on a view,
+counts toward the lake's `max_set_changes` (055), with what the same
+append moves across an edge, and so does every group a remake moves.
+Past it the write is refused `too_large`, naming the set or the trigger
+to a caller shown it and nothing to another, and nothing is appended.
 
 ### A set of a view is a reader's only where nothing of a source is held from it
 
@@ -156,8 +252,6 @@ them would mean running a migration twice.
 
 ## What it is not
 
-- **Not a trigger on a view.** A trigger on a kept view is the next
-  step, on the same decision (lakelands#1185).
 - **Not free.** A write of a record a set's view reads pays the view's
   kept share in the write path too: about what the fold pays for the
   same write, since the hooks read the group's kept row and an
@@ -173,6 +267,20 @@ them would mean running a migration twice.
   it while the view holds such a group. A write that decides every group
   of a view (a setting a set's `where` names, or a write that turns a
   group the view reads flagged before or after it) pays that for each
-  group while the view reads such a group.
+  group while the view reads such a group. A trigger on a view makes
+  the writes of its sources pay the same as a set of it would.
 - **Not per face.** A reader who is not shown the set reads the view,
   and filters it by its own `where`, as before.
+
+## How it came to be
+
+- A set may be decided at the read, keeping no membership, and the
+  refusal of a `where` that reads the clock became a refusal of a kept
+  set's (lakelands#1412): a host asked which of the records it shows a
+  condition reading `today()` rules out, by a name. The operator
+  accepted it on 2026-10-25.
+- What names a set decided at the read is refused for every view's
+  `where` and its merged sources', kept or not (lakelands#1441), and a
+  kept set a read names by `in_set` answers by its kept membership,
+  whatever its `where` reads (lakelands#1437).
+- Amended by 099 (lakelands#1652), proposed for 0.23.0.

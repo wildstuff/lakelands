@@ -1,0 +1,2756 @@
+[
+  {
+    "description": "Find `customer` (A customer of the trading house.) records: filter with `where`, sort, page with `cursor`, resume after a row with `after` or jump with `offset`, ask for the `total`, or aggregate. Every answer carries the position it was read at.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "additionalProperties": false,
+          "description": "Resume strictly after a row: its values for the order_by keys, in order (null where it has none), and its key. Instead of a cursor.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "values": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "values",
+            "key"
+          ],
+          "type": "object"
+        },
+        "aggregate": {
+          "additionalProperties": false,
+          "properties": {
+            "group_by": {
+              "items": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "id",
+                      "name",
+                      "country",
+                      "segment"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "description": "An expression in the grammar, e.g. date_bucket(due_on, 'month').",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "expr"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "measures": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "field": {
+                    "enum": [
+                      "id",
+                      "name",
+                      "country",
+                      "segment"
+                    ],
+                    "type": "string"
+                  },
+                  "func": {
+                    "enum": [
+                      "count",
+                      "sum",
+                      "min",
+                      "max",
+                      "avg"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "func"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "measures"
+          ],
+          "type": "object"
+        },
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip this many rows of the order before the page, to jump to a page of a table. The rows skipped are read, so a large offset costs more; continue from there with the cursor. Not with cursor, after or aggregate.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "order_by": {
+          "items": {
+            "additionalProperties": false,
+            "description": "One sort key. `latest` orders by the position of each record's latest change and takes no field; every other `by` names its field.",
+            "properties": {
+              "by": {
+                "enum": [
+                  "value",
+                  "known_at",
+                  "seen_at",
+                  "latest"
+                ]
+              },
+              "dir": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              },
+              "field": {
+                "enum": [
+                  "id",
+                  "name",
+                  "country",
+                  "segment"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "retired": {
+          "description": "Also answer how many retired records match, at the same position. Counted only when asked; not with aggregate.",
+          "type": "boolean"
+        },
+        "total": {
+          "description": "Also answer how many records match, at the answer's position. Counted only when asked.",
+          "type": "boolean"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "where": {
+          "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100.",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "customer_find",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "next_cursor": {
+              "type": "string"
+            },
+            "retired": {
+              "type": "integer"
+            },
+            "rows": {
+              "type": "array"
+            },
+            "shape": {
+              "enum": [
+                "records",
+                "groups"
+              ]
+            },
+            "total": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "shape",
+            "rows"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Get one `customer` (A customer of the trading house.) record by key.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "description": "The key of the `customer` record: the value of its `id`.",
+          "type": "string"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "customer_get",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "fields": {
+              "properties": {
+                "country": {
+                  "description": "The customer's country, as an ISO 3166 country code.",
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "segment": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "key": {
+              "type": "string"
+            },
+            "masked": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "meta": {
+              "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value.",
+              "type": "object"
+            },
+            "type": {
+              "const": "customer"
+            },
+            "version": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "key",
+            "version",
+            "fields"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Read the lake with one statement of the openCypher subset: `MATCH`, `OPTIONAL MATCH`, `WHERE` and `RETURN`, with `ORDER BY` and `LIMIT`. It is translated into one pattern of `query` and read as `query` reads it, under the same rights; it never writes. The first node names its type, as in `(o:order)`, and a node may carry a map of field values, as in `(c:customer {name: $name})`. A relationship names a declared relation and is walked in its direction, `(o:order)-[:placed_by]->(c:customer)`, or against it, `(c)<-[:placed_by]-(o)`; `-[:r*1..3]->` walks it 1 to 3 hops, its upper bound written. A further part, after a comma or in a further `MATCH`, begins at a name bound before it. `WHERE` takes the lake's expression grammar with Cypher's operators (`=`, `<>`, `<`, `AND`, `OR`, `NOT`, `IN [...]`, `STARTS WITH`, `CONTAINS`, `IS NULL`), and `NOT (p)<-[:r]-(:t)` keeps a row only where no such link is. `RETURN` names fields of bound names (`o.total`), or `*` for every bound name. An aggregate (`count(*)`, `count(x)`, `sum(x.f)`, `min(x.f)`, `max(x.f)`, `avg(x.f)`, each named with `AS`) answers one group per value of the fields returned beside it, the groups in one fixed order by those fields, so `ORDER BY` beside an aggregate is refused: leave it out. Without one, `ORDER BY` names fields of bound names (`o.total DESC`), never an alias or an expression. `LIMIT` takes a whole number and caps the rows of a page; `SKIP` past 0 is refused: to read the next page, pass the answer's `next_cursor` as `cursor` with the same statement and parameters. An aggregate answers every group in one page with no cursor, ignoring `LIMIT`: for the largest few, read every group and pick them. Give values as `$name` with `params`. Refused, naming the construct at its character offset: `WITH`, `DISTINCT`, `UNWIND`, `UNION`, a named path, a function the grammar lacks, and every write (`CREATE`, `MERGE`, `SET`, `DELETE`), which goes through the typed write tools. The subset cannot spell a shortest or cheapest walk, a path to a record, degree, components, reach or PageRank: `query` reads those. A statement that begins with `EXPLAIN` answers the `query` pattern it translates to and reads nothing.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cursor": {
+          "description": "The `next_cursor` of the page before, given with the same statement and parameters, to read the next page.",
+          "type": "string"
+        },
+        "params": {
+          "description": "The value of every `$name` the statement reads, by name; a value given and not read is refused.",
+          "type": "object"
+        },
+        "statement": {
+          "description": "One statement of the openCypher subset, as in `MATCH (c:customer {name: $name})<-[:placed_by]-(o:order) RETURN o.id, o.total ORDER BY o.total DESC LIMIT 20`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "statement"
+      ],
+      "type": "object"
+    },
+    "name": "cypher",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Describe the lake: its types, verbs, value types, functions, triggers and object sets as declared; or one type on six axes: structure, access, rights, actions, lineage, lifecycle.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "enum": [
+            "customer",
+            "order",
+            "order_line",
+            "product",
+            "supplier",
+            "sys.aging_rule",
+            "sys.setting"
+          ],
+          "type": "string"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "describe",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Find `order` (An order a customer placed, with its total over its lines.) records: filter with `where`, sort, page with `cursor`, resume after a row with `after` or jump with `offset`, ask for the `total`, or aggregate. Every answer carries the position it was read at.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "additionalProperties": false,
+          "description": "Resume strictly after a row: its values for the order_by keys, in order (null where it has none), and its key. Instead of a cursor.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "values": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "values",
+            "key"
+          ],
+          "type": "object"
+        },
+        "aggregate": {
+          "additionalProperties": false,
+          "properties": {
+            "group_by": {
+              "items": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "id",
+                      "customer",
+                      "placed_on",
+                      "total",
+                      "status"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "description": "An expression in the grammar, e.g. date_bucket(due_on, 'month').",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "expr"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "measures": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "field": {
+                    "enum": [
+                      "id",
+                      "customer",
+                      "placed_on",
+                      "total",
+                      "status"
+                    ],
+                    "type": "string"
+                  },
+                  "func": {
+                    "enum": [
+                      "count",
+                      "sum",
+                      "min",
+                      "max",
+                      "avg"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "func"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "measures"
+          ],
+          "type": "object"
+        },
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip this many rows of the order before the page, to jump to a page of a table. The rows skipped are read, so a large offset costs more; continue from there with the cursor. Not with cursor, after or aggregate.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "order_by": {
+          "items": {
+            "additionalProperties": false,
+            "description": "One sort key. `latest` orders by the position of each record's latest change and takes no field; every other `by` names its field.",
+            "properties": {
+              "by": {
+                "enum": [
+                  "value",
+                  "known_at",
+                  "seen_at",
+                  "latest"
+                ]
+              },
+              "dir": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              },
+              "field": {
+                "enum": [
+                  "id",
+                  "customer",
+                  "placed_on",
+                  "total",
+                  "status"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "retired": {
+          "description": "Also answer how many retired records match, at the same position. Counted only when asked; not with aggregate.",
+          "type": "boolean"
+        },
+        "total": {
+          "description": "Also answer how many records match, at the answer's position. Counted only when asked.",
+          "type": "boolean"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "where": {
+          "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100.",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "order_find",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "next_cursor": {
+              "type": "string"
+            },
+            "retired": {
+              "type": "integer"
+            },
+            "rows": {
+              "type": "array"
+            },
+            "shape": {
+              "enum": [
+                "records",
+                "groups"
+              ]
+            },
+            "total": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "shape",
+            "rows"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Get one `order` (An order a customer placed, with its total over its lines.) record by key.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "description": "The key of the `order` record: the value of its `id`.",
+          "type": "string"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "order_get",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "fields": {
+              "properties": {
+                "customer": {
+                  "description": "The key of a `customer` record.",
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "placed_on": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "total": {
+                  "description": "An exact decimal, written as a string.",
+                  "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "key": {
+              "type": "string"
+            },
+            "masked": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "meta": {
+              "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value.",
+              "type": "object"
+            },
+            "type": {
+              "const": "order"
+            },
+            "version": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "key",
+            "version",
+            "fields"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Find `order_line` (One line of an order, a product and how many units of it.) records: filter with `where`, sort, page with `cursor`, resume after a row with `after` or jump with `offset`, ask for the `total`, or aggregate. Every answer carries the position it was read at.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "additionalProperties": false,
+          "description": "Resume strictly after a row: its values for the order_by keys, in order (null where it has none), and its key. Instead of a cursor.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "values": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "values",
+            "key"
+          ],
+          "type": "object"
+        },
+        "aggregate": {
+          "additionalProperties": false,
+          "properties": {
+            "group_by": {
+              "items": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "id",
+                      "order",
+                      "product",
+                      "qty"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "description": "An expression in the grammar, e.g. date_bucket(due_on, 'month').",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "expr"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "measures": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "field": {
+                    "enum": [
+                      "id",
+                      "order",
+                      "product",
+                      "qty"
+                    ],
+                    "type": "string"
+                  },
+                  "func": {
+                    "enum": [
+                      "count",
+                      "sum",
+                      "min",
+                      "max",
+                      "avg"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "func"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "measures"
+          ],
+          "type": "object"
+        },
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip this many rows of the order before the page, to jump to a page of a table. The rows skipped are read, so a large offset costs more; continue from there with the cursor. Not with cursor, after or aggregate.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "order_by": {
+          "items": {
+            "additionalProperties": false,
+            "description": "One sort key. `latest` orders by the position of each record's latest change and takes no field; every other `by` names its field.",
+            "properties": {
+              "by": {
+                "enum": [
+                  "value",
+                  "known_at",
+                  "seen_at",
+                  "latest"
+                ]
+              },
+              "dir": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              },
+              "field": {
+                "enum": [
+                  "id",
+                  "order",
+                  "product",
+                  "qty"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "retired": {
+          "description": "Also answer how many retired records match, at the same position. Counted only when asked; not with aggregate.",
+          "type": "boolean"
+        },
+        "total": {
+          "description": "Also answer how many records match, at the answer's position. Counted only when asked.",
+          "type": "boolean"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "where": {
+          "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100.",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "order_line_find",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "next_cursor": {
+              "type": "string"
+            },
+            "retired": {
+              "type": "integer"
+            },
+            "rows": {
+              "type": "array"
+            },
+            "shape": {
+              "enum": [
+                "records",
+                "groups"
+              ]
+            },
+            "total": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "shape",
+            "rows"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Get one `order_line` (One line of an order, a product and how many units of it.) record by key.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "description": "The key of the `order_line` record: the value of its `id`.",
+          "type": "string"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "order_line_get",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "fields": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "order": {
+                  "description": "The key of a `order` record.",
+                  "type": "string"
+                },
+                "product": {
+                  "description": "The key of a `product` record.",
+                  "type": "string"
+                },
+                "qty": {
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "key": {
+              "type": "string"
+            },
+            "masked": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "meta": {
+              "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value.",
+              "type": "object"
+            },
+            "type": {
+              "const": "order_line"
+            },
+            "version": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "key",
+            "version",
+            "fields"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Pin this session's reads to one position until cleared, so every read in a turn sees the same state: `as_of` pins that position, no argument pins the current head, `clear` removes the pin. A read's own `as_of` still wins; writes are never pinned. A read pinned to the head reads `now()` at the instant the pin was set; one pinned to a named position, at the time its event was written; `valid_at` comes first.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "The position to pin; the current head when left out.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "clear": {
+          "description": "Remove the pin.",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "pin",
+    "outputSchema": {
+      "properties": {
+        "pinned": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "pinned"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Find `product` (A product the trading house sells, made by one supplier.) records: filter with `where`, sort, page with `cursor`, resume after a row with `after` or jump with `offset`, ask for the `total`, or aggregate. Every answer carries the position it was read at.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "additionalProperties": false,
+          "description": "Resume strictly after a row: its values for the order_by keys, in order (null where it has none), and its key. Instead of a cursor.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "values": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "values",
+            "key"
+          ],
+          "type": "object"
+        },
+        "aggregate": {
+          "additionalProperties": false,
+          "properties": {
+            "group_by": {
+              "items": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "sku",
+                      "name",
+                      "category",
+                      "unit_price",
+                      "supplier"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "description": "An expression in the grammar, e.g. date_bucket(due_on, 'month').",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "expr"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "measures": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "field": {
+                    "enum": [
+                      "sku",
+                      "name",
+                      "category",
+                      "unit_price",
+                      "supplier"
+                    ],
+                    "type": "string"
+                  },
+                  "func": {
+                    "enum": [
+                      "count",
+                      "sum",
+                      "min",
+                      "max",
+                      "avg"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "func"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "measures"
+          ],
+          "type": "object"
+        },
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip this many rows of the order before the page, to jump to a page of a table. The rows skipped are read, so a large offset costs more; continue from there with the cursor. Not with cursor, after or aggregate.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "order_by": {
+          "items": {
+            "additionalProperties": false,
+            "description": "One sort key. `latest` orders by the position of each record's latest change and takes no field; every other `by` names its field.",
+            "properties": {
+              "by": {
+                "enum": [
+                  "value",
+                  "known_at",
+                  "seen_at",
+                  "latest"
+                ]
+              },
+              "dir": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              },
+              "field": {
+                "enum": [
+                  "sku",
+                  "name",
+                  "category",
+                  "unit_price",
+                  "supplier"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "retired": {
+          "description": "Also answer how many retired records match, at the same position. Counted only when asked; not with aggregate.",
+          "type": "boolean"
+        },
+        "total": {
+          "description": "Also answer how many records match, at the answer's position. Counted only when asked.",
+          "type": "boolean"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "where": {
+          "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100.",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "product_find",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "next_cursor": {
+              "type": "string"
+            },
+            "retired": {
+              "type": "integer"
+            },
+            "rows": {
+              "type": "array"
+            },
+            "shape": {
+              "enum": [
+                "records",
+                "groups"
+              ]
+            },
+            "total": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "shape",
+            "rows"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Get one `product` (A product the trading house sells, made by one supplier.) record by key.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "description": "The key of the `product` record: the value of its `sku`.",
+          "type": "string"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "product_get",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "fields": {
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "supplier": {
+                  "description": "The key of a `supplier` record.",
+                  "type": "string"
+                },
+                "unit_price": {
+                  "description": "An exact decimal, written as a string.",
+                  "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "key": {
+              "type": "string"
+            },
+            "masked": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "meta": {
+              "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value.",
+              "type": "object"
+            },
+            "type": {
+              "const": "product"
+            },
+            "version": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "key",
+            "version",
+            "fields"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, whole-graph measures (degree centrality, connected components and PageRank) and the cheapest walk. A graph whose steps all start at depth 0 is one walk over their relations, each in its own step's direction and depth; any other is a chain, as rows walk it; a graph cut by `limit` pages with `next_cursor`. Rows and an aggregate may branch and join: a step's `from` names an earlier name, `join` closes a cycle, `optional` binds null where nothing matches and `absent` keeps a row only where nothing does. A path (`to`) has one start and answers a graph, or with `cheapest` rows. A measure is computed whole for every page: read it in one page, with `limit` up to the lake's `max_graph_nodes`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "order_by": {
+          "items": {
+            "additionalProperties": false,
+            "description": "One sort key of the rows: a path they hold, by its value.",
+            "properties": {
+              "dir": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              },
+              "field": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "field"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "project": {
+          "properties": {
+            "as": {
+              "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first; with no start `type` it grows from every linked record, in every type. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`. `reach` answers rows of `step`, `depth`, `type` and `key`: what each step reaches from what the step before it kept, dead ends included, each record at the first step that reaches it. `page_rank` answers rows of `type`, `key` and `page_rank` over the graph the start reaches, each step in its own direction, highest first, the same on every engine; like `components` it takes steps without `depth`, `where` or `type`, and may leave the start `type` out. `cheapest` needs `to` and one start: rows of `hop`, `type`, `key`, `relation`, `walk` and `cost` along the walk that costs least, a link costing its `weight` field, then the fewest hops.",
+              "enum": [
+                "rows",
+                "graph",
+                "aggregate",
+                "degree",
+                "components",
+                "reach",
+                "page_rank",
+                "cheapest"
+              ]
+            },
+            "fields": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "weight": {
+              "description": "For `cheapest`: the number or decimal field of every step's link type that a link costs.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "start": {
+          "properties": {
+            "as": {
+              "description": "The name a row binds this record under, `<name>.<field>`; its type's name when left out. Two records of one type in a row need a name each.",
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "params": {
+              "description": "The parameters of a view the pattern starts on, by name.",
+              "type": "object"
+            },
+            "rerank": {
+              "properties": {
+                "text": {
+                  "description": "What the window is ranked against; the search's own text when left out, so a vector search must give it.",
+                  "type": "string"
+                },
+                "top": {
+                  "description": "How many of the first hits the lake's reranker ranks again, at most the lake's `limits.max_rerank_top`; the answer ends at this window.",
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "top"
+              ],
+              "type": "object"
+            },
+            "search": {
+              "type": "object"
+            },
+            "type": {
+              "enum": [
+                "customer",
+                "order",
+                "order_line",
+                "product",
+                "supplier",
+                "sys.aging_rule",
+                "sys.setting"
+              ],
+              "type": "string"
+            },
+            "where": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "steps": {
+          "items": {
+            "properties": {
+              "absent": {
+                "description": "Keep the row only where the step has no match from its `from`; with `join`, only where no walk reaches the joined record. It binds no name and takes no `as`.",
+                "type": "boolean"
+              },
+              "as": {
+                "description": "The name a row binds this step's records under, `<name>.<field>`, with `<name>.key`, `<name>._type` and `<name>._depth`; its type's name when left out, or its relation's where it reaches several types. Name a step that may reach several types: left out, its name follows the types its reader is shown.",
+                "type": "string"
+              },
+              "depth": {
+                "properties": {
+                  "max": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "min": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              },
+              "from": {
+                "description": "The name this step walks from: the start's, or one an earlier step binds; the one the step before it binds when left out. Two steps from one name branch, and a row is a match of every branch. Rows and an aggregate only.",
+                "type": "string"
+              },
+              "join": {
+                "description": "A name an earlier step binds: the step holds only where it reaches that name's record, closing a cycle. It binds no name and takes no `as`, `type` or `where`.",
+                "type": "string"
+              },
+              "optional": {
+                "description": "Keep the row where the step has no match: its name's `key`, `_type` and `_depth` are null. A step from or joining it says `optional` too, and they match whole or are null whole.",
+                "type": "boolean"
+              },
+              "relation": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "walk": {
+                "enum": [
+                  "out",
+                  "in",
+                  "both"
+                ]
+              },
+              "where": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "relation"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "to": {
+          "description": "[type, key]: return only the shortest walk to this record.",
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "type": "array"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start"
+      ],
+      "type": "object"
+    },
+    "name": "query",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Ranked search over one type, lexical, by vector or both. Hits come best first, each with a score; page with `cursor`. With `rerank` the lake's reranker ranks the first `top` hits again and the answer ends at that window.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "also": {
+          "description": "vector: further vector fields, each {field, vector, weight, model}, fused with `field` by weighted rank.",
+          "items": {
+            "required": [
+              "field",
+              "vector"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "field": {
+          "type": "string"
+        },
+        "fields": {
+          "description": "lexical and hybrid: match the text only in these searchable fields.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "k": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "matches": {
+          "description": "Answer on each hit the searched fields its text matched, each with the char spans of its first 32 matched tokens and their count; needs a text.",
+          "type": "boolean"
+        },
+        "mode": {
+          "enum": [
+            "lexical",
+            "vector",
+            "hybrid"
+          ]
+        },
+        "model": {
+          "description": "The model that made `vector`, named only beside it; over a field that is a model's embedding, it must be that model.",
+          "type": "string"
+        },
+        "rerank": {
+          "properties": {
+            "text": {
+              "description": "What the window is ranked against; the search's own text when left out, so a vector search must give it.",
+              "type": "string"
+            },
+            "top": {
+              "description": "How many of the first hits the lake's reranker ranks again, at most the lake's `limits.max_rerank_top`; the answer ends at this window.",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "top"
+          ],
+          "type": "object"
+        },
+        "text": {
+          "type": "string"
+        },
+        "text_fields": {
+          "additionalProperties": {
+            "exclusiveMinimum": 0,
+            "maximum": 1000000,
+            "type": "number"
+          },
+          "description": "lexical and hybrid: a weight for a match of the text in each searchable field named, over the type's `search_weights` setting; a field it leaves out takes the setting's, else 1.",
+          "minProperties": 1,
+          "type": "object"
+        },
+        "text_weight": {
+          "exclusiveMinimum": 0,
+          "maximum": 1000000,
+          "type": "number"
+        },
+        "type": {
+          "enum": [
+            "customer",
+            "order",
+            "order_line",
+            "product",
+            "supplier",
+            "sys.aging_rule",
+            "sys.setting"
+          ],
+          "type": "string"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "vector": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "weight": {
+          "description": "The weight of `field`'s ranking against the text's (`text_weight`) or the fields' in `also`.",
+          "exclusiveMinimum": 0,
+          "maximum": 1000000,
+          "type": "number"
+        },
+        "where": {
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "name": "search",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "axes": {
+              "type": "array"
+            },
+            "hits": {
+              "type": "array"
+            },
+            "next_cursor": {
+              "type": "string"
+            },
+            "ranked_by": {
+              "type": "string"
+            },
+            "truncated": {
+              "description": "A reranked search only: the first stage holds more hits than the window, unranked and not answered.",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Be told of changes without polling: from `from` on (by default, from now), this session is sent a `notifications/lakelands/changed` for every change of a record it may read, of the kinds, types and keys asked (by default every kind, every type it may read when the change happens, and every record). A notification names the position, the kind, the type, the key and the changed fields it may read; never a value. Subscribing again replaces the subscription; it ends with the session.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "description": "The first position to be told of; the one after the current head when left out.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keys": {
+          "description": "Only the records with these keys, fixed now: of the types asked, or of any type when none are; every record when left out. One record's history is one type and one key.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kinds": {
+          "description": "Only these kinds of change; every kind when left out.",
+          "items": {
+            "enum": [
+              "record_upserted",
+              "record_ingested",
+              "record_retired",
+              "output_recorded",
+              "trigger_fired",
+              "trigger_dropped",
+              "object_set_changed"
+            ]
+          },
+          "type": "array"
+        },
+        "types": {
+          "description": "Only these types, fixed now; every type readable at each change when left out.",
+          "items": {
+            "enum": [
+              "customer",
+              "order",
+              "order_line",
+              "product",
+              "supplier",
+              "sys.aging_rule",
+              "sys.setting"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "subscribe",
+    "outputSchema": {
+      "properties": {
+        "from": {
+          "type": "integer"
+        },
+        "position": {
+          "type": "integer"
+        },
+        "subscribed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "position",
+        "subscribed",
+        "from"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Find `supplier` (A maker the trading house buys its products from.) records: filter with `where`, sort, page with `cursor`, resume after a row with `after` or jump with `offset`, ask for the `total`, or aggregate. Every answer carries the position it was read at.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "additionalProperties": false,
+          "description": "Resume strictly after a row: its values for the order_by keys, in order (null where it has none), and its key. Instead of a cursor.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "values": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "values",
+            "key"
+          ],
+          "type": "object"
+        },
+        "aggregate": {
+          "additionalProperties": false,
+          "properties": {
+            "group_by": {
+              "items": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "id",
+                      "name",
+                      "country"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "description": "An expression in the grammar, e.g. date_bucket(due_on, 'month').",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "expr"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "measures": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "field": {
+                    "enum": [
+                      "id",
+                      "name",
+                      "country"
+                    ],
+                    "type": "string"
+                  },
+                  "func": {
+                    "enum": [
+                      "count",
+                      "sum",
+                      "min",
+                      "max",
+                      "avg"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "func"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "measures"
+          ],
+          "type": "object"
+        },
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip this many rows of the order before the page, to jump to a page of a table. The rows skipped are read, so a large offset costs more; continue from there with the cursor. Not with cursor, after or aggregate.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "order_by": {
+          "items": {
+            "additionalProperties": false,
+            "description": "One sort key. `latest` orders by the position of each record's latest change and takes no field; every other `by` names its field.",
+            "properties": {
+              "by": {
+                "enum": [
+                  "value",
+                  "known_at",
+                  "seen_at",
+                  "latest"
+                ]
+              },
+              "dir": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              },
+              "field": {
+                "enum": [
+                  "id",
+                  "name",
+                  "country"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "retired": {
+          "description": "Also answer how many retired records match, at the same position. Counted only when asked; not with aggregate.",
+          "type": "boolean"
+        },
+        "total": {
+          "description": "Also answer how many records match, at the answer's position. Counted only when asked.",
+          "type": "boolean"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "where": {
+          "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100.",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "supplier_find",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "next_cursor": {
+              "type": "string"
+            },
+            "retired": {
+              "type": "integer"
+            },
+            "rows": {
+              "type": "array"
+            },
+            "shape": {
+              "enum": [
+                "records",
+                "groups"
+              ]
+            },
+            "total": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "shape",
+            "rows"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Get one `supplier` (A maker the trading house buys its products from.) record by key.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "description": "The key of the `supplier` record: the value of its `id`.",
+          "type": "string"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "supplier_get",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "fields": {
+              "properties": {
+                "country": {
+                  "description": "Where the supplier makes its goods, as an ISO 3166 country code.",
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "key": {
+              "type": "string"
+            },
+            "masked": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "meta": {
+              "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value.",
+              "type": "object"
+            },
+            "type": {
+              "const": "supplier"
+            },
+            "version": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "key",
+            "version",
+            "fields"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Find `sys.aging_rule` (One aging rule: on a date, move `field` of every record of `on` from `from` to `to` when `when` holds.) records: filter with `where`, sort, page with `cursor`, resume after a row with `after` or jump with `offset`, ask for the `total`, or aggregate. Every answer carries the position it was read at.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "additionalProperties": false,
+          "description": "Resume strictly after a row: its values for the order_by keys, in order (null where it has none), and its key. Instead of a cursor.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "values": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "values",
+            "key"
+          ],
+          "type": "object"
+        },
+        "aggregate": {
+          "additionalProperties": false,
+          "properties": {
+            "group_by": {
+              "items": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "name",
+                      "on",
+                      "field",
+                      "when",
+                      "description"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "description": "An expression in the grammar, e.g. date_bucket(due_on, 'month').",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "expr"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "measures": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "field": {
+                    "enum": [
+                      "name",
+                      "on",
+                      "field",
+                      "when",
+                      "description"
+                    ],
+                    "type": "string"
+                  },
+                  "func": {
+                    "enum": [
+                      "count",
+                      "sum",
+                      "min",
+                      "max",
+                      "avg"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "func"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "measures"
+          ],
+          "type": "object"
+        },
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip this many rows of the order before the page, to jump to a page of a table. The rows skipped are read, so a large offset costs more; continue from there with the cursor. Not with cursor, after or aggregate.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "order_by": {
+          "items": {
+            "additionalProperties": false,
+            "description": "One sort key. `latest` orders by the position of each record's latest change and takes no field; every other `by` names its field.",
+            "properties": {
+              "by": {
+                "enum": [
+                  "value",
+                  "known_at",
+                  "seen_at",
+                  "latest"
+                ]
+              },
+              "dir": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              },
+              "field": {
+                "enum": [
+                  "name",
+                  "on",
+                  "field",
+                  "when",
+                  "description"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "retired": {
+          "description": "Also answer how many retired records match, at the same position. Counted only when asked; not with aggregate.",
+          "type": "boolean"
+        },
+        "total": {
+          "description": "Also answer how many records match, at the answer's position. Counted only when asked.",
+          "type": "boolean"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "where": {
+          "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100.",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "sys_aging_rule_find",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "next_cursor": {
+              "type": "string"
+            },
+            "retired": {
+              "type": "integer"
+            },
+            "rows": {
+              "type": "array"
+            },
+            "shape": {
+              "enum": [
+                "records",
+                "groups"
+              ]
+            },
+            "total": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "shape",
+            "rows"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Get one `sys.aging_rule` (One aging rule: on a date, move `field` of every record of `on` from `from` to `to` when `when` holds.) record by key.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "description": "The key of the `sys.aging_rule` record: the value of its `name`.",
+          "type": "string"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "sys_aging_rule_get",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "fields": {
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "from": {},
+                "name": {
+                  "type": "string"
+                },
+                "on": {
+                  "type": "string"
+                },
+                "to": {},
+                "when": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "key": {
+              "type": "string"
+            },
+            "masked": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "meta": {
+              "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value.",
+              "type": "object"
+            },
+            "type": {
+              "const": "sys.aging_rule"
+            },
+            "version": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "key",
+            "version",
+            "fields"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Find `sys.setting` (One named setting of the lake: `setting('key')` reads its value.) records: filter with `where`, sort, page with `cursor`, resume after a row with `after` or jump with `offset`, ask for the `total`, or aggregate. Every answer carries the position it was read at.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "additionalProperties": false,
+          "description": "Resume strictly after a row: its values for the order_by keys, in order (null where it has none), and its key. Instead of a cursor.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "values": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "values",
+            "key"
+          ],
+          "type": "object"
+        },
+        "aggregate": {
+          "additionalProperties": false,
+          "properties": {
+            "group_by": {
+              "items": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "key",
+                      "group"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "description": "An expression in the grammar, e.g. date_bucket(due_on, 'month').",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "expr"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "measures": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "field": {
+                    "enum": [
+                      "key",
+                      "group"
+                    ],
+                    "type": "string"
+                  },
+                  "func": {
+                    "enum": [
+                      "count",
+                      "sum",
+                      "min",
+                      "max",
+                      "avg"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "func"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "measures"
+          ],
+          "type": "object"
+        },
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip this many rows of the order before the page, to jump to a page of a table. The rows skipped are read, so a large offset costs more; continue from there with the cursor. Not with cursor, after or aggregate.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "order_by": {
+          "items": {
+            "additionalProperties": false,
+            "description": "One sort key. `latest` orders by the position of each record's latest change and takes no field; every other `by` names its field.",
+            "properties": {
+              "by": {
+                "enum": [
+                  "value",
+                  "known_at",
+                  "seen_at",
+                  "latest"
+                ]
+              },
+              "dir": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              },
+              "field": {
+                "enum": [
+                  "key",
+                  "group"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "retired": {
+          "description": "Also answer how many retired records match, at the same position. Counted only when asked; not with aggregate.",
+          "type": "boolean"
+        },
+        "total": {
+          "description": "Also answer how many records match, at the answer's position. Counted only when asked.",
+          "type": "boolean"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "where": {
+          "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100.",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "sys_setting_find",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "next_cursor": {
+              "type": "string"
+            },
+            "retired": {
+              "type": "integer"
+            },
+            "rows": {
+              "type": "array"
+            },
+            "shape": {
+              "enum": [
+                "records",
+                "groups"
+              ]
+            },
+            "total": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "shape",
+            "rows"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Get one `sys.setting` (One named setting of the lake: `setting('key')` reads its value.) record by key.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "description": "The key of the `sys.setting` record: the value of its `key`.",
+          "type": "string"
+        },
+        "valid_at": {
+          "description": "Read what was true in the world at this instant; now() and today() are this instant.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "with_meta": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "sys_setting_get",
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "fields": {
+              "properties": {
+                "group": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "value": {}
+              },
+              "type": "object"
+            },
+            "key": {
+              "type": "string"
+            },
+            "masked": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "meta": {
+              "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value.",
+              "type": "object"
+            },
+            "type": {
+              "const": "sys.setting"
+            },
+            "version": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "key",
+            "version",
+            "fields"
+          ],
+          "type": "object"
+        },
+        "position": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Stop being told of changes. Answers the position the session had reached, to subscribe `from` later.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "unsubscribe",
+    "outputSchema": {
+      "properties": {
+        "next": {
+          "type": "integer"
+        },
+        "position": {
+          "type": "integer"
+        },
+        "subscribed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "position",
+        "subscribed",
+        "next"
+      ],
+      "type": "object"
+    }
+  }
+]

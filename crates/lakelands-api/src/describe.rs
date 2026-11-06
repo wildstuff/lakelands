@@ -3,7 +3,7 @@
 //! rights, actions, lineage and lifecycle — as one principal may see it.
 //! The tool catalog is generated from this answer and nothing else.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +72,23 @@ pub struct SettingValue {
     /// told to a holder of `schema` and to one who may write it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared: Option<crate::write::SettingDecl>,
+    /// Each value a host's setting holds and the day it holds from, in
+    /// order, the first from the start; none for a setting that holds no
+    /// value from a date. `value` is then the one in force on the clock's
+    /// day (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub periods: Vec<SettingPeriod>,
+}
+
+/// One value of a setting and the day it holds from, until the next one's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SettingPeriod {
+    /// The date it holds from; `None` for the first, which holds from the
+    /// start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Its value.
+    pub value: crate::Value,
 }
 
 /// Rights of the principal beyond any one type.
@@ -124,6 +141,13 @@ pub struct TypeDescription {
     pub lineage: TypeLineage,
     /// Lifecycle: version and shape.
     pub lifecycle: TypeLifecycle,
+    /// The series pairs its `series_index.<type>` setting asks for, and
+    /// whether each pair's rows are whole: told to a holder of `schema`
+    /// who reads both fields, at the head only, as `chosen` is
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §How a
+    /// lake with records gets it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub series: Vec<SeriesTold>,
     /// The constraints every record of the type holds, those whose
     /// fields its reader reads (lakelands#1119).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -133,6 +157,23 @@ pub struct TypeDescription {
     /// them once, in the lake's `value_types`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub value_types: Vec<ValueTypeDecl>,
+    /// The acts that thinned the type past a horizon, oldest first; for a
+    /// view, those on its sources
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinned: Vec<crate::read::ThinnedAct>,
+    /// How many of the type's or the view's groups are stranded: they
+    /// answer at the head alone.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stranded: u64,
+    /// The copies of the time-zone database that cut a stranded group
+    /// a make carried, for a zoned kept view.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cut: Vec<String>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// One field, as the principal may see it: the declaration whole for a
@@ -148,6 +189,11 @@ pub struct FieldDescription {
     pub required: bool,
     /// Which authority writes it.
     pub authority: Authority,
+    /// The sources an `ingest` may write it under, as declared
+    /// (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`):
+    /// shown wherever its authority is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admits: Vec<crate::id::SourceId>,
     /// This principal's access to it.
     pub access: Access,
     /// For a derived field: its expression.
@@ -198,14 +244,19 @@ pub struct FieldDescription {
     /// The host's own marks on the field, to a principal who reads it.
     #[serde(default, skip_serializing_if = "Annotations::is_empty")]
     pub annotations: Annotations,
+    /// Where its holder's grant lowers it below `access`: on the records
+    /// whose field holds one of the values
+    /// (`006 § A field may be hidden on only the records a condition selects`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_where: Vec<(FieldName, BTreeSet<String>)>,
 }
 
 impl FieldDescription {
     /// The description of a declared field for a principal with `access`.
     /// A masked field answers its shape only — name, type, whether it is
-    /// required and sensitive, its authority and what an input change does
-    /// to it — never what it is computed from, what it starts as, what it
-    /// means or how the host marked it
+    /// required and sensitive, its authority and the sources it admits,
+    /// and what an input change does to it — never what it is computed
+    /// from, what it starts as, what it means or how the host marked it
     /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
     pub fn of(decl: &FieldDecl, access: Access) -> FieldDescription {
         use crate::ontology::StorageKind::{Bytes, Json, Vector};
@@ -220,6 +271,7 @@ impl FieldDescription {
             ty: decl.ty,
             required: decl.required,
             authority: decl.authority,
+            admits: decl.admits,
             access,
             derived: decl.derived,
             function: decl.function,
@@ -234,6 +286,7 @@ impl FieldDescription {
             label: decl.label,
             embed: decl.embed,
             annotations: decl.annotations,
+            hidden_where: Vec::new(),
         }
     }
 
@@ -302,6 +355,17 @@ pub struct TypeRights {
     /// Left out where it admits every record.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub only: BTreeMap<FieldName, crate::Value>,
+    /// The principal's grant admits, beside `only`, only the records whose
+    /// field holds one of these values, for each field named. Left out
+    /// where it names no set.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub only_any: BTreeMap<FieldName, BTreeSet<String>>,
+    /// The principal's grant admits to write only the records whose
+    /// fields hold these values; it reads what `only` admits, and is
+    /// offered no write of a record that would not hold them. Left out
+    /// where it may write every record it reads.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub writes_only: BTreeMap<FieldName, crate::Value>,
 }
 
 /// Where a type's records come from.
@@ -319,6 +383,12 @@ pub struct TypeLineage {
     /// For a view type: the type it is computed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view_of: Option<TypeName>,
+    /// As of a position: the names the type bore from it on, each entry of
+    /// the lake's list of renames that gave it one, oldest first, so that
+    /// the last `to` is its name at the head (lakelands#1291). Told only to
+    /// a reader shown the type there too; empty at the head.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renamed: Vec<crate::principal::Renamed>,
 }
 
 /// A type's version and shape.
@@ -337,6 +407,21 @@ pub struct TypeLifecycle {
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sorted: Vec<FieldName>,
+    /// The fields the lake chose an order index for itself, from the pages
+    /// it had to sort whole, beside `sorted` and never in it: kept by the
+    /// lake and not in its log, so a feed, a mirror and an export carry
+    /// none. Told to a holder of `schema` who reads the field, as
+    /// `sorted_whole` is, and only at the head
+    /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen: Vec<FieldName>,
+    /// The fields an index build is filling in parts, which no read looks
+    /// at until its `Keep`: a `sort_index.<type>` or `lookup_index.<type>`
+    /// setting's, or the lake's own. Told like `chosen`, to a holder of
+    /// `schema` who reads the field, and only at the head
+    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub building: Vec<FieldName>,
     /// The fields a `find` ordered first by and the lake answered by
     /// sorting the type, since it was opened in the process that answers:
     /// the pages and the time they cost. Each is one `sort_index.<type>`
@@ -374,6 +459,30 @@ pub struct SortedWhole {
     pub millis: u64,
 }
 
+/// One series pair a type's `series_index.<type>` setting asks for, and
+/// whether its rows are whole
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// series index).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeriesTold {
+    /// The field naming the series.
+    pub series: FieldName,
+    /// The order field within the series.
+    pub order: FieldName,
+    /// Whether the pair's rows are whole.
+    pub state: SeriesToldState,
+}
+
+/// Whether a series pair's rows are whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SeriesToldState {
+    /// A build is filling the pair's rows: no read takes the pair.
+    Building,
+    /// The pair's rows are whole: a read may take the pair.
+    Kept,
+}
+
 /// Whether a view's records are kept as its sources are written, or
 /// computed at each read.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -409,6 +518,10 @@ pub enum NotKept {
         /// fold, which mends when its cause leaves.
         not_exact: u64,
     },
+    /// Its records are being built: a `view_kept.<view>` setting is in
+    /// force, and the build has not reached its `Keep`, so reads compute
+    /// it. A build a runner left owed goes on at the next open.
+    Building,
     /// Its records are not kept at this position, or by this lake.
     NotKeptHere,
     /// Its reader is admitted only some records of the view, or of a type

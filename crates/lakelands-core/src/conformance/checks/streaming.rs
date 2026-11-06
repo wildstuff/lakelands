@@ -125,36 +125,22 @@
 
 use std::fs;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures_core::Stream;
-use lakelands_api::event::{Digest, Event, EventBody};
-use lakelands_api::ontology::{
-    Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
-};
-use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk};
-use lakelands_api::read::{AggFunc, Direction, OrderBy};
-use lakelands_api::seam::{FEED_EXAMINED, FeedFilter, SETTING_TYPE, Seams, VIEW_KEPT_SETTING};
-use lakelands_api::{
-    Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
-    TypeName,
-};
-use serde_json::json;
+use lakelands_api::event::Digest;
+use lakelands_api::seam::{FEED_EXAMINED, SETTING_TYPE, VIEW_KEPT_SETTING};
 use sha2::{Digest as _, Sha256};
 
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, declare, doors, embedding, field, ingest, limits, order, owner,
-    pattern, pause, reason, restrict, source_record, sourced, step, type_decl, view_of,
-};
-use crate::conformance::{Failure, Given, Held, Meter, Store, backing, next};
+use crate::conformance::fixture::{doors, ingest, order, owner, source_record, step};
+use crate::conformance::prelude::*;
+use crate::conformance::{Meter, next};
 use crate::export;
-use crate::links::{link_key, link_type_name};
 
 check!(
     STREAMS =
@@ -855,7 +841,7 @@ impl Size<'_> {
                 .must(&format!("counting `reading` where {filter}"))?;
             let (heap, _) = m.stop();
             let counted = match &reply.data {
-                Found::Groups { rows } => rows
+                Found::Groups { rows, .. } => rows
                     .first()
                     .and_then(|g| g.values.get("n"))
                     .and_then(serde_json::Value::as_str)
@@ -903,7 +889,7 @@ impl Size<'_> {
                 .await
                 .must(&format!("grouping `{ty}` by site"))?;
             let (heap, _) = m.stop();
-            let Found::Groups { rows } = &reply.data else {
+            let Found::Groups { rows, .. } = &reply.data else {
                 return Err(Failure::new(format!(
                     "an aggregate over `{ty}` answered records"
                 )));
@@ -990,7 +976,7 @@ impl Size<'_> {
         let measured = (m.stop().0, started.elapsed());
         let reply = reply.must("the owner's sum over `ticks`")?;
         let sum = match &reply.data {
-            Found::Groups { rows } => rows.first().and_then(|g| g.values.get("s")).cloned(),
+            Found::Groups { rows, .. } => rows.first().and_then(|g| g.values.get("s")).cloned(),
             _ => None,
         };
         ensure!(
@@ -1156,6 +1142,19 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// [`Self::sorted_pages`] with the lake choosing no order index: its
+    /// build would read beside the pages the walks hold to their rows
+    /// (lakelands#1131). Answers the lake opened again as it was.
+    async fn sorted_walks(&mut self, store: Store, records: u64) -> Result<Store, Failure> {
+        let mut off = limits();
+        off.choose_order_index = false;
+        let store = (self.given.relimit)(store, seams(), off).await;
+        let store = store.map_err(|e| Failure::new(format!("opening the lake failed: {e}")))?;
+        self.sorted_pages(store.as_ref(), records).await?;
+        let store = (self.given.relimit)(store, seams(), limits()).await;
+        store.map_err(|e| Failure::new(format!("opening the lake again failed: {e}")))
+    }
+
     /// Walk the first pages of `reading` ordered by its `note`, a text field
     /// every record holds with its own value, first as a lake without an
     /// order index sorts them: a page holds the type, its heap reported
@@ -1168,7 +1167,7 @@ impl Size<'_> {
     /// three rows more than it answers, and two per record changed since
     /// its position. Every walk answers what the first, a sort of the
     /// type, answered. Then retire the setting.
-    async fn sorted_walks(&mut self, store: &dyn LakeStore, records: u64) -> Held {
+    async fn sorted_pages(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let limit = u64::from(limits().max_limit);
         // The store asks the engine for a page and one more row, which
         // tells it whether another page follows, and reads the lake's
@@ -1404,24 +1403,7 @@ impl Size<'_> {
         let got = doors(store)
             .search(
                 &self.own,
-                Search {
-                    ty: TypeName::from(TY),
-                    mode: SearchMode::Hybrid {
-                        text: note(SOUGHT),
-                        field: "vec".into(),
-                        vector: None,
-                        fields: None,
-                        weight: None,
-                        text_weight: None,
-                        model: None,
-                    },
-                    k: K,
-                    cursor: None,
-                    filter: None,
-                    with_meta: false,
-                    at: ReadAt::default(),
-                    rerank: None,
-                },
+                searched(TY, SearchMode::hybrid(note(SOUGHT), "vec"), K),
             )
             .await
             .must(&format!("a hybrid search for the note of `{sought}`"))?
@@ -1871,7 +1853,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         size.counts(store.as_ref(), records).await?;
         size.groups(store.as_ref(), records).await?;
         size.jump(store.as_ref(), records).await?;
-        size.sorted_walks(store.as_ref(), records).await?;
+        store = size.sorted_walks(store, records).await?;
         size.searches(store.as_ref(), records).await?;
         size.traverse(store.as_ref(), records).await?;
         size.derived_walk(store.as_ref(), records).await?;

@@ -1,18 +1,15 @@
 //! A change to the ontology plans before it acts
 //! (`docs/decisions/062-a-change-plans-before-it-acts.md`).
 
-use lakelands_api::event::EventBody;
-use lakelands_api::write::{Change, Migration, Plan, ProposedWrite, Recompute, ValueTypeMigration};
-use lakelands_api::{Principal, RecordKey};
-use serde_json::{Value, json};
+use lakelands_api::write::{Change, Plan, ProposedWrite, ValueTypeMigration, WriteOpts};
 
+use super::erasable::again as reopened;
 use super::only::{de, holder};
-use crate::conformance::fixture::{Lake, Must, log_events, restrict};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     PLAN_TELLS = a_change_tells_its_plan_before_it_acts,
-    "062 (lakelands#1141, lakelands#1140): every door that changes the ontology is planned on its own path: `plan` of a function declared again, of `recompute`, of an expression a migration changes, of a field added and of a migration that only fills tells each type whose records it would change, the live records computed again, per reference field the live records it would leave naming no live record (one absent or retired; a held one counts as live), the records an admitting constraint would break and those it would fill, each with the first keys its reader is answered, and a value type's migration the values that would no longer fit, not lossless; `enact` with the plan's id makes the change and answers that plan, with an id of another head it is refused `plan_stale`, and `declare`, `apply`, `recompute`, `add_field` and `migrate_apply` each answer the plan that applied; `migrate`'s preview is the plan's section, id included"
+    "062 (lakelands#1141, lakelands#1140): every door that changes the ontology is planned on its own path: `plan` of a function declared again, of `recompute`, of an expression a migration changes, of a field added and of a migration that only fills tells each type whose records it would change, the live records computed again, per reference field the live records it would leave naming no live record (one absent or retired; a held one counts as live), the records an admitting constraint would break and those it would fill, each with the first keys its reader is answered, and a value type's migration the values that would no longer fit, not lossless; `enact` with the plan's id makes the change and answers that plan; under any other id, another plan's or one a write since has reached, it is refused `plan_stale`; and `declare`, `apply`, `recompute`, `add_field` and `migrate_apply` each answer the plan that applied; `migrate`'s preview is the plan's section, id included"
 );
 
 check!(
@@ -29,6 +26,17 @@ check!(
 check!(
     PLAN_ACCEPTED = a_proposal_is_accepted_against_its_plan,
     "062, 013: a proposal is answered its plan as its proposer is shown it and refused only by the declaration's own checks, as before: one kept from a field that a constraint that refuses reads, proposing a declaration that would leave that constraint broken, is answered as for the twin without it, and the owner's accept of it is refused; a proposed change to the ontology accepted with `accept_planned` is accepted only where the plan of its change made now, as its reviewer is shown it by `plan`, is the one named: after the lake moved, the plan named before is refused `plan_stale` and the proposal stays pending, and the plan made again applies; a plain `accept` answers the plan that applied; a proposal of a write of records is refused `proposal_plans_nothing`; and a re-key's plan holds the sections of the other types it would leave naming no live record alike in its proposal's answer, its plan and its accept against that plan, and a reader kept from the reference field is told no section of that type"
+);
+
+check!(
+    PLAN_TOLD = a_proposal_is_lossless_as_its_proposer_is_told,
+    "062, 027, 006: a proposed migration is lossless as its proposer is told it, and so is a change's `plan` and a preview to a holder of `schema` without `restricted`, whose `enact`, `migrate_apply` and `migrate_value_type_apply` are refused `grant_needed` whatever the lake holds, as are its `declare`, `apply`, `add_field` and `recompute` and a reviewer's `accept` without `restricted`: twins whose one record a change would leave breaking a constraint that refuses, by a function declared again, by a field a migration computes again, by a re-key that rewrites another type's reference to it or by a value type's rename, or whose one link a narrowing to `many_to_one` would leave second at its end, is restricted in the one and retired or unlinked in the other are planned, previewed, proposed and listed alike to callers without `restricted`, its acts refused alike to that holder of `schema`, and the owner's accept refuses the one and applies the other; with that record live and unrestricted, each proposal is refused and the plan and preview are lossy or refused as the act"
+);
+
+check!(
+    PLAN_REOPENED = a_plans_id_holds_across_an_open_and_not_across_a_write,
+    "062, extended (lakelands#1476): a plan's id, and its migration's or value type's section's, names the head 039 names; the lake opened again between `plan` and `enact` of a function declared again, of a migration and of a value type's migration appends a lease, and each is made under the plan's id, a `migrated` it appends naming the id of its section; a migration and a value type's migration proposed after such an open are listed under their sections' ids; a record written after such an open into a type the plan names reaches it, and `enact` under the id is refused `plan_stale`, appending nothing",
+    given
 );
 
 /// A plan as one line: per section its type, the records computed again,
@@ -62,6 +70,45 @@ fn line(p: &Plan) -> String {
     out.extend((p.value_types.iter()).map(|v| format!("{} misfits {}", v.value_type, v.misfits)));
     let lossy = if p.lossless { "" } else { " lossy" };
     format!("[{}]{lossy}", out.join("; "))
+}
+
+/// What `sc`, holding `schema` without `restricted`, is answered of a
+/// migration: its plan and its preview, then `enact` and the apply against
+/// them.
+async fn as_schema(c: &dyn lakelands_api::Catalog, sc: &Principal, change: Change) -> String {
+    let planned = c.plan(sc, change.clone()).await;
+    let id = (planned.as_ref()).map_or_else(|_| String::new(), |p| p.data.report_id.clone());
+    let (preview, applied) = match change.clone() {
+        Change::Migrate { migration } => {
+            let r = c.migrate(sc, (*migration).clone()).await;
+            let id = r
+                .as_ref()
+                .map_or_else(|_| String::new(), |r| r.data.report_id.clone());
+            let r = r.map(|r| Plan {
+                lossless: r.data.lossless,
+                types: vec![r.data],
+                ..Plan::default()
+            });
+            (r, c.migrate_apply(sc, *migration, &id).await)
+        }
+        Change::MigrateValueType { migration } => {
+            let r = c.migrate_value_type(sc, (*migration).clone()).await;
+            let id = r
+                .as_ref()
+                .map_or_else(|_| String::new(), |r| r.data.report_id.clone());
+            let r = r.map(|r| Plan {
+                lossless: r.data.fits,
+                value_types: vec![r.data],
+                ..Plan::default()
+            });
+            (r, c.migrate_value_type_apply(sc, *migration, &id).await)
+        }
+        _ => return String::new(),
+    };
+    let preview = preview.as_ref().map_or_else(|_| class(&preview), line);
+    let enacted = c.enact(sc, change, &id).await;
+    let (planned, enacted, applied) = (class(&planned), class(&enacted), class(&applied));
+    format!("plans {planned}, previews {preview}, enacts {enacted}, applies {applied}")
 }
 
 /// What `who`'s listing shows of the proposal of declarations naming
@@ -434,13 +481,7 @@ async fn a_plan_refuses_what_its_act_refuses(store: Store, given: Given) -> Held
     for k in ["z1", "z2"] {
         l.upsert("z", k, json!({"c": "a"})).await?;
     }
-    let lower = lakelands_api::location::Limits {
-        max_set_changes: 1,
-        ..crate::conformance::fixture::limits()
-    };
-    let store = (given.relimit)(store, lakelands_api::seam::Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening at a ceiling of one: {e}")))?;
+    let store = at_one_set_change(&given, store, "opening at a ceiling of one").await?;
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let to = de(
         json!({"name": "bill", "fields": [{"name": "amount", "type": num},
@@ -1154,5 +1195,370 @@ async fn a_proposal_is_accepted_against_its_plan(store: Store) -> Held {
         "rekey accepted against it: [ac 0; pay 0 unlive ac 1 pay2]",
     ];
     ensure!(said == expected, "the answers were otherwise: {said:#?}");
+    Ok(())
+}
+
+async fn a_proposal_is_lossless_as_its_proposer_is_told(store: Store) -> Held {
+    let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
+    let c = l.cat.as_ref();
+    let pr = holder(s, "pr", json!({"default": "write"}));
+    let rv = holder(
+        s,
+        "rv",
+        json!({"default": "read", "review": true, "schema": true}),
+    );
+    let sc = holder(s, "sc", json!({"default": "write", "schema": true}));
+    let opts = WriteOpts::default;
+    let text = |name: &str| json!({"name": name, "type": {"kind": "text"}, "required": true});
+    // `m{n}`'s `d` is `s` until the migration makes `a0` none, which `ok`
+    // refuses; `o{n}` re-keyed by `alias` rewrites `q{n}`'s reference to
+    // `a` as `X`, which `not_x` refuses; `v{n}` renamed makes `w{n}`'s `a0`
+    // `z`, which `not_z` refuses. `g2`, the one record each breaks, is held
+    // in the first twin, retired in the second and live in the third.
+    let m = |n: &str, d: &str| {
+        json!({"name": format!("m{n}"), "fields": [text("s"),
+            {"name": "d", "type": {"kind": "text"}, "authority": "derived", "derived": d,
+             "depends_on": ["s"]}],
+            "constraints": [{"name": "ok", "holds": "d != 'none'"}]})
+    };
+    let o = |n: &str, key: &str| json!({"name": format!("o{n}"), "key": [key], "fields": [text("code"), text("alias")]});
+    let linked = |n: &str, by: &str| {
+        json!({"name": format!("k{n}"), "fields": [text("s")],
+            "relations": [{"name": "r", "target": format!("k{n}"), "cardinality": by}]})
+    };
+    let declared = |mut d: Value| {
+        d["declare"] = json!("type");
+        d
+    };
+    let mut said = Vec::new();
+    for n in ["1", "2", "3"] {
+        let (ty, q, w) = (format!("m{n}"), format!("q{n}"), format!("w{n}"));
+        l.declare_json(declared(m(n, "s"))).await?;
+        l.declare_json(declared(o(n, "code"))).await?;
+        l.declare_json(json!({"declare": "type", "name": q, "fields": [
+            {"name": "owner", "type": {"kind": "reference", "target": format!("o{n}")}}],
+            "constraints": [{"name": "not_x", "holds": "not (owner = 'X')"}]}))
+            .await?;
+        let v = |to: &str| json!({"name": format!("v{n}"), "kind": "text", "one_of": ["a1", to]});
+        let mut vt = v("a0");
+        vt["declare"] = json!("value_type");
+        l.declare_json(vt).await?;
+        l.declare_json(json!({"declare": "type", "name": w, "fields": [
+            {"name": "st", "type": {"kind": "text", "value_type": format!("v{n}")}}],
+            "constraints": [{"name": "not_z", "holds": "not (st = 'z')"}]}))
+            .await?;
+        for (k, v) in [("a", "X"), ("b", "Y")] {
+            let code = json!({"code": k, "alias": v});
+            l.upsert(&format!("o{n}"), k, code).await?;
+        }
+        // `b{n}`'s `gross` is `net` by `rated{n}`: declared again to make
+        // it `net * 4`, `g2`'s would break `under`.
+        let (b, f) = (format!("b{n}"), format!("rated{n}"));
+        let rated = |by: &str| {
+            json!({"declare": "function", "name": f, "backing": "expr",
+            "inputs": [{"name": "net", "type": {"kind": "decimal"}}], "expr": format!("net * {by}")})
+        };
+        l.declare_json(rated("2")).await?;
+        l.declare_json(json!({"declare": "type", "name": b, "fields": [
+            {"name": "net", "type": {"kind": "decimal"}},
+            {"name": "gross", "type": {"kind": "decimal"}, "authority": "derived", "function": f}],
+            "constraints": [{"name": "under", "holds": "gross < 10"}]}))
+            .await?;
+        for (k, v) in [("g1", "a1"), ("g2", "a0")] {
+            l.upsert(&ty, k, json!({ "s": v })).await?;
+            l.upsert(&w, k, json!({ "st": v })).await?;
+            l.upsert(&b, k, json!({ "net": if k == "g1" { "1" } else { "3" } }))
+                .await?;
+        }
+        for (k, v) in [("g1", "b"), ("g2", "a")] {
+            l.upsert(&q, k, json!({ "owner": v })).await?;
+        }
+        for t in [&ty, &q, &w, &b] {
+            match n {
+                "1" => restrict(s, t, "g2", "a hold").await.map(drop)?,
+                "2" => l.retire(t, "g2").await.map(drop)?,
+                _ => {}
+            }
+        }
+        let tight: Declaration = de(rated("4"));
+        let planned = c.plan(
+            &sc,
+            Change::Declare {
+                declarations: vec![tight.clone()],
+            },
+        );
+        let planned = class(&planned.await);
+        let declares = class(&c.declare(&sc, tight.clone()).await);
+        let applies = class(&c.apply(&sc, vec![tight]).await);
+        let note = de(json!({"name": "note", "type": {"kind": "text"}}));
+        let adds = class(&c.add_field(&sc, &ty.as_str().into(), note).await);
+        let what = Recompute::Function(f.as_str().into());
+        let recomputes = class(&c.recompute(&sc, what).await);
+        said.push(format!(
+            "sc {n}: plans {}, declares {declares}, applies {applies}, adds {adds}, recomputes {recomputes}",
+            planned.replace(&b, "b")
+        ));
+        // `k{n}`'s `x` is linked by `r` to `y` and to `z`, that link held,
+        // unlinked or live: narrowed to `many_to_one`, `x` holds two.
+        let k = format!("k{n}");
+        l.declare_json(declared(linked(n, "many_to_many"))).await?;
+        for key in ["x", "y", "z"] {
+            l.upsert(&k, key, json!({ "s": key })).await?;
+        }
+        let (kt, r, x) = (&k.as_str().into(), &"r".into(), &"x".into());
+        for to in [&"y".into(), &"z".into()] {
+            let link = l.cat.link(&l.own, kt, x, r, to, patch(json!({})), opts());
+            link.await.must("linking")?;
+        }
+        match n {
+            "1" => restrict(s, &format!("sys.link.{k}.r"), "x:z", "a hold")
+                .await
+                .map(drop)?,
+            "2" => (l.cat.unlink(&l.own, kt, x, r, &"z".into(), opts()).await)
+                .must("unlinking")
+                .map(drop)?,
+            _ => {}
+        }
+        let migrate = |to| Change::Migrate {
+            migration: Box::new(Migration::to(de(to))),
+        };
+        let mut renamed = ValueTypeMigration::from(de::<ValueTypeDecl>(v("z")));
+        renamed.renames = vec![("a0".into(), "z".into())];
+        let renamed = Change::MigrateValueType {
+            migration: Box::new(renamed),
+        };
+        let changes = [
+            (ty.clone(), migrate(m(n, "if(s = 'a0', 'none', s)"))),
+            (format!("o{n}"), migrate(o(n, "alias"))),
+            (format!("v{n}"), renamed),
+            (k.clone(), migrate(linked(n, "many_to_one"))),
+        ];
+        for (name, change) in changes {
+            let named = |a: String| a.replace(&name, &name[..1]);
+            let schema = as_schema(c, &sc, change.clone()).await;
+            said.push(format!("sc {name}: {}", named(schema)));
+            let write = match change {
+                Change::Migrate { migration } => ProposedWrite::Migrate {
+                    migration,
+                    report: Default::default(),
+                },
+                Change::MigrateValueType { migration } => ProposedWrite::MigrateValueType {
+                    to: Box::new(migration.to),
+                    renames: migration.renames,
+                    report: Default::default(),
+                },
+                _ => continue,
+            };
+            let proposed = c.propose(&pr, write, "why".into()).await;
+            said.push(format!("pr proposes {name}: {}", named(class(&proposed))));
+            let Ok(lakelands_api::Outcome::Proposed { proposal, .. }) = proposed else {
+                continue;
+            };
+            let listed = c.proposals(&rv, Default::default()).await;
+            let report = (listed.must("the listing")?.data.into_iter())
+                .find(|p| p.id == proposal)
+                .and_then(|p| match p.write {
+                    Some(ProposedWrite::Migrate { report, .. }) => Some(Plan {
+                        lossless: report.lossless,
+                        types: vec![*report],
+                        ..Plan::default()
+                    }),
+                    Some(ProposedWrite::MigrateValueType { report, .. }) => Some(Plan {
+                        lossless: report.fits,
+                        value_types: vec![*report],
+                        ..Plan::default()
+                    }),
+                    _ => None,
+                });
+            let report = report.map_or_else(|| "none".to_owned(), |p| line(&p));
+            said.push(format!("rv lists {name}: {}", named(report)));
+            let by_rv = class(&c.accept(&rv, &proposal).await);
+            let accepted = class(&c.accept(&l.own, &proposal).await);
+            said.push(format!("accepted {name}: {by_rv}, {}", named(accepted)));
+        }
+    }
+    let expected = [
+        "sc 1: plans [b 1], declares grant_needed, applies grant_needed, adds grant_needed, recomputes grant_needed",
+        "sc m1: plans [m 1], previews [m 1], enacts grant_needed, applies grant_needed",
+        "pr proposes m1: [m 1]",
+        "rv lists m1: [m 1]",
+        "accepted m1: grant_needed, migration",
+        "sc o1: plans [o 0], previews [o 0], enacts grant_needed, applies grant_needed",
+        "pr proposes o1: [o 0]",
+        "rv lists o1: [o 0]",
+        "accepted o1: grant_needed, constraint_left_broken",
+        "sc v1: plans [v misfits 0], previews [v misfits 0], enacts grant_needed, applies grant_needed",
+        "pr proposes v1: [v misfits 0]",
+        "rv lists v1: [v misfits 0]",
+        "accepted v1: grant_needed, constraint_left_broken",
+        "sc k1: plans [k 0], previews [k 0], enacts grant_needed, applies grant_needed",
+        "pr proposes k1: [k 0]",
+        "rv lists k1: [k 0]",
+        "accepted k1: grant_needed, narrowing_breaks_links",
+        "sc 2: plans [b 1], declares grant_needed, applies grant_needed, adds grant_needed, recomputes grant_needed",
+        "sc m2: plans [m 1], previews [m 1], enacts grant_needed, applies grant_needed",
+        "pr proposes m2: [m 1]",
+        "rv lists m2: [m 1]",
+        "accepted m2: grant_needed, [m 1]",
+        "sc o2: plans [o 0], previews [o 0], enacts grant_needed, applies grant_needed",
+        "pr proposes o2: [o 0]",
+        "rv lists o2: [o 0]",
+        "accepted o2: grant_needed, [o 0]",
+        "sc v2: plans [v misfits 0], previews [v misfits 0], enacts grant_needed, applies grant_needed",
+        "pr proposes v2: [v misfits 0]",
+        "rv lists v2: [v misfits 0]",
+        "accepted v2: grant_needed, [v misfits 0]",
+        "sc k2: plans [k 0], previews [k 0], enacts grant_needed, applies grant_needed",
+        "pr proposes k2: [k 0]",
+        "rv lists k2: [k 0]",
+        "accepted k2: grant_needed, [k 0]",
+        "sc 3: plans [b 2 breaks under 1 g2] lossy, declares grant_needed, applies grant_needed, adds grant_needed, recomputes grant_needed",
+        "sc m3: plans [m 2 breaks ok 1 g2] lossy, previews [m 2 breaks ok 1 g2] lossy, enacts grant_needed, applies grant_needed",
+        "pr proposes m3: migration",
+        "sc o3: plans [o 0 breaks not_x 1 g2] lossy, previews [o 0 breaks not_x 1 g2] lossy, enacts grant_needed, applies grant_needed",
+        "pr proposes o3: migration",
+        "sc v3: plans constraint_left_broken, previews constraint_left_broken, enacts grant_needed, applies grant_needed",
+        "pr proposes v3: constraint_left_broken",
+        "sc k3: plans narrowing_breaks_links, previews narrowing_breaks_links, enacts grant_needed, applies grant_needed",
+        "pr proposes k3: narrowing_breaks_links",
+    ];
+    ensure!(said == expected, "the proposals were otherwise: {said:#?}");
+    Ok(())
+}
+
+/// `q`, whose `d` is `f` of `s` and whose `e` is `s` by `expr`.
+fn q(expr: &str) -> Value {
+    let text = |name: &str| json!({"name": name, "type": {"kind": "text"}});
+    json!({"name": "q", "fields": [text("s"),
+        {"name": "c", "type": {"kind": "text", "value_type": "tone"}},
+        {"name": "d", "type": {"kind": "text"}, "authority": "derived", "function": "f",
+         "depends_on": ["s"]},
+        {"name": "e", "type": {"kind": "text"}, "authority": "derived", "derived": expr,
+         "depends_on": ["s"]}]})
+}
+
+/// The changes to `q`'s records whose plans hold across an open: `f`
+/// declared again, `e` migrated and `tone` widened.
+fn reopened_changes() -> [(&'static str, Change); 3] {
+    let tone = json!({"name": "tone", "kind": "text", "one_of": ["a", "b", "c"]});
+    let migration = Box::new(ValueTypeMigration::from(de::<ValueTypeDecl>(tone)));
+    let to = Migration::to(de(q("if(s = 'a0', 'b', s)")));
+    [
+        ("a function declared again", again("")),
+        (
+            "a migration",
+            Change::Migrate {
+                migration: Box::new(to),
+            },
+        ),
+        (
+            "a value type's migration",
+            Change::MigrateValueType { migration },
+        ),
+    ]
+}
+
+async fn a_plans_id_holds_across_an_open_and_not_across_a_write(
+    store: Store,
+    given: Given,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let tone =
+        json!({"declare": "value_type", "name": "tone", "kind": "text", "one_of": ["a", "b"]});
+    l.declare_json(tone).await?;
+    l.declare_json(function("f", "s")).await?;
+    let mut declared = q("s");
+    declared["declare"] = json!("type");
+    l.declare_json(declared).await?;
+    for k in ["a0", "a1"] {
+        l.upsert("q", k, json!({"s": k, "c": "a"})).await?;
+    }
+    let mut store = store;
+    // A migration and a value type's migration proposed after an open are
+    // listed under the ids of their plan's sections.
+    for (what, change) in reopened_changes().into_iter().skip(1) {
+        let l = Lake::of(store.as_ref());
+        let planned = l.cat.plan(&l.own, change.clone()).await;
+        let plan = planned.must(&format!("planning {what}"))?.data;
+        store = reopened(&given.reopen, store, Seams::default(), "after a plan").await?;
+        let l = Lake::of(store.as_ref());
+        let write = match change {
+            Change::Migrate { migration } => ProposedWrite::Migrate {
+                migration,
+                report: Default::default(),
+            },
+            Change::MigrateValueType { migration: m } => ProposedWrite::MigrateValueType {
+                to: Box::new(m.to),
+                renames: m.renames,
+                report: Default::default(),
+            },
+            _ => continue,
+        };
+        let proposed = l.cat.propose(&l.own, write, "why".into()).await;
+        proposed.must(&format!("proposing {what}"))?;
+        let listed = l.cat.proposals(&l.own, Default::default()).await;
+        let ids: Vec<_> = (listed.must("the listing")?.data.into_iter())
+            .filter_map(|p| match p.write? {
+                ProposedWrite::Migrate { report, .. } => Some(report.report_id),
+                ProposedWrite::MigrateValueType { report, .. } => Some(report.report_id),
+                _ => None,
+            })
+            .collect();
+        let made = (plan.types.iter().map(|t| &t.report_id))
+            .chain(plan.value_types.iter().map(|v| &v.report_id));
+        let made: Vec<_> = made.collect();
+        ensure!(
+            made.len() == 1 && ids.contains(made[0]),
+            "{what} proposed after an open is listed under its plan's section {made:?}; it is \
+             listed {ids:?}"
+        );
+    }
+    for moved in [true, false] {
+        for (what, change) in reopened_changes() {
+            let l = Lake::of(store.as_ref());
+            let planned = l.cat.plan(&l.own, change.clone()).await;
+            let plan = planned.must(&format!("planning {what}"))?.data;
+            let (id, sections) = (&plan.report_id, plan.types.iter().map(|t| &t.report_id));
+            let sections: Vec<_> = sections.collect();
+            let read = store.head().await.must("reading the head")?;
+            store = reopened(&given.reopen, store, Seams::default(), "after a plan").await?;
+            let kinds: Vec<_> = (events_after(store.as_ref(), read).await?)
+                .iter()
+                .map(|e| e.body.kind())
+                .collect();
+            ensure!(
+                kinds.contains(&"lease_taken"),
+                "opening the lake again appends a lease; it appended {kinds:?}"
+            );
+            let l = Lake::of(store.as_ref());
+            if !moved {
+                let read = store.head().await.must("reading the head")?;
+                let migrates = matches!(change, Change::Migrate { .. });
+                let made = l.cat.enact(&l.own, change, id).await;
+                made.must(&format!("{what} under its plan, the lake opened between"))?;
+                let logged: Vec<_> = (events_after(store.as_ref(), read).await?)
+                    .into_iter()
+                    .filter_map(|e| match e.body {
+                        EventBody::Migrated { report_id, .. } => Some(report_id),
+                        _ => None,
+                    })
+                    .collect();
+                ensure!(
+                    logged.len() == usize::from(migrates)
+                        && logged.iter().all(|r| sections.contains(&r)),
+                    "{what}'s `migrated` names its plan's section {sections:?}; it names {logged:?}"
+                );
+                continue;
+            }
+            l.upsert("q", "moved", json!({ "s": what })).await?;
+            let head = store.head().await.must("reading the head")?;
+            refused_like(
+                &format!("{what} under a plan before an open and a write"),
+                l.cat.enact(&l.own, change, id).await,
+                &json!({"code": "plan_stale"}),
+            )?;
+            head_unmoved(store.as_ref(), head, "a change under a stale plan").await?;
+        }
+    }
     Ok(())
 }

@@ -24,13 +24,16 @@
 //! single-threaded runtime.
 //!
 //! **Prepared statements.** A connection prepares each statement text
-//! once and keeps it for as long as it lives, so a statement run again
-//! costs one round trip, not a parse and an execute. The texts are the
-//! engine's own, the schema's name and fixed SQL with every value bound as
-//! a parameter, so there are as many as the engine has statements. Each
-//! run is planned for its values (`plan_cache_mode`), set as the
-//! connection starts: a generic plan kept from when a table was small
-//! would go on scanning it whole.
+//! once and keeps it, so a statement run again costs one round trip, not
+//! a parse and an execute. The texts are the engine's own, the schema's
+//! name and fixed SQL with every value bound as a parameter, so there are
+//! as many as the engine has statements, for each lake a reader served.
+//! At [`PREPARED_MOST`] a connection lets one go for each it prepares,
+//! each time from the next place in its table, so no one statement goes
+//! more often than the rest: a reader the process's lakes share does not
+//! grow with every lake it ever read. Each run is planned for its values
+//! (`plan_cache_mode`), set as the connection starts: a generic plan kept
+//! from when a table was small would go on scanning it whole.
 //!
 //! **Session state.** The lease is a session-level lock, so a handle
 //! opened for writing first checks, with [`session_keeping_state`], that
@@ -38,21 +41,22 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use lakelands_api::error::{Case, Detail, Error, Result, Situation, Tls};
-use lakelands_api::location::{PgTls, PgTlsMode, PgTuning};
+use lakelands_api::location::{PgTablespaces, PgTls, PgTlsMode, PgTuning};
 use lakelands_api::record::StoredRecord;
+use lakelands_core::engines::pool::Pool;
 use postgres::types::{FromSql, ToSql};
 use postgres::{Client, NoTls, Row, SimpleQueryMessage, Statement};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-use crate::{invalid, sql};
+use crate::{lock, sql};
 
 /// The oldest server the engine supports, as `server_version_num` says it.
-pub const MIN_SERVER_VERSION: i32 = 160_000;
+pub const MIN_SERVER_VERSION: i32 = 180_000;
 
 /// Where systems keep their bundle of trusted certificate authorities,
 /// tried in this order when the configuration names none.
@@ -74,6 +78,7 @@ pub(crate) struct Target {
     pub(crate) schema: String,
     pub(crate) tls: PgTls,
     pub(crate) tuning: PgTuning,
+    pub(crate) tablespaces: PgTablespaces,
 }
 
 impl Target {
@@ -83,9 +88,28 @@ impl Target {
         let s = &self.schema;
         if s.is_empty() || s.len() > 63 || s.contains('\0') {
             let schema = s.clone();
-            return Err(invalid(Case::SchemaName { schema }));
+            return Err(Error::invalid(Case::SchemaName { schema }));
         }
-        Ok(format!("\"{}\"", s.replace('"', "\"\"")))
+        Ok(Target::quote(s))
+    }
+
+    /// `name` as SQL writes an identifier: quoted, so it is taken exactly
+    /// as written.
+    pub(crate) fn quote(name: &str) -> String {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+
+    /// The schema the projection a rebuild builds beside this one's lives
+    /// in (`scratch.rs`): named from it by a digest, so it is the same for
+    /// every handle onto the lake, fits an identifier however long the
+    /// lake's schema is, and is found by no other lake.
+    pub(crate) fn scratch_schema(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+        let digest = Sha256::digest(self.schema.as_bytes());
+        format!(
+            "lakelands_rebuild_{}",
+            lakelands_core::canonical::hex(&digest[..8])
+        )
     }
 }
 
@@ -103,12 +127,17 @@ pub(crate) fn driver<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     }
 }
 
+/// The most statements one connection keeps prepared.
+const PREPARED_MOST: usize = 512;
+
 /// One connection, every statement through [`driver`]; closed through it
 /// too, since closing blocks on the driver's runtime as a statement does.
-/// It keeps the statements it prepared, by their text, until it is closed.
+/// It keeps the statements it prepared, by their text.
 pub(crate) struct Db {
     client: Option<Client>,
     prepared: HashMap<String, Statement>,
+    /// How many [`Db::prepared`] let go: the next goes from the next place.
+    let_go: usize,
     /// A `COMMIT` was sent since [`Db::transaction`] last began one.
     committing: bool,
 }
@@ -163,6 +192,13 @@ impl Db {
             Some(statement) => statement.clone(),
             None => {
                 let statement = driver(|| client.prepare(text)).map_err(sql)?;
+                if self.prepared.len() >= PREPARED_MOST {
+                    self.let_go += 1;
+                    let at = self.let_go % self.prepared.len();
+                    if let Some(old) = self.prepared.keys().nth(at).cloned() {
+                        self.prepared.remove(&old);
+                    }
+                }
                 self.prepared.insert(text.to_owned(), statement.clone());
                 statement
             }
@@ -189,12 +225,18 @@ impl Db {
         Ok(self.query(text, args)?.iter().map(|r| r.get(0)).collect())
     }
 
-    /// The records whose states the first column of a query's rows holds.
-    pub(crate) fn records(&mut self, query: &str, params: Params<'_>) -> Result<Vec<StoredRecord>> {
-        self.query(query, params)?
-            .iter()
-            .map(|r| crate::projection::decode_record(&r.get::<_, String>(0)))
-            .collect()
+    /// The records a query's rows hold, each from its first column on as
+    /// [`crate::projection::record_at`] reads it, joined to the rows of
+    /// the vectors their states keep apart and of the bases they name in
+    /// `names`' lake.
+    pub(crate) fn records(
+        &mut self,
+        names: &crate::projection::Names,
+        query: &str,
+        params: Params<'_>,
+    ) -> Result<Vec<StoredRecord>> {
+        let rows = self.query(query, params)?;
+        crate::projection::records_at(self, names, &rows, 0)
     }
 
     pub(crate) fn query_opt(&mut self, statement: &str, params: Params<'_>) -> Result<Option<Row>> {
@@ -306,26 +348,62 @@ fn tls_config_with(tls: &PgTls, bundles: &[&str]) -> Result<rustls::ClientConfig
                 .with_client_auth_cert(chain, key_der)
                 .map_err(|e| tls_failed(Tls::CertUnusable, Some(Detail::scrubbed(e))))
         }
-        _ => Err(invalid(Case::ClientCertHalf)),
+        _ => Err(Error::invalid(Case::ClientCertHalf)),
     }
 }
 
-/// Open one connection to the target's server.
+/// The most readers a process's lakes on one server share. A lake's reads
+/// still gained some past 16, but 16 leave a server's default 100
+/// connections to some 40 writing lakes.
+pub(crate) const SHARED_READERS: usize = 16;
+
+/// The readers a process's lakes on one server share: one pool per
+/// server, database, credentials, TLS and tuning, kept while a handle onto
+/// one of its lakes is open. So a process holds at most [`SHARED_READERS`]
+/// for each of those, however many lakes it opens there, and not fewer on
+/// a machine of fewer cores: the reads run on the server's. Every
+/// statement names its schema, so a reader serves any lake there.
+pub(crate) fn shared_readers(target: &Target) -> Arc<Pool<Db>> {
+    static POOLS: Mutex<Vec<(String, Weak<Pool<Db>>)>> = Mutex::new(Vec::new());
+    let server = format!("{:?}", (&target.url, &target.tls, &target.tuning));
+    let mut pools = lock(&POOLS);
+    pools.retain(|(_, pool)| pool.strong_count() > 0);
+    let found = pools.iter().find(|(s, _)| *s == server);
+    if let Some(pool) = found.and_then(|(_, pool)| pool.upgrade()) {
+        return pool;
+    }
+    let pool = Arc::new(Pool::new(Vec::new(), SHARED_READERS));
+    pools.push((server, Arc::downgrade(&pool)));
+    pool
+}
+
+/// Open one of the readers [`shared_readers`] keeps, named for the
+/// process, not a lake.
+pub(crate) fn reader(target: &Target) -> Result<Db> {
+    open(target, &format!("lakelands readers {}", std::process::id()))
+}
+
+/// Open one connection to the target's server, for its lake.
 pub(crate) fn connect(target: &Target) -> Result<Db> {
+    open(target, &format!("lakelands {}", target.schema))
+}
+
+/// Open one connection to the target's server, named `name`.
+fn open(target: &Target, name: &str) -> Result<Db> {
     for key in TLS_KEYS {
         if target.url.contains(&format!("{key}=")) {
             let key = key.to_owned();
-            return Err(invalid(Case::LocationUrlTls { key }));
+            return Err(Error::invalid(Case::LocationUrlTls { key }));
         }
     }
     let mut config: postgres::Config = target.url.parse().map_err(|e| {
         let detail = Detail::scrubbed(e);
-        invalid(Case::LocationUrlUnparsed { detail })
+        Error::invalid(Case::LocationUrlUnparsed { detail })
     })?;
     // Without a user the driver would take the operating system's: the
     // location names who connects.
     if config.get_user().is_none() {
-        return Err(invalid(Case::LocationUrlNoUser));
+        return Err(Error::invalid(Case::LocationUrlNoUser));
     }
     config.connect_timeout(Duration::from_secs(u64::from(
         target.tuning.connect_timeout_secs.max(1),
@@ -340,7 +418,7 @@ pub(crate) fn connect(target: &Target) -> Result<Db> {
     config.options(&options);
     // An operator finds the lake's connections by name in
     // `pg_stat_activity`.
-    config.application_name(&format!("lakelands {}", target.schema));
+    config.application_name(name);
     let client = match target.tls.mode {
         PgTlsMode::Disable => {
             config.ssl_mode(postgres::config::SslMode::Disable);
@@ -357,15 +435,13 @@ pub(crate) fn connect(target: &Target) -> Result<Db> {
     let mut db = Db {
         client: Some(client),
         prepared: HashMap::new(),
+        let_go: 0,
         committing: false,
     };
     let version: i32 = db
         .query_one("SELECT current_setting('server_version_num')::int4", &[])?
         .get(0);
-    if version < MIN_SERVER_VERSION {
-        let (major, minor) = ((version / 10_000) as u32, (version % 10_000) as u32);
-        return Err(Error::unavailable(Situation::ServerTooOld { major, minor }));
-    }
+    server_new_enough(version)?;
     if target.tuning.statement_timeout_secs > 0 {
         db.batch(&format!(
             "SET statement_timeout = '{}s'",
@@ -407,6 +483,15 @@ pub(crate) fn session_keeping_state(target: &Target) -> Result<Db> {
         }
     }
     Ok(probe)
+}
+
+/// Refuses a server older than [`MIN_SERVER_VERSION`], before any DDL.
+fn server_new_enough(version: i32) -> Result<(), Error> {
+    if version < MIN_SERVER_VERSION {
+        let (major, minor) = ((version / 10_000) as u32, (version % 10_000) as u32);
+        return Err(Error::unavailable(Situation::ServerTooOld { major, minor }));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

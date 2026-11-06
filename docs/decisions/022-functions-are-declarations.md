@@ -162,7 +162,7 @@ still computed by that function, and the record's call has the recorded
 digest now. Otherwise the output stays recorded for its input and fills
 nothing: a later write moved the inputs on while the backing was called.
 A filled value takes the event's provenance, with `origin: derived` and
-the function's version as the procedure version. The record's version
+the function as the procedure: its name and its version. The record's version
 stays, since no write touched it.
 
 A fill is a change of that field, and it takes the fold's ordinary path,
@@ -326,12 +326,46 @@ one per declared type, a batch holds at most 64 calls and one answer per
 call, and no write waits for more than one batch of a backlog it did not
 make.
 
+### A write may answer before its computed fields
+
+A write made with `defer_computed_fields` answers once it is in the log
+and folded, with its own last event's position, and waits for none of
+the calls it made due. The lake makes them in a task of its own, the
+same drain a write that waits runs (its own entries, a batch at a time,
+on the lane of calls) and the one the open's sweep of waiting
+embeddings runs; there is no second queue. Until a call is made, its
+field reads as a waiting one does: no value and no `error`. A lexical or
+structured read finds the record at its answer, a vector ranking leaves
+it out without failing, and the record never shows the vector of a text
+it no longer holds, since its write cleared the field. An output answered
+for a call the record has moved on from fills nothing, so a record
+written again while its earlier call is in flight ends with the output
+of its latest inputs. If the task stops (the lake is closed, a batch
+fails, the host's handle is dropped), what it left stays owed, made as
+orphans by the writes after it, and the open's sweep makes any embedding
+still waiting. A call that hands an external verb to its executor waits
+as without the option. The option is off by default, and a write
+without it behaves as before. The network doors do not carry it; it is
+for a host that writes many records in process and reads them back
+lexically before their embeddings exist.
+
+**Why.** A host that loads a corpus through its own process pays the
+backend's latency on every write it waits for, though what it reads
+next is a keyword or structured lookup that needs no vector. Answering
+at the fold, and filling the vector behind it, is honest because the
+fold already distinguishes a field that waits from one that holds a
+value or an error: a read never has to guess which. Reusing the drain
+keeps one owner of the lane of calls and one recovery path for work a
+caller stopped waiting for.
+
 ### A call is due to the append that wrote its event, never to a fold of the log
 
 A call is due to the append that wrote its event, never to a fold of
-the log. Opening a lake, an import and `rebuild` never call a backing.
-An open's catch-up, a `rebuild`, an import and a writer that catches up
-fold events whose appends are over: they read the recorded outputs, and
+the log. An import and `rebuild` never call a backing, and an open
+calls one only for the embeddings that wait on the backend it brought,
+after it is open (below). An open's catch-up, a `rebuild`, an import
+and a writer that catches up fold events whose appends are over: they
+read the recorded outputs, and
 a field whose output is not recorded is cleared with no `error`,
 waiting, as `describe` counts it. They hand out no call.
 
@@ -396,7 +430,7 @@ and is recorded for every text not answered yet. Telling the two apart
 is the backend's, because an endpoint refuses a whole request without
 naming the input.
 
-### A host binds the embedding backend on an open lake, and the bind is not recorded and makes nothing due
+### A host binds the embedding backend on an open lake, and the bind is not recorded and makes what waits on it
 
 A host binds the embedding backend on an open lake with
 `LakeStore::bind_embed`, in place of the one its open brought or an
@@ -411,12 +445,32 @@ due is decided from the log alone, and each vector names its model in
 its seam. The binding is the host's configuration, as an executor's is
 (`docs/decisions/013-verbs-run-by-declared-risk.md`).
 
-The bind makes nothing due. What fell due while none was bound waits,
-with no error, until its record is written again or `recompute` names
-its type, which the host calls for each type `vector_coverage` shows
-due. `recompute` is the act the log shows; a bind that made calls by
-itself would make calls no event gives a reason for, and could not tell
-a failure recorded while the backend was away from one that is final.
+The bind makes what waits on it (lakelands#1296). An embedding that
+fell due while no backend of its model and dimensions was bound waits,
+with no error. A bind of such a backend, and a writer's open with one,
+sweeps each type with an embedding of its model over the records that
+hold none, and makes the waiting calls, in a task of their own, a batch
+at a time, as a write's drain makes them. The open and the bind answer
+at once; `vector_coverage` counts a record due until its vector is
+recorded, and none once the sweep is through.
+
+It makes the waiting calls and no other. A call that waits was owed to
+the append that made it due, and no backend made it: making it once is
+the call its event gave a reason for, and nothing is called twice. A
+recorded failure is not called again: the sweep fills its field from
+the recorded output, as any settle does, since a bind cannot tell a
+failure recorded while the backend was away from one that is final.
+`recompute` of the type calls again for each, and it is the act the log
+shows. A record written again or `recompute` makes a waiting field as
+before.
+
+Only a writer sweeps, and only where a record waits: a lake none of
+whose records waits on the backend's model reads its embedding fields
+once at the open or the bind, appends nothing and calls nothing. A
+sweep owed already for the type is not owed twice. Outside an async
+runtime the sweep stays owed on the handle, and the writes after make
+it, a batch with each, as orphans. A handle the host drops gives its
+lease up once the batch in flight is recorded.
 
 A second bind replaces the first, whatever its model, so a host moves
 from one model to another without a reopen. A field of the old model
@@ -447,8 +501,9 @@ field's name, so an embedding a migration renames needs the backend.
 A declaration that changes the type and keeps its embedding still
 settles the type again, which calls again for each recorded failure;
 with none bound those calls are dropped, so the fields read as waiting,
-their `error` gone, until a backend is bound and `recompute` makes
-them. `vector_coverage` counts them as due either way.
+their `error` gone, until a backend is bound: the bind or the open then
+fills them from their recorded failure, and `recompute` makes them.
+`vector_coverage` counts them as due either way.
 
 ### A reader sees a waiting field cleared with no `error`, and a failed one cleared with its reason
 
@@ -534,6 +589,10 @@ output that is not deterministic is recorded.
   (lakelands#642, lakelands#609).
 - A backend is bound after open, and an embedding declared as it is in
   force needs none (lakelands#641).
+- A bind, and a writer's open, with an embedding backend makes what
+  waited on its model, failures aside; until then what fell due while
+  none was bound waited until its record was written again or
+  `recompute` named its type (lakelands#1296).
 - A bind reaches the next batch, where the record said that a batch
   already asking finishes with the backend it took, and the record says
   what a declaration that changes the type and keeps its embedding does

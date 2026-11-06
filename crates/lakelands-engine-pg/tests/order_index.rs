@@ -12,6 +12,7 @@ use lakelands_api::id::{Position, RecordKey, TypeName, Version};
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::Declaration;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_core::engines;
 use lakelands_engine_pg::PgOpener;
 use serde_json::json;
@@ -299,17 +300,12 @@ fn states() -> Vec<StoredRecord> {
                 json!({"v": values[(i as usize * 5) % values.len()]})
             };
             fields["w"] = json!(format!("w{}", i % 3));
-            StoredRecord {
-                ty: TypeName::from("t"),
-                key: RecordKey::from(format!("k{:03}", (i * 37) % 211)),
-                version: Version(1),
-                fields: serde_json::from_value(fields).unwrap(),
-                meta: Default::default(),
-                position: Position(1),
-                made: Position(1),
-                retired: false,
-                restricted: false,
-            }
+            stored_record(
+                "t",
+                format!("k{:03}", (i * 37) % 211),
+                serde_json::from_value(fields).unwrap(),
+                1,
+            )
         })
         .collect()
 }
@@ -349,16 +345,8 @@ fn fill_view(engine: &dyn LakeEngine) -> TypeName {
     }))
     .unwrap();
     let kept = lakelands_api::seam::kept_name(&TypeName::from("w"));
-    let record = |ty: &TypeName, key: &str, fields: Value| StoredRecord {
-        ty: ty.clone(),
-        key: RecordKey::from(key),
-        version: Version(1),
-        fields: serde_json::from_value(fields).unwrap(),
-        meta: Default::default(),
-        position: Position(1),
-        made: Position(1),
-        retired: false,
-        restricted: false,
+    let record = |ty: &TypeName, key: &str, fields: Value| {
+        stored_record(ty.clone(), key, serde_json::from_value(fields).unwrap(), 1)
     };
     let p = engine.projection();
     p.begin().unwrap();
@@ -387,15 +375,13 @@ fn fill_view(engine: &dyn LakeEngine) -> TypeName {
 /// The state of the setting `sort_index.t` asking for `fields`, at `at`.
 fn setting(fields: Value, at: u64) -> StoredRecord {
     StoredRecord {
-        ty: TypeName::from(lakelands_api::seam::SETTING_TYPE),
-        key: RecordKey::from("sort_index.t"),
         version: Version(at),
-        fields: serde_json::from_value(json!({"key": "sort_index.t", "value": fields})).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
-        made: Position(at),
-        retired: false,
-        restricted: false,
+        ..stored_record(
+            lakelands_api::seam::SETTING_TYPE,
+            "sort_index.t",
+            serde_json::from_value(json!({"key": "sort_index.t", "value": fields})).unwrap(),
+            at,
+        )
     }
 }
 

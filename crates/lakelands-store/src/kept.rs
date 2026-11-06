@@ -8,17 +8,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use std::ops::Bound::{Excluded, Included, Unbounded};
+use std::rc::Rc;
 
 use lakelands_api::canonical::hex;
-use lakelands_api::engine::{After, ProjectionStore, ProjectionView, Scan};
+use lakelands_api::engine::{Declared, ProjectionStore, ProjectionView};
 use lakelands_api::event::{Event, EventBody};
-use lakelands_api::expr::{Condition, Expr, Func, Literal};
+use lakelands_api::expr::{Condition, Expr, zone};
 use lakelands_api::ontology::{Measure, TypeDecl, ViewDecl};
 use lakelands_api::record::{StoredRecord, Value};
-use lakelands_api::seam::{VIEW_KEPT_SETTING as SETTING, kept_name, order_name};
-use lakelands_api::write::Declaration;
+use lakelands_api::seam::{SETTING_TYPE, VIEW_KEPT_SETTING as SETTING, kept_name, order_name};
+use lakelands_api::write::{Declaration, ObjectSetDecl};
 use lakelands_api::{FieldName, Position, RecordKey, Result, Timestamp, TypeName};
-use lakelands_core::expr::aggregate::{Entry, Folds, Grouping, Keeping, KeptFolds, Row};
+use lakelands_core::engines::declaration_key;
+use lakelands_core::expr::aggregate::{Entry, Folds, Grouping, Keeping, KeptFolds, Row, key_value};
 use lakelands_core::expr::{self, Place};
 use serde::{Deserialize, Serialize};
 
@@ -47,9 +49,9 @@ pub(crate) const WHOLE: &str = "whole";
 /// The member of [`FOLDS`] that says the group is on the open face alone.
 pub(crate) const ALONE: &str = "alone";
 
-/// The field of an entry of an extreme's order that holds it ([`Entry`]):
-/// an object, so the engines keep no text row for it.
-const ENTRY: &str = "sys:entry";
+/// The member of [`FOLDS`] that says a stranded group has no member on
+/// either face: its record holds the mark alone, and no reader is shown it.
+const BARE: &str = "bare";
 
 /// The entries of one view's orders as a transaction leaves them, by key:
 /// an entry's JSON text, none for one ended. Each extreme of each source
@@ -74,8 +76,23 @@ type Entries = BTreeMap<Box<str>, Option<Box<str>>>;
 /// group at `group` and one face's letter: its key's digest, so that an
 /// entry's key is short whatever the group's is.
 fn within(i: usize, j: usize, group: &RecordKey, letter: char) -> String {
+    format!("{i}.{j}.{}.{letter}.", digest(group))
+}
+
+/// The part of an entry's key that names its group.
+fn digest(group: &RecordKey) -> String {
     let digest = crate::backed::digest(&Value::from(group.as_str())).0;
-    format!("{i}.{j}.{}.{letter}.", &digest[..32])
+    digest[..32].to_owned()
+}
+
+/// A view the fold is building, a part at a time
+/// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Building {
+    /// The key of the last record folded, for each of the view's sources
+    /// in the order they are declared: none for a source no part has
+    /// reached.
+    pub cursors: Vec<Option<RecordKey>>,
 }
 
 /// What the store records of a kept view at a position: counters, and
@@ -85,12 +102,50 @@ pub(crate) struct State {
     /// Whether the view's records are whole: made, and brought up to date
     /// by every event since.
     pub whole: bool,
+    /// The build the view's records are being made by, if one is: its
+    /// sources' cursors. A read computes the view until the build's
+    /// `Keep`, as it does for a view no fold keeps ([`State::whole`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub building: Option<Building>,
+    /// The view's setting was taken back: its kept records stay until the
+    /// chunks that clear them, a key range a turn, and no read looks at
+    /// them meanwhile. A setting set again cancels what is left.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dropping: bool,
     /// The groups that are not exact, on the open face and on the whole
     /// one: a measure that fails, a sum outside what is exact, a member
     /// that does not fold.
     pub not_exact: [u64; 2],
-    /// The groups whose whole face reads otherwise than their open one.
+    /// The groups whose whole face reads otherwise than their open one,
+    /// a bare stranded group among them: no face shows its record.
     pub differ: u64,
+    /// The groups stranded on the open face and on the whole one: a
+    /// version of a member a thinning took was a member there
+    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+    #[serde(default, skip_serializing_if = "none_stranded")]
+    pub stranded: [u64; 2],
+    /// The copy of the time-zone database that cut the view's records,
+    /// for a view whose expressions cut a zone's local calendar
+    /// ([`zone::copy`]): a writer that opens the lake under another copy
+    /// folds the view again, and until then no read takes its records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tzdb: Option<String>,
+}
+
+fn none_stranded(n: &[u64; 2]) -> bool {
+    *n == [0, 0]
+}
+
+impl State {
+    /// Whether the fold's records were cut under a copy of the time-zone
+    /// database other than the binary's, so that none of them is read. A
+    /// build that names no copy cannot be shown to hold the one recorded,
+    /// so it reads them as cut elsewhere too.
+    pub(crate) fn cut_elsewhere(&self) -> bool {
+        self.tzdb
+            .as_deref()
+            .is_some_and(|c| !zone::named() || c != zone::copy())
+    }
 }
 
 /// The state of `view` at the position `at` reads, if the fold kept one.
@@ -107,6 +162,9 @@ pub(crate) fn state(at: &dyn ProjectionView, view: &TypeName) -> Result<Option<S
 pub(crate) fn shown(mut r: StoredRecord, view: &TypeName, whole: bool) -> Option<StoredRecord> {
     let folds = r.fields.remove(FOLDS);
     r.fields.remove(DIFFERS);
+    if folds.as_ref().and_then(|f| f.get(BARE)) == Some(&Value::Bool(true)) {
+        return None;
+    }
     let folds = folds.as_ref().filter(|_| whole);
     if folds.and_then(|f| f.get(ALONE)) == Some(&Value::Bool(true)) {
         return None;
@@ -119,6 +177,27 @@ pub(crate) fn shown(mut r: StoredRecord, view: &TypeName, whole: bool) -> Option
     Some(r)
 }
 
+/// [`shown`] to a reader: a stranded group's record says so on the
+/// reader's face, and names the copy of the time-zone database that cut
+/// it where a make carried it under another (lakelands#1746).
+pub(crate) fn told(r: StoredRecord, view: &TypeName, whole: bool) -> Option<StoredRecord> {
+    let mark = mark(&r, usize::from(whole));
+    let mut r = shown(r, view, whole)?;
+    if let Some(cut) = mark {
+        let marked = cut.map_or(Value::Bool(true), Value::String);
+        r.fields
+            .insert(lakelands_api::seam::STRANDED.into(), marked);
+    }
+    Some(r)
+}
+
+/// Whether the kept record `r` is stranded on `face`, and if so the copy
+/// of the time-zone database a make carried it under, where one did.
+pub(crate) fn mark(r: &StoredRecord, face: usize) -> Option<Option<String>> {
+    let c = carried(r);
+    c.stranded[face].then_some(c.cut)
+}
+
 /// One source of a kept view as the fold reads it: its own or a merged
 /// one, with its `where`, its grouping and the calls its measures make.
 struct Src {
@@ -127,7 +206,9 @@ struct Src {
     /// records.
     view: bool,
     filter: Option<Expr>,
-    group_by: Vec<FieldName>,
+    /// What each of the view's group values is of a member: its field's
+    /// value, or a term's over it, as the computation groups.
+    group_by: Vec<(FieldName, Option<Expr>)>,
     measures: Vec<(FieldName, Expr)>,
     keeping: Keeping,
 }
@@ -142,6 +223,8 @@ struct Kept {
     /// The settings its expressions name, each by a text: a declared
     /// expression names one no other way.
     settings: BTreeSet<String>,
+    /// Whether an expression of it cuts a zone's local calendar.
+    zoned: bool,
 }
 
 impl Kept {
@@ -151,40 +234,47 @@ impl Kept {
         let v = decl.view.as_deref()?;
         lakelands_api::expr::keepable(v, |t| o.ty(t).ok()).ok()?;
         let mut settings = BTreeSet::new();
-        let mut source =
-            |ty: &TypeName, filter: Option<&Condition>, by: &[FieldName], m: &[Measure]| {
-                let filter = filter.map(|w| condition(w, Place::View, &[]));
-                let filter = filter.transpose().ok()?;
-                let measured =
-                    |m: &Measure| Ok((m.name.clone(), condition(&m.expr, Place::Group, &[])?));
-                let measures: Result<Vec<(FieldName, Expr)>> = m.iter().map(measured).collect();
-                let measures = measures.ok()?;
-                let read = filter.iter().chain(measures.iter().map(|(_, e)| e));
-                read.for_each(|e| settings_named(e, &mut settings));
-                Some(Src {
-                    ty: ty.clone(),
-                    view: o.ty(ty).is_ok_and(|t| t.view.is_some()),
-                    filter,
-                    group_by: by.to_vec(),
-                    keeping: Keeping::of(&measures),
-                    measures,
-                })
-            };
-        let own = source(&v.source, v.r#where.as_ref(), &v.group_by, &v.measures)?;
+        let mut source = |ty: &TypeName, filter: Option<&Condition>, by: Vec<_>, m: &[Measure]| {
+            let filter = filter.map(|w| condition(w, Place::View, &[]));
+            let filter = filter.transpose().ok()?;
+            let measured =
+                |m: &Measure| Ok((m.name.clone(), condition(&m.expr, Place::Group, &[])?));
+            let measures: Result<Vec<(FieldName, Expr)>> = m.iter().map(measured).collect();
+            let measures = measures.ok()?;
+            let read = filter.iter().chain(measures.iter().map(|(_, e)| e));
+            read.for_each(|e| lakelands_core::derive::settings(e, &mut settings));
+            Some(Src {
+                ty: ty.clone(),
+                view: o.ty(ty).is_ok_and(|t| t.view.is_some()),
+                filter,
+                group_by: by,
+                keeping: Keeping::of(&measures),
+                measures,
+            })
+        };
+        let by = lakelands_core::expr::aggregate::group_keys(&v.group_by).ok()?;
+        let own = source(&v.source, v.r#where.as_ref(), by, &v.measures)?;
         let mut sources = vec![own];
         for m in &v.merge {
-            let merged = source(&m.source, m.r#where.as_ref(), &m.group_by, &m.measures)?;
+            let by = m.group_by.iter().map(|f| (f.clone(), None)).collect();
+            let merged = source(&m.source, m.r#where.as_ref(), by, &m.measures)?;
             sources.push(merged);
         }
-        let key = v.group_by.clone();
+        let key = v.group_names();
         let decl = TypeDecl {
             key,
             ..decl.clone()
         };
+        let zoned = sources.iter().any(|s| {
+            let terms = s.group_by.iter().filter_map(|(_, t)| t.as_ref());
+            let exprs = s.filter.iter().chain(s.measures.iter().map(|(_, e)| e));
+            exprs.chain(terms).any(Expr::zoned)
+        });
         Some(Kept {
             decl,
             sources,
             settings,
+            zoned,
         })
     }
 
@@ -216,19 +306,66 @@ pub(crate) fn settings_read(o: &Ontology, decl: &TypeDecl) -> BTreeSet<String> {
     Kept::of(o, decl).map(|k| k.settings).unwrap_or_default()
 }
 
-/// The settings `e` names.
-pub(crate) fn settings_named(e: &Expr, named: &mut BTreeSet<String>) {
-    if let Expr::Call {
-        func: Func::Setting,
-        args,
-    } = e
-        && let Some(Expr::Lit {
-            value: Literal::Text(key),
-        }) = args.first()
-    {
-        named.insert(key.clone());
+/// Whether the fold would keep the view `decl` under `o`.
+pub(crate) fn keeps(o: &Ontology, decl: &TypeDecl) -> bool {
+    Kept::of(o, decl).is_some()
+}
+
+/// The views `settings` asks to keep that hold a stranded group at the
+/// head of `view`.
+pub(crate) fn stranded(
+    view: &dyn ProjectionView,
+    settings: &BTreeMap<String, Value>,
+) -> Result<Vec<TypeName>> {
+    let mut out = Vec::new();
+    for name in asking(settings).map(TypeName::from) {
+        if state(view, &name)?.is_some_and(|s| s.stranded != [0, 0]) {
+            out.push(name);
+        }
     }
-    lakelands_api::expr::children(e).for_each(|c| settings_named(c, named));
+    Ok(out)
+}
+
+/// The keys the view `decl`, kept as the fold would keep it, reads as
+/// `setting('<key>')`, without a date.
+pub(crate) fn undated(o: &Ontology, decl: &TypeDecl) -> BTreeSet<String> {
+    let Some(k) = Kept::of(o, decl) else {
+        return BTreeSet::new();
+    };
+    let read = k.sources.iter();
+    let read = read.flat_map(|s| s.filter.iter().chain(s.measures.iter().map(|(_, e)| e)));
+    read.flat_map(|e| e.settings_read(false))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The first view `settings` keeps, then the first set of `o` decided at
+/// the write, that reads `key` without a date: what holds what it decided
+/// until a write moves it, so a period's start would make it drift
+/// (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`).
+pub(crate) fn reading_undated(
+    o: &Ontology,
+    settings: &BTreeMap<String, Value>,
+    key: &str,
+) -> Option<String> {
+    let kept = asking(settings)
+        .filter(|v| lakelands_api::seam::view_kept(settings.get(&format!("{SETTING}{v}"))));
+    let mut views = kept.filter_map(|v| o.ty(&TypeName::from(v)).ok());
+    if let Some(v) = views.find(|d| undated(o, d).contains(key)) {
+        return Some(v.name.to_string());
+    }
+    let mut sets = o.object_sets.values().map(|e| &e.decl);
+    sets.find(|s| set_undated(o, s).contains(key))
+        .map(|s| s.name.clone())
+}
+
+/// The keys the set `s` reads without a date, where it is decided at the
+/// write; none where it is decided at the read.
+pub(crate) fn set_undated(o: &Ontology, s: &ObjectSetDecl) -> BTreeSet<String> {
+    let filter = crate::declare::set_filter(&|n| o.set(n), s, &[]).ok();
+    let filter = filter.filter(|_| !s.at_read());
+    let read = filter.iter().flat_map(|e| e.settings_read(false));
+    read.map(str::to_owned).collect()
 }
 
 /// What a kept record carries beside its group's fields, in [`FOLDS`].
@@ -251,12 +388,28 @@ struct Carried {
     /// its `where` reads another record of the same group.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     alone: bool,
+    /// Whether the group is stranded on the open face and on the whole one.
+    #[serde(default, skip_serializing_if = "is_unmarked")]
+    stranded: [bool; 2],
+    /// Whether the group is stranded and has no member on either face.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    bare: bool,
+    /// The copy of the time-zone database a stranded group was cut under,
+    /// where a make under another copy carried it: its members are gone
+    /// to cut again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cut: Option<String>,
+}
+
+fn is_unmarked(marks: &[bool; 2]) -> bool {
+    *marks == [false; 2]
 }
 
 impl Carried {
-    /// Whether the whole face reads the group otherwise than the open one.
+    /// Whether the whole face reads the group otherwise than the open one,
+    /// or the group is bare: its record is held for its mark alone.
     fn differs(&self) -> bool {
-        self.whole.is_some() || self.alone
+        self.whole.is_some() || self.alone || self.bare
     }
 }
 
@@ -268,6 +421,10 @@ struct Group {
     folds: [Vec<KeptFolds>; 2],
     /// The group's record as the transaction found it or last put it.
     stored: Option<StoredRecord>,
+    /// Whether it is stranded on each face: the mark stays.
+    stranded: [bool; 2],
+    /// The copy it was cut under, where a make under another carried it.
+    cut: Option<String>,
 }
 
 /// One kept view while a transaction works on it.
@@ -278,6 +435,17 @@ struct Work {
     state: State,
     groups: BTreeMap<RecordKey, Group>,
     touched: BTreeSet<RecordKey>,
+    /// The groups a make carried from the view it ended, whose members
+    /// the make does not note again.
+    carried: BTreeSet<RecordKey>,
+}
+
+/// The stranded groups' records of a view an event ends, and their order
+/// entries, carried into the view it makes again.
+#[derive(Default)]
+struct Carry {
+    records: Vec<StoredRecord>,
+    entries: Vec<(String, String)>,
 }
 
 /// What a transaction holds of the views the lake keeps: each view named
@@ -296,6 +464,8 @@ pub(crate) struct Views {
     orphans: Vec<TypeName>,
     /// The groups put or ended, where the write path asks ([`step`]).
     moved: Option<Moved>,
+    /// What the views an event ended carry into their make, by view.
+    carry: BTreeMap<TypeName, Carry>,
 }
 
 /// The groups of kept views a run of the hooks put or ended, by view.
@@ -323,6 +493,11 @@ impl Undo {
     pub(crate) fn record(&mut self, at: (TypeName, RecordKey), was: Option<StoredRecord>) {
         self.0.push(Undone::Record(at, was));
     }
+
+    /// How many things it holds.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// Whether the group at `key` of `view` was flagged, or is flagged, as not
@@ -337,17 +512,8 @@ pub(crate) fn reflagged(
     (view, key): (&TypeName, &RecordKey),
 ) -> Result<bool> {
     let place = (kept_name(view), key.clone());
-    let Some(Undo(done)) = &staged.undo else {
+    let Some(was) = was(at, staged, &place)? else {
         return Ok(false);
-    };
-    let first = done.iter().find_map(|u| match u {
-        Undone::Record(p, was) if *p == place => Some(was),
-        _ => None,
-    });
-    let was = match first {
-        None => return Ok(false),
-        Some(Some(r)) => Some(r.clone()),
-        Some(None) => staged.before(at.view, &place.0, key)?,
     };
     let flagged = |r: Option<&StoredRecord>| {
         r.filter(|r| !r.is_ended())
@@ -356,14 +522,73 @@ pub(crate) fn reflagged(
     Ok(flagged(was.as_ref()) || flagged(staged.records.get(&place)))
 }
 
+/// The record the run since `staged`'s undo began found at `place`
+/// before it put one there; `None` where it put none there.
+fn was(
+    at: &At<'_>,
+    staged: &Staged,
+    place: &(TypeName, RecordKey),
+) -> Result<Option<Option<StoredRecord>>> {
+    let Some(Undo(done)) = &staged.undo else {
+        return Ok(None);
+    };
+    let first = done.iter().find_map(|u| match u {
+        Undone::Record(p, was) if p == place => Some(was),
+        _ => None,
+    });
+    Ok(match first {
+        None => None,
+        Some(Some(r)) => Some(Some(r.clone())),
+        Some(None) => Some(staged.before(at.view, &place.0, &place.1)?),
+    })
+}
+
+/// The group at `key` of `view` as the run since `staged`'s undo began
+/// found it: whether it had a record on the whole face, and that face,
+/// which a trigger on the view reads as the row before (lakelands#1185).
+/// The face is none where the fold had flagged the group as not exact, or
+/// where a view it reads through holds such a group (049): a read
+/// computes that face from members the run has moved since.
+pub(crate) fn before(
+    at: &At<'_>,
+    staged: &Staged,
+    (view, key): (&TypeName, &RecordKey),
+) -> Result<(bool, Option<StoredRecord>)> {
+    let place = (kept_name(view), key.clone());
+    let was = match was(at, staged, &place)? {
+        Some(was) => was,
+        None => staged.record(at.view, &place.0, key)?,
+    };
+    let Some(was) = was.filter(|r| !r.is_ended()) else {
+        return Ok((false, None));
+    };
+    let flagged = carried(&was).flagged[1];
+    let Some(face) = shown(was, view, true) else {
+        return Ok((false, None));
+    };
+    let kept = (at.ontology.ty(view).ok()).and_then(|d| Kept::of(at.ontology, d));
+    let below = match &kept {
+        Some(kept) => inexact_below(at, staged, kept)?,
+        None => false,
+    };
+    Ok((true, (!flagged && !below).then_some(face)))
+}
+
 /// Put back what the run since `staged`'s undo began overwrote, newest
 /// first, and keep no more. The views as the run worked on them go too: each is read again
 /// from what stays, on first use, as the next transaction reads it.
 pub(crate) fn undo(staged: &mut Staged) {
-    let Some(Undo(done)) = staged.undo.take() else {
+    undo_to(staged, 0);
+    staged.undo = None;
+}
+
+/// [`undo`], of what the run overwrote after its first `from` entries;
+/// the undo stays open.
+pub(crate) fn undo_to(staged: &mut Staged, from: usize) {
+    let Some(Undo(done)) = staged.undo.as_mut() else {
         return;
     };
-    for undone in done.into_iter().rev() {
+    for undone in done.split_off(from).into_iter().rev() {
         match undone {
             Undone::Record(at, Some(r)) => drop(staged.records.insert(at, r)),
             Undone::Record(at, None) => drop(staged.records.remove(&at)),
@@ -429,6 +654,19 @@ impl At<'_> {
         self.projection.map_or(Ok(()), |p| p.put_record(r))
     }
 
+    /// Put (or, with none, delete) an entry of the order `name` into the
+    /// projection, where there is one.
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        self.projection
+            .map_or(Ok(()), |p| p.put_order(name, key, entry))
+    }
+
+    /// End every entry of the order `name` in the projection, where there
+    /// is one.
+    fn end_order(&self, name: &TypeName) -> Result<()> {
+        self.projection.map_or(Ok(()), |p| p.end_order(name))
+    }
+
     /// Record `state` for `ty` at `at`.
     fn put_state(
         &self,
@@ -467,8 +705,8 @@ impl At<'_> {
         if !filter.is_none_or(|w| crate::reads::holds(w, &fields, meta, self.settings, EPOCH)) {
             return None;
         }
-        let value = |f: &FieldName| fields.get(f).cloned().unwrap_or(Value::Null);
-        let own = &kept.view().group_by;
+        let value = |k| key_value(k, (&fields, meta), Some(self.settings), EPOCH);
+        let own = &kept.decl.key;
         let by: Row = (own.iter().zip(&src.group_by))
             .map(|(to, from)| (to.clone(), value(from)))
             .collect();
@@ -521,6 +759,8 @@ fn group<'g>(
             by: by.clone(),
             folds: [open, all],
             stored,
+            stranded: carried.stranded,
+            cut: carried.cut,
         };
         groups.insert(key.clone(), group);
     }
@@ -529,10 +769,50 @@ fn group<'g>(
 }
 
 impl Work {
+    /// Whether a build of the view has not reached `r`, a record of the
+    /// source `i`: a record whose key the build's cursor has not passed is
+    /// the build's to fold, and nothing is counted for it here.
+    fn unreached(&self, i: usize, r: Option<&StoredRecord>) -> bool {
+        let Some(building) = &self.state.building else {
+            return false;
+        };
+        let Some(r) = r else {
+            return false;
+        };
+        match building.cursors.get(i).and_then(Option::as_ref) {
+            Some(cursor) => r.key > *cursor,
+            None => true,
+        }
+    }
+
     /// A record of the source `i` was `before` and is `after`: it leaves
     /// the group it was a member of, arrives in the one it is a member of,
     /// or changes within it, on each face.
     fn note(
+        &mut self,
+        at: &At<'_>,
+        staged: &Staged,
+        i: usize,
+        before: Option<&StoredRecord>,
+        after: Option<&StoredRecord>,
+    ) -> Result<()> {
+        // A build has folded the source only up to its cursor: a record
+        // past it is counted when the build reaches it, its state then,
+        // so that each member is counted once, at its head.
+        if self.unreached(i, after.or(before)) {
+            return Ok(());
+        }
+        self.apply(at, staged, i, before, after)
+    }
+
+    /// A record of the source `i` a part of the build folds, `r` as it
+    /// stands: no cursor is asked, since the part is the build.
+    fn folded(&mut self, at: &At<'_>, staged: &Staged, i: usize, r: &StoredRecord) -> Result<()> {
+        self.apply(at, staged, i, None, Some(r))
+    }
+
+    /// [`Self::note`], past the build's cursor.
+    fn apply(
         &mut self,
         at: &At<'_>,
         staged: &Staged,
@@ -545,12 +825,26 @@ impl Work {
             groups,
             touched,
             entries,
+            carried: made,
             ..
         } = self;
         let (src, settings, cx) = (&kept.sources[i], Some(at.settings), (at, staged));
+        // A group a make carried holds every member the fold has seen.
+        let member = |r: &StoredRecord, face| {
+            at.member(kept, src, r, face)
+                .filter(|m| !made.contains(&m.group))
+        };
         for face in 0..2 {
-            let was = before.and_then(|r| at.member(kept, src, r, face));
-            let is = after.and_then(|r| at.member(kept, src, r, face));
+            let was = before.and_then(|r| member(r, face));
+            let is = after.and_then(|r| member(r, face));
+            // A view's record stranded on the face strands the group it is
+            // a member of there.
+            if let (Some(n), Some(r)) = (&is, after.filter(|_| src.view))
+                && carried(r).stranded[face]
+            {
+                let g = group((&mut *groups, &mut *touched), kept, cx, &n.group, &n.by)?;
+                g.stranded[face] = true;
+            }
             let placed = |m: &Option<Member>, r: Option<&StoredRecord>| {
                 let letter = match face {
                     0 => Some('o'),
@@ -605,11 +899,11 @@ impl Work {
         settings: &BTreeMap<String, Value>,
     ) -> expr::eval::Result<Row> {
         let (kept, folds) = (&self.kept, &g.folds[face]);
-        let own = &kept.view().group_by;
+        let own = &kept.decl.key;
         let mut given = Row::new();
         for (src, folds) in kept.sources.iter().zip(folds).skip(1) {
             let by: Row = (src.group_by.iter().zip(own))
-                .map(|(to, from)| (to.clone(), g.by[from].clone()))
+                .map(|((to, _), from)| (to.clone(), g.by[from].clone()))
                 .collect();
             given.extend(src.keeping.measures(
                 folds,
@@ -651,25 +945,39 @@ impl Work {
             (Some(open), Some(all)) if open != all => Some(all.clone()),
             _ => None,
         };
+        let stranded = g.stranded;
+        let bare = open.is_none() && all.is_none() && stranded != [false; 2];
         let carried = Carried {
             open: g.folds[0].clone(),
             all: (g.folds[0] != g.folds[1]).then(|| g.folds[1].clone()),
             flagged,
             whole,
             alone: open.is_some() && all.is_none(),
+            stranded,
+            bare,
+            cut: g.cut.clone(),
         };
         let count = |n: &mut u64, was: bool, is: bool| {
             *n = (*n + u64::from(is)).saturating_sub(u64::from(was))
         };
-        let faces = self
-            .state
-            .not_exact
-            .iter_mut()
-            .zip(was.flagged.iter().zip(flagged));
-        faces.for_each(|(n, (was, is))| count(n, *was, is));
+        // A stranded group is exact: it is counted stranded, not flagged.
+        for (face, is) in stranded.into_iter().enumerate() {
+            let flags = |c: &Carried| c.flagged[face] && !c.stranded[face];
+            count(
+                &mut self.state.not_exact[face],
+                flags(&was),
+                flags(&carried),
+            );
+            count(&mut self.state.stranded[face], was.stranded[face], is);
+        }
         count(&mut self.state.differ, was.differs(), carried.differs());
         let restricted = open.is_none();
-        let mut fields = open.or(all)?;
+        let mut fields = match open.or(all) {
+            Some(fields) => fields,
+            // Its record holds its mark, which no reader is shown.
+            None if bare => g.by.clone(),
+            None => return None,
+        };
         if carried.differs() {
             fields.insert(DIFFERS.into(), Value::from("1"));
         }
@@ -719,9 +1027,12 @@ impl Views {
             }
             let state = at.state(staged, &ty)?;
             let kept = (at.ontology.ty(&ty).ok()).and_then(|d| Kept::of(at.ontology, d));
+            // A view a build is making is read in as one: a write beside
+            // the build is folded into the groups it has reached.
+            let making = state.whole || state.building.is_some();
             match kept {
-                Some(kept) if state.whole => self.insert(kept, state),
-                None if state.whole => self.orphans.push(ty),
+                Some(kept) if making => self.insert(kept, state),
+                None if making => self.orphans.push(ty),
                 _ => {}
             }
         }
@@ -736,6 +1047,7 @@ impl Views {
             state,
             groups: BTreeMap::new(),
             touched: BTreeSet::new(),
+            carried: BTreeSet::new(),
         };
         self.views.insert(work.kept.decl.name.clone(), work);
     }
@@ -760,6 +1072,36 @@ impl Views {
             of.collect::<Vec<_>>()
         };
         self.views.values().flat_map(reads).collect()
+    }
+
+    /// [`strand`]: `r` is asked by every rule in force over `[r, next)`
+    /// ([`Past::marks`]): each make in that span folded it by its own.
+    fn strand(
+        &mut self,
+        at: &At<'_>,
+        staged: &Staged,
+        (r, next): (&StoredRecord, Option<Position>),
+        past: &mut Past,
+    ) -> Result<()> {
+        if !self.noted.contains(&r.ty) {
+            self.load(at, staged, Some(&r.ty), None)?;
+            self.noted.insert(r.ty.clone());
+        }
+        for (view, _) in self.readers(&r.ty) {
+            let marks = past.marks(at, &view, r, next)?;
+            let Work {
+                kept,
+                groups,
+                touched,
+                ..
+            } = self.views.get_mut(&view).expect("a reader is a kept view");
+            for (face, m) in marks {
+                let cx = (at, staged);
+                let g = group((&mut *groups, &mut *touched), kept, cx, &m.group, &m.by)?;
+                g.stranded[face] = true;
+            }
+        }
+        Ok(())
     }
 
     /// Tell every kept view that reads `ty` what one of its records was
@@ -809,16 +1151,12 @@ impl Views {
             }
             let orders = staged.orders.entry(name.clone()).or_default();
             for (key, entry) in std::mem::take(&mut work.entries) {
-                let mut r = StoredRecord::ended(name.clone(), RecordKey::from(&*key), position);
-                if let Some(e) = &entry {
-                    (r.version, r.retired) = (lakelands_api::Version(1), false);
-                    r.fields
-                        .insert(ENTRY.into(), serde_json::from_str(e).expect("an entry"));
-                }
-                at.put(&r)?;
-                let was = orders.entries.insert(key.clone(), entry);
+                let key = RecordKey::from(&*key);
+                at.put_order(&name, &key, entry.as_deref().map(str::as_bytes))?;
+                let was = orders.entries.insert(key.as_str().into(), entry);
                 if let Some(undo) = &mut staged.undo {
-                    undo.0.push(Undone::Entry(name.clone(), key, was));
+                    undo.0
+                        .push(Undone::Entry(name.clone(), key.as_str().into(), was));
                 }
             }
             for key in std::mem::take(&mut work.touched) {
@@ -877,14 +1215,34 @@ impl Views {
             self.unmake(at, staged, &reader, position)?;
         }
         self.views.remove(view);
-        if !at.state(staged, view)?.whole {
+        // A view a build has started holds the groups it has reached: they
+        // end with the build's mark, as a whole view's do, and so do the
+        // records a take-back has not cleared yet.
+        let state = at.state(staged, view)?;
+        if !state.whole && state.building.is_none() && !state.dropping {
             return Ok(());
         }
-        let mut keys = Vec::new();
+        // A stranded group's record and entries are carried into the make
+        // that follows: its members are gone to fold again.
+        let (mut keys, mut carry) = (Vec::new(), Carry::default());
+        // A zoned group keeps the name of the copy that first cut it.
         staged.each(at.view, &kept_name(view), |r| {
+            let mut c = carried(&r);
+            if state.stranded != [0, 0] && c.stranded != [false; 2] {
+                let mut r = r.clone();
+                c.cut = c.cut.or_else(|| state.tzdb.clone());
+                r.fields.insert(FOLDS.into(), serde_json::json!(c));
+                carry.records.push(r);
+            }
             keys.push(r.key);
             Ok(())
         })?;
+        if !carry.records.is_empty() {
+            let groups = carry.records.iter().map(|r| digest(&r.key)).collect();
+            let name = order_name(view);
+            carry.entries = entries_of(at.view, staged.orders.get(&name), &name, &groups)?;
+            self.carry.insert(view.clone(), carry);
+        }
         for key in keys {
             let ended = StoredRecord::ended(kept_name(view), key.clone(), position);
             at.put(&ended)?;
@@ -896,9 +1254,7 @@ impl Views {
         // The entries end as a whole, whatever their number: a seek in the
         // transaction reads only those put after.
         let name = order_name(view);
-        if let Some(p) = at.projection {
-            p.end_head_only(&name, position)?;
-        }
+        at.end_order(&name)?;
         let ended = Orders {
             ended: true,
             ..Orders::default()
@@ -922,10 +1278,32 @@ impl Views {
         let view = kept.decl.name.clone();
         let whole = State {
             whole: true,
+            tzdb: kept.zoned.then(|| zone::copy().to_owned()),
             ..State::default()
         };
+        let carry = self.carry.remove(&view).unwrap_or_default();
         self.insert(kept, whole);
         let work = self.views.get_mut(&view).expect("the view was put");
+        // A carried group is put from its folds as the ended view held
+        // them, and none of its members is noted again.
+        let entries = carry.entries.into_iter();
+        (work.entries).extend(entries.map(|(k, e)| (k.into(), Some(e.into()))));
+        for r in carry.records {
+            let c = carried(&r);
+            let all = c.all.unwrap_or_else(|| c.open.clone());
+            let own = work.kept.decl.key.iter();
+            let by = own.filter_map(|f| Some((f.clone(), r.fields.get(f)?.clone())));
+            let group = Group {
+                by: by.collect(),
+                folds: [c.open, all],
+                stored: None,
+                stranded: c.stranded,
+                cut: c.cut,
+            };
+            work.carried.insert(r.key.clone());
+            work.touched.insert(r.key.clone());
+            work.groups.insert(r.key, group);
+        }
         for i in 0..work.kept.sources.len() {
             let src = &work.kept.sources[i];
             let ty = match src.view {
@@ -944,6 +1322,7 @@ impl Views {
             } = work;
             group((groups, touched), kept, (at, staged), &all, &Row::new())?;
         }
+        work.carried.clear();
         let state = work.state.clone();
         at.put_state(staged, &view, &state, position)?;
         self.flush(at, staged, position)
@@ -963,15 +1342,30 @@ impl Views {
         kept.sources.iter().all(read).then_some(kept)
     }
 
-    /// Whatever is to be kept now and is not is made, and whatever is
-    /// kept and is not to be is ended, innermost first.
-    fn want(&mut self, at: &At<'_>, staged: &mut Staged, position: Position) -> Result<()> {
+    /// Whatever is to be kept now and is not is made, `start` except: the
+    /// view a live setting starts building is marked, and a read computes
+    /// it until the build's `Keep`. Whatever is kept and is not to be is
+    /// ended, innermost first; where the event is a live setting's
+    /// take-back (`take_back`), in parts, the mark `dropping` saying so.
+    fn want(
+        &mut self,
+        at: &At<'_>,
+        staged: &mut Staged,
+        position: Position,
+        start: Option<&TypeName>,
+        take_back: bool,
+    ) -> Result<()> {
         loop {
             let unwanted = (self.views.keys())
                 .find(|v| self.wanted(at, staged, v).is_none())
                 .cloned();
             if let Some(view) = unwanted {
-                self.unmake(at, staged, &view, position)?;
+                let state = at.state(staged, &view)?;
+                let in_parts = take_back && (state.whole || state.building.is_some());
+                match in_parts {
+                    true => self.mark_dropping(at, staged, &view, position)?,
+                    false => self.unmake(at, staged, &view, position)?,
+                }
                 continue;
             }
             let missing = asking(at.settings).map(TypeName::from);
@@ -979,9 +1373,78 @@ impl Views {
             let Some(kept) = missing.find_map(|v| self.wanted(at, staged, &v)) else {
                 return Ok(());
             };
-            self.make(at, staged, kept, position)?;
+            // The views the build waits for are started, not made: a view
+            // over a view whose inner view is not whole waits for its
+            // inner's `Keep`, and a view its take-back has not finished
+            // waits for the drop to end.
+            let name = &kept.decl.name;
+            let waits = at.state(staged, name)?.dropping || !ready(at, staged, name)?;
+            match start {
+                Some(view) if view == name => self.start(at, staged, kept, position)?,
+                _ if waits => self.start(at, staged, kept, position)?,
+                _ => self.make(at, staged, kept, position)?,
+            }
         }
     }
+
+    /// Mark `view` as taken back in parts: its records stay until the
+    /// chunks that end them, and no read looks at them meanwhile. The views
+    /// that read it follow it in the same event: what is not in `views` is
+    /// not wanted, and the loop of [`Views::want`] comes to them.
+    fn mark_dropping(
+        &mut self,
+        at: &At<'_>,
+        staged: &mut Staged,
+        view: &TypeName,
+        position: Position,
+    ) -> Result<()> {
+        self.views.remove(view);
+        let state = State {
+            dropping: true,
+            ..State::default()
+        };
+        at.put_state(staged, view, &state, position)
+    }
+
+    /// Start `view`'s build: the state records a cursor for each of its
+    /// sources, none reached, and a read computes the view until the
+    /// build's [`keep`]. Nothing of a source is walked in the fold. A
+    /// setting set again between two chunks of a take-back keeps its
+    /// `dropping` mark: the drop ends first. The copy of the time-zone
+    /// database in force is recorded, as [`Views::make`] records it, so
+    /// that a writer that opens under another one starts the build again.
+    fn start(
+        &mut self,
+        at: &At<'_>,
+        staged: &mut Staged,
+        kept: Kept,
+        position: Position,
+    ) -> Result<()> {
+        let view = kept.decl.name.clone();
+        let was = at.state(staged, &view)?;
+        let building = Building {
+            cursors: vec![None; kept.sources.len()],
+        };
+        let state = State {
+            building: Some(building),
+            dropping: was.dropping,
+            tzdb: kept.zoned.then(|| zone::copy().to_owned()),
+            ..State::default()
+        };
+        self.insert(kept, state);
+        let work = self.views.get_mut(&view).expect("the view was put");
+        let state = work.state.clone();
+        at.put_state(staged, &view, &state, position)
+    }
+}
+
+/// The view the setting `setting` starts a build of, where it is a
+/// `view_kept.` setting the settings hold asked for.
+fn started(setting: Option<&str>, settings: &BTreeMap<String, Value>) -> Option<TypeName> {
+    let key = setting?;
+    let view = key.strip_prefix(SETTING)?;
+    let asked = lakelands_api::seam::view_kept(settings.get(key));
+    asked.then(|| TypeName::from(view))
 }
 
 /// The views a `view_kept.` setting names, from one seek: the setting
@@ -1008,9 +1471,210 @@ pub(crate) fn note(
     noted
 }
 
+/// `r`, a state a thinning takes, was a member of groups of the kept views
+/// that read its type: each is marked stranded on the face it was, and no
+/// group is told the member left. `next` is where the record's next state
+/// began, `None` for its last.
+pub(crate) fn strand(
+    at: &At<'_>,
+    staged: &mut Staged,
+    r: (&StoredRecord, Option<Position>),
+    past: &mut Past,
+) -> Result<()> {
+    if asking(at.settings).next().is_none() && staged.kept.idle() {
+        return Ok(());
+    }
+    let mut views = std::mem::take(&mut staged.kept);
+    let stranded = views.strand(at, staged, r, past);
+    staged.kept = views;
+    stranded
+}
+
+/// What a part of a thinning reads of the past to ask each state it takes
+/// by every rule in force while it was its record's: each declaration's
+/// states from the earliest position asked on — those in force now, those
+/// the transaction replaced, those the projection holds replaced, read as
+/// a read at a past position reads them — and the states of each setting a
+/// view's rule names. An ontology is built once for each position a
+/// declaration changed, a view's rule once for each of those.
+pub(crate) struct Past {
+    declared: Vec<Declared>,
+    from: Option<Position>,
+    through: Position,
+    built: BTreeMap<Position, Rc<Ontology>>,
+    kept: BTreeMap<(Position, TypeName), Option<Rc<Kept>>>,
+    settings: BTreeMap<String, Rc<Vec<StoredRecord>>>,
+}
+
+impl Past {
+    /// The past of a part at `through`, over `now` and what `staged` replaced.
+    pub(crate) fn new(now: &Ontology, staged: &Staged, through: Position) -> Past {
+        let mut declared = now.declared_and_withdrawn();
+        declared.extend(staged.replaced.iter().flatten().cloned());
+        Past {
+            declared,
+            from: None,
+            through,
+            built: BTreeMap::new(),
+            kept: BTreeMap::new(),
+            settings: BTreeMap::new(),
+        }
+    }
+
+    /// Reads the declarations replaced since `p`, once for each stretch.
+    fn back_to(&mut self, at: &At<'_>, p: Position) -> Result<()> {
+        if let Some(to) = self.from.or(at.view.position())
+            && p < to
+        {
+            self.declared
+                .extend(at.view.replaced(p, to)?.into_iter().flatten());
+            self.from = Some(p);
+        }
+        Ok(())
+    }
+
+    /// `view`'s rule as the declarations in force at `p` declare it.
+    fn kept(&mut self, view: &TypeName, p: Position) -> Option<Rc<Kept>> {
+        let since = self.declared.iter().map(|d| d.since);
+        let epoch = since.filter(|s| *s <= p).max().unwrap_or(Position::GENESIS);
+        if let Some(k) = self.kept.get(&(epoch, view.clone())) {
+            return k.clone();
+        }
+        let o = self.built.entry(epoch).or_insert_with(|| {
+            let mut by: BTreeMap<String, &Declared> = BTreeMap::new();
+            for d in self.declared.iter().filter(|d| d.since <= epoch) {
+                let k = declaration_key(&d.declaration);
+                if by.get(&k).is_none_or(|e| e.since < d.since) {
+                    by.insert(k, d);
+                }
+            }
+            Rc::new(Ontology::from_declared(&Vec::from_iter(
+                by.into_values().cloned(),
+            )))
+        });
+        let k = o.ty(view).ok().and_then(|d| Kept::of(o, d)).map(Rc::new);
+        self.kept.insert((epoch, view.clone()), k.clone());
+        k
+    }
+
+    /// The states of the setting `name` through the part, read once.
+    fn setting(&mut self, at: &At<'_>, name: &str) -> Result<Rc<Vec<StoredRecord>>> {
+        if let Some(s) = self.settings.get(name) {
+            return Ok(s.clone());
+        }
+        let (ty, key) = (TypeName::from(SETTING_TYPE), RecordKey::from(name));
+        let (mut all, mut after) = (Vec::new(), None);
+        while let Some(p) = at.projection {
+            let page = p.states(&ty, &key, after, self.through, 256)?;
+            let full = page.len() == 256;
+            after = page.last().map(|r| r.position);
+            all.extend(page);
+            if !full {
+                break;
+            }
+        }
+        let all = Rc::new(all);
+        self.settings.insert(name.to_owned(), all.clone());
+        Ok(all)
+    }
+
+    /// Each group and face `r` was a member of in `view` from its position
+    /// up to `next`: by each declaration in force over that span that
+    /// declares `view` or `r`'s type, or is of another kind, and by each
+    /// value of a setting that rule names, while a setting kept the view.
+    fn marks(
+        &mut self,
+        at: &At<'_>,
+        view: &TypeName,
+        r: &StoredRecord,
+        next: Option<Position>,
+    ) -> Result<Vec<(usize, Member)>> {
+        let within = |p: Position| p > r.position && next.is_none_or(|n| p < n);
+        self.back_to(at, r.position)?;
+        let moves = |d: &Declared| match &d.declaration {
+            Declaration::Type(t) => &t.name == view || t.name == r.ty,
+            _ => true,
+        };
+        let mut cuts = Vec::from_iter(
+            (self.declared.iter())
+                .filter(|d| moves(d) && within(d.since))
+                .map(|d| d.since),
+        );
+        cuts.push(r.position);
+        cuts.sort();
+        cuts.dedup();
+        let named = format!("{SETTING}{view}");
+        let on = self.setting(at, &named)?;
+        let mut marks = Vec::new();
+        for (k, &c) in cuts.iter().enumerate() {
+            let end = cuts.get(k + 1).copied().or(next);
+            let Some(kept) = self.kept(view, c) else {
+                continue;
+            };
+            let Some(j) = kept.sources.iter().position(|s| s.ty == r.ty) else {
+                continue;
+            };
+            let mut held = vec![(named.clone(), on.clone())];
+            for n in &kept.settings {
+                held.push((n.clone(), self.setting(at, n)?));
+            }
+            let set = held.iter().flat_map(|(_, s)| s.iter().map(|s| s.position));
+            let mut points = Vec::from_iter(set.filter(|p| *p > c && end.is_none_or(|e| *p < e)));
+            points.push(c);
+            points.sort();
+            points.dedup();
+            for q in points {
+                let mut settings = at.settings.clone();
+                for (n, states) in &held {
+                    let s = states.iter().take_while(|s| s.position <= q).last();
+                    let fields = s.filter(|s| !s.retired).map(|s| &s.fields);
+                    lakelands_api::settings::hold(&mut settings, n, fields);
+                }
+                if !lakelands_api::seam::view_kept(settings.get(&named)) {
+                    continue;
+                }
+                let then = At {
+                    settings: &settings,
+                    ..*at
+                };
+                for face in 0..2 {
+                    let m = then.member(&kept, &kept.sources[j], r, face);
+                    marks.extend(m.map(|m| (face, m)));
+                }
+            }
+        }
+        Ok(marks)
+    }
+}
+
+/// What an event or a write's step may move, as [`settle`] and [`step`]
+/// hand to [`Views::settle`]: the setting it writes or the types it
+/// declares or steps, a writer's lease, or a record's write, which moves
+/// the views its notes have read in.
+struct Moves<'a> {
+    /// Whether any view may move, not only those reading a written type.
+    any: bool,
+    /// The types the event declares or steps.
+    declared: &'a BTreeSet<TypeName>,
+    /// The setting the event writes, if it writes one.
+    setting: Option<&'a str>,
+    /// Whether the event is the writer's lease.
+    leased: bool,
+    /// The view a live `view_kept` setting starts a build of, where the
+    /// event writes one: made whole in one fold otherwise.
+    start: Option<TypeName>,
+    /// Whether the event is a live `view_kept` setting's take-back: what
+    /// the setting no longer asks for is cleared in parts, marked
+    /// `dropping`, rather than ended in one fold.
+    take_back: bool,
+}
+
 /// The end of one event's fold: the views it makes or ends are made or
-/// ended, and every group it touched is put, at its position.
-pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> {
+/// ended, and every group it touched is put, at its position. `whole`
+/// where the fold reads the log and makes what a setting asks for whole at
+/// its event; a live fold starts a build instead, and a read computes the
+/// view until its `Keep`.
+pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event, whole: bool) -> Result<()> {
     // What the event may move: a setting, or the types whose declaration
     // or records it changes under a view: a declared type, and every type
     // a migration's step, or a value type's, reached.
@@ -1042,13 +1706,37 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
     if none && staged.kept.idle() && asked.is_none() {
         return Ok(());
     }
+    // A writer's lease is the first event a binary folds as the lake's
+    // writer: a view cut under another copy of the time-zone database
+    // is folded again there, under its own.
+    let leased = matches!(e.body, EventBody::LeaseTaken { .. });
     let any = setting.is_some()
+        || leased
         || matches!(
             e.body,
             Declared { .. } | Migrated { .. } | ValueTypeMigrated { .. }
         );
+    // A live `view_kept` setting starts its view's build; a fold from the
+    // log makes it whole at its event, as an import does (041).
+    let start = (!whole)
+        .then(|| started(setting.as_deref(), at.settings))
+        .flatten();
+    // A live `view_kept.` setting that no longer asks for its view is a
+    // take-back: the view's records go in parts, as a field's rows do. A
+    // fold from the log ends them at the event.
+    let take_back = !whole
+        && setting.as_deref().is_some_and(|k| {
+            k.strip_prefix(SETTING).is_some() && !lakelands_api::seam::view_kept(at.settings.get(k))
+        });
     let mut views = std::mem::take(&mut staged.kept);
-    let moves = (any, &declared, setting.as_deref());
+    let moves = Moves {
+        any,
+        declared: &declared,
+        setting: setting.as_deref(),
+        leased,
+        start,
+        take_back,
+    };
     let settled = views.settle(at, staged, moves, e.position);
     staged.kept = views;
     settled
@@ -1056,14 +1744,23 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
 
 impl Views {
     /// [`settle`] of an event that writes `setting`, declares or steps
-    /// the types `declared`, or, where not `any`, writes a record.
+    /// the types `declared`, takes the writer's lease where `leased`, or,
+    /// where not `any`, writes a record.
     fn settle(
         &mut self,
         at: &At<'_>,
         staged: &mut Staged,
-        (any, declared, setting): (bool, &BTreeSet<TypeName>, Option<&str>),
+        moves: Moves<'_>,
         position: Position,
     ) -> Result<()> {
+        let Moves {
+            any,
+            declared,
+            setting,
+            leased,
+            start,
+            take_back,
+        } = moves;
         // A setting's write and a declaration may move any view: all are
         // read in. A record's write moves the views that read its type,
         // which its notes have read in.
@@ -1076,12 +1773,14 @@ impl Views {
         }
         // A view the event changes under its records is ended: its own
         // declaration or a source's, a source whose records wait to be
-        // computed again, or a setting its expressions read.
+        // computed again, a setting its expressions read, or, at a lease,
+        // a copy of the time-zone database other than the one that cut it.
         let moved = |w: &Work| {
             let under = |s: &Src| declared.contains(&s.ty) || staged.recomputes(&s.ty);
             declared.contains(&w.kept.decl.name)
                 || w.kept.sources.iter().any(under)
                 || setting.is_some_and(|k| w.kept.settings.contains(k))
+                || (leased && w.state.cut_elsewhere())
         };
         let ended: Vec<TypeName> = (self.views.values().filter(|w| moved(w)))
             .map(|w| w.kept.decl.name.clone())
@@ -1089,8 +1788,8 @@ impl Views {
         for view in &ended {
             self.unmake(at, staged, view, position)?;
         }
-        if setting.is_some() || !declared.is_empty() {
-            self.want(at, staged, position)?;
+        if setting.is_some() || !declared.is_empty() || leased {
+            self.want(at, staged, position, start.as_ref(), take_back)?;
         }
         self.flush(at, staged, position)
     }
@@ -1106,9 +1805,209 @@ pub(crate) fn made(at: &At<'_>, staged: &mut Staged, position: Position) -> Resu
         return Ok(());
     }
     let mut views = std::mem::take(&mut staged.kept);
-    let made = (views.load(at, staged, None, None)).and_then(|()| views.want(at, staged, position));
+    let made = (views.load(at, staged, None, None))
+        .and_then(|()| views.want(at, staged, position, None, false));
     staged.kept = views;
     made
+}
+
+/// Fold the next part of `view`'s build into it: `limit` records of the
+/// first source with records past its cursor, in key order, and the state
+/// records the cursor the part reached. `Some` the key it reached; `None`
+/// where this part folded nothing — every source is reached, and the build
+/// is [`keep`]'s, or the view is not building, or its take-back has not
+/// finished. A caller keeps the view only after its own checks that it
+/// builds and that every inner view it reads is whole ([`ready`]), and
+/// while no take-back of it runs.
+///
+/// A group's folds are its record's, so a part reads the groups it moves
+/// from the projection and puts them back as it goes: what is folded is
+/// in the lake after each part, and a later part goes on from the cursor
+/// the state holds, as a runner that stopped does.
+pub(crate) fn fill(
+    at: &At<'_>,
+    staged: &mut Staged,
+    view: &TypeName,
+    limit: u32,
+    position: Position,
+) -> Result<Option<RecordKey>> {
+    let mut views = Views::default();
+    views.load(at, staged, None, Some(view))?;
+    let Some(work) = views.views.get_mut(view) else {
+        return Ok(None);
+    };
+    // A take-back's chunks go first: a build set again waits for them.
+    let Some(building) = work.state.building.clone().filter(|_| !work.state.dropping) else {
+        return Ok(None);
+    };
+    let mut filled = None;
+    for i in 0..work.kept.sources.len() {
+        let ty = {
+            let src = &work.kept.sources[i];
+            match src.view {
+                true => kept_name(&src.ty),
+                false => src.ty.clone(),
+            }
+        };
+        let cursor = building.cursors.get(i).cloned().flatten();
+        let after = cursor.map(|key| lakelands_api::engine::After {
+            values: Vec::new(),
+            key,
+        });
+        let scan = lakelands_api::engine::Scan {
+            limit,
+            retired: true,
+            restricted: true,
+            after,
+            ..Default::default()
+        };
+        let rows = at.view.scan(&ty, &scan)?;
+        let Some(last) = rows.last().map(|r| r.key.clone()) else {
+            continue;
+        };
+        for r in &rows {
+            work.folded(at, staged, i, r)?;
+        }
+        let cursors = &mut work
+            .state
+            .building
+            .as_mut()
+            .expect("the view builds")
+            .cursors;
+        cursors[i] = Some(last.clone());
+        filled = Some(last);
+        break;
+    }
+    // The cursor is the part's own: the flush writes the groups the part
+    // moved, counting the ones that fail, and the state it leaves is put
+    // after it, so that the next part goes on from where this one ended
+    // and a runner that stopped goes on there.
+    views.flush(at, staged, position)?;
+    let state = views.views.get(view).map(|w| w.state.clone());
+    if let Some(state) = state {
+        at.put_state(staged, view, &state, position)?;
+    }
+    Ok(filled)
+}
+
+/// Fold the next part of `view`'s take-back: `limit` of its kept records,
+/// ended, in key order past `after`. `Some` the key the part ended at;
+/// `None` where nothing is left: the view's order entries end and the mark
+/// goes, leaving a build's mark where a setting asked for the view again
+/// between two chunks. No read looks at a view the mark holds, so a
+/// part-cleared view is never read.
+pub(crate) fn drop_chunk(
+    at: &At<'_>,
+    staged: &mut Staged,
+    view: &TypeName,
+    limit: u32,
+    after: Option<RecordKey>,
+    position: Position,
+) -> Result<Option<RecordKey>> {
+    let state = at.state(staged, view)?;
+    if !state.dropping {
+        return Ok(None);
+    }
+    let scan = lakelands_api::engine::Scan {
+        limit,
+        restricted: true,
+        after: after.map(|key| lakelands_api::engine::After {
+            values: Vec::new(),
+            key,
+        }),
+        ..Default::default()
+    };
+    let rows = at.view.scan(&kept_name(view), &scan)?;
+    let Some(last) = rows.last().map(|r| r.key.clone()) else {
+        // The last chunk: the entries end as a whole, whatever their
+        // number, and the mark goes.
+        let name = order_name(view);
+        at.end_order(&name)?;
+        let ended = Orders {
+            ended: true,
+            ..Orders::default()
+        };
+        let was = staged.orders.insert(name.clone(), ended);
+        if let Some(undo) = &mut staged.undo {
+            undo.0.push(Undone::Orders(name, was));
+        }
+        let state = State {
+            building: state.building,
+            // A build a setting set again started before the drop ended
+            // keeps the copy it was cut under; the `Keep` records the
+            // one the rest of it is cut under.
+            tzdb: state.tzdb,
+            ..State::default()
+        };
+        return at.put_state(staged, view, &state, position).map(|()| None);
+    };
+    // Ended in the transaction's own view, so that a part that ends here
+    // is not read by the next one, and in the projection, so that it is
+    // gone when the part commits.
+    for r in &rows {
+        let ended = StoredRecord::ended(kept_name(view), r.key.clone(), position);
+        at.put(&ended)?;
+        staged.put(ended);
+    }
+    Ok(Some(last))
+}
+
+/// Whether every source of `view` that is itself a view is whole.
+pub(crate) fn ready(at: &At<'_>, staged: &Staged, view: &TypeName) -> Result<bool> {
+    let kept = at
+        .ontology
+        .ty(view)
+        .ok()
+        .and_then(|d| Kept::of(at.ontology, d));
+    let Some(kept) = kept else {
+        return Ok(false);
+    };
+    for src in kept.sources.iter().filter(|s| s.view) {
+        if !at.state(staged, &src.ty)?.whole {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Keep `view` whole at `position`: the mark goes, and a read takes the
+/// records. `false` where it is not building, which is nothing to keep.
+pub(crate) fn keep(
+    at: &At<'_>,
+    staged: &mut Staged,
+    view: &TypeName,
+    position: Position,
+) -> Result<bool> {
+    let mut views = Views::default();
+    views.load(at, staged, None, Some(view))?;
+    let Some(work) = views.views.get_mut(view) else {
+        return Ok(false);
+    };
+    if work.state.building.take().is_none() {
+        return Ok(false);
+    }
+    // A view without group fields has one group, which no source's record
+    // makes: the fold makes it, as [`Views::make`] does.
+    if work.kept.view().group_by.is_empty() {
+        let all = RecordKey::from(lakelands_api::key::UNGROUPED);
+        let Work {
+            kept,
+            groups,
+            touched,
+            ..
+        } = work;
+        group((groups, touched), kept, (at, staged), &all, &Row::new())?;
+    }
+    work.state.whole = true;
+    work.state.tzdb = work.kept.zoned.then(|| zone::copy().to_owned());
+    // The `Keep` is the state's own, put with the last part's groups: a
+    // read takes the records from the position the state names.
+    views.flush(at, staged, position)?;
+    let state = views.views.get(view).map(|w| w.state.clone());
+    if let Some(state) = state {
+        at.put_state(staged, view, &state, position)?;
+    }
+    Ok(true)
 }
 
 /// The write path's run of the fold's own hooks (lakelands#1185), over
@@ -1133,7 +2032,18 @@ pub(crate) fn step(
     let mut views = std::mem::take(&mut staged.kept);
     views.moved = Some(Moved::new());
     let any = write.is_none() || setting.is_some();
-    let settled = views.settle(at, staged, (any, declared, setting.as_deref()), position);
+    let take_back = setting.as_deref().is_some_and(|k| {
+        k.strip_prefix(SETTING).is_some() && !lakelands_api::seam::view_kept(at.settings.get(k))
+    });
+    let moves = Moves {
+        any,
+        declared,
+        setting: setting.as_deref(),
+        leased: false,
+        start: started(setting.as_deref(), at.settings),
+        take_back,
+    };
+    let settled = views.settle(at, staged, moves, position);
     let moved = views.moved.take().unwrap_or_default();
     staged.kept = views;
     settled.map(|()| moved)
@@ -1149,6 +2059,11 @@ pub(crate) fn moved(staged: &mut Staged) -> Moved {
 /// Whether the views as the transaction leaves them hold `view` whole.
 pub(crate) fn whole(at: &At<'_>, staged: &Staged, view: &TypeName) -> Result<bool> {
     Ok(at.state(staged, view)?.whole)
+}
+
+/// Whether the views as the transaction leaves them are building `view`.
+pub(crate) fn building(at: &At<'_>, staged: &Staged, view: &TypeName) -> Result<bool> {
+    Ok(at.state(staged, view)?.building.is_some())
 }
 
 /// The record a set over `view` decides on at `key`, as the transaction
@@ -1193,7 +2108,7 @@ fn faced(
     };
     if flagged || inexact_below(at, staged, &kept)? {
         let value = |f: &FieldName| (f.clone(), r.fields.get(f).cloned().unwrap_or(Value::Null));
-        let by: Row = kept.view().group_by.iter().map(value).collect();
+        let by: Row = kept.decl.key.iter().map(value).collect();
         match computed(at, staged, &kept, key, &by)? {
             Some(Some(fields)) => r.fields = fields,
             Some(None) => return Ok(Some(None)),
@@ -1229,11 +2144,10 @@ fn computed(
     key: &RecordKey,
     by: &Row,
 ) -> Result<Option<Option<Row>>> {
-    let own = &kept.view().group_by;
+    let own = &kept.decl.key;
     let mut folds = Vec::with_capacity(kept.sources.len());
     for src in &kept.sources {
-        let keys = src.group_by.iter().map(|f| (f.clone(), None)).collect();
-        let mut members = Grouping::new(keys, &src.measures, EPOCH);
+        let mut members = Grouping::new(src.group_by.clone(), &src.measures, EPOCH);
         let ty = match src.view {
             true => kept_name(&src.ty),
             false => src.ty.clone(),
@@ -1262,7 +2176,7 @@ fn computed(
     let none = Folds::default();
     let measured = |i: usize, given: Row| {
         let src: &Src = &kept.sources[i];
-        let value = |(to, from): (&FieldName, &FieldName)| {
+        let value = |((to, _), from): (&(FieldName, _), &FieldName)| {
             (to.clone(), by.get(from).cloned().unwrap_or(Value::Null))
         };
         let own: Row = src.group_by.iter().zip(own).map(value).collect();
@@ -1334,26 +2248,46 @@ impl Work {
     }
 }
 
-/// At most `n` records of the order `name` after the key `after`, in key
+/// At most `n` entries of the order `name` after the key `after`, in key
 /// order: the page every engine reads by a seek.
 fn page(
     view: &dyn ProjectionView,
     name: &TypeName,
     after: &str,
     n: u32,
-) -> Result<Vec<StoredRecord>> {
-    let after = Some(After {
-        values: Vec::new(),
-        key: after.into(),
-    });
-    view.scan(
-        name,
-        &Scan {
-            after,
-            limit: n,
-            ..Scan::default()
-        },
-    )
+) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+    view.order_page(name, Some(&RecordKey::from(after)), n)
+}
+
+/// Every live entry of the order `name` whose group's digest is one of
+/// `groups`: the transaction's own over the engine's, read in pages.
+fn entries_of(
+    view: &dyn ProjectionView,
+    orders: Option<&Orders>,
+    name: &TypeName,
+    groups: &BTreeSet<String>,
+) -> Result<Vec<(String, String)>> {
+    const PAGE: u32 = 1024;
+    let of = |key: &str| key.split('.').nth(2).is_some_and(|d| groups.contains(d));
+    let mut all: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut after: Option<RecordKey> = None;
+    while !orders.is_some_and(|o| o.ended) {
+        let batch = view.order_page(name, after.as_ref(), PAGE)?;
+        let end = batch.last().filter(|_| batch.len() == PAGE as usize);
+        after = end.map(|(key, _)| key.clone());
+        let theirs = batch.into_iter().filter(|(key, _)| of(key.as_str()));
+        all.extend(theirs.map(|(key, e)| (key.to_string(), String::from_utf8(e).ok())));
+        if after.is_none() {
+            break;
+        }
+    }
+    let mine = orders.into_iter().flat_map(|o| &o.entries);
+    let mine = mine.filter(|(key, _)| of(key));
+    all.extend(mine.map(|(key, e)| (key.to_string(), e.as_deref().map(str::to_owned))));
+    Ok(all
+        .into_iter()
+        .filter_map(|(key, e)| Some((key, e?)))
+        .collect())
 }
 
 /// The first live entry of the order `name` from `start` on whose key
@@ -1368,7 +2302,7 @@ fn seek(
     within: &str,
     start: String,
 ) -> Result<Option<(String, Entry)>> {
-    let read = |r: &StoredRecord| serde_json::from_value(r.fields.get(ENTRY)?.clone()).ok();
+    let read = |e: &[u8]| serde_json::from_slice(e).ok();
     let parse = |e: &str| serde_json::from_str(e).ok();
     let mine = |key: &str| orders.and_then(|o| o.entries.get(key));
     let ended = orders.is_some_and(|o| o.ended);
@@ -1377,10 +2311,8 @@ fn seek(
         Some(None) => {}
         None if ended => {}
         None => {
-            let held = view
-                .get(name, &start.as_str().into())?
-                .filter(|r| !r.is_ended());
-            if let Some(e) = held.as_ref().and_then(read) {
+            let held = view.order(name, &start.as_str().into())?;
+            if let Some(e) = held.as_ref().and_then(|e| read(e)) {
                 return Ok(Some((start, e)));
             }
         }
@@ -1394,10 +2326,10 @@ fn seek(
         let end = batch
             .last()
             .filter(|_| batch.len() == n as usize)
-            .map(|r| r.key.to_string());
-        let theirs = batch.iter().filter(|r| mine(r.key.as_str()).is_none());
+            .map(|(key, _)| key.to_string());
+        let theirs = batch.iter().filter(|(key, _)| mine(key.as_str()).is_none());
         let mut merged: BTreeMap<String, Option<Entry>> =
-            theirs.map(|r| (r.key.to_string(), read(r))).collect();
+            theirs.map(|(key, e)| (key.to_string(), read(e))).collect();
         let to = end.as_deref().map_or(Unbounded, Included);
         let range = orders
             .into_iter()

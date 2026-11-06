@@ -5,21 +5,8 @@
 //! merged sources (`docs/decisions/006-grants-not-roles.md`,
 //! `docs/decisions/028-authoring-is-strict-and-whole.md`).
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{StorageKind, TypeDecl};
-use lakelands_api::query::Projection;
-use lakelands_api::read::AggFunc;
-use lakelands_api::write::Declaration;
-use lakelands_api::{
-    Access, Error, Find, Position, Principal, ReadAt, Refusal, Timestamp, TypeName,
-};
-use serde_json::{Value, json};
-
-use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, declared_below, field, field_access, get_at, invalid_case,
-    migration, pattern, refused_on,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{declared_below, get_at};
+use crate::conformance::prelude::*;
 
 /// A read at `day` of 2026, as of `as_of`.
 fn on(day: Option<&str>, as_of: Option<Position>) -> ReadAt {
@@ -294,17 +281,22 @@ pub(super) async fn a_kept_view_and_merged_sources_at_a_valid_time(store: &Store
         "`ov` in January is computed, one group of one, and kept without a valid time; \
          it answered {owner:?} and {kept:?}"
     );
+    // Dated by the grant on the view, its own valid time is not probed
+    // (092, lakelands#1571).
     for access in [Access::None, Access::Masked, Access::WriteOnly] {
         let who = field_access(store.as_ref(), "clerk", "ov", &[("since", access)]);
+        let dated = super::masking::dated_by(store.as_ref(), "ov", ("since", access));
         for at in [january, ReadAt::default()] {
-            let mut want = doors(&l, &l.own, "ov", "x", at).await;
+            let owner = doors(&l, &l.own, "ov", "x", at).await;
+            let mut want = owner.clone();
             if access != Access::None && at.valid_at.is_some() {
                 want = std::array::from_fn(|_| "not granted since".into());
             }
             let got = doors(&l, &who, "ov", "x", at).await;
+            let by_it = doors(&l, &dated, "ov", "x", at).await;
             ensure!(
-                got == want,
-                "`since` {access:?} at {:?}: {got:?}, not {want:?}",
+                got == want && by_it == owner,
+                "`since` {access:?} at {:?}: {got:?}, not {want:?}; dated by it {by_it:?}",
                 at.valid_at
             );
         }
@@ -343,15 +335,18 @@ pub(super) async fn a_kept_view_and_merged_sources_at_a_valid_time(store: &Store
     l.declare(own("ob", true)).await?;
     let july = on(Some("07-01"), None);
     let blind = field_access(store.as_ref(), "clerk", "ob", &[("until", Access::None)]);
+    let dated = super::masking::dated_by(store.as_ref(), "ob", ("until", Access::None));
     let told = [
         doors(&l, &l.own, "oa", "x", july).await,
         doors(&l, &l.own, "ob", "x", july).await,
         doors(&l, &blind, "ob", "x", july).await,
+        doors(&l, &dated, "ob", "x", july).await,
     ];
     ensure!(
-        told[0][0] == r#""x""# && told[1][0].is_empty() && told[2] == told[0],
+        told[0][0] == r#""x""# && told[1][0].is_empty() && told[2] == told[0] && told[3] == told[1],
         "in July `oa` answers `x` alone, `ob` nothing, and `ob` to a reader at `none` on its \
-         end what `oa` answers at every door; they answered {told:?}"
+         end what `oa` answers at every door, and to one dated by it what `ob` does; they \
+         answered {told:?}"
     );
     // Kept views whose valid time stands only in a merged source, a kept
     // view of the valid-timed offers, and one over them, are computed at

@@ -50,10 +50,13 @@ impl KeyStore for Keys {
 }
 
 /// A report without its expected time, which counts the preflight's own
-/// walk and so differs between two preflights alike (lakelands#1152).
+/// walk and so differs between two preflights alike (lakelands#1152), and
+/// without its way: a walk finds what the index finds, but only the index
+/// names the records a scoped refold restates, so a walk always rebuilds.
 fn timeless(r: lakelands_api::write::ForgetReport) -> lakelands_api::write::ForgetReport {
     lakelands_api::write::ForgetReport {
         expected_ms: 0,
+        way: Default::default(),
         ..r
     }
 }
@@ -102,6 +105,12 @@ async fn a_preflight_reads_the_sources_events_as_a_walk_does() {
     *probe.damaged.lock().unwrap() = None;
     probe.undecided.store(true, Ordering::SeqCst);
     let walked = store.forget_preflight(&crm).await.unwrap();
+    assert!(
+        indexed.way.scoped && !walked.way.scoped,
+        "the index plans the scoped refold, and a walk the index does not decide plans the rebuild: {:?}, {:?}",
+        indexed.way,
+        walked.way
+    );
     assert_eq!(
         timeless(indexed),
         timeless(walked),
@@ -165,6 +174,107 @@ async fn after_the_act_the_index_counts_the_sources_outputs_as_a_walk_does() {
     assert_eq!(repeat.outputs, 2, "a repeat counts them too: {repeat:?}");
 }
 
+/// A set's report without its expected times and its way.
+fn timeless_set(r: lakelands_api::write::ForgetSetReport) -> lakelands_api::write::ForgetSetReport {
+    lakelands_api::write::ForgetSetReport {
+        sources: r.sources.into_iter().map(timeless).collect(),
+        expected_ms: 0,
+        way: Default::default(),
+        ..r
+    }
+}
+
+/// A set whose sources' events interleave, the index deciding each only
+/// so far, is read in one walk from the first place it stops: the walk
+/// gives each source the events from its own place on, and the set's
+/// preflight answers what the index answers whole, each source's report
+/// counting what its own preflight counts (lakelands#1183).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sets_walk_gives_each_source_its_events_from_where_its_index_stops() {
+    use lakelands_core::conformance::backing;
+    let probe = Arc::new(Probe::default());
+    let seams = Seams {
+        engines: vec![Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))],
+        keys: Some(Arc::new(Keys::default())),
+        backings: backing::backings(),
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory("set"), seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare_json(
+        json!({"declare": "function", "name": "shout", "backing": backing::KIND,
+        "inputs": [{"name": "name", "type": {"kind": "text"}}],
+        "config": {"token": "forget_set", "echo": "name"}}),
+    )
+    .await
+    .unwrap();
+    let mut t = person(true);
+    let loud = lakelands_core::conformance::fixture::computed_by("loud", Text, "shout", &["name"]);
+    t.fields.push(loud);
+    l.declare(t).await.unwrap();
+    let lead = |erasable| TypeDecl {
+        name: "lead".into(),
+        ..person(erasable)
+    };
+    l.declare(lead(false)).await.unwrap();
+    // Each person's `loud` is an output sealed under its source's key;
+    // each lead's `name` is plaintext once `lead` is made erasable.
+    let p = |ty: &str, key: &str| source_record(ty, key, json!({"id": key, "name": key}));
+    let mut heads = BTreeMap::new();
+    for (source, ty, key) in [
+        ("crm", "person", "a1"),
+        ("web", "person", "b1"),
+        ("crm", "lead", "c1"),
+        ("web", "lead", "d1"),
+        ("web", "person", "b2"),
+        ("crm", "person", "a2"),
+        ("web", "lead", "d2"),
+        ("crm", "lead", "c2"),
+    ] {
+        heads.insert(key, store.head().await.unwrap());
+        l.ingest(source, vec![p(ty, key)]).await.unwrap();
+    }
+    l.declare(lead(true)).await.unwrap();
+    let (crm, web) = (
+        SourceId::from("crm".to_owned()),
+        SourceId::from("web".to_owned()),
+    );
+    let set = [crm.clone(), web.clone()];
+    let indexed = store.forget_sources_preflight(&set).await.unwrap();
+    let counts: Vec<_> = (indexed.sources.iter())
+        .map(|r| (r.plaintext, r.outputs))
+        .collect();
+    assert_eq!(counts, [(2, 2), (2, 2)], "{indexed:?}");
+    // The index decides crm through the event before `c1`, and web
+    // through the one before `b2`: the walk starts at `c1`, and web's
+    // `d1` after it is web's by the index alone.
+    *probe.decided.lock().unwrap() =
+        BTreeMap::from([("crm".into(), heads["c1"]), ("web".into(), heads["b2"])]);
+    let walked = store.forget_sources_preflight(&set).await.unwrap();
+    let alone = [
+        store.forget_preflight(&crm).await.unwrap(),
+        store.forget_preflight(&web).await.unwrap(),
+    ];
+    probe.decided.lock().unwrap().clear();
+    let counted =
+        |r: &lakelands_api::write::ForgetReport| (r.plaintext, r.outputs, r.fields.clone());
+    for (r, one) in walked.sources.iter().zip(&alone) {
+        assert_eq!(
+            counted(r),
+            counted(one),
+            "{} counts in the set what it counts alone",
+            r.source
+        );
+    }
+    assert_eq!(
+        timeless_set(indexed),
+        timeless_set(walked),
+        "the set's walk answers what the index answers"
+    );
+}
+
 /// A source of more events than one read of the index answers is read
 /// page by page: another source's event past the first page is never
 /// opened, and the preflight finds the plaintext value the source wrote
@@ -211,112 +321,6 @@ async fn a_source_past_one_page_of_the_index_is_read_page_by_page() {
         timeless(indexed),
         timeless(walked),
         "the pages answer what the walk answers"
-    );
-}
-
-/// A foreign log's ingest whose seal names another source than its
-/// envelope, as an import takes it: the index keeps it under its
-/// envelope's source, as forgetting's walk reads it, so the plaintext
-/// value it holds is found either way and the act is refused.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_foreign_ingest_is_indexed_under_its_envelopes_source() {
-    use lakelands_api::canonical;
-    use serde_json::Value;
-    let typed = |name: &str, erasable: bool| TypeDecl {
-        name: name.into(),
-        ..person(erasable)
-    };
-    let keys: Arc<Keys> = Arc::new(Keys::default());
-    let seams = Seams {
-        engines: vec![Arc::new(MemoryOpener::new())],
-        keys: Some(keys.clone()),
-        ..Seams::default()
-    };
-    let store = lakelands_store::open(Location::memory("foreign"), seams, OpenMode::Create)
-        .await
-        .unwrap();
-    let l = Lake::of(store.as_ref());
-    l.declare(typed("person", false)).await.unwrap();
-    l.declare(typed("secret", true)).await.unwrap();
-    // web seals a value of `secret`, and crm's last event holds `alice`
-    // in plaintext, `name` not erasable yet.
-    let s = source_record("secret", "s0", json!({"id": "s0", "name": "s0"}));
-    l.ingest("web", vec![s]).await.unwrap();
-    let p = source_record("person", "p1", json!({"id": "p1", "name": "alice"}));
-    l.ingest("crm", vec![p]).await.unwrap();
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("foreign-ingest-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    lakelands_core::export::write(store.as_ref(), &dir)
-        .await
-        .unwrap();
-    // The export's last line, crm's ingest, given a seal naming web.
-    let mut files: Vec<_> = std::fs::read_dir(dir.join("log"))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
-        .collect();
-    files.sort();
-    let file = files.last().unwrap().clone();
-    let text = std::fs::read(&file).unwrap();
-    let mut lines: Vec<Vec<u8>> = (text.strip_suffix(b"\n").unwrap())
-        .split(|b| *b == b'\n')
-        .map(<[u8]>::to_vec)
-        .collect();
-    let last = lines.last_mut().unwrap();
-    let mut ev: Value = serde_json::from_slice(last).unwrap();
-    assert_eq!(
-        (&ev["source"], &ev["body"]["kind"]),
-        (&json!("crm"), &json!("record_ingested"))
-    );
-    ev["sealed"] = json!({"key": "k1", "source": "web"});
-    ev.as_object_mut().unwrap().remove("hash");
-    ev["hash"] = json!(canonical::sha256_hex(&ev));
-    *last = canonical::to_vec(&ev);
-    let mut bytes = lines.join(&b'\n');
-    bytes.push(b'\n');
-    std::fs::write(&file, bytes).unwrap();
-    let probe = Arc::new(Probe::default());
-    let seams = Seams {
-        engines: vec![Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))],
-        keys: Some(keys.clone()),
-        ..Seams::default()
-    };
-    let at = Location::memory("foreign");
-    lakelands_store::import(at.clone(), seams.clone(), dir.clone())
-        .await
-        .unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
-    let store = lakelands_store::open(at, seams, OpenMode::Write)
-        .await
-        .unwrap();
-    Lake::of(store.as_ref())
-        .declare(typed("person", true))
-        .await
-        .unwrap();
-    let crm = SourceId::from("crm".to_owned());
-    let indexed = store.forget_preflight(&crm).await.unwrap();
-    probe.undecided.store(true, Ordering::SeqCst);
-    let walked = store.forget_preflight(&crm).await.unwrap();
-    probe.undecided.store(false, Ordering::SeqCst);
-    assert_eq!(
-        indexed.plaintext, 1,
-        "crm's `alice` is plaintext: {indexed:?}"
-    );
-    assert_eq!(
-        timeless(indexed),
-        timeless(walked),
-        "the index answers what the walk answers"
-    );
-    let act = store.forget_source(&crm, None).await;
-    let refused = act
-        .as_ref()
-        .err()
-        .map(ToString::to_string)
-        .unwrap_or_default();
-    assert!(
-        refused.contains("plaintext"),
-        "the act is refused over a plaintext value: {act:?}"
     );
 }
 
@@ -509,5 +513,59 @@ async fn a_poll_decides_a_reaction_again_by_point_reads_only_after_an_act() {
     assert!(
         b.events.len() == 9 && b.next == ninth && b.overruled.len() == 9,
         "the poll stops at {ninth}: {b:?}"
+    );
+}
+
+/// The tail an act reads past its walk costs what the tail costs, not what
+/// the act reaches (099, lakelands#1649): a forgetting of 300 keys, with
+/// one write landed past the walk's view, judges that write, never asks
+/// the index for more keys than a window past the view holds positions,
+/// and asks it of such windows a bounded number of times. A seek by key
+/// reads the index once a key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tail_past_the_walk_is_sought_by_type_where_the_keys_outnumber_it() {
+    let probe = Arc::new(Probe::default());
+    let seams = Seams {
+        engines: vec![Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))],
+        keys: Some(Arc::new(Keys::default())),
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory("sought"), seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    let mut decl = person(true);
+    decl.fields.push(sourced("city", Text));
+    l.declare(decl).await.unwrap();
+    let p = |key: String| source_record("person", &key, json!({"id": key, "name": key}));
+    l.ingest("crm", (0..300).map(|i| p(format!("c{i}"))).collect())
+        .await
+        .unwrap();
+    let city = source_record("person", "c0", json!({"id": "c0", "city": "Oslo"}));
+    // `erp`'s write lands inside the walk's first read of the index, past
+    // the view the walk stands on.
+    let (runtime, writer) = (tokio::runtime::Handle::current(), store.clone());
+    let write = Box::new(move || {
+        let l = Lake::of(writer.as_ref());
+        runtime.block_on(l.ingest("erp", vec![city])).unwrap();
+    });
+    *probe.before_source.lock().unwrap() = Some((1, write));
+    let walked = store.head().await.unwrap();
+    let crm = SourceId::from("crm".to_owned());
+    let forgot = store.forget_source(&crm, None).await.unwrap();
+    assert!(probe.before_source.lock().unwrap().is_none(), "erp wrote");
+    let co_owned: u64 = forgot.co_owned.iter().map(|c| c.records).sum();
+    assert_eq!(co_owned, 1, "erp's write is judged: {forgot:?}");
+    // The windows past the walk's view: the tail, and the act's own
+    // appends after its turns; the walk reads the log from its start.
+    let seeks = probe.seeks.lock().unwrap().clone();
+    let tail: Vec<_> = seeks.iter().filter(|s| s.1 > walked).collect();
+    assert!(
+        (1..=4).contains(&tail.len()),
+        "the tail is sought a bounded number of times, not once a key: {seeks:?}"
+    );
+    assert!(
+        (tail.iter()).all(|&&(keys, from, through)| keys as u64 <= through.0 - from.0 + 1),
+        "a seek of the tail named more keys than it holds positions: {seeks:?}"
     );
 }

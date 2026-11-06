@@ -10,19 +10,22 @@
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
-    Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
+    Applied, CanonicalEvent, Choose, Compact, Declared, LakeEngine, Lease, OpenMode,
+    ProjectionStore, ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, TextCounts,
+    VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
+use lakelands_api::quarantine::Quarantined;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
+use lakelands_core::engines;
 
 use crate::projection::Put;
 use crate::vectors::Indexed;
 use crate::view::MemView;
-use crate::{Lake, NAME, REBUILD_RATE, invalid, lock};
+use crate::{Lake, NAME, REBUILD_RATE, lock};
 
 /// One handle onto a lake held in memory.
 pub struct MemoryLake {
@@ -125,6 +128,10 @@ impl LakeEngine for MemoryLake {
         Ok(())
     }
 
+    fn lease_free(&self) -> Result<bool> {
+        Ok(lock(&self.shared).log.lease_free())
+    }
+
     fn tip(&self) -> Result<Option<(Position, Digest)>> {
         Ok(lock(&self.shared).log.tip())
     }
@@ -176,18 +183,43 @@ impl LakeEngine for MemoryLake {
         let lake = lock(&self.shared);
         let p = &lake.projection;
         let mut lists = Vec::new();
-        if let Some((text, fields)) = &asked.text {
-            let head = p.records_at(ty, p.folded);
-            lists.push(p.type_at(ty, p.folded).map_or_else(Vec::new, |decl| {
-                let weights = &asked.text_weights;
-                lakelands_core::engines::lexical(decl, head, text, fields.as_deref(), weights, k)
-            }));
+        // The memory engine keeps no counts: it counts them over the head,
+        // in the same pass, and is the reference.
+        if asked.text.is_some() {
+            let head = || p.records_at(ty, p.folded).filter(|r| !r.retired);
+            lists.push(match p.type_at(ty, p.folded) {
+                Some(decl) => {
+                    let kept = |held: bool| {
+                        let class = head().filter(|r| held || !r.restricted);
+                        let mut counts = TextCounts::default();
+                        engines::text_stats(decl, class, ("", None), &mut counts);
+                        Ok::<_, Error>(counts.fields)
+                    };
+                    engines::ranked_text(decl, head(), asked, k, kept)?
+                }
+                None => Vec::new(),
+            });
         }
+        let decl = p.type_at(ty, p.folded);
+        let seen = asked.seen.as_ref().map(|s| (s, decl));
         for (field, query) in &asked.vectors {
-            lists.push(lake.vectors.nearest(ty, field, query, k)?);
+            let top = |m| lake.vectors.nearest(ty, field, query, m);
+            let read = |keys: Vec<RecordKey>| {
+                let head = |key| p.records.get(&(ty.clone(), key))?.at(p.folded);
+                Ok(keys
+                    .into_iter()
+                    .filter_map(head)
+                    .map(|h| h.record(&p.bases))
+                    .collect())
+            };
+            lists.push(lakelands_core::engines::rank_seen(k, seen, top, read)?);
         }
-        let position = p.folded;
-        Ok(Ranked { position, lists })
+        let (position, judged) = (p.folded, asked.seen.is_some());
+        Ok(Ranked {
+            position,
+            lists,
+            judged,
+        })
     }
 
     fn vectors(&self) -> Option<&dyn VectorIndex> {
@@ -219,7 +251,7 @@ impl ProjectionStore for MemoryLake {
     fn commit(&self, through: Position) -> Result<()> {
         let puts = lock(&self.pending)
             .take()
-            .ok_or_else(|| invalid(Case::CommitUnbegun))?;
+            .ok_or_else(|| Error::invalid(Case::CommitUnbegun))?;
         let vectors = std::mem::take(&mut *lock(&self.indexing));
         let mut lake = lock(&self.shared);
         lake.projection.commit(puts, through)?;
@@ -258,15 +290,127 @@ impl ProjectionStore for MemoryLake {
         }
     }
 
+    fn put_record_for(&self, record: &StoredRecord, whole: bool) -> Result<()> {
+        // A setting put beside the writer marks what it asks for as
+        // building; the build fills it in turns (099). Every other put is
+        // whole, as before.
+        let beside = !whole
+            && (lakelands_core::engines::sort_index_type(record).is_some()
+                || lakelands_core::engines::series_index_type(record).is_some())
+            && !lakelands_api::seam::is_head_only(&record.ty);
+        match beside {
+            true => self.stage(Put::Live(record.clone())),
+            false => self.put_record(record),
+        }
+    }
+
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         lakelands_core::engines::head_only(name)?;
         let ty = name.clone();
         self.stage(Put::HeadsEnded { ty, at })
     }
 
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        self.stage(Put::Order {
+            name: name.clone(),
+            key: key.clone(),
+            entry: entry.map(<[u8]>::to_vec),
+        })
+    }
+
+    fn end_order(&self, name: &TypeName) -> Result<()> {
+        self.stage(Put::OrdersEnded { name: name.clone() })
+    }
+
+    fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
+        self.stage(match of {
+            StatesOf::Record(ty, key) => Put::DroppedRecord(ty.clone(), key.clone()),
+            StatesOf::Output(seam, input) => Put::DroppedOutput(seam.to_owned(), input.clone()),
+            // Memory tests every state, not only those put after `past`:
+            // it keeps every base the engines on disk keep, and more.
+            StatesOf::Bases(ids, _) => Put::DroppedBases(ids.iter().map(|id| *id as i64).collect()),
+        })
+    }
+
+    fn states(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        after: Option<Position>,
+        through: Position,
+        limit: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        // The transaction's own puts, in the order they were staged, taken
+        // before `shared`, in the order `index` locks the two.
+        let mine = |p: &&Put| match p {
+            Put::Record(r) | Put::Live(r) | Put::Head(r) => (&r.ty, &r.key) == (ty, key),
+            Put::DroppedRecord(t, k) => (t, k) == (ty, key),
+            _ => false,
+        };
+        let pending: Vec<Put> = (lock(&self.pending).iter().flatten())
+            .filter(mine)
+            .cloned()
+            .collect();
+        let lake = lock(&self.shared);
+        let projection = &lake.projection;
+        let id = (ty.clone(), key.clone());
+        let mut states: Vec<StoredRecord> = (projection.records.get(&id).into_iter())
+            .flat_map(|h| h.all().map(|held| held.record(&projection.bases)))
+            .collect();
+        drop(lake);
+        for put in &pending {
+            match put {
+                Put::Record(r) | Put::Live(r) if (&r.ty, &r.key) == (ty, key) => {
+                    let i = states.partition_point(|s| s.position < r.position);
+                    match states.get_mut(i) {
+                        Some(s) if s.position == r.position => *s = r.clone(),
+                        _ => states.insert(i, r.clone()),
+                    }
+                }
+                Put::Head(r) if (&r.ty, &r.key) == (ty, key) => states = vec![r.clone()],
+                Put::DroppedRecord(t, k) if (t, k) == (ty, key) => states.clear(),
+                _ => {}
+            }
+        }
+        let within =
+            |s: &StoredRecord| after.is_none_or(|a| s.position > a) && s.position <= through;
+        Ok(states
+            .into_iter()
+            .filter(within)
+            .take(limit as usize)
+            .collect())
+    }
+
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.stage(Put::Proposal {
             proposal: proposal.clone(),
+            at,
+        })
+    }
+
+    fn put_quarantined(&self, row: &Quarantined, at: Position) -> Result<()> {
+        let row = Box::new(row.clone());
+        self.stage(Put::Quarantined { row, at })
+    }
+
+    fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
+        self.stage(Put::ThinnedAct {
+            act: act.clone(),
+            at,
+        })
+    }
+
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: lakelands_api::time::Timestamp,
+        at: Position,
+    ) -> Result<()> {
+        self.stage(Put::Thinned {
+            ty: ty.clone(),
+            key: key.clone(),
+            before,
             at,
         })
     }
@@ -312,9 +456,14 @@ impl ProjectionStore for MemoryLake {
         Ok(())
     }
 
+    fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
+        self.writable()?;
+        Ok(lock(&self.shared).projection.choose(ty, step))
+    }
+
     /// The memory engine keeps no storage to give back: it measures and
     /// reclaims nothing.
-    fn compact(&self) -> Result<Reclaimed> {
+    fn compact_step(&self, _: Compact) -> Result<Reclaimed> {
         self.writable()?;
         Ok(Reclaimed::nothing())
     }

@@ -1,17 +1,8 @@
 //! A cursor is bound to the position of its first page
 //! (`docs/glossary.md`, `docs/decisions/009-every-response-carries-its-position.md`).
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{FieldDecl, StorageKind};
-use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
-use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::{Cursor, Find, Found, ReadAt, TypeName};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, count_view, field, invalid_case, order, pattern, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::order;
+use crate::conformance::prelude::*;
 
 check!(
     CURSOR_ONE_ANSWER = a_cursor_continues_only_the_answer_it_was_handed_out_for,
@@ -134,14 +125,8 @@ async fn a_cursor_continues_only_the_answer_it_was_handed_out_for(store: Store) 
         p
     };
     let search = |cursor| Search {
-        ty: "alpha".into(),
-        mode: SearchMode::lexical("same"),
-        k: 1,
         cursor,
-        filter: None,
-        with_meta: false,
-        at: ReadAt::default(),
-        rerank: None,
+        ..searched("alpha", SearchMode::lexical("same"), 1)
     };
     let (alpha, beta) = (TypeName::from("alpha"), TypeName::from("beta"));
     let next = |c: Option<Cursor>, what: &str| {
@@ -303,14 +288,8 @@ async fn a_cursor_continues_only_the_read_it_was_handed_out_for(store: Store) ->
         ..Find::default()
     };
     let search = |cursor, mode| Search {
-        ty: item.clone(),
-        mode,
-        k: 1,
         cursor,
-        filter: None,
-        with_meta: false,
-        at: ReadAt::default(),
-        rerank: None,
+        ..searched(item.clone(), mode, 1)
     };
     let query = |cursor, fields: Vec<String>, filter: &str| {
         let mut p = pattern("item", None, Vec::new(), Projection::Rows { fields });
@@ -359,6 +338,7 @@ async fn a_cursor_continues_only_the_read_it_was_handed_out_for(store: Store) ->
     let wider = Search {
         k: 2,
         with_meta: true,
+        matches: false,
         ..search(Some(of_search.clone()), SearchMode::lexical("same"))
     };
     cat.search(own, wider)
@@ -372,6 +352,7 @@ async fn a_cursor_continues_only_the_read_it_was_handed_out_for(store: Store) ->
     let named = SearchMode::Lexical {
         text: "same".into(),
         fields: Some(vec!["name".into()]),
+        text_fields: None,
     };
     let refused = [
         (

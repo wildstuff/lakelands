@@ -4,9 +4,11 @@
 //!
 //! A rule is a `sys.aging_rule` record, checked by [`check`] when it is
 //! written and again when it runs: the type or its field may have changed
-//! since, and a rule that no longer fits is skipped with the reason, never
-//! run half. Its author's rights are checked once, when it is written
-//! ([`check_authority`]); the run carries them. [`run`] holds the writer's lock for the whole date and reads
+//! since, or a rule written before its condition was held to read no
+//! setting kept for a type or a source may read one, and a rule that no
+//! longer fits is skipped with the reason, never run half. Its author's
+//! rights are checked once, when it is written ([`check_authority`]); the
+//! run carries them. [`run`] holds the writer's lock for the whole date and reads
 //! every live record of a rule's type at the head, restricted ones
 //! included: aging is the host's maintenance, not a principal's read.
 //!
@@ -32,16 +34,16 @@ use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::record::Origin;
 use lakelands_api::write::{AGE_REFUSALS_SHOWN, AgeReport, RefusedMove, RuleRun};
 use lakelands_api::{
-    Error, FieldName, Patch, Position, Principal, RecordKey, Refusal, Result, Timestamp, TypeName,
-    Value,
+    Error, FieldName, Patch, Position, RecordKey, Refusal, Result, Timestamp, TypeName, Value,
 };
 use lakelands_core::derive;
 use lakelands_core::expr::{self, Place, RecordScope};
-use lakelands_core::rights::{self, Door};
+use lakelands_core::sight::{Door, Sight};
 use lakelands_core::{canonical, names};
 
 use crate::declare;
-use crate::lake::{AGING_RULE_TYPE, Lake, every};
+use crate::exec::Turn;
+use crate::lake::{AGING_RULE_TYPE, every};
 use crate::log;
 use crate::ontology::Ontology;
 use crate::writes::{self, Call, Envelope};
@@ -98,7 +100,7 @@ pub fn check(
         return Err(wrong("on", Case::IsAView { ty }));
     }
     let field = FieldName::from(text("field")?.as_str());
-    let Some(f) = decl.fields.iter().find(|f| f.name == field) else {
+    let Some(f) = decl.field(&field) else {
         return Err(wrong("field", Case::UnknownField { ty, field }));
     };
     if !matches!(
@@ -136,6 +138,15 @@ pub fn check(
         let said = e.case().cloned().expect("a condition's refusal");
         ("when".into(), Box::new(said))
     })?;
+    // The run reads a setting as the lake holds it, for every reader: one
+    // kept for a type or a source is not told to all of them (063).
+    let mut keys = std::collections::BTreeSet::new();
+    derive::settings(&when, &mut keys);
+    let scoped =
+        |k: &String| matches!(lakelands_api::settings::lake_setting(k), Some((_, Some(_))));
+    if let Some(key) = keys.into_iter().find(scoped) {
+        return Err(wrong("when", Case::AgingScopedSetting { key }));
+    }
     Ok(Rule {
         on,
         field,
@@ -151,13 +162,14 @@ pub fn check(
 /// reads is probed and needs the author's right to read it
 /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
 /// Refused as not granted, naming the field of `on`.
-pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Result<()> {
+pub fn check_authority(sees: &Sight, ontology: &Ontology, rule: &Rule) -> Result<()> {
     let decl = ontology.ty(&rule.on)?;
-    // A rule moves every owner's records: never one a holder of `only` writes (051).
-    crate::writes::granted(!rights::only_holder(who, decl, ontology))?;
+    // A rule moves every owner's records: never one a holder of `only` or
+    // `writes_only` writes (051, 006).
+    crate::writes::granted(!sees.only_holder(decl) && !sees.write_holder(decl))?;
     let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
-    rights::check_write(who, decl, Door::Verb, &patch)?;
-    rights::check_probe(who, decl, derive::reads(&rule.when).iter())
+    sees.check_write(decl, (Door::Verb, None), &patch)?;
+    sees.check_probe(decl, derive::reads(&rule.when).iter())
 }
 
 /// Counts a move the lake refused in `ran`, and lists it while the list
@@ -172,11 +184,11 @@ fn refuse(ran: &mut RuleRun, key: &RecordKey, why: Refusal) {
 
 /// Run every live rule once for `today`, in rule-name order, one append
 /// per rule that moves anything.
-pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
+pub fn run(lake: &Turn<'_>, today: Timestamp) -> Result<AgeReport> {
     // `today` is a date: a time other than UTC midnight is refused.
     if today.0.rem_euclid(MICROS_PER_DAY) != 0 {
         let case = Case::AgingNotADate { today };
-        return Err(declare::invalid_field(&"today".into(), case));
+        return Err(Error::invalid_at(&"today".into(), case));
     }
     let system = lake.system("lakelands");
     let call = Call {
@@ -186,6 +198,8 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             cause: None,
             origin: WriteOrigin::Scheduled,
             depth: 0,
+            on_behalf_of: None,
+            occasion: None,
         },
         followed: None,
         shown: None,
@@ -243,12 +257,12 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             if record.fields.get(&rule.field).map(canonical::to_vec) != Some(from.clone()) {
                 continue;
             }
-            let scope = RecordScope {
+            let scope = Dated(RecordScope {
                 fields: &record.fields,
                 meta: Some(&record.meta),
                 settings: Some(&w.settings),
                 now: today,
-            };
+            });
             match expr::holds(&rule.when, &scope) {
                 Ok(true) => {}
                 Ok(false) => continue,
@@ -312,4 +326,31 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
     }
     report.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
     Ok(report)
+}
+
+/// A rule's condition, read for the date the run ages for: `today()` is
+/// that date as given, already the lake's calendar day, and is not cut in
+/// its zone again (101).
+struct Dated<'a>(RecordScope<'a>);
+
+impl expr::Scope for Dated<'_> {
+    fn value(&self, path: &[FieldName]) -> Option<Value> {
+        self.0.value(path)
+    }
+
+    fn meta(&self, field: &FieldName) -> Option<lakelands_api::FieldMeta> {
+        self.0.meta(field)
+    }
+
+    fn setting(&self, key: &str) -> Option<Value> {
+        self.0.setting(key)
+    }
+
+    fn now(&self) -> Timestamp {
+        self.0.now
+    }
+
+    fn today(&self) -> Timestamp {
+        self.0.now
+    }
 }

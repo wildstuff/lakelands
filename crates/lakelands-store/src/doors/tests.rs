@@ -7,6 +7,7 @@ use lakelands_engine_mem::MemoryOpener;
 use serde_json::json;
 
 use super::*;
+use crate::writes::Judging;
 
 fn principal(id: &str, grants: Grants) -> Principal {
     Principal {
@@ -23,13 +24,42 @@ fn account(field: &str) -> lakelands_api::ontology::TypeDecl {
     serde_json::from_value(json!({"name": "account", "fields": fields})).expect("a type")
 }
 
-/// A write is followed through the lake's renames before it waits for the
-/// writer. One that waited behind a migration that renames a field came
-/// with grants that do not know the rename: it is refused to be sent
-/// again, and sent again it is judged by the grant on the old name
-/// (`docs/decisions/006-grants-not-roles.md`, extended).
+/// `who` as its call is seen at the head now, for a call whose head
+/// another handle's migration moves between its sight and its writer.
+async fn seen_now(lake: &Arc<Lake>, who: &Principal) -> Seen {
+    let (lake, who) = (lake.clone(), who.clone());
+    (exec::run(move || seen(&lake, who)).await).expect("the call is seen")
+}
+
+type Seen = (Principal, Option<usize>, Option<writes::Shown>);
+
+/// A call `seen` before the head moved, decided by `f` at a turn now.
+async fn decided_late<T: Send + 'static>(
+    lake: &Arc<Lake>,
+    (who, followed, shown): Seen,
+    f: impl FnOnce(&Call<'_>) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    exec::write(lake, move |lake| {
+        let context = WriteContext::default();
+        f(&Call {
+            lake,
+            who: &who,
+            context,
+            followed,
+            shown,
+        })
+    })
+    .await
+}
+
+/// A write is followed through the lake's renames at its turn, before it
+/// takes the writer. One that waited behind a migration that renames a
+/// field is followed through the rename: it is judged by the grant on the
+/// old name (`docs/decisions/006-grants-not-roles.md`, extended). A call
+/// followed before the rename, as one is when another handle renames
+/// between its sight and its writer, is refused to be sent again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_write_that_waited_behind_a_rename_is_sent_again() {
+async fn a_write_that_waited_behind_a_rename_is_judged_by_it() {
     let seams = Seams {
         engines: vec![Arc::new(MemoryOpener::new())],
         ..Seams::default()
@@ -37,7 +67,10 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
     let location = Location::memory("waits");
     let lake = Lake::open(&location, seams, OpenMode::Create).expect("the lake opens");
     let lake = Arc::new(lake);
-    let store = Store { lake: lake.clone() };
+    let store = Store {
+        lake: lake.clone(),
+        owns: false,
+    };
     let cat = store.catalog(WriteContext::default());
     let owner = principal("owner", Grants::owner());
     let (ty, key) = (
@@ -67,19 +100,20 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
     };
     grants.types.insert(ty.clone(), held);
     let narrow = principal("narrow", grants);
+    let before = seen_now(&lake, &narrow).await;
 
-    // A thread holds the writer; the upsert follows its grants and waits;
-    // under the writer, `holder` becomes `owner`.
+    // A write holds its turn; the upsert waits for its own; under the
+    // writer, `holder` becomes `owner`.
     let (held, holding) = tokio::sync::oneshot::channel();
     let renames = {
-        let (lake, owner) = (lake.clone(), owner.clone());
-        tokio::task::spawn_blocking(move || {
+        let (turns, owner) = (lake.clone(), owner.clone());
+        let migrate = move |lake: &crate::exec::Turn<'_>| {
             let mut w = lake.writer();
             held.send(())
                 .expect("the test waits for the writer to be held");
             std::thread::sleep(Duration::from_millis(300));
             let call = Call {
-                lake: &lake,
+                lake,
                 who: &owner,
                 context: WriteContext::default(),
                 followed: None,
@@ -91,11 +125,14 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
             };
             let view = lake.engine.view(None).expect("a view");
             let now = lake.clock(&mut w);
-            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), Some(now));
+            let act = (Some(now), Judging::Act);
+            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), act);
             let drafts = call.migration_drafts(&w, m, plan.expect("the plan"), now, 0);
             drop(view);
             (lake.append(&mut w, drafts.expect("the drafts"))).expect("the migration is appended");
-        })
+            Ok(())
+        };
+        tokio::spawn(async move { crate::exec::write(&turns, migrate).await })
     };
     holding.await.expect("the writer is held");
     let waiting = {
@@ -105,35 +142,42 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
             (cat.upsert(&narrow, &ty, &key, owner_field, Default::default())).await
         })
     };
-    renames.await.expect("the migration ends");
+    (renames.await.expect("the migration ends")).expect("it is applied");
 
     let answer = waiting.await.expect("the upsert ends");
     assert!(
-        matches!(&answer, Err(Error::Unavailable { situation }) if situation.to_string().contains("send it again")),
-        "a write that waited behind a rename is refused to be sent again: {answer:?}"
+        matches!(&answer, Err(Error::Refused { field: Some(f), reason: Refusal::NotGranted }) if f.as_str() == "owner"),
+        "a write that waited behind a rename is held by the grant on `holder`: {answer:?}"
     );
-    let again = cat
-        .upsert(&narrow, &ty, &key, patch("owner"), Default::default())
-        .await;
+    let late = decided_late(&lake, before, move |c| {
+        let write = writes::Write::Upsert(ty, key, patch("owner"));
+        c.record(&write, Default::default())
+    });
+    let late = late.await;
     assert!(
-        matches!(&again, Err(Error::Refused { field: Some(f), reason: Refusal::NotGranted }) if f.as_str() == "owner"),
-        "sent again, it is held by the grant on `holder`: {again:?}"
+        matches!(&late, Err(Error::Unavailable { situation })
+            if **situation == lakelands_api::error::Situation::Moved),
+        "a call followed before the rename is refused to be sent again: {late:?}"
     );
 }
 
 /// The same behind a relation's rename (lakelands#429): a principal kept
 /// from the link type by a default alone links while the relation is
-/// renamed. The link is refused to be sent again, and sent again by the
-/// new name it is held by the grant on the old link type.
+/// renamed. The link waited for its turn and names a relation the lake
+/// no longer has; by the new name it is held by the grant on the old link
+/// type. One followed before the rename is refused to be sent again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
+async fn a_link_that_waited_behind_a_relations_rename_is_judged_by_it() {
     let seams = Seams {
         engines: vec![Arc::new(MemoryOpener::new())],
         ..Seams::default()
     };
     let lake = Lake::open(&Location::memory("waits"), seams, OpenMode::Create);
     let lake = Arc::new(lake.expect("the lake opens"));
-    let store = Store { lake: lake.clone() };
+    let store = Store {
+        lake: lake.clone(),
+        owns: false,
+    };
     let cat = store.catalog(WriteContext::default());
     let owner = principal("owner", Grants::owner());
     let doc = |relation: &str| -> lakelands_api::ontology::TypeDecl {
@@ -161,16 +205,17 @@ async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
     };
     grants.types.insert("sys.link.doc.cites".into(), none);
     let narrow = principal("narrow", grants);
+    let before = seen_now(&lake, &narrow).await;
     let (held, holding) = tokio::sync::oneshot::channel();
     let renames = {
-        let (lake, owner) = (lake.clone(), owner.clone());
-        tokio::task::spawn_blocking(move || {
+        let (turns, owner) = (lake.clone(), owner.clone());
+        let migrate = move |lake: &crate::exec::Turn<'_>| {
             let mut w = lake.writer();
             held.send(()).expect("the test waits for the writer");
             std::thread::sleep(Duration::from_millis(300));
             let (context, followed) = (WriteContext::default(), None);
             let call = Call {
-                lake: &lake,
+                lake,
                 who: &owner,
                 context,
                 followed,
@@ -182,11 +227,14 @@ async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
             };
             let view = lake.engine.view(None).expect("a view");
             let now = lake.clock(&mut w);
-            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), Some(now));
+            let act = (Some(now), Judging::Act);
+            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), act);
             let drafts = call.migration_drafts(&w, m, plan.expect("the plan"), now, 0);
             drop(view);
             (lake.append(&mut w, drafts.expect("the drafts"))).expect("the rename is appended");
-        })
+            Ok(())
+        };
+        tokio::spawn(async move { crate::exec::write(&turns, migrate).await })
     };
     holding.await.expect("the writer is held");
     let link = |relation: &'static str| {
@@ -198,18 +246,38 @@ async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
         }
     };
     let waiting = tokio::spawn(link("cites"));
-    renames.await.expect("the rename ends");
+    (renames.await.expect("the rename ends")).expect("it is applied");
     let answer = waiting.await.expect("the link ends");
     assert!(
-        matches!(&answer, Err(Error::Unavailable { situation }) if situation.to_string().contains("send it again")),
-        "a link that waited behind its relation's rename is refused to be sent again: {answer:?}"
+        matches!(
+            &answer,
+            Err(Error::Refused {
+                field: None,
+                reason: Refusal::Invalid(said)
+            }) if matches!(said.case, lakelands_api::error::Case::NoLinkRelation { .. })
+        ),
+        "a link that waited behind its relation's rename names a relation gone: {answer:?}"
     );
     let again = link("quotes").await;
     // One kept from every field of a type is answered as if it had none.
     let held = matches!(&again, Err(Error::Refused { field: Some(f), .. }) if f.as_str() == "from");
     assert!(
         held,
-        "sent again, it is held by the grant on the old link type: {again:?}"
+        "by the new name, it is held by the grant on the old link type: {again:?}"
+    );
+    let late = decided_late(&lake, before, |c| {
+        let (ty, a, b) = ("doc".into(), "a".into(), "b".into());
+        let (fields, opts) = (Default::default(), Default::default());
+        c.record(
+            &writes::Write::Link(ty, a, "quotes".into(), b, fields),
+            opts,
+        )
+    });
+    let late = late.await;
+    assert!(
+        matches!(&late, Err(Error::Unavailable { situation })
+            if **situation == lakelands_api::error::Situation::Moved),
+        "a link followed before the rename is refused to be sent again: {late:?}"
     );
 }
 
@@ -242,7 +310,11 @@ async fn the_executor_reads_the_record_as_its_call_was_judged() {
     };
     let location = Location::memory("waits");
     let lake = Arc::new(Lake::open(&location, seams, OpenMode::Create).expect("the lake opens"));
-    let cat = Store { lake: lake.clone() }.catalog(WriteContext::default());
+    let cat = Store {
+        lake: lake.clone(),
+        owns: false,
+    }
+    .catalog(WriteContext::default());
     let owner = principal("owner", Grants::owner());
     let (ty, key) = (
         TypeName::from("account"),
@@ -299,14 +371,15 @@ async fn the_executor_reads_the_record_as_its_call_was_judged() {
     );
 }
 
-/// A write's references are hidden by the head's types before it waits for
-/// the writer. One that waited behind a migration that hides a type it
-/// refers to came with grants that still let it write the reference: it is
-/// refused to be sent again, and sent again the reference is a field it
-/// may not know of (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-/// extended). One the types moved under without hiding more is applied.
+/// A write's references are hidden by the head's types at its turn,
+/// before it takes the writer. One that waited behind a migration that
+/// hides a type it refers to is judged by the moved types: the reference
+/// is a field it may not know of
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+/// extended). One seen before the types moved is refused to be sent
+/// again; one the types moved under without hiding more is applied.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
+async fn a_write_that_waited_while_the_types_moved_is_judged_by_them() {
     let seams = Seams {
         engines: vec![Arc::new(MemoryOpener::new())],
         ..Seams::default()
@@ -314,7 +387,10 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
     let lake =
         Lake::open(&Location::memory("waits"), seams, OpenMode::Create).expect("the lake opens");
     let lake = Arc::new(lake);
-    let store = Store { lake: lake.clone() };
+    let store = Store {
+        lake: lake.clone(),
+        owns: false,
+    };
     let cat = store.catalog(WriteContext::default());
     let owner = principal("owner", Grants::owner());
     fn typed(d: serde_json::Value) -> lakelands_api::ontology::TypeDecl {
@@ -366,17 +442,18 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
     let patch = || -> lakelands_api::Patch {
         serde_json::from_value(json!({"payee": "p1"})).expect("a patch")
     };
+    let (before, wide_before) = (seen_now(&lake, &narrow).await, seen_now(&lake, &wide).await);
 
     let (held, holding) = tokio::sync::oneshot::channel();
     let keyed = {
-        let (lake, owner) = (lake.clone(), owner.clone());
-        tokio::task::spawn_blocking(move || {
+        let (turns, owner) = (lake.clone(), owner.clone());
+        let migrate = move |lake: &crate::exec::Turn<'_>| {
             let mut w = lake.writer();
             held.send(())
                 .expect("the test waits for the writer to be held");
             std::thread::sleep(Duration::from_millis(300));
             let call = Call {
-                lake: &lake,
+                lake,
                 who: &owner,
                 context: WriteContext::default(),
                 followed: None,
@@ -385,11 +462,14 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
             let m = Migration::to(payroll(&["code"]));
             let view = lake.engine.view(None).expect("a view");
             let now = lake.clock(&mut w);
-            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), Some(now));
+            let act = (Some(now), Judging::Act);
+            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), act);
             let drafts = call.migration_drafts(&w, m, plan.expect("the plan"), now, 0);
             drop(view);
             (lake.append(&mut w, drafts.expect("the drafts"))).expect("the migration is appended");
-        })
+            Ok(())
+        };
+        tokio::spawn(async move { crate::exec::write(&turns, migrate).await })
     };
     holding.await.expect("the writer is held");
     let waiting = {
@@ -405,7 +485,7 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
             async move { (cat.upsert(&wide, &ty, &"t2".into(), no, Default::default())).await },
         )
     };
-    keyed.await.expect("the migration ends");
+    (keyed.await.expect("the migration ends")).expect("it is applied");
     let passed = passing.await.expect("the upsert ends");
     assert!(
         passed.is_ok(),
@@ -413,15 +493,96 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
     );
     let answer = waiting.await.expect("the upsert ends");
     assert!(
-        matches!(&answer, Err(Error::Unavailable { situation })
-            if **situation == lakelands_api::error::Situation::TypesMoved),
-        "a write that waited while its types moved is refused to be sent again: {answer:?}"
+        matches!(&answer, Err(Error::Refused { field: Some(f), reason: Refusal::Invalid { .. } }) if f.as_str() == "payee"),
+        "a write that waited while its types moved finds `payee` a field it may not know of: {answer:?}"
     );
-    let again = cat
-        .upsert(&narrow, &ty, &key, patch(), Default::default())
-        .await;
+    let late = {
+        let (ty, key) = (ty.clone(), key.clone());
+        decided_late(&lake, before, move |c| {
+            c.record(&writes::Write::Upsert(ty, key, patch()), Default::default())
+        })
+    };
+    let late = late.await;
     assert!(
-        matches!(&again, Err(Error::Refused { field: Some(f), reason: Refusal::Invalid { .. } }) if f.as_str() == "payee"),
-        "sent again, `payee` is a field it may not know of: {again:?}"
+        matches!(&late, Err(Error::Unavailable { situation })
+            if **situation == lakelands_api::error::Situation::TypesMoved),
+        "a call seen before its types moved is refused to be sent again: {late:?}"
+    );
+    let no = serde_json::from_value(json!({"no": "8"})).expect("a patch");
+    let wide_late = decided_late(&lake, wide_before, move |c| {
+        let write = writes::Write::Upsert(ty, "t3".into(), no);
+        c.record(&write, Default::default())
+    });
+    let wide_late = wide_late.await;
+    assert!(
+        wide_late.is_ok(),
+        "one seen before types moved that hide nothing more from it is applied: {wide_late:?}"
+    );
+}
+
+/// A read made again at the position a search's rankings were read at,
+/// which a write has since moved past, computes a kept view there: the
+/// fold keeps a group's latest record alone, so its kept records are not
+/// the view's at that position (098).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_made_again_at_its_rankings_position_computes_a_kept_view() {
+    let seams = Seams {
+        engines: vec![Arc::new(MemoryOpener::new())],
+        ..Seams::default()
+    };
+    let lake = Lake::open(&Location::memory("waits"), seams, OpenMode::Create);
+    let lake = Arc::new(lake.expect("the lake opens"));
+    let cat = Store {
+        lake: lake.clone(),
+        owns: false,
+    }
+    .catalog(WriteContext::default());
+    let owner = principal("owner", Grants::owner());
+    let line = json!({"declare": "type", "name": "line", "fields": [
+        {"name": "g", "type": {"kind": "text"}}, {"name": "n", "type": {"kind": "number"}}]});
+    let view = |name: &str| {
+        json!({"declare": "type", "name": name, "key": ["g"], "fields": [
+            {"name": "g", "type": {"kind": "text"}}, {"name": "t", "type": {"kind": "number"}}],
+            "view": {"source": "line", "group_by": ["g"],
+                     "measures": [{"name": "t", "expr": "sum(n)"}]}})
+    };
+    let kept = json!({"key": "view_kept.sums", "value": true});
+    let upsert = |ty: &str, key: &str, fields: serde_json::Value| {
+        let patch = serde_json::from_value(fields).expect("a patch");
+        let (ty, key) = (TypeName::from(ty), lakelands_api::RecordKey::from(key));
+        let cat = cat.clone();
+        let owner = owner.clone();
+        async move {
+            cat.upsert(&owner, &ty, &key, patch, Default::default())
+                .await
+        }
+    };
+    for d in [line, view("sums"), view("twin")] {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        cat.declare(&owner, d).await.expect("declaring");
+    }
+    upsert("sys.setting", "view_kept.sums", kept)
+        .await
+        .expect("keeping `sums`");
+    upsert("line", "a", json!({"g": "x", "n": 1}))
+        .await
+        .expect("writing `a`");
+    let then = lake.head();
+    upsert("line", "b", json!({"g": "x", "n": 2}))
+        .await
+        .expect("writing `b`");
+    let found = |ty: &'static str| {
+        let at = (Default::default(), None);
+        let find = |r: &Reader<'_>| r.find(&TypeName::from(ty), &Default::default());
+        let found = reading(&lake, owner.clone(), at, Some(Some(then)), find);
+        match found.expect("a find").data {
+            Found::Records { rows, .. } => rows.into_iter().map(|r| r.fields).collect::<Vec<_>>(),
+            other => panic!("records, not {other:?}"),
+        }
+    };
+    let (sums, twin) = (found("sums"), found("twin"));
+    assert_eq!(
+        sums, twin,
+        "`sums` at {then:?} answers as its twin computed there"
     );
 }

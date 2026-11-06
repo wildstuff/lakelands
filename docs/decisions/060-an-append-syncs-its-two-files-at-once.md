@@ -41,7 +41,7 @@ fails was never answered:
 
 A later read does not check: a crash that loses what was written ends
 the handle too. The check costs about 14 µs an event of that one group:
-0.4 ms at the default window of 32 events, 14 ms at 1 000.
+about 3.5 ms at the default window of 256 events, 14 ms at 1 000.
 
 What stays damage, refused before either file is cut: a segment shorter
 than an earlier group's commit, and a sealed segment that is short, each

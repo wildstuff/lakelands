@@ -3,18 +3,12 @@
 //! (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`
 //! and `docs/decisions/028-authoring-is-strict-and-whole.md`, extended).
 
-use lakelands_api::Access;
-use lakelands_api::Refusal;
-use lakelands_api::error::{Case, RecordName};
-use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
-use serde_json::{Value, json};
+use lakelands_api::error::RecordName;
+use lakelands_api::write::Outcome;
 
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{
-    Lake, Must, alike_each, alike_renamed, field_access, invalid_case, migration, object_set_on,
-    reason, refused_on, trigger_on, try_upsert, write_verb,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::alike_each;
+use crate::conformance::prelude::*;
 
 check!(
     AUTHOR_READS = a_declaration_reads_only_what_its_author_may_read,
@@ -120,7 +114,7 @@ async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held
     let mut partial = field_access(store.as_ref(), "partial", "account", &grants);
     let mut full = field_access(store.as_ref(), "full", "account", &grants[..1]);
     for who in [&mut partial, &mut full] {
-        (who.grants.schema, who.grants.review) = (true, true);
+        (who.grants.schema, who.grants.review, who.grants.restricted) = (true, true, true);
     }
 
     // R2: a field its author may not know of answers as one the type does
@@ -225,7 +219,7 @@ async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held
         l.declare_json(over(shape.clone(), whole)).await?;
         let name = shape["name"].as_str().unwrap_or_default().to_owned();
         let mut author = field_access(store.as_ref(), "author", &name, &[(hidden, Access::None)]);
-        author.grants.schema = true;
+        (author.grants.schema, author.grants.restricted) = (true, true);
         let mut seen = shape.clone();
         if let Some(s) = seen.as_object_mut() {
             s.remove("relations");

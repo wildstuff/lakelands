@@ -2,9 +2,12 @@
 # Gate 14 — the vectors of a shipped format are kept.
 #
 # `docs/log-format/vectors/<N>/` holds the test vectors of log format N.
-# The highest number is the format this tree writes; every lower one was
-# shipped by a release, which every later release reads, and is kept as
-# that release's tag holds it
+# The promise begins at format 23: nothing of a format below it is in the
+# tree (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`), and
+# a directory or a kept lake below it is red. From 23 on, the highest
+# number is the format this tree writes; every lower one was shipped by a
+# release, which every later release reads, and is kept as that release's
+# tag holds it
 # (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 # `docs/log-format/vectors/kept` names each with its tag and its path
 # there. Red when a directory below the highest has no line there; when a
@@ -12,12 +15,13 @@
 # from the tag's tree: a file changed, gone or added. And red when a kept
 # lake (`docs/log-format/lakes/<N>/`, or `<N>-<name>/` for another lake
 # of format N) has no line in `lakes/kept`, or its files are not the ones
-# that line's digest names; and when a line `lakes/kept` held where the
-# head branched is changed or gone.
+# that line's digest names; and when a line of format 23 or later that
+# `lakes/kept` held where the head branched is changed or gone.
 . "$(dirname "$0")/lib.sh"
 
 DIR=docs/log-format/vectors
 LIST="$DIR/kept"
+FIRST=23
 [ -f "$LIST" ] || die "$LIST is missing"
 
 formats=$(tracked_files | tr '\0' '\n' | sed -n "s|^$DIR/\([0-9][0-9]*\)/.*|\1|p" | sort -un)
@@ -26,6 +30,7 @@ newest=$(printf '%s\n' "$formats" | tail -1)
 
 kept=0
 for n in $formats; do
+    [ "$n" -ge "$FIRST" ] || { fail "$DIR/$n/ is below format $FIRST, where the promise begins"; continue; }
     [ "$n" = "$newest" ] && continue
     line=$(grep -E "^$n " "$LIST" || true)
     [ -n "$line" ] || { fail "$DIR/$n/ is below the newest format ($newest) and $LIST names no tag for it"; continue; }
@@ -52,21 +57,23 @@ LAKES_LIST="$LAKES/kept"
 lakes=$(tracked_files | tr '\0' '\n' | sed -n "s|^$LAKES/\([0-9][0-9]*\(-[a-z0-9][a-z0-9-]*\)\{0,1\}\)/.*|\1|p" | LC_ALL=C sort -u)
 held=0
 for n in $lakes; do
+    [ "${n%%-*}" -ge "$FIRST" ] || { fail "$LAKES/$n/ is below format $FIRST, where the promise begins"; continue; }
     want=$(grep -E "^$n " "$LAKES_LIST" 2>/dev/null | awk '{ print $2 }' || true)
     [ -n "$want" ] || { fail "$LAKES/$n/ is a kept lake and $LAKES_LIST names no digest for it"; continue; }
     have=$(git ls-files -s -- "$LAKES/$n" | awk -v d="$LAKES/$n/" '{ sub(d, "", $4); print $4 " " $2 }' | LC_ALL=C sort | sha256sum | cut -d' ' -f1)
     [ "$have" = "$want" ] || { fail "$LAKES/$n/ is not the lake $LAKES_LIST names: its digest is $have, the list says $want"; continue; }
     held=$((held + 1))
 done
-# A line the base's `lakes/kept` holds is never changed or taken away: a
-# lake edited together with its digest is still an edited lake. A new
-# line, a lake added, is the head's alone. The base is where the head
-# branched: a lake kept on the base branch since then is not one the
-# head took away.
+# A line of format 23 or later the base's `lakes/kept` holds is never
+# changed or taken away: a lake edited together with its digest is still
+# an edited lake. A new line, a lake added, is the head's alone. The base
+# is where the head branched: a lake kept on the base branch since then
+# is not one the head took away.
 base="$(gate_base)"
 [ -n "$base" ] && base="$(git merge-base "$base" HEAD 2>/dev/null || true)"
 if [ -n "$base" ]; then
     while read -r n digest; do
+        [ "${n%%-*}" -ge "$FIRST" ] || continue
         now=$(grep -E "^$n " "$LAKES_LIST" 2>/dev/null | awk '{ print $2 }' || true)
         [ "$now" = "$digest" ] || fail "$LAKES_LIST changes the line of the kept lake $n: the base names $digest, the head ${now:-names none}"
     done < <(git show "$base:$LAKES_LIST" 2>/dev/null | grep -v '^#' | LC_ALL=C sort || true)

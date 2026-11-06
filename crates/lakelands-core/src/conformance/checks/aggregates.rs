@@ -1,18 +1,10 @@
 //! Aggregates over a set of records (`lakelands_api::read::Aggregate`,
 //! `docs/decisions/011-storage-kind-and-value-type.md`).
 
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
-use lakelands_api::query::{Projection, QueryResult};
-use lakelands_api::read::{AggFunc, Aggregate, ReadAt};
-use lakelands_api::write::Declaration;
-use lakelands_api::{Find, Found, Timestamp, TypeName, Value};
-use serde_json::json;
+use lakelands_api::Value;
+use lakelands_api::read::ReadAt;
 
-use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, all_found, count_view, dec, decimal, field, pattern, reads_all,
-    restrict, type_decl, value_type,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     COUNT_IS_THE_WALK = a_count_answers_as_many_records_as_a_full_find_walk,
@@ -60,7 +52,7 @@ async fn an_aggregate_over_no_records_answers_zero(store: Store) -> Held {
         .find(own, &TypeName::from("payment"), find)
         .await
         .must("aggregating over no payments")?;
-    let Found::Groups { rows } = reply.data else {
+    let Found::Groups { rows, .. } = reply.data else {
         return Err(Failure::new("an aggregate answered records, not groups"));
     };
     ensure!(
@@ -150,7 +142,7 @@ async fn a_count_answers_as_many_records_as_a_full_find_walk(store: Store) -> He
                 .must(&format!("{name} counting {what}"))?
                 .data;
             let counted = match &reply {
-                Found::Groups { rows } => rows
+                Found::Groups { rows, .. } => rows
                     .first()
                     .and_then(|g| g.values.get("n"))
                     .and_then(Value::as_str)
@@ -194,7 +186,7 @@ async fn a_group_key_reads_a_setting_as_a_where_reads_it(store: Store) -> Held {
     let mut find = aggregate(Vec::new());
     find.aggregate = Some(by.clone());
     let reply = (l.cat).find(&l.own, &TypeName::from("bill"), find).await;
-    let Found::Groups { rows } = reply.must("aggregating bills")?.data else {
+    let Found::Groups { rows, .. } = reply.must("aggregating bills")?.data else {
         return Err(Failure::new("an aggregate answered records, not groups"));
     };
     // A pattern's row holds `amount` as `bill.amount` (lakelands#720).
@@ -538,7 +530,7 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
         .await
         .map(|r| r.data)
     {
-        Ok(Found::Groups { rows }) => grouped(&rows),
+        Ok(Found::Groups { rows, .. }) => grouped(&rows),
         other => vec![format!("{other:?}")],
     };
     if walked != found || walked.len() != 3 {
@@ -650,8 +642,9 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
         s.ty = ty.map(Into::into);
         vec![s]
     };
-    // Untyped, it is bound under its relation's name and holds no field
-    // (lakelands#990): a path that reads one is refused.
+    // Untyped, it is bound under its relation's name and holds the fields
+    // its types declare alike (lakelands#990, lakelands#1186): a path that
+    // reads another is refused.
     for (start, steps, path) in [
         ("bill", both(None), "of.tier"),
         ("customer", into(None), "of.x"),

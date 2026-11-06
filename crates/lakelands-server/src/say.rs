@@ -7,8 +7,8 @@
 
 use std::fmt;
 
-use lakelands_api::error::{Case, Error, Refusal, Said, Situation};
-use lakelands_api::id::RecordKey;
+use lakelands_api::error::{Case, Error, Flaw, Refusal, Said, Situation};
+use lakelands_api::id::{RecordKey, Version};
 use lakelands_api::write::Plan;
 
 /// A failure, for a person.
@@ -66,7 +66,7 @@ fn advice(case: &Case) -> Option<String> {
         Case::NoMember { .. } => {
             "remove the member or correct its name, then call again; nothing was declared or written"
         }
-        Case::MemberMissing { .. } | Case::ArgumentsUnfit { .. } => {
+        Case::MemberMissing { .. } | Case::ModeNeedsMember { .. } | Case::ArgumentsUnfit { .. } => {
             "correct them against the tool's input schema (over REST, the route's in docs/rest.md) and call it again"
         }
         Case::NoSessionToPin { .. } => "name `as_of` on each read instead",
@@ -100,6 +100,10 @@ fn advice(case: &Case) -> Option<String> {
         Case::BodyMediaType | Case::BodyNotJson { .. } => "send the body as JSON",
         Case::BodyTooLarge => "send a smaller body; many records go through ingest",
         Case::ExportNotEmpty => "export into an empty or new directory",
+        Case::BackupOtherLog { .. } => "back up into a new directory, or this lake's own backup",
+        Case::WholeSetNeeded { .. } => {
+            "read the records you are admitted one by one, or ask the lake's owner for a grant that admits every record of the type or does not hold `whole_sets_only`"
+        }
         _ => return None,
     };
     Some(todo.to_owned())
@@ -132,6 +136,9 @@ impl From<Error> for Failure {
                     "act as a principal whose grants allow it, or ask the lake's owner for a grant"
                         .to_owned()
                 }
+                Refusal::GrantNeeded { grant } => format!(
+                    "act as a principal holding `{grant}`, or propose the change for one to accept"
+                ),
                 Refusal::WrongDoor if field.is_none() => {
                     "another door does it: a relation's authored links through `link` and `unlink`, \
                      a source's links through `lakelands ingest`, a derived relation's by the lake \
@@ -139,7 +146,8 @@ impl From<Error> for Failure {
                         .to_owned()
                 }
                 Refusal::WrongDoor => {
-                    "source fields arrive through `lakelands ingest`; authored fields through writes and verbs"
+                    "source fields arrive through `lakelands ingest`; authored fields through writes and verbs, or from a source they admit; \
+                     derived fields and those holding the writer that made the record are filled by the lake alone"
                         .to_owned()
                 }
                 Refusal::VerbsOnly { .. } => {
@@ -195,6 +203,11 @@ impl From<Error> for Failure {
             Error::NotFound { .. } => {
                 "check the name, or apply the declaration that introduces it first".to_owned()
             }
+            Error::Conflict {
+                expected: Version(0),
+                ..
+            } => "write with `If-Match: <version>` to change it, or under another key to create one"
+                .to_owned(),
             Error::Conflict { .. } => {
                 "read the record again and retry against its current version".to_owned()
             }
@@ -218,6 +231,28 @@ impl From<Error> for Failure {
                  where it says the executor was not handed the call"
                     .to_owned()
             }
+            // An act of erasure that is in the log: sent again as it was,
+            // it appends nothing and finishes what is left.
+            Error::Unavailable { situation }
+                if matches!(**situation, Situation::ActUnfinished { .. }) =>
+            {
+                "the act is done in the log: repeat it as it was, or open the lake for writing, \
+                 to finish it"
+                    .to_owned()
+            }
+            // A line no writer writes came in by an edited export; the
+            // log holds it, so a rebuild meets it again.
+            Error::Unavailable { situation }
+                if matches!(
+                    **situation,
+                    Situation::Damaged { flaw: Flaw::SealsAnother { .. }, .. }
+                ) =>
+            {
+                "the line came from an edited export, and `lakelands rebuild` meets it again: \
+                 import the export as its writer wrote it, or restore the lake from a backup \
+                 taken before that import"
+                    .to_owned()
+            }
             // Waiting mends no damage. A projection is made anew from
             // the log; what the log lost comes back only from a backup.
             Error::Unavailable { situation }
@@ -225,6 +260,29 @@ impl From<Error> for Failure {
             {
                 "restore the lake from a backup; where the projection alone is damaged, \
                  `lakelands rebuild` makes it anew from the log"
+                    .to_owned()
+            }
+            // Waiting does not change a format: it takes a release that reads it.
+            Error::Unavailable { situation } if matches!(**situation, Situation::LogFormat { .. }) => {
+                let Situation::LogFormat { found, .. } = &**situation else {
+                    unreachable!("matched as a log format")
+                };
+                format!(
+                    "open it with a release that reads log format {found}; restoring it would not help, it is not damaged"
+                )
+            }
+            // A bound of the door's: the lake is as it was.
+            Error::Unavailable { situation }
+                if matches!(
+                    **situation,
+                    Situation::RateBound { .. } | Situation::InFlightBound { .. }
+                ) =>
+            {
+                "nothing was read or written: wait the seconds `Retry-After` says, then send the request again"
+                    .to_owned()
+            }
+            Error::Unavailable { situation } if matches!(**situation, Situation::ServerTooOld { .. }) => {
+                "run the lake on PostgreSQL 18 or newer; nothing was created, so the lake is as it was"
                     .to_owned()
             }
             Error::Unavailable { .. } => {
@@ -315,6 +373,33 @@ pub fn plan(plan: &Plan) -> Vec<String> {
             first(&keys, v.misfits)
         ));
     }
+    if let Some(r) = plan.records.as_deref() {
+        let ty = &r.ty;
+        said.push(match r.selected {
+            0 => format!("The condition selects no record of `{ty}`."),
+            n => format!(
+                "The condition selects {} of `{ty}`{}",
+                records(n),
+                first(&r.sample_keys, n)
+            ),
+        });
+        for f in &r.fields {
+            let (field, n) = (&f.field, records(f.records));
+            said.push(format!("`{field}` would change on {n}."));
+        }
+        for g in &r.refused {
+            let n = records(g.records);
+            said.push(format!(
+                "{n} would be refused, {}{}",
+                g.refusal,
+                first(&g.sample_keys, g.records)
+            ));
+        }
+        if !plan.lossless {
+            said.push("It cannot be enacted: a selected record would be refused.".to_owned());
+        }
+        return said;
+    }
     if said.is_empty() {
         said.push("The change would leave every stored record as it is.".to_owned());
     }
@@ -392,6 +477,31 @@ mod tests {
         assert!(other.todo.starts_with("wait and retry"), "{}", other.todo);
     }
 
+    /// A lake in another log format is not mended by waiting either.
+    #[test]
+    fn a_lake_in_another_log_format_is_advised_a_release() {
+        let format = Situation::LogFormat {
+            lake: "x".into(),
+            found: 21,
+            reads: 20,
+            oldest: Some(20),
+        };
+        let todo = Failure::from(Error::unavailable(format)).todo;
+        assert!(
+            todo.contains("reads log format 21") && !todo.contains("retry"),
+            "{todo}"
+        );
+        let old = Situation::ServerTooOld {
+            major: 16,
+            minor: 15,
+        };
+        let todo = Failure::from(Error::unavailable(old)).todo;
+        assert!(
+            todo.contains("PostgreSQL 18") && !todo.contains("retry"),
+            "{todo}"
+        );
+    }
+
     /// A damaged lake is not mended by waiting: the hint names a restore.
     #[test]
     fn a_damaged_lake_is_advised_a_restore_not_a_retry() {
@@ -405,6 +515,24 @@ mod tests {
         let todo = Failure::from(Error::unavailable(damaged)).todo;
         assert!(
             todo.starts_with("restore") && !todo.contains("retry"),
+            "{todo}"
+        );
+    }
+
+    /// A line no writer writes is met again by a rebuild: the hint names
+    /// the export as its writer wrote it, or a backup from before the import.
+    #[test]
+    fn a_seal_naming_another_source_is_advised_the_export_as_written() {
+        use lakelands_api::error::{Flaw, Part};
+        let sealed = "web".into();
+        let damaged = Situation::Damaged {
+            part: Part::Log,
+            position: None,
+            flaw: Flaw::SealsAnother { sealed },
+        };
+        let todo = Failure::from(Error::unavailable(damaged)).todo;
+        assert!(
+            todo.contains("as its writer wrote it") && todo.contains("before that import"),
             "{todo}"
         );
     }

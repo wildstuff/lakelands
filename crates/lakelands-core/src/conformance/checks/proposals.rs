@@ -3,24 +3,12 @@
 //! `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
 //! `docs/decisions/004-the-change-feed-is-the-log.md`).
 
-use lakelands_api::error::{Case, Seam};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::write::{Proposal, ProposalFilter, ProposalState, ProposedWrite};
-use lakelands_api::{
-    Error, LakeStore, Missing, Outcome, Position, Principal, ProposalId, RecordKey, Refusal,
-    Version, WriteOpts,
-};
-use serde_json::{Value, json};
+use lakelands_api::principal::WriteContext;
 
 use super::only::{alice, claim_with, claims, de, holder};
 use crate::conformance::backing::EXECUTOR;
-use crate::conformance::fixture::{
-    Lake, Must, doors, events_from, field, field_writer, head_unmoved, invalid_case, log_events,
-    outputs_from, owner, patch, reactive, read, reason, refused_on, reviewer, try_upsert,
-    type_decl, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{doors, owner, read, reviewer};
+use crate::conformance::prelude::*;
 
 check!(
     VERB_BY_RISK = a_low_verb_runs_and_a_higher_one_is_proposed,
@@ -48,6 +36,11 @@ check!(
 );
 
 check!(
+    ACCEPTED_FOR_THE_PROPOSER = an_accepted_write_names_whom_its_proposer_wrote_for,
+    "088 (lakelands#1489): `agent:a`, bound for `human:alice`, proposes an upsert, and `human:bob`, bound for no one, accepts it; `write_accepted` names `human:bob` and no `on_behalf_of`, and the upsert names `agent:a` for `human:alice`, as the proposer wrote it; and (lakelands#1584) the `write_proposed` and the upsert carry the proposer's occasion, `again`, the upsert being the proposer's write, while the `write_accepted` carries the accepter's, `live`, the acceptance being the accepter's act"
+);
+
+check!(
     REJECT_AND_DECIDED = a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided,
     "013: rejecting appends `write_rejected` and nothing else; a decided proposal is refused as decided"
 );
@@ -69,7 +62,7 @@ check!(
 
 check!(
     VERB_PROCEDURE_VERSION = a_verbs_write_carries_the_verbs_procedure_version,
-    "010 and the log format §1.1: a value a verb produced carries, as its procedure_version, the version of the verb's declaration"
+    "010 and the log format §1.1: a value a verb produced carries, as its procedure and procedure_version, the verb's name and the version of its declaration"
 );
 
 async fn ledger(store: &dyn LakeStore) -> Result<Lake, Failure> {
@@ -895,8 +888,8 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(store: Store) -> Held
         before
             .meta
             .get("status")
-            .is_some_and(|m| m.procedure_version.is_none()),
-        "`status` written by `upsert` must carry no procedure_version; its provenance \
+            .is_some_and(|m| m.procedure.is_none() && m.procedure_version.is_none()),
+        "`status` written by `upsert` must carry no procedure; its provenance \
          reads {:?}",
         before.meta.get("status")
     );
@@ -905,9 +898,10 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(store: Store) -> Held
     let after = l.read("invoice", "i").await?;
     let meta = after.meta.get("status");
     ensure!(
-        meta.is_some_and(|m| m.procedure_version.as_deref() == Some("1")),
-        "`status` set by `approve` (declared once, version 1) must carry \
-         procedure_version \"1\"; its provenance reads {meta:?}"
+        meta.is_some_and(|m| m.procedure.as_deref() == Some("approve")
+            && m.procedure_version.as_deref() == Some("1")),
+        "`status` set by `approve` (declared once, version 1) must carry the procedure \
+         `approve` at procedure_version \"1\"; its provenance reads {meta:?}"
     );
     Ok(())
 }
@@ -1046,7 +1040,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
 
 check!(
     EXECUTOR_DECLINES = an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_says_so,
-    "013, extended (lakelands#812): an executor's error is recorded as the wire carries it, `error`, its `reason` where it is a refusal, and `message`; one whose wire form holds an integer beyond ±(2^53 − 1) is recorded as its sentence, `{\"error\": …}`, and a retry answers it; a call the executor declines by `Error::declined` is recorded as `refused` / `declined` with the case `call_declined` naming the verb, said at the verb, and one it answers `not_granted` or an outage is recorded as that, each telling what it is; a retry under the call's key answers the same and runs nothing; so is the acceptance of a proposed external call its executor declines"
+    "013, extended (lakelands#812): an executor's error is recorded as the wire carries it, `error`, its `reason` where it is a refusal, and `message`; one whose wire form holds an integer beyond ±(2^53 − 1) is recorded as its sentence, `{\"error\": …}`, and a retry answers it; a call the executor declines by `Error::declined` is recorded as `refused` / `declined` with the case `call_declined` naming the verb, said at the verb, and one it declines by `Error::declined_because` carries the host's reason as the case's `reason`, and one it answers `not_granted` or an outage is recorded as that, each telling what it is; a retry under the call's key answers the same and runs nothing; so is the acceptance of a proposed external call its executor declines"
 );
 
 async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_says_so(
@@ -1054,7 +1048,7 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
 ) -> Held {
     use crate::conformance::backing::executed;
     use lakelands_api::IdempotencyKey;
-    use lakelands_api::error::{Place, Said};
+    use lakelands_api::error::{Detail, Place, Said};
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl(
@@ -1062,7 +1056,13 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
         vec![field("status", StorageKind::Text)],
     ))
     .await?;
-    let flags = ["decline", "ungrant", "fail", "vast_error"];
+    let flags = [
+        "decline",
+        "decline_because",
+        "ungrant",
+        "fail",
+        "vast_error",
+    ];
     let payload: Vec<Value> = flags
         .iter()
         .map(|f| json!({"name": f, "type": {"kind": "boolean"}}))
@@ -1091,7 +1091,11 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
     let declined = |name: &str| Error::Refused {
         field: None,
         reason: Refusal::Declined(Box::new(
-            Said::from(Case::CallDeclined { verb: name.into() }).within(verb(name)),
+            Said::from(Case::CallDeclined {
+                verb: name.into(),
+                reason: None,
+            })
+            .within(verb(name)),
         )),
     };
     ensure!(
@@ -1106,6 +1110,14 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
     };
     for (flag, once, expected) in [
         ("decline", "judge-declined", Some(declined("judge"))),
+        (
+            "decline_because",
+            "judge-declined-because",
+            Some(Error::declined_because(
+                &"judge".into(),
+                Detail::scrubbed("above this executor's ceiling – über"),
+            )),
+        ),
         ("ungrant", "judge-ungranted", Some(ungranted)),
         ("fail", "judge-outage", None),
     ] {
@@ -1132,6 +1144,12 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
             tells && output["message"].is_string(),
             "an executor that errs with `{flag}` is recorded as its error's wire form, which \
              decodes as {expected:?} and has a `message`; the output is {output}"
+        );
+        ensure!(
+            (flag == "decline_because")
+                == (output["reason"]["reason"] == "above this executor's ceiling – über"),
+            "a declined call carries the host's reason in its recorded answer, as `reason` of \
+             the case, and one declined with none carries no `reason`; `{flag}` recorded {output}"
         );
         let recorded = outputs_from(store.as_ref(), *position).await?;
         ensure!(
@@ -1809,6 +1827,53 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
          not granted to one listed the write in part, else answer a write changed since it \
          was proposed, append nothing (the head moved: {moved_head}) and leave each pending \
          ({pending}): {wrong:#?}"
+    );
+    Ok(())
+}
+
+async fn an_accepted_write_names_whom_its_proposer_wrote_for(store: Store) -> Held {
+    ledger(store.as_ref()).await?;
+    let agent = principal(store.as_ref(), PrincipalKind::Agent, "a", Grants::owner());
+    let bob = principal(
+        store.as_ref(),
+        PrincipalKind::Human,
+        "bob",
+        Grants {
+            default: Access::Read,
+            review: true,
+            ..Grants::default()
+        },
+    );
+    let for_alice = store.catalog(WriteContext {
+        occasion: Some("again".into()),
+        ..super::context::made_for("human:alice")
+    });
+    let write =
+        json!({"write": "upsert", "type": "invoice", "key": "i", "patch": {"status": "held"}});
+    let proposed = for_alice
+        .propose(&agent, de(write), "for alice".into())
+        .await;
+    let (at, id) = proposal(&proposed.must("`agent:a` proposing for alice")?)?;
+    (store.catalog(super::context::on_occasion("live")))
+        .accept(&bob, &id)
+        .await
+        .must("`human:bob` accepting")?;
+    let events = events_from(store.as_ref(), at).await?;
+    let named = |is: fn(&EventBody) -> bool| {
+        (events.iter().find(|e| is(&e.body))).map(|e| {
+            let occasion = e.context.occasion.as_deref();
+            (e.writer.as_str(), e.on_behalf_of.as_deref(), occasion)
+        })
+    };
+    let proposed = named(|b| matches!(b, EventBody::WriteProposed { .. }));
+    let accepted = named(|b| matches!(b, EventBody::WriteAccepted { .. }));
+    let upserted = named(|b| matches!(b, EventBody::RecordUpserted { .. }));
+    ensure!(
+        proposed == Some(("agent:a", Some("human:alice"), Some("again")))
+            && accepted == Some(("human:bob", None, Some("live")))
+            && upserted == Some(("agent:a", Some("human:alice"), Some("again"))),
+        "the proposal and the upsert name `agent:a` for `human:alice` under `again`, the \
+         acceptance `human:bob` for no one under `live`: {proposed:?}, {accepted:?}, {upserted:?}"
     );
     Ok(())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ontology::ComputedAt;
 use serde_json::json;
 
 /// What `keepable` says of a view over `invoice` with these members, as
@@ -20,9 +21,25 @@ fn case(view: serde_json::Value) -> Result<(), Said> {
         ("data", K::Json),
         ("open", K::Boolean),
     ];
+    let mut fields: Vec<_> = kinds.map(|(name, kind)| FieldDecl::of(name, kind)).into();
+    let buckets = [
+        ("hour", "date_bucket(due, 1h, '2026-01-01T00:00:00Z')"),
+        ("day", "date_bucket(due, 'day')"),
+        ("lot", "date_bucket(note, 'day')"),
+        ("late", "due"),
+        ("age", "due"),
+    ];
+    for (name, expr) in buckets {
+        let mut f = FieldDecl::of(name, K::DateTime);
+        f.derived = Some(expr.into());
+        if name == "age" {
+            f.computed_at = Some(ComputedAt::Read);
+        }
+        fields.push(f);
+    }
     let invoice = TypeDecl {
         name: "invoice".into(),
-        fields: kinds.map(|(name, kind)| FieldDecl::of(name, kind)).into(),
+        fields,
         ..TypeDecl::default()
     };
     let mut whole = json!({"source": "invoice", "measures": []});
@@ -60,16 +77,28 @@ fn a_view_is_kept_where_every_fold_is_a_function_of_its_values() {
         "sum(coalesce(amount, 0))",
         "min(due)",
         "max(amount) - min(if(open, amount, null))",
+        "first(note, due)",
+        "last(amount, qty) - first(data, if(open, due, null))",
     ];
     for expr in kept {
         assert_eq!(measured(&grouped, expr), Ok(()), "{expr}");
     }
     assert_eq!(measured(&[], "sum(amount) / count()"), Ok(()));
     assert_eq!(measured(&["qty", "open"], "avg(amount)"), Ok(()));
+    // An extreme is kept under any group field the write fixes, or none.
+    let m = "min(amount) + last(qty, due)";
+    for by in ["partner hour", "day region", "", "due", "hour day"] {
+        let by: Vec<_> = by.split_whitespace().collect();
+        assert_eq!(measured(&by, m), Ok(()), "{by:?}");
+    }
+    assert_eq!(measured(&["qty", "late"], m), Ok(()));
+    // A group field computed at the read is not fixed by the write.
+    let aged = "it groups by what reads `age` of `invoice`, which is computed at the read";
+    let refused = measured(&["partner", "age"], "max(amount)");
+    assert!(refused.is_err_and(|why| why.starts_with(aged)));
 
     let adds = "it is kept where its argument is certainly a number";
-    let orders = "it is kept where its argument is certainly a number or an instant";
-    let by = "is kept only in a view grouped by text or reference fields";
+    let orders = "it is kept where what it orders by is certainly a number or an instant";
     let refused = [
         (
             &grouped[..],
@@ -105,14 +134,9 @@ fn a_view_is_kept_where_every_fold_is_a_function_of_its_values() {
             format!("`min(note)` orders a text; {orders}"),
         ),
         (
-            &[],
-            "max(amount)",
-            format!("`max(amount)` {by}, and this one has no group field"),
-        ),
-        (
-            &["partner", "qty"],
-            "min(due)",
-            format!("`min(due)` {by}, and `qty` is neither"),
+            &grouped,
+            "first(amount, note)",
+            format!("`first(amount, note)` orders a text; {orders}"),
         ),
     ];
     for (by, expr, why) in refused {

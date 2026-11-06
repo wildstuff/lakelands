@@ -3,24 +3,12 @@
 //! (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! extended): in the shape's own lists, or in `restated`.
 
-use std::path::PathBuf;
-
-use lakelands_api::error::Case;
 use lakelands_api::id::ProposalId;
-use lakelands_api::ontology::{FieldDecl, RelationDecl, TypeDecl};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Migration, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, Outcome, Principal};
-use serde_json::{Value, json};
 
 use super::export::Scratch;
 use super::report_names::{preview, refused};
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{
-    Lake, Must, describe_type, field_access, invalid_case, is_invalid, log_events,
-};
-use crate::conformance::{Failure, Held, Store};
-use crate::links::link_type_name;
+use crate::conformance::prelude::*;
 
 check!(
     EVERY_MEMBER = a_migration_reports_every_member_its_to_states_otherwise,
@@ -57,7 +45,7 @@ type Kind = (&'static str, Vec<&'static str>, fn(&str) -> bool);
 fn kinds() -> [Kind; 3] {
     [
         ("the type", members!(TypeDecl { name, key, fields, relations, view, valid_from, valid_to, language, field_meta, insert_only, retired_by, description, label, annotations, constraints }), |t| t == "-"),
-        ("a field", members!(FieldDecl { name, ty, required, authority, derived, function, computed_at, depends_on, on_input_change, initial, sensitive, searchable, erasable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
+        ("a field", members!(FieldDecl { name, ty, required, authority, admits, derived, function, computed_at, depends_on, on_input_change, initial, sensitive, searchable, erasable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
         ("a relation", members!(RelationDecl { name, target, cardinality, inverse, via, fields, authority, description, annotations, derived }), |t| RELATIONS.contains(&t)),
     ]
 }
@@ -87,6 +75,7 @@ secret type {"kind":"number"} fields
 title required true fields
 secret required null restated
 secret authority "source" restated
+title admits ["samples"] refused
 loud derived "lower(title)" restated
 loud depends_on null nothing
 loud computed_at "write" restated
@@ -504,9 +493,17 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
     let exported = crate::export::write(s, &dir).await;
     exported.must("exporting")?;
     let unread = |e: std::io::Error| Failure::new(format!("reading the export: {e}"));
+    // Each file's events restored, as a block stores them compressed.
     let mut export = String::new();
     for file in std::fs::read_dir(dir.join("log")).map_err(unread)? {
-        export += &std::fs::read_to_string(file.map_err(unread)?.path()).map_err(unread)?;
+        let file = std::fs::File::open(file.map_err(unread)?.path()).map_err(unread)?;
+        let mut events = crate::log::Restoring::new(std::io::BufReader::new(file), true);
+        while let Some(read) = events
+            .next_event()
+            .map_err(|e| Failure::new(format!("restoring the export: {e:?}")))?
+        {
+            export += &String::from_utf8_lossy(&read.bytes);
+        }
     }
     // Per row: what answers, what it must show and what it must not.
     let mark = "{\"field\":\"secret\",\"member\":\"sensitive\",\"to\":false,\"was\":true}";

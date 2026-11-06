@@ -1,0 +1,19 @@
+name: order_line
+description: One line of an order, a product and how many units of it.
+key: id
+fields:
+  id: { type: text, authority: source }
+  order: { type: reference(order), authority: source }
+  product: { type: reference(product), authority: source }
+  qty: { type: number, authority: source }
+relations:
+  of_order:
+    target: order
+    cardinality: many_to_one
+    via: order
+    inverse: lines
+  of_product:
+    target: product
+    cardinality: many_to_one
+    via: product
+    inverse: lines

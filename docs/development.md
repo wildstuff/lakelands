@@ -24,7 +24,7 @@ derived from its letter. A worktree's PostgreSQL is a container of its own:
 docker run -d --name lakelands-<letter>-pg \
   -e POSTGRES_USER=lakelands -e POSTGRES_PASSWORD=lakelands \
   -e POSTGRES_DB=lakelands -p 127.0.0.1:<port>:5432 \
-  pgvector/pgvector:pg16 -c max_connections=300
+  pgvector/pgvector:pg18 -c max_connections=300
 ```
 
 It takes 300 connections, not the image's 100: the CLI's mirror tests
@@ -55,7 +55,10 @@ Each worktree carries two files that are never committed:
   off. Incremental data grows by the tens of gigabytes per target
   directory, and a full run, which rebuilds after every change anyway,
   gains little from it; five worktrees with it on once filled the cache
-  disk.
+  disk. Measured on a 14-core Linux machine (2026-11-05): it turns an
+  edit in lakelands-store into its tests in 11 s instead of 27 s, but
+  makes an edit in lakelands-core slower to test (81 s against 70 s) and
+  the target directory larger (17 GB against 11 GB).
 - `CLAUDE.local.md` — instructions for this worktree that don't belong in
   the repository: the worktree's name, where the developer keeps the source
   material the organs are imported from, the commit they are read at,
@@ -265,11 +268,12 @@ release deprecated, nor a line of `scripts/release/surface-accepted`
 (`docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md`).
 The notes of a minor release name what the list holds; once its tag
 stands, the next pull request sets the file's `baseline` to it and
-empties the list. The job pins `cargo-semver-checks` and its compiler together
-(`ci.yml`, `host-surface`): the tool reads only the rustdoc formats it
-ships, so one moves with the other, in one pull request that shows the
-job green on both. The job judges a pull request merged into develop as
-develop stood when its CI ran, so before a merge
+empties the list. The job pins `cargo-semver-checks` and its compiler
+(the one `rust-toolchain.toml` pins) together (`ci.yml`, `host-surface`):
+the tool reads only the rustdoc formats it ships, so one moves with the
+other, in one pull request that shows the job green on both. The job
+judges a pull request merged into develop as develop stood when its CI
+ran, so before a merge
 `scripts/release/surface-fresh.sh <n>` asks whether that judgement still
 stands. It is stale when the run has no `host-surface` job (its merge
 ref predates the job, and a re-run keeps that ref), or when a merge
@@ -281,9 +285,18 @@ one. Nothing is published to crates.io yet.
 
 ### A patch release
 
+What a patch may carry, and what makes a release a minor one, is
+`docs/decisions/068-a-patch-carries-fixes-and-anything-new-is-a-minor.md`.
 A minor release `vX.Y.0` is tagged on `develop`. A fix to it ships as
 `vX.Y.1` on `main`, so that `develop`, which already holds work for the
 next minor, does not ship with it.
+A patch whose items are all on `develop`, while `develop` holds nothing
+else of the next minor, may be released from `develop` instead, as
+`v0.21.1` is. Then the release pull request goes to `develop` and the
+tag goes on its merge commit, as for a minor release; steps 1 to 3 and 5
+to 7 below do not apply. The notes list the pull requests merged since
+`vX.Y.0`, and "Changes a host must make" compares `vX.Y.0` with the new
+tag.
 
 1. **`main` holds `vX.Y.0`.** If it does not yet, a pull request brings
    it there and adds nothing else:

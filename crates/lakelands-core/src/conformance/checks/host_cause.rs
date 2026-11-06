@@ -9,22 +9,10 @@
 //! refused. The depth ceiling holds on every door that writes, not only
 //! on the record doors.
 
-use std::sync::Arc;
-
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::WriteContext;
-use lakelands_api::write::{Declaration, ProposedWrite};
-use lakelands_api::{Catalog, Position, RecordKey, Refusal, TypeName, WriteOpts};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_after, field, head_unmoved, ingest, invalid_case, limits, migration, nobody,
-    patch, reactive, reads_all, reason, refused_on, source_record, sourced, trigger_on, try_upsert,
-    type_decl, upsert, value_type, write_verb,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{ingest, nobody, source_record, upsert};
+use crate::conformance::prelude::*;
 
 check!(
     CAUSE_ON_OWN_EVENTS = a_reactive_write_with_a_cause_carries_it_on_each_of_its_events,

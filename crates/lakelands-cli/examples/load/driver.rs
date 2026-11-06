@@ -560,9 +560,12 @@ fn prepare(plan: &Plan, root: &Path) -> Result<Option<String>, String> {
                         ..PgTls::default()
                     },
                     tuning: PgTuning::default(),
+                    tablespaces: Default::default(),
                 },
                 key: None,
                 limits: Limits::default(),
+                writers: Vec::new(),
+                zone: None,
             };
             let lakes = root.join("lakes");
             std::fs::create_dir_all(&lakes).map_err(|e| e.to_string())?;
@@ -585,6 +588,15 @@ fn prepare(plan: &Plan, root: &Path) -> Result<Option<String>, String> {
         session_idle_secs: 1800,
         feed_poll_millis: 250,
         feed_floor_millis: 25,
+        workers: None,
+        metrics: None,
+        hosts: Vec::new(),
+        // The load measures the store, so no rate or in-flight bound
+        // refuses its callers; its caps probe the body bound's default.
+        bounds: lakelands_server::Bounds {
+            body_bytes: lakelands_server::Bounds::default().body_bytes,
+            ..lakelands_server::Bounds::OFF
+        },
     })
     .unwrap();
     std::fs::write(&file, serde_json::to_vec_pretty(&config).unwrap())
@@ -1485,6 +1497,7 @@ impl Worker {
                 let opts = WriteOpts {
                     idempotency_key: idem.map(|i| i.to_owned().into()),
                     expected_version: expected.map(lakelands_api::id::Version),
+                    defer_computed_fields: false,
                 };
                 outcome(
                     self.remote
@@ -1535,6 +1548,7 @@ impl Worker {
                 let opts = WriteOpts {
                     idempotency_key: None,
                     expected_version: Some(lakelands_api::id::Version(expected)),
+                    defer_computed_fields: false,
                 };
                 match self
                     .remote
@@ -2646,6 +2660,7 @@ async fn ingest_rate(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(),
                     schema: Some(schema),
                     tls,
                     tuning,
+                    tablespaces: Default::default(),
                 };
                 Location {
                     engine,
@@ -2654,6 +2669,7 @@ async fn ingest_rate(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(),
             }
         };
         location.limits.commit_window_events = window;
+        location.limits.commit_window_max = location.limits.commit_window_max.max(window);
         let seams = lakelands_api::seam::Seams {
             engines: lakelands_cli::engines(),
             ..Default::default()

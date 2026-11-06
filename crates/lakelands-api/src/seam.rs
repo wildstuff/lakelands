@@ -1,11 +1,11 @@
 //! The seams beside the engine: how Lakelands reaches anything outside
 //! its deterministic core.
 //!
-//! Nine seams, this roster and no other: the engine seam
+//! Ten seams, this roster and no other: the engine seam
 //! ([`crate::engine`]), [`PrincipalResolver`], [`FunctionBacking`],
 //! [`EmbedBackend`], [`Reranker`], [`VerbExecutor`], [`ChangeFeed`],
-//! [`SystemVocabulary`] and [`KeyStore`]. Every seam has a default, so a host that plugs
-//! in nothing still has a working store. Whatever must reproduce from the
+//! [`SystemVocabulary`], [`KeyStore`] and [`Meter`]. Every seam has a
+//! default, so a host that plugs in nothing still has a working store. Whatever must reproduce from the
 //! log stays inside; whatever needs the outside world is here, and its
 //! output is recorded in the log and read back on replay
 //! (`docs/decisions/002-determinism-is-the-boundary.md`). Invariants —
@@ -36,6 +36,18 @@ pub enum Credential {
     Bearer(String),
     /// The operating-system user running a local door (the CLI).
     LocalUser(String),
+    /// A principal named by its id, for whom another host forwards a
+    /// call over the link between hosts. The server has checked the
+    /// host's own key and that the host may speak for the principal; the
+    /// resolver resolves the id as one of its own principals, and the
+    /// principal's grants judge the call
+    /// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`).
+    Forwarded {
+        /// The forwarding host, as the server's configuration names it.
+        host: String,
+        /// The principal's id.
+        principal: String,
+    },
 }
 
 /// Turns a host's identities, roles and policies into one [`Principal`]
@@ -130,10 +142,11 @@ pub trait EmbedBackend: Send + Sync {
     /// One vector per text, in order. `Invalid` refuses the request for
     /// what it carries, and the store asks again in halves to find the
     /// text; any other error is weather, recorded for every text of the
-    /// batch not answered yet. Any failure reaches the caller of the search that
-    /// asked as `Unavailable`, whatever error the backend answered: the
-    /// store never falls back to lexical ranking for a backend that is
-    /// bound.
+    /// batch not answered yet. For a search's query any failure is the
+    /// backend's, whatever error it answered: a hybrid search ranks by its
+    /// text and names the failure in its answer's `unranked`, and a vector
+    /// search that brings `text`, or a later page of an answer its vector
+    /// ranked, is `Unavailable`.
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
 
@@ -257,6 +270,24 @@ pub struct FeedBatch {
     /// reaction passes these by.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overruled: Vec<Position>,
+    /// The last position of each append that wrote one of `events`, in
+    /// order: an event belongs to the first of them at or after its own
+    /// position, and a consumer holds all of an append's events it
+    /// admits once a batch's `next` passes its end. Read from the frames
+    /// the log stores, so it holds whatever `known_at` reads and however
+    /// the caller names deliveries
+    /// (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub appends: Vec<Position>,
+}
+
+impl FeedBatch {
+    /// The last position of the append that wrote the event at `at`: the
+    /// first of `appends` at or after it, none where there is none.
+    pub fn append_of(&self, at: Position) -> Option<Position> {
+        let i = self.appends.partition_point(|end| *end < at);
+        self.appends.get(i).copied()
+    }
 }
 
 /// The most events one feed poll reads from the log and opens, matched or
@@ -336,12 +367,14 @@ pub trait KeyStore: Send + Sync {
     /// Make a new version of the source's key and answer its id.
     fn create(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId>;
 
-    /// The key of that version, or none once it is destroyed.
+    /// The key of that version, or of that key [`Self::create_apart`]
+    /// made, or none once it is destroyed.
     fn key(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<Option<DataKey>>;
 
-    /// Destroy every version of the source's key, and refuse it a new one:
-    /// a source whose versions are all destroyed already, or that has none,
-    /// is accepted and marked so.
+    /// Destroy every version of the source's key, and every key
+    /// [`Self::create_apart`] made of it, and refuse it a new one: a
+    /// source whose keys are all destroyed already, or that has none, is
+    /// accepted and marked so.
     fn destroy(&self, lake: &LakeId, source: &SourceId) -> Result<()>;
 
     /// Destroy the version `id` of the source's key and every older one,
@@ -365,6 +398,154 @@ pub trait KeyStore: Send + Sync {
 
     /// The versions of the source's key, oldest first; none destroyed.
     fn ids(&self, lake: &LakeId, source: &SourceId) -> Result<Vec<KeyId>>;
+
+    /// Make a key of the source outside its versions, for one delivery
+    /// sealed apart, and answer its id: [`Self::key`] answers it, it is
+    /// never among [`Self::ids`], and [`Self::destroy`] destroys it with
+    /// the versions
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). It
+    /// answers once the key is kept as durably as any key. A key store
+    /// that makes none refuses as unbound, as this default does.
+    fn create_apart(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId> {
+        let _ = (lake, source);
+        Err(crate::Error::unbound(crate::error::Seam::KeyApart))
+    }
+
+    /// [`Self::create_apart`] for each entry, in order, a source named
+    /// once per key it needs: a window's new keys in one request. It
+    /// answers once they are all kept as durably as any key, so a key
+    /// store that keeps keys durably may keep them with one sync; this
+    /// default asks [`Self::create_apart`] for each.
+    fn create_apart_many(&self, lake: &LakeId, sources: &[SourceId]) -> Result<Vec<KeyId>> {
+        (sources.iter())
+            .map(|s| self.create_apart(lake, s))
+            .collect()
+    }
+
+    /// Destroy the key `id` [`Self::create_apart`] made, and no other. One
+    /// it does not hold is no change. A key store that makes none refuses
+    /// as unbound, as this default does.
+    fn destroy_apart(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<()> {
+        let _ = (lake, source, id);
+        Err(crate::Error::unbound(crate::error::Seam::KeyApart))
+    }
+}
+
+/// Where a number was measured: the lake and its engine, and nothing
+/// else. No type, field, key, source or principal can be named, so a meter
+/// has none to tell a scraper
+/// (`docs/decisions/079-a-lake-is-measured-through-a-meter-the-host-binds.md`).
+#[derive(Clone, Copy, Debug)]
+pub struct Metered<'a> {
+    /// The lake.
+    pub lake: &'a LakeId,
+    /// The engine's name.
+    pub engine: &'a str,
+}
+
+/// One kind of number: each variant with the name a host exports it
+/// under, and every variant in order.
+macro_rules! numbers {
+    ($(#[$m:meta])* $kind:ident { $($(#[$v:meta])* $variant:ident = $name:literal,)+ }) => {
+        $(#[$m])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[non_exhaustive]
+        pub enum $kind {
+            $($(#[$v])* $variant,)+
+        }
+
+        impl $kind {
+            /// Every number of the kind, in order.
+            pub const ALL: &'static [$kind] = &[$($kind::$variant,)+];
+
+            /// The name a host exports it under.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $($kind::$variant => $name,)+
+                }
+            }
+        }
+    };
+}
+
+numbers! {
+    /// A number that only goes up.
+    Count {
+        /// Events this handle appended.
+        Events = "lakelands_events_appended_total",
+        /// Durable appends.
+        Appends = "lakelands_appends_total",
+        /// Appends the engine answered with an error.
+        AppendFailures = "lakelands_append_failures_total",
+        /// Record writes decided at the writer, batched or alone, whatever
+        /// each answered: appended, refused, replayed or unchanged.
+        Writes = "lakelands_writes_total",
+        /// Segments sealed, by size or by a checkpoint.
+        Seals = "lakelands_seals_total",
+    }
+}
+
+numbers! {
+    /// A number that stands at a value.
+    Level {
+        /// Entries waiting in the writer's queue.
+        Queued = "lakelands_queue_depth",
+        /// The log's last position, as the handle knows it.
+        Tip = "lakelands_tip",
+        /// The position the projection is committed through.
+        FoldedThrough = "lakelands_folded_through",
+        /// 1 while a rebuild folds, else 0.
+        Rebuilding = "lakelands_rebuilding",
+        /// The active segment's size in bytes, as a seal by size weighs it.
+        ActiveSegmentBytes = "lakelands_active_segment_bytes",
+        /// 1 while this handle holds the writer lease, else 0.
+        LeaseHeld = "lakelands_lease_held",
+        /// The lease's fencing token while it is held, else 0.
+        LeaseFence = "lakelands_lease_fence",
+    }
+}
+
+numbers! {
+    /// A number observed many times: a duration in microseconds, or a
+    /// batch's size in writes.
+    Spread {
+        /// The engine's durable append, a checkpoint's included.
+        Append = "lakelands_append_seconds",
+        /// The fold of an append, its commits included.
+        Fold = "lakelands_fold_seconds",
+        /// One commit of the projection.
+        Commit = "lakelands_commit_seconds",
+        /// One catalog read that answers, its view to its answer.
+        Read = "lakelands_read_seconds",
+        /// Record writes a turn decided together, whatever each answered; a
+        /// write alone is one.
+        BatchWrites = "lakelands_batch_writes",
+    }
+}
+
+impl Spread {
+    /// Whether it is observed in microseconds; otherwise in writes.
+    pub fn micros(self) -> bool {
+        self != Spread::BatchWrites
+    }
+}
+
+/// The host's meter: what the lake measures, told as it happens
+/// (`docs/decisions/079-a-lake-is-measured-through-a-meter-the-host-binds.md`).
+/// Synchronous, and it returns at once: it is called on the store's
+/// blocking threads, inside the writer's turn for the writer's numbers.
+/// It records into memory and exports elsewhere. A meter that panics is dropped from that call
+/// alone: the lake goes on as if it were not bound. None bound, the lake
+/// measures nothing and reads no clock for it.
+pub trait Meter: Send + Sync {
+    /// `n` went up by `by`.
+    fn count(&self, at: Metered<'_>, n: Count, by: u64);
+
+    /// `n` stands at `value`.
+    fn level(&self, at: Metered<'_>, n: Level, value: u64);
+
+    /// One observation of `n`, in microseconds or writes ([`Spread::micros`]).
+    fn observe(&self, at: Metered<'_>, n: Spread, value: u64);
 }
 
 /// The type holding a lake's named settings: `setting('key')` reads the
@@ -374,9 +555,10 @@ pub const SETTING_TYPE: &str = "sys.setting";
 /// The prefix of the name a view's kept records bear in an engine's
 /// projection, `sys:kept.<view>`. It holds `:`, which no type name may,
 /// so no declared type bears such a name. A kept record is put again at
-/// every write to its group, so its key may hold thousands of states, and
-/// an engine reads such a name by statements of its own: it tells one by
-/// this prefix and by nothing looser (`docs/seams.md` §`ProjectionStore`).
+/// every write to its group, and an engine keeps its key's latest state
+/// alone: a put deletes the states the key held. The store reads such a
+/// name at the head only. An engine tells one by this prefix and by
+/// nothing looser (`docs/seams.md` §`ProjectionStore`).
 pub const KEPT_PREFIX: &str = "sys:kept.";
 
 /// The name the kept records of the view `view` are put and read under.
@@ -424,6 +606,9 @@ pub fn setting_type() -> TypeDecl {
             // The group the store stamps from the setting's declaration,
             // which a grant's `only` names (063, extended).
             FieldDecl::of("group", StorageKind::Text),
+            // A host's setting's values from dates after the first, which
+            // the store writes from `from` and `period` (090).
+            FieldDecl::of("periods", StorageKind::Json),
         ],
         field_meta: true,
         description: Some(
@@ -438,6 +623,42 @@ pub fn setting_type() -> TypeDecl {
 /// field names (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
 pub const SORT_INDEX_SETTING: &str = "sort_index.";
 
+/// The key prefix of the setting that asks for an order index within one
+/// series: the setting `series_index.<type>`, whose value is a JSON array
+/// of pairs of the type's field names, the series field first, as
+/// `[["symbol", "at"]]`
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// series index).
+pub const SERIES_INDEX_SETTING: &str = "series_index.";
+
+/// The byte a series pair's derived field name holds between its order
+/// field and its series field: no field name holds U+001F.
+pub const SERIES_SEPARATOR: char = '\u{1F}';
+
+/// The name of the order index field a series pair keeps its rows under:
+/// `<order>\u{1F}<series>`.
+pub fn series_field(order: &str, series: &str) -> String {
+    format!("{order}{SERIES_SEPARATOR}{series}")
+}
+
+/// The order field and the series field a derived field name names, if it
+/// is one.
+pub fn split_series_field(name: &str) -> Option<(&str, &str)> {
+    name.split_once(SERIES_SEPARATOR)
+}
+
+/// Whether `name` is a series pair's derived field name.
+pub fn is_series_field(name: &str) -> bool {
+    name.contains(SERIES_SEPARATOR)
+}
+
+/// Whether a series index can name a field of this kind as its series
+/// field: text, reference, number and decimal.
+pub fn series_kind(kind: &crate::ontology::StorageKind) -> bool {
+    use crate::ontology::StorageKind as K;
+    matches!(kind, K::Text | K::Number | K::Decimal | K::Reference)
+}
+
 /// Whether an order index can keep a field of this kind: the scalar
 /// kinds. JSON values, vectors, geometries and bytes are ordered by
 /// sorting.
@@ -451,9 +672,10 @@ pub fn sortable(kind: &crate::ontology::StorageKind) -> bool {
 
 /// The key prefix of the setting that asks for a type's exact-text index
 /// over more fields than its declarations look up by: the setting
-/// `lookup_index.<type>`, whose value is a JSON array of the type's text
-/// fields. A field the index keeps no rows for is found by a scan of the
-/// type (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
+/// `lookup_index.<type>`, whose value is a JSON array of the type's text,
+/// number and decimal fields. A field the index keeps no rows for is found
+/// by a scan of the type
+/// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
 pub const LOOKUP_INDEX_SETTING: &str = "lookup_index.";
 
 /// The key prefix of the setting that asks for a type's vector index: the
@@ -509,10 +731,29 @@ fn weighed(value: Option<&Value>, member: &str) -> BTreeMap<String, f64> {
 /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
 pub const KEY_PERIOD_SETTING: &str = "key_period";
 
+/// The field a kept record is shown with when its group is stranded: the
+/// copy of the time-zone database that cut it, or `true`. Never declared,
+/// so never answered as a field.
+pub const STRANDED: &str = "sys:stranded";
+
 /// The key prefix of the setting that asks for a view's records to be
 /// kept as its sources are written: the setting `view_kept.<type>`, which
 /// holds when its value is `true`.
 pub const VIEW_KEPT_SETTING: &str = "view_kept.";
+
+/// The key of the setting that names the lake's zone: the IANA time zone,
+/// as `Europe/Berlin`, whose calendar day `today()` and aging read, and
+/// `UTC` where none is set
+/// (`docs/decisions/101-a-lake-keeps-its-calendar-in-one-named-zone.md`).
+pub const ZONE_SETTING: &str = "zone";
+
+/// The zone a `zone` setting of this value names: its text, else
+/// [`crate::expr::zone::UTC`].
+pub fn zone(value: Option<&Value>) -> &str {
+    value
+        .and_then(Value::as_str)
+        .unwrap_or(crate::expr::zone::UTC)
+}
 
 /// Whether a `view_kept.<type>` setting of this value holds.
 pub fn view_kept(value: Option<&Value>) -> bool {
@@ -534,6 +775,11 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///   [`indexable`], text) and not computed at the read; `None` or `null`
 ///   asks for no index. `sort_index` may name a declared view too: the
 ///   index is kept of its kept records.
+/// - `series_index.<type>` names a declared stored type and holds an
+///   array of pairs of the names of fields it declares, the series field
+///   first, or `None` or `null` for no index. A pair's series field is
+///   text, reference, number or decimal; its order field is of a kind an
+///   order index keeps ([`sortable`]); neither is computed at the read.
 /// - `search_weights.<type>` names a declared stored type and holds an
 ///   object of `fields` (each a vector field it declares, with a weight),
 ///   `text_fields` (each a searchable field it declares, with a weight)
@@ -545,6 +791,8 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///   writer shown the view as declared, and to no other.
 /// - `key_period` and `key_period.<source>`, a source id, hold `day`,
 ///   `week` or `month`; `None` or `null` names no period.
+/// - `zone` holds a zone the built-in time-zone database names
+///   ([`crate::expr::zone::known`]); `None` or `null` is `UTC`.
 ///
 /// It lives in the contract, not in the core; the store is its one
 /// caller.
@@ -560,7 +808,7 @@ pub fn check_setting<'a>(
     let refused = |member: &str, said: Said| {
         let reason = Refusal::Invalid(Box::new(said.within(at())));
         let field = Some(member.into());
-        Err(crate::Error::Refused { field, reason })
+        Err(crate::Error::refused(field, reason))
     };
     let known = |ty: &str| Some((shown(&ty.into())?, declared(&ty.into())?));
     if let Some(prefix) = crate::settings::unlisted(key) {
@@ -571,6 +819,79 @@ pub fn check_setting<'a>(
             }
             .into(),
         );
+    }
+    if let Some(ty) = key.strip_prefix(SERIES_INDEX_SETTING) {
+        let Some((seen, _)) = known(ty).filter(|(_, d)| d.view.is_none()) else {
+            return refused("key", Case::NoStoredType { ty: ty.into() }.into());
+        };
+        let pairs = match value {
+            None | Some(Value::Null) => return Ok(()),
+            Some(Value::Array(pairs)) => pairs,
+            Some(_) => {
+                return refused("value", Case::SeriesIndexShape { ty: ty.into() }.into());
+            }
+        };
+        for pair in pairs {
+            let named = match pair.as_array().map(Vec::as_slice) {
+                Some([series, order]) => Some((series.as_str(), order.as_str())),
+                _ => None,
+            };
+            let Some((Some(series), Some(order))) = named else {
+                return refused("value", Case::SeriesIndexShape { ty: ty.into() }.into());
+            };
+            let named_series = crate::id::FieldName::from(series);
+            let named_order = crate::id::FieldName::from(order);
+            let declared = seen.fields.iter().find(|f| f.name == named_series);
+            let (member, fault) = match declared {
+                None => (
+                    series,
+                    Case::UnknownField {
+                        ty: ty.into(),
+                        field: named_series.clone(),
+                    },
+                ),
+                Some(f) if !series_kind(&f.ty.kind) => (
+                    series,
+                    Case::SeriesFieldKind {
+                        field: named_series.clone(),
+                        kind: f.ty.kind,
+                    },
+                ),
+                // As it is shown: one told nothing of how a field is
+                // computed is not told so here either.
+                Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => (
+                    series,
+                    Case::OrderIndexAtRead {
+                        field: named_series.clone(),
+                    },
+                ),
+                Some(_) => match seen.fields.iter().find(|f| f.name == named_order) {
+                    None => (
+                        order,
+                        Case::UnknownField {
+                            ty: ty.into(),
+                            field: named_order.clone(),
+                        },
+                    ),
+                    Some(f) if !sortable(&f.ty.kind) => (
+                        order,
+                        Case::OrderIndexKind {
+                            field: named_order.clone(),
+                            kind: f.ty.kind,
+                        },
+                    ),
+                    Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => (
+                        order,
+                        Case::OrderIndexAtRead {
+                            field: named_order.clone(),
+                        },
+                    ),
+                    Some(_) => continue,
+                },
+            };
+            return refused(member, fault.into());
+        }
+        return Ok(());
     }
     if let Some(rest) =
         (key.strip_prefix(KEY_PERIOD_SETTING)).filter(|r| r.is_empty() || r.starts_with('.'))
@@ -586,6 +907,13 @@ pub fn check_setting<'a>(
             None | Some(Value::Null) => Ok(()),
             Some(Value::String(p)) if named(p) => Ok(()),
             Some(_) => refused("value", Case::SettingKeyPeriod.into()),
+        };
+    }
+    if key == ZONE_SETTING {
+        return match value {
+            None | Some(Value::Null) => Ok(()),
+            Some(Value::String(z)) if crate::expr::zone::known(z) => Ok(()),
+            Some(v) => refused("value", Case::SettingZone { value: v.clone() }.into()),
         };
     }
     if let Some(ty) = key.strip_prefix(VIEW_KEPT_SETTING) {
@@ -648,14 +976,21 @@ pub fn check_setting<'a>(
         }
         return Ok(());
     }
-    let text = |k: &crate::ontology::StorageKind| *k == crate::ontology::StorageKind::Text;
+    let lookup = |k: &crate::ontology::StorageKind| {
+        matches!(
+            k,
+            crate::ontology::StorageKind::Text
+                | crate::ontology::StorageKind::Number
+                | crate::ontology::StorageKind::Decimal
+        )
+    };
     let (ty, (order, lookup), keeps): (_, _, &dyn Fn(&crate::ontology::StorageKind) -> bool) =
         if let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) {
             (ty, (true, false), &sortable)
         } else if let Some(ty) = key.strip_prefix(VECTOR_INDEX_SETTING) {
             (ty, (false, false), &indexable)
         } else if let Some(ty) = key.strip_prefix(LOOKUP_INDEX_SETTING) {
-            (ty, (false, true), &text)
+            (ty, (false, true), &lookup)
         } else {
             return Ok(());
         };
@@ -775,6 +1110,8 @@ pub struct Seams {
     /// The key store a source's erasable values are sealed with, if any:
     /// without one such a value is refused as `Unbound`.
     pub keys: Option<Arc<dyn KeyStore>>,
+    /// The meter, if any: without one the lake measures nothing.
+    pub meter: Option<Arc<dyn Meter>>,
 }
 
 impl std::fmt::Debug for Seams {
@@ -799,6 +1136,7 @@ impl std::fmt::Debug for Seams {
             )
             .field("vocabulary", &self.vocabulary.is_some())
             .field("keys", &self.keys.is_some())
+            .field("meter", &self.meter.is_some())
             .finish()
     }
 }
@@ -815,5 +1153,6 @@ fn seams_are_dyn_compatible(
     _: &dyn ChangeFeed,
     _: &dyn SystemVocabulary,
     _: &dyn KeyStore,
+    _: &dyn Meter,
 ) {
 }

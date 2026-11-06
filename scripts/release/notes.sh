@@ -40,7 +40,9 @@ exclude=()
 [[ "$tag" == *-* ]] || exclude=(--exclude 'v*-*')
 previous="$(git describe --tags --abbrev=0 --match "$match" ${exclude[@]+"${exclude[@]}"} "$tag^" 2>/dev/null || true)"
 
-# The numbers of the release's pull requests, oldest first.
+# The numbers of the release's pull requests, oldest first. A merge
+# subject reads `#N` (GitHub's own) or `<repo>#N` (gate 9 keeps a bare
+# `#N` out of this repository's subjects).
 pulls() {
     local revs=("$tag") earlier
     if [ -n "$previous" ] && git rev-list --first-parent "$tag" |
@@ -54,7 +56,7 @@ pulls() {
         done < <(git tag -l "$match" --merged "$tag")
     fi
     git log --merges --reverse --format=%s "${revs[@]}" |
-        sed -n 's/^Merge pull request #\([0-9]*\) from .*/\1/p'
+        sed -n 's/^Merge pull request [^ #]*#\([0-9]*\) from .*/\1/p'
 }
 if $only_pulls; then
     pulls

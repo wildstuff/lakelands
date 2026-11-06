@@ -12,8 +12,9 @@
 mod common;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
+use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::record::StoredRecord;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_pg::PgOpener;
 use serde_json::json;
 
@@ -21,17 +22,12 @@ use serde_json::json;
 const REFUSED: &str = "bad\0key";
 
 fn record(key: &str, at: u64) -> StoredRecord {
-    StoredRecord {
-        ty: TypeName::from("t"),
-        key: RecordKey::from(key),
-        version: Version(1),
-        fields: serde_json::from_value(json!({"v": key.replace('\0', "")})).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
-        made: Position(at),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(
+        "t",
+        key,
+        serde_json::from_value(json!({"v": key.replace('\0', "")})).unwrap(),
+        at,
+    )
 }
 
 /// Whether the head holds the record `key`.

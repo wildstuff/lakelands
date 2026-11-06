@@ -524,10 +524,21 @@ declaration's changes, and the times `recompute` appended it again (022).
   differs is appended in the set's order, and what that sets off
   happens: a recomputation, a set's memberships. A set wholly in force
   is answered at the head.
-- **A proposal is recorded,** in force or not. When it is
-  accepted, the proposal is decided and what is in force at that moment
-  is not appended again, so an acceptance may append `write_accepted`
-  alone.
+- **A proposal is recorded where it would change something.** One whose
+  declarations are all in force when it is proposed is not recorded: its
+  accept would change nothing, and a host that lets an agent without
+  `schema` file its declarations wants the answer `apply` gives its own
+  operator, not a proposal and an acceptance that both land in the log
+  for nothing. It is answered `applied` at the head, after every
+  refusal, with how each declaration stands, and appends nothing. A
+  proposal with one declaration that differs is recorded whole. When it
+  is accepted, the proposal is decided and what is in force at that
+  moment is not appended again, so an acceptance may append
+  `write_accepted` alone; the accept answers how each declaration of
+  the bundle stands after it, as `apply` does (lakelands#1187).
+  A proposed migration whose `to` is the type in force, renaming and
+  filling nothing, is answered the same way, with its plan and the type
+  named in `declared`, and is not recorded (lakelands#1267).
 - **Every kind:** a value type, a type, a function, a verb, a trigger,
   an object set. A function with a backing and a type with a field
   computed outside the lake are no exception (022).
@@ -536,8 +547,10 @@ declaration's changes, and the times `recompute` appended it again (022).
   `migrate_apply` answers it `applied` at the head and appends nothing
   only where it fills no record (050), after every refusal, a stale
   report among them: the preflight is made and its id compared, and each
-  answers as for any migration. An accepted proposal of one that fills
-  no record appends its acceptance alone. A value type's
+  answers as for any migration. A proposal of one that fills no record
+  is not recorded; one that fills a record is, and when the records have
+  taken the field by its accept, that accept appends its acceptance
+  alone. A value type's
   migration to itself needs no rule: its preflight refuses it, there
   being nothing to migrate.
 
@@ -637,13 +650,53 @@ under its name now, and a filter by type finds it by the type it
 withdrew from, whatever stands under the name since. The version a name
 declared again continues tells a reader that the name has a history,
 never what that history was: so does a trigger moved from a type the
-reader is not shown to one it is. A type leaves by `migrate` and a
-setting by its record; these and a value type are refused
-`withdrawn_kind`.
+reader is not shown to one it is. A setting leaves by its record; it
+and a value type are refused `withdrawn_kind`.
 
 Without it, the only way to end a rule was to declare it again with a
 guard that never holds: a dead declaration in every description and
 in the log, which reads like a rule that never matches.
+
+### A type is withdrawn once it is empty and nothing names it
+
+A type is withdrawn by the same declaration, `{"declare": "withdraw",
+"kind": "type", ...}`, and leaves as the others do: `describe` no
+longer lists it from the withdrawal on, a read as of before still
+does, and declared again its version continues. The link types its
+relations carry leave with it, each by a `declared` of its own the
+lake appends after the type's, or by its own withdrawal in the same
+call. A call that withdraws a type and the one its relation points at
+withdraws both, in either order: each is checked with the other and
+its link types gone. A type in use is refused `withdrawn_in_use`,
+naming the first thing that holds it, in this order:
+
+- a type the lake reserves, `sys.` and not a link type, by the lake;
+  a link type a relation in force carries, by that relation, which
+  leaves only with its type or by a migration;
+- a field or a relation of another type that points at it or at one
+  of its link types, or a view computed from it, the author's types
+  before the lake's own; then a verb on it or on one of its link
+  types, or whose payload points at it; then an object set of one of
+  them, then a trigger on one;
+- a live record, retired ones not counting, restricted ones counting:
+  `its records`, or `the links of its relation` for a link type that
+  would leave with it.
+
+The names come first and the records last, so an author who empties
+a type learns at once what else stands in its way. A type whose
+records hold history keeps that history: the withdrawal ends no
+record, and a read as of before answers them. Declared again while
+the lake keeps one of them, retired, it is refused
+`withdrawn_name_held`, as a link type it would bring is: those records
+were written to the shape that left, and the new one would read them
+as its own. A count of records its author is not answered is not its
+to learn, so where it is not answered one of them the refusal is not
+granted, as a function's is that only fields hidden from it read.
+
+Before, a type once declared stood in every description for good: an
+author who declared one by mistake, or whose use for it had ended, had
+no way to say so but a migration to an empty shape, which still
+listed it.
 
 ### The migration doors refuse in one order
 
@@ -806,7 +859,7 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 | what may name an old value is listed to a reader shown it, a declaration as `describe` shows it and an aging rule as a read answers it, and another reader is told that there may be one (lakelands#553) | `006 § A report is answered as its reader may know it` |
 | a type is named in that list by what its reader is described of it (lakelands#861) | `006 § A report is answered as its reader may know it` |
 | a proposal's report of renames is listed to each reader as it is shown the lake as it stood before the proposal, and the list and the report's id are the reader's (lakelands#553) | `006 § A report is answered as its reader may know it` |
-| a proposed migration is listed as its reader may know it: `renames`, `dropped` and `fields`, `rekeyed`, `references`; the totals, `lossless`, the hashes, the id and `more`; a migration of a type its reader may not see (lakelands#499) | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| a proposed migration is listed as its reader may know it: `renames`, `dropped` and `fields`, `rekeyed`, `references`; the totals, the hashes, the id and `more`; `lossless` as its proposer was told it, by the records and constraints it is told of; a migration of a type its reader may not see (lakelands#499) | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
 | a report is answered as its reader may know it: one function trims it at the five places that answer one (lakelands#531) | `006 § A report is answered as its reader may know it` |
 | `sample_keys`: the keys of records the reader is answered, the first five among them (lakelands#531, lakelands#875) | `006 § A report is answered as its reader may know it` |
 | `sample_collisions`: a colliding key is named to a reader who is answered two or more of the records that would take it and reads every field of the new key, in the order of the new key (lakelands#531, lakelands#875) | `006 § A report is answered as its reader may know it` |
@@ -948,8 +1001,53 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 - `declare` and `apply` answer how each declaration sent stands in
   force: its version, the position it stands from, and whether the call
   appended it (lakelands#1059).
+- Corrected: "A proposal is recorded, in force or not". A proposal of
+  declarations all in force is answered as `apply` answers it and is not
+  recorded, and an accept of declarations answers how each stands
+  (lakelands#1187).
+- Extended: a proposed migration to the type in force that renames and
+  fills nothing is answered the same way and is not recorded
+  (lakelands#1267).
 - Added: a declaring append leaves the shape after it, built at the
   first read of its position (lakelands#1056).
+- Extended: a proposed migration is lossless as its proposer is told it.
+  A restricted record that it would leave breaking a constraint that
+  refuses makes it lossy at the accept alone; one that
+  would not convert or would collide makes it lossy to every reader,
+  since retired records are converted and keyed with the rest and a
+  held one tells no more than a retired one would.
 - Marking a field `authority: verb` is a change of meaning, taken by `declare` (lakelands#1130).
 - A trigger, a verb, an object set or a function is withdrawn by a declaration (lakelands#1219).
+- Extended: a type is withdrawn once it holds no live record and nothing in force names it, its link types with it; it was refused `withdrawn_kind` (lakelands#1292).
 - Marking a type `retired_by: verbs` is a change of meaning, taken by `declare` (lakelands#1148).
+- **As built (2026-11-04), lakelands#1726: a migration declares its views again.**
+  `Migration` gains `views`, re-declarations of views in force over the type it
+  migrates (as its source or a merged one). Each is judged as `declare` judges a
+  declaration of it, by its author, over the lake the migration leaves: what its
+  author may not read it may not add, and it must check against the migrated
+  type. The plan then judges each in place of the view in force, so a view named
+  that still reads a field the migration takes away is refused with the report a
+  migration that names none is given, and a view not named keeps that refusal. A
+  view named that is not in force over the type, that would no longer read it, or
+  that is named twice, is refused `migration_view_not_over`; one the author is not
+  shown is not granted. The report's id binds the views named, as its schema hash
+  binds the type: an apply naming others is not the one previewed. The apply
+  declares the views named that read otherwise than the lake holds them as
+  `declare` does, after the `migrated` and in its append; one named as it is held
+  is not declared again and keeps its version.
+  The logged `migrated` carries no `views`: the `declared` events carry them, so a
+  feed reader sees a view's change as it sees one from `declare`. Two choices of
+  shape: the field is on `Migration`, not on the doors, so a proposed migration
+  takes it as `migrate` does; and kept or not, any view over the type may be named,
+  since the refusal it lifts is the same. A declaration takes no such field: a
+  `declare` that changes the type without a reshape already lands with the views
+  sent beside it in its set, in one append, and one that reshapes is refused
+  `reshapes` and is a migration. The migration's fold makes the views over the type
+  again as before, in its turn; the `declared` of a changed view makes it again at
+  its event, whole in one fold, as any declaration of a kept view does (record 099,
+  R8). So a changed view is made twice in the append, and it is not built beside
+  the writer. What is left: a set over a view over the type still refuses the
+  migration (`view_source_stepped`), named views or not; withdrawing the set,
+  migrating, and declaring it again remains the way. Held by
+  `MIGRATE_WITH_ITS_VIEWS`, `MIGRATE_WITH_ITS_VIEWS_UNAPPLIED` and
+  `MIGRATE_WITH_ITS_VIEWS_JUDGED`.

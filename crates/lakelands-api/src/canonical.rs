@@ -150,12 +150,15 @@ fn write(value: &Value, out: &mut Vec<u8>) {
         Value::Bool(false) => out.extend_from_slice(b"false"),
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                out.extend_from_slice(i.to_string().as_bytes());
+                if i < 0 {
+                    out.push(b'-');
+                }
+                integer(i.unsigned_abs(), out);
             } else if let Some(u) = n.as_u64() {
-                out.extend_from_slice(u.to_string().as_bytes());
+                integer(u, out);
             } else {
                 let f = n.as_f64().expect("a JSON number is an integer or a float");
-                out.extend_from_slice(number(f).as_bytes());
+                number_into(f, out);
             }
         }
         Value::String(s) => string(s, out),
@@ -207,6 +210,95 @@ fn string(s: &str, out: &mut Vec<u8>) {
         }
     }
     out.push(b'"');
+}
+
+/// The digits of `u`, written into `out`.
+fn integer(mut u: u64, out: &mut Vec<u8>) {
+    let mut buf = [0u8; 20];
+    let mut at = buf.len();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (u % 10) as u8;
+        u /= 10;
+        if u == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&buf[at..]);
+}
+
+/// [`number`], written into `out` with no allocation: the digits `ryu`
+/// prints are read off its stack buffer and placed by the same rules.
+fn number_into(f: f64, out: &mut Vec<u8>) {
+    assert!(f.is_finite(), "canonical JSON has no NaN or infinity");
+    if f == 0.0 {
+        out.push(b'0'); // -0 prints as 0
+        return;
+    }
+    if f < 0.0 {
+        out.push(b'-');
+    }
+    let mut buf = ryu::Buffer::new();
+    let printed = buf.format_finite(f.abs()).as_bytes();
+    let (mantissa, exp) = match printed.iter().position(|&b| b == b'e') {
+        Some(e) => {
+            let text = std::str::from_utf8(&printed[e + 1..]).expect("ryu prints ASCII");
+            (
+                &printed[..e],
+                text.parse::<i32>().expect("ryu prints an integer exponent"),
+            )
+        }
+        None => (printed, 0),
+    };
+    // At most 17 significant digits, plus leading zeros of a `0.000ddd`.
+    let mut digits = [0u8; 24];
+    let mut k = 0;
+    let mut int_len = mantissa.len();
+    for (i, &b) in mantissa.iter().enumerate() {
+        if b == b'.' {
+            int_len = i;
+        } else {
+            digits[k] = b;
+            k += 1;
+        }
+    }
+    let leading = digits[..k].iter().take_while(|&&b| b == b'0').count();
+    let mut n = int_len as i32 + exp - leading as i32;
+    digits.copy_within(leading..k, 0);
+    k -= leading;
+    while digits[k - 1] == b'0' {
+        k -= 1;
+    }
+    let digits = &digits[..k];
+    let zeros =
+        |out: &mut Vec<u8>, count: i32| out.extend(std::iter::repeat_n(b'0', count as usize));
+    let k = k as i32;
+    if k <= n && n <= 21 {
+        out.extend_from_slice(digits);
+        zeros(out, n - k);
+    } else if 0 < n && n <= 21 {
+        out.extend_from_slice(&digits[..n as usize]);
+        out.push(b'.');
+        out.extend_from_slice(&digits[n as usize..]);
+    } else if -6 < n && n <= 0 {
+        out.extend_from_slice(b"0.");
+        zeros(out, -n);
+        out.extend_from_slice(digits);
+    } else {
+        n -= 1;
+        out.push(digits[0]);
+        if k > 1 {
+            out.push(b'.');
+            out.extend_from_slice(&digits[1..]);
+        }
+        out.push(b'e');
+        if n >= 0 {
+            out.push(b'+');
+        } else {
+            out.push(b'-');
+        }
+        integer(u64::from(n.unsigned_abs()), out);
+    }
 }
 
 /// A finite double in the ECMAScript `Number.prototype.toString` form, which

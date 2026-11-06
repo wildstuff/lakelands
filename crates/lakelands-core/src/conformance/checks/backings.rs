@@ -11,21 +11,9 @@
 //! the calls the backing received. The checks use the suite's scripted
 //! backing ([`crate::conformance::backing`]), which every harness binds.
 
-use lakelands_api::error::{Case, Seam};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::write::{Declaration, Recompute};
-use lakelands_api::{
-    Access, Error, Grants, LakeStore, Origin, Position, Principal, Refusal, Version,
-};
-use serde_json::{Value, json};
-
 use crate::conformance::backing::{KIND, made, plug, unplug};
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, derived, events_from, field, field_access, head_unmoved, invalid_case,
-    reason, recorded_outputs, trigger_on, type_decl, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, recorded_outputs};
+use crate::conformance::prelude::*;
 
 check!(
     UNBOUND_KIND_REFUSED = a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare,
@@ -139,9 +127,11 @@ async fn a_backed_field_is_filled_from_the_output_the_store_records(store: Store
     let meta = r.meta.get("name");
     ensure!(
         meta.is_some_and(|m| m.origin == Origin::Derived
+            && m.procedure.as_deref() == Some("lookup")
             && m.procedure_version.as_deref() == Some("1")
             && m.error.is_none()),
-        "a filled field carries origin `derived`, the function's version (1) and no error; \
+        "a filled field carries origin `derived`, the function `lookup` at its version (1) \
+         and no error; \
          its metadata is {meta:?}"
     );
     ensure!(
@@ -553,6 +543,7 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
     let author = Principal {
         grants: Grants {
             schema: true,
+            restricted: true,
             ..shown.grants.clone()
         },
         ..shown

@@ -30,12 +30,14 @@
 //!   A field whose function has a backing outside the store is filled
 //!   from a recorded output or cleared until one is recorded
 //!   ([`crate::backed`]).
-//!
-//! - **Initial values.** The event that makes a record (none was live
-//!   under the key) fills each field that declares `initial` and holds no
-//!   value after the patch, with `origin: initial` and the event's
-//!   position, time and writer
+//! - **Initial values.** The event that makes a record fills each field
+//!   that declares `initial` and holds no value after the patch, with
+//!   `origin: initial`
 //!   (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+//! - **The writer.** The event that makes a record fills each field of
+//!   `authority: writer` with the event's writer, with `origin: system`
+//!   naming that writer; no patch writes one, and a later write keeps it
+//!   (`docs/decisions/084-a-field-holds-the-writer-that-made-its-record.md`).
 //!
 //! A record written again after it was retired starts from no fields, and
 //! its version continues from the retired one.
@@ -45,12 +47,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::error::{Case, Flaw, Part, Said};
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::event::{Event, EventBody, Procedure};
 use lakelands_api::expr::Expr;
-use lakelands_api::ontology::{OnInputChange, TypeDecl, ValueTypeDecl};
+use lakelands_api::ontology::{Authority, OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
-use lakelands_api::{FieldName, Position, Result, TypeName, Value};
-use lakelands_core::rights::Door;
+use lakelands_api::{Error, FieldName, Position, Result, TypeName, Value};
+use lakelands_core::sight::Door;
 use lakelands_core::{damaged, derive, value};
 
 use crate::backed::{self, Outputs};
@@ -66,7 +68,7 @@ pub struct Plan {
     /// allocated in its place.
     entries: Vec<Held>,
     /// The type with its `expr` functions' bodies put in
-    /// ([`resolve_functions`]).
+    /// ([`derive::resolve_functions`]).
     decl: TypeDecl,
     /// The value types its fields name.
     value_types: Vec<ValueTypeDecl>,
@@ -76,17 +78,30 @@ pub struct Plan {
     /// Its computed fields in the order the fold settles them
     /// ([`backed::computed_order`]).
     pub(crate) settled: std::result::Result<Vec<(FieldName, BTreeSet<FieldName>)>, Case>,
-    /// The version of the function that computes a field, by field.
-    versions: BTreeMap<FieldName, String>,
+    /// The function that computes a field, by field: its name and
+    /// version.
+    procedures: BTreeMap<FieldName, Procedure>,
     /// Its constraints, parsed once (lakelands#1119).
     pub(crate) constraints: Vec<Constraint>,
 }
 
 /// A type's constraint as the write path judges it: parsed, with the
 /// fields it reads and those whose write moves them, through derived
-/// fields and fields cleared when their inputs change.
+/// fields and fields cleared when their inputs change. `walked` is what
+/// a walk judges of it, without what only the write can judge, the
+/// write's clock and the record before it; `None` where nothing is left.
 pub(crate) struct Constraint {
     pub(crate) decl: lakelands_api::ontology::ConstraintDecl,
+    pub(crate) holds: Expr,
+    pub(crate) walked: Option<Walk>,
+    pub(crate) reads: BTreeSet<FieldName>,
+    pub(crate) fed: BTreeSet<FieldName>,
+}
+
+/// The part of a constraint a walk judges, with the fields that part
+/// reads and those whose write moves them: a walk reaches it, and grants
+/// by it, only by these (lakelands#1552).
+pub(crate) struct Walk {
     pub(crate) holds: Expr,
     pub(crate) reads: BTreeSet<FieldName>,
     pub(crate) fed: BTreeSet<FieldName>,
@@ -94,41 +109,55 @@ pub(crate) struct Constraint {
 
 impl Plan {
     fn of(o: &Ontology, raw: &TypeDecl) -> Plan {
-        let decl = resolve_functions(raw, o);
+        let decl = derive::resolve_functions(raw, |n| o.functions.get(n).map(|e| &e.decl));
         let named = raw.fields.iter().filter_map(|f| f.ty.value_type.as_ref());
-        let versions = raw.fields.iter().filter_map(|f| {
-            let function = o.functions.get(f.function.as_ref()?)?;
-            Some((f.name.clone(), function.version.to_string()))
+        let procedures = raw.fields.iter().filter_map(|f| {
+            let name = f.function.as_ref()?;
+            let function = o.functions.get(name)?;
+            let procedure = Procedure {
+                name: name.clone(),
+                version: function.version.to_string(),
+            };
+            Some((f.name.clone(), procedure))
         });
         let derived = derive::order(&decl);
         let computed = derived.as_deref().unwrap_or_default();
-        let constraints = (decl.constraints.iter()).filter_map(|c| {
-            let holds = crate::declare::typed(&c.holds, lakelands_core::expr::Place::Guard).ok()?;
-            let reads = lakelands_core::derive::reads(&holds);
-            // What moves a field it reads: a derived field's inputs, and
-            // those of a field the fold clears when they change, to the
-            // fields a write sends (lakelands#1119).
-            let feeds = (computed.iter())
-                .map(|(f, e)| (f, lakelands_core::derive::reads(e)))
-                .chain(
-                    decl.fields
-                        .iter()
-                        .filter(|f| f.on_input_change == OnInputChange::Clear)
-                        .map(|f| (&f.name, f.depends_on.iter().cloned().collect())),
-                );
-            let feeds: Vec<(&FieldName, BTreeSet<FieldName>)> = feeds.collect();
+        // What moves a field it reads: a derived field's inputs, and those
+        // of a field the fold clears when they change, to the fields a
+        // write sends (lakelands#1119).
+        let feeds = (computed.iter())
+            .map(|(f, e)| (f, lakelands_core::derive::reads(e)))
+            .chain(
+                decl.fields
+                    .iter()
+                    .filter(|f| f.on_input_change == OnInputChange::Clear)
+                    .map(|f| (&f.name, f.depends_on.iter().cloned().collect())),
+            );
+        let feeds: Vec<(&FieldName, BTreeSet<FieldName>)> = feeds.collect();
+        let fed = |reads: &BTreeSet<FieldName>| {
             let mut fed = reads.clone();
             while let Some(more) =
                 (feeds.iter()).find(|(f, inputs)| fed.contains(*f) && !inputs.is_subset(&fed))
             {
                 fed.extend(more.1.iter().cloned());
             }
-            let decl = c.clone();
+            fed
+        };
+        let constraints = (decl.constraints.iter()).filter_map(|c| {
+            let place = lakelands_core::expr::Place::Constraint;
+            let holds = crate::declare::typed(&c.holds, place).ok()?;
+            let reads = lakelands_core::derive::reads(&holds);
+            let walked = holds.walked().map(|holds| {
+                let reads = lakelands_core::derive::reads(&holds);
+                let fed = fed(&reads);
+                Walk { holds, reads, fed }
+            });
             Some(Constraint {
-                decl,
+                decl: c.clone(),
+                walked,
+                fed: fed(&reads),
                 holds,
                 reads,
-                fed,
             })
         });
         let constraints = constraints.collect();
@@ -140,18 +169,16 @@ impl Plan {
                 .collect(),
             derived,
             settled: backed::computed_order(o, raw),
-            versions: versions.collect(),
+            procedures: procedures.collect(),
             constraints,
             decl,
         }
     }
 }
 
-/// An entry of the ontology, of whichever kind.
 type Held = Arc<dyn Any + Send + Sync>;
 
-/// The entries of an ontology a type's plan is made from: the type's, and
-/// those of the functions and the value types its fields name.
+/// The ontology entries a type's plan is made from.
 fn entries<'o>(o: &'o Ontology, ty: &TypeName) -> impl Iterator<Item = Held> + 'o {
     let t = o.types.get(ty);
     let named = t.into_iter().flat_map(|t| &t.decl.fields).flat_map(|f| {
@@ -205,18 +232,55 @@ pub(crate) fn initial_of(
 }
 
 /// The provenance of a field filled with its `initial` at `event`: at a
-/// create, and at a migration that fills it (050).
+/// create, and at a migration that fills it (050). The store fills it by
+/// its own hand, for no one (088).
 pub(crate) fn initial_meta(event: &Event) -> FieldMeta {
     FieldMeta {
+        on_behalf_of: None,
         upstream: None,
         seen_at: None,
         source: None,
+        procedure: None,
         procedure_version: None,
         ..meta_of(event, Origin::Initial)
     }
 }
 
-/// The provenance an event gives the fields it writes.
+/// The store's own writer, `system:lakelands`.
+pub(crate) const STORE_WRITER: &str = "system:lakelands";
+
+/// The fields of `ty` the store fills with the writer that makes a record
+/// (`authority: writer`, 084): a create fills each with its event's writer,
+/// in this function's caller that the door and the fold share, and a
+/// migration that brings one fills each live record with its maker
+/// ([`maker`]). No door writes them.
+pub(crate) fn writer_fields(ty: &TypeDecl) -> impl Iterator<Item = &FieldName> {
+    (ty.fields.iter())
+        .filter(|f| f.authority == Authority::Writer)
+        .map(|f| &f.name)
+}
+
+/// The provenance of a field filled at `event` with `writer`, the writer
+/// that made its record: the store's own hand, naming that writer (084).
+pub(crate) fn writer_meta(event: &Event, writer: &str) -> FieldMeta {
+    FieldMeta {
+        writer: writer.to_owned(),
+        origin: Origin::System,
+        ..initial_meta(event)
+    }
+}
+
+/// The writer that made a live record, as far as the record itself tells:
+/// the writer its provenance names for a field written at the position
+/// that made it. A record whose every field was written again since, or
+/// whose type keeps no provenance, tells none, and takes the store's own
+/// writer, never a migration author's (084).
+pub(crate) fn maker(r: &StoredRecord) -> String {
+    (r.meta.values())
+        .find(|m| m.position == r.made)
+        .map_or_else(|| STORE_WRITER.into(), |m| m.writer.clone())
+}
+
 pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
     FieldMeta {
         upstream: event.upstream.clone(),
@@ -225,7 +289,9 @@ pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
         seen_at: event.seen_at,
         position: event.position,
         writer: event.writer.clone(),
+        on_behalf_of: event.on_behalf_of.clone(),
         source: event.source.clone(),
+        procedure: event.procedure.as_ref().map(|p| p.name.clone()),
         procedure_version: event.procedure.as_ref().map(|p| p.version.clone()),
         error: None,
         erased: false,
@@ -285,10 +351,10 @@ pub fn apply(
 
     let mut written = BTreeSet::new();
     for (name, value) in patch {
-        let Some(field) = raw.fields.iter().find(|f| &f.name == name) else {
+        let Some(field) = raw.field(name) else {
             continue;
         };
-        if !door.admits(field.authority) {
+        if !door.admits(field, event.source.as_ref()) {
             continue;
         }
         if value.is_null() {
@@ -310,6 +376,10 @@ pub fn apply(
                 fields.insert(f.name.clone(), v);
                 meta.insert(f.name.clone(), initial_meta(event));
             }
+        }
+        for name in writer_fields(raw) {
+            fields.insert(name.clone(), Value::from(event.writer.clone()));
+            meta.insert(name.clone(), writer_meta(event, &event.writer));
         }
     }
 
@@ -341,13 +411,12 @@ pub fn apply(
     }))
 }
 
-/// The provenance of a value the fold computed: the event's, with
-/// `origin: derived`, and for a field a function computes, that
-/// function's version as the procedure's.
+/// The event's provenance with `origin: derived`, and the field's function as procedure.
 fn derived_meta(event: &Event, plan: &Plan, field: &FieldName) -> FieldMeta {
     let mut m = meta_of(event, Origin::Derived);
-    if let Some(version) = plan.versions.get(field) {
-        m.procedure_version = Some(version.clone());
+    if let Some(p) = plan.procedures.get(field) {
+        m.procedure = Some(p.name.clone());
+        m.procedure_version = Some(p.version.clone());
     }
     m
 }
@@ -480,10 +549,7 @@ fn compute(
 ) -> Result<BTreeSet<FieldName>> {
     let plan = outputs.plans.get(ontology, raw);
     let order = plan.derived.as_ref().map_err(|e| {
-        let (ty, cause) = (
-            raw.name.clone(),
-            Box::new(lakelands_core::invalid(e.clone())),
-        );
+        let (ty, cause) = (raw.name.clone(), Box::new(Error::invalid(e.clone())));
         damaged(Part::Projection, None, Flaw::CannotDerive { ty, cause })
     })?;
     let mut changed = BTreeSet::new();
@@ -533,28 +599,13 @@ fn compute(
     Ok(changed)
 }
 
-/// A type with every field computed by a declared `expr` function given
-/// that function's expression, so the derived pass treats both alike. A
-/// field whose function has another backing is left to [`backed`].
-pub fn resolve_functions(decl: &TypeDecl, ontology: &Ontology) -> TypeDecl {
-    let mut out = decl.clone();
-    for f in &mut out.fields {
-        if let Some(name) = &f.function
-            && let Some(func) = ontology.functions.get(name)
-        {
-            f.derived = func.decl.expr.clone();
-        }
-    }
-    out
-}
-
 /// Refuse a record that lacks a value for a required field.
 pub fn check_required(decl: &TypeDecl, fields: &BTreeMap<FieldName, Value>) -> Result<()> {
     for f in decl.fields.iter().filter(|f| f.required) {
         if fields.get(&f.name).is_none_or(Value::is_null) {
             let (ty, field) = (decl.name.clone(), f.name.clone());
             let case = lakelands_api::error::Case::Required { ty, field };
-            return Err(crate::writes::constraint(Some(f.name.clone()), case));
+            return Err(Error::constraint(Some(f.name.clone()), case));
         }
     }
     Ok(())

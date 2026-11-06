@@ -101,15 +101,16 @@ belongs to whoever stands on it; the life on top is Wildstuff's product.
 `get`, `upsert`, `retire` — each with a JSON schema derived from the
 type and filtered by the caller's rights, a `link` and `unlink` pair for
 each relation carried by link records, plus one tool per declared verb,
-`describe`, `query` and `search`. Rights can remove a door as well
+`describe`, `query`, `cypher` and `search`. Rights can remove a door as well
 as narrow it: a type whose fields all come from a source has no
 `upsert`. Beside them an agent sees the lake's other doors: `pin` for
 the position its turn reads at, `subscribe` and `unsubscribe` to be told
 of changes without polling, `propose`, `proposals`, `accept` and
 `reject` for writes that wait for a review, and `declare_type`,
 `add_field`, `migrate` and `recompute` for the schema. Served over MCP
-(stdio and HTTP) and REST from one catalog. Agents never write a query
-language.
+(stdio and HTTP) and REST from one catalog. Agents write no query
+language of Lakelands' own: `cypher` reads a statement of the
+openCypher subset as the `query` pattern it translates into.
 
 ## Verify it
 
@@ -148,8 +149,10 @@ terrain Lakelands is built for, and where it is not the right tool.
 
 **Choose something else when:**
 
-- **many writers hammer one dataset at once.** A lake has one writer;
-  throughput comes from many lakes, not from one.
+- **many processes must each write one dataset directly.** A lake takes
+  any number of concurrent callers, and writes from several processes go
+  through its one writing process; past what one writer takes (about
+  5 000 writes a second on SQLite), throughput comes from more lakes.
 - **you need queries across tenants.** There is no query across lakes;
   data crosses only as a mirror that carries its provenance.
 - **the work is heavy graph analytics.** Walks have ceilings, and a walk
@@ -160,47 +163,42 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.16.1`.** Lakelands `0.16.1` is the `lakelands` CLI, its
+> **Status: `0.23.0`.** Lakelands `0.23.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (718 checks through the doors and 72 through the
-> engine seam), with 67 decision records and the event log at format
-> version 17, installable from the release. Its budgets: the store
-> facade and engine traits hold 71 of 110 methods, the core crates'
-> product code 72 370 of 74 000 lines and their specification 107 554 of
-> 108 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
-> recorded rule (decision 047): the operator set the round's ceilings at
-> 68 000 and 98 000 and raised them twice, measured, to 74 000 and
-> 108 000. Beside what `0.15.1` held, part of a source may be taken
-> back, what it wrote before a time or one delivery, from records
-> another hand also writes: its values read as erased, and a key version
-> whose values are all taken is destroyed (decision 065). A change to
-> the ontology tells its plan before it lands, and a proposal carries it
-> (decision 062). A field may be one only declared verbs write, and a
-> type's records ones only its verbs retire. A trigger, a verb, an
-> object set or a function may be withdrawn; a trigger past its depth
-> drops instead of firing, says what kind of change fired it, and may
-> fail closed on a field the record does not hold. A function that
-> reaches outside the lake runs by its declared risk (decision 064).
-> Every setting is in one list, with its kind, meaning and group
-> (decision 063); a set may hold a kept view (decision 066); a search
-> may take a second stage (decision 067), and a lexical search may weigh
-> one field above another (decision 025). A query vector names the model
-> that made it, a host's executor may decline a call by policy and say
-> so, and forgetting a source walks the log once. A reaction set off by
-> a value an act erased since is marked overruled on the feed, and not
-> told again. The projection's commit on PostgreSQL waits for no flush
-> of its own (decision 061). `lakelands verify` checks a lake's log, and
-> `lakelands init` makes a first lake and an agent's MCP configuration
-> in one command. A writer's open upgrades a lake of format 14, 15 or 16
-> to 17 by appending, and the lake this release writes, a part of a
-> source taken back and a destroyed key version among it, is kept beside
-> those of the releases before.
-> `0.16.1` fixes `0.16.0`: a declaration that re-plans over a lost key
-> is refused before it appends, an ingest reads the targets of its
-> references together, a preflight's expected time follows the lake's
-> last rebuild, and an import's batch is bounded in bytes. The log
-> format is unchanged.
+> conformance suite (1098 checks through the doors and 108 through the
+> engine seam), with 101 decision records and the event log at format
+> version 23, installable from the release. Its budgets: see
+> `docs/budgets.md` for the ceilings and the ratchet bases.
+> Beside what `0.22.0` held (the numbers are issues), a host keeps
+> series in a lake: a read of a window of one series walks its window
+> and `rows_read` says so (lakelands#1633, lakelands#1635,
+> lakelands#1638), a view groups by a bucket of time, in a named zone or
+> not, with no field added to the source type, and a read of a kept view
+> narrows by its group key (lakelands#1634, lakelands#1636,
+> lakelands#1667), a trigger's guard reads the value in force from a
+> record of its own, so a threshold changes by a write (lakelands#1640),
+> and a series is thinned past a horizon while its kept roll-ups stay
+> and answer as before (lakelands#1639). Removal, forget, purge, a
+> setting's field taken back and the builds of a sort index, a lookup
+> index, a view and a series' pair run in parts beside the writer, one
+> turn at a time, and a read answers as before until a build is whole
+> (lakelands#1649, lakelands#1651, lakelands#1690, lakelands#1721).
+> A lake keeps its calendar in one named zone (`today()` and aging read
+> it, lakelands#1665), a grant holding an unknown key does not start, a
+> misspelt field is told and a repeated key refused (lakelands#1627,
+> lakelands#1658), `describe`'s stated position is true (lakelands#1632),
+> a delivery in two calls keeps its quarantine ids apart
+> (lakelands#1609), `Lakelands-Append` names the last position sent
+> (lakelands#1616), and the PostgreSQL engine's pooler and mutual-TLS
+> refusals are proved against live servers in CI (lakelands#1629). The
+> tick workload's table is in `docs/hosting.md` (lakelands#1637).
+> **0.23.0 begins a new log format.** It reads and writes format 23 and
+> nothing else: a lake of any other format is refused, nothing is
+> translated, and profiles are made anew; `lakelands upgrade` is gone
+> (lakelands#1664). The lake 0.23.0 made through its doors is kept,
+> never edited, under `docs/log-format/lakes/23/`, and every later
+> release reads it.
 
 ## Try it
 
@@ -280,6 +278,10 @@ The walk's page lists every call and the answer it must give.
 - [`docs/walks/walk-5.md`](docs/walks/walk-5.md): the fifth walk, by a
   blind LLM agent that sees only the MCP door: a clerk's tasks, and the
   common refusals, each with what the agent changed after it.
+- [`docs/walks/walk-6.md`](docs/walks/walk-6.md): the sixth walk, by the
+  same blind agent: graph tasks through the typed `query` tool and
+  through a statement of the openCypher subset, measured on the same
+  tasks and the same lake.
 
 ## What it is not
 
@@ -320,7 +322,21 @@ The walk's page lists every call and the answer it must give.
 format, per-field provenance, positions on every answer, the engine
 contract and the seams. Each later release built on them; what it adds
 is in its notes on the releases page, and what comes next is on the
-milestones.
+milestones. `0.23.0` built what the status block above lists. `0.22.0`
+built reading judged apart from writing, a grant over a set of values, a
+write's occasion, a vector search's text, the feed's end, quarantine,
+`preceding` in a constraint or a trigger, `first` and `last`, extremes
+and `in_force`, and a bounded HTTP door. `0.21.1` fixed
+lakelands#1572 and added `defer_computed_fields` (lakelands#1576).
+`0.21.0` built quarantine, the principal a write was made for, dated
+settings, an edge per key of an array field, openCypher writes and
+communities. `0.20.0`
+built the openCypher subset as an MCP read tool beside `query`, PageRank
+and the cheapest walk, patterns that branch and join, a change planned
+before it acts, sets decided at the read, a field hidden on the records
+a condition selects, where a lexical hit matched, BM25F as the lexical
+score on every engine (lakelands#1459), the compact log format 20, and
+the sealing of a record's erasable values in one box.
 
 ## Licence
 

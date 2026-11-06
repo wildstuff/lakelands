@@ -17,13 +17,20 @@
 //! ```text
 //! meta         the lake's name, and the position the projection reflects
 //! lease        the fencing token and its holder (lease.rs)
-//! segments     the log's segments, and each sealed one's digest (log.rs)
-//! log          one row per event: its canonical bytes and members
-//! declarations, records, proposals, members, outputs, applied
+//! segments     the log's segments, each sealed one's digest and the
+//!              active one's running (log.rs)
+//! log          one row per block or line alone: its bytes, its first and
+//!              last position, its prev and hash as bytes (log.rs)
+//! ids          each event's id as bytes and its position, keyed by both
+//! declarations, records, proposals, members, outputs, routes
 //!              the projection, with its kept history (projection.rs)
 //! text_index, edges, full_text, vectors
 //!              the head indexes that find candidates
 //! ```
+//!
+//! Beside it, while a rebuild builds a projection, a schema
+//! `lakelands_rebuild_<digest>` holds that projection's tables and `meta`
+//! until they are moved into the lake's schema (scratch.rs).
 //!
 //! Every statement names its tables with the schema; no connection's
 //! `search_path` is set. `PgLake::export` writes the log's segments as
@@ -44,6 +51,7 @@ mod handle;
 mod lease;
 mod log;
 mod projection;
+mod scratch;
 mod vector_index;
 mod view;
 
@@ -54,9 +62,12 @@ use lakelands_api::location::{EngineConfig, Location};
 pub use connect::MIN_SERVER_VERSION;
 use handle::PgLake;
 #[doc(hidden)]
-pub use handle::{ANALYZE_AFTER, export};
+pub use handle::{ANALYZE_AFTER, LAKE_READERS, export};
 #[doc(hidden)]
-pub use view::{few_holders_statements, holding_statements, read_statements};
+pub use view::{
+    few_batch_statements, few_holders_statements, holding_statements, range_statements,
+    read_statements,
+};
 
 /// The name the engine answers to, in [`LakeEngine::name`] and for
 /// `EngineConfig::Postgres`.
@@ -66,14 +77,16 @@ pub(crate) const NAME: &str = "pg";
 /// build on the development machine (lakelands#1042).
 pub(crate) const REBUILD_RATE: u64 = 2_500;
 
-pub(crate) use lakelands_core::{invalid, lock};
+pub(crate) use lakelands_core::lock;
 
 /// A failed statement, for the host. Of an error the server sends, only
 /// its severity, SQLSTATE and primary message: its `DETAIL`, `HINT`,
 /// `WHERE` and statement position can quote a record's key or values,
 /// which the answer carries to a caller who may not be shown that record
-/// (024). Any other failure says every cause the driver gives.
+/// (024). Any other failure says every cause the driver gives. The
+/// server's lack of disk room is named as that, the operator's to mend.
 pub(crate) fn sql(e: postgres::Error) -> Error {
+    let full = e.code() == Some(&postgres::error::SqlState::DISK_FULL);
     let detail = match e.as_db_error() {
         Some(db) => {
             let (severity, code) = (db.severity(), db.code().code());
@@ -89,6 +102,9 @@ pub(crate) fn sql(e: postgres::Error) -> Error {
             Detail::scrubbed(said)
         }
     };
+    if full {
+        return Error::unavailable(Situation::NoRoom { part: None, detail });
+    }
     let (doing, part) = (Doing::Query, Part::Projection);
     Error::unavailable(Situation::Storage {
         doing,
@@ -123,6 +139,21 @@ impl EngineOpener for PgOpener {
             mode,
         )?))
     }
+
+    /// Opens the log in the location's schema as `Read` does, and the
+    /// scratch beside its projection, a schema of its own; the
+    /// projection's tables are not read.
+    fn open_scratch(&self, location: &Location) -> Result<Box<dyn LakeEngine>> {
+        let lake = location.lake.clone();
+        Ok(Box::new(PgLake::open_scratch(lake, target(location)?)?))
+    }
+
+    /// Measures the projection's tables in the location's schema, the log's
+    /// left out, from PostgreSQL's catalogue; none of them is opened to
+    /// read.
+    fn room(&self, location: &Location) -> Result<u64> {
+        handle::room(&target(location)?)
+    }
 }
 
 /// Where a location keeps its lake: the connection, the schema (by
@@ -133,11 +164,12 @@ pub(crate) fn target(location: &Location) -> Result<connect::Target> {
         schema,
         tls,
         tuning,
+        tablespaces,
     } = &location.engine
     else {
         let (engine, kind) = (NAME.to_owned(), "postgres".to_owned());
         let lake = Box::new(location.lake.clone());
-        return Err(invalid(Case::EngineOtherLocation {
+        return Err(Error::invalid(Case::EngineOtherLocation {
             engine,
             location: kind,
             lake,
@@ -150,5 +182,6 @@ pub(crate) fn target(location: &Location) -> Result<connect::Target> {
             .unwrap_or_else(|| format!("lakelands_{}", location.lake)),
         tls: tls.clone(),
         tuning: *tuning,
+        tablespaces: tablespaces.clone().unwrap_or_default(),
     })
 }

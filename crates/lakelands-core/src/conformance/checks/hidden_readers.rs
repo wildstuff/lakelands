@@ -3,17 +3,10 @@
 //! refused on that field, before any check that would name the hidden
 //! part.
 
-use lakelands_api::ontology::{FieldDecl, RelationDecl, StorageKind, TypeDecl};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Declaration, Migration, ProposedWrite};
-use lakelands_api::{Access, Catalog, Principal};
-use serde_json::json;
-
 use super::embeddings::{reopen_failed, with_embedder};
 use crate::conformance::backing::{EMBED_MODEL, embedder_as};
-use crate::conformance::fixture::{Lake, Must, derived, embedding, field, field_access, type_of};
-use crate::conformance::{Held, Reopen, Store};
-use crate::links::link_type_name;
+use crate::conformance::fixture::{derived, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     HIDDEN_READER_STANDS = a_field_a_hidden_part_reads_stands_to_its_author,
@@ -210,7 +203,7 @@ async fn a_field_a_hidden_part_reads_stands_to_its_author(store: Store, reopen: 
         .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
     let l = Lake::of(store.as_ref());
     let mut who = field_access(store.as_ref(), "author", "he", &[("salary", Access::None)]);
-    (who.grants.schema, who.grants.review) = (true, true);
+    (who.grants.schema, who.grants.review, who.grants.restricted) = (true, true, true);
     let kept = |f: &str| TypeGrants {
         fields: [(f.into(), Access::None)].into(),
         ..Default::default()

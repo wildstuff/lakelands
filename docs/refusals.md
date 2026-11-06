@@ -28,6 +28,7 @@ What a declared name names.
 | `executor` | — | executor | A verb's executor. |
 | `trigger` | — | trigger | A trigger. |
 | `constraint` | — | constraint | A type's constraint. |
+| `precondition` | — | precondition | A verb's precondition. |
 | `object_set` | — | object set | An object set. |
 | `function` | — | function | A function. |
 | `setting` | — | setting | A host's setting. |
@@ -88,6 +89,65 @@ What a REST path segment a client sends names.
 | `verb` | — | the verb | A verb. |
 | `proposal` | — | the proposal | A proposal. |
 | `source` | — | the source | A source. |
+
+## `Construct`
+
+An openCypher construct outside the subset Lakelands takes, spelt as the statement spells it.
+
+| code | parameters | sentence | about |
+|---|---|---|---|
+| `create` | — | `CREATE` | A `CREATE` clause. |
+| `merge` | — | `MERGE` | A `MERGE` clause. |
+| `set` | — | `SET` | A `SET` clause. |
+| `delete` | — | `DELETE` | A `DELETE` clause. |
+| `detach_delete` | — | `DETACH DELETE` (a retirement that unlinks is two writes; the plan tells what still names the record) | A `DETACH DELETE` clause. |
+| `remove` | — | `REMOVE` | A `REMOVE` clause. |
+| `foreach` | — | `FOREACH` | A `FOREACH` clause. |
+| `load_csv` | — | `LOAD CSV` | A `LOAD CSV` clause. |
+| `call` | — | `CALL` (a procedure or a subquery) | A procedure call or a `CALL` subquery. |
+| `with` | — | `WITH` | A `WITH` clause. |
+| `union` | — | `UNION` | A `UNION` of statements. |
+| `unwind` | — | `UNWIND` | An `UNWIND` clause. |
+| `use` | — | `USE` | A `USE` clause. |
+| `profile` | — | `PROFILE` (there is no plan to profile; `EXPLAIN` shows the pattern) | `PROFILE` before a statement. |
+| `several_statements` | — | a second statement | A statement after the first. |
+| `distinct` | — | `DISTINCT` | `DISTINCT`. |
+| `list_comprehension` | — | a list comprehension | A list comprehension. |
+| `pattern_comprehension` | — | a pattern comprehension | A pattern comprehension. |
+| `map_projection` | — | a map projection | A map projection. |
+| `count_subquery` | — | `COUNT` over a subquery | A `COUNT` subquery. |
+| `exists` | — | `EXISTS` (a `WHERE` reads only `NOT EXISTS` over a part of one relationship, as a whole conjunct) | An `EXISTS` other than a `NOT EXISTS` conjunct. |
+| `case` | — | `CASE` | A `CASE` expression. |
+| `xor` | — | `XOR` | `XOR`. |
+| `modulo` | — | `%` | The `%` operator. |
+| `power` | — | `^` | The `^` operator. |
+| `ends_with` | — | `ENDS WITH` | `ENDS WITH`. |
+| `list_literal` | — | a list outside `IN` | A list outside `IN`. |
+| `map_literal` | — | a map outside a node | A map outside a node. |
+| `named_path` | — | a named path | A path bound to a name. |
+| `shortest_path` | — | a shortest path | `shortestPath` or `allShortestPaths`. |
+| `relationship_variable` | — | a variable on a relationship (a link's fields are read through its link type) | A variable on a relationship. |
+| `relationship_properties` | — | properties on a relationship (a link's fields are read through its link type) | Properties on a relationship. |
+| `relation_alternation` | — | a choice of relationship types (`:a\|b`) | A choice of relationship types. |
+| `several_labels` | — | a node of several labels | A node of more than one label. |
+| `unbounded_length` | — | a length with no upper bound (`*`, `*2..`; none is made up) | A variable length with no upper bound. |
+| `calendar_duration` | — | a duration in months or years, which has no fixed length | A duration in months or years. |
+| `match_from_optional` | — | a `MATCH` reading a name only an `OPTIONAL MATCH` binds (it would drop the rows the optional part keeps; write the part as a `MATCH`) | A `MATCH` part reading a name only an optional part binds. |
+| `optional_from_optional` | — | an `OPTIONAL MATCH` walking from a name only another `OPTIONAL MATCH` binds (the two would match or miss as one) | An `OPTIONAL MATCH` walking from a name another one binds. |
+| `optional_parts` | — | an `OPTIONAL MATCH` walking from more than one name bound before it (an optional part is one branch from one name) | An `OPTIONAL MATCH` hanging from more than one bound name. |
+| `aggregate_in_expression` | — | an aggregate inside an expression (a measure is one function of one path) | An aggregate inside an expression. |
+| `using` | — | `USING` (an index hint) | A `USING` hint. |
+| `on_create` | — | `ON CREATE` (a door writes one patch, whether the record is there or not) | `ON CREATE`. |
+| `on_match` | — | `ON MATCH` (a door writes one patch, whether the record is there or not) | `ON MATCH`. |
+| `label` | — | a label set or removed (a record's type is declared, never written) | A label set or removed. |
+| `schema` | — | an index or a constraint (the ontology is declared through its own doors) | An index, a constraint or a `DROP`. |
+| `return_beside_write` | — | a `RETURN` beside a write (a write statement answers its door's outcome or its plan) | `RETURN` after a write. |
+| `computed_value` | — | a value computed or read from a record (a write sets values: literals or parameters) | A value written that is computed or read from a record. |
+| `write_selection` | — | a `MATCH` the condition of a change to one type cannot say (a second name, an optional part, a part that must not match, or a link's end not named by its key) | A selection the change's condition cannot say. |
+| `undirected_write` | — | a relationship written or changed without a direction | A relationship written without a direction. |
+| `explain_write` | — | `EXPLAIN` before a write (a `MATCH … SET` sent alone answers its plan) | `EXPLAIN` before a write. |
+| `set_map` | — | a map set on a name (`=` or `+=`; set each property by its path) | A map set on a name. |
+| `order_by_aggregate` | — | `ORDER BY` beside an aggregate (its groups come in one fixed order, by the fields returned beside it: leave `ORDER BY` out) | `ORDER BY` beside an aggregate. |
 
 ## `Act`
 
@@ -173,6 +233,15 @@ How a call of a verb that reaches outside the lake, whose executor's answer is h
 | `other_key` | — | sent again under its key, the call answers it | Sent again under its key, the call is answered. |
 | `propose` | — | accepted again, the proposal answers it | Accepted again, the proposal is answered. |
 
+## `Per`
+
+What a bound on the requests of a network door counts by.
+
+| code | parameters | sentence | about |
+|---|---|---|---|
+| `connection` | — | connection | One connection. |
+| `principal` | — | principal | One principal. |
+
 ## `Tls`
 
 A TLS setup that failed, on the side of the lake's own connection.
@@ -202,6 +271,7 @@ Where in a declaration or a request a case is said.
 | `value_type` | `name` (ValueTypeName) | value type `{name}` | A value type. |
 | `trigger` | `name` (TriggerName) | trigger `{name}` | A trigger. |
 | `type_constraint` | `name` (ConstraintName) | constraint `{name}` | A type's constraint. |
+| `precondition` | `name` (PreconditionName) | precondition `{name}` | A verb's precondition. |
 | `object_set` | `name` (String) | object set `{name}` | An object set. |
 | `function` | `name` (String) | function `{name}` | A function. |
 | `function_config` | `key` (String) | `config.{key}` | A member of a function's `config`. |
@@ -220,6 +290,7 @@ Where in a declaration or a request a case is said.
 | `initial` | — | `initial` | A field's `initial` value. |
 | `erasable` | — | `erasable` | A field's `erasable`. |
 | `authority` | — | `authority` | A field's `authority`. |
+| `admits` | — | `admits` | A field's `admits`. |
 | `links` | `name` (TypeName) | the links of `{name}` | The link types of a type's relations. |
 | `start` | — | the start | A pattern's start. |
 | `step` | `step` (usize), `relation` (RelationName) | step {step} over `{relation}` | A pattern's step, by its number from 1 and its relation. |
@@ -274,6 +345,13 @@ What a refusal is about.
 | `computed_cycle` | `fields` (Names) | computed fields read each other in a cycle: {fields} | Computed fields that read each other. |
 | `computed_reads_itself` | `field` (FieldName) | the computed field `{field}` reads itself | A computed field that reads itself. |
 | `constraint_named_twice` | `constraint` (ConstraintName) | two constraints are named `{constraint}` | A type naming two constraints alike. |
+| `clock_not_compared` | `constraint` (ConstraintName) | constraint `{constraint}` reads the clock other than as `now()` or `today()`, with or without a duration added or taken away, on one side of a comparison whose other side is a field, with or without a duration added or taken away; the rule is fixed and only the write's instant moves | A constraint whose `now()` or `today()` is no clock term on one side of a comparison with a field. |
+| `preceding_unlooked` | `field` (FieldName) | a `preceding` matches its series on `{field}`, which is not text or a reference | A `preceding` whose matched field the exact-text index cannot keep. |
+| `preceding_unordered` | `field` (FieldName) | a `preceding` orders its series by `{field}`, whose kind has no order | A `preceding` ordered by a field whose kind has no order. |
+| `in_force_form` | `field` (FieldName) | the field `{field}` pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of this record | A field's `in_force` not of the form it pairs by. |
+| `in_force_pair` | `field` (FieldName), `left` (FieldName), `right` (FieldName) | the field `{field}` pairs `{left}` with `{right}`: two fields of one kind, a match of text or a reference, an order bound of a kind with an order | A field's `in_force` pair whose two fields cannot pair. |
+| `guard_in_force_form` | — | its `when` pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of the trigger's type | A trigger's `in_force` not of the form it pairs by. |
+| `guard_in_force_pair` | `left` (FieldName), `right` (FieldName) | its `when` pairs `{left}` with `{right}`: two fields of one kind, a match of text or a reference, an order bound of a kind with an order | A trigger's `in_force` pair whose two fields cannot pair. |
 | `constraint_reads_beyond` | `constraint` (ConstraintName), `reads` (Beyond) | constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields | A constraint that reads what can change without a write of the record. |
 | `declared_twice` | `what` (Naming), `name` (String) | it declares the {what} `{name}` twice | A name declared twice in one declaration. |
 | `derived_and_function` | — | a field is derived from an expression or computed by a function, not both | A field both derived and computed by a function. |
@@ -298,20 +376,32 @@ What a refusal is about.
 | `erasable_not_of_type` | — | only a field of a type declares it | A field of no type declared erasable. |
 | `erasable_key` | — | a key's field is the record's key, which stays plaintext in every event | A key field declared erasable. |
 | `erasable_reference` | — | a field that names a record is read by every walk, so it stays plaintext | A field that names a record declared erasable. |
+| `admits_not_authored` | — | only an authored field admits a source: a shared field takes every source already, a source field is any source's, and no source writes a derived field or one only verbs write | `admits` on a field whose authority is not `authored`. |
+| `admits_not_of_type` | — | only a field of a type's own records admits a source; no ingest writes a view's field, a relation's, a verb's payload or a function's input | `admits` on a field no `ingest` writes. |
+| `admits_no_provenance` | — | the type keeps no per-field provenance, so a source's value could not be told from an author's, nor taken back by its purge | `admits` on a field of a type that keeps no per-field provenance. |
+| `admits_twice` | `source` (SourceId) | it admits `{source}` twice | A source `admits` names twice. |
 | `verb_required` | — | a required field is written by every create, and a verb writes only a record that stands; it needs an `initial` | A field only verbs write declared required with no `initial`. |
 | `verb_computed` | — | the fold computes it, so no door writes it, a verb's neither | A field only verbs write that the fold computes. |
 | `initial_breaks` | `constraint` (ConstraintName), `field` (FieldName) | the `initial` of `{field}`, which only the type's verbs write, breaks the constraint `{constraint}`: no record of the type could be made | An `initial` of fields only verbs write that a type's constraint refuses: no create could hold it. |
 | `no_initial_breaks` | `constraint` (ConstraintName), `field` (FieldName) | `{field}`, which only the type's verbs write, has no `initial`, and a create leaves it null, which the constraint `{constraint}` refuses: no record of the type could be made | A field only verbs write with no `initial`, which a create leaves null, where a constraint reading only such fields refuses that. |
 | `verb_key` | — | a key's field is written by every create, and a verb writes only a record that stands | A key field only verbs write. |
+| `writer_not_of_type` | — | the store fills it when a record is made, so it is a field of a stored type's own records, not a view's, a relation's, a verb's payload or a function's input | A field of `authority: writer` that is not a stored type's own. |
+| `writer_not_text` | — | it holds a writer as `<kind>:<id>`, so it is a `text` field with no value type | A field of `authority: writer` of another kind than plain `text`. |
+| `writer_key` | — | a key's field is given by the record's key, and this one by the store | A key field of `authority: writer`. |
+| `writer_computed` | — | the store fills it with the writer that made its record, so nothing computes or clears it | A field of `authority: writer` that is computed or cleared. |
 | `expr_no_expression` | — | it is backed by `expr` and has no expression | An `expr` function with no expression. |
 | `expr_risk` | — | it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low` | An `expr` function declared above `low` risk. |
+| `expr_too_deep` | `max` (usize), `offset` (usize) | an expression nests at most {max} levels deep: a parenthesis, a call argument, a list item, `not` and a unary `-` each go one deeper (at character {offset}) | An expression nested deeper than the parser reads. |
 | `expression_not_expr` | `backing` (String) | it has an expression but is backed by `{backing}` | An expression on a function another backing computes. |
 | `function_input_kind` | `function` (String), `input` (FieldName), `kind` (StorageKind), `type` (TypeName), `held` (StorageKind) | the function `{function}` takes `{input}` as a {kind}, and `{type}` holds it as a {held} | A function's input the type holds as another kind. |
 | `function_not_derived` | — | a field computed by a function has the authority `derived` | A field computed by a function whose authority is not `derived`. |
 | `function_undeclared` | `name` (String) | it names the function `{name}`, which is not declared | A field naming a function that is not declared. |
 | `withdrawn_in_use` | `kind` (Naming), `name` (String), `by` (String) | the {kind} `{name}` is in use by {by}, so it is not withdrawn | A withdrawal of a declaration something in force reads. |
 | `withdrawn_undeclared` | `kind` (Naming), `name` (String) | the {kind} `{name}` is not declared, so it is not withdrawn | A withdrawal of a name not in force. |
-| `withdrawn_kind` | `kind` (Naming) | a {kind} is not withdrawn: a trigger, a verb, an object set or a function is; a type leaves by `migrate`, and a setting by its record | A withdrawal of a kind that leaves force another way. |
+| `withdrawn_name_held` | `type` (TypeName) | the lake keeps the records of the withdrawn type `{type}`; take another name | A type declared again where the lake keeps records of the one withdrawn. |
+| `withdrawn_kind` | `kind` (Naming) | a {kind} is not withdrawn: a type, a trigger, a verb, an object set or a function is, and a setting leaves by its record | A withdrawal of a kind that leaves force another way. |
+| `group_term` | `name` (FieldName), `second` (bool) | its group term `{name}` [{?second}is its second, and a view groups by one term at most\|is no `date_bucket` over one field of its source that holds an instant or a date, its other arguments written out] | A view's group term that is not one `date_bucket` over a field of instants or dates, or is its second term. |
+| `group_term_merged` | `name` (FieldName) | its group term `{name}` meets no group of a merged source, which groups by fields alone; group the view by fields, or merge into a view without a term | A view grouped by a term that merges a source, whose groups are fields. |
 | `group_unkeyable` | `field` (FieldName) | it groups by `{field}`, whose kind cannot be part of a key | A view grouped by a field no key may be. |
 | `initial_cleared` | — | its inputs would clear it at their next change | An `initial` value on a field its inputs clear. |
 | `initial_in_view` | — | a view's records are computed, and none is created | An `initial` value on a view's field. |
@@ -345,8 +435,12 @@ What a refusal is about.
 | `param_undeclared` | `name` (String), `declared` (Names, optional) | its view reads param('{name}'), which it does not declare; [its parameters are {declared}\|it declares no parameters] | A `param` its view does not declare. |
 | `param_unread` | `name` (ParamName) | its view declares the parameter `{name}`, which neither its `where` nor its measures read, so a reader would bind a value that changes nothing | A view's parameter nothing reads. |
 | `payload_no_member` | `member` (FieldName) | it reads `payload.{member}`, which the payload does not have | A verb's assignment reading a payload member the payload does not have. |
-| `read_as_stored` | — | a trigger, a verb, an object set or another type's derived relation in force reads it as stored, so it is not computed at the read | A field taken to the read that something reads as stored. |
+| `read_as_stored` | — | a trigger, a verb, an object set, another type's derived relation or another type's `in_force` in force reads it as stored, so it is not computed at the read | A field taken to the read that something reads as stored. |
 | `reads_at_read` | `field` (FieldName), `type` (TypeName) | it reads `{field}`, which `{type}` computes at the read; it is evaluated over the record as stored, which never holds it | A declaration reading as stored a field computed at the read. |
+| `set_reads_clock` | `set` (String), `call` (String) | the set `{set}` reads `{call}` in its `where`; a kept set is decided at the write and keeps what it decided, so a read of `in_set` would drift from it; declare it decided at the read, or keep a time window in a view's `where` or a computed field | A set's `where` reading the clock. |
+| `set_at_read_steps` | `set` (String), `path` (String) | the set `{set}` is decided at the read, which steps through no reference, and its `where` reads `{path}` | A set decided at the read whose `where` steps across a reference or a relation. |
+| `set_at_read_named` | `set` (String), `kind` (Naming), `name` (String) | the set `{set}` is decided at the read and the {kind} `{name}` names it, which is decided at a write: what a write decides by it would drift from what a read of it answers | A set decided at the read named by what a write decides. |
+| `set_at_read_of_view` | `set` (String), `view` (TypeName) | the set `{set}` is decided at the read and holds `{view}`, a view: in this release a set of a view is decided at the write; declare it kept, or of the view's source | A set decided at the read of a view. |
 | `set_reads_computed` | `field` (FieldName), `type` (TypeName) | it reads `{field}` of `{type}` across an edge, which is computed outside the lake: its value lands with no write that would decide this again | A set's `where` or a trigger's `when` reading across an edge a field computed outside the lake. |
 | `reads_no_input` | `field` (FieldName) | it reads `{field}`, which is not one of its inputs | A function's expression reading what is not one of its inputs. |
 | `reads_param_view` | `source` (TypeName), `param` (ParamName) | its view reads `{source}`, a view with the parameter `{param}`; only a read that names a view binds its parameters, so no view reads one | A view reading a view with parameters. |
@@ -373,31 +467,58 @@ What a refusal is about.
 | `via_with_fields` | — | a relation carried by `via` has no fields of its own; fields belong to a relation carried by link records, declared without `via` | A relation carried by `via` with fields. |
 | `view_cycle` | `chain` (Names) | its view closes a cycle, reading {chain} in turn; a view may not read itself, through other views or directly | A view that reads itself. |
 | `view_field_unfilled` | `field` (FieldName) | its field `{field}` is neither a `group_by` field nor a measure of its view, so nothing would fill it | A view's field nothing fills. |
-| `view_kept_for_set` | `type` (TypeName) | it holds `{type}`, a view the lake keeps, and the view stays kept while the set holds it: withdraw the set first | A view a set holds no longer kept. |
-| `view_source_stepped` | `type` (TypeName), `source` (TypeName) | it holds `{type}`, a view over `{source}`, and the change moves records of `{source}` where no write decides the set again: withdraw the set, make the change, then declare the set again | A change of a view's source that no write decides a set over the view again for. |
+| `view_building` | `type` (TypeName) | it reads `{type}`, a view the lake is building and has not kept whole yet, and a set or a trigger reads only a whole view: declare it again when the build has ended | A set or a trigger declared over a kept view whose build is not whole. |
+| `view_kept_for_set` | `type` (TypeName) | it reads `{type}`, a view the lake keeps, and the view stays kept while a set holds it or a trigger watches it: withdraw it first | A view a set holds, or a trigger watches, no longer kept. |
+| `view_source_stepped` | `type` (TypeName), `source` (TypeName) | it reads `{type}`, a view over `{source}`, and the change moves records of `{source}` where no write decides it again: withdraw it, make the change, then declare it again | A change of a view's source that no write decides a set over the view, or a trigger on it, again for. |
 | `view_key` | `group_by` (Names, optional) | a view's records are keyed by its `group_by`[ ({group_by})\|, and it has none]; its `key` names the same fields in that order, or is left out | A view's `key` that names other fields than its `group_by`. |
 | `view_relation` | `type` (TypeName), `carrier` (Carrier) | `{type}` is a view, whose records are computed and never written, so a relation carried by {carrier} could never hold an edge; a relation on a view is derived from matching values | A stored relation on a view. |
 | `view_searched` | `searchable` (bool), `embedded` (bool) | it [{?searchable}is searchable\|[{?embedded}carries an embedding\|is a vector]], and a view is not searched; its records are computed on read and no index holds them | A view's field that a search would read. |
 | `view_value_no_field` | `field` (FieldName) | its view computes `{field}`, which has no declared field to land in; a view declares a field for each value it computes, of the kind it holds | A value a view computes that no field holds. |
 | `vocabulary_reserved` | `type` (TypeName), `link` (bool) | the host vocabulary's type `{type}` is reserved: [{?link}the store derives the link types under `sys.link.` from relations itself\|the store keeps it for its own reader]; nothing was appended, and the lake is not opened for writing until the vocabulary names it otherwise | A host vocabulary's type under a name the store keeps. |
-| `watches_via_links` | `type` (TypeName), `relation` (RelationName), `via` (FieldName), `owner` (TypeName) | it watches `{type}`, but `{relation}` is carried by a reference field, not by link records; watch `{owner}` with `changed({via})` | A trigger on a link type of a relation carried by a reference. |
-| `watches_view` | `type` (TypeName) | it watches `{type}`, a view; a view is never written, so no write of it fires a trigger | A trigger on a view. |
+| `vocabulary_changed` | `type` (TypeName), `reasons` (list of Revision) | the host vocabulary declares `{type}` otherwise than the lake holds it ({reasons}); between releases a vocabulary only adds optional fields to a type it declared, so the lake is not opened until the vocabulary declares `{type}` as the lake holds it, or with optional fields added and nothing else changed but its descriptions, labels, annotations or the order of its fields | A host vocabulary's type the lake holds in a form the vocabulary changes beyond adding optional fields and rewording it. |
+| `watches_via_links` | `type` (TypeName), `relation` (RelationName), `via` (FieldName), `owner` (TypeName) | it watches `{type}`, but `{relation}` is carried by the field `{via}`, not by link records; watch `{owner}` with `changed({via})` | A trigger on a link type of a relation carried by a field (a reference, or JSON holding keys). |
+| `watches_view` | `type` (TypeName) | it watches `{type}`, a view the lake does not keep, and a trigger fires on rows the lake keeps: set `view_kept.{type}` to keep it first | A trigger on a view the lake does not keep. |
 | `writes_nothing` | — | it writes nothing | A write effect that sets nothing. |
 | `aggregate_here` | `name` (String) | {name}() folds a set of records and has no meaning here | An aggregate where no set of records is. |
 | `aggregate_needs_field` | `name` (String) | {name}() needs a field | An aggregate other than `count` with no argument. |
-| `bucket_arguments` | — | date_bucket() takes a calendar unit quoted ('day', 'week', 'month', 'quarter' or 'year') and no origin, or a width above zero and the origin its windows are counted from, as in date_bucket(t, 30d, origin) | A `date_bucket` given neither a unit nor a width and an origin. |
+| `bucket_arguments` | — | date_bucket() takes a calendar unit quoted ('day', 'week', 'month', 'quarter' or 'year'), and no origin but the time zone it is cut in quoted or none, or a width above zero and the origin its windows are counted from, as in date_bucket(t, 'day', 'Europe/Berlin') or date_bucket(t, 30d, origin) | A `date_bucket` given neither a unit nor a width and an origin. |
 | `bucket_unit` | `unit` (String) | date_bucket() knows no unit '{unit}'; the units are 'day', 'week', 'month', 'quarter' and 'year', and a width is written unquoted, as in date_bucket(t, 30d, origin) | A `date_bucket` unit it does not know. |
+| `bucket_zone` | `zone` (String) | date_bucket() knows no time zone '{zone}'; a zone is named as the IANA time-zone database names it, as in 'Europe/Berlin' | A `date_bucket` zone the time-zone database does not name. |
 | `bucket_unit_text` | `value` (Operand) | date_bucket() takes its unit as text, not {value} | A `date_bucket` unit that is no text. |
 | `call_arity` | `name` (String), `given` (usize) | {name}() does not take {given} argument(s) | A call with a number of arguments its function does not take. |
 | `call_takes_field` | `name` (String) | {name}() takes one field name | A call that takes a field name given something else. |
 | `call_takes_quoted` | `name` (String) | {name}() takes a quoted name | A call that takes a quoted name given something else. |
+| `cypher_alias` | `item` (String) | an aggregate or an expression is named with `AS`: `{item} AS <name>` | An aggregate or an expression returned with no name. |
+| `cypher_computed` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is computed by the lake; no statement writes it | A field a statement writes that the lake computes. |
+| `cypher_count` | `item` (String) | `count` counts rows: `count(*)` or `count(<name>)` of a name no optional part binds, not `{item}` | A `count` of what is no row. |
+| `cypher_function` | `name` (String), `offset` (usize) | `{name}()` is no function of Lakelands' expression grammar (at character {offset}) | A function the expression grammar does not have. |
+| `cypher_key_missing` | `type` (TypeName), `field` (FieldName) | a record of `{type}` is keyed by `{field}`, which the statement does not give | A key field a `CREATE` or `MERGE` does not give. |
+| `cypher_key_null` | `type` (TypeName), `field` (FieldName) | a record of `{type}` is keyed by `{field}`, which the statement gives as null | A key field a `CREATE` or `MERGE` gives as null. |
+| `cypher_member` | `member` (String) | the statement takes no `{member}`: a read takes the axes and a cursor, a `MATCH … SET`, `REMOVE` or `DELETE` the id of its plan, and every other write nothing beside its parameters | A member a statement of its kind does not take. |
+| `cypher_merge_on` | `type` (TypeName), `field` (FieldName) | `MERGE` keys on what keys a record, and `{field}` keys no record of `{type}`: give its key fields alone, or `MATCH` it and `SET` | A `MERGE` on a field that keys no record. |
+| `cypher_order_item` | `item` (String) | `ORDER BY` names a path, as in `a.amount`, not `{item}` | A sort key that is no path. |
+| `cypher_outside` | `construct` (Construct), `offset` (usize) | {construct} is outside the openCypher subset Lakelands takes (at character {offset}) | A construct outside the openCypher subset. |
+| `cypher_param_missing` | `name` (ParamName) | the statement reads `${name}`, which is not given | A parameter the statement reads that is not given. |
+| `cypher_param_unused` | `name` (ParamName) | `{name}` is given and the statement does not read it | A parameter given that the statement does not read. |
+| `cypher_param_value` | `name` (ParamName) | `${name}` cannot stand where it is read: an object, a list outside `IN`, a key that is not text, or a limit or skip that is no whole number | A parameter whose value cannot stand where it is read. |
+| `cypher_row_item` | `item` (String) | a row holds paths (`a.amount`) or every bound name (`RETURN *`); `{item}` is neither | A row item that is neither a path nor every bound name. |
+| `cypher_second_write` | `construct` (Construct), `offset` (usize) | {construct} is a second write: a statement is one call of one write door (at character {offset}) | A write after the statement's first, which a second door call would make. |
+| `cypher_skip` | `skip` (u64) | `SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement | A `SKIP` other than 0. |
+| `cypher_start_type` | `offset` (usize) | the first node names its type, as in `(a:invoice)` (at character {offset}) | A first node with no label. |
+| `cypher_too_deep` | `max` (usize), `offset` (usize) | a condition nests at most {max} levels deep: parentheses, `NOT` and a unary `-` each go one deeper (at character {offset}) | A condition nested deeper than the subset reads. |
+| `cypher_tool_writes` | `construct` (Construct), `offset` (usize) | the `cypher` tool reads; {construct} writes, through the typed write tools (at character {offset}) | A write statement sent to the `cypher` tool, which reads. |
+| `cypher_unbound` | `name` (String), `offset` (usize) | `{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset}) | A part that begins at a name nothing bound. |
+| `cypher_whole` | `clause` (String), `offset` (usize) | `{clause}` takes a whole number, written or a parameter (at character {offset}) | A `SKIP` or `LIMIT` given what is no whole number. |
 | `division_by_zero` | — | division by zero | A division by zero. |
 | `in_empty` | — | an `in` lists one value at least | An `in` with an empty list. |
 | `exists_here` | — | exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at | An `exists` outside a verb's `requires` and set values. |
+| `preceding_here` | — | preceding() has meaning in a type's constraint and in the `when` of a trigger on a type that is no view, over the record before it in its series | A `preceding` outside a constraint and a trigger's `when`, or over a view's rows. |
+| `in_force_here` | — | in_force() has meaning in a field computed at the read and in the `when` of a trigger on a type that is no view, over another type's record in force | An `in_force` outside a field computed at the read and a trigger's `when`, or over a view's rows. |
 | `in_set_here` | — | in_set() has meaning in an object set's `where`, a trigger's `when` and a read's `where` | An `in_set` left where no set's filter stands. |
 | `kind_negates` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it negates {kind} | A negation of what has no negative. |
 | `kind_sides` | `expr` (String), `left` (Kind), `right` (Kind) | `{expr}` has no meaning: its sides are {left} and {right} | Arithmetic over kinds that do not combine. |
 | `kind_takes_number` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it takes a number, not {kind} | A number's function over what is no number. |
+| `kind_takes_date` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it takes a date or an instant, not {kind} | A `setting` read on what is no date or instant. |
 | `minus_no_meaning` | `left` (Operand), `right` (Operand) | {left} minus {right} has no meaning | A difference of what are not two instants. |
 | `no_records_provenance` | — | known_at() and seen_at() read a record's provenance, and no record stands here: a view's records, a query's rows, a value type's constraint and a function's expression carry none | A provenance function where no record stands. |
 | `not_a_number` | `value` (Operand) | {value} is not a number | A number that is not a number. |
@@ -433,13 +554,15 @@ What a refusal is about.
 | `path_empty` | — | a path names at least one field | A path with no field. |
 | `regex_unmatchable` | `pattern` (String), `limit` (usize, optional) | `{pattern}` cannot be matched[: its compiled form is over {limit} bytes] | A pattern the matcher refuses. |
 | `relation_holds_many` | `relation` (RelationName), `cardinality` (Cardinality) | `{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern | A path through a relation that may hold several links from a record. |
-| `relation_via_field` | `relation` (RelationName), `field` (FieldName) | `{relation}` is carried by the field `{field}`: a path steps through `{field}` | A path through a relation carried by a reference field. |
+| `relation_via_field` | `relation` (RelationName), `field` (FieldName) | `{relation}` is carried by the field `{field}`: a path steps through `{field}` | A path through a relation carried by a field (a reference, or JSON holding keys). |
 | `retired_only_in_guard` | — | retired() has meaning only in a trigger's guard | A `retired` outside a trigger's guard. |
 | `created_only_in_guard` | — | created() has meaning only in a trigger's guard | A `created` outside a trigger's guard. |
 | `set_cycle` | `set` (String), `through` (Names) | in_set('{set}') names a set that names it in turn, through {through} | A set that names itself through others. |
 | `set_of_other_type` | `set` (String), `of` (TypeName), `type` (TypeName) | in_set('{set}') names a set of `{of}`, not of `{type}` | A set of another type named in a filter. |
 | `set_undeclared` | `set` (String) | in_set('{set}') names an object set that is not declared | A set named in a filter that is not declared. |
 | `setting_takes_key` | `value` (Operand) | setting() takes a key, not {value} | A `setting` given what is no key. |
+| `setting_takes_date` | `value` (Operand) | setting() reads the value in force on a date or an instant, not {value} | A `setting` read on a day of what denotes no instant. |
+| `statement_not_parsed` | `why` (Case) | the statement does not parse as the openCypher subset Lakelands takes (`MATCH … RETURN …`, or one write): {why} | An openCypher statement that does not parse. |
 | `steps_into_reference` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is a reference: a condition reads the record's own fields. Compare the reference's key, or walk to the record it names in a pattern | A path into a reference's members. |
 | `steps_into_scalar` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is no `json` field, and has no members | A path into the members of what has none. |
 | `sum_not_number` | `value` (Operand) | sum() met {value}, which is not a number | A sum of what is no number. |
@@ -449,12 +572,10 @@ What a refusal is about.
 | `kept_adds_uncertain` | `call` (String) | `{call}` adds what is of no certain kind: it is kept where its argument is certainly a number | A sum or an average of what is of no certain kind. |
 | `kept_at_read` | `field` (FieldName), `source` (TypeName) | it reads `{field}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written | A measure reading a field computed at the read. |
 | `kept_clock` | — | it reads the clock, and a kept record is computed when its source is written | A measure reading the clock. |
-| `kept_extreme_grouped_by` | `call` (String), `field` (FieldName) | `{call}` is kept only in a view grouped by text or reference fields, and `{field}` is neither | A minimum or maximum under a group field that is no text or reference. |
-| `kept_extreme_ungrouped` | `call` (String) | `{call}` is kept only in a view grouped by text or reference fields, and this one has no group field | A minimum or maximum in a view with no group field. |
 | `kept_group_at_read` | `field` (FieldName), `source` (TypeName) | it groups by what reads `{field}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written | A grouping by a field computed at the read. |
 | `kept_no_argument` | `call` (String) | `{call}` has no argument | An aggregate call with no argument. |
-| `kept_orders_kind` | `call` (String), `kind` (Kind) | `{call}` orders {kind}; it is kept where its argument is certainly a number or an instant | A minimum or maximum of a kind that is no number or instant. |
-| `kept_orders_uncertain` | `call` (String) | `{call}` orders what is of no certain kind: it is kept where its argument is certainly a number or an instant | A minimum or maximum of what is of no certain kind. |
+| `kept_orders_kind` | `call` (String), `kind` (Kind) | `{call}` orders {kind}; it is kept where what it orders by is certainly a number or an instant | An extreme ordering by a kind that is no number or instant. |
+| `kept_orders_uncertain` | `call` (String) | `{call}` orders what is of no certain kind: it is kept where what it orders by is certainly a number or an instant | An extreme ordering by what is of no certain kind. |
 | `kept_param` | `name` (ParamName) | it declares the parameter `{name}`, and a kept record is the same for every read | A view with a parameter. |
 | `kept_where_at_read` | `field` (FieldName), `source` (TypeName) | its `where` reads `{field}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written | A `where` reading a field computed at the read. |
 | `kept_where_clock` | `source` (TypeName) | its `where` over `{source}` reads the clock, and a kept record is computed when its source is written | A `where` reading the clock. |
@@ -462,7 +583,8 @@ What a refusal is about.
 | `after_unfit` | `index` (usize), `field` (FieldName), `why` (Case) | `after.values` member {index} does not fit `{field}`: {why} | An `after` value its order's field does not take. |
 | `after_with_aggregate` | — | `after` pages records; an `aggregate` has no pages | An `after` beside an aggregate. |
 | `after_with_cursor` | — | `after` and `cursor` both name where a page starts; give one | An `after` beside a cursor. |
-| `components_both_ways` | `relation` (RelationName) | `components` takes every link both ways; the step over `{relation}` must walk `both` | A `components` step that does not walk both ways. |
+| `cheapest_needs_to` | — | `cheapest` answers the walk that costs least from the start to one record; name that record with `to` | A `cheapest` walk with no `to`. |
+| `components_both_ways` | `relation` (RelationName) | `components` and `communities` take every link both ways; the step over `{relation}` must walk `both` | A `components` or `communities` step that does not walk both ways. |
 | `cursor_foreign` | — | the cursor is not one this lake handed out | A cursor the lake did not hand out. |
 | `cursor_other_door` | `was` (String), `was_ty` (TypeName, optional), `door` (String), `type` (TypeName, optional) | the cursor was handed out for `{was}`[ on `{was_ty}`], not `{door}`[ on `{type}`]; continue it there | A cursor handed out for another door or type. |
 | `cursor_other_order` | — | the cursor was handed out for another order; continue it with the `order_by` its first page was read with | A cursor handed out for another order. |
@@ -471,16 +593,18 @@ What a refusal is about.
 | `depth_empty` | `min` (u32), `max` (u32) | a step's depth range {min}..={max} is empty | A step's depth range that is empty. |
 | `group_key_twice` | `name` (FieldName) | two group keys are named `{name}`; each needs a name of its own | Two group keys of one name. |
 | `instant_not_text` | — | an instant is given as text | An instant of an `after` that is no text. |
+| `join_never_holds` | `name` (String), `bound` (Names), `reached` (Names) | `join` names `{name}`, which binds {bound}, and over its whole range the step reaches only {reached}: the join could never hold | A join whose relation reaches no type the joined name binds. |
 | `latest_no_change` | `type` (TypeName, optional) | `order_by` `latest` orders records by their latest change, and [`{type}` is a view, whose records are computed and have none\|a query's rows are projections of a walk, not records] | A `latest` order where no record has a change of its own. |
 | `latest_takes_no_field` | `field` (FieldName) | `latest` orders by the position of each record's latest change and takes no field, and `{field}` was given | A `latest` order given a field. |
 | `limit_range` | `max` (u32) | a limit is between 1 and {max} | A limit out of range. |
+| `matches_without_text` | — | `matches` says where a search's text matched each hit, and a vector search ranks no text; a lexical or hybrid search is told it | A search that asks for `matches` and brings no text. |
 | `measure_no_depth` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `depth`: it reads each record's links, not hops | A measure's step with a depth. |
 | `measure_no_order` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `order_by`: its rows come in the measure's own order | A measure with an order. |
 | `measure_no_steps` | `measure` (String) | `{measure}` walks the relations its steps name; name at least one | A measure with no step. |
 | `measure_no_to` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `to` | A measure with a `to`. |
 | `measure_no_type` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches | A measure's step with a `type`. |
 | `measure_no_where` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `where` | A measure's step with a `where`. |
-| `model_without_vector` | — | `model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model | A `model` on a hybrid search that brings no query vector. |
+| `model_without_vector` | — | `model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model | A `model` on a search whose query vector the lake makes. |
 | `rerank_top_zero` | — | `rerank.top` is how many of the search's first hits the second stage ranks, and it is 1 at least | A `rerank` whose `top` is 0. |
 | `rerank_no_window` | — | the location's `limits.max_rerank_top` is 0, which lets no search take a second stage; set it to 1 at least, or leave it out for 100 | A location whose `limits.max_rerank_top` is 0. |
 | `rerank_top_above` | `max` (u32) | `rerank.top` is above the lake's `limits.max_rerank_top`, {max}; ask for a window of at most {max}, or raise the setting in the lake's location | A `rerank` whose `top` is above the lake's bound. |
@@ -491,7 +615,10 @@ What a refusal is about.
 | `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search, or a `search_weights` setting's `text_fields`, names that is not searchable. |
 | `offset_beside` | `other` (String) | `offset` and `{other}` both say where the answer starts; give one | An `offset` beside another start of the answer. |
 | `only_unappliable` | `type` (TypeName) | the grant's `only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `only` that cannot be applied to the read. |
-| `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read and moves with the clock; a page's order would not hold to the next | An order by a field computed at the read. |
+| `writes_only_unappliable` | `type` (TypeName) | the grant's `writes_only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `writes_only` that cannot be applied to the write. |
+| `hiding_unappliable` | `type` (TypeName) | the grant's `hide_where` on `{type}` cannot be applied here; the host's grants need fixing | A grant's hiding of a field on some records that cannot be applied to the read. |
+| `whole_set_needed` | `type` (TypeName) | this read needs every record of `{type}`; you may read only some of them | A read that computes over a set of records (a view over them, an aggregate, a count) of a type the reader's grant admits only some records of and holds `whole_sets_only` on. |
+| `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read; order by a stored field it is computed from | An order by a field computed at the read. |
 | `order_names_no_field` | — | an order by a value, `known_at` or `seen_at` names its field | An order by a value or a time that names no field. |
 | `param_missing` | `type` (TypeName), `name` (ParamName), `kind` (StorageKind), `unbound` (bool) | view `{type}` needs parameter `{name}` ({kind})[{?unbound}, and only a read that names the view binds it] | A view's parameter not given, or met where no read binds it. |
 | `param_unknown` | `type` (TypeName), `name` (ParamName), `declared` (Names, optional) | `{type}` declares no parameter `{name}`, so it binds nothing[; its parameters are {declared}] | A parameter given that the type does not declare. |
@@ -503,35 +630,65 @@ What a refusal is about.
 | `pattern_order_not_rows` | — | `order_by` orders rows; a graph and a path come by depth, type and key, and an aggregate's groups by their key | A pattern with an `order_by` that answers no rows. |
 | `pattern_to_chain` | — | a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0 | A pattern with `to` whose steps are a chain. |
 | `pattern_to_not_graph` | — | a pattern with `to` answers the walk to it as a graph; ask `project` `graph` | A pattern with `to` not projected as a graph. |
+| `pattern_tree_member` | `member` (String), `projection` (String) | `{member}` makes the pattern a tree, which rows and an aggregate answer; `{projection}` answers by its walk's own shape | A member that makes a pattern a tree beside a projection that answers by a walk's own shape. |
 | `position_not_integer` | — | a position is a non-negative integer | A position of an `after` that is no whole number. |
 | `proposal_order` | `members` (Names), `field` (FieldName), `by` (OrderBy) | `order_by` orders proposals by their members ({members}) and their values, and `{field}` by `{by}` is not one | An order of proposals by what is not one of their members. |
 | `query_dimensions` | `query` (usize), `held` (usize) | the query vector has {query} dimensions, and the field holds vectors of {held} | A query vector of another length than the field declares. |
 | `query_model` | `query` (String), `held` (String) | the query vector is of the model `{query}`, and the field holds vectors of `{held}` | A query vector the caller names another model for than the one the field is the embedding of. |
 | `retired_with_aggregate` | — | `retired` counts the retired records a page's `where` matches; an `aggregate` answers groups, so give one | A `retired` count beside an aggregate. |
 | `search_fields_empty` | — | `fields` names no field; leave it out to search every searchable field | A search's `fields` that names none. |
-| `search_needs_vector` | `field` (FieldName) | `{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector | A hybrid search without a vector over a vector field no model fills: its writers chose the space, so no bound model may stand in for one. |
+| `search_needs_vector` | `field` (FieldName) | `{field}` holds vectors its writers make, in a space the lake does not know; a search over it brings its own query vector | A search whose query vector the lake would make, over a vector field no model fills: its writers chose the space, so no bound model may stand in for one. |
 | `search_not_vector` | `field` (FieldName), `kind` (StorageKind) | `{field}` is a {kind} field; a vector ranking reads a vector field | A vector ranking over a field that holds no vectors. |
+| `search_text_fields_empty` | — | `text_fields` weighs no field; leave it out to weigh each as its type's setting does | A search's `text_fields` that weighs no field. |
+| `start_needs_vector` | `field` (FieldName) | a pattern's start ranks `{field}` by a `vector` it brings; the lake embeds a vector search's `text` for `search` alone, whose answer says how it ranked | A pattern's start search whose query vector the lake would embed: a pattern's rows cannot say how they were ranked. |
 | `start_no_type` | `asks` (String) | `{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params` | A start with no type where a type is needed. |
+| `step_after_no_name` | — | the step before binds no name, as a join and an absent step bind none; say with `from` which name this step walks from | A step with no `from` after one that binds no name. |
+| `step_binds_no_name` | `member` (String), `join` (bool) | a[{?join} join\|n absent step] binds no name of its own[{?join}, and the record it reaches is judged where its name was bound]; it takes no `{member}` | A member given to a join or an absent step, which bind no name. |
+| `step_name_unbound` | `member` (String), `name` (String) | `{member}` names `{name}`, which neither the start nor a step listed before this one binds; a step walks from and joins only a name bound before it | A `from` or `join` naming no name bound before the step. |
+| `step_optional_no_name` | `join` (bool) | a[{?join} join\|n absent step] binds no name to bind null where it has no match; it may say `optional` only where its `from` or `join` is a name an optional step binds, as a step of that branch | A join or an absent step that says `optional` outside an optional branch. |
+| `step_past_optional` | `name` (String) | `{name}` is bound by an optional step, so a step that walks from it or joins it says `optional` too, and never drops the row the optional step kept | A step from or joining a name an optional step binds that is not optional itself. |
 | `step_reaches` | `reached` (TypeName), `type` (TypeName), `also` (Names, optional) | it reaches `{reached}`[, {also}], not `{type}` | A step that reaches another type than it names. |
-| `step_several_types` | `reached` (TypeName, optional), `also` (Names, optional) | it reaches several types[, `{reached}`][, {also}], and a `where`, the step after it or a path that reads one of its fields reads one; name the step's `type` | A step reaching several types where a `where`, the next step or a path that reads a field reads one. |
+| `step_several_types` | `reached` (TypeName, optional), `also` (Names, optional), `field` (FieldName, optional), `missing` (Names, optional), `other` (Names, optional) | it reaches several types[, `{reached}`][, {also}], and [it reads `{field}`, which is[ missing from {missing}][[{?missing},] of another kind, value type, target or dimensions in {other}]\|the step after it reads one]; name the step's `type` | A step reaching several types where the next step reads one, or where a `where` or a path reads a field they do not all declare alike: `field`, missing from the types `missing` names and of another kind, value type, target or dimensions than most of them in those `other` names. |
 | `step_too_deep` | `max` (u32), `asked` (u32) | a step may walk at most {max} hops; this one asks for {asked} | A step deeper than the lake walks. |
+| `text_as_of_beside` | `member` (String) | `text_as_of` ranks the text the records held at an earlier position, and a search's `{member}` ranks by the head; search the text alone, with no `vector` and no `rerank` | A search with `text_as_of` beside what ranks by the head: a vector or a second stage. |
+| `text_as_of_needs` | `member` (String) | `text_as_of` ranks the text the records a `where` selects held at an earlier position, and the search names no `{member}`; name one, or search at the head without it | A search with `text_as_of` that names no earlier position or no `where` to bound its records. |
 | `text_weight_range` | — | `text_weight` must be above 0 and at most 1000000 | A `text_weight` out of range. |
 | `total_with_aggregate` | — | `total` counts the records a page lists; an `aggregate` answers groups, so give one | A `total` beside an aggregate. |
 | `vector_aimless` | `field` (FieldName), `why` (Aimless) | `{field}`'s vector {why} | A query vector with no direction to rank along. |
+| `vector_with_text` | `field` (FieldName) | `{field}`'s query is a `vector` the search brings or a `text` the lake embeds with the field's model, not both | A vector search that brings both a `vector` and a `text`. |
 | `vector_field_twice` | `field` (FieldName) | `{field}` is named twice; a search ranks a vector field once | A vector field a search names twice. |
 | `view_not_searched` | `type` (TypeName) | `{type}` is a view, and a view is not searched: its records are computed on read and no index holds them | A search of a view. |
 | `view_reads_itself` | `type` (TypeName), `chain` (Names) | view `{type}` reads itself through other views, reading {chain} in turn, so it has no records | A view that reads itself through views the reader did not check. |
 | `weight_alone` | — | `weight` weighs one vector field's ranking against another's, and the search names no other in `also` | A `weight` on a vector search of one field. |
+| `weight_missing` | `relation` (RelationName), `from` (RecordKey), `to` (RecordKey) | the `{relation}` link from `{from}` to `{to}` has no weight, and the cheapest walk neither skips a link nor prices it by default; declare an `initial` on the weight field for one | A link the cheapest walk weighs that has no weight. |
+| `weight_negative` | `relation` (RelationName), `from` (RecordKey), `to` (RecordKey) | the `{relation}` link from `{from}` to `{to}` weighs less than 0, and over a cycle that costs less than 0 no walk is cheapest | A link the cheapest walk weighs whose weight is below 0. |
+| `weight_not_number` | `relation` (RelationName), `field` (FieldName) | `{field}` of the links of `{relation}` is neither a `number` nor a `decimal`, so it weighs nothing | A weight field of a kind other than `number` or `decimal`. |
+| `weight_not_on_link` | `relation` (RelationName), `field` (FieldName) | the links of `{relation}` hold no field `{field}` to weigh by; a relation carried by `via` or `derived` holds no link record | A weight field the links of a step's relation do not hold. |
 | `weight_range` | `field` (FieldName) | the weight of `{field}` must be above 0 and at most 1000000 | A field's weight out of range. |
-| `call_declined` | `verb` (VerbName) | the host declined the call of `{verb}`: it did not run, and a retry under the same idempotency key answers the same | A call a verb's executor declined by the host's policy. |
+| `thin_by` | `type` (TypeName), `field` (FieldName) | `{type}` cannot be thinned by `{field}`: the field is neither of instants nor of dates | A thinning act's field that holds neither an instant nor a date. |
+| `thinned` | `type` (TypeName), `key` (RecordKey), `before` (Timestamp) | `{type}` `{key}` was thinned before {before}, so its values are out of the projection: it is not written, corrected, retired or read through it, and the log keeps what it held | A record a thinning act took: a write, an ingest, a retirement or a read of its key. |
+| `stranded_at_head_only` | `type` (TypeName), `position` (Position) | `{type}` at position {position} cannot be answered: its group held a member that was thinned, and a stranded group answers at the head alone | A group a read at an earlier position cannot answer: it held a member a thinning took, and a stranded group answers at the head alone. |
+| `kept_over_thinned` | `view` (TypeName), `type` (TypeName) | `{view}` cannot be kept: records of its source `{type}` were thinned, and its make would count the live ones alone | A view made a kept one over a type whose records a thinning took. |
+| `kept_not_exact` | `view` (TypeName), `type` (TypeName) | `{view}`, kept over `{type}`, holds a group that is not exact, so a thinning of `{type}` is refused whether or not this act would strand it: make the view exact first, or thin another way | A thinning refused because a kept view of the type holds a group that is not exact. |
+| `stranded_make` | `view` (TypeName), `type` (TypeName) | `{view}` cannot be made again over `{type}`: its stranded groups' records would answer a rule the event no longer states, and the records they were computed from are gone; end the view first | A view made again over a source whose records a thinning took, by an event that changes what its stranded groups fold. |
+| `call_declined` | `verb` (VerbName), `reason` (Detail, optional) | the host declined the call of `{verb}`[ ({reason})]: it did not run, and a retry under the same idempotency key answers the same | A call a verb's executor declined by the host's policy. |
+| `refused_by_host` | `cause` (String), `reason` (String) | the host refused the record as `{cause}`: {reason} | A record the host refused before any ingest, quarantined with the host's stable cause code and its sentence for the operator. |
+| `host_refusal_form` | `max` (usize) | a host's refusal names a cause of 1 to 64 bytes of `a` to `z`, `0` to `9` and `_`, and a reason that is not empty, is at most {max} bytes and holds no control character | A host's refusal whose cause or reason is not of its form. |
+| `host_line_missing` | — | a record the host refused under a named run or delivery names its `line`, which keys it apart from the other rows of the run | A record the host refused under a named run or delivery that names no line, so its place would not tell it from the run's other rows. |
+| `quarantine_line_missing` | — | a record of an ingest that quarantines its refused records under a delivery names its `line`, which keys it apart from the delivery's other records across calls | A record of an ingest that asks `quarantine_refused` under a delivery that names no line: its place counts per call, so two calls of one delivery would quarantine different records under one id. |
 | `cause_past_head` | `cause` (Position), `head` (Position, optional) | the cause {cause} is past the lake's head [{head}\|(none)] | A host's cause past the head. |
+| `on_behalf_of_form` | `value` (String) | `on_behalf_of` holds `{value}`, which is not `human:`, `agent:` or `service:` followed by an id that is not empty and holds no NUL character, or which is the writer itself | A host's `on_behalf_of` that is not a principal the store may record a write as made for. |
+| `occasion_form` | `max` (usize) | `occasion` is not empty, is at most {max} bytes and holds no control character | A host's `occasion` that is empty, too long or holds a control character. |
 | `changed_since_proposed` | `type` (TypeName) | `{type}` changed since this migration was proposed; propose it again | A type declared again since its migration was proposed. |
 | `declared_since_proposed` | `what` (Naming), `name` (String) | the {what} `{name}` was declared since this bundle was proposed; propose it again | A bundle's declaration under a name declared again since it was proposed. |
 | `field_exists` | `type` (TypeName), `field` (FieldName) | `{type}` already has a field `{field}` | A field added that the type has. |
 | `field_name_kept` | `type` (TypeName), `field` (FieldName) | a new field of `{type}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`, `<name>._type`); name it `{field}` without the `_` | A new field whose name begins with `_`, which the lake keeps for its own columns. |
-| `field_read_elsewhere` | `field` (FieldName), `type` (TypeName) | `{field}` is read by another part of `{type}` and cannot be removed or changed | A field taken away that another part of the type reads. |
+| `field_read_elsewhere` | `field` (FieldName), `type` (TypeName) | `{field}` is read by another part of `{type}`, or another type pairs by it, and cannot be removed or changed | A field taken away that another part of the type reads. |
 | `forget_plaintext` | `source` (SourceId), `count` (u64) | the log holds {count} value(s) of `{source}` in erasable fields in plaintext, written before the field was erasable or before the log sealed them; destroying its key cannot reach them, so it is not forgotten: export the lake, leave the source out and import that as a new lake | A forgetting refused while the log holds plaintext values of the source in erasable fields. |
-| `forget_report_stale` | — | that report is not of this forgetting at this head; run the preflight again | A forgetting's report of another source or head. |
+| `forget_report_stale` | — | that report is not of this forgetting at its position; run the preflight again | A forgetting's report of another source, or of a selection the log has moved past. |
+| `forget_set_empty` | — | a forgetting of several sources names at least one | A forgetting of several sources that names none. |
+| `forget_source_twice` | `source` (SourceId) | the set names `{source}` twice; a source is forgotten once | A forgetting of several sources that names one twice. |
+| `forget_source_unknown` | `source` (SourceId) | the log holds no event of `{source}`, so the set is not forgotten; forget it alone to keep the id from the lake | A forgetting of several sources that names one the log does not. |
 | `idempotency_key_nul` | — | an idempotency key holds no NUL character | An idempotency key holding a NUL. |
 | `is_a_view` | `type` (TypeName) | `{type}` is a view; it is computed, never written | A view at a door that writes or holds a record. |
 | `key_component_kind` | `part` (String), `kind` (StorageKind), `field` (FieldName) | the key component `{part}` is not a {kind} for `{field}` | A key component of a kind its field cannot read it as. |
@@ -547,16 +704,16 @@ What a refusal is about.
 | `patch_empty` | — | nothing to write: the patch carries no field | A patch with no field. |
 | `payload_required` | `verb` (VerbName), `member` (FieldName) | verb `{verb}` requires `{member}` in its payload | A payload member a verb requires that is not given. |
 | `payload_undeclared` | `verb` (VerbName), `member` (FieldName) | verb `{verb}` has no `{member}` in its payload | A payload member a verb does not declare. |
-| `plan_stale` | — | the lake moved since that plan, or it is not the one this caller was shown; plan the change again | A change enacted against a plan of another head, or one its caller was not shown. |
+| `plan_stale` | — | a write since that plan reached what it names, or it is not the one this caller was shown; plan the change again | A change enacted against a plan a write since has reached, or one its caller was not shown. |
 | `proposal_plans_nothing` | `proposal` (ProposalId) | the proposal `{proposal}` changes no declaration, so it has no plan; accept it without one | A proposal accepted against a plan that changes no declaration. |
-| `purge_report_stale` | — | that report is not of this purge at this head; run the preflight again | A purge's report of another purge or head. |
-| `purge_shared` | `source` (SourceId), `type` (TypeName, optional), `count` (usize), `first` (list of RecordName) | the purge of `{source}`[ from `{type}`] is refused whole: {count} record(s) it brought in were also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them or clear those fields, then purge again. First: {first} | A purge of records another hand wrote too. |
+| `purge_report_stale` | — | that report is not of this purge at its position; run the preflight again | A purge's report of another purge, or of a selection the log has moved past. |
+| `purge_shared` | `source` (SourceId), `type` (TypeName, optional), `count` (usize), `first` (list of RecordName) | the purge of `{source}`[ from `{type}`] is refused whole: {count} record(s) it brought in were made or also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them, clear the fields another hand wrote on those the source made, or take the source's values off them with `remove_values`; then purge again. First: {first} | A purge of records another hand made or wrote too. |
 | `remove_not_shredded` | `source` (SourceId), `count` (u64) | {count} value(s) of erasable fields of `{source}` the removal takes would be redacted only, not shredded: in plaintext, or sealed under a version of its key that also seals values outside the selection; nothing is removed | A removal asked to shred that would redact values of erasable fields only. |
-| `remove_report_stale` | — | that report is not of this removal at this head; run the preflight again | A removal's report of another removal or head. |
+| `remove_report_stale` | — | that report is not of this removal at its position; run the preflight again | A removal's report of another removal, or of a selection the log has moved past. |
 | `required` | `type` (TypeName), `field` (FieldName) | `{type}` requires a value for `{field}` | A record with no value for a required field. |
 | `constraint_broken` | `constraint` (ConstraintName), `type` (TypeName), `key` (RecordKey) | `{type}` `{key}` would break the constraint `{constraint}` | A write that would leave a record breaking its type's constraint. |
 | `constraint_left_broken` | `constraint` (ConstraintName), `type` (TypeName), `records` (u64) | {records} record(s) of `{type}` would be left breaking the constraint `{constraint}`; fix them first | Records a walk of the lake would leave breaking their type's constraint: a declaration's or a migration's computing again, a re-key's rewritten references, a value type's renames. |
-| `requires_unmet` | `verb` (VerbName), `type` (TypeName), `key` (RecordKey) | verb `{verb}` requires what `{type}` `{key}` does not hold | A verb's `requires` that does not hold. |
+| `requires_unmet` | `verb` (VerbName), `type` (TypeName), `key` (RecordKey), `part` (Printed, optional) | verb `{verb}` requires what `{type}` `{key}` does not hold[: `{part}`] | A verb's `requires` that does not hold, and the part of it the record fails: of a conjunction, its first conjunct that does not hold; else the whole condition (006). Said within the precondition it is of, for one of a verb's preconditions. |
 | `restriction` | `type` (TypeName), `key` (RecordKey), `already` (bool) | `{type}` `{key}` is [{?already}already\|not] restricted | A restriction of what is restricted, or a release of what is not. |
 | `set_declares_twice` | — | the set declares it more than once | A set of declarations that names one twice. |
 | `set_empty` | — | nothing to apply: the set holds no declaration | A set of no declarations. |
@@ -567,6 +724,10 @@ What a refusal is about.
 | `source_id_form` | — | a source id is not empty and holds no NUL character | A source id that is empty or holds a NUL. |
 | `delivery_id_form` | — | a delivery id is not empty, holds no NUL character, and is not `d` followed by digits, the form of the store's own | A delivery id that is empty, holds a NUL, or takes the form of the store's own. |
 | `delivery_not_carried` | — | this catalog does not carry a delivery id to the store | A delivery id given to a catalog that does not carry it. |
+| `sealed_apart_not_carried` | — | this catalog does not carry a delivery sealed apart to the store | An ingest asked to seal its delivery apart through a catalog that does not carry it. |
+| `commit_window_not_carried` | — | this catalog does not carry an ingest's own commit window to the store | An ingest asked for a commit window of its own through a catalog that does not carry it. |
+| `quarantine_refused_not_carried` | — | this catalog does not carry an ingest's asking to quarantine its refused records to the store | An ingest asked to quarantine its refused records through a catalog that does not carry it. |
+| `host_quarantine_not_carried` | — | this catalog does not carry a record the host refused to the store's quarantine | A record the host refused, given to a catalog that does not carry it. |
 | `trigger_too_deep` | `depth` (u32), `max` (u32) | its `max_depth` {depth} is above the lake's `max_reactive_depth` {max} | A trigger's ceiling above the lake's. |
 | `unanswered` | `position` (Position), `accepted` (bool) | [{?accepted}the acceptance\|the call] is in the log at position {position}, and no answer of the verb's executor is recorded for it, so this retry runs nothing; if the call is still running, or its answer is held, its answer will be recorded and a retry then answers it, unless the handle that ran it is dropped or loses its lease first; if its first answer said that the verb's executor was not handed the call, [{?accepted}propose the call again\|call the verb again under another key or with none] | A retry that finds no answer of the verb's executor recorded. |
 | `unclaimed_link_type` | `type` (TypeName) | `{type}` is the link type of no relation: its relation was renamed or removed | A link type no relation carries. |
@@ -587,9 +748,10 @@ What a refusal is about.
 | `aging_not_a_value` | `type` (TypeName), `field` (FieldName), `cause` (Error) | not a value of `{type}`.`{field}`: {cause} | An aging rule's value that its field does not take. |
 | `aging_not_text` | `member` (FieldName) | an aging rule's `{member}` is text | An aging rule's member that is no text. |
 | `aging_same_value` | — | `to` equals `from`; a rule moves a value to another | An aging rule that moves a value to itself. |
+| `aging_scoped_setting` | `key` (String) | it reads the setting `{key}`, which is kept for one type or source and not told to every reader; a rule's condition is judged once for every reader | An aging rule whose condition reads a setting for a type or a source. |
 | `aging_system_type` | `type` (TypeName) | `{type}` is a system type; aging never moves it | An aging rule on a system type. |
 | `lookup_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; an exact-text index keeps stored values | An exact-text index of a field computed at the read. |
-| `lookup_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; an exact-text index keeps text fields | An exact-text index of a field that is no text. |
+| `lookup_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; an exact-text index keeps text, number and decimal fields | An exact-text index of a field that is no text, number or decimal. |
 | `no_stored_type` | `type` (TypeName) | `{type}` is no declared stored type | A type named as a stored type that is none. |
 | `no_stored_type_or_view` | `type` (TypeName) | `{type}` is no declared stored type or view | A type named for an order index that is neither stored nor a view. |
 | `no_view` | `type` (TypeName) | `{type}` is no declared view | A type named as a view that is none. |
@@ -598,11 +760,22 @@ What a refusal is about.
 | `order_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; an order index keeps text, number, decimal, boolean, date-time, date and reference fields | An order index of a field of a kind it does not keep. |
 | `setting_field_names` | `value` (Value) | it holds field names, and {value} is not one | An index setting holding something other than field names. |
 | `setting_index_shape` | `type` (TypeName) | it holds an array of field names of `{type}`, or null for no index | An index setting that is no list. |
+| `series_field_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; a series index keeps text, reference, number and decimal fields as its series field | A series index of a field that is no series field. |
+| `series_index_shape` | `type` (TypeName) | it holds an array of pairs of field names of `{type}`, the series field first, as [["symbol", "at"]], or null for no index | A `series_index` setting that is no list of pairs. |
 | `setting_kept_holds` | — | it holds `true` for a view that is kept, or `false` | A `view_kept` setting that holds no boolean. |
 | `setting_key_period` | — | it holds `day`, `week` or `month`, the period a source's key is used for, or null for no period | A key period that names none. |
+| `setting_zone` | `value` (Value) | it holds a time zone as the IANA time-zone database names it, as 'Europe/Berlin', and {value} is none | A lake's zone the time-zone database does not name. |
 | `setting_unlisted` | `prefix` (String) | keys under `{prefix}.` are the store's own settings, and this is none of them | A key under the prefix of the store's own settings that names none of them. |
 | `setting_store_key` | `prefix` (String) | keys under `{prefix}` are the store's own settings; a host declares a key of its own | A host's setting declared under a key the store reads, or under the prefix of one. |
 | `setting_group_stamped` | — | the store writes a setting's group from its declaration; leave `group` out | A write of `sys.setting` naming a group other than the one the store stamps from the setting's declaration. |
+| `setting_period_undeclared` | — | only a setting a host declares holds a value from a date | A value from a date written to a setting no host declares. |
+| `setting_period_first` | — | a setting's first value holds from the start; write it without `from` | A value from a date written to a setting with no live record. |
+| `setting_period_held` | `from` (String) | a value already holds from {from}; correct it with `period` | A value added from a date one already holds from. |
+| `setting_period_unknown` | `period` (String) | no value of this setting holds from {period}; name `start` or a date one holds from | A correction naming a period the setting does not hold. |
+| `setting_periods_named` | — | it holds values from dates; name the one to correct with `period`, `start` for the first, or the date a new one holds from with `from` | An undated write of a setting that holds values from dates. |
+| `setting_periods_stamped` | — | the store writes `periods` from `from` and `period`; leave it out | A write of `sys.setting` naming `periods`. |
+| `setting_from_or_period` | — | a write adds a value `from` a date or corrects one `period`, not both | A write of `sys.setting` naming `from` and `period`. |
+| `setting_dated_kept` | `key` (String), `name` (String) | `{name}` is kept by the fold and reads `{key}` without a date, which holds values from dates, so it would drift at each period's start: read it as setting('{key}', <date>), or decide it at the read | What the fold keeps reading, without a date, a setting that holds values from dates. |
 | `setting_store_group` | — | the group `store` holds the store's own settings; a host's setting is in a group of its own | A host's setting declared into the store's own group. |
 | `setting_reference` | — | a setting holds no reference; keep the record's key as `text` | A host's setting declared to hold a reference, whose record nothing would hold to it. |
 | `setting_weights_shape` | — | it holds an object of `fields` (vector fields and their weights), `text_fields` (searchable text fields and their weights) and `text_weight`, one at least, or null | A `search_weights` setting of the wrong shape. |
@@ -615,12 +788,13 @@ What a refusal is about.
 | `key_holds_renamed` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is part of the key and holds a value this migration renames, which would leave records whose key no longer matches their fields; re-key the type through its migration first | A value a migration renames that a key field holds. |
 | `migration_of_view` | `type` (TypeName) | `{type}` is a view, and a view changes by being declared again, never by a migration | A migration of a view. |
 | `migration_other_type` | `from` (TypeName), `to` (TypeName) | a migration of `{from}` declares the type `{to}` | A migration that declares another type. |
-| `migration_stale` | — | the lake moved since that preflight report; run the preflight again | A migration applied against a report of another head. |
+| `migration_stale` | — | a write since that preflight report reached what it names; run the preflight again | A migration applied against a report a write since has reached. |
 | `migration_takes_key` | `type` (TypeName) | the migration takes every key field of `{type}` away, and leaves no rule to make its records' keys | A migration that takes every key field away. |
 | `migration_takes_link_type` | `unnamed` (bool), `relation` (RelationName), `type` (TypeName) | [{?unnamed}a declaration\|it] is declared on `{type}`, the link type of the relation `{relation}`, which the migration removes; declare it on another type first | A migration that removes a relation a verb is declared on the link type of. |
 | `migration_takes_target` | `unnamed` (bool), `relation` (RelationName), `type` (TypeName) | [{?unnamed}a declaration\|it] refers to `{type}`, the link type of the relation `{relation}`, which the migration removes; retarget or remove it first | A migration that removes a relation whose link type another relation or a reference field refers to. |
 | `migration_takes_read` | `unnamed` (bool), `field` (FieldName), `type` (TypeName), `renamed` (FieldName, optional) | [{?unnamed}a declaration\|it] reads `{field}` of `{type}`, which the migration [renames to `{renamed}`\|drops] | A migration that takes away a field a declaration reads. |
 | `migration_to_view` | `type` (TypeName) | the migration would turn the stored type `{type}` into a view; declare the view under another name, and the type keeps its name and its records | A migration that would make a stored type a view. |
+| `migration_view_not_over` | `view` (TypeName), `type` (TypeName) | the migration declares `{view}` again, and only a view in force that reads `{type}` is declared again with its migration; declare `{view}` by itself | A view a migration declares again that is no view over the type it migrates. |
 | `migration_view_to_stored` | `type` (TypeName) | `{type}` is a view, and it becomes a stored type by being declared as one, never by a migration | A migration that would make a view a stored type. |
 | `narrowing_breaks_links` | `relation` (RelationName), `cardinality` (Cardinality), `count` (usize) | narrowing `{relation}` to {cardinality} would break the links of {count} record(s) that hold more than one; unlink them first | A narrowing of a cardinality that existing links break. |
 | `no_longer_declarable` | `type` (TypeName) | a declaration over `{type}` could no longer be declared | A declaration over a migrated type that could not be declared again. |
@@ -686,9 +860,11 @@ What a refusal is about.
 | `url_no_host` | — | a URL that names no host | A URL that names no host. |
 | `url_scheme` | — | neither an `http` nor an `https` URL | A URL of another scheme than `http` or `https`. |
 | `active_segment_named` | `named` (Position), `position` (Position) | the active segment is named for position {named}, and the event to append is at position {position}; nothing was appended | A segment to append to, named for another position than the event's. |
+| `append_frame` | `position` (Position) | the event at position {position} shares a frame the append does not hold whole and in order, from its first event on; nothing was appended | An event whose frame the append does not hold whole. |
 | `append_line_feed` | `position` (Position) | the event at position {position} holds a line feed in its bytes, which canonical bytes never do; nothing was appended | An event with a line feed in its bytes. |
 | `append_not_next` | `position` (Position), `next` (u64) | the event at position {position} does not continue the log, whose next position is {next}; nothing was appended | An event not at the log's next position. |
 | `append_prev` | `position` (Position), `named` (String), `hash` (String) | the event at position {position} names `{named}` as the hash before it, but that hash is `{hash}`; nothing was appended | An event whose `prev` is not the hash before it. |
+| `backup_other_log` | `held` (Position) | the backup's directory holds a log through position {held} that this lake's log does not continue; back up into a new directory | A backup's directory holding a log the lake's does not continue. |
 | `client_cert_half` | — | a client certificate needs both `tls.client_cert` and `tls.client_key` | A PostgreSQL client certificate without its key, or a key without its certificate. |
 | `commit_behind` | `folded` (Position), `through` (Position) | the projection reflects the log through position {folded}; a transaction cannot commit through the earlier position {through} | A commit through a position the projection is past. |
 | `commit_late` | `late` (Position), `through` (Position) | a state valid from position {late} cannot be committed through the earlier position {through} | A commit of a state valid from a later position. |
@@ -721,6 +897,9 @@ What a refusal is about.
 | `body_too_large` | — | the body is too large or was cut off | A body over the size a door reads. |
 | `filter_key_empty` | — | a feed filter names an empty key | A change filter naming an empty key. |
 | `find_where_text` | — | over REST, `find` takes `where` in its text form only; give the condition as text | A typed condition sent where REST takes text. |
+| `host_header_from_caller` | `header` (String) | `{header}` is sent only over the link between hosts, with a host's key; a principal's key carries no write context and acts as no other principal | A header of the link between hosts sent with a principal's key. |
+| `no_forwarded_principal` | — | a host's key acts for the principal `Lakelands-Principal` names by its id, and the call names none | A host's key with no principal named. |
+| `forwarded_context_form` | — | `Lakelands-Context` is not a write context: give its `origin`, `depth`, `cause`, `on_behalf_of` and `occasion` as JSON | A forwarded write context that is not one. |
 | `idempotency_key_header` | — | the idempotency key holds a character a header cannot carry, such as a line break | An idempotency key a header cannot carry. |
 | `if_match_both` | — | `If-Match` and `If-None-Match` cannot both be given | Both compare-and-set headers. |
 | `if_match_no_version` | `value` (String) | `If-Match: {value}` names no version | An `If-Match` that names no version. |
@@ -730,6 +909,7 @@ What a refusal is about.
 | `line_not_record` | `line` (usize), `fault` (JsonFault), `column` (usize) | line {line} is not a record `ingest` takes: {fault}, at column {column} | An ingest line that is not a record. |
 | `line_too_long` | `line` (usize), `max` (usize) | line {line} is longer than {max} bytes | An ingest line over the length one may have. |
 | `member_missing` | `member` (String) | the member `{member}` is missing | A member the arguments need and do not give. |
+| `mode_needs_member` | `mode` (String), `member` (String) | the `{mode}` mode needs the member `{member}`, and it is missing | A member the arguments' mode needs and they do not give. |
 | `migration_both` | — | a migration names a type (`to`) or a value type (`value_type`), not both | A migration naming both a type and a value type. |
 | `migration_neither` | — | a migration names a type (`to`) or a value type (`value_type`) | A migration naming neither a type nor a value type. |
 | `no_argument` | `tool` (String), `argument` (String) | `{tool}` takes no argument `{argument}`; nothing was done | An argument a tool's input schema does not list. |
@@ -794,7 +974,6 @@ What a constraint reads that can change without a write of its record (lakelands
 | `path` | — | a path across a reference or a link | A path across a reference or a link. |
 | `in_set` | — | `in_set` | An object set. |
 | `setting` | — | `setting` | A setting. |
-| `clock` | — | the clock | The clock. |
 | `exists` | — | `exists` | A relation's links. |
 | `computed_outside` | `field` (FieldName) | `{field}`, computed outside the lake | A field computed outside the lake. |
 | `computed_at_read` | `field` (FieldName) | `{field}`, computed at the read | A field computed at the read. |
@@ -809,6 +988,7 @@ One difference between two declarations of a type; a field's names the relation 
 | `field_removed` | `field` (FieldName), `relation` (RelationName, optional) | field `{field}`[ of relation `{relation}`] removed | A field removed; it reshapes. |
 | `field_retyped` | `field` (FieldName), `relation` (RelationName, optional), `from` (FieldType), `to` (FieldType) | field `{field}`[ of relation `{relation}`] changes type from {from} to {to} | A field's type changed; it reshapes. |
 | `field_required` | `field` (FieldName), `relation` (RelationName, optional) | field `{field}`[ of relation `{relation}`] becomes required | An optional field made required; it reshapes. |
+| `field_writer` | `field` (FieldName) | field `{field}` becomes filled by the store with its record's writer | A field made `authority: writer`, added so or changed to it; it reshapes, as every live record takes a writer. |
 | `field_optional` | `field` (FieldName), `relation` (RelationName, optional) | field `{field}`[ of relation `{relation}`] becomes optional | A required field made optional. |
 | `key_changed` | `from` (Names), `to` (Names) | the key changes from {from} to {to} | The key's fields or their order changed; it reshapes. |
 | `relation_added` | `relation` (RelationName) | relation `{relation}` added | A relation added. |
@@ -818,6 +998,7 @@ One difference between two declarations of a type; a field's names the relation 
 | `view_changed` | — | the view changes | A view's source, filter, grouping or measures changed. |
 | `became_view` | — | a stored type becomes a view | A stored type made a view; it reshapes. |
 | `stopped_being_view` | — | a view becomes a stored type | A view made a stored type. |
+| `otherwise` | `part` (String) | {part} is declared otherwise | A part of the declaration beyond its shape changed, said only of a host's vocabulary type: no door's comparison weighs it. |
 
 ## `Seam`
 
@@ -830,6 +1011,7 @@ A seam the call needs and the host has not bound.
 | `function_backing` | `kind` (String) | the `{kind}` function backing (the host bound none of that kind) | A function backing of a kind. |
 | `key_store` | — | a key store, which seals a source's values of an erasable field (the host bound none) | A key store, which seals a source's values of an erasable field. |
 | `key_versions` | — | a key store that destroys a version of a source's key with every older one (the bound one destroys only a whole source's) | A key store that destroys a version of a source's key with those before it. |
+| `key_apart` | — | a key store that makes a key of a source outside its versions, for a delivery sealed apart (the bound one makes none) | A key store that makes a source a key of its own for one delivery. |
 | `rerank` | — | a reranker, the second stage of a search (the host bound none) | A reranker, the second stage of a search. |
 | `vector_index` | — | a vector index (this engine keeps none) | A vector index, which this engine keeps none of. |
 | `engine` | `name` (String) | the engine `{name}` (no opener for it was passed in) | An engine, whose opener was not passed in. |
@@ -910,21 +1092,28 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `format_other` | `v` (u64), `reads` (u64) | written in log format {v}, which this release does not read; it writes format {reads} | It is written in a log format this release does not read. |
 | `created_in_another` | `format` (u64), `reads` (u64) | its `lake_created` says log format {format}, another than its own line's or one this release does not read; it writes format {reads} | Its `lake_created` says another log format than its own line, or one the release does not read. |
 | `fence_below` | `fence` (u64), `floor` (u64) | it carries fence {fence}, below the fence {floor} of the event before it: fences never fall | Its fence is below the fence of the event before it. |
-| `format_step` | `v` (u64), `before` (u64) | written in log format {v} after an event in format {before}: a lake's format rises only at a new writer's `lease_taken`, whose next event is the `lake_upgraded` from the one to the other | Its log format differs from the event's before it where no new writer upgraded the lake. |
 | `cause_in_context` | — | `context` carries `cause`, which the envelope carries | `context` carries `cause`, which the envelope carries. |
+| `on_behalf_of_in_context` | — | `context` carries `on_behalf_of`, which the envelope carries | `context` carries `on_behalf_of`, which the envelope carries. |
 | `initial_origin` | — | the envelope carries the origin `initial`, a field's alone | The envelope carries the origin `initial`, a field's alone. |
 | `sealed_on` | `kind` (String) | a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries | An event other than `record_ingested` and `output_recorded` carries `sealed`. |
-| `sealed_before` | `v` (u32) | an event of format {v} carries `sealed`, which format 16 added | An event of a format before 16 carries `sealed`. |
-| `forgotten_before` | `v` (u32) | an event of format {v} is a `source_forgotten`, which format 16 added | A `source_forgotten` in a format before the one that added it. |
-| `change_before` | `v` (u32) | a `trigger_fired` of format {v} carries `change` or `created`, which format 17 added | A `trigger_fired` before format 17 carries `change` or `created`. |
-| `dropped_before` | `v` (u32) | an event of format {v} is a `trigger_dropped`, which format 17 added | A `trigger_dropped` in a format before the one that added it. |
-| `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries | An event other than a `record_ingested` of format 17 on carries `delivery`. |
-| `removed_before` | `v` (u32) | an event of format {v} is a `values_removed`, which format 17 added | A `values_removed` event in a format before the one that added it. |
+| `seals_another` | `sealed` (SourceId) | a `record_ingested` carries `sealed` naming the source `{sealed}`, which is not its own: an ingest is sealed under its own source's key | A `record_ingested` whose `sealed` names another source than its envelope. |
+| `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` or a `record_quarantined` carries | An event other than a `record_ingested` or a `record_quarantined` carries `delivery`. |
+| `boxed_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `sealed.box`, which only a `record_ingested` carries | An event other than a `record_ingested` carries `sealed.box`. |
+| `box_form` | — | a `record_ingested` carries `sealed` with no `box`, or a `sealed.box` names no member in `sealed.fields`, or one the patch holds too, or is not padded base64 of at least 16 bytes | A `record_ingested`'s `sealed` with no box, or a box that names no member, holds a member the patch holds too, or is not padded base64 of at least the tag's 16 bytes. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |
 | `disagrees` | — | the engine's record of the event disagrees with its bytes | The engine's record of the event disagrees with its bytes. |
 | `position` | `expected` (Position), `found` (Position, optional) | [position {found} stands where \|expected ]position {expected}[{?found} belongs] | Another position stands where one belongs, or none does. |
 | `prev_hash` | — | it does not name the hash of the event before it | It does not name the hash of the event before it. |
+| `not_a_frame` | — | a line holds `events` or `frame` and is no frame: a frame holds those two and `v` alone, `events` a count from 1, and `frame` an object of the members a frame may hold | A line holds `events` or `frame` and is no frame. |
+| `frame_other` | `frame` (u64), `v` (u64) | a frame of log format {frame} covers an event of format {v}: a frame holds its events' format | A frame's log format is not its events'. |
+| `frame_short` | `events` (u64), `held` (u64) | a frame covers {events} events, and its segment holds {held} of them after it | A frame covers more events than its segment holds after it. |
+| `frame_in_frame` | — | a frame line stands among the lines a frame covers | A frame line stands among the lines a frame covers. |
+| `framed_twice` | `member` (String) | its line holds `{member}`, which its frame holds | An event's line holds a member its frame holds. |
+| `not_a_block` | — | a line holds `block` and is no block's first line: it holds `block` and `v` alone, `block` an object of `end`, `events`, `first`, `hash`, `prev`, `raw` and `stored`, `events` a count from 1 and `end` no position before the block's last | A line holds `block` and is no block's first line. |
+| `block_bytes` | — | a block's bytes do not inflate by zlib to the `raw` bytes of lines, each ended by a line feed, that its first line names | A block's bytes do not inflate to the lines its first line names. |
+| `append_short` | `end` (Position) | an append's blocks end before its last position {end} | An append's blocks end before its last position. |
+| `start_unheld` | — | it is a segment's first event line, and does not hold both its `position` and its `prev` | A segment's first event line does not hold its `position` and its `prev`. |
 | `known_at_back` | `known_at` (Timestamp), `before` (Timestamp) | its known_at {known_at} is before the {before} of the event before it | Its `known_at` is before that of the event before it. |
 | `integer_too_large` | `n` (Number) | the integer {n} in it is beyond ±(2^53 − 1), which not every reader reads exactly | It holds a number written as an integer beyond ±(2^53 − 1). |
 | `no_checkpoint` | — | a segment begins there, and its first event is no checkpoint | A segment begins there, and its first event is no checkpoint. |
@@ -964,6 +1153,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `no_event_in` | `name` (String) | the file {name} holds no event | A file holds no event. |
 | `no_segment_file` | — | there is no segment file under log/ | There is no segment file. |
 | `index_missing` | `name` (String) | the segment {name} has no index file | A segment has no index file beside it. |
+| `id_not_of_form` | — | its `id` is not 32 lower-case hex digits | An event's `id` is not 32 lower-case hex digits. |
 | `fence_mismatch` | `carried` (u64), `lease` (u64) | an event carries fence {carried}, and its writer's lease had fence {lease} | An event carries another fence than its writer's lease had. |
 | `digest_differs` | `engine` (String), `file` (String) | the engine digests the segment before it as `{engine}`, and the file's is `{file}` | The engine and the file digest a segment differently. |
 | `nothing_to_seal` | — | the engine holds no event of the segment before it to seal | The engine holds no event of the segment before to seal. |
@@ -982,36 +1172,48 @@ Why the lake cannot answer now. Retrying may help; the sentence says what the op
 | `read_only` | `lake` (String, optional), `leased_elsewhere` (bool) | [lake `{lake}`\|this lake] is open read-only here[{?leased_elsewhere}; another process holds its writer lease\|[{?lake}; open it for writing to take the lease]] | The lake is open read-only here; whether another process holds its writer lease. |
 | `no_lake` | `lake` (String), `schema` (String, optional) | there is no lake `{lake}` [in the schema `{schema}`\|where its location says]; open it with `create` to make it | There is no lake where the location says, in the schema looked in where the engine keeps one per lake. |
 | `not_served` | `lake` (String) | this server serves no lake `{lake}` | This server serves no lake of the name. |
+| `rate_bound` | `per` (Per), `most` (Requests), `retry_after` (u64) | this {per} sent more than its bound of {most} a second; nothing was done: wait {retry_after} s and send it again | A connection or a principal sent more requests in a second than the server's bound on its rate. |
+| `in_flight_bound` | `most` (Requests) | the principal has its bound of {most} being answered at once; nothing was done: send it again once one is answered | A principal has as many requests being answered as the server's bound lets one have at once. |
 | `unmade` | `part` (Part) | this engine did not create what is there: {part} is missing | A part every lake of this engine has is missing: something else made what is there. |
 | `no_projection` | `lake` (String) | lake `{lake}` has no projection yet; open it for writing first | The lake has no projection yet. |
 | `projection_layout` | `lake` (String), `found` (u64, optional), `wanted` (u64) | lake `{lake}`'s projection [has layout {found}\|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild` | The lake's projection was laid out by another build: nothing reads it, and a rebuild makes it anew from the log. |
 | `log_format` | `lake` (String), `found` (u64), `reads` (u64), `oldest` (u64, optional) | lake `{lake}` is written in log format {found}, and this release reads log format[s {oldest} to] {reads} and writes {reads}; nothing was read from it and nothing appended | The lake's log is written in the format of another release: nothing reads it and nothing is appended. |
-| `log_upgrade_owed` | `lake` (String), `found` (u64), `reads` (u64) | lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade {lake}`, and it is read; nothing was read from it | The lake's log is written in an older format this release reads, and only a writer's open upgrades it. |
+| `vocabulary_upgrade_owed` | `lake` (String), `type` (TypeName) | lake `{lake}` holds `{type}` without fields the host vocabulary has since added to it: a writer's open declares it again, so open it once for writing, and it is read; nothing was read from it | The lake holds a type of the host's vocabulary in an older form, one without fields the vocabulary has since added, and only a writer's open declares it again. |
 | `busy` | `lake` (String) | lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done | The lake could not be compacted while a reader holds a snapshot. |
 | `behind` | `cause` (Error, optional) | the lake's projection is behind its log and could not catch up; nothing was appended[ ({cause})] | The projection is behind the log and could not catch up; nothing was appended. |
 | `key_missing` | `source` (SourceId), `key` (KeyId) | the key store does not give the key `{key}` of the source `{source}`, and no act forgot that source; a lost key is never read as an erasure | A key of a source that the key store does not give, with no act that forgot the source. |
 | `unsealable` | `position` (Position) | a sealed value of the event at position {position} does not open under the key it names: the key store gives another key under that id, or the event was changed | A sealed value that does not open under the key its event names. |
 | `decided_behind` | — | this write was decided while the lake's projection was behind its log; nothing was appended | The write was decided while the projection was behind the log; nothing was appended. |
 | `not_folded` | `from` (Position), `cause` (Error) | what was appended is in the log from position {from} and is not folded yet; the next write folds it, and a write is sent again only under its idempotency key ({cause}) | What was appended from a position is in the log and not folded yet. |
+| `act_unfinished` | `at` (Position), `cause` (Error) | the act is in the log through position {at}, and finishing it failed: {cause}; until it is finished its keys may be kept and the projection may hold what it erased, so repeat the act as it was, which appends nothing again, or open the lake for writing: either finishes it | An act of erasure is in the log through a position, and destroying its keys or restating the projection after it failed. |
 | `moved` | — | the lake's names moved while this write waited; send it again | The lake's names moved while the write waited; send it again. |
 | `types_moved` | — | the lake's types moved while this write waited; send it again | The types a write reads, or what its principal is shown of them, moved while the write waited; send it again. |
+| `tail_overran` | `tries` (u32), `bound` (u32) | the lake was written faster than this work's view could move up: the writes past it were still more than one turn reads (`limits.part_tail`, {bound}) after {tries} attempt(s); nothing was appended, so send it again | The lake was written faster than a job's view moved: at each try its tail was longer than one turn may read; nothing was appended. |
 | `executor` | `retry` (Retry), `cause` (Error) | the verb's executor was not handed this call ({cause}); {retry} | A call of a verb that reaches outside the lake failed before its executor was handed it. |
 | `answer_held` | `answered` (Value), `retry` (Resent, optional), `cause` (Error) | the verb's executor answered this call, and recording its answer, {answered}, failed: {cause}; the answer is held and recorded before the next write[; {retry}] | A call's executor answered, recording its answer failed, and the answer is held and recorded before the next write; what sending it again answers, unless it has no key. |
 | `answer_lost` | `answered` (Value), `cause` (Error) | the verb's executor answered this call with {answered}, and recording its answer failed: {cause} | A call's executor answered, and recording its answer failed. |
 | `stopped` | `detail` (Detail) | the store's work stopped unexpectedly: {detail} | The store's work stopped unexpectedly. |
 | `damaged` | `part` (Part), `position` (Position, optional), `flaw` (Flaw) | {part} is damaged[ at position {position}]: {flaw} | Stored or exported events, or the files that hold them, are damaged, at a position if one. |
 | `storage` | `doing` (Doing), `part` (Part), `detail` (Detail) | the storage failed while {doing} {part}: {detail} | The storage failed. |
+| `no_room` | `part` (Part, optional), `detail` (Detail) | there is no room left to write [{part}\|to the lake's storage]: {detail}; free space there, then repeat what failed: for a writer's open, open the lake again | The disk, the volume or the database server written to had no room left: free space there, then repeat what failed, a writer's open by opening the lake again. A writer's open refused with it, and not with it as the cause of `not_folded`, appended nothing. |
 | `append_failed` | `detail` (Detail), `left` (Left), `cut` (Error, optional) | appending to the log failed: {detail}[; {left}][ ({cut})] | An append to the log failed; what it left, and why the cut after it failed where it did. |
 | `unsynced` | — | a sync of the log failed on this handle and writing it again failed too, so it writes nothing more: open the lake again, and its open checks what the last append left | A sync of the log failed on this handle, and writing and syncing its group again failed too: it appends, seals and takes the lease no more until the lake is opened again, whose open checks the group it left. |
 | `seal_unsure` | `detail` (Detail) | syncing the log's directory failed: {detail}; the next segment is in the log's files and its name's sync failed: every handle reads it, and the outcome is not known | A seal's step was taken and syncing its directory failed: the next segment is in the log's files, and the outcome is not known. |
 | `sealed_not_read` | `last` (Position), `cause` (Error) | the segment through position {last} is sealed and the next one is in the log's files, synced; this handle then failed to read on: {cause} | A segment was sealed through a position, and this handle then failed to read on. |
 | `compact_failed` | `lake` (String), `detail` (Detail) | lake `{lake}` could not be compacted, and its projection is as it was: {detail} | A compaction failed, and the projection is as it was. |
+| `rebuilding` | `lake` (String) | lake `{lake}`'s projection is being built beside it by another handle; nothing was changed, so try again once that build has ended | Another handle has the projection being built beside the lake's open. |
+| `no_scratch` | `lake` (String) | no projection built beside lake `{lake}`'s is marked built for this lake and this build's layout; nothing was changed | No projection built beside the lake's is marked built for this lake by this build. |
+| `scratch_behind` | `lake` (String), `marked` (Position, optional), `tip` (Position, optional) | the projection built beside lake `{lake}`'s reaches [position {marked}\|no position], and the log [ends at position {tip}\|is empty] or holds another hash there; nothing was changed: fold the scratch to the log's end and mark it built | The projection built beside the lake's does not reach the log's tip and its hash. |
+| `swap_busy` | `lake` (String) | lake `{lake}`'s projection is open on another handle, so the one built beside it was not put in its place; nothing was changed, so swap again once that handle is closed | Another handle reads the projection a swap would replace. |
 | `import_not_folded` | `cause` (Error) | every event was imported, and folding the projection failed: {cause}; a writer's open folds it again | Every event was imported, and folding the projection failed. |
 | `import_stopped` | `reached` (Position), `lake` (String), `cause` (Error) | the import stopped at position {reached}: {cause}; the lake `{lake}` holds the export's events before that position, a true prefix that is not the exported lake, and refuses another import; remove it and import again | An import stopped part way, at the position it reached. |
-| `server_too_old` | `major` (u32), `minor` (u32) | the server is PostgreSQL {major}.{minor}; the engine needs PostgreSQL 16 or newer, and nothing was created | The PostgreSQL server is older than the engine needs. |
+| `server_too_old` | `major` (u32), `minor` (u32) | the server is PostgreSQL {major}.{minor}; the engine needs PostgreSQL 18 or newer, and nothing was created | The PostgreSQL server is older than the engine needs. |
 | `pooler` | — | the connection does not keep its session; a transaction-mode connection pooler seems to sit in front of the server. The writer lease is a session lock, which such a pooler loses or hands to another client, so the lake was not opened for writing. Connect directly or through a session-mode pooler. | A transaction-mode connection pooler seems to sit in front of the server. |
 | `tls` | `problem` (Tls), `detail` (Detail, optional) | TLS cannot be set up: {problem}[: {detail}] | TLS cannot be set up for the lake's connection, with the library's words if it gave any. |
 | `tool_names` | `problems` (list of NameProblem) | the lake's names cannot all become tools[: {problems}] | The lake's names cannot all become tools. |
+| `not_forwarded` | `lake` (String), `doors` (u32), `last` (Error, optional) | none of the {doors} writer door(s) named for lake `{lake}` took the call: each holds no lease or was not reached before the call was sent, so nothing was written[ (the last: {last})] | No writer door named for the lake took a forwarded call; nothing was written. |
+| `forward_lost` | `lake` (String), `exchange` (Exchange) | the call was sent to the writer of lake `{lake}`, which then {exchange}; whether it landed is not known, and it is not sent again: retry it under its idempotency key, which answers the first call's outcome if it landed, or read the lake to learn it | A forwarded call was sent, and the writer was lost before it answered. |
+| `not_folded_yet` | `at` (Position), `folded` (Position) | this handle has read the lake through position {folded} and not yet through position {at}, which a write through it answered; it answers no read from before its own write, so read again shortly | The handle has not read the lake through a position its own write answered. |
 | `remote` | `remote` (Remote), `exchange` (Exchange) | calling {remote}: {exchange} | An exchange with a remote end failed. |
 
 ## `NameSource`
@@ -1032,7 +1234,7 @@ Why a lake's declarations cannot all become tools. The store refuses a declarati
 | code | parameters | sentence | about |
 |---|---|---|---|
 | `collision` | `name` (String), `from` (list of NameSource) | the tool name `{name}` would come from {from} | Two declarations produce the same tool name. |
-| `too_long` | `name` (String) | the tool name `{name}` is longer than 64 characters | A tool name would be longer than [`MAX_TOOL_NAME`]. |
+| `too_long` | `name` (String), `from` (NameSource, optional) | the tool name `{name}`[ of {from}] is longer than 64 characters | A tool name would be longer than [`MAX_TOOL_NAME`]; one problem for each declaration it comes from. |
 | `empty` | `from` (NameSource) | {from} gives an empty tool name | A declaration's name has nothing left once made a tool name. |
 
 ## Withdrawn
@@ -1083,6 +1285,24 @@ whose own page says its sentence.
 | `Unmocked::hops` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
 | `Unmocked::proposer` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
 | `Case::window_links_already` | v0.15.1 | 0.16.0 | it was deprecated since 0.15.0 and never answered: a link that breaks its relation's cardinality is answered `linked_already_from` / `linked_already_to` |
+| `Beyond::clock` | v0.21.1 | 0.22.0 | a constraint reads the clock as the write's: compared with the record it is taken, anywhere else refused `clock_not_compared` (lakelands#1556) |
+| `Case::kept_extreme_grouped_by` | v0.21.1 | 0.22.0 | an extreme is kept under any group field the write fixes: the next holder is sought by the group's digest, whatever its fields' kinds (lakelands#1614) |
+| `Case::kept_extreme_ungrouped` | v0.21.1 | 0.22.0 | an extreme is kept in a view with no group field too, its one group sought by one digest (lakelands#1614) |
+| `Flaw::format_step` | v0.22.0 | 0.23.0 | a lake reads one format, so its format does not rise along its log (lakelands#1660) |
+| `Flaw::on_behalf_of_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::occasion_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::sealed_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::forgotten_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::change_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::dropped_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::quarantined_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::setting_periods_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::setting_members_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::setting_at_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::removed_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::apart_before` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Flaw::selects_later` | v0.22.0 | 0.23.0 | a lake reads one format, and a member or kind is no more judged by the format it came in (lakelands#1660) |
+| `Situation::log_upgrade_owed` | v0.22.0 | 0.23.0 | no lake is upgraded: a lake of an older format is refused `log_format` (lakelands#1660) |
 
 ## Parameter types
 
@@ -1091,9 +1311,10 @@ its own sentence. The other types:
 
 - **text** (`String`), a **name** (`TypeName`, `FieldName`, `RelationName`,
   `VerbName`, `ParamName`, `TriggerName`, `ConstraintName`,
-  `ValueTypeName`, `LakeId`, `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
-- a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`) or
-  a **position** (`Position`): a JSON number;
+  `PreconditionName`, `ValueTypeName`, `LakeId`, `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
+- a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`), a
+  **position** (`Position`) or a **count of requests** (`Requests`, said
+  "1 request", "2 requests"): a JSON number;
 - an **instant** (`Timestamp`): an RFC 3339 string in UTC; a
   **proposal's identifier** (`ProposalId`): a string;
 - a **field's type** (`FieldType`): an object as a declaration writes
@@ -1103,6 +1324,8 @@ its own sentence. The other types:
 - **`Detail`**: an operating system's, a database's or a library's own
   words, scrubbed at their source; never a key, a value or a host path;
 - **`Value`**: a JSON value the caller gave;
+- **`Printed`**: a part of a declared condition in its text form, a
+  string;
 - **`Error`**: a nested error, as the error's own JSON;
 - **`bool`**: a flag, said only by the segment it switches.
 
@@ -1112,7 +1335,7 @@ These types are said by a name of a closed list:
 
 Which authority writes a field. It decides which door may carry the field: a source feed through `ingest`, an author through `upsert` or a verb, the store itself through the fold. Grants then decide which principals of that authority may.
 
-`authored`, `source`, `shared`, `derived`, `verb`
+`authored`, `source`, `shared`, `derived`, `verb`, `writer`
 
 ### `Cardinality`
 

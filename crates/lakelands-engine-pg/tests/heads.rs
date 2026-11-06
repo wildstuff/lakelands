@@ -9,8 +9,9 @@
 mod common;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::id::{Position, RecordKey, TypeName, Version};
+use lakelands_api::id::{Position, TypeName, Version};
 use lakelands_api::record::StoredRecord;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_engine_pg::{PgOpener, read_statements};
 use serde_json::json;
 
@@ -19,15 +20,13 @@ const RECORDS: u64 = 1_024;
 
 fn state(key: u64, at: u64) -> StoredRecord {
     StoredRecord {
-        ty: TypeName::from("t"),
-        key: RecordKey::from(format!("k{key:05}")),
         version: Version(at),
-        fields: serde_json::from_value(json!({"n": at, "pad": "x".repeat(400)})).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
-        made: Position(at),
-        retired: false,
-        restricted: false,
+        ..stored_record(
+            "t",
+            format!("k{key:05}"),
+            serde_json::from_value(json!({"n": at, "pad": "x".repeat(400)})).unwrap(),
+            at,
+        )
     }
 }
 
@@ -120,8 +119,9 @@ fn a_heads_read_is_a_lookup_per_head() {
                 ),
                 (later, vec![&ty, &at, &limit, &after]),
             ] {
-                let explain =
-                    format!("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}");
+                let explain = format!(
+                    "EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}"
+                );
                 let rows = client.query(&explain, &args).unwrap();
                 out.push((head, rows.iter().map(|row| row.get(0)).collect()));
             }
@@ -138,7 +138,7 @@ fn a_heads_read_is_a_lookup_per_head() {
             has("using records_head_pkey on records_head h")
                 && !has("Sort")
                 && !has("Seq Scan")
-                && seek.is_some_and(|i| plan[i - 1].contains("Limit (actual rows=1 loops=10)")),
+                && seek.is_some_and(|i| plan[i - 1].contains("Limit (actual rows=1.00 loops=10)")),
             "a page of ten at the head ({head}) is not a walk of ten heads, each with one \
              seek of its state: {plan:#?}"
         );

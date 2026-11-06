@@ -2,14 +2,10 @@
 //! `lakelands_api::describe::TypeRights`), and what a read before the
 //! retirement still sees.
 
-use lakelands_api::ontology::StorageKind::{self, Decimal, Text};
-use lakelands_api::{Access, Error, ReadAt, Refusal, TypeName, WriteOpts};
-use serde_json::json;
+use lakelands_api::ontology::StorageKind::{Decimal, Text};
 
-use crate::conformance::fixture::{
-    Lake, Must, field_writer, get_at, head_unmoved, reason, refused_on, sourced, type_decl, type_of,
-};
-use crate::conformance::{Held, Store};
+use crate::conformance::fixture::{get_at, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     RETIRE_NEEDS_EVERY_FIELD = a_principal_who_may_write_only_some_fields_cannot_retire,

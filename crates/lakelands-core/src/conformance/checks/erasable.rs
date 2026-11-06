@@ -6,25 +6,24 @@
 //! answer as for any other value. The checks bring their own key store,
 //! [`Keys`], since a key store is the host's.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
-use lakelands_api::error::{Case, Seam, Situation};
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::LakeId;
 use lakelands_api::id::KeyId;
-use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
-use lakelands_api::seam::{DataKey, KeyStore, Seams};
-use lakelands_api::{Error, LakeId, LakeStore, Position, SourceId};
-use serde_json::{Value, json};
+use lakelands_api::seam::DataKey;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_after, field, head_unmoved, refused_like, source_record, sourced, type_decl,
-};
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::fixture::source_record;
+use crate::conformance::prelude::*;
 
 check!(
     SEALED_IN_THE_LOG = a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plain,
-    "058: a source's value of an erasable field enters the log as `record_ingested` with `sealed` naming the key's version and the field, and the value base64 that is not the plaintext, while a field that is not erasable stays plaintext; the record reads the plaintext, at the head and after a rebuild; the same value sent again against the same state appends nothing, the same value on another record seals to other bytes, and a value that returns after another (A, B, A) appends again; with no key store bound such a value is refused as unbound and nothing is appended",
+    "058, 083: a source's value of an erasable field enters the log as `record_ingested` with `sealed` naming the key's version and the field, the patch leaving the value out and `sealed.box` holding it as base64 that is not the plaintext, while a field that is not erasable stays plaintext in the patch; the record reads the plaintext, at the head and after a rebuild; the same value sent again against the same state appends nothing, the same value on another record seals to another box, and a value that returns after another (A, B, A) appends again; with no key store bound such a value is refused as unbound and nothing is appended",
+    reopens
+);
+
+check!(
+    ONE_BOX = a_records_sealed_members_are_sealed_in_one_box,
+    "083, lakelands#1498: a source's ingest of a record with two erasable members seals both in one `sealed.box`, the patch leaving both out and `sealed.fields` naming both, and its id is made with the box (`lakelands:ingest:v2`); under the key of fixed bytes `docs/log-format/sealed-bytes.json` keeps, the type's schema hash (SHA-256 over canonical bytes), the ingest's id and box (AES-256-GCM-SIV), and the input digest (HMAC-SHA-256 under a key HKDF derives) and sealed output of a field computed outside the lake from `name` are the bytes that file keeps, as the store wrote them before the crypto crates' bump; the record reads back each value, after a rebuild too; the same values against the same state append nothing; the same values written again at a later version seal to another box; and once the source is forgotten, neither value reads",
     reopens
 );
 
@@ -54,24 +53,37 @@ check!(
 
 /// A key store in memory, for the checks: one key a version, made from a
 /// counter, so nothing of it is random, and every id once in the process,
-/// so a store made anew never gives an id it gave before.
+/// so a store made anew never gives an id it gave before; and, beside the
+/// versions, each key of a delivery sealed apart (065).
 #[derive(Default)]
-pub struct Keys(Mutex<BTreeMap<(LakeId, SourceId), Versions>>);
+pub struct Keys(
+    Mutex<BTreeMap<(LakeId, SourceId), Versions>>,
+    Mutex<BTreeMap<(LakeId, SourceId), Versions>>,
+);
 
 /// A source's keys by version, none where destroyed.
 type Versions = Vec<(KeyId, Option<[u8; 32]>)>;
 
+/// A new key of `source` in `held`, its id `prefix` and a counter.
+fn made(
+    held: &Mutex<BTreeMap<(LakeId, SourceId), Versions>>,
+    (lake, source): (&LakeId, &SourceId),
+    prefix: &str,
+) -> KeyId {
+    let mut held = crate::lock(held);
+    let versions = held.entry((lake.clone(), source.clone())).or_default();
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = KeyId::from(format!("{prefix}{n}"));
+    let bytes: [u8; 32] =
+        <sha2::Sha256 as sha2::Digest>::digest(format!("{lake}/{source}/{id}")).into();
+    versions.push((id.clone(), Some(bytes)));
+    id
+}
+
 impl KeyStore for Keys {
     fn create(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
-        let mut held = crate::lock(&self.0);
-        let versions = held.entry((lake.clone(), source.clone())).or_default();
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let id = KeyId::from(format!("k{n}"));
-        let bytes: [u8; 32] =
-            <sha2::Sha256 as sha2::Digest>::digest(format!("{lake}/{source}/{id}")).into();
-        versions.push((id.clone(), Some(bytes)));
-        Ok(id)
+        Ok(made(&self.0, (lake, source), "k"))
     }
 
     fn key(
@@ -80,15 +92,39 @@ impl KeyStore for Keys {
         source: &SourceId,
         id: &KeyId,
     ) -> lakelands_api::Result<Option<DataKey>> {
-        let held = crate::lock(&self.0);
-        let versions = held.get(&(lake.clone(), source.clone()));
-        let found = versions.and_then(|v| v.iter().find(|(i, _)| i == id));
-        Ok(found.and_then(|(_, k)| k.map(DataKey)))
+        for held in [&self.0, &self.1] {
+            let held = crate::lock(held);
+            let versions = held.get(&(lake.clone(), source.clone()));
+            if let Some((_, k)) = versions.and_then(|v| v.iter().find(|(i, _)| i == id)) {
+                return Ok(k.map(DataKey));
+            }
+        }
+        Ok(None)
     }
 
     fn destroy(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<()> {
-        let mut held = crate::lock(&self.0);
-        for (_, k) in held.entry((lake.clone(), source.clone())).or_default() {
+        for held in [&self.0, &self.1] {
+            let mut held = crate::lock(held);
+            for (_, k) in held.entry((lake.clone(), source.clone())).or_default() {
+                *k = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn create_apart(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
+        Ok(made(&self.1, (lake, source), "a"))
+    }
+
+    fn destroy_apart(
+        &self,
+        lake: &LakeId,
+        source: &SourceId,
+        id: &KeyId,
+    ) -> lakelands_api::Result<()> {
+        let mut held = crate::lock(&self.1);
+        let apart = held.entry((lake.clone(), source.clone())).or_default();
+        for (_, k) in apart.iter_mut().filter(|(i, _)| i == id) {
             *k = None;
         }
         Ok(())
@@ -104,7 +140,10 @@ impl KeyStore for Keys {
         let versions = held.entry((lake.clone(), source.clone())).or_default();
         let Some(i) = versions.iter().position(|(i, k)| i == id && k.is_some()) else {
             let (source, key) = (source.clone(), id.clone());
-            return Err(crate::invalid(Case::KeyVersionNotHeld { source, key }));
+            return Err(lakelands_api::Error::invalid(Case::KeyVersionNotHeld {
+                source,
+                key,
+            }));
         };
         versions[..=i].iter_mut().for_each(|(_, k)| *k = None);
         Ok(())
@@ -141,24 +180,38 @@ impl Keys {
             let bytes: Option<Vec<u8>> = (0..hex.len()).step_by(2).map(byte).collect();
             Some((KeyId::from(id), Some(<[u8; 32]>::try_from(bytes?).ok()?)))
         };
-        let mut held = BTreeMap::new();
+        let (mut held, mut apart) = (BTreeMap::new(), BTreeMap::new());
         for (source, versions) in ring["sources"].as_object().into_iter().flatten() {
-            let keys = versions["keys"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(key);
-            held.insert(
-                (lake.clone(), SourceId::from(source.as_str())),
-                keys.collect(),
-            );
+            let of = |list: &str| -> Versions {
+                let all = versions[list].as_array().into_iter().flatten();
+                all.filter_map(key).collect()
+            };
+            let at = (lake.clone(), SourceId::from(source.as_str()));
+            held.insert(at.clone(), of("keys"));
+            apart.insert(at, of("apart"));
         }
-        Ok(Keys(Mutex::new(held)))
+        Ok(Keys(Mutex::new(held), Mutex::new(apart)))
+    }
+
+    /// Whether no key was ever made.
+    #[cfg(test)]
+    pub(in crate::conformance) fn is_new(&self) -> bool {
+        crate::lock(&self.0).is_empty() && crate::lock(&self.1).is_empty()
     }
 
     /// A copy of every key, as a backup of the key store holds them.
     pub(super) fn backup(&self) -> Keys {
-        Keys(Mutex::new(crate::lock(&self.0).clone()))
+        let apart = Mutex::new(crate::lock(&self.1).clone());
+        Keys(Mutex::new(crate::lock(&self.0).clone()), apart)
+    }
+
+    /// The keys of deliveries sealed apart of `source` it holds, none
+    /// destroyed.
+    pub(super) fn apart(&self, lake: &LakeId, source: &SourceId) -> Vec<KeyId> {
+        let held = crate::lock(&self.1);
+        let apart = held.get(&(lake.clone(), source.clone())).into_iter();
+        let live = apart.flatten().filter(|(_, k)| k.is_some());
+        live.map(|(i, _)| i.clone()).collect()
     }
 }
 
@@ -174,7 +227,7 @@ pub(super) fn first(keys: &Keys, store: &dyn LakeStore, source: &str) -> Result<
 }
 
 /// Seams with `keys` as the key store, and the suite's backing.
-pub(super) fn with(keys: &Arc<Keys>) -> Seams {
+pub(in crate::conformance) fn with(keys: &Arc<Keys>) -> Seams {
     Seams {
         keys: Some(keys.clone()),
         backings: crate::conformance::backing::backings(),
@@ -219,6 +272,23 @@ fn stored(e: &Event, f: &str) -> Value {
     }
 }
 
+/// The box an ingested event seals its members in, if it has one.
+fn boxed(e: &Event) -> Option<&str> {
+    e.sealed.as_ref()?.boxed.as_deref()
+}
+
+/// Whether `e` holds none of `needles` outside its box. The box is random
+/// ciphertext, so a short word can occur in its text by chance; the
+/// plaintext is looked for in everything else the event carries.
+pub(in crate::conformance) fn plain_outside_box(e: &Event, needles: &[&str]) -> bool {
+    let mut bare = e.clone();
+    if let Some(s) = bare.sealed.as_mut() {
+        s.boxed = None;
+    }
+    let text = json!(bare).to_string();
+    !needles.iter().any(|n| text.contains(n))
+}
+
 /// The value of `f` in `person` `key` at the head.
 pub(super) async fn read(l: &Lake, key: &str, f: &str) -> Result<Value, Failure> {
     let r = l.read("person", key).await?;
@@ -226,7 +296,7 @@ pub(super) async fn read(l: &Lake, key: &str, f: &str) -> Result<Value, Failure>
 }
 
 /// Opens the lake again with `seams`, naming `what` if that fails.
-pub(super) async fn again(
+pub(in crate::conformance) async fn again(
     reopen: &Reopen,
     store: Store,
     seams: Seams,
@@ -252,8 +322,7 @@ async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plai
     );
     let head = store.head().await.must("reading the head")?;
     ensure!(head == before, "the refused ingest appended up to {head}");
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.ingest("crm", vec![ada("p1")])
         .await
@@ -271,13 +340,11 @@ async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plai
         "the event's `sealed` names key `{k}` and the field `name`; it is {:?}",
         e.sealed
     );
-    let name = stored(e, "name");
-    let base64 = name
-        .as_str()
-        .is_some_and(|s| !s.is_empty() && s.len() % 4 == 0 && !s.contains("Ada"));
+    let base64 = boxed(e).is_some_and(|s| !s.is_empty() && s.len() % 4 == 0)
+        && plain_outside_box(e, &["Ada"]);
     ensure!(
-        base64,
-        "the log holds `name` as base64 that is not the plaintext; it holds {name}"
+        base64 && stored(e, "name").is_null(),
+        "the log holds `name` in `sealed.box` as base64 that is not the plaintext, and not in the patch; it holds {e:?}"
     );
     ensure!(
         stored(e, "city") == json!("Oslo"),
@@ -308,10 +375,14 @@ async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plai
         .await
         .must("ingesting Ada into p1 again")?;
     let events = ingested(store.as_ref(), before).await?;
-    let names: Vec<Value> = events.iter().map(|e| stored(e, "name")).collect();
+    let names: Vec<Option<&str>> = events.iter().map(boxed).collect();
     ensure!(
-        names.len() == 4 && names[0] != names[1] && names[0] != names[3] && names[2] != names[3],
-        "p1, p2, Bob into p1 and Ada into p1 again append four events whose sealed `name`s all differ; the log holds {names:?}"
+        names.len() == 4
+            && names.iter().all(Option::is_some)
+            && names[0] != names[1]
+            && names[0] != names[3]
+            && names[2] != names[3],
+        "p1, p2, Bob into p1 and Ada into p1 again append four events whose boxes all differ; the log holds {names:?}"
     );
     store.rebuild().await.must("rebuilding the lake")?;
     for (key, want) in [("p1", "Ada"), ("p2", "Ada")] {
@@ -319,6 +390,127 @@ async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plai
         ensure!(
             v == json!(want),
             "after a rebuild `{key}` reads `name` {want}; it reads {v}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_records_sealed_members_are_sealed_in_one_box(store: Store, reopen: Reopen) -> Held {
+    let file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/sealed-bytes.json");
+    let keys = Arc::new(Keys::from_file(&file, store.lake())?);
+    let store = again(&reopen, store, with(&keys), "with the kept key").await?;
+    let l = Lake::of(store.as_ref());
+    let before = store.head().await.must("reading the head")?;
+    l.declare_json(json!({"declare": "function", "name": "shout",
+        "backing": crate::conformance::backing::KIND,
+        "inputs": [{"name": "name", "type": {"kind": "text"}}],
+        "config": {"token": "one_box", "echo": "name"}}))
+        .await?;
+    let mut t = person();
+    t.fields.push(FieldDecl {
+        erasable: true,
+        ..sourced("email", StorageKind::Text)
+    });
+    t.fields
+        .push(computed_by("loud", StorageKind::Text, "shout", &["name"]));
+    l.declare(t).await?;
+    let ada = || {
+        let ada = json!({"id": "p1", "name": "Ada", "email": "ada@example.org", "city": "Oslo"});
+        source_record("person", "p1", ada)
+    };
+    l.ingest("crm", vec![ada()]).await.must("ingesting p1")?;
+    let kept = std::fs::read(&file).map_err(|e| Failure::new(format!("reading {file:?}: {e}")))?;
+    let kept: Value =
+        serde_json::from_slice(&kept).map_err(|e| Failure::new(format!("{file:?}: {e}")))?;
+    let wrote: Vec<Value> = (events_after(store.as_ref(), before).await?.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::Declared { schema_hash, .. } => schema_hash.as_ref().map(|h| json!(h)),
+            EventBody::RecordIngested { .. } => Some(json!([e.id, e.sealed])),
+            EventBody::OutputRecorded { input, output, .. } => {
+                Some(json!([input, output, e.sealed]))
+            }
+            _ => None,
+        })
+        .collect();
+    ensure!(
+        json!(wrote) == kept["wrote"],
+        "the schema hash, the ingest's id and box and the output's digest and box are the bytes kept for them, {}; they are {}",
+        kept["wrote"],
+        json!(wrote)
+    );
+    let events = ingested(store.as_ref(), before).await?;
+    let [e] = events.as_slice() else {
+        return Err(Failure::new(format!(
+            "one `record_ingested` was expected, the log holds {events:?}"
+        )));
+    };
+    let mut fields = e
+        .sealed
+        .as_ref()
+        .map(|s| s.fields.clone())
+        .unwrap_or_default();
+    fields.sort();
+    ensure!(
+        fields == ["email", "name"],
+        "`sealed.fields` names `email` and `name`; it is {:?}",
+        e.sealed
+    );
+    let one = boxed(e).is_some_and(|b| !b.is_empty()) && plain_outside_box(e, &["Ada", "ada@"]);
+    let out = stored(e, "name").is_null() && stored(e, "email").is_null();
+    ensure!(
+        one && out && stored(e, "city") == json!("Oslo"),
+        "one `sealed.box` holds `name` and `email`, which the patch leaves out, and `city` stays in the patch; the event is {e:?}"
+    );
+    let back = async || -> Held {
+        for (f, want) in [
+            ("name", "Ada"),
+            ("email", "ada@example.org"),
+            ("loud", "Ada"),
+        ] {
+            let v = read(&l, "p1", f).await?;
+            ensure!(v == json!(want), "`p1` reads `{f}` {want}; it reads {v}");
+        }
+        Ok(())
+    };
+    back().await?;
+    let head = store.head().await.must("reading the head")?;
+    l.ingest("crm", vec![ada()])
+        .await
+        .must("ingesting p1 again")?;
+    let again_head = store.head().await.must("reading the head")?;
+    ensure!(
+        again_head == head,
+        "the same values against the same state append nothing; the head moved from {head} to {again_head}"
+    );
+    let bob = source_record("person", "p1", json!({"name": "Bob"}));
+    l.ingest("crm", vec![bob])
+        .await
+        .must("ingesting Bob into p1")?;
+    l.ingest("crm", vec![ada()])
+        .await
+        .must("ingesting Ada into p1 again")?;
+    let events = ingested(store.as_ref(), before).await?;
+    let boxes: Vec<Option<&str>> = events.iter().map(boxed).collect();
+    ensure!(
+        boxes.len() == 3 && boxes.iter().all(Option::is_some) && boxes[0] != boxes[2],
+        "the same values at a later version seal to another box; the log holds {boxes:?}"
+    );
+    store.rebuild().await.must("rebuilding the lake")?;
+    back().await?;
+    // An author's note keeps `p1` when crm, which brought it, is forgotten.
+    l.upsert("person", "p1", json!({"note": "kept"})).await?;
+    let crm: SourceId = "crm".into();
+    let report = store.forget_preflight(&crm).await.must("the preflight")?;
+    store
+        .forget_source(&crm, Some(&report.report_id))
+        .await
+        .must("forgetting crm")?;
+    for f in ["name", "email"] {
+        let v = read(&l, "p1", f).await?;
+        ensure!(
+            v.is_null(),
+            "once crm is forgotten `p1` reads no `{f}`; it reads {v}"
         );
     }
     Ok(())
@@ -395,8 +587,7 @@ async fn erasable_is_declared_on_a_sources_own_field_alone_and_stays(
 }
 
 async fn a_key_the_key_store_does_not_give_fails_closed(store: Store, reopen: Reopen) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
@@ -448,8 +639,7 @@ async fn an_output_computed_from_a_sources_erasable_values_is_sealed_under_its_k
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     let kind = crate::conformance::backing::KIND;
     let text = json!({"kind": "text"});
@@ -541,7 +731,7 @@ async fn an_output_computed_from_a_sources_erasable_values_is_sealed_under_its_k
     let base64 = output
         .as_ref()
         .and_then(|o| o.as_str())
-        .is_some_and(|s| !s.contains("Ada"));
+        .is_some_and(|s| !s.is_empty() && s.len() % 4 == 0 && s != "Ada");
     ensure!(
         base64,
         "the output is held sealed, as base64 that is not the plaintext; it is {output:?}"
@@ -727,7 +917,7 @@ async fn an_output_computed_from_a_sources_erasable_values_is_sealed_under_its_k
     let behind = {
         let mut held = crate::lock(&keys.0).clone();
         held.values_mut().for_each(|v| v.truncate(1));
-        Arc::new(Keys(Mutex::new(held)))
+        Arc::new(Keys(Mutex::new(held), Mutex::default()))
     };
     let store = again(&reopen, store, with(&behind), "with a key store behind it").await?;
     let before = store.head().await.must("reading the head")?;
@@ -751,8 +941,7 @@ async fn a_sources_first_sealed_write_is_planned_as_the_fold_computes_it(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (_, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     let token = "first_sealed";
     let kind = crate::conformance::backing::KIND;

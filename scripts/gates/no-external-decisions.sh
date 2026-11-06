@@ -11,6 +11,8 @@
 #     URLs are allowed; so are HTML character references (`&#8212;`) and
 #     colour literals in attribute, style or JSON-value position
 #     (`fill="#000000"`, `color: #000000`, `"value": "#000000"`).
+# The pull request's title (PR_TITLE, which a merge carries as its body)
+# is read as a commit message is.
 # Exempt is exactly GitHub's own merge subject, the first line of a
 # commit message: "Merge pull request #N from <branch>", and nothing else.
 # This script is the only file that may spell the patterns out.
@@ -50,5 +52,9 @@ while IFS= read -r commit; do
         fail "commit $(git log -1 --format='%h' "$commit") message line $hit"
     done < <(git log -1 --format='%B' "$commit" | merge_subject_out | check)
 done < <(git rev-list "$range")
+
+if [ -n "${PR_TITLE:-}" ]; then
+    while IFS= read -r hit; do fail "pull request title line $hit"; done < <(printf '%s\n' "$PR_TITLE" | check)
+fi
 
 verdict "$files file(s), $n commit message(s)"

@@ -4,20 +4,11 @@
 
 use std::cmp::Ordering;
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{
-    Authority, ComputedAt, FieldDecl, FieldType, StorageKind, ValueTypeDecl,
-};
-use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::write::{Declaration, ProposedWrite, WriteOpts};
-use lakelands_api::{Find, LakeStore, Record, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::ontology::ComputedAt;
+use lakelands_api::write::WriteOpts;
 
-use crate::conformance::fixture::{
-    Lake, Must, derived, doors, field, head_unmoved, order, owner, patch, refused_on,
-    source_record, try_upsert, type_decl, value, value_type,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, doors, order, owner, source_record};
+use crate::conformance::prelude::*;
 use crate::expr::order::cmp_values;
 
 check!(
@@ -310,7 +301,7 @@ check!(
 
 check!(
     COMPUTED_IN_ITS_WRITTEN_FORM = a_computed_value_its_field_would_not_take_written_holds_no_value,
-    "the log format §1.2 and §1.3: what an expression computes is judged as what is written is; a derived number that would be written as an integer beyond ±(2^53 − 1) (`n + 1` at the largest integer, `n * 2`, `n * 1.5`) and a derived date-time or date carried out of the years 0000 to 9999 hold no value, through get and find, where the largest integer and the last days hold theirs; a verb that sets such a value is refused on the field it sets, appending nothing"
+    "the log format §1.2 and §1.3: what an expression computes is judged as what is written is; a derived number that would be written as an integer beyond ±(2^53 − 1) (`n + 1` at the largest integer, `n * 2`, `n * 1.5`) and a derived date-time or date carried out of the years 0000 to 9999 hold no value, through get and find, where the largest integer and the last days hold theirs; a derived number computes over a stored one up to about 7.9e28 (`1e21 * 2` holds `2e+21`), and over one beyond that holds no value; a verb that sets such a value is refused on the field it sets, appending nothing"
 );
 
 check!(
@@ -716,6 +707,12 @@ async fn a_computed_value_its_field_would_not_take_written_holds_no_value(store:
             json!({"after": "9999-12-31T12:00:00.000000Z", "day": "9999-12-31",
                 "before": "9999-12-29T12:00:00.000000Z", "next": max}),
         ),
+        (
+            "huge",
+            json!({"n": 1e21}),
+            json!({"next": 1e21, "twice": 2e21, "half_more": 1.5e21}),
+        ),
+        ("beyond", json!({"n": 1e29}), json!({})),
     ];
     for (key, written, _) in &records {
         l.upsert("thing", key, written.clone()).await?;

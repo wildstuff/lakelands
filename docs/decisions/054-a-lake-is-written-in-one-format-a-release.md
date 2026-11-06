@@ -33,14 +33,23 @@ that restated it.
     last event (`EngineOpener::log_ends`, which reads the log and makes
     and changes nothing) and judges three numbers: the first
     event's `v`, the format its `lake_created` says, and the last
-    event's `v`. Another format is refused as the situation
-    `log_format`, naming the lake, the first of the three that is
-    another and the one read. The engine's `open` is not called, so no
-    projection is judged or touched, no lease taken, nothing cleared,
-    folded or appended: a lake the release before left is told its
-    format, and never that its projection's layout is unknown. Such a
-    lake is not damaged and restoring it would not help, so it is not
-    said to be.
+    event's `v`. Where the three numbers do not contradict each other —
+    its first event and its `lake_created` name one format, and the last
+    event's `v` is not lower than the first's — another format is
+    refused as the situation `log_format`, naming the lake, the first of
+    the three that is another and the one read. The engine's `open` is
+    not called, so no projection is judged or touched, no lease taken,
+    nothing cleared, folded or appended: a lake the release before left
+    is told its format, and never that its projection's layout is
+    unknown. Such a lake is not damaged and restoring it would not help,
+    so it is not said to be.
+  - Two ends that contradict each other in a way no release writes are
+    damage, not another release's lake: a `lake_created` whose `format`
+    is not its own line's `v` (one release wrote both at once), and a
+    tip older than the first event (a release appends only onto a lake
+    whose first event it reads). Such a lake is refused as `damaged` at
+    the event that carries the contradiction, naming its position and
+    the flaw; restoring it from a backup is the remedy.
   - An import asks the same before it opens its target. Onto a lake of
     another format it is refused as `log_format`; onto a lake of this
     format as `import_not_empty`, naming the tip. The engine is opened
@@ -75,6 +84,9 @@ that restated it.
 
 ### From the first release with real installations on, every change of the format carries its upgrade path
 
+The operator's green field of 2026-10-31 (098) ends this for formats
+before 23: an older format is refused, and nothing is upgraded.
+
 How a lake the release before wrote becomes one the new release reads is
 then part of the change, and the suite proves it on a lake the release
 before wrote. Upgrading is then a commitment of the first rank, not an
@@ -85,7 +97,108 @@ change that writes a form 15 does not hold: it reads 14 to 16 and writes
 16, so a 0.14.0 binary refuses its lakes by their number
 (lakelands#1096). 0.16.0 takes the third, to 17, the same way: it reads
 14 to 17 and writes 17, so a 0.15.0 binary refuses its lakes by their
-number (lakelands#1164).
+number (lakelands#1164). 0.17.0 takes the fourth, to 18: it reads 14 to
+18 and writes 18, so a 0.16.0 binary refuses its lakes by their number
+(lakelands#1214). 0.18.0 takes the fifth, to 19: it reads 14 to 19 and
+writes 19, so a 0.17.0 binary refuses its lakes by their number
+(lakelands#1330). 0.20.0 takes the sixth, to 20: it reads 14 to 20 and
+writes 20, so a 0.19.0 binary refuses its lakes by their number
+(lakelands#1409). Its SQLite index keeps the two line shapes 0.19.0
+reads, so that binary reaches the ends and judges them (lakelands#1468).
+The append that begins a lake's format, its creation or its upgrade, is
+stored whole, each line its event's canonical bytes, so a binary of the
+format before reads that append as lines of its own while it is still
+the last, and names the format the lake is in; framed, it would take
+that append for a crash's tail and judge the lake by the format before
+(lakelands#1477, `docs/log-format.md` §1.2). Its one step carries also a new
+stored form of the log and a record's values sealed in one box,
+accepted as 083
+(`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`,
+lakelands#1413), and a lake of 19 is read without a rewrite.
+
+**0.19.0 on a lake that 0.20.0 upgraded.** On PostgreSQL, 0.19.0 does
+not name format 20 for such a lake: it refuses the schema as one that
+holds tables that are not a lake's (it names `bases`, `frames`, …), and
+it writes nothing. On SQLite it names format 20 (lakelands#1473,
+lakelands#1479). Neither is a way back: do not restore a backup over
+the upgraded lake, and open it with 0.20.0, which finishes the upgrade.
+The way back to 0.19.0 is a backup taken before the upgrade, restored
+into a lake of its own.
+
+0.21.0 takes the seventh step, to 21: it reads 14 to 21 and writes 21,
+so a 0.20.0 binary refuses its lakes by their number (lakelands#1547).
+
+**0.20.0 on a lake that 0.21.0 upgraded.** On PostgreSQL, 0.20.0 does
+not name format 21 for such a lake: it refuses the schema as one that
+holds tables that are not a lake's (it names `quarantined`), and it
+writes nothing. On SQLite it names format 21. Neither is a way back: do
+not restore a backup over the upgraded lake, and open it with 0.21.0.
+There is no 0.20.1; the way back to 0.20.0 is a backup taken before the
+upgrade, restored into a lake of its own.
+
+0.22.0 takes the eighth step, to 22: it reads 14 to 22 and writes 22,
+so a 0.21.x binary refuses its lakes by their number. The step adds one
+member, `context.occasion` (088, lakelands#1584). The way back to
+0.21.x is a backup taken before the upgrade, restored into a lake of its
+own.
+
+**0.21.x on a lake that 0.22.0 wrote.** It refuses the lake by its log
+format, naming 22, on SQLite and on PostgreSQL, and writes nothing. Do
+not restore a backup over the lake, and open it with 0.22.0. Format 22
+is the one develop `2df88393` writes, and 0.22.0 only adds to it: a
+binary built from that commit is not to open a lake that 0.22.0 has
+written, which may hold a line it adds (a host's quarantined record keyed
+by its run and line, `preceding` in a constraint or a trigger, `first`
+and `last`, `in_force`), and is not supported. It does not refuse the
+lake, because both write format 22. It serves such a lake, and what it
+serves is not the lake. Describe lists no constraint or trigger that reads
+`preceding`. A record answers without its `in_force` field, though
+describe still lists the field. A view over `first` or `last` is refused,
+and kept views are described as computed. A write is refused: where a
+trigger reads `preceding`, every write of every type is answered 422
+`not_parsed`, naming the lake's own expression as if the input were bad; a
+write of a type with an `in_force` field is answered 503, a damaged
+projection, with the advice to rebuild. Neither is so: the input is good,
+nothing is damaged, and a rebuild does not help. Its `verify` and its
+other commands exit 0. It appends only `lease_taken`, so 0.22.0 opens the
+lake again whole, and that is the way out. The way back is a backup taken
+before 0.22.0's first open of the lake.
+
+**0.22.x on a lake that 0.23.0 wrote.** It does not refuse the lake by
+its format as the rule above says, but by its projection's layout:
+`verify` exits 3 and `export` exits 1, both answering "lake `kept23`'s
+projection has layout 11, and this build reads layout 8; nothing was
+read from it: rebuild it from the log with `lakelands rebuild`", and
+neither writes a byte. The rebuild it advises is destruction, not a way
+in: on a copy of the lake, `rebuild` exited 0, said it had rebuilt the
+projection "from the log through position 3", and left the log
+rewritten in format 22 with four events where 26 stood — 13 380 bytes
+to 3 761, and the index 2 038 to 435 — the events from position 4 gone
+with the format-23 lines. Do not run it. The lake's exported form it
+refuses by its number: `restore --check` says "the backup is damaged at
+position 0: written in log format 23, which this release does not read;
+it writes format 22" (exit 1), and an import into an empty lake says
+the export is damaged at position 0 for the same reason (exit 1),
+writing no log. Do not restore a backup over the lake, and open it with
+0.23.0. The way back is a backup taken before 0.23.0's first open of
+the lake.
+
+**0.23.0 on a lake that 0.22.0 wrote.** It refuses the lake by its log
+format, judged on the log and not on the projection, and it names the
+way: `verify` exits 3 and `export` exits 1, both answering "lake
+`liquidity` is written in log format 22, and this release reads log
+formats 23 to 23 and writes 23; nothing was read from it and nothing
+appended", with the advice "open it with a release that reads log format
+22; restoring it would not help, it is not damaged"; nothing is written.
+`restore --check` on the lake, and `restore` and `import` of an export
+0.22.0 wrote, refuse the archive as a log format too, not as damage:
+each answers "lake `liquidity` is written in log format 22, and this
+release reads log formats 23 to 23 and writes 23; nothing was read from
+it and nothing appended", with the advice "restore it with a release
+that reads log format 22; it is not damaged" (`import` says to import
+it), exits 1 and writes no log. There is no upgrade and no translation:
+a host opens the lake with a release that reads format 22, or brings its
+data into a lake of its own.
 
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
@@ -95,6 +208,16 @@ number (lakelands#1164).
   release's, and the event keeps its `v`, its bytes and its hash. Every
   hash, checkpoint and export a host already holds stays true; a log
   that replaced the events with new ones would be a second truth (001).
+  A step that changes how events are stored, as 083 accepts for 20,
+  changes it only for the lines written after it: a line of an earlier
+  format is a full event, read as it stands beside the new ones in one
+  segment, and a value sealed in an earlier format opens by its event's
+  `v`. What an engine keeps beside the log is its own: as 086 decides
+  for 0.21.0, the first writer's open of 0.21.0 on PostgreSQL converts
+  the log's `id`, `prev` and `hash` columns from text to their bytes in
+  place, under the lease and before any append, in one transaction,
+  and not again; every event's bytes, hash and id stay as they were
+  (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
 - **A writer's open upgrades.** It appends, after its `lease_taken`, one
   `lake_upgraded` from the older format to the release's, and the lake
   is written in the new one from there; a step that changes a fold also
@@ -107,16 +230,19 @@ number (lakelands#1164).
   verifiers refuse any other change.
 - **There is no downgrade.** A backup taken before the upgrade is the
   way back.
-- **The proof on a lake the release before wrote**:
+- **The proof on a lake the release before wrote**: through 0.22.0,
   `docs/log-format/lakes/14/`, a small lake v0.13.1 made through its
-  doors, with what that release answered of it, is imported, upgraded
-  and read the same on every engine. `docs/log-format/lakes/15/`, the
-  lake v0.14.0 made, is held the same way from that release on, read in
-  its own format until a later one upgrades it, as 0.15.0 does;
-  `docs/log-format/lakes/16/`, the lake v0.15.0 made, from that release
-  on, and `docs/log-format/lakes/17/`, the lake v0.16.0 made, from that
-  one on. The vectors of each older format are imported and upgraded on
-  every engine too.
+  doors, with what that release answered of it, and the lakes 15 to 22,
+  each made by the release of its format, were imported, upgraded and
+  read the same on every engine, and the vectors of each older format
+  were imported and upgraded on every engine too. 0.23.0 is the release
+  at which the operator's green field ends that path: the formats 14 to
+  22 are history that no binary of this tree reads, neither their lakes
+  nor their vectors are in the tree, and `scripts/gates/vectors-kept.sh`
+  holds from format 23 on. `docs/log-format/lakes/23/`, the lake v0.23.0
+  made, is kept from that release on and read in its own format on every
+  engine, and every later release reads it, record 098 keeping every
+  format from 23 on.
 
 At 100 000 events a step that changes no fold costs one append, and
 about 5 µs an event at each later read of an older event; one that
@@ -208,3 +334,18 @@ them.
 - 0.16.0's step, to 17, is taken as 0.15.0's to 16 was: one step of its
   own before any form it adds, the vectors of 16 kept as v0.15.0 holds
   them (lakelands#1164).
+- 0.17.0's step, to 18, is taken as 0.16.0's to 17 was: one step of its
+  own before any form it adds, the vectors of 17 kept as v0.16.0 holds
+  them (lakelands#1214).
+- 0.18.0's step, to 19, is taken as 0.17.0's to 18 was: one step of its
+  own before any form it adds, the vectors of 18 kept as v0.17.0 holds
+  them (lakelands#1330).
+- 0.20.0's step, to 20, changing also how the log stores events, a
+  lake of 19 keeping its lines as they stand, accepted with 083
+  (lakelands#1413).
+- The append that creates a lake or upgrades it is stored whole, so
+  0.19.0 names 20 from that append on; before, it read a lake whose
+  only append of 20 was the last as a lake of 19 with a crash's tail,
+  refused its projection's layout and advised a rebuild that cut that
+  append (lakelands#1477).
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

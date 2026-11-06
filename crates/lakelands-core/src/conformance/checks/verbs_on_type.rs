@@ -8,23 +8,12 @@
 //! key, under the grants of its type, by its declared risk, and its
 //! executor's answer is recorded as for any external verb.
 
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{StorageKind, VerbScope};
-use lakelands_api::principal::{Access, TypeGrants};
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::{Declaration, ProposalFilter, ProposedWrite};
-use lakelands_api::{
-    Grants, IdempotencyKey, LakeStore, Outcome, Position, Principal, PrincipalKind, ReadAt,
-    Refusal, TypeName, Version, WriteOpts,
-};
-use serde_json::{Value, json};
+use lakelands_api::ontology::VerbScope;
+use lakelands_api::principal::Access;
 
 use crate::conformance::backing::{EXECUTOR, executed};
-use crate::conformance::fixture::{
-    Lake, Must, events_from, field, head_unmoved, owner, patch, principal, reads_all, reason,
-    refused_like, reviewer, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{owner, reviewer};
+use crate::conformance::prelude::*;
 
 check!(
     VERB_EVENTS_UNTYPED = a_feed_filtered_by_type_passes_none_of_a_verbs_events,

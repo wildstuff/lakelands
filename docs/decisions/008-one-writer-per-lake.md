@@ -33,8 +33,11 @@ writer already" tells the operator what to do.
   many lakes and write to all of them.
 - It is not a limit on concurrent callers. Many principals write to one
   lake through its one writer; the writer orders their appends.
-- It is not replication. Standby writers and failover are outside this
-  decision; the lease is what makes them safe to add later.
+- It is not replication. A standby that takes the lease once the writer
+  is gone is
+  `docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`;
+  the lease is what makes it safe: the standby's fence is greater than
+  every earlier one, so the old writer's next append is refused.
 
 ## How it came to be
 

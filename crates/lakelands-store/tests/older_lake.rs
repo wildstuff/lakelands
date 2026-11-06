@@ -249,3 +249,106 @@ async fn a_writer_s_open_gives_older_settings_their_group() {
          setting `store`; the host's key holds no group"
     );
 }
+
+/// A lake holding an aging rule written before a rule's condition was
+/// held to read no setting kept for a type or a source: its run skips
+/// the rule, naming that reason in its report, and moves nothing (063,
+/// extended). No door writes such a rule now, so the test writes it
+/// through the engine seam.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_older_rule_reading_a_kept_setting_is_skipped_at_its_run() {
+    use lakelands_api::ontology::StorageKind;
+    use lakelands_api::seam::aging_rule_type;
+    use lakelands_api::{RecordKey, TypeName, Version};
+    use lakelands_core::conformance::fixture::{field, type_decl};
+    let opener = MemoryOpener::new();
+    let lake = "made-before-kept-settings";
+    let location = Location::memory(lake);
+    {
+        let engine = opener
+            .open(&location, OpenMode::Create)
+            .expect("the engine creates the lake");
+        let lease = engine.take_lease("an older writer").expect("the lease");
+        let now = Timestamp(1_790_000_000_000_000);
+        let declared = |t: lakelands_api::ontology::TypeDecl| {
+            let hash = lakelands_core::shape::schema_hash(&t).expect("a schema hash");
+            Draft::system(
+                now,
+                EventBody::Declared {
+                    declaration: Declaration::Type(t),
+                    schema_hash: Some(hash),
+                    version: 1,
+                    with_the_set: false,
+                },
+            )
+        };
+        let upserted = |ty: &str, key: &str, patch: serde_json::Value| {
+            let patch = serde_json::from_value(patch).expect("a patch");
+            Draft::system(
+                now,
+                EventBody::RecordUpserted {
+                    ty: TypeName::from(ty),
+                    key: RecordKey::from(key),
+                    version: Version(1),
+                    patch,
+                    made: true,
+                },
+            )
+        };
+        let rule = serde_json::json!({"name": "r", "on": "bare", "field": "m", "from": "a",
+            "to": "b", "when": "setting('sort_index.bare') is not null"});
+        let drafts = vec![
+            Draft::system(
+                now,
+                EventBody::LakeCreated {
+                    format: LOG_FORMAT_VERSION,
+                },
+            ),
+            Draft::system(
+                now,
+                EventBody::LeaseTaken {
+                    fence: lease.fence,
+                    holder: lease.holder.clone(),
+                },
+            ),
+            declared(setting_type()),
+            declared(aging_rule_type()),
+            declared(type_decl("bare", vec![field("m", StorageKind::Text)])),
+            upserted("bare", "o", serde_json::json!({"m": "a"})),
+            upserted(AGING_RULE_TYPE, "r", rule),
+        ];
+        let mut prev = Digest::zero();
+        let mut stored = Vec::new();
+        for (i, d) in drafts.into_iter().enumerate() {
+            let fence = if i == 0 { 0 } else { lease.fence };
+            let (event, canon) = seal(&location.lake, Position(i as u64), &prev, fence, d);
+            prev = event.hash.clone();
+            stored.push(canon);
+        }
+        engine
+            .append(&lease, &stored)
+            .expect("the older lake's log");
+        engine
+            .release_lease(&lease)
+            .expect("the older writer lets go");
+    }
+    let store: Arc<dyn LakeStore> = lakelands_store::open(
+        location,
+        Seams {
+            engines: vec![Arc::new(opener)],
+            ..Seams::default()
+        },
+        OpenMode::Write,
+    )
+    .await
+    .expect("the store opens the older lake for writing");
+    let today = Timestamp::from_date(2026, 3, 1).expect("a date");
+    let report = store.age(today).await.expect("aging the lake");
+    let skipped = report.rules.iter().find(|r| r.rule == "r");
+    assert!(
+        report.transitions == 0
+            && skipped.is_some_and(|r| r.skipped.as_ref().is_some_and(|s| s
+                .contains("the setting `sort_index.bare`, which is kept for one type or source"))),
+        "the rule reading `sort_index.bare` is skipped with its reason: {report:?}"
+    );
+}

@@ -28,7 +28,6 @@ records it and goes on; it is never smoothed over on the spot.
 | `types/transaction.yaml` | `transaction`: a payment settling an invoice (not ingested in this walk) |
 | `verbs/pay_invoice.yaml` | `pay_invoice`, risk `low`: sets `status` to `paid` and `paid_on` |
 | `triggers/invoice_overdue.yaml` | fires when an invoice is open and more than 30 days past due |
-| `object_sets/overdue.yaml` | the open invoices more than 30 days past due |
 | `aging_rules/invoice_overdue.yaml` | the aging rule `invoice_overdue`: an open invoice's `status` becomes `overdue` thirty days after `due_on` (`docs/decisions/036-aging-runs-by-date-once.md`); the walk never calls `age`, so no status moves |
 | `data/partners.csv` | four partners and their credit limits, exported on 31 August |
 | `data/invoices-august.csv` | the invoice export of 31 August: ten invoices |
@@ -143,15 +142,15 @@ cd walk && claude    # approve the server `lakelands` when it asks
 | Prints | Expected |
 |---|---|
 | first | ``created a Lakelands root in walk with the lake `liquidity`, from the example `liquidity` `` |
-| `apply`'s lines | as below: the eight declarations in force from position 12, the aging rule at 13 |
-| `ingest`'s lines | the same counts as below, through positions **17**, **41** and **47** |
+| `apply`'s lines | as below: the seven declarations in force from position 11, the aging rule at 12 |
+| `ingest`'s lines | the same counts as below, through positions **16**, **33** and **37** |
 | the configuration | `wrote …/walk/.mcp.json`, with the server `lakelands`: this binary's own absolute path, with `--root` the root's absolute path, `--lake liquidity serve --mcp`; and that command line for any other MCP client |
-| what to do | `next: cd …/walk && claude`, the question, the walk's answer at the head, the answer **as the lake stood at position 41**, and this page at the binary's own tag |
+| what to do | `next: cd …/walk && claude`, the question, the walk's answer at the head, the answer **as the lake stood at position 33**, and this page at the binary's own tag |
 
 One process takes the lake's writer once, so the positions after the
 first append are less than the seven commands' by one for each command
-that wrote before: 17, 41 and 47 where the seven commands print 18, 43
-and 50. The August ingest's position is the one the command prints, and
+that wrote before: 16, 33 and 37 where the seven commands print 17, 35
+and 40. The August ingest's position is the one the command prints, and
 it is the one the agent pins below. A `.mcp.json` that is in `walk`
 already is not rewritten: the command prints the entry to add; says
 that this `lakelands` server is there; or says that its `lakelands` names
@@ -161,7 +160,7 @@ command can run again.
 
 Ask Claude Code the question. Its calls are the ones under "The agent's
 calls", with the positions of this path: the head after the ingests is
-47, and each `serve --mcp` adds one.
+37, and each `serve --mcp` adds one.
 
 ## The commands
 
@@ -195,10 +194,10 @@ What each must print:
 | Command | Expected |
 |---|---|
 | `init`, `lake new` | the root and the lake's location, exit 0 |
-| `apply` | `applied 8 declaration(s), in force from position 12`, then the eight: value types `invoice_status`, `money`, types `invoice`, `partner`, `transaction`, verb `pay_invoice`, trigger `invoice_overdue`, object set `overdue`. The lake also declares `sys.link.invoice.approved_by`, the link type of `approved_by`, in the same append. Then the rule: ``aging rule `invoice_overdue` written at position 13`` |
-| partners ingest | one `committed` line: **4 records, 0 already in the lake**, through position **18** |
-| August ingest | one `committed` line: **10 records, 0 already in the lake**, through position **43**: ten invoices, and for each of the seven that are open and overdue one `trigger_fired` and one `object_set_changed` |
-| September ingest | one `committed` line: **3 records, 9 already in the lake**, through position **50**. The nine unchanged rows append nothing. INV-3002 is now paid and leaves `overdue`; INV-1004 is new and not overdue; INV-4003 is new, overdue, fires the trigger and joins `overdue`. |
+| `apply` | `applied 7 declaration(s), in force from position 11`, then the seven: value types `invoice_status`, `money`, types `invoice`, `partner`, `transaction`, verb `pay_invoice`, trigger `invoice_overdue`. The lake also declares `sys.link.invoice.approved_by`, the link type of `approved_by`, in the same append. Then the rule: ``aging rule `invoice_overdue` written at position 12`` |
+| partners ingest | one `committed` line: **4 records, 0 already in the lake**, through position **17** |
+| August ingest | one `committed` line: **10 records, 0 already in the lake**, through position **35**: ten invoices, and for each of the seven that are open and overdue one `trigger_fired` |
+| September ingest | one `committed` line: **3 records, 9 already in the lake**, through position **40**. The nine unchanged rows append nothing. INV-3002 is now paid; INV-1004 is new and not overdue; INV-4003 is new, overdue and fires the trigger. |
 | `feed --kind trigger_fired` | eight `trigger_fired` events: INV-1001, 1002, 2001, 2002, 3001, 3002, 4001 in August, INV-4003 in September |
 
 The positions are the store's with aging rules in the lake: the lake's
@@ -206,7 +205,7 @@ first append (`lake_created`, `lease_taken`, the `sys.setting` and
 `sys.aging_rule` declarations), then, for every command that writes, one
 `lease_taken` as that process becomes the lake's writer before its own
 events. Write down the position the
-August ingest prints: it is the one the walk pins (43 here, 41 after
+August ingest prints: it is the one the walk pins (35 here, 33 after
 `init --example`). A different number is not a rift if the records and
 the answers are right.
 
@@ -228,8 +227,8 @@ only, so each run below makes a pinned turn's calls together.
 
 Every `serve --mcp` process becomes the lake's writer and appends one
 `lease_taken`, so each run moves the head by one: the September ingest
-ends at 50, so it is 51 in the first run after it (the `tools/list`
-below), 52 in the next, and so on. `<head>`
+ends at 40, so it is 41 in the first run after it (the `tools/list`
+below), 42 in the next, and so on. `<head>`
 below is the run's own head. A reply's `position` is the position it
 reflects; `pin`'s reply also says what is `pinned`.
 
@@ -315,7 +314,7 @@ it came from, for example P-300's:
 ```json
 "credit_limit": { "origin": "source", "source": "crm",
                   "seen_at": "2026-08-31T18:00:00.000000Z",
-                  "position": 17, "writer": "…", "known_at": "…" }
+                  "position": 16, "writer": "…", "known_at": "…" }
 ```
 
 `writer` is the principal the CLI ingested as (the root's owner), and
@@ -326,13 +325,13 @@ it came from, for example P-300's:
 10000.00) and P-200 Northwind Tools (5950.00 against 5000.00), with
 their credit limits taken from `crm`'s export of 31 August.
 
-**5. `pin`** — `{ "as_of": 43 }` (the August ingest's position, as the
-ingest printed it; 41 on the lake `init --example` makes):
-`{ "position": <head>, "pinned": 43 }`. Calls 5 to 8 are one turn, so one run:
+**5. `pin`** — `{ "as_of": 35 }` (the August ingest's position, as the
+ingest printed it; 33 on the lake `init --example` makes):
+`{ "position": <head>, "pinned": 35 }`. Calls 5 to 8 are one turn, so one run:
 
 ```sh
 cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve --mcp" \
-  tools/call pin '{"as_of": 43}' \
+  tools/call pin '{"as_of": 35}' \
   tools/call invoice_find "{\"where\": \"status = 'open' and due_on < now() - 30d\", \"aggregate\": {\"measures\": [{\"name\": \"overdue_gross\", \"func\": \"sum\", \"field\": \"gross\"}], \"group_by\": [\"partner\"]}}" \
   tools/call partner_get '{"key": "P-100", "with_meta": true}' \
   tools/call partner_get '{"key": "P-200", "with_meta": true}' \
@@ -342,7 +341,7 @@ cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve
 ```
 
 **6. `invoice_find`**, the same arguments. Expected, at the August
-ingest's position (43, or 41):
+ingest's position (35, or 33):
 P-100 `10710.00`, P-200 `5950.00`, **P-300 `8330.00`**, P-400
 `7140.00`.
 

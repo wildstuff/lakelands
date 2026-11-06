@@ -6,23 +6,11 @@
 //! and rows read whole for an order over a record a step reaches, or for
 //! an aggregate, are bounded by the lake's `max_graph_nodes`.
 
-use std::collections::BTreeMap;
-
-use lakelands_api::error::Case;
+use lakelands_api::Value;
 use lakelands_api::id::Cursor;
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::{RelationDecl, StorageKind};
-use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
-use lakelands_api::read::{AggFunc, Aggregate, Direction, OrderBy};
-use lakelands_api::seam::Seams;
-use lakelands_api::{Catalog, Error, Principal, Refusal, Value};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, agg, field, invalid_case, order, pattern, reads_all, reason, reference, restrict,
-    step, type_decl,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{order, reference, step};
+use crate::conformance::prelude::*;
 
 check!(
     ROW_PAGES = a_patterns_pages_are_its_rows_read_in_one_page,

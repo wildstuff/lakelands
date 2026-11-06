@@ -17,6 +17,7 @@ use lakelands_api::id::{
 };
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::{Principal, WriteContext};
+use lakelands_api::quarantine::{QuarantineClose, QuarantineFilter, QuarantineId, Quarantined};
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
@@ -35,6 +36,10 @@ use lakelands_api::{Catalog, LakeStore};
 pub struct Faults {
     pub head: AtomicUsize,
     pub poll: AtomicUsize,
+    /// Non zero: a poll tells all it reads as one append.
+    pub one_append: AtomicUsize,
+    /// How many milliseconds a `get` takes.
+    pub get_millis: AtomicU64,
     pub get: AtomicUsize,
     pub behind: AtomicUsize,
     pub first_window_millis: AtomicU64,
@@ -115,7 +120,16 @@ struct Feed {
 impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
         fail(&self.faults.poll)?;
-        self.inner.poll(from, filter, limit).await
+        let mut batch = self.inner.poll(from, filter, limit).await?;
+        if self.faults.one_append.load(Ordering::SeqCst) != 0 {
+            batch.appends = batch
+                .events
+                .last()
+                .map(|e| e.position)
+                .into_iter()
+                .collect();
+        }
+        Ok(batch)
     }
     async fn ack(&self, consumer: &str, through: Position) -> Result<()> {
         self.inner.ack(consumer, through).await
@@ -179,6 +193,9 @@ impl LakeStore for Store {
     async fn age(&self, today: lakelands_api::time::Timestamp) -> Result<AgeReport> {
         self.inner.age(today).await
     }
+    async fn zone(&self) -> Result<String> {
+        self.inner.zone().await
+    }
     async fn purge_source(
         &self,
         source: &SourceId,
@@ -194,6 +211,19 @@ impl LakeStore for Store {
     ) -> Result<lakelands_api::write::PurgeReport> {
         self.inner.purge_preflight(source, ty).await
     }
+    async fn upsert_preflight(
+        &self,
+        who: &lakelands_api::Principal,
+        context: lakelands_api::WriteContext,
+        ty: &lakelands_api::TypeName,
+        key: &lakelands_api::RecordKey,
+        patch: lakelands_api::record::Patch,
+        expected: Option<lakelands_api::Version>,
+    ) -> lakelands_api::Result<()> {
+        self.inner
+            .upsert_preflight(who, context, ty, key, patch, expected)
+            .await
+    }
     async fn forget_source(
         &self,
         source: &lakelands_api::SourceId,
@@ -206,6 +236,19 @@ impl LakeStore for Store {
         source: &lakelands_api::SourceId,
     ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
         self.inner.forget_preflight(source).await
+    }
+    async fn forget_sources(
+        &self,
+        sources: &[lakelands_api::SourceId],
+        id: Option<&str>,
+    ) -> lakelands_api::Result<lakelands_api::write::ForgetSetReport> {
+        self.inner.forget_sources(sources, id).await
+    }
+    async fn forget_sources_preflight(
+        &self,
+        sources: &[lakelands_api::SourceId],
+    ) -> lakelands_api::Result<lakelands_api::write::ForgetSetReport> {
+        self.inner.forget_sources_preflight(sources).await
     }
     async fn remove_values(
         &self,
@@ -270,6 +313,8 @@ impl Catalog for Doors {
     }
     async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
         self.faults.gets.fetch_add(1, Ordering::SeqCst);
+        let wait = self.faults.get_millis.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(wait)).await;
         fail(&self.faults.get)?;
         behind(&self.faults.behind, get.at.as_of)?;
         self.inner.get(who, ty, get).await
@@ -355,6 +400,29 @@ impl Catalog for Doors {
     ) -> Result<Reply<Vec<Proposal>>> {
         self.inner.proposals(who, filter).await
     }
+    async fn quarantined(
+        &self,
+        who: &Principal,
+        filter: QuarantineFilter,
+    ) -> Result<Reply<Vec<Quarantined>>> {
+        self.inner.quarantined(who, filter).await
+    }
+    async fn dismiss_quarantined(
+        &self,
+        who: &Principal,
+        id: &QuarantineId,
+    ) -> Result<QuarantineClose> {
+        self.inner.dismiss_quarantined(who, id).await
+    }
+    async fn quarantine(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: lakelands_api::IngestOpts,
+        refused: lakelands_api::quarantine::HostRefused,
+    ) -> Result<lakelands_api::quarantine::Quarantining> {
+        self.inner.quarantine(who, source, opts, refused).await
+    }
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
         self.inner.declare(who, declaration).await
     }
@@ -433,10 +501,10 @@ impl Catalog for Doors {
         opts: lakelands_api::IngestOpts,
         records: SourceStream,
     ) -> Result<CommitStream> {
-        match opts.delivery {
-            None => self.ingest(who, source, records).await,
-            Some(_) => self.inner.ingest_with(who, source, opts, records).await,
+        if opts == lakelands_api::IngestOpts::default() {
+            return self.ingest(who, source, records).await;
         }
+        self.inner.ingest_with(who, source, opts, records).await
     }
     async fn ingest(
         &self,

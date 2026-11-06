@@ -2,13 +2,8 @@
 //! (`docs/decisions/006-grants-not-roles.md` and
 //! `013-verbs-run-by-declared-risk.md`, each extended).
 
-use lakelands_api::write::ProposalFilter;
-use lakelands_api::{Error, Missing, Outcome, ProposalId};
-use serde_json::{Value, json};
-
 use super::only::{de, holder};
-use crate::conformance::fixture::{Lake, Must, head_unmoved, trigger_on};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     DECIDED_AS_LISTED = an_entry_is_decided_as_its_reviewer_is_listed_it,
@@ -231,7 +226,8 @@ async fn an_entry_is_decided_as_its_reviewer_is_listed_it(store: Store) -> Held 
     };
     let (mut apart, mut got) = (Vec::new(), Vec::new());
     for (name, more, want) in GRID {
-        let mut grants = json!({"default": "read", "review": true, "schema": true});
+        let mut grants =
+            json!({"default": "read", "review": true, "schema": true, "restricted": true});
         let more: Value = serde_json::from_str(more).expect("the grid's grants read");
         if let (Some(g), Value::Object(more)) = (grants.as_object_mut(), more) {
             g.extend(more);

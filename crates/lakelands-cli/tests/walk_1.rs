@@ -62,7 +62,6 @@ fn the_liquidity_bundle_loads_with_every_lane_the_walk_needs() {
             "type transaction",
             "verb pay_invoice",
             "trigger invoice_overdue",
-            "object_set overdue",
         ]
     );
 }
@@ -140,17 +139,17 @@ fn walk(engine: &str) {
     let applied = sh.ok(&["--root", &root, "apply", &example().display().to_string()]);
     let rule = |l: &&str| l.starts_with("  aging rule ");
     assert!(
-        applied.starts_with("applied 8 declaration(s), in force from position ")
+        applied.starts_with("applied 7 declaration(s), in force from position ")
             && applied
                 .lines()
                 .filter(|l| l.starts_with("  ") && !rule(l))
                 .count()
-                == 8,
-        "apply applies the bundle's eight declarations as one set:\n{applied}"
+                == 7,
+        "apply applies the bundle's seven declarations as one set:\n{applied}"
     );
     assert_eq!(
         applied.lines().filter(rule).collect::<Vec<_>>(),
-        ["  aging rule `invoice_overdue` written at position 13"],
+        ["  aging rule `invoice_overdue` written at position 12"],
         "apply writes the bundle's aging rule after its declarations:\n{applied}"
     );
 
@@ -266,6 +265,7 @@ async fn over(
                 name: "overdue_gross".into(),
                 func: AggFunc::Sum,
                 field: Some("gross".into()),
+                by: None,
             }],
             group_by: vec!["partner".into()],
         }),
@@ -273,7 +273,7 @@ async fn over(
         ..Find::default()
     };
     let found = cat.find(&who, &"invoice".into(), find).await.unwrap().data;
-    let Found::Groups { rows } = found else {
+    let Found::Groups { rows, .. } = found else {
         panic!("an aggregate find answers groups, not {found:?}");
     };
     let mut out = BTreeMap::new();
@@ -307,11 +307,11 @@ fn init_with_an_example_makes_the_walks_lake_and_its_mcp_configuration() {
     let sh = Shell { root: dir.clone() };
     let out = sh.ok(&["init", &dir.display().to_string(), "--example", "liquidity"]);
     assert!(
-        out.contains("applied 8 declaration(s), in force from position 12:"),
+        out.contains("applied 7 declaration(s), in force from position 11:"),
         "{out}"
     );
     assert!(
-        out.contains("  aging rule `invoice_overdue` written at position 13"),
+        out.contains("  aging rule `invoice_overdue` written at position 12"),
         "{out}"
     );
     let committed: Vec<&str> = out
@@ -321,9 +321,9 @@ fn init_with_an_example_makes_the_walks_lake_and_its_mcp_configuration() {
     assert_eq!(
         committed,
         [
-            "committed 4 record(s), 0 already in the lake, through position 17",
-            "committed 10 record(s), 0 already in the lake, through position 41",
-            "committed 3 record(s), 9 already in the lake, through position 47",
+            "committed 4 record(s), 0 already in the lake, through position 16",
+            "committed 10 record(s), 0 already in the lake, through position 33",
+            "committed 3 record(s), 9 already in the lake, through position 37",
         ],
         "{out}"
     );
@@ -358,7 +358,7 @@ fn init_with_an_example_makes_the_walks_lake_and_its_mcp_configuration() {
     assert!(out.contains(&walk), "{out}");
     assert!(
         out.contains(
-            "as the lake stood at position 41 (pin it): P-100, P-200 and P-300 Cedar Logistics"
+            "as the lake stood at position 33 (pin it): P-100, P-200 and P-300 Cedar Logistics"
         ),
         "{out}"
     );
@@ -376,7 +376,7 @@ fn init_with_an_example_makes_the_walks_lake_and_its_mcp_configuration() {
         ]),
         "at the head"
     );
-    let then = block_on(over(location, Some(Position(41))));
+    let then = block_on(over(location, Some(Position(33))));
     assert_eq!(
         then,
         BTreeMap::from([
@@ -515,10 +515,12 @@ fn init_with_an_example_refuses_what_is_there_before_it_writes() {
 }
 
 /// A run that fails after it made the root removes what it made, and the
-/// same command then runs. The fault is a file-size limit (512 KiB, with
-/// the signal it raises ignored, so a write fails as a full disk does): the
-/// partners ingest commits and the August ingest fails. A directory and a
-/// `lakes/` that were there before stay: no directory, an empty one, and
+/// same command then runs. The fault is a file-size limit (with the signal
+/// it raises ignored, so a write fails as a full disk does): the partners
+/// ingest commits and the August ingest fails. The limit is raised in
+/// 32 KiB steps from 512 KiB until the fault lands there, since the
+/// example's size moves with the schema the engines keep. A directory and
+/// a `lakes/` that were there before stay: no directory, an empty one, and
 /// one with an empty `lakes/`.
 #[test]
 fn init_with_an_example_removes_what_it_made_when_a_later_step_fails() {
@@ -529,9 +531,6 @@ fn init_with_an_example_removes_what_it_made_when_a_later_step_fails() {
 
 fn fault(n: usize, there: &[&str]) {
     let dir = fresh(&format!("walk-1-example-fault-{n}"));
-    for path in there {
-        fs::create_dir_all(dir.join(path)).unwrap();
-    }
     let d = dir.display().to_string();
     let run = |limit: &str| {
         std::process::Command::new("bash")
@@ -545,16 +544,39 @@ fn fault(n: usize, there: &[&str]) {
             .output()
             .unwrap()
     };
-    let failed = run("512");
-    let (out, err) = (
-        String::from_utf8_lossy(&failed.stdout),
-        String::from_utf8_lossy(&failed.stderr),
-    );
-    assert_eq!(failed.status.code(), Some(1), "{out}\n{err}");
-    assert!(
-        out.contains("through position 17") && !out.contains("through position 41"),
-        "the fault is to land in the August ingest:\n{out}\n{err}"
-    );
+    let mut last = String::new();
+    let mut failed = None;
+    for blocks in (512..=4096).step_by(32) {
+        let _ = fs::remove_dir_all(&dir);
+        if !there.is_empty() {
+            fs::create_dir_all(&dir).unwrap();
+        }
+        for path in there {
+            fs::create_dir_all(dir.join(path)).unwrap();
+        }
+        let limit = blocks.to_string();
+        let out = run(&limit);
+        let (stdout, stderr) = (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        );
+        last = format!("{limit} KiB:\n{stdout}\n{stderr}");
+        if out.status.code() == Some(1)
+            && stdout.contains("through position 16")
+            && !stdout.contains("through position 33")
+        {
+            failed = Some((stdout, stderr));
+            break;
+        }
+        assert_ne!(
+            out.status.code(),
+            Some(0),
+            "the example ran whole inside {limit} KiB, so no later step failed:\n{last}"
+        );
+    }
+    let (_, err) = failed.unwrap_or_else(|| {
+        panic!("no file-size limit landed the fault in the August ingest:\n{last}")
+    });
     assert!(err.contains("nothing this run made is left in"), "{err}");
     let left: Vec<String> = fs::read_dir(&dir)
         .map(|d| {
@@ -577,5 +599,5 @@ fn fault(n: usize, there: &[&str]) {
     let again = run("unlimited");
     let out = String::from_utf8_lossy(&again.stdout);
     assert!(again.status.success(), "{out}");
-    assert!(out.contains("through position 47"), "{out}");
+    assert!(out.contains("through position 37"), "{out}");
 }

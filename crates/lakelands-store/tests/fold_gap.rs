@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use lakelands_api::engine::{
-    CanonicalEvent, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    Ranked, Rankings, VectorIndex,
+    CanonicalEvent, Compact, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore,
+    ProjectionView, Ranked, Rankings, VectorIndex,
 };
 use lakelands_api::error::{Flaw, Part, Situation};
 use lakelands_api::event::{Digest, EventBody, SegmentDigest};
@@ -109,6 +109,9 @@ impl LakeEngine for Failing {
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
         self.inner.segments()
     }
+    fn active_segment_bytes(&self) -> Option<u64> {
+        self.inner.active_segment_bytes()
+    }
     fn projection(&self) -> &dyn ProjectionStore {
         self
     }
@@ -182,11 +185,39 @@ impl ProjectionStore for Failing {
         }
         self.inner.projection().put_record(record)
     }
+    fn drop_states(&self, of: lakelands_api::engine::StatesOf<'_>) -> Result<()> {
+        self.inner.projection().drop_states(of)
+    }
+    fn states(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        after: Option<Position>,
+        through: Position,
+        limit: u32,
+    ) -> Result<Vec<lakelands_api::record::StoredRecord>> {
+        self.inner
+            .projection()
+            .states(ty, key, after, through, limit)
+    }
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         self.inner.projection().end_head_only(name, at)
     }
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        self.inner.projection().put_order(name, key, entry)
+    }
+    fn end_order(&self, name: &TypeName) -> Result<()> {
+        self.inner.projection().end_order(name)
+    }
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.inner.projection().put_proposal(proposal, at)
+    }
+    fn put_quarantined(
+        &self,
+        row: &lakelands_api::quarantine::Quarantined,
+        at: Position,
+    ) -> Result<()> {
+        self.inner.projection().put_quarantined(row, at)
     }
     fn put_membership(
         &self,
@@ -209,7 +240,11 @@ impl ProjectionStore for Failing {
     fn clear(&self) -> Result<()> {
         self.inner.projection().clear()
     }
-    fn compact(&self) -> Result<lakelands_api::engine::Reclaimed> {
+    fn compact_step(&self, how: Compact) -> Result<lakelands_api::engine::Reclaimed> {
+        // A reclaim's other steps pass: it is counted, and fails, once.
+        if matches!(how, Compact::Beside | Compact::Pages(_)) {
+            return self.inner.projection().compact_step(how);
+        }
         let (fails, done) = &self.compact;
         if fails.load(Ordering::SeqCst) > 0 {
             fails.fetch_sub(1, Ordering::SeqCst);
@@ -219,7 +254,19 @@ impl ProjectionStore for Failing {
             }));
         }
         done.fetch_add(1, Ordering::SeqCst);
-        self.inner.projection().compact()
+        self.inner.projection().compact_step(how)
+    }
+    fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
+        self.inner.projection().put_thinned_act(act, at)
+    }
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: lakelands_api::time::Timestamp,
+        at: Position,
+    ) -> Result<()> {
+        self.inner.projection().put_thinned(ty, key, before, at)
     }
 }
 
@@ -327,6 +374,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
         ty: FieldType::kind(StorageKind::Text),
         required: false,
         authority: Default::default(),
+        admits: vec![],
         derived: None,
         function: None,
         computed_at: None,
@@ -743,10 +791,10 @@ async fn a_rebuild_whose_log_read_fails_leaves_the_lake_behind_until_a_fold_catc
 
 /// A forgetting stopped between its rebuild and its reclaim
 /// (`docs/decisions/058-a-source-may-be-forgotten.md`) is reclaimed by the
-/// act's repeat, which appends nothing, or by the next writer's open, and
-/// an open after that reclaims nothing again: only
-/// an engine's fault can stop the reclaim, so the suite holds the other
-/// stops and this one stands here.
+/// act's repeat, which appends nothing, or by the road beside the next
+/// writer's open, after its answer, and an open after that reclaims
+/// nothing again: only an engine's fault can stop the reclaim, so the
+/// suite holds the other stops and this one stands here.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open() {
     let (store, cat, who, l) = lake_with_switches().await;
@@ -781,7 +829,7 @@ async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open()
         again.reclaimed.is_none(),
         "a repeat of the done act reclaims nothing: {again:?}"
     );
-    // A stop the open finishes.
+    // A stop the road beside the open finishes.
     fails.store(1, Ordering::SeqCst);
     let owed = store.forget_source(&"erp".into(), None).await.unwrap();
     assert!(owed.reclaim_owed.is_some(), "{owed:?}");
@@ -798,10 +846,12 @@ async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open()
     store.close().await.unwrap();
     drop((store, cat));
     let store = reopen().await;
+    // The open answers before the road takes the reclaim up (099).
+    until(|| done.load(Ordering::SeqCst) == before + 1).await;
     assert_eq!(
         done.load(Ordering::SeqCst),
         before + 1,
-        "the open reclaims what the act owed"
+        "the road beside the open reclaims what the act owed"
     );
     store.close().await.unwrap();
     drop(store);
@@ -811,4 +861,17 @@ async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open()
         before + 1,
         "the next open owes nothing"
     );
+}
+
+/// Wait until `done`, for a row that needs the road beside the writer to
+/// have got somewhere.
+async fn until(done: impl Fn() -> bool) {
+    for _ in 0..5_000 {
+        if done() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        tokio::task::yield_now().await;
+    }
+    panic!("waited five seconds");
 }

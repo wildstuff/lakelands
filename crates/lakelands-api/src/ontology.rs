@@ -9,12 +9,13 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Case, Place, Said};
+use crate::error::{Beyond, Case, Place, Said};
 use crate::expr::{Condition, Func};
 use crate::id::{
-    ConstraintName, FieldName, ParamName, RelationName, TriggerName, TypeName, ValueTypeName,
-    VerbName,
+    ConstraintName, FieldName, ParamName, PreconditionName, RelationName, SourceId, TriggerName,
+    TypeName, ValueTypeName, VerbName,
 };
+use crate::read::GroupKey;
 
 /// A host's own marks on a declaration: a map from a namespaced key
 /// (`acme.icon`) to a JSON value. Lakelands stores, replays and describes
@@ -199,16 +200,20 @@ pub enum Authority {
     /// Written only by the type's verbs' `set`, its `initial` and an aging
     /// rule; `upsert` and `ingest` are refused it (lakelands#1130).
     Verb,
+    /// Filled by the store at a create with the writer of the event that
+    /// makes the record, `<kind>:<id>`; no door writes it (lakelands#1488).
+    Writer,
 }
 
 impl Authority {
     /// Every authority, in declaration order.
-    pub const ALL: [Authority; 5] = [
+    pub const ALL: [Authority; 6] = [
         Authority::Authored,
         Authority::Source,
         Authority::Shared,
         Authority::Derived,
         Authority::Verb,
+        Authority::Writer,
     ];
 
     /// Whether this is the default, `authored`.
@@ -279,6 +284,13 @@ pub struct FieldDecl {
     /// Which authority writes it.
     #[serde(default)]
     pub authority: Authority,
+    /// For `authored`: the sources an `ingest` may write it under, in the
+    /// order declared, each only where no other hand's value stands
+    /// (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`).
+    /// Not part of the schema hash: it says who writes the field, not what
+    /// a record holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admits: Vec<SourceId>,
     /// For `derived`: the expression the fold computes it from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived: Option<Condition>,
@@ -389,6 +401,8 @@ struct InputWire {
     required: bool,
     #[serde(default)]
     authority: Authority,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    admits: Vec<SourceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     derived: Option<Condition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -424,6 +438,7 @@ impl From<&FunctionInput> for InputWire {
             ty,
             required,
             authority,
+            admits,
             derived,
             function,
             computed_at,
@@ -443,6 +458,7 @@ impl From<&FunctionInput> for InputWire {
             name,
             required,
             authority,
+            admits,
             derived,
             function,
             computed_at,
@@ -470,6 +486,7 @@ impl From<InputWire> for FunctionInput {
                 name: w.name,
                 required: w.required,
                 authority: w.authority,
+                admits: w.admits,
                 derived: w.derived,
                 function: w.function,
                 computed_at: w.computed_at,
@@ -531,8 +548,8 @@ macro_rules! unread {
             pub const UNREAD: &[&str] = &[$(stringify!($member)),*];
 
             /// Leaves the declaration its shape alone: its name, type,
-            /// authority, whether it is required and sensitive and what
-            /// an input change does to it.
+            /// authority and the sources it admits, whether it is required
+            /// and sensitive and what an input change does to it.
             pub fn shape_alone(&mut self) {
                 $(self.$member = Default::default();)*
             }
@@ -555,6 +572,21 @@ pub struct EmbedDecl {
 }
 
 impl TypeDecl {
+    /// The field it declares as `name`.
+    pub fn field(&self, name: &FieldName) -> Option<&FieldDecl> {
+        self.fields.iter().find(|f| &f.name == name)
+    }
+
+    /// Whether it declares a field `name`.
+    pub fn has_field(&self, name: &FieldName) -> bool {
+        self.fields.iter().any(|f| &f.name == name)
+    }
+
+    /// The relation it declares as `name`.
+    pub fn relation(&self, name: &RelationName) -> Option<&RelationDecl> {
+        self.relations.iter().find(|r| &r.name == name)
+    }
+
     /// The fields a path reads, each with the type it is a field of: its
     /// first segment here, and while the field so read is a reference and
     /// the path goes on, the next segment on the reference's target as `ty`
@@ -570,7 +602,7 @@ impl TypeDecl {
     ) -> Vec<(&'d TypeDecl, &'d FieldDecl)> {
         let (mut on, mut read) = (Some(self), Vec::new());
         let named = |r: &&RelationDecl| r.carried_by_links() && r.name.as_str() == path[0].as_str();
-        let first = path.len() > 1 && !self.fields.iter().any(|f| f.name == path[0]);
+        let first = path.len() > 1 && !self.has_field(&path[0]);
         let link = (first.then(|| self.relations.iter().find(named)).flatten())
             .and_then(|r| ty(&crate::key::link_type_name(&self.name, &r.name)));
         let from = |lt: &'d TypeDecl| {
@@ -580,7 +612,7 @@ impl TypeDecl {
             (on, read) = (Some(step.0), vec![step]);
         }
         for (i, name) in path.iter().enumerate().skip(read.len()) {
-            let field = on.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == name)?)));
+            let field = on.and_then(|t| Some((t, t.field(name)?)));
             let Some((t, f)) = field else { break };
             read.push((t, f));
             let further = f.ty.target.as_ref().filter(|_| i + 1 < path.len());
@@ -592,7 +624,7 @@ impl TypeDecl {
     /// The derived relation a path's first segment `n` names, where the
     /// type has no field of that name.
     pub fn derived_step(&self, n: &FieldName) -> Option<&RelationDecl> {
-        let field = self.fields.iter().any(|f| &f.name == n);
+        let field = self.has_field(n);
         let named = |r: &&RelationDecl| r.derived.is_some() && r.name.as_str() == n.as_str();
         self.relations.iter().find(named).filter(|_| !field)
     }
@@ -614,7 +646,7 @@ impl TypeDecl {
                 && let Some(target) = ty(&r.target)
             {
                 let [from, to] = r.derived.as_ref().map(Derived::reads).unwrap_or_default();
-                let field = |t: &'d TypeDecl, n: &FieldName| t.fields.iter().find(|f| &f.name == n);
+                let field = |t: &'d TypeDecl, n: &FieldName| t.field(n);
                 let own = from.iter().filter_map(|n| Some((on, field(on, n)?)));
                 let there = to.iter().filter_map(|n| Some((target, field(target, n)?)));
                 let rest = target.stepped(&p[1..], ty);
@@ -623,7 +655,7 @@ impl TypeDecl {
             // `exists` over a relation carried by links reads its link's
             // `from`, as a path through the link does.
             if let [n] = p.as_slice() {
-                let field = on.fields.iter().any(|f| &f.name == n);
+                let field = on.has_field(n);
                 let named = |r: &&RelationDecl| {
                     !field && r.carried_by_links() && r.name.as_str() == n.as_str()
                 };
@@ -647,10 +679,10 @@ impl TypeDecl {
     /// `key` names the same or is left out; one that came in past
     /// `declare` and says otherwise keys nothing (lakelands#782,
     /// lakelands#788).
-    pub fn key_fields(&self) -> &[FieldName] {
+    pub fn key_fields(&self) -> Vec<FieldName> {
         match &self.view {
-            Some(v) => &v.group_by,
-            None => &self.key,
+            Some(v) => v.group_names(),
+            None => self.key.clone(),
         }
     }
 
@@ -658,13 +690,23 @@ impl TypeDecl {
     /// fields it groups by, then each merge source and the fields it
     /// groups by, which line up with them position by position (018).
     /// None of a stored type.
-    pub fn key_sources(&self) -> Vec<(&TypeName, &[FieldName])> {
+    pub fn key_sources(&self) -> Vec<(&TypeName, Vec<FieldName>)> {
         let Some(v) = &self.view else {
             return Vec::new();
         };
-        let merged = v.merge.iter().map(|m| (&m.source, m.group_by.as_slice()));
-        std::iter::once((&v.source, v.group_by.as_slice()))
+        let merged = v.merge.iter().map(|m| (&m.source, m.group_by.clone()));
+        std::iter::once((&v.source, v.group_sources()))
             .chain(merged)
+            .collect()
+    }
+
+    /// Each of its fields computed at the read that pairs with another
+    /// type's record in force, with its expression typed (052, extended).
+    pub fn in_force(&self) -> Vec<(&FieldDecl, crate::expr::Expr)> {
+        let typed = |f: &FieldDecl| f.derived.as_ref()?.typed().ok();
+        (self.fields.iter().filter(|f| f.at_read()))
+            .filter_map(|f| Some((f, typed(f)?)))
+            .filter(|(_, e)| e.calls(&[Func::InForce]))
             .collect()
     }
 
@@ -821,6 +863,97 @@ impl TypeDecl {
             said(&[ty()], f, case)
         })
     }
+
+    /// `c`, one of this type's constraints, in its typed form, checked
+    /// as `declare` checks it: parsed and checked in a constraint's place,
+    /// then refused where it reads what can change without a write of its
+    /// record — a path across a reference or a link, `in_set`, `setting`,
+    /// `exists`, a field computed at the read or one computed outside the
+    /// lake (an embedding, or a field of a function whose backing is not
+    /// `expr`), the first of these that holds — where it reads the clock
+    /// other than as a clock term compared with a field, where it reads
+    /// a field the type does not declare, and where a `preceding` matches
+    /// on a field that is not text or a reference or orders by one of a
+    /// kind with no order. `function` names the declared functions. A
+    /// constraint is judged on the write of its own record alone, so what
+    /// it reads must move only with that write, or be the write's own to
+    /// judge: its clock, and the record before it; a host that authors one
+    /// asks here and gets the store's answer.
+    pub fn constraint_reach<'f>(
+        &self,
+        c: &ConstraintDecl,
+        function: impl Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
+    ) -> Result<crate::expr::Expr, Case> {
+        let e = c.holds.checked(crate::expr::Place::Constraint)?;
+        let mut paths = Vec::new();
+        crate::expr::paths(&e, &mut paths);
+        let backed = |n: &str| function(n).is_some_and(|f| f.backing != "expr");
+        let beyond = if paths.iter().any(|p| p.len() > 1) {
+            Some(Beyond::Path)
+        } else if e.calls(&[Func::InSet]) {
+            Some(Beyond::InSet)
+        } else if e.calls(&[Func::Setting]) {
+            Some(Beyond::Setting)
+        } else if e.calls(&[Func::Exists]) {
+            Some(Beyond::Exists)
+        } else {
+            e.fields_read().into_iter().find_map(|n| {
+                let f = self.field(n)?;
+                let field = n.clone();
+                if f.at_read() {
+                    Some(Beyond::ComputedAtRead { field })
+                } else if f.embed.is_some() || f.function.as_deref().is_some_and(backed) {
+                    Some(Beyond::ComputedOutside { field })
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some(reads) = beyond {
+            let constraint = c.name.clone();
+            let reads = Box::new(reads);
+            return Err(Case::ConstraintReadsBeyond { constraint, reads });
+        }
+        let constraint = c.name.clone();
+        if !e.clock_compared() {
+            return Err(Case::ClockNotCompared { constraint });
+        }
+        let declared = |n: &&FieldName| self.has_field(n);
+        if let Some(n) = e.fields_read().into_iter().find(|n| !declared(n)) {
+            let (ty, field) = (self.name.clone(), n.clone());
+            return Err(Case::UnknownField { ty, field });
+        }
+        self.series_read(&e)?;
+        Ok(e)
+    }
+
+    /// Whether every `preceding` in `e`, a constraint or a trigger's
+    /// `when` over this type, reads its series as `declare` takes it: a
+    /// series matched on fields an exact-text index keeps, text or a
+    /// reference, so a write reads one series and never the type, and
+    /// ordered by a field of a kind with an order; never over a view's
+    /// rows, which a write stages apart from its records.
+    pub fn series_read(&self, e: &crate::expr::Expr) -> Result<(), Case> {
+        let kind = |n: &FieldName| self.field(n).map(|f| f.ty.kind);
+        for series in e.series().into_keys() {
+            let (by, matched) = series.split_first().expect("three arguments or more");
+            if self.view.is_some() {
+                return Err(Case::PrecedingHere);
+            }
+            let looked = |n: &&FieldName| {
+                matches!(kind(n), Some(StorageKind::Text | StorageKind::Reference))
+            };
+            if let Some(n) = matched.iter().find(|n| !looked(n)) {
+                let field = n.clone();
+                return Err(Case::PrecedingUnlooked { field });
+            }
+            if !kind(by).is_some_and(|k| crate::seam::sortable(&k)) {
+                let field = by.clone();
+                return Err(Case::PrecedingUnordered { field });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// What of `computed_at_problem` one field of `fields` breaks by itself.
@@ -942,7 +1075,7 @@ fn embedding_problem(t: &TypeDecl, f: &FieldDecl) -> Option<Case> {
             return Some(Case::EmbedFromItself);
         }
         // Not one of the type's fields: as one it does not have.
-        let Some(source) = t.fields.iter().find(|d| &d.name == name) else {
+        let Some(source) = t.field(name) else {
             let ty = t.name.clone();
             return Some(Case::UnknownField { ty, field });
         };
@@ -989,8 +1122,9 @@ pub struct RelationDecl {
     /// declares a relation of that name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inverse: Option<RelationName>,
-    /// The field of this type that holds the target's key, if the
-    /// relation is carried by a reference field.
+    /// The field of this type that holds the target's key, or a JSON
+    /// array of keys with one link to each distinct one, if the relation
+    /// is carried by a field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<FieldName>,
     /// Fields of the link itself, for a relation carried by link records
@@ -1101,11 +1235,15 @@ pub struct ViewDecl {
     /// Which source records it covers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#where: Option<Condition>,
-    /// Source fields whose values form one view record each. Without
-    /// them the view is one record, keyed [`crate::key::UNGROUPED`], over
+    /// What forms one view record each: a source field's value, or a
+    /// term's under a name of its own, as an aggregate's grouping takes
+    /// them (`docs/decisions/049-a-view-the-fold-keeps.md`). A term is one
+    /// `date_bucket` over a field of the source; the record carries its
+    /// value under its name, and the source has no such field. Without
+    /// any the view is one record, keyed [`crate::key::UNGROUPED`], over
     /// no source record too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub group_by: Vec<FieldName>,
+    pub group_by: Vec<GroupKey>,
     /// The view's fields, each an expression over its group. They are
     /// computed after the merged sources' measures, which they may read by
     /// name.
@@ -1117,6 +1255,18 @@ pub struct ViewDecl {
 }
 
 impl ViewDecl {
+    /// The names its records hold their group values under, in order:
+    /// a field's own name, or a term's.
+    pub fn group_names(&self) -> Vec<FieldName> {
+        self.group_by.iter().map(|k| k.name().clone()).collect()
+    }
+
+    /// Of each group value, the source field it comes from: the field, or
+    /// the one a term reads (none where its expression does not parse).
+    pub fn group_sources(&self) -> Vec<FieldName> {
+        self.group_by.iter().map(GroupKey::source).collect()
+    }
+
     /// The definition without each measure, its own or a merged source's,
     /// whose view field `known` does not answer: shown beside a type's
     /// fields, it names none that they leave out (lakelands#782).
@@ -1381,30 +1531,57 @@ pub struct VerbDecl {
     pub payload: Vec<FieldDecl>,
     /// Its declared risk; the caller cannot lower it.
     pub risk: Risk,
-    /// A condition the record must meet for the verb to be called.
+    /// A condition the record must meet for the verb to be called; in
+    /// it, `payload.<name>` reads the call's payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires: Option<Condition>,
+    /// Conditions the record and the call must meet too, each by its own
+    /// name, judged after `requires` in order, so that a refusal names
+    /// the one unmet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preconditions: Vec<Precondition>,
     /// What it does.
     #[serde(flatten)]
     pub effect: VerbEffect,
     /// What the verb does, for people and agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Whether it is callable only by a principal whose grants on `on`
+    /// name it ([`TypeGrants::verbs`](crate::principal::TypeGrants::verbs)),
+    /// on top of the field rights every verb asks
+    /// (`docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub granted: bool,
+}
+
+/// A named condition a verb requires of its record and its call
+/// (`docs/decisions/006-grants-not-roles.md`, extended).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Precondition {
+    /// Its name, unique in its verb.
+    pub name: PreconditionName,
+    /// What the record and the call hold, as `requires` reads them.
+    pub holds: Condition,
 }
 
 impl VerbDecl {
-    /// The paths the verb reads of a record: those of its `requires`, and
-    /// those of its set values but for `payload.<name>`, a member of the
-    /// call's payload. `None` where one of them does not parse.
+    /// What the verb requires, in the order a call judges it: `requires`,
+    /// then each precondition's `holds`.
+    pub fn conditions(&self) -> impl Iterator<Item = &Condition> {
+        let named = self.preconditions.iter().map(|p| &p.holds);
+        self.requires.iter().chain(named)
+    }
+
+    /// The paths the verb reads of a record: those of its conditions and
+    /// its set values but for `payload.<name>`, a member of the call's
+    /// payload ([`record_paths`]). `None` where one of them does not parse.
     pub fn record_paths(&self) -> Option<Vec<Vec<FieldName>>> {
         let set = self.effect.set();
-        let values = set.iter().map(|a| (&a.value, true));
+        let values = set.iter().map(|a| &a.value);
         let mut read = Vec::new();
-        for (c, value) in self.requires.iter().map(|r| (r, false)).chain(values) {
-            let (e, mut paths) = (c.typed().ok()?, Vec::new());
-            crate::expr::paths(&e, &mut paths);
-            let payload = |p: &[FieldName]| value && p.len() == 2 && p[0].as_str() == "payload";
-            read.extend(paths.iter().filter(|p| !payload(p)).map(|p| p.to_vec()));
+        for c in self.conditions().chain(values) {
+            read.extend(record_paths(&c.typed().ok()?));
         }
         Some(read)
     }
@@ -1427,15 +1604,14 @@ impl VerbDecl {
         Some(on.reads_across(&self.record_paths()?, ty))
     }
 
-    /// The relations an `exists(…)` of the verb's `requires` and set values
-    /// names.
+    /// The relations an `exists(…)` of the verb's conditions and set
+    /// values names.
     pub fn exists_relations(&self) -> Vec<FieldName> {
         let set = self.effect.set();
         let mut out = Vec::new();
         let values = set.iter().map(|a| &a.value);
         for e in self
-            .requires
-            .iter()
+            .conditions()
             .chain(values)
             .filter_map(|c| c.typed().ok())
         {
@@ -1443,6 +1619,20 @@ impl VerbDecl {
         }
         out
     }
+}
+
+/// The paths a verb's condition or value `e` reads of a record: each but
+/// `payload.<name>`, a member of the call's payload. A bare `payload` and
+/// a longer path are the record's.
+pub(crate) fn record_paths(e: &crate::expr::Expr) -> Vec<Vec<FieldName>> {
+    let mut paths = Vec::new();
+    crate::expr::paths(e, &mut paths);
+    let payload = |p: &&[FieldName]| p.len() == 2 && p[0].as_str() == "payload";
+    paths
+        .into_iter()
+        .filter(|p| !payload(p))
+        .map(<[FieldName]>::to_vec)
+        .collect()
 }
 
 /// The relation each `exists(…)` in `e` names, added to `out`.
@@ -1475,6 +1665,8 @@ struct VerbWire {
     risk: Risk,
     #[serde(default)]
     requires: Option<Condition>,
+    #[serde(default)]
+    preconditions: Vec<Precondition>,
     effect: EffectKind,
     #[serde(default)]
     set: Option<Vec<Assignment>>,
@@ -1482,6 +1674,8 @@ struct VerbWire {
     executor: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    granted: bool,
 }
 
 #[derive(Deserialize)]
@@ -1521,8 +1715,10 @@ impl TryFrom<VerbWire> for VerbDecl {
             payload: w.payload,
             risk: w.risk,
             requires: w.requires,
+            preconditions: w.preconditions,
             effect,
             description: w.description,
+            granted: w.granted,
         })
     }
 }
@@ -1538,9 +1734,10 @@ pub struct TriggerDecl {
     pub name: TriggerName,
     /// The type whose writes it watches.
     pub on: TypeName,
-    /// A guard over the written record; `changed(f)` and `previous(f)`
+    /// A guard over the written record; `changed(f)`, `previous(f)`
     /// (the value before the write, null for a record the write creates)
-    /// are available.
+    /// and `preceding(f, by, match…)` (the record before it in a series,
+    /// as its writer is answered) are available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<Condition>,
     /// What the trigger is for.

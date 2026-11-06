@@ -1,5 +1,5 @@
 use super::*;
-use crate::conformance::fixture::order;
+use crate::conformance::fixture::{field, order, stored_record, type_decl};
 use serde_json::json;
 
 #[test]
@@ -103,16 +103,13 @@ fn a_scan_sorted_by_keys_answers_what_cmp_places_orders() {
     let records: Vec<StoredRecord> = sort_corpus()
         .into_iter()
         .enumerate()
-        .map(|(i, v)| StoredRecord {
-            ty: TypeName::from("t"),
-            key: RecordKey::from(format!("k{:04}", (i * 37) % 1000)),
-            version: lakelands_api::Version(1),
-            fields: [(FieldName::from("v"), v)].into_iter().collect(),
-            meta: BTreeMap::new(),
-            position: lakelands_api::Position(1),
-            made: lakelands_api::Position(1),
-            retired: false,
-            restricted: false,
+        .map(|(i, v)| {
+            stored_record(
+                "t",
+                format!("k{:04}", (i * 37) % 1000),
+                [(FieldName::from("v"), v)].into_iter().collect(),
+                1,
+            )
         })
         .collect();
     for dir in [Direction::Asc, Direction::Desc] {
@@ -157,6 +154,7 @@ fn walk_by_index(
         .filter_map(|r| {
             order_rows(
                 &sorted_fields(&decl.name, decl, Some(&json!(["v", "w"]))),
+                Some(decl),
                 r,
             )
             .into_iter()
@@ -241,15 +239,8 @@ fn a_walk_in_index_order_answers_what_a_whole_sort_answers() {
                 fields.insert(FieldName::from("w"), json!(format!("w{}", i % 3)));
             }
             StoredRecord {
-                ty: TypeName::from("t"),
-                key: RecordKey::from(format!("k{:04}", (i * 37) % 1009)),
-                version: lakelands_api::Version(1),
-                fields,
-                meta: BTreeMap::new(),
-                position: lakelands_api::Position(1),
-                made: lakelands_api::Position(1),
                 retired: i % 11 == 0,
-                restricted: false,
+                ..stored_record("t", format!("k{:04}", (i * 37) % 1009), fields, 1)
             }
         })
         .collect();
@@ -305,15 +296,8 @@ fn a_walk_at_an_earlier_position_answers_what_a_whole_sort_there_answers() {
         }
         fields.insert(FieldName::from("w"), json!(format!("w{}", i % 3)));
         StoredRecord {
-            ty: TypeName::from("t"),
-            key: RecordKey::from(format!("k{:04}", (i * 37) % 1009)),
-            version: lakelands_api::Version(1),
-            fields,
-            meta: BTreeMap::new(),
-            position: lakelands_api::Position(1),
-            made: lakelands_api::Position(1),
             retired,
-            restricted: false,
+            ..stored_record("t", format!("k{:04}", (i * 37) % 1009), fields, 1)
         }
     };
     let n = corpus.len() + 40;
@@ -378,7 +362,8 @@ fn a_walk_at_an_earlier_position_answers_what_a_whole_sort_there_answers() {
 
 #[test]
 fn only_text_that_compares_as_text_narrows() {
-    let term = |s: &str| exact_text_term(&crate::expr::parse(s).unwrap());
+    let text = |_f: &FieldName| None;
+    let term = |s: &str| exact_text_term(&crate::expr::parse(s).unwrap(), &text);
     assert_eq!(
         term("status = 'open'"),
         Some(("status".into(), "open".into()))
@@ -447,7 +432,9 @@ fn top_k_answers_what_rank_answers() {
 /// A record's state keeps one block for the fields that share it, and
 /// reads back every field's: all one block, a tie, a block with no value,
 /// a value with no block beside a base, an authored field among source
-/// ones, no meta at all; a state of the form before it reads the same.
+/// ones, fields derived in the event that wrote the others, more of them
+/// than written, one a function derived and one derived alone, no meta
+/// at all; a state of the form before it reads the same.
 #[test]
 fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
     let record = |fields: serde_json::Value, meta: serde_json::Value| -> StoredRecord {
@@ -458,6 +445,10 @@ fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
     let (a, b) = (block(1, "source"), block(2, "authored"));
     let failed = json!({"error": "down", "origin": "derived", "known_at": "2026-01-01T00:00:03Z", "position": 3, "writer": "w"});
     let (xy, xyz) = (json!({"x": 1, "y": 1}), json!({"x": 1, "y": 1, "z": 1}));
+    let mut d = a.clone();
+    d["origin"] = json!("derived");
+    let mut by = d.clone();
+    by["procedure"] = json!("f");
     let cases = [
         record(xyz.clone(), json!({"x": a, "y": a, "z": a})),
         record(xy.clone(), json!({"x": a, "y": b})),
@@ -466,21 +457,215 @@ fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
         record(json!({"x": 1, "y": 1, "bare": 1}), json!({"x": a, "y": a})),
         record(xyz.clone(), json!({"x": a, "y": b, "z": a})),
         record(json!({"x": 1}), json!({})),
+        record(xyz.clone(), json!({"x": a, "y": d, "z": by})),
+        record(xyz.clone(), json!({"x": a, "y": d, "z": d})),
+        record(xy.clone(), json!({"x": d, "y": d})),
+        record(xyz.clone(), json!({"x": b, "y": d, "z": d})),
     ];
+    let mut bases = Vec::new();
     for r in &cases {
-        let state = record_state(r);
-        assert_eq!(&decode_record(&state).unwrap(), r, "{state}");
+        let state = kept(r, &mut bases);
         assert_eq!(
-            &decode_record(&serde_json::to_string(r).unwrap()).unwrap(),
-            r
+            &read_back("t", "k", r.position, &state, &bases),
+            r,
+            "{state}"
         );
+        let alone = inline(r);
+        assert_eq!(&read_back("t", "k", r.position, &alone, &[]), r, "{alone}");
+        if let Some(base) = base_of(r) {
+            let id = bases.iter().position(|b| *b == base).unwrap() as i64;
+            let named = name_base(&alone, &base, id).unwrap();
+            assert_eq!(named.as_deref(), Some(state.as_str()), "named as kept");
+            let other = name_base(&alone, "{}", id).unwrap();
+            assert_eq!(other, None, "another base is not named");
+        }
+        let whole = serde_json::to_string(r).unwrap();
+        assert_eq!(&read_back("t", "k", r.position, &whole, &bases), r);
     }
-    let shared = record_state(&cases[0]);
-    assert_eq!(
-        shared.matches("\"origin\"").count(),
-        1,
-        "one block for three fields: {shared}"
+    let shared = kept(&cases[0], &mut bases);
+    assert!(
+        !shared.contains("\"origin\""),
+        "the block is the base's: {shared}"
     );
+    let alone = inline(&cases[0]);
+    assert_eq!(
+        alone.matches("\"origin\"").count(),
+        1,
+        "one block inline: {alone}"
+    );
+    let derives = inline(&cases[8]);
+    assert_eq!(
+        derives.matches("\"origin\"").count(),
+        1,
+        "derived fields name the block: {derives}"
+    );
+    assert_eq!(bases.len(), 2, "a base a block, derived or not: {bases:?}");
+    let missing = decode_record("t", "k", Position(9), &shared).unwrap();
+    let (mut r, based) = (missing.0, missing.1.base.unwrap());
+    assert!(rebase(&mut r, based, None).is_err(), "a base not held");
+}
+
+/// The state an engine keeps of `r`, its base kept once in `bases` at
+/// the index that is its id.
+fn kept(r: &StoredRecord, bases: &mut Vec<String>) -> String {
+    let mut id = |b: &str| {
+        let at = bases.iter().position(|h| h == b).unwrap_or_else(|| {
+            bases.push(b.to_owned());
+            bases.len() - 1
+        });
+        Ok(Some(at as i64))
+    };
+    record_state(r, &BTreeMap::new(), &mut id).unwrap()
+}
+
+/// The state an engine keeps of `r`, its base inline.
+fn inline(r: &StoredRecord) -> String {
+    record_state(r, &BTreeMap::new(), &mut |_| Ok(None)).unwrap()
+}
+
+/// The record a state [`kept`] reads back, its base from `bases`.
+fn read_back(ty: &str, key: &str, at: Position, state: &str, bases: &[String]) -> StoredRecord {
+    let (mut r, apart) = decode_record(ty, key, at, state).unwrap();
+    if let Some(based) = apart.base {
+        let block = bases.get(based.id as usize).map(String::as_str);
+        rebase(&mut r, based, block).unwrap();
+    }
+    r
+}
+
+/// A base is shared from the [`SHARED`]th record of one write naming it,
+/// whose states before it are named then, by their own positions, each
+/// record once however often it is put; another write's base is another.
+#[test]
+fn a_write_shares_a_base_from_its_shared_th_record() {
+    // The records of write `w` each have a position of their own and its time.
+    let record = |key: &str, w: u64, at: u64| -> StoredRecord {
+        let meta = json!({"origin": "source", "source": "crm",
+            "known_at": format!("2026-01-0{w}T00:00:00Z"), "position": at, "writer": "w"});
+        let r = json!({"type": "t", "key": key, "version": 1, "fields": {"x": 1},
+            "meta": {"x": meta}, "position": at, "made": at});
+        serde_json::from_value(r).unwrap()
+    };
+    let write = |w: u64, n: usize| -> Vec<StoredRecord> {
+        let at = |i| w * 100 + i as u64;
+        (0..n).map(|i| record(&format!("k{i}"), w, at(i))).collect()
+    };
+    let base = base_of(&record("k", 1, 1)).unwrap();
+    assert_eq!(
+        base_of(&record("k", 1, 2)),
+        Some(base.clone()),
+        "its position apart"
+    );
+    let shared = shared_bases(write(1, SHARED).iter().chain(&write(2, SHARED - 1)));
+    assert_eq!(shared, HashSet::from([base.clone()]));
+    let twice = write(3, SHARED - 1);
+    assert!(
+        shared_bases(twice.iter().chain(&twice)).is_empty(),
+        "each record once"
+    );
+    let mut sharing = Sharing::default();
+    let (mut kept, mut named) = (0, Vec::new());
+    let mut id = |r: &StoredRecord| {
+        let mut keep = |_: &str| {
+            kept += 1;
+            Ok(7)
+        };
+        let mut name = |_: &TypeName, key: &RecordKey, at: Position, id| {
+            named.push((key.to_string(), at.0, id));
+            Ok(())
+        };
+        sharing
+            .id(r, &base_of(r).unwrap(), &mut keep, &mut name)
+            .unwrap()
+    };
+    // A record put again counts once.
+    let mut ids: Vec<_> = write(1, SHARED - 1).iter().map(&mut id).collect();
+    ids.push(id(&record("k0", 1, 140)));
+    ids.extend(write(1, SHARED + 1)[SHARED - 1..].iter().map(&mut id));
+    ids.push(id(&record("k0", 1, 150)));
+    ids.push(id(&record("k0", 2, 200)));
+    let mut wanted = vec![None; SHARED];
+    wanted.extend([Some(7), Some(7), Some(7), None]);
+    assert_eq!(ids, wanted);
+    assert_eq!(kept, 1, "kept once");
+    let before = (1..SHARED - 1).map(|i| (format!("k{i}"), 100 + i as u64, 7));
+    let before: Vec<_> = before.chain([("k0".to_owned(), 140, 7)]).collect();
+    assert_eq!(named, before, "the states before it name it");
+}
+
+/// The state leaves out what its row holds and what is false, and reads
+/// back every record whole from it and the row (lakelands#1318): over
+/// records drawn from a seed, of keys with `:`, `%` and non-ASCII, fields
+/// with and without provenance, blocks at the record's position and at
+/// others, either flag, and a key ended. `base`'s position is left out
+/// only where it is the row's.
+#[test]
+fn a_state_round_trips_through_its_row_whatever_the_record() {
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    let keys = ["k", "a%3Ab", "50%25", "zürich:ü", "日本", ""];
+    let mut bases = Vec::new();
+    for _ in 0..2000 {
+        let position = Position(1 + next(40));
+        let block = |at: u64, source: bool| {
+            let mut b = json!({"origin": if source {"source"} else {"authored"},
+                "known_at": "2026-01-01T00:00:00Z", "position": at, "writer": "w"});
+            if source {
+                b["source"] = json!("crm");
+            }
+            b
+        };
+        let blocks = [
+            block(position.0, true),
+            block(position.0, false),
+            block(1 + next(40), true),
+        ];
+        let (mut fields, mut meta) = (json!({}), json!({}));
+        for f in ["a", "b", "c", "d"].iter().take(next(5) as usize) {
+            match next(4) {
+                0 => meta[f] = blocks[next(3) as usize].clone(),
+                1 => fields[f] = json!(keys[next(6) as usize]),
+                _ => {
+                    fields[f] = json!(next(9));
+                    meta[f] = blocks[next(3) as usize].clone();
+                }
+            }
+        }
+        let key = keys[next(6) as usize];
+        let mut r: StoredRecord = serde_json::from_value(json!({"type": "t.ü", "key": key,
+            "version": next(5), "fields": fields, "meta": meta, "position": position.0,
+            "made": 1 + next(position.0), "retired": next(2) == 0, "restricted": next(2) == 0}))
+        .unwrap();
+        if next(10) == 0 {
+            r = StoredRecord::ended(r.ty, r.key, r.position);
+        }
+        let state = kept(&r, &mut bases);
+        let back = read_back("t.ü", key, position, &state, &bases);
+        assert_eq!(back, r, "{state}");
+        let alone = inline(&r);
+        assert_eq!(read_back("t.ü", key, position, &alone, &[]), r, "{alone}");
+        let inline: serde_json::Value = serde_json::from_str(&alone).unwrap();
+        let at = inline.get("base").and_then(|b| b.get("position"));
+        assert_ne!(at, Some(&json!(position.0)), "{alone}");
+        let kept: serde_json::Value = serde_json::from_str(&state).unwrap();
+        for member in ["type", "key", "position"] {
+            assert!(kept.get(member).is_none(), "{member} kept in {state}");
+        }
+        for flag in ["retired", "restricted"] {
+            assert_ne!(kept.get(flag), Some(&json!(false)), "{state}");
+        }
+        assert_ne!(kept.get("base_at"), Some(&json!(position.0)), "{state}");
+    }
+    assert!(
+        bases.len() <= 2,
+        "a block is kept once, its position apart: {bases:?}"
+    );
+    assert!(bases.iter().all(|b| !b.contains("position")), "{bases:?}");
 }
 
 #[test]
@@ -499,21 +684,22 @@ fn a_commit_decides_again_only_the_types_its_puts_move_and_as_the_whole_decides(
     let set = |of: &str, filter: &str| {
         decl(json!({"declare": "object_set", "name": "s", "of": of, "where": filter}))
     };
-    let setting = StoredRecord {
-        ty: lakelands_api::seam::SETTING_TYPE.into(),
-        key: "lookup_index.w".into(),
-        version: lakelands_api::id::Version(1),
-        fields: serde_json::from_value(json!({"key": "lookup_index.w", "value": ["f"]})).unwrap(),
-        meta: Default::default(),
-        position: Position(1),
-        made: Position(1),
-        retired: false,
-        restricted: false,
-    };
+    let setting = stored_record(
+        lakelands_api::seam::SETTING_TYPE,
+        "lookup_index.w",
+        serde_json::from_value(json!({"key": "lookup_index.w", "value": ["f"]})).unwrap(),
+        1,
+    );
     // Each moves the index of a type other than the one it declares, or,
     // declared again, of the one its last declaration named.
     let steps: Vec<(&str, Vec<Declaration>, bool)> = vec![
         ("a set's type", vec![set("t", "a = 'x'")], false),
+        (
+            "a trigger's `preceding`",
+            vec![decl(json!({"declare": "trigger", "name": "g", "on": "u",
+                             "when": "preceding(c, d, c) is null"}))],
+            false,
+        ),
         (
             "the set declared again over another type",
             vec![set("w", "e = 'x'")],
@@ -600,4 +786,297 @@ fn a_commit_decides_again_only_the_types_its_puts_move_and_as_the_whole_decides(
         );
         heads = after;
     }
+}
+
+/// A key of one text field is left out of the exact-text index and read by
+/// key: a `where` that it equals a text, or a match asking for one of
+/// texts, makes the keys the texts make, escaped as the key rule escapes
+/// them. A key of two
+/// fields, a number key and a reference key are none: they keep their rows
+/// where they are texts, and no lookup by key is made for them.
+#[test]
+fn a_key_of_one_text_field_is_read_by_key_and_no_other_key_is() {
+    let decl = |key: &[&str], fields: serde_json::Value| -> Declaration {
+        serde_json::from_value(json!({"declare": "type", "name": key.join("_"), "key": key,
+            "fields": fields}))
+        .unwrap()
+    };
+    let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+    let lake = [
+        decl(&["id"], json!([text("id"), text("note")])),
+        decl(&["a", "b"], json!([text("a"), text("b")])),
+        decl(&["n"], json!([{"name": "n", "type": {"kind": "number"}}])),
+        decl(
+            &["r"],
+            json!([{"name": "r", "type": {"kind": "reference", "target": "id"}}]),
+        ),
+    ];
+    let types: Vec<&TypeDecl> = (lake.iter())
+        .map(|d| match d {
+            Declaration::Type(t) => t,
+            _ => unreachable!(),
+        })
+        .collect();
+    let named = |f: &[&str]| -> BTreeSet<FieldName> { f.iter().map(|&f| f.into()).collect() };
+    let looked = |t: &TypeDecl| looked_up(&t.name, &lake, None).unwrap();
+    assert_eq!(text_key(types[0]), Some(&"id".into()));
+    assert_eq!(looked(types[0]), named(&[]), "the text key keeps no rows");
+    for (t, rows) in [
+        (types[1], &["a", "b"][..]),
+        (types[2], &[]),
+        (types[3], &["r"]),
+    ] {
+        assert_eq!(text_key(t), None, "`{}` is no text key", t.name);
+        assert_eq!(
+            looked(t),
+            named(rows),
+            "`{}` keeps rows for its key",
+            t.name
+        );
+    }
+    let lookup = |t: &TypeDecl, filter: &str| {
+        let scan = Scan {
+            filter: Some(crate::expr::parse(filter).unwrap()),
+            ..Scan::default()
+        };
+        key_lookup(Some(t), &scan).map(|k| k.into_iter().collect::<Vec<_>>())
+    };
+    let keys = |k: &[&str]| Some(k.iter().map(|&k| k.to_owned()).collect::<Vec<_>>());
+    assert_eq!(lookup(types[0], "id = 'a:b'"), keys(&["a%3Ab"]));
+    assert_eq!(lookup(types[0], "id = '50%'"), keys(&["50%25"]));
+    assert_eq!(
+        lookup(types[0], "note = 'x' and id = 'zürich'"),
+        keys(&["zürich"])
+    );
+    let any = Scan {
+        equal_any: ["日本", "a:b"]
+            .map(|t| vec![("id".into(), json!(t))])
+            .into(),
+        ..Scan::default()
+    };
+    let made = key_lookup(Some(types[0]), &any).map(|k| k.into_iter().collect::<Vec<_>>());
+    assert_eq!(made, keys(&["a%3Ab", "日本"]), "a match asks for several");
+    assert_eq!(
+        lookup(types[0], "id in ('a', 'b')"),
+        None,
+        "`in` is no lookup"
+    );
+    assert_eq!(lookup(types[0], "note = 'x'"), None, "not by its key");
+    assert_eq!(lookup(types[0], "id = 'a' or note = 'x'"), None);
+    assert_eq!(lookup(types[0], "id = '10'"), None, "compares as a number");
+    assert_eq!(lookup(types[1], "a = 'x' and b = 'y'"), None);
+    assert_eq!(lookup(types[2], "n = 1"), None);
+    assert_eq!(lookup(types[3], "r = 'x'"), None);
+    assert_eq!(key_lookup(None, &Scan::default()), None, "no declaration");
+}
+
+#[test]
+fn every_kind_has_the_code_the_projections_store() {
+    let codes: Vec<_> = KIND_CODES.iter().map(|(k, c)| (*k, *c)).collect();
+    let kinds = lakelands_api::event::KINDS.iter().copied();
+    let listed: Vec<_> = kinds.zip((1..).filter(|code| *code != 2)).collect();
+    assert_eq!(codes, listed, "the codes follow the format's order, from 1");
+    assert_eq!(kind_code("checkpoint"), Some(22));
+    assert_eq!(kind_code("lake_created"), Some(1));
+    assert_eq!(kind_code("a_newer_kind"), None);
+}
+
+/// BM25F by hand: `body` held by two records, two tokens and one long,
+/// so its mean length is 1.5 and N is 2. `b`, held by one, weighs
+/// ln(6/3); `a`, held by both, ln(6/5), and scores the shorter record
+/// higher. The store's count of the same heads scores alike to the bit.
+#[test]
+fn lexical_scores_bm25f_over_the_counts_it_is_handed() {
+    let record = |key: &str, body: &str| -> StoredRecord {
+        let r = json!({"type": "t", "key": key, "version": 1, "fields": {"body": body},
+                       "position": 1, "made": 1});
+        serde_json::from_value(r).unwrap()
+    };
+    let decl: TypeDecl = serde_json::from_value(json!({"name": "t", "fields": [
+        {"name": "body", "type": {"kind": "text"}, "searchable": true}]}))
+    .unwrap();
+    let heads = [record("r1", "a b"), record("r2", "a")];
+    let mut counts = TextCounts::default();
+    text_stats(&decl, &heads, ("", None), &mut counts);
+    let body = FieldName::from("body");
+    assert_eq!(counts.fields[&body], (2, 3));
+    let kept = |text| {
+        let weights = BTreeMap::new();
+        lexical(
+            &decl,
+            &heads,
+            text,
+            None,
+            &weights,
+            Counts::Kept(&counts.fields),
+            10,
+        )
+    };
+    let close = |got: f64, want: f64| (got - want).abs() < 1e-12;
+    let b = kept("b");
+    assert_eq!(b[0].0, RecordKey::from("r1"));
+    assert!(close(b[0].1, std::f64::consts::LN_2 * 0.88), "{b:?}");
+    let a = kept("a");
+    let ln = libm::log(1.2);
+    assert_eq!(
+        a.iter().map(|h| h.0.as_str()).collect::<Vec<_>>(),
+        ["r2", "r1"]
+    );
+    assert!(
+        close(a[0].1, ln * 22.0 / 19.0) && close(a[1].1, ln * 0.88),
+        "{a:?}"
+    );
+    let mut counted = TextCounts::default();
+    text_stats(&decl, &heads, ("a", None), &mut counted);
+    let weights = BTreeMap::new();
+    let by_store = lexical(
+        &decl,
+        &heads,
+        "a",
+        None,
+        &weights,
+        Counts::Counted(&counted),
+        10,
+    );
+    assert_eq!(by_store, a);
+}
+
+#[test]
+fn a_value_holds_a_key_or_an_arrays_distinct_strings() {
+    let keys = |v: serde_json::Value| {
+        keys_of(&v)
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let mixed = json!(["b", "a", "b", 7, null, true, ["c"], {"key": "c"}, ""]);
+    assert_eq!(keys(json!("a")), ["a"]);
+    assert_eq!(keys(json!("")), [""]);
+    assert_eq!(keys(mixed), ["", "a", "b"]);
+    assert!(keys(json!([])).is_empty());
+    for other in [json!(7), json!(null), json!(true), json!({"key": "a"})] {
+        assert!(keys(other.clone()).is_empty(), "{other} holds no key");
+    }
+}
+
+/// A stored type with a series field, an order field and one of each kind
+/// a series pair never names.
+fn series_decl() -> TypeDecl {
+    type_decl(
+        "book",
+        vec![
+            field("series", StorageKind::Text),
+            field("at", StorageKind::Number),
+            field("flag", StorageKind::Boolean),
+            FieldDecl {
+                computed_at: Some(ComputedAt::Read),
+                ..field("seen_at", StorageKind::Number)
+            },
+        ],
+    )
+}
+
+#[test]
+fn a_series_setting_names_each_pair_the_declaration_keeps_holds_once() {
+    let decl = series_decl();
+    let setting = json!([
+        ["series", "at"],
+        ["series", "at"],
+        ["flag", "at"],
+        ["series", "seen_at"],
+        ["missing", "at"],
+        ["series"],
+        ["series", "at", "flag"],
+        "series"
+    ]);
+    assert_eq!(
+        series_pairs(&decl, Some(&setting)),
+        vec![SeriesPair {
+            series: FieldName::from("series"),
+            order: FieldName::from("at"),
+        }]
+    );
+    assert!(series_pairs(&decl, None).is_empty());
+    assert!(series_pairs(&decl, Some(&json!("no pairs"))).is_empty());
+}
+
+#[test]
+fn a_series_field_is_listed_from_both_its_kept_and_its_building_pairs() {
+    let pair = |series: &str, order: &str| SeriesPair {
+        series: FieldName::from(series),
+        order: FieldName::from(order),
+    };
+    let state = SeriesState {
+        kept: vec![pair("series", "at")],
+        building: vec![pair("series", "flag")],
+        started: 0,
+    };
+    assert_eq!(
+        series_fields(&state),
+        vec![
+            FieldName::from(lakelands_api::seam::series_field("at", "series")),
+            FieldName::from(lakelands_api::seam::series_field("flag", "series")),
+        ]
+    );
+    assert!(series_fields(&SeriesState::default()).is_empty());
+}
+
+#[test]
+fn a_series_row_is_its_series_hash_then_its_order_key_or_ff() {
+    let decl = series_decl();
+    let field = FieldName::from(lakelands_api::seam::series_field("at", "series"));
+    let record = |key: &str, fields: serde_json::Value| {
+        let fields: serde_json::Map<String, serde_json::Value> =
+            fields.as_object().cloned().unwrap_or_default();
+        stored_record(
+            "book",
+            key,
+            fields
+                .into_iter()
+                .map(|(k, v)| (FieldName::from(k.as_str()), v))
+                .collect(),
+            1,
+        )
+    };
+    let rows = |r: &StoredRecord| order_rows(std::slice::from_ref(&field), Some(&decl), r);
+    let red = record("a", json!({"series": "red", "at": 2}));
+    let red_later = record("b", json!({"series": "red", "at": 3}));
+    let blue = record("c", json!({"series": "blue", "at": 2}));
+    let at = rows(&red);
+    assert_eq!(at.len(), 1);
+    let mut expected = at[0].1[..8].to_vec();
+    expected.extend(order_key(&json!(2)));
+    assert_eq!(at[0].1, expected);
+    // A series keeps one hash over all its records, and another series
+    // hashes elsewhere.
+    assert_eq!(rows(&red_later)[0].1[..8], at[0].1[..8]);
+    assert_ne!(rows(&blue)[0].1[..8], at[0].1[..8]);
+    // A record with a series and no order value ranks above every one
+    // that has one.
+    let no_at = record("d", json!({"series": "red"}));
+    assert_eq!(rows(&no_at)[0].1[8..], [0xFF]);
+    // A record with no series value keeps no row.
+    assert!(rows(&record("e", json!({"at": 2}))).is_empty());
+}
+
+#[test]
+fn a_types_order_fields_never_name_a_series_pair() {
+    let decl = series_decl();
+    let pair = FieldName::from(lakelands_api::seam::series_field("at", "series"));
+    let chosen = Chosen {
+        kept: vec![pair.clone()],
+        ..Chosen::default()
+    };
+    let setting = json!([pair.as_str()]);
+    for building in [true, false] {
+        let fields = order_fields(
+            &TypeName::from("book"),
+            &decl,
+            Some(&setting),
+            &chosen,
+            building,
+        );
+        assert!(!fields.contains(&pair), "{fields:?}");
+    }
+    assert!(sorted_fields(&TypeName::from("book"), &decl, Some(&setting)).is_empty());
 }

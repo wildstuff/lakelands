@@ -45,6 +45,8 @@ const ALL: TypeRights = TypeRights {
     retire: true,
     link: Vec::new(),
     only: BTreeMap::new(),
+    only_any: BTreeMap::new(),
+    writes_only: BTreeMap::new(),
 };
 const READ: TypeRights = TypeRights {
     find: true,
@@ -55,6 +57,8 @@ const READ: TypeRights = TypeRights {
     retire: false,
     link: Vec::new(),
     only: BTreeMap::new(),
+    only_any: BTreeMap::new(),
+    writes_only: BTreeMap::new(),
 };
 
 fn lake(
@@ -130,8 +134,10 @@ fn a_type_gives_four_doors_and_the_generic_tools_follow_rights() {
         [
             "accept",
             "add_field",
+            "cypher",
             "declare_type",
             "describe",
+            "invoice_change",
             "invoice_find",
             "invoice_get",
             "invoice_retire",
@@ -145,6 +151,7 @@ fn a_type_gives_four_doors_and_the_generic_tools_follow_rights() {
             "reject",
             "search",
             "subscribe",
+            "thin",
             "unsubscribe",
         ]
     );
@@ -211,11 +218,11 @@ fn a_verb_tool_says_whether_its_executor_is_bound() {
 }
 
 #[test]
-fn twenty_types_offer_about_eighty_tools() {
+fn twenty_types_offer_about_a_hundred_tools() {
     let types = (0..20).map(|i| ty(&format!("t{i}"), ALL, vec![])).collect();
     let t = tools_ok(&lake(types, vec![], LakeRights::default()));
-    // describe, pin, subscribe, unsubscribe, query, search, propose
-    assert_eq!(t.len(), 80 + 7);
+    // describe, pin, subscribe, unsubscribe, query, cypher, search, propose
+    assert_eq!(t.len(), 100 + 8);
 }
 
 #[test]
@@ -487,6 +494,7 @@ fn the_generic_tools_emitted_are_exactly_the_generic_list() {
                 Door::Find { .. }
                     | Door::Get { .. }
                     | Door::Upsert { .. }
+                    | Door::Change { .. }
                     | Door::Retire { .. }
                     | Door::Link { .. }
                     | Door::Unlink { .. }
@@ -505,6 +513,27 @@ fn the_generic_tools_emitted_are_exactly_the_generic_list() {
         "{:?}",
         names(&t)
     );
+}
+
+/// `cypher` is offered exactly where `query` is: beside it for a lake
+/// with a type the principal may find, and with neither for one without.
+#[test]
+fn cypher_is_offered_where_query_is() {
+    let unread = TypeRights {
+        find: false,
+        get: false,
+        ..ALL
+    };
+    for (t, offered) in [(invoice(), true), (ty("invoice", unread, vec![]), false)] {
+        let t = tools_ok(&lake_of(vec![t]));
+        let has = |d: &Door| t.iter().any(|t| t.door == *d);
+        assert_eq!(
+            (has(&Door::Query), has(&Door::Cypher)),
+            (offered, offered),
+            "{:?}",
+            names(&t)
+        );
+    }
 }
 
 #[test]
@@ -588,4 +617,198 @@ fn the_outcome_schema_names_every_member_an_outcome_answers() {
         &serde_json::json!(named),
         "the kinds are every kind, as answered"
     );
+}
+
+/// A type the principal may write has a `<type>_change` tool: `set` takes
+/// the fields it may write, `retire` is there only where it may retire,
+/// and a type it may only read has none (081).
+#[test]
+fn a_change_tool_follows_what_its_principal_may_write() {
+    let t = tools_ok(&lake(vec![invoice()], vec![], OWNER));
+    let change = t.iter().find(|t| t.name == "invoice_change").unwrap();
+    assert_eq!(
+        change.door,
+        Door::Change {
+            ty: "invoice".into()
+        }
+    );
+    let props = &change.input_schema["properties"];
+    for member in ["where", "set", "retire", "plan", "plan_id"] {
+        assert!(props.get(member).is_some(), "{member}");
+    }
+    assert!(props["set"]["properties"].get("verdict").is_some());
+    assert!(props["set"]["properties"].get("score").is_none());
+    for named in ["plan_stale", "too_large"] {
+        assert!(change.description.contains(named), "{}", change.description);
+    }
+    let mut reader = invoice();
+    reader.may.upsert = false;
+    reader.may.retire = false;
+    let t = tools_ok(&lake(vec![reader], vec![], OWNER));
+    assert!(t.iter().all(|t| t.name != "invoice_change"));
+}
+
+#[test]
+fn a_change_tool_on_a_link_type_sets_its_own_fields_or_unlinks_and_names_no_end() {
+    let (invoice, mut link_type) = linked_invoice();
+    link_type.may = ALL;
+    let t = tools_ok(&lake_of(vec![invoice, link_type]));
+    let change = t
+        .iter()
+        .find(|t| t.name == "sys_link_invoice_approved_by_change")
+        .expect("the change tool of the link type");
+    let set = &change.input_schema["properties"]["set"]["properties"];
+    assert!(set["since"].is_object(), "{set}");
+    assert!(set.get("score").is_none(), "a read-only field: {set}");
+    assert!(
+        set.get("from").is_none() && set.get("to").is_none(),
+        "{set}"
+    );
+    assert!(
+        change.description.contains("unlink"),
+        "{}",
+        change.description
+    );
+}
+
+/// What walk 7's agent was refused for not knowing is said where it
+/// reads first: a find's cursor goes back with the `where` and
+/// `order_by` of its first page, a find's list is written in
+/// parentheses, and a step's depth takes both members, a graph or a path
+/// being one walk only where every step's `min` is 0.
+#[test]
+fn a_cursor_a_list_and_a_depth_say_what_their_refusals_ask() {
+    let t = tools_ok(&lake_of(vec![invoice()]));
+    let door = |d: Door| t.iter().find(|t| t.door == d).expect("the door is offered");
+    let find = &door(Door::Find {
+        ty: "invoice".into(),
+    })
+    .input_schema["properties"];
+    let said = |v: &Value| v["description"].as_str().unwrap_or_default().to_owned();
+    let cursor = said(&find["cursor"]);
+    for words in ["`next_cursor`", "`where`", "`order_by`"] {
+        assert!(cursor.contains(words), "the cursor says {words}: {cursor}");
+    }
+    let condition = said(&find["where"]);
+    assert!(condition.contains("in ('open', 'paid')"), "{condition}");
+    let query = &door(Door::Query).input_schema["properties"];
+    let depth = said(&query["steps"]["items"]["properties"]["depth"]);
+    for words in ["both members", "`to`", "`min` 0", "chain"] {
+        assert!(depth.contains(words), "the depth says {words}: {depth}");
+    }
+}
+
+/// Walk 8's texts: a find's `where` says a text is matched by a function,
+/// not by a word between its operands, and a search's `mode` and `field`
+/// say which members each mode needs, so a hybrid search names its field.
+#[test]
+fn a_where_and_a_search_mode_say_what_their_refusals_ask() {
+    let t = tools_ok(&lake_of(vec![invoice()]));
+    let door = |d: Door| t.iter().find(|t| t.door == d).expect("the door is offered");
+    let said = |v: &Value| v["description"].as_str().unwrap_or_default().to_owned();
+    let find = &door(Door::Find {
+        ty: "invoice".into(),
+    })
+    .input_schema["properties"];
+    let condition = said(&find["where"]);
+    for words in ["contains(name, 'Kest')", "starts_with(name, 'Kest')"] {
+        assert!(
+            condition.contains(words),
+            "the where says {words}: {condition}"
+        );
+    }
+    let search = &door(Door::Search).input_schema["properties"];
+    let mode = said(&search["mode"]);
+    for words in ["`text`", "`field`", "`vector`", "hybrid"] {
+        assert!(mode.contains(words), "the mode says {words}: {mode}");
+    }
+    let field = said(&search["field"]);
+    assert!(
+        field.contains("hybrid"),
+        "the field says hybrid needs it: {field}"
+    );
+}
+
+#[test]
+fn a_search_text_says_a_word_matches_only_as_written() {
+    let t = tools_ok(&lake_of(vec![invoice()]));
+    let search = t.iter().find(|t| t.door == Door::Search).expect("search");
+    let text = &search.input_schema["properties"]["text"]["description"];
+    let text = text.as_str().unwrap_or_default();
+    for words in ["misspelled", "starts_with"] {
+        assert!(text.contains(words), "the text says {words}: {text}");
+    }
+}
+
+/// Walk 6's gaps: `query`'s `project` shows an aggregate's members, a
+/// step's `depth` requires both its members, and a cursor says it goes
+/// back with the request of its first page.
+#[test]
+fn a_query_schema_shows_an_aggregate_a_depth_and_a_cursor() {
+    let t = tools_ok(&lake_of(vec![invoice()]));
+    let door = |d: Door| t.iter().find(|t| t.door == d).expect("the door is offered");
+    let said = |v: &Value| v["description"].as_str().unwrap_or_default().to_owned();
+    let query = &door(Door::Query).input_schema["properties"];
+    let project = &query["project"]["properties"];
+    for member in ["group_by", "measures"] {
+        assert!(said(&project[member]).contains("aggregate"), "{project}");
+    }
+    let measure = &project["measures"]["items"];
+    assert_eq!(measure["required"], serde_json::json!(["name", "func"]));
+    assert!(measure["properties"]["field"].is_object(), "{measure}");
+    assert!(said(&project["fields"]).contains("rows"), "{project}");
+    let depth = &query["steps"]["items"]["properties"]["depth"];
+    assert_eq!(depth["required"], serde_json::json!(["min", "max"]));
+    assert!(
+        said(&depth["properties"]["min"]).contains("0 keeps"),
+        "{depth}"
+    );
+    assert!(
+        said(&depth["properties"]["max"]).contains("`max_depth`"),
+        "{depth}"
+    );
+    assert!(said(depth).contains("one hop when left out"), "{depth}");
+    let find = &door(Door::Find {
+        ty: "invoice".into(),
+    })
+    .input_schema["properties"];
+    for (cursor, same) in [
+        (&find["cursor"], "the same `where` and `order_by`"),
+        (&query["cursor"], "the same pattern"),
+    ] {
+        let text = said(cursor);
+        assert!(
+            text.contains("`next_cursor` of an earlier answer"),
+            "{text}"
+        );
+        assert!(text.contains(same), "{text}");
+    }
+}
+
+#[test]
+fn a_tool_name_too_long_names_the_declaration_it_comes_from() {
+    let long = "x".repeat(70);
+    let from = |p: Vec<NameProblem>| -> Vec<NameSource> {
+        p.into_iter()
+            .map(|p| match p {
+                NameProblem::TooLong { from, .. } => from.expect("the store fills it"),
+                p => panic!("{p:?}"),
+            })
+            .collect()
+    };
+    let ty: TypeName = long.as_str().into();
+    let door = from(name_problems(std::slice::from_ref(&ty), &[], &[]));
+    assert!(
+        door.iter()
+            .all(|f| *f == NameSource::Type { ty: ty.clone() })
+    );
+    assert!(!door.is_empty());
+    let (t, relation): (TypeName, RelationName) = ("a".into(), "r".repeat(70).as_str().into());
+    let link = from(name_problems(&[], &[], &[(t.clone(), relation.clone())]));
+    assert_eq!(link.len(), 2, "one for each link door");
+    assert!(link.iter().all(|f| *f
+        == NameSource::Link {
+            relation: relation.clone(),
+            ty: t.clone()
+        }));
 }

@@ -1,7 +1,7 @@
 use lakelands_api::expr::{Condition, Expr, Literal};
 use lakelands_api::ontology::{
     Assignment, Authority, Cardinality, FieldDecl, FieldType, FunctionInput, Measure,
-    OnInputChange, RelationDecl, RetiredBy, Risk, StorageKind, TriggerDecl, TypeDecl,
+    OnInputChange, Precondition, RelationDecl, RetiredBy, Risk, StorageKind, TriggerDecl, TypeDecl,
     ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewSource,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
@@ -164,6 +164,8 @@ name: pay_invoice
 on: invoice
 risk: low
 requires: "status = 'open'"
+preconditions:
+  live: "not (status = 'void')"
 payload:
   paid_on: { type: date_time, required: true }
 set:
@@ -172,7 +174,7 @@ set:
     ),
     (
         "verbs/send_reminder.yaml",
-        "name: send_reminder\non: invoice\nrisk: medium\nexecutor: mailer\n",
+        "name: send_reminder\non: invoice\nrisk: medium\nexecutor: mailer\ngranted: true\n",
     ),
     (
         "triggers/invoice_paid.yaml",
@@ -268,7 +270,7 @@ fn complete_declarations() -> Vec<Declaration> {
             view: Some(Box::new(ViewDecl {
                 source: TypeName::new("invoice"),
                 r#where: Some(text("status = 'open'")),
-                group_by: vec![FieldName::new("partner")],
+                group_by: vec![FieldName::new("partner").into()],
                 measures: vec![Measure {
                     name: FieldName::new("total"),
                     expr: text("sum(net)"),
@@ -317,6 +319,10 @@ fn complete_declarations() -> Vec<Declaration> {
                 ..field("paid_on", kind(StorageKind::DateTime))
             }],
             risk: Risk::Low,
+            preconditions: vec![Precondition {
+                name: "live".into(),
+                holds: text("not (status = 'void')"),
+            }],
             requires: Some(text("status = 'open'")),
             effect: VerbEffect::Write {
                 set: vec![Assignment {
@@ -325,6 +331,7 @@ fn complete_declarations() -> Vec<Declaration> {
                 }],
             },
             description: None,
+            granted: false,
         }),
         Declaration::Verb(VerbDecl {
             name: VerbName::new("send_reminder"),
@@ -332,11 +339,13 @@ fn complete_declarations() -> Vec<Declaration> {
             scope: Default::default(),
             payload: Vec::new(),
             risk: Risk::Medium,
+            preconditions: Vec::new(),
             requires: None,
             effect: VerbEffect::External {
                 executor: "mailer".to_owned(),
             },
             description: None,
+            granted: true,
         }),
         Declaration::Trigger(TriggerDecl {
             max_depth: None,
@@ -352,6 +361,7 @@ fn complete_declarations() -> Vec<Declaration> {
             of: TypeName::new("invoice"),
             filter: text("status = 'open'"),
             description: None,
+            decided_at: Default::default(),
         }),
     ]
 }

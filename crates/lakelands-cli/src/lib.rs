@@ -41,7 +41,7 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::error::{Error, Result};
 use lakelands_api::id::{LakeId, Position};
 use lakelands_api::location::{EngineConfig, Location};
-use lakelands_api::seam::Seams;
+use lakelands_api::seam::{Seams, ZONE_SETTING};
 use lakelands_api::{LakeStore, WriteContext};
 
 mod commands;
@@ -53,8 +53,12 @@ mod settings;
 pub mod ticker;
 use lakelands_server::say;
 
-pub use root::{CONFIG, Config, KeysConfig};
+pub use root::{CONFIG, Config, KeysConfig, StandbyConfig};
 pub use say::Failure;
+
+/// `query`'s flag that takes the statement: a word of the command line,
+/// not the MCP tool the catalog makes of the same word.
+const CYPHER: &str = "cypher";
 
 /// A lake being opened.
 pub type Opening = Pin<Box<dyn Future<Output = Result<Arc<dyn LakeStore>>> + Send>>;
@@ -143,6 +147,81 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
     })
 }
 
+/// The future [`standby_store`] answers.
+type Standingby =
+    Pin<Box<dyn Future<Output = Result<(Arc<dyn LakeStore>, lakelands_store::Standing)>> + Send>>;
+
+/// Open the lake at `location` as a standby beside its writer, trying the
+/// lease every `every` ([`lakelands_store::standby`]), and keep its store
+/// as [`open_store`] keeps one, which later opens in this process share;
+/// with it, what its tries come to. A lake open in this process already,
+/// or never written yet, has no writer to stand by: the one is shared,
+/// the other created and leased as [`open_store`] creates it, and their
+/// tries have come to their end.
+fn standby_store(location: Location, host: Seams, every: std::time::Duration) -> Standingby {
+    Box::pin(async move {
+        let key = serde_json::to_string(&(&location.lake, &location.engine))
+            .expect("a location serialises");
+        let ended = || -> lakelands_store::Standing { Box::pin(std::future::ready(Ok(()))) };
+        if let Some(store) = opened().lock().await.get(&key) {
+            return Ok((store.clone(), ended()));
+        }
+        let seams = Seams {
+            engines: engines(),
+            ..host.clone()
+        };
+        match lakelands_store::standby(location.clone(), seams, every).await {
+            Ok((store, standing)) => {
+                opened().lock().await.insert(key, store.clone());
+                Ok((store, standing))
+            }
+            Err(e) if unmade(&e) => {
+                let store = open_store(location, OpenMode::Create, host).await?;
+                Ok((store, ended()))
+            }
+            Err(e) => Err(e),
+        }
+    })
+}
+
+/// Open the lake at `location` for `serve`, and put what its tries come
+/// to in `standing`: as a standby where the root configures one, else for
+/// writing through `open`.
+async fn serving_open(
+    root: &root::Root,
+    location: Location,
+    seams: Seams,
+    open: &Opener<'_>,
+    standing: &mut Vec<lakelands_store::Standing>,
+) -> Result<Arc<dyn LakeStore>> {
+    let Some(standby) = &root.config.standby else {
+        return open(location, OpenMode::Create, seams).await;
+    };
+    let (store, tries) = standby_store(location, seams, standby.every()).await?;
+    standing.push(tries);
+    Ok(store)
+}
+
+/// Until the tries of every standby of `standing` come to their end: the
+/// first error one answers, as soon as it answers it.
+async fn taken(mut standing: Vec<lakelands_store::Standing>) -> Result<()> {
+    std::future::poll_fn(|cx| {
+        let mut i = 0;
+        while i < standing.len() {
+            match standing[i].as_mut().poll(cx) {
+                std::task::Poll::Ready(Ok(())) => drop(standing.swap_remove(i)),
+                std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
+                std::task::Poll::Pending => i += 1,
+            }
+        }
+        match standing.is_empty() {
+            true => std::task::Poll::Ready(Ok(())),
+            false => std::task::Poll::Pending,
+        }
+    })
+    .await
+}
+
 fn command() -> Command {
     let lake = Arg::new("lake")
         .long("lake")
@@ -218,7 +297,8 @@ fn command() -> Command {
                         .arg(Arg::new("url").long("url").value_name("URL").help("For `postgres`: the database's URL. The location file holds it as plain text, a password in it too: keep the root's `lakes/` to its operator"))
                         .arg(Arg::new("schema").long("schema").value_name("NAME").help("For `postgres`: the schema; `lakelands_<id>` when left out"))
                         .arg(Arg::new("no-tls").long("no-tls").action(clap::ArgAction::SetTrue).help("For `postgres`: connect without TLS"))
-                        .arg(Arg::new("ca-file").long("ca-file").value_name("PEM").help("For `postgres`: the certificate authorities to verify the server against")),
+                        .arg(Arg::new("ca-file").long("ca-file").value_name("PEM").help("For `postgres`: the certificate authorities to verify the server against"))
+                        .arg(Arg::new(ZONE_SETTING).long(ZONE_SETTING).value_name("ZONE").help("The time zone the lake's calendar day is read in, as the IANA database names it (`Europe/Berlin`); `UTC` when left out. The writer's first open records it as the lake's `zone` setting, which `settings set` changes later")),
                 ),
         )
         .subcommand(
@@ -231,6 +311,38 @@ fn command() -> Command {
             Command::new("plan")
                 .about("Tell what applying an ontology bundle would do to the lake's records, changing nothing")
                 .arg(Arg::new("bundle").value_name("DIR").required(true).help("The bundle's directory")),
+        )
+        .subcommand(
+            Command::new("change")
+                .about("Set values on, or retire, the records of a type that a condition selects: planned first, and made only against that plan")
+                .arg(Arg::new("type").value_name("TYPE").required(true).help("The type"))
+                .arg(Arg::new("where").long("where").value_name("EXPR").required(true).help("The records to change: a condition in the expression grammar"))
+                .arg(Arg::new("set").long("set").value_name("FIELD=JSON").action(ArgAction::Append).required_unless_present("retire").conflicts_with("retire").help("A value to set on every record selected; repeated for more fields"))
+                .arg(Arg::new("retire").long("retire").action(ArgAction::SetTrue).help("Retire every record selected"))
+                .arg(Arg::new("plan").long("plan").value_name("ID").help("Make the change only if its plan is still this one (the `report_id` the plan printed); without it, print the plan and change nothing")),
+        )
+        .subcommand(
+            Command::new("query")
+                .about("Read the lake with an openCypher statement, or write through the typed write doors with one; with EXPLAIN, print the pattern a read translates to and read nothing")
+                .arg(Arg::new(CYPHER).long(CYPHER).value_name("STATEMENT").required(true).help("The statement, in the openCypher subset the lake takes: a read, or one write"))
+                .arg(Arg::new("param").long("param").value_name("NAME=JSON").action(ArgAction::Append).help("A value for the statement's `$NAME`; repeated for more parameters"))
+                .arg(Arg::new("as-of").long("as-of").value_name("POSITION").value_parser(clap::value_parser!(u64)).help("Read the lake as it was at this position"))
+                .arg(Arg::new("valid-at").long("valid-at").value_name("INSTANT").help("Read what was true in the world at this instant, as `2026-06-30T00:00:00Z`"))
+                .arg(Arg::new("cursor").long("cursor").value_name("CURSOR").help("Continue a page: the `next_cursor` the last page printed"))
+                .arg(Arg::new("plan").long("plan").value_name("ID").help("For a MATCH … SET, REMOVE or DELETE: make the change only if its plan is still this one (the `report_id` the plan printed); without it, print the plan and change nothing")),
+        )
+        .subcommand(
+            Command::new("search")
+                .about("Rank a type's records by the words of a text, best first, each hit with its score")
+                .arg(Arg::new("type").long("type").value_name("TYPE").required(true).help("The type searched"))
+                .arg(Arg::new("text").long("text").value_name("TEXT").required(true).help("The words ranked in the type's searchable fields"))
+                .arg(Arg::new("where").long("where").value_name("EXPR").help("Only the records this condition selects, in the expression grammar"))
+                .arg(Arg::new("k").long("k").value_name("N").value_parser(clap::value_parser!(u32)).help("At most this many hits a page; 20 when not given"))
+                .arg(Arg::new("as-of").long("as-of").value_name("POSITION").value_parser(clap::value_parser!(u64)).help("Read the lake as it was at this position"))
+                .arg(Arg::new("valid-at").long("valid-at").value_name("INSTANT").help("Read what was true in the world at this instant, as `2026-06-30T00:00:00Z`"))
+                .arg(Arg::new("text-as-of").long("text-as-of").action(ArgAction::SetTrue).help("Rank by the text the records `--where` selects held at `--as-of`, not by the head's"))
+                .arg(Arg::new("matches").long("matches").action(ArgAction::SetTrue).help("Print on each hit where the text matched it"))
+                .arg(Arg::new("cursor").long("cursor").value_name("CURSOR").help("Continue a page: the `next_cursor` the last page printed")),
         )
         .subcommand(
             Command::new("recompute")
@@ -302,7 +414,7 @@ fn command() -> Command {
                         .help("The source to forget"),
                 )
                 .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the act would erase and retire, and how long it would hold the writer, appending nothing; what `forget` does without --report"))
-                .arg(Arg::new("report").long("report").value_name("ID").help("Forget, only under the id of a preflight of this source at this head")),
+                .arg(Arg::new("report").long("report").value_name("ID").help("Forget, only under the id of a preflight of this source at its position")),
         )
         .subcommand(
             Command::new("values")
@@ -310,7 +422,7 @@ fn command() -> Command {
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("remove")
-                        .about("Take back what one source wrote before a time, or in one delivery: its values read as erased at every position, as one act")
+                        .about("Take back what one source wrote before a time, in one or more deliveries, or of what it observed before a time: its values read as erased at every position, as one act")
                         .arg(
                             Arg::new("source")
                                 .long("source")
@@ -320,25 +432,54 @@ fn command() -> Command {
                                 .help("The source whose values are taken back"),
                         )
                         .arg(Arg::new("before").long("before").value_name("RFC3339").value_parser(|s: &str| lakelands_api::Timestamp::parse(s).map_err(|e| e.to_string())).help("Take back what the source wrote before this instant: RFC 3339, or a date at midnight UTC"))
-                        .arg(Arg::new("delivery").long("delivery").value_name("ID").value_parser(clap::builder::NonEmptyStringValueParser::new()).help("Take back what the source wrote in this one delivery"))
-                        .group(clap::ArgGroup::new("selection").args(["before", "delivery"]).required(true))
+                        .arg(Arg::new("delivery").long("delivery").value_name("ID").action(ArgAction::Append).value_parser(clap::builder::NonEmptyStringValueParser::new()).help("Take back what the source wrote in this delivery; repeated, in any of them, as one act"))
+                        .arg(Arg::new("seen-before").long("seen-before").value_name("RFC3339").value_parser(|s: &str| lakelands_api::Timestamp::parse(s).map_err(|e| e.to_string())).help("Take back what the source wrote of what it says it observed before this instant (its seen_at): RFC 3339, or a date at midnight UTC"))
+                        .group(clap::ArgGroup::new("selection").args(["before", "delivery", "seen-before"]).required(true))
                         .arg(Arg::new("require-shredded").long("require-shredded").action(ArgAction::SetTrue).help("Refuse while a value of an erasable field would be redacted only, its key version not destroyed"))
                         .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the act would take, retire and leave broken, and how long it would hold the writer, appending nothing; what `values remove` does without --report"))
-                        .arg(Arg::new("report").long("report").value_name("ID").help("Take back, only under the id of a preflight of this removal at this head")),
+                        .arg(Arg::new("report").long("report").value_name("ID").help("Take back, only under the id of a preflight of this removal at its position")),
                 ),
         )
-        .subcommand(Command::new("rebuild").about("Delete the lake's projection and rebuild it from the log"))
-        .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
         .subcommand(
-            Command::new("upgrade")
-                .about("Open the lake for writing once, which upgrades one written in an older log format, the events staying as they were written, and rebuilds a projection an older build laid out")
+            Command::new("thin")
+                .about("Take a series' rows before a horizon out of the projection as one act in parts, keeping the folds of the kept views over it; the log keeps every value it took")
                 .arg(
-                    Arg::new("check")
-                        .long("check")
+                    Arg::new("type")
+                        .long("type")
+                        .value_name("TYPE")
+                        .required(true)
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("The type whose records are thinned"),
+                )
+                .arg(
+                    Arg::new("before")
+                        .long("before")
+                        .value_name("RFC3339")
+                        .required(true)
+                        .value_parser(|s: &str| lakelands_api::Timestamp::parse(s).map_err(|e| e.to_string()))
+                        .help("Take every record whose --by field is certainly before this instant: RFC 3339, or a date at midnight UTC"),
+                )
+                .arg(Arg::new("by").long("by").value_name("FIELD").required(true).help("The field of instants or dates the horizon is judged on"))
+                .arg(Arg::new("act").long("act").action(ArgAction::SetTrue).help("Take them, appending the act; without it, say what it would take, appending nothing")),
+        )
+        .subcommand(Command::new("rebuild").about("Rebuild the lake's projection from the log beside it, and put it in the old one's place"))
+        .subcommand(
+            Command::new("build-ahead")
+                .about("Build the projection this release lays out beside the lake's, from its log, while an older release still serves it: this release's writer's open then folds only what was written since, and swaps it in")
+                .after_help(
+                    "It says how much room it takes before it starts. It opens the lake's log and \
+                     its own scratch only, never the projection or the lease, so it runs beside the \
+                     writer; run again, it goes on from where it stopped. A writer's open with this \
+                     release swaps the build in, once the older release is stopped.",
+                )
+                .arg(
+                    Arg::new("discard")
+                        .long("discard")
                         .action(ArgAction::SetTrue)
-                        .help("Say what an upgrade would do, and open nothing"),
+                        .help("Remove the build ahead kept beside the lake, of this release or another, instead"),
                 ),
         )
+        .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
         .subcommand(
             Command::new("verify")
                 .about("Check the lake's log: every event's hash and every checkpoint; it only reads, beside a running serve")
@@ -371,9 +512,8 @@ fn command() -> Command {
                     Arg::new("to")
                         .long("to")
                         .value_name("DIR")
-                        .required(true)
                         .value_parser(clap::builder::NonEmptyStringValueParser::new())
-                        .help("An empty or new directory to write into"),
+                        .help("An empty or new directory to write into; by default one of its own in the root's exports_dir"),
                 ),
         )
         .subcommand(
@@ -385,6 +525,61 @@ fn command() -> Command {
                         .required(true)
                         .value_parser(clap::builder::NonEmptyStringValueParser::new())
                         .help("A directory `lakelands export` wrote"),
+                ),
+        )
+        .subcommand(
+            Command::new("backup")
+                .about("Bring a backup directory up to the lake's head, writing only what is new; it only reads, beside a running serve")
+                .long_about(
+                    "Bring a backup directory up to the lake's head: a new or empty directory takes \
+                     the whole log, one an earlier backup of this lake wrote takes only the events \
+                     after its last; it only reads, beside a running serve. The lake's keys are \
+                     never written into it: --keys-to copies them into a directory of their own \
+                     (`docs/hosting.md`, Backups).",
+                )
+                .arg(
+                    Arg::new("to")
+                        .long("to")
+                        .value_name("DIR")
+                        .required(true)
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("The backup's directory: new, empty, or one this lake's backup wrote"),
+                )
+                .arg(
+                    Arg::new("keys-to")
+                        .long("keys-to")
+                        .value_name("DIR")
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("Copy the lake's file of the root's keyring into this directory, apart from the backup"),
+                ),
+        )
+        .subcommand(
+            Command::new("restore")
+                .about("Make the backup's lake from its directory, in the root's empty lake of that name; --check only verifies it")
+                .after_help(
+                    "Exit status of --check: 0 the backup holds; 1 it is damaged or written in a \
+                     log format this release does not read; 2 the command line was not \
+                     understood; 3 it could not be checked.",
+                )
+                .arg(
+                    Arg::new("dir")
+                        .value_name("DIR")
+                        .required(true)
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("A directory `lakelands backup` or `lakelands export` wrote"),
+                )
+                .arg(
+                    Arg::new("keys-from")
+                        .long("keys-from")
+                        .value_name("DIR")
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("Put the lake's keyring file back from this copy first, where the root's keyring holds none"),
+                )
+                .arg(
+                    Arg::new("check")
+                        .long("check")
+                        .action(ArgAction::SetTrue)
+                        .help("Verify the backup's chain and change nothing"),
                 ),
         )
         .subcommand(
@@ -400,7 +595,9 @@ fn command() -> Command {
                         .about("Set a lake setting")
                         .arg(Arg::new("key").value_name("KEY").required(true).help("The setting's key"))
                         .arg(Arg::new("value").value_name("VALUE").required(true).help("Its value, as JSON; any other text is taken as a text"))
-                        .arg(Arg::new("type").long("type").value_name("TYPE").help("Set it for this type: the key `<KEY>.<TYPE>`")),
+                        .arg(Arg::new("type").long("type").value_name("TYPE").help("Set it for this type: the key `<KEY>.<TYPE>`"))
+                        .arg(Arg::new("from").long("from").value_name("DATE").conflicts_with("period").help("Add a value that holds from this date, to a setting a host declares"))
+                        .arg(Arg::new("period").long("period").value_name("start|DATE").help("Correct the value that holds from this date, or the first with `start`")),
                 )
                 .subcommand(
                     Command::new("unset")
@@ -414,6 +611,28 @@ fn command() -> Command {
                 .about("Serve the lake to agents")
                 .arg(Arg::new("mcp").long("mcp").action(ArgAction::SetTrue).help("Serve over the Model Context Protocol")),
         )
+}
+
+/// The runtime a command line runs on: `serve` on the threads the root's
+/// server section names ([`lakelands_server::runtime`]), every other
+/// command on the one thread that starts it. A command line that does not
+/// parse, or a root that does not open, is left to [`run`] to say.
+pub fn runtime<I, T>(args: I) -> std::io::Result<tokio::runtime::Runtime>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let m = command().try_get_matches_from(args).ok();
+    match m.filter(|m| m.subcommand_name() == Some("serve")) {
+        Some(m) => {
+            let dir = PathBuf::from(m.get_one::<String>("root").map_or(".", String::as_str));
+            let server = root::Root::open(&dir).ok().and_then(|r| r.config.server);
+            lakelands_server::runtime(server.as_ref())
+        }
+        None => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build(),
+    }
 }
 
 /// Run one command line. Output goes to `out`, failures to `err`; the
@@ -440,6 +659,11 @@ where
     };
     if m.subcommand_name() == Some("verify") {
         return verify(&m, out, err, open).await;
+    }
+    if let Some(("restore", sub)) = m.subcommand()
+        && sub.get_flag("check")
+    {
+        return restore_check(sub, out, err);
     }
     let lake = |m: &ArgMatches| {
         let root = PathBuf::from(m.get_one::<String>("root").map_or(".", String::as_str));
@@ -507,7 +731,7 @@ async fn dispatch(
                 tls_disabled: new.get_flag("no-tls"),
                 ca_file: text(new, "ca-file").map(PathBuf::from),
             };
-            root.new_lake(&id, &engine, &pg)?;
+            root.new_lake(&id, &engine, &pg, text(new, ZONE_SETTING))?;
             return say(
                 out,
                 format!(
@@ -516,7 +740,7 @@ async fn dispatch(
                 ),
             );
         }
-        "import" => {
+        "import" | "restore" => {
             let root = root::Root::open(&root_dir)?;
             let dir = PathBuf::from(text(sub, "dir").unwrap_or_default());
             // The export's lake, which is inside every hash and cannot be
@@ -524,11 +748,29 @@ async fn dispatch(
             // mismatch naming both.
             let lake = text(sub, "lake").or_else(|| commands::exported_lake(&dir));
             let location = root.location(lake.as_deref())?;
+            // A restore is an import, its keys put back first where the
+            // keyring has lost them, and taken out again where the import
+            // is refused, so the next try puts them back too.
+            let keys = (name == "restore").then(|| text(sub, "keys-from"));
+            let put_back = match keys.flatten() {
+                Some(keys) => Some(commands::restore_keys(
+                    out,
+                    &root,
+                    &location.lake,
+                    Path::new(&keys),
+                )?),
+                None => None,
+            };
+            let lake = location.lake.clone();
             let seams = Seams {
                 engines: engines(),
                 ..root.seams()
             };
-            return commands::import(out, location, seams, &dir).await;
+            let imported = commands::import(out, location, seams, &dir, name == "restore").await;
+            if let (Err(_), Some(keyring)) = (&imported, put_back) {
+                keyring.unrestore(&lake)?;
+            }
+            return imported?;
         }
         "serve" if !sub.get_flag("mcp") => {
             return Err(Failure::new(
@@ -542,13 +784,15 @@ async fn dispatch(
     let root = root::Root::open(&root_dir)?;
     let location = root.location(text(sub, "lake").as_deref())?;
     let listed = location.clone();
-    // `upgrade` reads the log's ends first, to say what it does; with
-    // `--check` it opens nothing (`docs/log-format.md` §6).
-    if name == "upgrade" {
-        let check = sub.get_flag("check");
-        return commands::upgrade(out, location, root.seams(), check, open).await;
+    // `build-ahead` opens the log and its own scratch, never the lake.
+    if name == "build-ahead" {
+        let seams = Seams {
+            engines: engines(),
+            ..root.seams()
+        };
+        return commands::build_ahead(out, location, seams, sub.get_flag("discard")).await;
     }
-    // `feed` and `export` only read: they take no lease and append
+    // `feed`, `export` and `backup` only read: they take no lease and append
     // nothing, so they run beside a `serve` that holds the writer, and an
     // export's head is the lake's as it stood
     // (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
@@ -557,10 +801,20 @@ async fn dispatch(
     // stands, a damaged one among them, is not opened again for writing.
     // `rebuild` opens the lake for a rebuild, which that open is: a
     // projection of another layout opens only so.
+    // `serve` binds its door before it opens anything, the primary lake
+    // included, so that an open that rebuilds a projection is `starting`
+    // for `/readyz` and up for `/livez`.
+    let door = if name == "serve" {
+        Door::bind(&root).await?
+    } else {
+        None
+    };
+    let mut standing = Vec::new();
     let store = if name == "rebuild" {
         open(location, OpenMode::Rebuild, root.seams()).await?
     } else if name == "feed"
         || name == "export"
+        || name == "backup"
         || (name == "settings" && sub.subcommand().is_none())
     {
         match open(location.clone(), OpenMode::Read, root.seams()).await {
@@ -569,11 +823,23 @@ async fn dispatch(
             Err(e) => return Err(e.into()),
         }
     } else {
-        open(location, OpenMode::Create, root.seams()).await?
+        let seams = match &door {
+            Some(door) => door.seams(&root, &location.lake),
+            None => root.seams(),
+        };
+        if name == "serve" {
+            serving_open(&root, location, seams, open, &mut standing).await?
+        } else {
+            open(location, OpenMode::Create, seams).await?
+        }
     };
     let who = root
         .principal(store.lake(), text(sub, "as").as_deref())
         .await?;
+    // A process with no door acts as this one principal, in this one lake.
+    if let (None, Some(acting)) = (&door, text(sub, "as")) {
+        (root.tell_undeclared(std::slice::from_ref(&store), Some(&acting))).await;
+    }
     let catalog = store.catalog(WriteContext::default());
     match name {
         "apply" => {
@@ -584,6 +850,51 @@ async fn dispatch(
         "plan" => {
             let dir = text(sub, "bundle").unwrap_or_default();
             commands::plan(out, catalog.as_ref(), &who, Path::new(&dir)).await
+        }
+        "change" => {
+            let set = sub.get_many::<String>("set").map(|v| v.cloned().collect());
+            let at = (
+                text(sub, "type").unwrap_or_default(),
+                text(sub, "where").unwrap_or_default(),
+            );
+            let plan = text(sub, "plan");
+            let to = (set, plan.as_deref());
+            commands::change(out, catalog.as_ref(), &who, (&at.0, &at.1), to).await
+        }
+        "query" => {
+            let pairs = sub
+                .get_many::<String>("param")
+                .map(|v| v.cloned().collect());
+            let statement = text(sub, CYPHER).unwrap_or_default();
+            let at = (
+                sub.get_one::<u64>("as-of").map(|p| Position(*p)),
+                text(sub, "valid-at"),
+                text(sub, "cursor"),
+                text(sub, "plan"),
+            );
+            let given = (statement.as_str(), pairs.unwrap_or_default());
+            commands::query(out, catalog.as_ref(), &who, given, at).await
+        }
+        "search" => {
+            let words = text(sub, "text").unwrap_or_default();
+            let search = lakelands_api::query::Search {
+                ty: text(sub, "type").unwrap_or_default().into(),
+                mode: lakelands_api::query::SearchMode::lexical(words),
+                k: sub.get_one::<u32>("k").copied().unwrap_or(20),
+                cursor: None,
+                filter: text(sub, "where").map(|w| w.as_str().into()),
+                rerank: None,
+                with_meta: false,
+                matches: sub.get_flag("matches"),
+                text_as_of: sub.get_flag("text-as-of"),
+                at: lakelands_api::read::ReadAt::default(),
+            };
+            let at = (
+                sub.get_one::<u64>("as-of").map(|p| Position(*p)),
+                text(sub, "valid-at"),
+                text(sub, "cursor"),
+            );
+            commands::search(out, catalog.as_ref(), &who, search, at).await
         }
         "recompute" => {
             let (function, ty) = (text(sub, "function"), text(sub, "type"));
@@ -627,34 +938,130 @@ async fn dispatch(
             // As `forget`: the act runs only under a preflight's id (065).
             let of = sub.subcommand().map_or(sub, |(_, of)| of);
             let source = text(of, "source").unwrap_or_default();
-            let selection = match of.get_one::<lakelands_api::Timestamp>("before") {
-                Some(t) => lakelands_api::write::Selection::WrittenBefore(*t),
-                None => lakelands_api::write::Selection::Delivery(
-                    text(of, "delivery").unwrap_or_default().into(),
-                ),
+            let at = |name: &str| of.get_one::<lakelands_api::Timestamp>(name).copied();
+            let selection = match (at("before"), at("seen-before")) {
+                (Some(t), _) => lakelands_api::write::Selection::WrittenBefore(t),
+                (_, Some(t)) => lakelands_api::write::Selection::SeenBefore(t),
+                _ => {
+                    let mut set: Vec<lakelands_api::DeliveryId> = (of
+                        .get_many::<String>("delivery"))
+                    .into_iter()
+                    .flatten()
+                    .map(|d| d.as_str().into())
+                    .collect();
+                    match set.len() {
+                        1 => lakelands_api::write::Selection::Delivery(set.remove(0)),
+                        _ => lakelands_api::write::Selection::Deliveries(set),
+                    }
+                }
             };
             let (shredded, report) = (of.get_flag("require-shredded"), text(of, "report"));
             let act = (shredded, report.as_deref().map(Some));
             commands::values_remove(out, &store, (&source, &selection), act).await
         }
+        "thin" => {
+            let (ty, by) = (
+                text(sub, "type").unwrap_or_default(),
+                text(sub, "by").unwrap_or_default(),
+            );
+            let before = *sub
+                .get_one::<lakelands_api::Timestamp>("before")
+                .expect("--before is required");
+            let act = sub.get_flag("act");
+            commands::thin(out, &store, (&ty, &by), (before, act)).await
+        }
         "rebuild" => commands::rebuild(out, &store).await,
         "compact" => commands::compact(out, &store).await,
         "export" => {
-            commands::export(out, &store, Path::new(&text(sub, "to").unwrap_or_default())).await
+            let to = text(sub, "to").map_or_else(|| root.export_dir(store.lake()), PathBuf::from);
+            commands::export(out, &store, &to).await
+        }
+        "backup" => {
+            let to = PathBuf::from(text(sub, "to").unwrap_or_default());
+            let keys = text(sub, "keys-to").map(PathBuf::from);
+            commands::backup(out, &store, &root, &to, keys.as_deref()).await
         }
         "settings" => match sub.subcommand() {
             Some((change, of)) => {
                 let key = settings::key_of(of);
                 let raw = (change == "set").then(|| text(of, "value").unwrap_or_default());
-                settings::change(out, catalog.as_ref(), &who, &key, raw.as_deref()).await
+                let dated = (change == "set").then(|| settings::dated(of)).flatten();
+                let raw = raw.as_deref().map(|r| (r, dated));
+                settings::change(out, catalog.as_ref(), &who, &key, raw).await
             }
             None => {
                 let lake = catalog.describe(&who, Default::default()).await?.data;
                 settings::list(out, &lake, &listed, &root.config)
             }
         },
-        "serve" => serve(&root, store, who, open).await,
+        "serve" => serve(&root, (store, door, standing), who, open).await,
         other => unreachable!("clap knows no command `{other}`"),
+    }
+}
+
+/// Run `restore --check`: the backup's chain verified as an import would,
+/// nothing opened or written. Its exit status is `verify`'s: 0 the backup
+/// holds, 1 it is damaged or written in a log format this release does not
+/// read (a whole archive of another release, which is not damaged), 3 it
+/// could not be checked.
+fn restore_check(sub: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
+    use lakelands_api::error::Situation;
+    let dir = PathBuf::from(sub.get_one::<String>("dir").map_or("", String::as_str));
+    let checked = lakelands_core::export::verify(&dir).and_then(|v| {
+        let lake = commands::exported_lake(&dir).unwrap_or_default();
+        let lake = lakelands_api::LakeId::from(lake);
+        lakelands_store::check_events(&dir, &lake).map(|()| v)
+    });
+    let (code, line) = match checked {
+        Ok(v) => (
+            0,
+            format!(
+                "the backup in {} holds lake `{}` from position 0 through {} (last hash {})",
+                dir.display(),
+                commands::exported_lake(&dir).unwrap_or_default(),
+                v.through,
+                v.hash.0
+            ),
+        ),
+        Err(Error::Unavailable { situation })
+            if matches!(*situation, Situation::LogFormat { .. }) =>
+        {
+            let Situation::LogFormat { found, .. } = *situation else {
+                unreachable!("the arm matches `log_format`")
+            };
+            (
+                1,
+                format!(
+                    "the backup in {}: {}\n  what to do: restore it with a release that reads \
+                     log format {found}; it is not damaged",
+                    dir.display(),
+                    situation
+                ),
+            )
+        }
+        Err(Error::Unavailable { situation })
+            if matches!(*situation, Situation::Damaged { .. }) =>
+        {
+            let todo = "  what to do: restore from another backup; nothing was changed";
+            (
+                1,
+                format!(
+                    "the backup in {}: {}\n{todo}",
+                    dir.display(),
+                    situation
+                        .to_string()
+                        .replacen("the export", "the backup", 1)
+                ),
+            )
+        }
+        Err(e) => {
+            let _ = write!(err, "{}", Failure::from(e));
+            return 3;
+        }
+    };
+    match writeln!(out, "{line}") {
+        Ok(()) => code,
+        Err(_) => 3,
     }
 }
 
@@ -774,67 +1181,192 @@ fn unmade(e: &Error) -> bool {
     )
 }
 
+/// The HTTP door of `serve`, bound and running before any lake is open.
+struct Door {
+    addr: std::net::SocketAddr,
+    served: Arc<std::sync::RwLock<BTreeMap<LakeId, Arc<dyn LakeStore>>>>,
+    health: lakelands_server::Health,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+    /// The meter of every lake served, and its door's task, where the
+    /// root configures `server.metrics`.
+    metrics: Option<(
+        Arc<lakelands_server::Metrics>,
+        tokio::task::JoinHandle<std::io::Result<()>>,
+    )>,
+}
+
+impl Door {
+    /// Bind and run the door the root configures, answering `NotServed` for
+    /// every lake and `starting` at `/readyz` until [`Door::serving`]; none
+    /// where the root configures no server.
+    async fn bind(root: &root::Root) -> std::result::Result<Option<Door>, Failure> {
+        let Some(config) = root.config.server.clone() else {
+            return Ok(None);
+        };
+        let metrics = match &config.metrics {
+            Some(at) => {
+                let metrics = lakelands_server::Metrics::new();
+                let door = lakelands_server::serve_metrics(at, metrics.clone())
+                    .await
+                    .map_err(stopped)?;
+                let addr = door.local_addr().map_err(stopped)?;
+                eprintln!("lakelands: metrics at http://{addr}/metrics");
+                Some((metrics, tokio::spawn(door.run())))
+            }
+            None => None,
+        };
+        let served: Arc<std::sync::RwLock<BTreeMap<LakeId, Arc<dyn LakeStore>>>> = Arc::default();
+        let lookup = {
+            let served = served.clone();
+            move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {
+                let served = served.read().unwrap_or_else(|e| e.into_inner());
+                served.get(lake).cloned().ok_or_else(|| {
+                    let lake = lake.to_string();
+                    Error::unavailable(lakelands_api::error::Situation::NotServed { lake })
+                })
+            }
+        };
+        let resolver = Arc::new(lakelands_server::resolver::StaticResolver::new(
+            root.config.principals.clone(),
+        ));
+        let http = lakelands_server::serve_http(config, resolver, Arc::new(lookup))
+            .await
+            .map_err(stopped)?;
+        let health = http.health();
+        // Standard output is the protocol's; the address goes to standard
+        // error, so a server bound to port 0 can be found. A caller that
+        // waits for the lakes reads the later "serving" line.
+        let addr = http.local_addr().map_err(stopped)?;
+        eprintln!("lakelands: listening at http://{addr}/ (starting)");
+        let task = tokio::spawn(http.run());
+        Ok(Some(Door {
+            addr,
+            served,
+            health,
+            task,
+            metrics,
+        }))
+    }
+
+    /// The seams `lake` is opened with: the root's, and its meter where
+    /// the door measures.
+    fn seams(&self, root: &root::Root, lake: &LakeId) -> Seams {
+        Seams {
+            meter: self.metrics.as_ref().map(|(m, _)| m.lake(lake)),
+            ..root.seams()
+        }
+    }
+
+    /// Every lake is open: the door serves them and says it is ready.
+    fn serving(&self, lakes: BTreeMap<LakeId, Arc<dyn LakeStore>>) {
+        let held = lakes.values().cloned().collect();
+        *self.served.write().unwrap_or_else(|e| e.into_inner()) = lakes;
+        self.health.serving(held);
+        eprintln!("lakelands: serving HTTP at http://{}/", self.addr);
+    }
+}
+
+/// A `serve` that fails after its bind does not leave the door answering.
+impl Drop for Door {
+    fn drop(&mut self) {
+        self.task.abort();
+        if let Some((_, scrape)) = &self.metrics {
+            scrape.abort();
+        }
+    }
+}
+
+fn stopped(e: std::io::Error) -> Failure {
+    Failure::new(
+        format!("the server stopped: {e}"),
+        "check the server section of the configuration and that the port is free",
+    )
+}
+
 /// `serve --mcp`: the lake on standard input and output, as the principal
 /// the command acts as; and, when the root configures the HTTP door, every
 /// lake of the root over HTTP, each caller resolved from the root's
 /// principals. Standard output carries the protocol only. The command ends
 /// when its stdio client closes, HTTP door or not, and the process's
-/// deliverers and writer leases end with it.
+/// deliverers and writer leases end with it. Where the root configures a
+/// standby, every lake is opened beside its writer: the stdio session is
+/// served while it stands by, what writes on the lakes' behalf starts once
+/// each lease is held, and a takeover that fails ends the command with its
+/// error.
 async fn serve(
     root: &root::Root,
-    store: Arc<dyn LakeStore>,
+    (store, door, standing): (
+        Arc<dyn LakeStore>,
+        Option<Door>,
+        Vec<lakelands_store::Standing>,
+    ),
     who: lakelands_api::Principal,
     open: &Opener<'_>,
 ) -> std::result::Result<(), Failure> {
-    let failed = |e: std::io::Error| {
-        Failure::new(
-            format!("the server stopped: {e}"),
-            "check the server section of the configuration and that the port is free",
-        )
+    // A standby serves its stdio client while it stands by, as its door
+    // does, and ends when that client closes, before it takes a lease.
+    let stdio = lakelands_server::serve_stdio(store.clone(), who);
+    tokio::pin!(stdio);
+    let Some(mut door) = door else {
+        let held = [store];
+        tokio::select! {
+            stdio = &mut stdio => return stdio.map_err(stopped),
+            taken = taken(standing) => taken.map_err(given_up)?,
+        }
+        root.deliver(&held)?;
+        ticker::start(root.config.aging.as_ref(), &held);
+        orders::start(&held);
+        root.mirror(&held, open).await?;
+        return stdio.await.map_err(stopped);
     };
-    let Some(config) = root.config.server.clone() else {
-        root.deliver(std::slice::from_ref(&store))?;
-        ticker::start(root.config.aging.as_ref(), std::slice::from_ref(&store));
-        orders::start(std::slice::from_ref(&store));
-        root.mirror(std::slice::from_ref(&store), open).await?;
-        return lakelands_server::serve_stdio(store, who)
-            .await
-            .map_err(failed);
-    };
-    let mut lakes = BTreeMap::new();
+    // The primary lake is open already; the others open now.
+    let mut standing = standing;
+    let mut lakes = BTreeMap::from([(store.lake().clone(), store.clone())]);
     for name in root.lakes() {
         let location = root.location(Some(&name))?;
-        lakes.insert(
-            location.lake.clone(),
-            open(location, OpenMode::Create, root.seams()).await?,
-        );
+        if !lakes.contains_key(&location.lake) {
+            let seams = door.seams(root, &location.lake);
+            lakes.insert(
+                location.lake.clone(),
+                serving_open(root, location, seams, open, &mut standing).await?,
+            );
+        }
     }
     let held: Vec<Arc<dyn LakeStore>> = lakes.values().cloned().collect();
+    root.tell_undeclared(&held, None).await;
+    // A standby's door serves reads at once and is not ready until every
+    // lake holds its lease; what writes on the lakes' behalf starts then.
+    if root.config.standby.is_some() {
+        door.serving(lakes.clone());
+        tokio::select! {
+            stdio = &mut stdio => return stdio.map_err(stopped),
+            http = &mut door.task => return http
+                .unwrap_or_else(|e| Err(std::io::Error::other(e)))
+                .map_err(stopped),
+            taken = taken(standing) => taken.map_err(given_up)?,
+        }
+        eprintln!("lakelands: the standby holds every lake's lease");
+    }
     root.deliver(&held)?;
     ticker::start(root.config.aging.as_ref(), &held);
     orders::start(&held);
     root.mirror(&held, open).await?;
-    let lookup = move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {
-        lakes.get(lake).cloned().ok_or_else(|| {
-            let lake = lake.to_string();
-            Error::unavailable(lakelands_api::error::Situation::NotServed { lake })
-        })
-    };
-    let resolver = Arc::new(lakelands_server::resolver::StaticResolver::new(
-        root.config.principals.clone(),
-    ));
-    let http = lakelands_server::serve_http(config, resolver, Arc::new(lookup))
-        .await
-        .map_err(failed)?;
-    // Standard output is the protocol's; the address goes to standard
-    // error, so a server bound to port 0 can be found.
-    if let Ok(addr) = http.local_addr() {
-        eprintln!("lakelands: serving HTTP at http://{addr}/");
+    if root.config.standby.is_none() {
+        door.serving(lakes);
     }
     // The command ends with its stdio client: the HTTP door beside it, the
     // deliverers and the lake's writer lease end with the process.
     tokio::select! {
-        stdio = lakelands_server::serve_stdio(store, who) => stdio.map_err(failed),
-        http = http.run() => http.map_err(failed),
+        stdio = &mut stdio => stdio.map_err(stopped),
+        http = &mut door.task => http
+            .unwrap_or_else(|e| Err(std::io::Error::other(e)))
+            .map_err(stopped),
     }
+}
+
+/// A standby's takeover failed: the command ends with its error, as a
+/// writer's open that fails ends it.
+fn given_up(e: Error) -> Failure {
+    eprintln!("lakelands: the standby's takeover failed and it stopped standing by");
+    e.into()
 }

@@ -28,7 +28,8 @@ use crate::canonical;
 use crate::error::{Place, Said};
 use crate::expr::{Condition, ParseError};
 use crate::id::{FieldName, TypeName};
-use crate::ontology::{FieldDecl, Measure, RelationDecl, TypeDecl, ViewDecl};
+use crate::ontology::{Authority, FieldDecl, Measure, RelationDecl, TypeDecl, ViewDecl};
+use crate::read::GroupKey;
 
 /// A condition inside a view that does not parse, so its typed form (the
 /// form the schema hash covers) does not exist.
@@ -88,10 +89,26 @@ pub fn view_shape(view: &ViewDecl) -> Result<Value, ViewConditionError> {
     let mut shape = source_shape(
         &view.source,
         view.r#where.as_ref(),
-        &view.group_by,
+        &view.group_names(),
         &view.measures,
         &[],
     )?;
+    // A term joins the shape in its typed form, where its name stands;
+    // a view grouped by fields alone keeps its hash.
+    let terms = view.group_by.iter().map(|k| match k {
+        GroupKey::Field(f) => Ok(json!(f)),
+        GroupKey::Named { name, expr } => {
+            let at = || vec![Place::Group { name: name.clone() }];
+            Ok(json!({"name": name, "expr": typed(expr, at)?}))
+        }
+    });
+    if view
+        .group_by
+        .iter()
+        .any(|k| matches!(k, GroupKey::Named { .. }))
+    {
+        shape["group_by"] = json!(terms.collect::<Result<Vec<_>, ViewConditionError>>()?);
+    }
     // Parameters and merged sources join the shape only when declared, so
     // a view without them keeps the hash it had before views could take
     // them.
@@ -149,7 +166,15 @@ fn fields(list: &[FieldDecl]) -> Vec<Value> {
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
     sorted
         .into_iter()
-        .map(|f| json!({ "name": f.name, "type": f.ty, "required": f.required }))
+        .map(|f| {
+            let mut v = json!({ "name": f.name, "type": f.ty, "required": f.required });
+            // Only a field the store fills names its authority, so every
+            // other type keeps the hash it had (decision 084).
+            if f.authority == Authority::Writer {
+                v["authority"] = json!("writer");
+            }
+            v
+        })
         .collect()
 }
 

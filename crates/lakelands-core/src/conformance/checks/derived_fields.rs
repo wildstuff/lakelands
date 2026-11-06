@@ -9,17 +9,8 @@
 //! every total built on it quietly short, which is why the check reads
 //! the field back rather than trusting the declaration.
 
-use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
-use lakelands_api::write::Declaration;
-use lakelands_api::{Access, Error, Origin, Refusal, TypeName};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, dec, decimal, derived, field, field_access, find_where, get_at,
-    head_unmoved, no_such_field, patch, read, refused_on, refused_unmoved, source_record,
-    try_upsert, type_decl, type_of, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, get_at, read, source_record, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     COMPUTED_BY_THE_FOLD = a_derived_field_is_computed_by_the_fold_on_every_write,
@@ -381,15 +372,13 @@ async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_chan
     l.declare_as(scaled("net * 3")?, "declaring `scaled` as net * 3")
         .await?;
     let r = l.read("bill", "b").await?;
-    let meta = r
-        .meta
-        .get("scaled")
-        .and_then(|m| m.procedure_version.clone());
+    let meta = (r.meta.get("scaled")).map(|m| (m.procedure.clone(), m.procedure_version.clone()));
+    let want = (Some("scaled".to_owned()), Some("2".to_owned()));
     ensure!(
-        decimal(value(&r, "scaled")) == Some(dec("9")) && meta.as_deref() == Some("2"),
+        decimal(value(&r, "scaled")) == Some(dec("9")) && meta == Some(want),
         "after `scaled` became net * 3 (version 2), the record's `scaled` must be \
-         recomputed to 9 and name procedure version 2; it reads {:?} with procedure \
-         version {meta:?}",
+         recomputed to 9 and name the procedure `scaled` at version 2; it reads {:?} \
+         with procedure and version {meta:?}",
         value(&r, "scaled")
     );
     Ok(())

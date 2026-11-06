@@ -11,14 +11,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::error::Naming;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
-    Assignment, EmbedDecl, FieldDecl, FieldType, FunctionInput, Measure, RelationDecl, StorageKind,
-    TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam, ViewSource,
+    Assignment, EmbedDecl, FieldDecl, FieldType, FunctionInput, Measure, Precondition,
+    RelationDecl, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
+    ViewDecl, ViewParam, ViewSource,
 };
+use lakelands_api::read::GroupKey;
 use lakelands_api::write::{
     AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl, SettingDecl,
 };
 use lakelands_api::{
-    FieldName, ParamName, Patch, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
+    FieldName, ParamName, Patch, PreconditionName, RelationName, SourceId, TriggerName, TypeName,
+    ValueTypeName, VerbName,
 };
 
 use super::doc::{
@@ -162,6 +165,7 @@ impl<'a> Lower<'a> {
             ty,
             required: body.required,
             authority: body.authority,
+            admits: body.admits.0.into_iter().map(SourceId::from).collect(),
             derived,
             function: body.function,
             computed_at: body.computed_at,
@@ -442,6 +446,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             .collect();
         let filter = l.opt_cond("view, `where`", v.filter);
         let group_by = l.names(Naming::Field, v.group_by.0);
+        let group_by = group_by.into_iter().map(GroupKey::Field).collect();
         let measures = l.measures("", v.measures);
         let merge = v
             .merge
@@ -493,6 +498,16 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
     let on = l.type_ref("`on`", &doc.on);
     let payload = l.fields("payload field", doc.payload);
     let requires = l.opt_cond("`requires`", doc.requires);
+    let preconditions = (doc.preconditions.0.into_iter())
+        .map(|(name, holds)| {
+            l.name(Naming::Precondition, &name);
+            let holds = l.cond(&format!("precondition `{name}`"), holds);
+            Precondition {
+                name: PreconditionName::new(name),
+                holds,
+            }
+        })
+        .collect();
     let effect = match (doc.set, doc.executor, doc.retire) {
         (None, None, true) => VerbEffect::Retire,
         (Some(set), None, false) => VerbEffect::Write {
@@ -539,9 +554,11 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
         scope: doc.scope,
         payload,
         risk: doc.risk,
+        preconditions,
         requires,
         effect,
         description: doc.description,
+        granted: doc.granted,
     };
     l.annotated(&Declaration::Verb(v.clone()));
     v
@@ -571,6 +588,7 @@ pub(super) fn object_set(l: &mut Lower<'_>, doc: ObjectSetDoc) -> ObjectSetDecl 
         of,
         filter,
         description: doc.description,
+        decided_at: Default::default(),
     };
     l.annotated(&Declaration::ObjectSet(s.clone()));
     s

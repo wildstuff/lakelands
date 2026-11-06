@@ -9,7 +9,7 @@ contract is right and this page is wrong.
 
 ## What a host implements
 
-Lakelands has nine seams. A host implements the ones it needs and
+Lakelands has ten seams. A host implements the ones it needs and
 passes them in `Seams`; every one but the engine has a default, and for
 the engine a host passes Lakelands' own openers. A host that passes
 those and nothing else has a working store. Two seams point the other
@@ -48,6 +48,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `ca_file`, the engine looks for the system's certificate bundle at the
   well-known Unix paths; on Windows there is none, so opening the lake
   fails as `unavailable` until `ca_file` names one.
+
+  The server must be **PostgreSQL 18 or newer**. The floor is the
+  engine's own and a host does not set it: a 16 or a 17 server is refused
+  at first contact as `server_too_old`, before anything is created.
 
   PostgreSQL in a container wants a `shm_size` of at least 256 MB:
   a parallel index build, pgvector's HNSW during a rebuild for one,
@@ -96,10 +100,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `lakelands-backings` for any `/v1/embeddings` endpoint, which the CLI
   and the server bind from the `embed` section of the root's
   `lakelands.json`. A bound backend embeds the query text of a hybrid
-  search that brings no vector of its own, which is a read and records
-  nothing. Without one, search is lexical and over caller-supplied
-  vectors, and says so. A bound backend that fails makes the search
-  `Unavailable`; it never falls back to lexical. A vector field declared
+  search that brings no vector of its own, and of a vector search that
+  brings `text`, which is a read and records nothing. Without one, or
+  with one that fails, a hybrid search ranks by its text and names its
+  vector leg and why in `unranked`; a vector search that brings `text`
+  is `Unbound` or `Unavailable`. A vector field declared
   with `embed` is the embedding of text fields of its record: the store
   embeds the text after the write, records each vector in the log
   (`output_recorded`) and reads it back on replay, one call per text and
@@ -140,8 +145,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   due stands, and the caller gets the recorded answer either way. To
   decline a call by the host's policy, answer `Error::declined(verb)`,
   never `not_granted` nor `unavailable`: the record then says `declined`,
-  the call did not run, and a retry under the same idempotency key answers the same. The host's reason
-  goes in its own trail, under the dedup key; the case carries none. Without a bound
+  the call did not run, and a retry under the same idempotency key answers the same. To say why, answer
+  `Error::declined_because(verb, reason)`: the reason, a `Detail` of the
+  host's own words (never a record's values), is recorded in the answer. Without a bound
   executor such a verb is refused as `Unbound`, not faked. See
   `docs/decisions/013-verbs-run-by-declared-risk.md`.
 - **`ChangeFeed`.** The host reads the store's feed: the log, filtered
@@ -201,7 +207,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   same way; subscribing again with other keys tells at most one change
   of the old ones that was already on its way. A notification names
   the position, kind, type, key and the changed fields it is shown, never
-  a value. A trigger's firing or an object set's change is told only to
+  a value, and as `append` the last position of the append that wrote
+  it that the session is told, so a session gathers what one append
+  changed whatever its `known_at` and its delivery read, and holds it
+  whole once the change at that position arrives (083). An append's
+  changes are sent once the pump has read past its end. A trigger's firing or an object set's change is told only to
   a principal who reads every field of the type in full, since its
   condition may read any of them. That rule sends less than one that
   asks only for the fields the condition reads, never more; a
@@ -224,13 +234,22 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and
   says which lakes may hold them; each time a writer opens a lake, the
   store declares the allowed types it does not hold yet, and its own
-  `sys.*` types again where the lake holds an older form of them.
+  `sys.*` types and the host's again where the lake holds an older form
+  of them, one without fields they have since gained (below, what a
+  host may change between its releases).
   Lakelands reserves only the types its own fold reads; today those are
   `sys.setting` and `sys.aging_rule`, and the other two are reserved
   ahead of their readers. See `docs/decisions/003-reservation-by-namespace.md`.
-  A value that must be kept from a reader is not put into a setting:
-  any reader's expression reads `setting('<key>')`, whatever its grant
-  on `sys.setting` and whether or not the setting is restricted.
+  An expression reads `setting('<key>')`, or `setting('<key>', at)` for
+  the value in force on `at`'s UTC day where the key holds values from
+  dates (`docs/decisions/090-a-setting-value-may-hold-from-a-date.md`),
+  whatever its reader's grant on
+  `sys.setting`, save a lake setting for a type or a source: a condition
+  evaluated at a read reads that as its reader is told it, and one
+  judged once for every reader tells what it decides only to a reader
+  told it (`docs/decisions/063-every-setting-is-in-one-list.md`). So a
+  value that must be kept from a reader is not put into a setting of
+  the host's own.
   The settings the store itself reads, with those of a lake's location
   and of the root's `lakelands.json`, are listed in `docs/settings.md`
   with what each changes, its default and where it is kept, and the
@@ -246,9 +265,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and
   `lakelands serve` makes it daily when the root's `lakelands.json` has an
-  `aging` section: the date at its `utc_offset`, once at start and at each
-  rollover (`docs/seams.md` §aging). A rule moves the records whose field
-  holds its `from` to its `to`, and both are values, written as they are:
+  `aging` section: the day of the lake's calendar, read in the zone its
+  `zone` setting names (101), once at start and at each rollover
+  (`docs/seams.md` §aging). A rule moves the records whose field holds
+  its `from` to its `to`, and both are values, written as they are:
   a `to` of `concat('over', 'due')` is that text, never evaluated. A
   record whose field is null holds no `from`, so no rule moves it and the
   report does not count it. A host that wants such records aged gives the
@@ -261,22 +281,38 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `LakeStore::purge_source(source, None, None)`
   (`lakelands purge --source <id>`):
   every record it brought in is retired in one append, and a record
-  another hand also wrote refuses the purge
+  another hand made or also wrote refuses the purge
   (`docs/decisions/039-a-source-is-retracted-as-one.md`). The report
   names, per relation, the live records outside the purge that still
   refer to a record it took. A host that must know that before it acts
   asks first: `LakeStore::purge_preflight(source, None)`
   (`lakelands purge --source <id> --preflight`) appends nothing and
   answers the same report under an id, and `purge_source(source, None,
-  Some(id))` (`--report <id>`) purges only if the lake has not moved
-  since. Both take one type in place of `None` (`--type <type>`): the
-  purge is then of what the source brought into that type and the links
-  of its relations, a co-owned record elsewhere does not hold it, the
-  report names the source's records in other types that still refer
-  into what went, and the id is of that purge alone. A view, and a type
-  that keeps no per-field provenance, are refused there.
+  Some(id))` (`--report <id>`) purges only if nothing but a
+  `lease_taken` or a `checkpoint` was appended since, as each command's
+  process appends one. Both take one type in place of `None` (`--type
+  <type>`): the purge is then of what the source brought into that type
+  and the links of its relations, a co-owned record elsewhere does not
+  hold it, the report names the source's records in other types that
+  still refer into what went, and the id is of that purge alone. A
+  view, and a type that keeps no per-field provenance, are refused
+  there.
   A purge retires and does not erase: `as_of` still reads what the
-  source wrote. **Forgetting a source** erases it
+  source wrote. **Example rows** a host writes into a type the operator
+  modelled, so that one act removes them again, come from a source the
+  fields admit (`admits: [<source id>]` on each authored field, declared
+  by a holder of `schema`;
+  `docs/decisions/069-an-authored-field-may-admit-a-named-source.md`):
+  every other source is still refused there, and the admitted one never
+  writes over an author's value, nor over the `initial` of a record an
+  author made; it writes an `initial` only on a record it made. A row
+  nobody edited goes with `purge_source`. A row an author edited in part
+  refuses the purge whole, so `remove_values` is the act for rows people
+  may have touched: it takes the source's values, keeps the author's,
+  and never retires a record an author made, as neither the purge nor
+  forgetting does. Declaring the fields again
+  without the source closes them; the rows written before stay its own.
+  **Forgetting a source** erases it
   (`docs/decisions/058-a-source-may-be-forgotten.md`). A source's values
   of a field declared `erasable` enter the log sealed under a key of its
   own, which the host's key store keeps outside the lake; the CLI and
@@ -286,22 +322,49 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   Without one a value that would be sealed is refused.
   - **The act:** `LakeStore::forget_source(source, None)`
     (`lakelands forget --source <id> --report <id>`) appends `source_forgotten`,
-    retires what the source alone brought, has the key store destroy its
-    keys, rebuilds the projection and reclaims the storage, all under the
+    retires what the source made and alone brought, has the key store destroy its
+    keys, restates the projection and reclaims the storage, all under the
     writer's lock. Its preflight, `forget_preflight` (`--preflight`),
     says what it erases and retires, what is computed again, and how
     long it expects to hold the lock (the log's events at the engine's
     measured rate: about 2 500 a second on PostgreSQL, 17 000 on
     SQLite). The CLI acts only with `--report <id>`, the preflight's,
-    and only if the lake has not moved since; without it, it answers the
-    preflight.
+    and only if nothing but a `lease_taken` or a `checkpoint` was
+    appended since; without it, it answers the preflight.
     Choose a moment when waiting writes can wait.
+  - **The way it takes** (lakelands#1120): the preflight and the act's
+    report each carry `way`. With `scoped: true` the act refolds only
+    the records the source wrote, a page of 256 in each transaction,
+    and its time grows with what the source wrote and the types its
+    records read, not with the lake; `records` and `events` say how
+    much it folds, a record a migration of such a type walks counted as
+    an event in each page. With `scoped: false`
+    it rebuilds the whole projection, and `why` says, a sentence a
+    reason, what made it: a kept view, a set, a vector field, a relation
+    of link records or another type's computed field reading the
+    source's records, a migration that re-keyed or renamed them, an act
+    of removal in the log, an event of the source's that is not about
+    one record, or the host's own `limits.forget_rebuild`. `scoped_ms`
+    and `rebuild_ms` are each way's estimate, `reclaim_untimed` is true where the lake has timed no reclaim yet and the estimate leaves it out, and `expected_ms` is the
+    chosen one's; the refold is taken where it is expected to be no
+    slower. Both ways leave the projection alike, which the conformance
+    suite holds read for read, so `limits.forget_rebuild` is for a host
+    that wants the reference way, not a fix. The act chooses again over
+    the log it appended to, so its `way` may differ from the
+    preflight's if the lake moved.
+  - **Several sources at once:** `LakeStore::forget_sources(sources,
+    report_id)`, with its preflight `forget_sources_preflight`, forgets a
+    set in one act, one restatement under one hold of the writer instead
+    of one for each, with one report id over the set. Use it when a
+    request reaches several sources, so that the reports do not go stale
+    one after another.
   - **What it cannot reach** refuses it: a value the log holds in
     plaintext, written before its field was erasable or by a release
     before 0.15.0. Such a lake is exported, the source left out, and
     imported as a new lake.
   - **After a crash** between the act's steps, open a writer: the next
-    writer's open, or the act repeated, finishes what is owed. A
+    writer's open, or the act repeated, finishes what is owed. A scoped
+    refold stopped between pages is planned again and refolded whole. A
     handle that only reads answers what the projection held until then.
   - **A reclaim that fails** is owed, never a lock-out: the values are
     erased already, so the act answers its report with the cause in
@@ -317,10 +380,21 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   - **Keep backups honest:** a key restored from a backup restores what
     it sealed. The key store's backups must follow its destroys, and the
     keyring stays out of the lake's backup set: a backup that carries
-    both carries what forgetting destroys. A disk snapshot, a PostgreSQL
+    both carries what forgetting destroys. `lakelands backup` never
+    writes a key into its directory; `--keys-to <dir>` copies the lake's
+    keyring file into a directory of its own, and is refused inside the
+    backup's, around it or inside a lake's; it copies nothing, and says
+    so, where the keyring holds no file for the lake. A disk snapshot, a PostgreSQL
     WAL archive or a copy outside the lake is out of the act's reach. An
     import finishes a forgetting its export holds, so a key store
     restored beside it has that source's keys destroyed again.
+  - **A log backup older than a forgetting** does not hold the act.
+    Restored beside the key store that destroyed the source's keys, its
+    import needs a key that is gone and is refused `key_missing`: it
+    fails closed and brings no value back. Restore a backup taken after
+    the act instead; running `lakelands backup` again into the same
+    directory makes one
+    (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
   - **Backups under key periods:** back the key directory up at least
     once a period. A backup older than the newest version the log used
     leaves the lake refusing a source's writes, `key_missing`, since the
@@ -356,19 +430,23 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `LakeStore::remove_values(source, selection, require_shredded,
   report_id)` takes what a
   source wrote before a time (`Selection::WrittenBefore`, the log's
-  clock) or in one delivery (`Selection::Delivery`, the id `ingest`
-  answered), and nothing another hand wrote. It appends
-  `values_removed`, retires each record left holding nothing of another
-  hand, rebuilds and reclaims, all under the writer's lock, as
+  clock), in one delivery (`Selection::Delivery`, the id `ingest`
+  answered) or any of a set of them in one act
+  (`Selection::Deliveries`), or of what it says it observed before a time
+  (`Selection::SeenBefore`, its `seen_at`), and nothing another hand
+  wrote. It appends `values_removed`, retires each record the source
+  made left holding nothing of another hand, rebuilds and reclaims, all
+  under the writer's lock, as
   forgetting does; its preflight, `remove_values_preflight`, says what
   it takes, keeps and retires, what is computed again, the constraints
   and references it leaves broken, the required fields it leaves empty
   (a breach of `required` naming the field), and how long it expects to
   hold the lock. `RemoveReport::said` says it in sentences. The CLI's
   `lakelands values remove --source <id> (--before <instant> |
-  --delivery <id>) [--require-shredded]` prints those sentences, and acts
-  only with `--report <id>`, the preflight's, as `forget` does. What the
-  host is told:
+  --delivery <id>… | --seen-before <instant>) [--require-shredded]`,
+  `--delivery` given once or more,
+  prints those sentences, and acts only with `--report <id>`, the
+  preflight's, as `forget` does. What the host is told:
   - **a redacted value** is read by no door at any position, `as_of`
     included, but it is still in the log, every export and every
     backup: in plaintext for a field that is not erasable, sealed under
@@ -379,7 +457,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   - **key periods** are how a retention cut shreds: each period's values
     seal under a version of their own, and a cut destroys the versions
     of the periods wholly before it. One delivery taken back is
-    redacted, and shredded only once such a cut covers it;
+    redacted, and shredded only once such a cut covers it, unless its
+    ingest asked `IngestOpts::sealed_apart`: its values then seal under
+    their version composed with a key of the delivery's own, and taking
+    it back destroys that key alone, which needs a key store that makes
+    such keys (`KeyStore::create_apart`); the file keyring does;
   - **`require_shredded`** refuses the act, `remove_not_shredded`,
     while a value of an erasable field it takes would be redacted only;
     a key store that destroys a source's key only whole
@@ -422,6 +504,50 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     read the lake's own figures (lakelands#1152), while each CLI command
     opens a handle of its own and reads the constant. Plan the act's
     window by the measured times all the same.
+  **Quarantining a refused record**
+  (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`):
+  an ingest with `IngestOpts::quarantine_refused` keeps a record
+  refused by a rule of the record, its cells as sent and its refusal,
+  and goes on; `Committed::quarantined` lists the stream index of each.
+  `Catalog::quarantined(who, filter)` lists them by source, type,
+  delivery and state, and `dismiss_quarantined(who, id)` closes one,
+  both under the `ingest` grant. What the host is told:
+  - **name the delivery:** a quarantined record is keyed by its source,
+    its first delivery and its index there, so a host that wants a
+    redelivery to find its rows names the delivery (`?delivery=`, the
+    file or feed item); without one each call is its own. A row sent
+    again under the same delivery and refused the same way appends
+    nothing, whether open or dismissed;
+  - **or name the run and the line:** `IngestOpts::run` and each
+    record's `SourceRecord::line` key its quarantined record in place
+    of the delivery and the place, so the same row of the same run is
+    the same record whoever refused it and in whichever call. Name a
+    line wherever a run or a delivery is named: a place counts only
+    one call's rows, so rows of two calls without lines meet at it;
+  - **quarantine what the host refuses:** `Catalog::quarantine(who,
+    source, opts, refused)` (`POST …/quarantined`) keeps a row the host
+    refused before any ingest, with a stable cause code and a sentence
+    for the operator, as a refused record is kept, so its cells stay
+    under the type's protection rather than in the host's own logs. The
+    sentence names no cell's value: it is shown to every reader of the
+    row, as the type's refusals are. Under a named run or delivery the
+    row names its line, or the door refuses it (`host_line_missing`).
+    A `HostRefused`'s debug form names the record's type, key, cell
+    names, line and cause, never a cell's value or the sentence; where a
+    key is itself protected (an IBAN, say), keep that form out of logs
+    as you would the key;
+  - **resubmit** by ingesting the mended record under the same source
+    with `SourceRecord::resubmits` naming the id's delivery and index:
+    the key may be what was mended;
+  - **a dismiss erases nothing:** the log keeps what was sent, in every
+    export and backup, a cell of an erasable field sealed under the
+    source's key and every other cell plaintext; a host that must erase
+    a refused row's cells forgets the source or takes the delivery back,
+    as for a landed one;
+  - **the bound:** `limits.quarantined_max` open quarantined records a
+    source, 10 000 by default; past it a refusal ends the stream with
+    `quarantine_full` beside it. Closed ones keep a row with no cell,
+    unbounded, as retired records do.
   Source ids and record keys stay plaintext in the log, so a lake is
   ready to forget when:
   - **a source id names no person:** an opaque id for a device or a feed,
@@ -463,7 +589,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   understand or a range outside the log, and 3 when it could not check
   (no lake yet, no projection, a memory lake, the database
   unreachable). `index/` is part of the
-  log, not derived data: back it up and restore it with `log/`. A
+  log, not derived data: a file copy of a SQLite lake's directory takes
+  it with `log/` (`lakelands backup` takes neither, and the import
+  makes the index again). A
   segment without its index file, a `projection.db` with no segment
   beside it, and a log whose segments do not follow each other (a
   sealed segment gone, or another lake's in its place) are refused as
@@ -501,6 +629,19 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   the seal answers its own. Then the host opens the lake again and sends
   nothing again: the handle opened then reads the checkpoint where it is
   in the log (lakelands#623).
+  On SQLite the writer also seals the active segment by itself once its
+  lines and its blocks, counted inflated (each block's `raw`, never what
+  it stores), pass `limits.seal_after_bytes`, 64 MiB by default, as `checkpoint` does, after the write that crossed it
+  and before that write is answered, and at a writer's open that finds one past it; never on a
+  read-only handle or in an import
+  (`docs/decisions/074-a-segment-is-sealed-by-size.md`). So a lake never
+  checkpointed still has sealed files that never change: a file copy
+  takes each sealed segment once and the active one each time
+  (`lakelands backup` writes only the events after its last line, on
+  every engine). The
+  write that crosses the bound waits for
+  the seal, about 0.5 s at the default. A seal that fails does not fail
+  that write; it is tried after the next one.
   A write answered `unsynced` has met a second failed sync: the handle
   is done, and refuses appends, seals and taking the lease until the
   lake is opened again
@@ -521,6 +662,26 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   PostgreSQL, `VACUUM` skips, with a warning, a table the connecting role
   does not own, and the compact reclaims nothing there; connect as the
   role that owns the lake's schema.
+  A series that outgrows its use is thinned: `LakeStore::thin_values`
+  (`lakelands thin --type <t> --by <field> --before <instant>`, `--act`
+  to take them) takes every record of the type whose field is certainly
+  before the horizon out of the projection, in parts beside the writer,
+  and the kept views over it answer as before
+  (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`). The log
+  keeps every value; a thinned key is refused to writes and reads, a
+  view's group that held one answers at the head alone, marked
+  `stranded` (with `cut`, the time-zone copy that cut it, for a zoned
+  group), and a read at an earlier position omits it and counts it in
+  the page's `stranded`. The act ends with the compact's reclaim, and its
+  report names the projection's bytes before and after it. Measured on
+  SQLite (`crates/lakelands-engine-sqlite/tests/thin_bytes.rs`, a 14-CPU
+  Ryzen 9 9950X VM, one run): of 4 000 records with a 200-byte note,
+  3 000 before the horizon, the file compacted first, the preflight took
+  57 ms and the act 628 ms; the file went from 2 568 192 to 1 413 120
+  bytes, some 385 bytes a thinned record. The act keeps
+  a tombstone a key, 25 bytes of key and horizon each here (75 000 for
+  the 3 000), beside the log's part naming the key. PostgreSQL's
+  `VACUUM` runs off the lease and was not measured here.
   After a bulk load into PostgreSQL the engine analyses its tables
   itself, once every 5 000 records a writer puts or order index rows a
   `sort_index.<type>` setting rebuilds, so the planner knows their size;
@@ -533,12 +694,19 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   EXTENSION IF NOT EXISTS vector`, which needs a role allowed to create
   it; where it cannot, the lake opens as always, its searches read every
   vector and answer exactly, and the open says so once on standard
-  error. An indexed field costs, beside
-  its vectors, a unit vector and an index entry per vector: measured at
-  100 000 vectors of 1 536 dimensions, about 8.3 KiB for the unit vector
-  (kept out of line) and 8 KiB for the index, one page per vector. The
-  index is built in the transaction of the setting's write, which holds
-  the lake's writer until it is done: 7 minutes for that field at
+  error. Each indexed field of a record type keeps a graph of its live
+  heads that are not held (B) and, from the type's first hold, a
+  second of every live head (A); a link type's field keeps one
+  (`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`).
+  A graph is a table of the record's key and its unit vector with an
+  HNSW index, made where `tablespaces` puts `vectors`. So an indexed
+  field costs, beside its vectors, a unit vector and an index entry per
+  graph a record is in: measured at 100 000 vectors of 1 536
+  dimensions, about 8.3 KiB for the unit vector (kept out of line) and
+  8 KiB for the index, one page per vector, in each graph. B, and A
+  where a head of the type is held, is built in the transaction of the
+  setting's write, which holds the lake's writer until it is done: 7
+  minutes for B of that field at
   PostgreSQL's default `maintenance_work_mem` of 64 MiB on a loaded
   12-core machine, since the graph stops fitting in memory after about
   9 000 vectors; a host that indexes a large field raises
@@ -552,39 +720,69 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   again and fails the same way. Reads answer as before; writes do not,
   until the host raises `/dev/shm` or `maintenance_work_mem`, or sets
   `max_parallel_maintenance_workers = 0`, and opens the writer again.
-  Under the index a page of a search is the index's answer at the depth
-  that page asks for, so the pages of one query may answer a record
-  twice or leave one out (043): a host that needs a ranked result whole
-  and in order reads it in one page, up to `max_limit`, or leaves the
-  field without the setting. A group of equally near vectors is no
-  exception: the members the index hands out at a page's depth come
-  once and in key order there, and the index may hand out a part of
-  the group and go on with farther vectors. A vector of zeros is never
-  answered for a field read through its index, whether the index or the
-  scan after it answers the search; a field without the setting scores
-  it 0, and so does every field on a server without pgvector, and a
-  field whose index is behind the head, which a writer's open builds.
-  Some searches read every vector of the
-  field after the index. One is a search the index hands fewer
-  candidates than it asked for: on a field smaller than what the search
-  pulls (a field under 65 vectors for a search of one ranking, a field
-  no larger than `max_limit` for one that fuses rankings, and a page
-  deep into a larger one); past 20 000 candidates or pgvector's memory limit for such a
-  scan (`hnsw.scan_mem_multiplier` times `work_mem`, which stays the
-  server's), which a search under a filter that keeps few records
-  reaches on a large field; and over a group of several hundred
-  identical vectors, of which the index reaches a part. The other is a
-  search whose pull of 4 096 candidates or more ends inside a group of
-  equally near vectors. **The engine sets `hnsw.max_scan_tuples`
-  itself,** to pgvector's default of 20 000, for each search and
-  whatever the server's value: where the index ends decides which
-  searches the scan answers, and an answer must not move with a
-  server's setting. It is set with `SET LOCAL`, for the search's own
-  transaction only; nothing of the role's or the server's is changed,
-  and a value a host set there has no effect on a lake's searches.
+  A is built at the type's first hold, and B again after the hold of a
+  record B held, by a thread of the writer on a connection of its own,
+  beside the graph it replaces, which it drops once every search that
+  began before the swap has ended, looking again every 200 ms: searches
+  that overlap without a pause delay the drop by the longest of them; a
+  writer's open drops a half-built one and starts it again. A build
+  that the server refuses is tried again after 1 s, then after twice
+  the wait before for each failure in a row, up to 64 s; the connection
+  is closed while it waits, and the next commit or the writer's close
+  ends the wait. Until it
+  is built, that graph's readers are ranked exactly: on a field of
+  100 000 × 32 with a quarter held, a hold took a median 13 ms, a
+  reader's first page right after it a median 77 ms (6 ms from the
+  graph), and B was built again in about 33 s. Holds that come faster
+  than a build keep them there.
+  A reader without `restricted` is streamed from B, which never held a
+  held record, and one with it from A; a reader holding `only` on the
+  type, or one whose grants judge a link by its ends, is ranked
+  exactly. What B leaves a reader without `restricted` is this: from
+  its answers, which all change when B is built again, it may tell that
+  a record it once saw was held, and roughly when, never which record
+  or anything of it.
+  Under the index the pages of one query are one sequence while the
+  graph of the reader's class does not change: no record twice, none
+  left out. A committed or open write its class sees, a build, a swap
+  and `VACUUM` change that graph, and a cursor followed across one may
+  answer a record twice or leave one out. The sequence is the index's
+  stream ranked by the one cosine, equal scores by key, and after it
+  the field's vectors the stream did not hand out, ranked the same way:
+  the score may rise once, where they begin, and a group of equally
+  near vectors may fall on both sides of it. A vector of zeros is never
+  answered for a field read through its index; a field without the
+  setting scores it 0, and so does every field on a server without
+  pgvector. A search whose filter keeps few records of a large field
+  is answered from the stream, at the index's recall of what it may
+  see, not exactly: on a field of 100 000 × 32, a filter keeping some
+  900 found 0.981 of the exact first 10 and 0.924 of the first 100. A
+  host that needs such answers exact leaves the field without the
+  setting. **The engine sets pgvector's search settings itself,** for
+  each search and whatever the server's values, since an answer must
+  not move with a server's setting: `hnsw.ef_search = 1000`,
+  `hnsw.iterative_scan = strict_order`, `hnsw.max_scan_tuples =
+  2147483647`, `hnsw.scan_mem_multiplier = 1000`, `work_mem = 4MB`,
+  `jit = off`, and `enable_seqscan` and `enable_sort` off. They are set
+  with `SET LOCAL`, for the search's own transaction only; nothing of
+  the role's or the server's is changed, and a value a host set there
+  has no effect on a lake's searches. With them a search's scan may
+  take up to 4 000 MiB of memory, and so may each search running at
+  once and each of its parallel workers; a field that reaches the bound
+  ends its stream there. The first writer's open of 0.19.0 rebuilds
+  each PostgreSQL lake beside its projection (its layout becomes 7) and
+  builds its graphs at the end: for a lake with a field of 100 000 × 32
+  under the index, the open took 89 s (67 s before 0.19.0).
   SQLite and in-memory lakes keep no such
   index and answer every search exactly; a SQLite lake that needs one
   moves to PostgreSQL by export and import (lakelands#215).
+- **`Meter`.** A host that reports through its own metrics system binds
+  a `Meter` in `Seams::meter`: the lake tells it its writes, appends,
+  seals, queue, tip, fold, lease and the times of its appends, folds,
+  commits and reads, labelled with the lake and its engine, and keeps no
+  number of its own. A meter that panics loses that number and nothing
+  else. `lakelands serve` binds its own where `server.metrics` is set
+  (below; `docs/seams.md`, `Meter`).
 
 **Moving a lake to another engine.** An installation runs one engine,
 and a lake is not bound to the one it was created on: `lakelands export`
@@ -623,6 +821,51 @@ long run imported 257 606 events (100 000 records) in 40 s on the memory
 engine, 136 s on SQLite and 335 s on PostgreSQL, holding at most 23 MiB
 of heap, on a 12-core machine at a load of 17 to 31.
 
+**Backing a lake up.** `lakelands backup --to <dir>` writes the lake's
+log as an export does, and run again into the same directory writes
+only the events after its last line
+(`docs/decisions/077-a-backup-is-an-export-that-grows.md`). It reads
+only, on every engine, beside a `serve` that holds the lake. Its cut is
+the head it read when it began; writes that land meanwhile are the next
+run's. It writes no manifest and no key; the line it prints names the
+head, how many events it wrote and the position the directory held
+before. It writes only into a new or empty directory, or one holding
+nothing beside `log/` and `export.json`: any other is refused as
+`export_not_empty`, and one inside a lake's directory is refused by the
+command, naming that directory. A run stopped
+halfway leaves a torn last line, which the next run cuts and writes
+again. A directory whose last line is not the lake's own event at that
+position, another lake's backup, is refused as `backup_other_log`, and
+nothing in it is changed, its torn tail included: back up into a new
+directory. A run reads none of the
+lines before the last, so damage there is found by the restore, or by
+`lakelands restore <dir> --check`, whose exit status is `verify`'s (0
+it holds, 1 damaged or written in a log format this release does not
+read — a whole archive of another release is refused as its lake is,
+and is not damaged — 3 not checked). `lakelands restore <dir>` is
+`import` of the directory, with `--keys-from <dir>` putting the lake's
+keyring file back first, only where the root's keyring has none, and
+taking it out again where the import is refused. Both `--keys-to` and
+`--keys-from` need the root's file keyring named in its
+`lakelands.json`, `"keys": {"keyring": "<directory>"}`, which
+`lakelands init` does not write; without it each is refused, and a
+restore of a lake holding erasable values is refused as nothing being
+bound for a key store:
+
+```sh
+lakelands --root /srv/lakes backup --to /backup/finance --keys-to /keys-backup
+lakelands --root /srv/lakes restore /backup/finance --check
+lakelands init restored
+# restored/lakelands.json: add "keys": {"keyring": "keys"}
+lakelands --root restored lake new finance
+lakelands --root restored restore /backup/finance --keys-from /keys-backup
+```
+
+The restored lake answers as the lake did at the backup's cut. A file
+copy of a SQLite lake's directory is a backup too, for SQLite only and
+taken with the writer stopped: a copy made while it appends can catch
+an append half written, which the next writer cuts off.
+
 **A projection is read only by the layout that made it.** A SQLite or
 PostgreSQL projection is marked with its engine's layout number when it
 is made, and a build whose engine lays the projection out otherwise does
@@ -631,61 +874,146 @@ none of that: its maker has connected and not made the tables, and a
 reader that comes in that moment is answered `no_projection`, as the
 moment before, and opens a moment later.
 - **An older build's projection is rebuilt by the first writer's open.**
-  The open takes the lease, drops the projection, makes it anew and
-  folds the whole log, and holds the writer that long; the CLI says so
+  The open takes the lease, folds the whole log into a scratch beside
+  the projection and puts it in the projection's place
+  (`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`), and
+  holds the writer that long; the CLI says so
   (`the projection was rebuilt from the log at this open`), and a host
-  reads why from `LakeStore::rebuilt_at_open`. 0.16.0 is such a step
-  for both engines: the first open of 0.16.0 rebuilds the projection,
-  about 8 s per 100 000 records on SQLite and 47 s on
-  PostgreSQL (at 1 000 000 records 80 s and 7.5 min; one event a
-  record, a release build). `lakelands upgrade` runs that open at a moment
-  the operator picks, also for a lake already in this release's log
-  format, and `lakelands upgrade --check` names the layout it found.
+  reads why from `LakeStore::rebuilt_at_open`. 0.16.0 and 0.21.0 are
+  such steps for both engines (0.21.0's projection holds an edge for
+  each key of an array a relation's `via` field holds,
+  `docs/decisions/091-a-field-carried-relation-over-an-array-of-keys-yields-one-edge-per-key.md`): the first open of either rebuilds the projection,
+  for a lake of 100 000 records with arrays of keys the
+  upgrade drill measured the first writer's open at 19.9 s on SQLite,
+  59.2 s on PostgreSQL and 68.1 s on PostgreSQL with pgvector, and the
+  second open at 0.008 s and about 0.06 s; a lake of another size or
+  shape is not extrapolated from these.
+- **Build ahead, and the first open folds only the tail.** The step
+  for a release whose engine lays the projection out anew:
+  1. With the new release, run `lakelands build-ahead` while the old one
+     still serves the lake. It folds the log into the scratch beside the
+     projection (`projection.db.rebuild` in the projection's directory on
+     SQLite, a schema of its own on PostgreSQL) and marks it built at
+     the log's tip. It opens the log and its own scratch only, never the
+     projection the old release answers from and never the lease, so the
+     old writer writes on. Before it starts it says the room it takes,
+     in MiB: as much as the projection, measured from its files on SQLite
+     and from its tables' sizes on PostgreSQL (or, where a session holds
+     a table, from what the catalogue last recorded). Run again, it goes
+     on from where it stopped; run it again just before step 2 if the old
+     release forgot a source or removed values since.
+  2. Stop every process of the old release, readers too.
+  3. Run any command that writes (or the host's own writer's open). The
+     open folds only what was written after the build and swaps the scratch
+     in, saying so (`folding only what was written after the build
+     ahead`). At 100 000 records, from stopping the old release to the
+     first answer under the new one, with 1 000 written after the build
+     (a release build): 2.7 s without the build ahead and 0.10 s with it
+     on SQLite, 7.9 s and 0.13 s on PostgreSQL; with a 64-dimension
+     vector and an eight-field order index, 12.6 s and 0.35 s on SQLite,
+     29.9 s and 0.31 s on PostgreSQL. The build ahead itself takes about
+     what the open took without it.
+
+  On PostgreSQL the swap is one transaction of some 30 ms, and waits for
+  every transaction reading the projection's tables; a reader that
+  begins meanwhile waits behind it. A reader that holds a transaction
+  open for 5 s holds the swap, and every reader after it, that long.
+
+  A build ahead whose mark the log no longer holds (a backup older than
+  it restored, the lake imported anew) is not used: the open folds the
+  whole log, and the next build ahead removes it and begins anew. A
+  forget, purge or removal the old release made after the build is
+  folded into it as a full rebuild would, so the build ahead answers
+  what the full rebuild answers, but not at the tail's cost. A removal
+  of values after the build, and a forget the lake's rates do not scope,
+  makes the open fold the whole log again after the swap, as the old
+  release did when it made it: the open then takes as long as one
+  without the build ahead, and says so (`then the whole log again`).
+  Running `lakelands build-ahead` again after the act folds the whole
+  log beside the old release instead, and the open is short again.
+
+  On SQLite a projection another handle reads (a reader of either
+  release left running) cannot be swapped. The open then folds the whole
+  log in place, as before 0.18.0, removes the build ahead and says so
+  (`removed the build ahead it could not swap in`). `LakeStore::rebuild`
+  and a forget or removal that rebuilds do the same while a reader is
+  open: the store asks before it builds, so a rebuild with a reader open
+  folds the log once, in place, and takes no second projection's room;
+  without a reader, it folds beside and the room is taken until the
+  swap. PostgreSQL's swap waits for its readers instead, as above.
+  Nothing removes a build ahead on its own: it is the operator's room,
+  kept for the open it was made for; `lakelands build-ahead
+  --discard` gives it back.
 - **A reader waits for the writer.** A read-only open of it is refused
   before anything is read, naming the number found, the number wanted
   and `lakelands rebuild` (`projection_layout` in `docs/refusals.md`).
 - **A newer build's projection, or one with no mark, is refused** at
   every open, as above. `lakelands rebuild`, or a host's own open with
-  `OpenMode::Rebuild`, opens it, drops the projection under the lease,
-  makes it anew and folds the whole log; the open is the rebuild.
+  `OpenMode::Rebuild`, opens it, folds the whole log beside the
+  projection under the lease and puts it in the projection's place; the
+  open is the rebuild.
   `LakeStore::rebuild` on an open lake does the same for a lake that
   opened.
 
-**A lake outlives a release from log format 14 on.** A release writes
-one log format and reads every one from 14, the format of the first
-release with real installations, to it (`docs/log-format.md` §6;
-`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-- **An older lake is upgraded by its first writer's open.** The open
-  appends one `lake_upgraded` after its `lease_taken` and writes the new
-  format from there; the events before stay as they were written, so
-  every export and checkpoint the host holds stays true. Where the step
-  changes how events fold, the same open rebuilds the projection, and
-  holds the writer that long: at 100 000 events about 7 s on SQLite and
-  35 s on PostgreSQL; a step that changes no fold, as 14 to 15, costs
-  one append. `lakelands upgrade` runs that open by itself at a moment
-  the operator picks, and `lakelands upgrade --check` says what it would
-  do and opens nothing.
-- **Take a backup before, and stop every older process first.** There is
-  no downgrade: a lake a release upgraded is not opened by the release
-  before. A writer of the release before that still holds the lake is
-  refused at its next append once the upgrade's lease is taken (its
-  fence is below it), so stop every older process before the first
-  writer of the new release opens the lake.
-- **A reader waits for the writer.** A read-only open of a lake not yet
-  upgraded is refused before anything is read, naming the way
-  (`log_upgrade_owed` in `docs/refusals.md`); so is a mirror of such a
-  source, whose open is a reader's.
-- **An export of an older release imports**, and the import upgrades
-  the new lake the same way, by a writer's open after the events are in.
-  Should that open fail, the events stay and a second import is refused
-  as `import_not_empty`: the lake is whole, and the next writer's open,
-  or `lakelands upgrade`, finishes the upgrade.
-- **A format this release does not read**, older than 14 or newer than
+**A release reads one log format, and from 0.23.0 no older lake opens.**
+Format 23 starts anew: an older lake or export is refused by its format,
+nothing of it is read, and no command translates it (`log_format` and
+`format_other` in `docs/refusals.md`; `docs/log-format.md` §6;
+`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`). Profiles
+are made anew, and `lakelands upgrade` is gone.
+- **The way back is the release that wrote the lake.** A lake of format
+  23 is refused by a release before it, by the format on its first line,
+  and a lake of an older format stays what it was, for the release that
+  wrote it.
+- **Take a backup into a new directory before a new release, and stop
+  every older process first.** `lakelands backup --to <new dir>`, kept
+  apart from the backup that grows
+  (`docs/decisions/077-a-backup-is-an-export-that-grows.md`), is the
+  copy a release that refuses the lake leaves you.
+- **A host's vocabulary may gain fields and be reworded, and nothing
+  else.** Between its releases a host may add optional fields to a type
+  of its vocabulary the lake holds, anywhere among its fields. The first
+  writer's open declares the type again with them, in the append that
+  takes its lease; the records written before read as they did, without
+  the new fields, and the next write may give them. A reader's open is
+  refused until then, naming the lake and the type
+  (`vocabulary_upgrade_owed`). A host may also change the type's
+  descriptions, labels and annotations and the order of its fields: a
+  writer's open declares that again too, with a field added or alone,
+  and a reader reads the type as held meanwhile. Annotations are judged
+  as a door judges them (a key `namespace.name` outside `sys.` and
+  `lakelands.`, no `null`, their size), and a writer's open refuses
+  what a door would. Any other change to a held type is refused at
+  every open, alone or beside a field added, naming the type and each
+  difference (`vocabulary_changed`): a field removed, retyped or
+  renamed, a field added as required or made optional, any other member
+  of a field changed (its authority, its derivation, `sensitive`,
+  `searchable`, `erasable`, `embed`), the key, a relation added,
+  removed or changed, a constraint added, changed or removed, the
+  type's `language`, `valid_from` or `valid_to`, `field_meta`,
+  `insert_only` or `retired_by`. Nothing of it is applied, and the lake
+  opens with the vocabulary of the release that wrote it. A type the
+  host adds reaches the lake at the next writer's open, and one it
+  leaves out stays in the lake as it was.
+- **A rolling deploy refuses readers between releases.** A reader of
+  the new release that opens before the new writer has is refused as
+  `vocabulary_upgrade_owed`; a reader of the release before that opens
+  after it is refused as `vocabulary_changed`, since its vocabulary
+  lacks the fields the lake now holds. Upgrade the writer first and the
+  readers right after it, and let a refused reader retry once it runs
+  the new release.
+- **An export of an older format is refused** by its format, before any
+  of it is written, and the lake it was to fill stays empty.
+- **A format this release does not read**, older than 23 or newer than
   the release, is refused at the open in every mode, naming the lake,
-  the formats read and the one written (`log_format`). The store reads
-  the two ends of the log before it opens the lake's engine, so such a
-  lake is left as it stands: its projection is not judged, and nothing
-  of it is made, folded or changed. An import asks the same before it
+  the formats read and the one written (`log_format`) — unless the
+  lake's own ends contradict each other, which no release writes: a
+  `lake_created` whose format is not its own line's `v`, or a newest
+  event older than the first, is refused as `damaged` at the end that
+  carries it, and a backup is the remedy. The store reads the two ends of
+  the log before it opens the lake's engine, so such a lake is left as it
+  stands: its projection is not judged, and nothing of it is made, folded
+  or changed. An import asks the same before it
   opens its target: onto such a lake it is refused the same way, and
   onto a lake it reads as `import_not_empty`, with no lease taken and
   nothing changed. The number steps only in a release that changes the
@@ -696,6 +1024,141 @@ and an optional key handle reach a lake through `Location`, and a
 server through its server configuration; Lakelands never reads the
 environment. A host that keeps settings in its environment reads them
 and passes them in. See `docs/decisions/005-no-environment-reads.md`.
+
+**Placement.** Each member below is optional, and absent it keeps the
+placement of the release before it. A SQLite lake's `projection_dir`
+puts its projection on a disk of its own, apart from `dir`, which keeps
+the log, the lease and the indexes: `projection.db` and its `-wal` and
+`-shm` files, the scratch a rebuild or `lakelands build-ahead` builds
+beside it, which swaps in by a rename within that directory, and a
+`lake` file naming the lake, so a second lake's location that names the
+same directory is refused. The lake still verifies from `dir` alone
+(`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
+Created at the first open. A PostgreSQL lake's `tablespaces` names, for
+each of `log` (the log, its segments and the lease), `projection` (the
+projection's tables), `indexes` (their indexes) and `vectors` (the
+vectors and the graphs of their index), the tablespace its relations are made in; a
+part named by none goes where the role's or the database's
+`default_tablespace` puts it, as before, and that setting is not
+changed. The tablespaces exist before the open, made by the operator,
+and the lake's role holds `CREATE` on each. A part made before its
+member was named stays where it is; a rebuild beside moves every part
+but the log and the `meta` table. A SQLite lake that is given a `projection_dir` later
+finds no projection there: its next writer's open folds one from the
+log (or swaps in what `lakelands build-ahead` built there), and the
+old `projection.db` in `dir` is the operator's to remove. In a root's `lakelands.json`, `lakes_dir` (`lakes` when
+absent, relative to the root) is where `lakelands lake new` puts a new
+SQLite lake, `exports_dir` (`exports`) where `lakelands export` writes
+when no `--to` is given, to a directory named by the lake and the
+moment in UTC, and `backups_dir` (`backups`) where the backups of
+lakelands#1369 are to go; nothing writes there yet.
+
+```json
+{
+  "lake": "finance",
+  "engine": {
+    "engine": "postgres",
+    "url": "postgres://lakelands@db.example:5432/lakes",
+    "tablespaces": { "log": "fast_log", "vectors": "big_disk" }
+  }
+}
+```
+
+Adding these members to `EngineConfig`'s `Sqlite` and `Postgres`
+variants breaks a host that builds either variant as a literal without
+`..`, or destructures it without `..`: add `projection_dir: None` or
+`tablespaces: None`, or `..`. A host that builds
+through `Location::sqlite` and `Location::postgres`, or reads a location
+file, changes nothing.
+
+## Serving a lake from more than one process
+
+A lake has one writer: the process that holds its lease. Another process
+can still serve it, with a forwarding handle
+(`lakelands_client::ForwardingLake`,
+`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`):
+it opens the lake's engine read-only and reads it there, and sends every
+write to the writer over the writer's REST door, the link between hosts.
+
+- **The writers.** The location names them in `writers`, the writer
+  first and then its standbys, each a `url` and an optional `ca_file`.
+  A write starts at the door that last answered and goes round them
+  once: a door that holds no lease, or that was not reached before
+  anything was sent, passes it on. When none takes it, the write is
+  `unavailable` as `not_forwarded`, and nothing was written.
+- **A lost writer.** A write that was sent and then not answered is
+  `unavailable` as `forward_lost`, and is never sent again, so it
+  lands once at most. Whether it landed is learnt by retrying it with
+  its idempotency key, which answers the first outcome if it did.
+- **Read-your-writes.** A read through the handle waits, at most
+  `read_wait_millis` (2 000 ms), until the handle's engine has folded
+  the highest position a writer has answered this handle. It looks
+  every `REACH_POLL` (10 ms) and gives up at the bound, never later:
+  past it the read is `unavailable` as `not_folded_yet`, naming the
+  position and how far the engine had got, and never an answer from
+  before the handle's own write. `LakeStore::reaches(at, within)` is the
+  same wait, for a host that tracks positions itself; on the writer it
+  answers as soon as the head is there.
+- **Host operations.** Those that need the lease (`rebuild`,
+  `checkpoint`, `age`, `purge_source`, `restrict`, `unrestrict`, the
+  forgettings, `remove_values`, `compact`) are `unavailable` as
+  `read_only` through the handle: they are run on the writer. Their
+  preflights, and the other reads of a host, are answered by the
+  handle's engine once it has folded the handle's own writes.
+- **The host's key.** The writer's server lists the processes that may
+  forward to it in `server.hosts`, each an `id`, its `keys`, the
+  `lakes` it may forward to, and the `principals` it may act for. A
+  host's keys are its own: a root whose host has no key or an empty
+  one, shares a key with another host, or has a key that is also a
+  principal's `api_keys` entry does not open. A host's key carries no
+  grants of its own: each call names the
+  principal it is made as in `Lakelands-Principal`, by id, and is judged
+  under that principal's grants; `Lakelands-Context` carries the
+  call's write context (`docs/rest.md`). So a host key can act as any
+  principal the writer knows for its lakes, within that principal's
+  grants, unless `principals` narrows it. Set `principals` to the ones
+  the forwarding process serves, keep the key out of the location (the
+  handle is given it by value), and bind the writers' doors to a
+  private network the forwarding processes share.
+- **A standby.** `lakelands_store::standby(location, seams, every)`
+  opens the lake beside its writer: it follows the log as a read-only
+  handle does, answers a write as `read_only` with the lake leased
+  elsewhere (which a forwarding handle passes on to the next door), and
+  every `every` asks the engine whether the lease is free
+  (`LakeEngine::lease_free`). Once it is, the standby takes it as a
+  writer's open does, with a fence greater than every earlier one,
+  folds what it has not folded, and is the lake's writer from then on.
+  Only the lease's lock says the writer is gone: a writer that hangs
+  while it holds the lock keeps the lease, however long, and there is
+  no timeout. On SQLite the lock is the OS lock of a file in the lake's
+  directory, which goes with the writer's process, so the standby runs
+  where that directory is; on PostgreSQL it is an advisory lock of the
+  writer's session, which goes with the session. SQLite asks by taking
+  the file's lock for a moment and letting it go: a writer's open that
+  falls in that moment is refused as held, as one racing another taker
+  is, and opens at its next try. The old writer's next write is refused
+  by the engine as `lease_not_held` or `lease_stale` and appends
+  nothing. While the lease is held elsewhere a try changes nothing. A
+  try that fails once the lease is free ends the tries: the standby
+  gives the lease up again, what the try appended stays in the log, and
+  the future `standby` answers beside the store answers its error.
+  Where the root has a `standby` section (`try_millis`, 1 000 ms),
+  `lakelands serve` opens every lake that way: its door serves reads at
+  once and `/readyz` answers `not_ready` until it holds every lake's
+  lease, its stdio session is served from the start, and the command
+  ends when that client closes, standing by or not; deliveries, ticker,
+  orders and mirrors start once every lease is held. A takeover that
+  fails ends the command with its error. A lake never written yet has
+  no writer to stand by: the first `serve` makes it and holds its lease.
+
+`Location.writers` is a new member and `Location` has no `Default`: a
+host that builds a location as a literal adds `writers: vec![]`. A host
+that builds `HttpConfig` as a literal adds `hosts: Vec::new()`. A host
+that matches `Credential` without a wildcard adds an arm for
+`Credential::Forwarded { host, principal }`: a call a listed host
+forwards as the principal of that id, which `StaticResolver` resolves to
+its entry of that id and a resolver that serves no forwarded calls
+refuses.
 
 ## How a host switches onto Lakelands
 
@@ -709,9 +1172,11 @@ A host that already has a store of its own moves in four steps.
    fails before it and passes after. The pure helpers a host needs
    beside the seams are there too: `schema_hash` in
    `lakelands_api::shape`, the key rule with `link_key` and
-   `key_components` in `lakelands_api::key`, and the canonical bytes in
-   `lakelands_api::canonical`; `lakelands-core` is not a surface a host
-   builds on.
+   `key_components` in `lakelands_api::key`, the canonical bytes in
+   `lakelands_api::canonical`, an expression checked for where it is
+   evaluated in `Condition::checked`, and a constraint judged as
+   `declare` judges it in `TypeDecl::constraint_reach`;
+   `lakelands-core` is not a surface a host builds on.
 3. **Cut over in one step.** Consumers re-point to Lakelands, pinned by
    tag, never by bare revision. Any contract the host exposes to its own
    plugins is adapted onto `lakelands-api`. The old store and the
@@ -722,10 +1187,29 @@ A host that already has a store of its own moves in four steps.
    cover shows up here, and it is fixed in Lakelands, not worked around
    in the host.
 
+## Editing a record
+
+A record's version is one number for the whole record, so two people
+editing different fields of it collide by design: the second write is
+refused with 412 `conflict`. A `PUT` or `DELETE` of a record answers the
+record's new version (`ETag` over REST), so an editor that edits twice
+sends it back without reading in between; a link answers its own
+record's version, which is not the record's. On a 412 the editor reads the record again
+with `with_meta`, compares the `meta.position` of each field it edits
+with the position it read them at, and retries against the new version
+only if none moved; a field that moved is shown to its person, who
+decides. Over REST a create is `If-None-Match: *`, refused the same way when the
+key exists. `docs/rest.md`, "Editing a record", has the steps.
+
 ## Rules the host inherits
 
 - **One tool surface.** The catalog is the only tool surface. A host
   adds no second query door beside it and no hand-written tool names.
+  Its read tools are `describe`, each type's `find` and `get`, `query`,
+  `search` and `proposals`, and `cypher`: a statement of the openCypher
+  subset, read as the `query` pattern it translates into, under the same
+  rights, refusals and cursor; it is listed wherever `query` is, and
+  refuses a write statement naming its clause.
 - **Invariants live in the store.** Field rights, per-field provenance
   and the `sys.` guard are enforced on every write by the store, so a
   host-side check is never a substitute and never needed. See
@@ -733,120 +1217,109 @@ A host that already has a store of its own moves in four steps.
   `docs/decisions/012-writes-touch-only-their-fields.md`.
 - **`schema` is for a principal that reads everything it may declare
   over.** A principal with `schema` is shown every definition, and a
-  write answers `through`, the position its consequences reach. The lake
-  refuses a declaration that reads a field its author may not read, and
-  names a trigger or an object set in a write's answer only to one who
-  reads what its condition reads; it cannot hide from such a principal
-  that something reacted to its own write. So a host does not hand
-  `schema` to a principal it keeps from a field or a type. See
-  `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-  extended.
-- **A schema hash is that of the shape its reader is shown.** A principal
-  kept from a field is answered, by `describe` and in a migration's
-  report, the hash of the type without that field, not the stored one,
-  and so is a host that declares as such a principal. Nothing breaks: a
-  declaration identical to the one in force appends nothing. A hash
+  write answers `through`, the position its consequences reach, so such a
+  principal learns that something reacted to its own write. A host does
+  not hand `schema` to a principal it keeps from a field or a type. See
+  `docs/decisions/006-grants-not-roles.md`, "Some things are still told, on purpose".
+- **A schema hash is that of the shape its reader is shown.** A hash
   compares only between readers shown the same shape; the host's own
   comparison before it applies describes as one shown everything, and
-  the log and the feed carry the whole hash. A report's id is made over
-  the report as its reader is shown it. See
-  `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-  extended (lakelands#644).
-- **A grant by name holds a field through its renames.** A field's
-  access is the lowest of what a principal's grants say under every name
-  the field has borne. A restriction follows the field, at the head and
-  in a read as of before the rename; a permission stays with its name.
-  So a host that does nothing stays closed, and a host that wants a
-  renamed field read or written by a principal names the new name and
-  drops the restriction on the old. A migration's answer names what it
-  renamed (`renamed`), and the feed's `migrated` event carries it. Two
-  fields that have borne one name (after a swap, or when a name is taken
-  again) are restricted together by it; grant by a name only one of them
-  has borne. A lake made before this finds its renames at its next open
-  from the declarations it keeps, not from its log; until a writer has
-  opened it once, each read-only open finds them again. See
-  `docs/decisions/006-grants-not-roles.md`, extended.
+  the log and the feed carry the whole hash. See
+  `docs/decisions/006-grants-not-roles.md`, "A schema hash is that of the shape its
+  reader is shown".
+- **A grant by name holds a field through its renames.** A restriction
+  follows the field, at the head and in a read as of before the rename;
+  a permission stays with its name, so a host that wants a renamed field
+  read or written names the new name and drops the restriction on the
+  old. Two fields that have borne one name are restricted together by
+  it; grant by a name only one of them has borne. See
+  `docs/decisions/006-grants-not-roles.md`, "A grant holds a field through its
+  renames".
 - **A grant may admit only some records.** `only` on a type, pairs of a
   text or reference field the principal may read and a text value,
   admits the records that hold every pair at every read door. That
   principal writes those records alone, another's being to its write a
-  key that is free; a proposal, a verb above low risk and every change
-  of shape still go through the host. `only` is a function
-  of `Principal.id` within a lake: give each owner its own id, and never
-  give one id `only` on some calls and not on others, since a retry is
-  answered its first outcome before the grants are asked. A grant whose
-  pairs cannot be applied refuses the reads that name the type until it
-  is fixed. See `docs/decisions/051-a-grant-may-admit-only-some-records.md`.
+  key that is free, and proposes writes to its own records, pinned to
+  them; a schema door, an aging rule and a migration's proposal stay
+  refused. `only` is a function of `Principal.id` within a lake: give
+  each owner its own id, and never give one id `only` on some calls and
+  not on others, since a retry is answered its first outcome before the
+  grants are asked. A grant whose pairs cannot be applied refuses the
+  doors that name the type as invalid until it is fixed. See
+  `docs/decisions/006-grants-not-roles.md`, "A grant may admit only the records that
+  hold its pairs".
+- **A verb may be kept to the callers granted it.** A verb declared
+  `granted` is called, proposed, accepted and described only by a
+  principal whose `TypeGrants.verbs` on the verb's type name it, its
+  field rights on top. `Grants::owner()` names none, so give the owner
+  the grant or declare the verb without the flag. See
+  `docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`.
 - **What a host reads before it applies a migration.** The preflight's
-  report says, each in one member: whether the apply is admitted
-  (`lossless`: every value the migration keeps converts, every record a
-  re-key moves takes a key of its own, and no live record breaks a
-  constraint that refuses at ingest; it says nothing of what the
-  migration removes); what goes (`dropped`: each removed field with
-  the records that hold a value, each removed relation with its live
-  links; the apply discards the values and retires the links, each by
-  an event of its own, so a host that asks "is anything lost?" sums
-  the counts, `MigrationReport::discards()` in Rust); what
-  moves (`rekeyed`, `references`, `sample_collisions`); a relation's
-  rename (`relations`, `carried`, the entry below); and every other
-  member `to` states otherwise (`restated`, the entry after it). A
-  removal is the migration's intent and is consented to by repeating the
-  report's id, so `lossless: true` with a count above zero in `dropped`
-  is an apply that is admitted and discards values. See
+  report says whether the apply is admitted (`lossless`, which says
+  nothing of what the migration removes), what goes (`dropped`), what
+  moves (`rekeyed`, `references`, `sample_collisions`), a relation's
+  rename (`relations`, `carried`) and every other member `to` states
+  otherwise (`restated`). A removal is the migration's intent and is
+  consented to by repeating the report's id, so `lossless: true` with a
+  count above zero in `dropped` is an apply that is admitted and
+  discards values; a host that asks "is anything lost?" sums the counts
+  (`MigrationReport::discards()` in Rust). See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
 - **A migration may rename a relation, and the relation keeps its
-  edges.** `relation_renames` pairs an old name with a new one. A
-  relation carried by a `via` field or derived from matching values is
-  only named anew. One carried by link records moves them: its links
-  become records of `sys.link.<type>.<new>`, with their versions, fields
-  and provenance, and a read as of before answers them under the old
-  name. The preflight's report lists each renamed relation with the
-  links that move (`relations`), and what the lake declares again
-  because it names the old link type (`carried`): a trigger or a verb on
-  it, an object set of it, a view that reads it. A rename changes no
-  link field and re-keys nothing; those are migrations of their own, and
-  a rename is refused while a reference field or a relation of another
-  type names the link type, or while a set, a trigger or a verb reads a
-  field of the new name's standing link type that the relation lacks. A
-  consumer of the feed that follows the old or the new link
-  type is handed the `migrated` event. The old link type stays declared,
-  for the reads as of before: it holds no record and takes none, so a
-  source that still sends links under the old name is refused, naming it.
+  edges.** `relation_renames` pairs an old name with a new one; links
+  carried by link records move to the link type of the new name, and a
+  read as of before answers them under the old one. See
+  `docs/decisions/035-a-link-is-a-record.md`, "A renamed relation keeps its edges".
 - **A migration's `to` is the type's whole declaration; read `restated`
-  before you apply.** A `to` built from a reduced view (a field's name
-  and type, nothing else) takes away every mark it does not restate:
-  `sensitive`, `searchable`, a label, annotations, an expression. The
-  migration is lossless, since no stored value changes, and its
-  preflight lists each such member in `restated` with what was declared
-  and what `to` states; `dropped` names every removed relation, with 0
-  where it holds no live link. Build `to` from `describe`'s answer for
-  the type and change what you mean to change; a report whose `restated`
-  is not what you meant is the signal. A field you may not read is
-  described and reported by its shape alone: your preview says `more`
-  where it leaves a member out, and a reviewer who reads the field sees
-  the rest. A proposed migration is refused
-  at its accept ("propose it again") where the type gained or lost a
-  member since that the proposal's report does not restate
-  (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
-  extended).
+  before you apply.** A `to` built from a reduced view takes away every
+  mark it does not restate (`sensitive`, `searchable`, a label,
+  annotations, an expression); the migration is lossless, since no
+  stored value changes, and its preflight lists each such member in
+  `restated`. Build `to` from `describe`'s answer for the type and
+  change what you mean to change. A proposed migration is refused at
+  its accept ("propose it again") where the type gained or lost a member
+  since that the proposal's report does not restate. See
+  `docs/decisions/027-shape-changes-are-declared-or-migrated.md`, "The report says
+  every difference between the declaration in force and `to`".
 - **A grant on a link type follows the relation's rename, as a grant on
-  a field follows the field's.** A field of the link type is as closed
-  as the lowest of what a principal's grants say under every name the
-  link type has borne: its grant, else its default. So
-  `sys.link.invoice.signed_by: {default: none}` holds for
-  `sys.link.invoice.approved_by` after the rename, and a grant on the new
-  name holds for the old one in a read as of before. A permission stays
-  with its name: a host that wants the links read under the new name
-  names the new link type. A mirror's mapping that names the old link
-  type stops applying at the rename and is stated again.
+  a field follows the field's.** A restriction holds for the renamed
+  link type, a permission stays with its name, and a mirror's mapping
+  that names the old link type is stated again. See
+  `docs/decisions/035-a-link-is-a-record.md`.
 - **A key is shown to whoever is shown the record.** A principal that
   is shown a type finds and gets its records, also where it reads no
   field of them: each with its key, its version and the names of the
-  fields it sees masked. A key made of fields holds their values,
-  whatever is granted on those fields, so a host does not key a type by
-  a field it hides; and a principal that is not to list a type's records
-  is granted nothing of the type. See
-  `docs/decisions/006-grants-not-roles.md`, extended.
+  fields it sees masked. A key made of fields holds their values, so a
+  type keyed by a field its principal may not know of is not shown to
+  it; holding a key field at `none` hides the type. To a read, a key
+  field it may only write hides the type too, and the principal still
+  writes it. A principal that is not to list a type's records is granted
+  nothing of the type. See `docs/decisions/006-grants-not-roles.md`, "A
+  type keyed by a field its principal may not know of is not shown", and
+  `docs/decisions/092-reading-is-judged-apart-from-writing.md`.
+- **A grant that writes a type and reads none of it hides the type from
+  every read.** This covers a principal whose grants on a type are
+  `write_only` and `none`, or whose key field on it is `write_only`. It
+  also covers one whose every field of the type is granted `write_only`
+  with no type default. To a read, the lake default does not count for
+  a type whose fields are granted, so a lake default that reads does
+  not show such a type. Name a field `read` or `masked`, or set the type's
+  default, to keep it readable. Such a principal upserts and proposes
+  the type, and `describe` lists it for those writes with `may.find` and
+  `may.get` false. Every read door, a walk, a view and the proposals
+  listing included, answers the type as one that is not declared. A
+  write answers as it does for anyone. See
+  `docs/decisions/092-reading-is-judged-apart-from-writing.md`, "A type a
+  principal may write and not read is not declared to a read".
+- **A read at a valid time dates by a bound its reader does not read
+  only where the grant says so.** Without the grant, a read at `valid_at`
+  is refused `not_granted` for a masked bound and reads as without one
+  where the bound is hidden. With `dates_by_hidden_valid_time` on the
+  principal's grant of the type, the read is answered the records valid
+  then, by their stored bounds, and the bounds stay withheld. Answers
+  across dates narrow a bound down, and the grant accepts that for its
+  type. See `docs/decisions/092-reading-is-judged-apart-from-writing.md`,
+  "A grant may date a read by a valid time its reader does not read".
 - **One writer per lake.** A lake has one writing process at a time,
   held by a lease; one process may write many lakes. See
   `docs/decisions/008-one-writer-per-lake.md`.
@@ -860,6 +1333,15 @@ A host that already has a store of its own moves in four steps.
   it the declaration is refused `too_large`. The host raises the limit
   for a quiet moment, or widens the filter in steps; `docs/seams.md`,
   "Declaring a set over a large type", has the costs.
+- **Only a kept set's `where` does not read the clock.** A kept set
+  keeps the memberships it decided at each write, so a `where` that calls
+  `now()` or `today()` is refused `set_reads_clock`. A set declared with
+  `decided_at: read` keeps no membership and is judged at each read, at
+  the read's clock, so its `where` may read the clock and a field computed
+  at the read; it steps through no reference, is of a type and, in 0.20.0, not
+  of a view, and nothing decided at a write (a kept set, a view, a
+  trigger's `when`, a verb's `requires`) names it. A host may also keep a time
+  window in a view's `where` or in a computed field.
 - **A whole-graph measure is read in one page.** `degree` and
   `components` are computed whole for every page read, so a walk through
   small pages computes the measure once per page. A host that wants the
@@ -971,6 +1453,18 @@ A host that already has a store of its own moves in four steps.
   admits is named in the value type's or the migration's report, in
   `breaches`, with its type. See
   `docs/decisions/059-a-type-declares-its-constraints.md`.
+- **A host asks whether a record write would land without writing it
+  (lakelands#1329).** `LakeStore::upsert_preflight(who, context, ty,
+  key, patch, expected)` is `upsert`'s own decision at the head,
+  appending nothing: `Ok` where the write would land, and otherwise the
+  refusal it would give, `constraint_broken` on the record the patch
+  makes of the live one (its initial values, derived fields and a
+  setting's declaration included), a right, an unknown field or a
+  version among them. So a host that previews a save asks it and keeps
+  no copy of the store's rules. It reads under no lock and takes no
+  idempotency key: what the head becomes before the save, a retry, and
+  the writer's own state (its lease, a fold behind) are the write's to
+  answer. It is the host's, with no door.
 - **A host may state its declarations at every start.** A declaration
   that is the one in force is answered `applied` at the head and appends
   nothing, by `declare` and by `apply`: a type, a value type, a function,
@@ -982,7 +1476,9 @@ A host that already has a store of its own moves in four steps.
   `appended` it, so a host drops what it cached only for what changed
   (lakelands#1059). `lakelands apply` prints it: each declaration already
   in force says since which position, and a bundle wholly in force says
-  that nothing was appended (lakelands#1106). See
+  that nothing was appended (lakelands#1106). A proposal of declarations
+  all in force is answered the same way and is not filed, and the accept
+  of a proposed bundle answers `declared` too (lakelands#1187). See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
 - **A read costs the same however much the lake declares
   (lakelands#557).** A handle builds what the lake declares once for a
@@ -1006,9 +1502,11 @@ A host that already has a store of its own moves in four steps.
   again as in force, or grown beside its embedding, is admitted, and one
   grown turns the embedding's recorded failures into waiting fields,
   their `error` gone, until the bind and `recompute`. The
-  bind appends nothing and makes nothing due: after it, call `recompute`
-  for each type whose `vector_coverage` shows records due, which also
-  calls again for a failure recorded while the model was away. A second
+  bind, as a writer's open with the model, makes what waited on it in a
+  task of its own, and `vector_coverage` counts those records due until
+  it is through (lakelands#1296). It does not call again for a failure
+  recorded while the model was away: call `recompute` for each type
+  whose `vector_coverage` still shows records due. A second
   bind replaces the first, whatever its model; a field of the old model
   then waits, and a search over it is refused as `Unbound`, until its
   type is declared with the new one. Over the network doors `bind_embed`
@@ -1040,6 +1538,18 @@ A host that already has a store of its own moves in four steps.
   `model` clears every vector of the type: until the sweep has embedded
   them again, the type's records are out of vector search, and
   `vector_coverage` counts them due.
+- **A write may answer before its embeddings (`defer_computed_fields`).**
+  `WriteOpts { defer_computed_fields: true, .. }` makes a write answer
+  once it is in the log and folded, at its own position; the lake makes
+  its embeddings and function calls after, in a task of its own, on the
+  same lane and in the same batches as above. Until then the field holds
+  no value and no `error`: `get`, `find` and a lexical search find the
+  record at once, a vector search leaves it out without failing, and no
+  vector of an earlier text shows. A record written again meanwhile ends
+  with the output of its latest text. What the task leaves (the lake
+  closed, a batch failed) is made by later writes as above, or at the
+  next open for embeddings. Off by default; REST, MCP and the client do
+  not carry it. Wait on `vector_coverage` to know the vectors are made.
 - **A text the embedding backend refuses fails alone (lakelands#658).**
   The store sends the texts due for one model in batches of up to 64.
   A backend that answers `Invalid` refuses the request for what it
@@ -1138,6 +1648,9 @@ A host that already has a store of its own moves in four steps.
   the retry under its key answers it. It is lost when the handle is
   closed or dropped before a write records it (the server ends so): a
   retry is then `unanswered`, and the first answer carried the output.
+  A host that needs more gives the executor its own record of what it
+  did, keyed by the call's position (`VerbInvocation.position`). See
+  `docs/decisions/013-verbs-run-by-declared-risk.md`, extended.
   **A dropped connection on PostgreSQL** (a restart of the server, a
   failover, a pooler's or a firewall's cut, an operator's
   `pg_terminate_backend`) costs a read one reconnect: the read opens its
@@ -1154,10 +1667,95 @@ A host that already has a store of its own moves in four steps.
   survives this and is recorded by that write. While another writer
   holds the lease, every write, rebuild and compaction is refused with
   the lease's situation and appends nothing, and the handle reads on.
-  The lake's connections carry `application_name` `lakelands <schema>`
-  in `pg_stat_activity`. A host that needs more gives the executor its own record of what it did, keyed by
-  the call's position (`VerbInvocation.position`). See
-  `docs/decisions/013-verbs-run-by-declared-risk.md`, extended.
+- **Health and readiness of `lakelands serve`.** With the `server`
+  section configured, the HTTP door answers `GET /livez` (`200`, the
+  process is up) and `GET /readyz` (`200` when every lake it serves is
+  open, holding its writer lease as its handle knows it, and answering
+  its head; `503` with `not_ready` when a lake's handle does not hold its
+  lease (one lost to another writer shows, on every engine, once the
+  engine has refused the handle an append or a rebuild's swap for it, and
+  until a write takes the lease again) or does not answer its head, `503` with
+  `starting` until every lake is open). The door is bound before the lakes
+  open, so an open that rebuilds the projection after an upgrade is
+  `starting`, not down. Neither takes a key or says a lake's name, a count
+  or a position (`docs/rest.md`, Health and readiness). A host that embeds
+  `lakelands-server` tells the door when its lakes are open with
+  `HttpServer::health().serving(lakes)`; until then it is `starting`.
+- **Metrics of `lakelands serve` (lakelands#1371).** With
+  `"server": {"metrics": {"bind": "127.0.0.1:9464"}}` in the root's
+  `lakelands.json`, `serve` binds a meter to every lake it opens and
+  answers `GET /metrics` at that address in the Prometheus text format,
+  on a listener of its own beside the door; it prints the address to
+  standard error. Every line is labelled with the lake and its engine:
+  writes, appends, events and seals counted; the queue's depth, the tip,
+  the position folded through, a rebuild under way, the active
+  segment's bytes and the writer's lease as levels; the times of an
+  append, a fold, a commit and a read, and the writes of a batch, as
+  histograms. A scrape tells which lakes the server holds, how large
+  they are and how fast they are written and read, and nothing of what
+  they hold: no type, record, principal or value is ever a label. It
+  asks no key and has no TLS, so bind it to loopback or to a private
+  interface only the collector reaches, never to the address the door
+  answers callers on. Each connection carries one scrape and is closed
+  after ten seconds at most. Without the setting nothing is measured and
+  nothing more is listened for. Measured on one machine, a write on the
+  memory engine took 22.6 µs with the meter against 22.3 µs without at
+  one caller and 12.6 µs either way at sixteen; on SQLite the difference
+  is inside the noise of a commit
+  (`crates/lakelands-cli/examples/meter_bench.rs`,
+  `docs/decisions/079-a-lake-is-measured-through-a-meter-the-host-binds.md`).
+  A host that embeds the store binds its own `Meter` in `Seams::meter`
+  instead (`docs/seams.md`).
+- **The threads of `lakelands serve` (lakelands#1373).** `serve` runs
+  on a multi-threaded runtime: as many threads as the `server` section's
+  `workers` names, or the machine's cores, at most 8; every other
+  command runs on one. The threads run the doors, the sessions and their
+  pumps. A lake's storage work runs on the runtime's blocking pool, never
+  on them: every engine call the store makes, the writer's turn
+  included, and every statement of the PostgreSQL driver, which blocks
+  on a runtime of its own there. On one thread that driver had to start
+  a thread of its own for every statement. Through REST, one record
+  after another per caller (`crates/lakelands-cli/examples/serve_bench.rs`),
+  on 14 cores, PostgreSQL 16 on loopback wrote 661, 1 196 and 2 899
+  writes/s at 1, 4 and 16 callers on one thread and 998, 1 752 and
+  3 828 on eight, its p99 1.8, 4.0 and 6.4 ms against 1.2, 2.6 and
+  4.8 ms: the medians of three runs of 5 s each, as the table on
+  lakelands#1373 gives them. SQLite was the same on both, bound by its
+  durable commit (about 10 ms on that machine's disk), and the memory
+  engine within 7 %.
+- **The bounds of the HTTP door (lakelands#1523).** The `server`
+  section's `bounds` hold what one caller may spend of the door: the
+  requests a second per connection (`connection_rate`, 1000 unless set)
+  and per principal over all its connections (`principal_rate`, 1000),
+  the requests of one principal answered at once
+  (`principal_in_flight`, 128), and the largest body read whole
+  (`body_bytes`, 4 MiB). Each takes `"off"` for none, for a host whose
+  proxy bounds its callers already. A request over a rate or in flight
+  is answered `429` with `Retry-After` and `unavailable` with
+  `rate_bound` or `in_flight_bound`, a body over the size `413` with
+  `body_too_large`; nothing of it is read or written. An ingest holds
+  its principal's slot until its last window is committed. Over MCP the
+  body is read before the principal is counted, so an MCP request spends
+  its read, up to `body_bytes`, before a principal's bound refuses it.
+  `/livez` and `/readyz` are not counted. MCP over stdio is not bounded
+  (`docs/decisions/095-the-http-door-bounds-what-one-caller-spends.md`).
+- **Connections on PostgreSQL (lakelands#1324).** A process holds two
+  connections for a lake it writes, `lakelands <schema>` in
+  `pg_stat_activity`, a third while a graph of its vector index is
+  built or dropped, two more while a rebuild of it runs, and none of
+  its own for a lake it only reads. The reads of its lakes run side by
+  side on readers they share, `lakelands readers <pid>`: up to 16 for
+  each server, database, credentials, TLS and tuning, however many lakes
+  and cores. One handle's reads hold at most 8 of them at once, so reads
+  of a handle that wait on a lock, another session's or a rebuild's
+  swap, leave the other 8 to the process's other handles; two handles
+  whose reads all wait, of two lakes or a lake and its rebuild, hold all
+  16. A read waits as long as the lock is held unless
+  `engine.tuning.statement_timeout_secs` is set (`0`, the default, does
+  not end it). At PostgreSQL's default `max_connections` of 100, three
+  of them kept for superusers, a process can write 40 lakes on one
+  server while none builds a graph, where it wrote 32 when each lake
+  had a reader of its own.
 - **An outage and a missing seam are cases, not sentences
   (lakelands#650).** `unavailable` carries a `Situation` and `unbound` a
   `Seam`: a code and its parameters (which lease and who holds it, which
@@ -1174,8 +1772,11 @@ A host that already has a store of its own moves in four steps.
   not know is shown as itself in backticks. A client and a lake on either
   side of this change cannot read each other's errors: move both
   together. The only free text is a `Detail`, an operating system's,
-  database's or library's own words, scrubbed where they arise: never a
-  record's key or values, and never a path on the host. See
+  database's or library's own words, or a host's reason for declining a
+  call, scrubbed where they arise: never a record's key or values, and
+  never a path on the host. A host scrubs its own reason and keeps it
+  short; neither the `detail-sources` gate nor the store checks or bounds
+  it. See
   `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
   extended.
 - **A refusal is a case too (lakelands#650).** A refusal of `invalid`,
@@ -1234,29 +1835,66 @@ A host that already has a store of its own moves in four steps.
   embedding or a field of a function computed outside the lake is never
   such a type: the store walks its records at every declaration of it,
   whatever changed.
-- **An order index is the host's to ask for, from what was ordered
-  (lakelands#1029).** A page ordered by a field `sort_index.<type>` does
-  not name sorts the type, on every page: 0.6 s on SQLite and 1.0 s on
-  PostgreSQL at 100 000 records, and far more for a deep page by offset.
-  Naming a field costs every write about 4 % and one rebuild, about a
-  second at that size. The lake does not choose: `describe_type` tells a
-  holder of `schema`, in `sorted_whole`, each field it reads that was
-  ordered by a whole sort since the lake was opened, with its pages and
-  their time, and `lakelands serve`
-  prints a line when one grows. A host's rule, run as often as it likes,
-  names a field when it was ordered by on a few pages of a large type,
-  and keeps a type's list short:
-
-  ```text
-  for each type with at least 2 000 records:
-    for each field in sorted_whole with pages >= 3 and millis >= 100,
-      while sort_index.<type> names fewer than 4 fields:
-        add it to sort_index.<type>
-  ```
-
-  Write the setting in a quiet moment: its fold rebuilds the type's
-  rows under the writer. See
-  `docs/decisions/041-a-sorted-page-reads-its-page.md`.
+- **The lake chooses an order index from what is ordered by; a host's
+  setting wins (lakelands#1029, lakelands#1131).** A page ordered by a
+  field `sort_index.<type>` does not name sorts the type, on every page:
+  0.6 s on SQLite and 1.0 s on PostgreSQL at 100 000 records, and far
+  more for a deep page by offset. So the lake chooses: once a field was
+  ordered by on `limits.order_after_pages` (3) whole-sorted pages within
+  `limits.order_window_secs` (10 minutes), on a type of at least
+  `limits.order_min_records` (2 000) live records with fewer than
+  `limits.order_max_fields` (2) chosen fields, the writer's process builds
+  its order index beside the log, in chunks of `limits.order_chunk`
+  (1 000) records between writes, and pages ordered by it read their
+  page from then on. Nothing is logged: a feed, a mirror and an export
+  carry nothing of it, and a projection rebuilt from the log learns it
+  again from use. A field unused for `limits.order_unused_secs` (7 days)
+  is dropped. All of these are members of the lake's `limits` in its
+  location.
+  - **The switch** is `limits.choose_order_index`, on by default. Off,
+    only what the host sets is indexed, as before 0.17.0.
+  - **What it costs:** each chosen field adds an index entry to every
+    write: a single upsert about 0–2 % on SQLite and about 20 % on
+    PostgreSQL in this release's runs, a bulk ingest within the runs'
+    spread on SQLite and up to about 40 % on PostgreSQL.
+    `limits.order_max_fields` bounds it, and its default is 2, the cost
+    of a lake that chooses by default: at a type's second field, one
+    field's cost taken twice (not measured at two), a single upsert about
+    0–4 % slower on SQLite and about 40–50 % on PostgreSQL. A host that
+    raises the bound to 4 pays up to four times one field's cost (not
+    measured at four): a single upsert about 0–8 % slower on SQLite and
+    80–100 % on PostgreSQL, a bulk ingest up to about 90 % on SQLite
+    (within the runs' spread at one field) and up to about 170 % on
+    PostgreSQL. A host for whom the default is too much lowers the bound
+    or turns the switch off. A build writes in chunks, and a write sent meanwhile waited at
+    most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records,
+    in chunks of 10 000 (the size measured then; the default is
+    `limits.order_chunk`, 1 000); a host's own setting builds the same way (below).
+  - **A binary before 0.17.0 writing or rebuilding the lake** (it reads
+    it: the format and the layout are the same) leaves the chosen
+    fields' rows behind. No read takes them from then on, and the next
+    open by a writer of 0.17.0 or later drops the lake's choice; a
+    writer that took its lease back without an open keeps chosen fields
+    no read takes until it opens the lake again.
+  - **A host's own `sort_index.<type>` always wins.** Written, it takes
+    the lake's choice for the fields it names away; the setting and the
+    lake share the type's rows field by field, so the lake still chooses
+    the type's other fields (`CHOSEN_ORDER_BESIDE_SORT_INDEX`);
+    retired, it hands those fields back. A host that knows its orders
+    names them, and may write the setting while the lake takes writes:
+    the build runs in parts beside the writer, a part of
+    `limits.order_chunk` records each its own turn in the queue, and no
+    read looks at the rows until the last part has kept them
+    (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`). The
+    setting's write returns when the build is whole. What a write waited
+    meanwhile, measured, is in "What a build costs the writes beside it"
+    below.
+  - **Told:** `describe_type` tells a holder of `schema` who reads the
+    field what the lake chose, in `chosen`, and what it still sorts
+    whole, in `sorted_whole`, with its pages and their time; `lakelands
+    serve` prints a line when one grows. A reader-only process counts
+    its pages for `sorted_whole` but builds nothing.
+  See `docs/decisions/041-a-sorted-page-reads-its-page.md`.
 - **A view that is read often may be kept.** A view's read walks its
   source: seconds at a hundred thousand records. The setting
   `view_kept.<type>` asks the fold to keep the view's records in the
@@ -1264,11 +1902,17 @@ A host that already has a store of its own moves in four steps.
   at every position from the setting on
   (`docs/decisions/049-a-view-the-fold-keeps.md`). What it costs and
   where it does not hold:
-  - **Turning it on is a step for a quiet moment:** the fold of the
-    setting's write walks the view's sources once under the writer and
-    holds the folds of every group until that append ends, so a view
-    grouped by a nearly unique field holds about as many as its source
-    has records.
+  - **Turning it on builds in parts beside the writer,** as an index does
+    (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`): the
+    view's records are kept part by part, writes to its sources go on, and
+    reads compute the view until the last part has kept it
+    (`describe_type` says `building`). A set or a trigger over a view in its
+    build is refused as `view_building`. A write waits for at most the
+    part in front of it and the writes queued ahead; the build is not
+    instant: 99 s and 1 210 s on SQLite and 269 s and 7 657 s on
+    PostgreSQL at 1 000 000 and 10 000 000 records, the longest write 0.6 to
+    2.8 s on SQLite and 3.9 to 26.7 s on PostgreSQL ("What a build costs the
+    writes beside it", below).
   - **Every write to a source puts one state more** for each group it
     touches in each kept view, for good. An append reads the state of
     the kept views that read a type it wrote, one read each, and of no
@@ -1323,8 +1967,10 @@ A host that already has a store of its own moves in four steps.
     to index, so `describe_type` names no indexed field for it
     (lakelands#748).
   - **Not every view can be kept:** only counts, sums and averages of
-    what is certainly a number, and a `min` or `max` of a number or an
-    instant under text or reference group fields. The setting's write is
+    what is certainly a number, and a `min`, `max`, `first` or `last`
+    ordered by a number or an instant, under any group fields the write
+    fixes, or none (a view of readings by meter and hour, or by the
+    hour alone). The setting's write is
     refused otherwise and says which measure. `describe_type` says for a
     view whether it is kept, and why not.
 - **A view's measure lands in its field's kind, or the view is not
@@ -1359,6 +2005,242 @@ A host that already has a store of its own moves in four steps.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.
+- **Order by the stored field, not by a day count computed at the
+  read.** `order_by` a field computed at the read is refused as
+  `order_at_read`. A host that wants records ordered by
+  `floor((today() - due_date) / 1d)` orders by `due_date` instead: for a
+  computation that rises or falls with one stored field the order is the
+  same, descending where the count falls as the field rises.
+
+## What a market tick costs
+
+`crates/lakelands-cli/examples/tick_bench.rs` measures a tick workload through
+`lakelands serve` (build and flags in its header). A tick has `symbol`, `at`
+(under an order index), `price`, `size` and `seq`, keyed by all three; 5 000 series
+of uneven size (weight `1 / (rank + 1)^0.9`) get their ticks in time order. The
+first 20 000 records are written by 16 callers, an `upsert` each (writes a second, p99
+of a write); the rest by one caller in `ingest` calls of 1 000 (records a second, p99 of
+a call). A roll-up is a kept view grouped by `[symbol, date_bucket(at, …)]` with
+`count`, `sum`, `min`, `max`, `first` and `last`: one roll-up is the hour, three are
+the minute, the hour and the day, each grouped by a derived `date_bucket` field of the
+tick type. The trigger's guard reads `preceding(price, at, symbol)` against a constant
+bound and never fires, and the `in_force` cells' guard reads the bound in force
+for the tick's symbol instead and never fires either. It is judged on every
+write. Bytes are per record: the log's
+files, the projection's tables, and the projection's indexes (`dbstat`). Reads are of
+the largest series, the median of five, raw (`where symbol and at >= …`, paged by 1 000)
+and from the finest roll-up (last hour) and the hour roll-up (last day).
+
+Machine: a 13th-generation Intel laptop-class CPU with 14 cores and 38 GB of
+memory, a virtual block disk (the guest reports it as rotational; it sits on shared
+host storage), Linux. It was shared with other builds, a model server and
+other benchmark runs, so the one-minute load average was 2 to 24 (the last column
+of the driver's row, start and end of a cell; it misses peaks inside a cell). PostgreSQL 18 ran in a
+container on the same machine, reached over TCP without TLS. Most cells ran
+once, not a median; the two-run ones are said so beside them. The driver is
+`tick_bench` on this branch at `fc0da1b1` (unchanged since `3c6d7c75`, the
+commit that added it), the release build that ran; `origin/develop`'s copy of
+the driver has neither `--series-index` nor `--build`, and it reads the load
+average from macOS's `load averages:`, so it reads NaN on Linux. Run to run,
+the same cell spread by up to 46% in writes a second and up to 58% in ingest
+(the three-roll-up SQLite cell with no trigger ran twice: 298 and 339 writes a
+second, 326 and 486 records a second, the second 49% more in ingest, and the
+table has the second, whose bytes could be read; the series pair below ran each
+setting twice, 401 and 587 writes a second without and 1 638 and 2 586 records
+a second with, 46% and 58% again). Treat a difference under 58%, the wider of
+the two measures, as none.
+Reads of the day come from the day roll-up with three roll-ups and from the hour
+roll-up with one. With a guard, the run first writes one tick far above its
+series' last price and stops unless the outcome names the guard as fired. The
+bytes a record of a PostgreSQL lake come from `pg_table_size` and
+`pg_indexes_size`; the `preceding` cell with three roll-ups reads 4 948 bytes of
+projection against 7 646 without a trigger, which the same data cannot explain, so
+read PostgreSQL's projection bytes as good to a third (table bloat at the moment
+of reading).
+
+Cut, and why. Of the matrix of roll-ups 0, 1, 3 × triggers none, `preceding`,
+`in_force` × two engines × two sizes, 18 cells ran. PostgreSQL at 1 000 000
+records with three roll-ups runs 41 to 187 records a second, so a cell took 1.5
+to 6.5 hours; PostgreSQL's `in_force` with three roll-ups and all its one-roll-up
+cells, and every cell with a roll-up at 10 000 000 records on either engine, were
+not started: at the rates below a three-roll-up cell at 10 000 000 would take 6 to
+67 hours. PostgreSQL at 10 000 000 ran with no roll-up and no trigger only; SQLite at
+10 000 000 ran the three no-roll-up cells. These cells are cut for time, and the
+issue stays open for them if a host needs them.
+
+SQLite and PostgreSQL, one table (`ingest` is one caller in calls of 1 000;
+`writes/s` is 16 callers, an `upsert` each; reads are of the largest series, the
+median of five):
+
+| engine | records | roll-ups | trigger | writes/s | p99 ms | ingest rec/s | p99 ms a call | log B/rec | proj. B/rec | index B/rec | raw hour ms | raw day ms | roll-up hour / day ms |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| sqlite | 1 000 000 | 0 | none | 1156 | 97.3 | 4297 | 518.9 | 73 | 664 | 260 | 164.6 | 2043.5 | - |
+| sqlite | 1 000 000 | 0 | preceding | 793 | 34.5 | 1268 | 1003.5 | 73 | 663 | 260 | 149.3 | 1997.4 | - |
+| sqlite | 1 000 000 | 0 | in_force | 1127 | 35.5 | 3058 | 677.5 | 74 | 669 | 264 | 156.2 | 2042.6 | - |
+| sqlite | 1 000 000 | 1 | none | 599 | 149.1 | 1075 | 1304.6 | 73 | 2199 | 273 | 159.4 | 2101.4 | 0.5 / 0.7 |
+| sqlite | 1 000 000 | 1 | preceding | 485 | 105.1 | 653 | 2151.0 | 73 | 2198 | 273 | 152.7 | 2028.1 | 0.6 / 0.8 |
+| sqlite | 1 000 000 | 1 | in_force | 562 | 87.9 | 983 | 1405.0 | 74 | 2206 | 277 | 160.8 | 2029.8 | 0.4 / 0.5 |
+| sqlite | 1 000 000 | 3 | none | 339 | 264.5 | 486 | 2673.9 | 73 | 5426 | 361 | 138.9 | 1903.3 | 2.1 / 0.5 |
+| sqlite | 1 000 000 | 3 | preceding | 337 | 201.6 | 348 | 5096.2 | 73 | 5426 | 360 | 161.0 | 1993.4 | 2.4 / 0.5 |
+| sqlite | 1 000 000 | 3 | in_force | 365 | 146.0 | 465 | 4255.3 | 74 | 5426 | 365 | 154.6 | 1990.0 | 2.2 / 0.3 |
+| postgres | 1 000 000 | 0 | none | 712 | 42.2 | 2958 | 1373.5 | 170 | 790 | 994 | 425.4 | 4131.8 | - |
+| postgres | 1 000 000 | 0 | preceding | 197 | 421.3 | 152 | 12067.8 | 170 | 790 | 993 | 469.4 | 4015.1 | - |
+| postgres | 1 000 000 | 0 | in_force | 318 | 73.1 | 582 | 3165.0 | 172 | 800 | 1004 | 348.4 | 3999.3 | - |
+| postgres | 1 000 000 | 3 | none | 141 | 603.6 | 187 | 13798.8 | 170 | 7646 | 5242 | 604.6 | 14148.6 | 2.9 / 1.1 |
+| postgres | 1 000 000 | 3 | preceding | 153 | 395.0 | 41 | 74130.6 | 170 | 4948 | 4774 | 590.0 | 9868.9 | 2.6 / 0.9 |
+| sqlite | 10 000 000 | 0 | none | 909 | 29.4 | 3930 | 558.7 | 65 | 586 | 266 | 153.2 | 3636.3 | - |
+| sqlite | 10 000 000 | 0 | preceding | 1091 | 28.1 | 564 | 8380.5 | 65 | 586 | 266 | 283.4 | 5603.7 | - |
+| sqlite | 10 000 000 | 0 | in_force | 467 | 81.6 | 1944 | 1512.1 | 65 | 586 | 267 | 259.4 | 7671.2 | - |
+| postgres | 10 000 000 | 0 | none | 333 | 133.7 | 1545 | 3024.0 | 159 | 798 | 1067 | 413.7 | 8133.0 | - |
+
+What the numbers say:
+
+- **A roll-up's fold dominates a write, on both engines.** On SQLite at 1 000 000
+  records ingest falls from 4 297 records a second with none to 1 075 with one
+  and 486 with three; single writes from 1 156 to 599 and 339. On PostgreSQL
+  with three roll-ups ingest is 187 records a second and single writes 141 (p99
+  604 ms), against 2 958 and 712 with none.
+- **The log is not where the bytes go.** A record's log is 65 to 74 bytes on SQLite and 159 to
+  172 on PostgreSQL; three roll-ups keep 5.8 KB (SQLite) and 10 to 13 KB (PostgreSQL) of
+  projection and indexes a record, so the log is 1% to 3% of them.
+- **A trigger's guard costs a write, and PostgreSQL pays far more than SQLite.**
+  Against no trigger at 1 000 000 records with no roll-up: `preceding` takes ingest from 4 297 to 1 268
+  records a second (−70%) and single writes from 1 156 to 793 on SQLite, and
+  from 2 958 to 152 (−95%) and 712 to 197 (−72%) on PostgreSQL; SQLite's
+  singles (793 against 1 156) are within the spread. `in_force` with four
+  bounds a symbol takes ingest to 582 (−80%) and singles to 318 (−55%, within
+  the spread) on PostgreSQL; on SQLite its ingest (3 058, −29%) and singles
+  (1 127) are both within the spread. With one roll-up the guards' cost is
+  within the spread too (`in_force` −9% ingest, −6% singles on SQLite); with
+  three they are not separable from it, the fold being
+  the whole write. At 10 000 000 records with no roll-up, SQLite's `preceding` takes ingest from
+  3 930 to 564 (−86%) and `in_force` to 1 944 (−51%, within the spread), and the single writes of
+  `preceding` (1 091) were not slower than none (909), at a load of 2 for the
+  first and up to 24 for the last cell of `in_force`; these are single runs at
+  a varying load, so a guard price that grows with the series (a symbol of 716 000 ticks
+  against 72 000 at 1 000 000) is a reading of them, not a settled fact.
+- **Reading a busy series' last hour raw takes 150 ms on SQLite and 350 to 600 ms
+  on PostgreSQL at 1 000 000 records; its last day 2 s and 4 to 14 s;** from a roll-up
+  under 3 ms. At 10 000 000 the raw day (124 000 ticks) takes 3.6 to 7.7 s on SQLite and 8.1 s on PostgreSQL.
+- **Rates fall with the size of the lake on PostgreSQL** (no roll-up, no trigger):
+  2 958 records a second at 1 000 000, 1 545 at 10 000 000, p99 of a call 1.4 s
+  and 3.0 s; SQLite holds (4 297 and 3 930).
+
+Which of lakelands#1516 and lakelands#1524 this workload needs: lakelands#1516
+(append and fold side by side). The time goes to the fold, not to the append: with
+no roll-up SQLite takes 4 300 records a second and with three 490, on the same log; and
+PostgreSQL with three roll-ups takes 187, where the log is 1% of the bytes.
+lakelands#1524 (sealed segments on other storage, and their compression) acts on
+the log, which is 1% to 3% of the bytes here at any size measured, so these numbers
+give it no need. How much lakelands#1516 would buy is not measured. A host
+that keeps a roll-up per tick-rate series on PostgreSQL should size for the
+fold's rate above, not the append's.
+
+### A trigger that pairs a record in force
+
+`--triggers in_force` declares a type `bound` (keyed by `symbol` and `from`, with `hi`)
+and the trigger `price > in_force(bound.hi, bound.from <= at, bound.symbol = symbol)`,
+with `--bounds` bounds a symbol (4 here) written before the feed. Every write reads
+its symbol's partition once, so the cell is K = 4. What it adds to a write is in the
+table above, against no trigger and against `preceding` with a constant bound: on
+SQLite with no roll-up both ingest (29% lower) and single writes stay within the
+spread; on PostgreSQL ingest falls 80%, outside it, and single writes 55%, inside it. The guard fires on a tick far above
+its bound (the run stops unless the outcome names it). The other figures of the cost of a
+partition, which the cell does not measure, are
+reckoned in `docs/decisions/100-a-guard-may-read-the-record-in-force.md`: a read costs
+5 to 7 µs a record of the partition with no order index, about 1 µs with `sort_index`
+up to 4 096, and one seek with `series_index` on the series field and the order field,
+for which a read of the partition's size is not paid (the conformance row hands the
+engine at most two rows for a symbol of 40 bounds). A host with partitions of
+hundreds of bounds, or a feed of many writes a second, declares `sort_index` or
+`series_index` on `bound` first.
+A writer with no read on `bound` fires nothing and is told nothing: its guard reads
+null, reads no row of the type, and the write goes through.
+
+### What the series pair adds to a write
+
+`series_index.<type>` (`[["symbol", "at"]]`; `docs/decisions/097-a-read-in-a-window-walks-its-window.md`)
+keeps an order index within each symbol. On SQLite it was measured at a median 8.9 µs a
+write at 100 000 records (16.2 → 28.2 µs; `docs/settings.md`). On PostgreSQL the same
+tick cell (1 000 000 records, no roll-up, no trigger, `tick_bench --series-index`), two
+runs each, in turn, at a load of 3 to 12:
+
+| setting | writes/s | p99 ms | ingest rec/s | p99 ms a call of 1000 | proj. B/rec | index B/rec | raw hour / day read ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| without, run 1 | 587 | 43.4 | 2 480 | 1 753 | 790 | 994 | 531 / 5 862 |
+| with, run 1 | 466 | 44.6 | 1 638 | 2 443 | 899 | 1 330 | 175 / 2 517 |
+| without, run 2 | 401 | 79.1 | 2 142 | 1 801 | 790 | 994 | 452 / 3 828 |
+| with, run 2 | 607 | 49.7 | 2 586 | 1 650 | 899 | 1 330 | 109 / 1 573 |
+
+The runs of one setting differ by more than the two settings do (single writes 401 to
+587 without, 466 to 607 with; ingest 2 142 to 2 480 and 1 638 to 2 586), so the
+pair's cost to a write on PostgreSQL is not separable from the spread at this
+load: the means are 494 and 537 writes a second and 2 311 and 2 112 records a second,
+that is +9% in writes and −9% in ingest with the setting, the wrong sign for a cost in one of them. What is measured is the space: 109
+bytes of projection and 336 of index more a record (+445 bytes, +25% of the
+1 784 a record kept without), and the reads: an hour of the largest series fell from
+531 and 452 ms to 175 and 109 (3 to 4 times), and its day from 5 862 and 3 828 ms
+to 2 517 and 1 573 (2.3 to 2.4 times). `docs/settings.md` reckons 11% for an order field on PostgreSQL; this run could not tell
+the pair from none, nor from that.
+
+## What a build costs the writes beside it
+
+Writing `sort_index.<type>`, `lookup_index.<type>` or `view_kept.<type>` on a type that
+holds records builds in parts beside the writer (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`,
+R7 to R9): a part is `limits.order_chunk` records (1 000 by default), each part its own
+turn in the writer's queue, so **a write waits for the part in front of it, and for the
+writes queued ahead of it, and for no more than that**. The bound is therefore the cost of
+one part plus the queue, not the length of the whole build. Measured with `tick_bench --build`:
+the tick type and its hour view are filled with N ticks, and then each setting is
+written, one after the other, while 16 callers keep upserting ticks; the build's wall time runs
+until `describe_type` no longer says `building`, and each write's wait is its call's time (so
+it includes the queue of the 16 callers). Same machine, load and release as
+above; one run each.
+
+| engine | records | build | build wall | writes/s beside | p50 ms | p99 ms | p100 ms |
+|---|---:|---|---:|---:|---:|---:|---:|
+| sqlite | 1 000 000 | none (20 s) | - | 965 | 13.6 | 70.8 | 682 |
+| sqlite | 1 000 000 | `sort_index` on `at` | 50 s | 329 | 29.2 | 481 | 2 197 |
+| sqlite | 1 000 000 | `view_kept` on the hour view | 99 s | 169 | 67.6 | 469 | 631 |
+| sqlite | 1 000 000 | `lookup_index` on `price` | not ended in 2.5 h | - | - | - | - |
+| sqlite | 10 000 000 | none (20 s) | - | 630 | 18.4 | 204 | 306 |
+| sqlite | 10 000 000 | `sort_index` on `at` | 809 s | 200 | 47.6 | 559 | 2 376 |
+| sqlite | 10 000 000 | `view_kept` on the hour view | 1 210 s | 136 | 66.7 | 648 | 2 755 |
+| postgres | 1 000 000 | none (20 s) | - | 516 | 25.5 | 221 | 915 |
+| postgres | 1 000 000 | `sort_index` on `at` | 92 s | 178 | 65.9 | 538 | 1 760 |
+| postgres | 1 000 000 | `view_kept` on the hour view | 269 s | 62 | 146.6 | 1 871 | 3 883 |
+| postgres | 10 000 000 | none (20 s) | - | 252 | 56.9 | 119 | 1 299 |
+| postgres | 10 000 000 | `sort_index` on `at` | 1 870 s | 86 | 142.8 | 844 | 7 106 |
+| postgres | 10 000 000 | `view_kept` on the hour view | 7 657 s | 21 | 408.9 | 6 925 | 26 712 |
+
+No write was refused. What this says:
+
+- **Writes go on, at a share of the rate.** During a `sort_index` build the 16 callers
+  took 34% (SQLite) to 35% (PostgreSQL) of their quiet rate at 1 000 000 records and 32%
+  and 34% at 10 000 000; during a `view_kept` build 18% and 12% at 1 000 000 and 22% and 8% at
+  10 000 000. The build and the callers share the writer.
+- **The longest wait is a part and a queue, and it grows with the type.** On SQLite the longest
+  wait was 2.2 s (`sort_index`) and 0.6 s (`view_kept`) at 1 000 000 records and 2.4 s and
+  2.8 s at 10 000 000, against 0.7 s and 0.3 s with no build; p99 was 0.5 to 0.65 s.
+  On PostgreSQL 1.8 s and 3.9 s at 1 000 000 and 7.1 s and 26.7 s at 10 000 000
+  (p99 0.5 s and 1.9 s, then 0.8 s and 6.9 s), against 0.9 s and 1.3 s with no build. A part is
+  1 000 records, so the part alone is far below these: the wait is mostly the
+  queue of 15 other callers behind the build's turns; on PostgreSQL's kept build the
+  part's own cost adds to it.
+- **Stated bound.** At 16 callers, the longest wait measured was about 3 s on SQLite at 10 000 000
+  records for either build, and 7 s (`sort_index`) or 27 s (`view_kept`) on PostgreSQL;
+  its p99 stays under 1 s except the PostgreSQL kept build (1.9 s at 1 000 000, 6.9 s at 10 000 000).
+  The build walls, of the builds that ended (50 s to 1 210 s on SQLite, 92 s to 7 657 s on
+  PostgreSQL), include the
+  16 callers taking most of the writer; they are not the time a build would take alone, and
+  no run of the earlier path, the whole build in one append, was made at these sizes, so
+  nothing here compares the two.
+- **`lookup_index` is the exception, and a finding.** On SQLite its build did not end in
+  2 h 30 min at 1 000 000 records (one core of the server at 95%, the 16 callers writing on). At smaller
+  types, on 4 callers, it took 53 s at 30 000 records and 125 s at 60 000 (writes waited up to
+  3.7 s) — more than linear — and on PostgreSQL 2.9 s at 30 000 records. It was not run on PostgreSQL
+  at 1 000 000 and was cut at 10 000 000 on both engines. A host that adds a
+  `lookup_index.<type>` to a large type on SQLite should not, until lakelands#1760 is settled.
 
 ## Building declarations in Rust
 
@@ -1372,7 +2254,8 @@ them:
   `RelationDecl::to("partner", "partner")`, and `SearchMode::lexical(text)`,
   `::vector` and `::hybrid` (0.9.0 added `weight` and `also` to a vector
   search and `weight` and `text_weight` to a hybrid one, and 0.16.0
-  `model` to both and to a vector term, and to `Axis`; a mode built by
+  `model` to both and to a vector term, and to `Axis`, and 0.17.0
+  `text_fields` to a lexical and a hybrid one; a mode built by
   its constructor leaves them out, and a `VectorTerm` written as a
   struct literal names `model`). `TypeDecl`, `FieldDecl`, `RelationDecl`,
   `TypeDescription`, `FieldDescription`, `LakeDescription` and
@@ -1388,4 +2271,3 @@ them:
   must make", with every other change a host's code has to follow.
   `crates/lakelands-api/tests/host_builds.rs` is the host's view, kept
   compiling.
-

@@ -3,9 +3,10 @@ pub(super) mod fixture;
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
+use crate::conformance::fixture::stored_record;
 use lakelands_api::engine::{Declared, Scan};
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{Position, Version};
+use lakelands_api::id::Position;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Proposal, ProposalFilter};
 
@@ -17,15 +18,9 @@ fn node(t: &str, k: &str) -> Node {
 
 fn stored(key: &str, retired: bool, restricted: bool) -> StoredRecord {
     StoredRecord {
-        ty: TypeName::new("n"),
-        key: RecordKey::new(key),
-        version: Version(1),
-        fields: BTreeMap::new(),
-        meta: BTreeMap::new(),
-        position: Position(0),
-        made: Position(0),
         retired,
         restricted,
+        ..stored_record(TypeName::new("n"), RecordKey::new(key), BTreeMap::new(), 0)
     }
 }
 
@@ -44,6 +39,17 @@ impl ProjectionView for View {
         unreachable!()
     }
     fn get(&self, _: &TypeName, _: &RecordKey) -> Result<Option<StoredRecord>> {
+        unreachable!()
+    }
+    fn order(&self, _: &TypeName, _: &RecordKey) -> Result<Option<Vec<u8>>> {
+        unreachable!()
+    }
+    fn order_page(
+        &self,
+        _: &TypeName,
+        _: Option<&RecordKey>,
+        _: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
         unreachable!()
     }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
@@ -73,6 +79,12 @@ impl ProjectionView for View {
     fn proposals(&self, _: &ProposalFilter) -> Result<Vec<Proposal>> {
         unreachable!()
     }
+    fn quarantined(
+        &self,
+        _: &lakelands_api::quarantine::QuarantineFilter,
+    ) -> Result<Vec<lakelands_api::quarantine::Quarantined>> {
+        unreachable!()
+    }
     fn is_member(&self, _: &str, _: &TypeName, _: &RecordKey) -> Result<bool> {
         unreachable!()
     }
@@ -93,6 +105,16 @@ impl ProjectionView for View {
         _: Position,
         _: u32,
     ) -> Result<lakelands_api::engine::Matched> {
+        unreachable!()
+    }
+    fn thinned_acts(&self, _: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        unreachable!()
+    }
+    fn thinned_at(
+        &self,
+        _: &TypeName,
+        _: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
         unreachable!()
     }
 }

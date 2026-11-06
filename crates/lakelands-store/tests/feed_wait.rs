@@ -1,6 +1,7 @@
 //! A wait on the feed of a read-only handle beside the lake's writer
-//! (lakelands#1061): its head moves only when it opens again, so its wait
-//! ends at its bound, answering the head its poll reads up to.
+//! (lakelands#1061, lakelands#1394): it follows the writer's fold, so its
+//! wait ends at the writer's append, answering the head its poll then
+//! reads up to, and at its bound when nothing is appended.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +15,7 @@ use lakelands_engine_mem::MemoryOpener;
 use serde_json::json;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_read_only_handles_wait_ends_at_its_bound() {
+async fn a_read_only_handles_wait_follows_the_writer() {
     let opener = MemoryOpener::new();
     let seams = || Seams {
         engines: vec![Arc::new(opener.clone())],
@@ -38,10 +39,17 @@ async fn a_read_only_handles_wait_ends_at_its_bound() {
     let written = written.expect("writing").position();
     let all = FeedFilter::default();
     let batch = feed.poll(head.next(), &all, 10).await.expect("polling");
+    let polled: Vec<_> = batch.events.iter().map(|e| e.position).collect();
     assert!(
-        written > head && woke == head && waited >= bound && batch.events.is_empty(),
+        woke == written && waited < bound && polled == [written],
         "the writer appended at {written}; the read-only handle's wait past {head} answered \
-         {woke} after {waited:?}, and its poll answers {} events",
-        batch.events.len()
+         {woke} after {waited:?}, and its poll answers {polled:?}"
+    );
+    let t = Instant::now();
+    let quiet = feed.wait(written, bound).await.expect("waiting again");
+    assert!(
+        quiet == written && t.elapsed() >= bound,
+        "with nothing appended, the wait past {written} answered {quiet} after {:?}",
+        t.elapsed()
     );
 }

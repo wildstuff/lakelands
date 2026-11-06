@@ -66,6 +66,7 @@ macro_rules! engine_check {
 pub mod log;
 pub mod projection;
 pub mod reads;
+pub mod rebuild;
 
 /// Opens lakes for the engine checks: one engine, as its test configures
 /// it.
@@ -88,6 +89,55 @@ pub trait EngineHarness: Send + Sync {
     /// whose projection lives only as long as its handles, which no other
     /// build opens. A mark that cannot be made panics.
     fn mark_layout(&self, _lake: &LakeId, _layout: Option<u64>) -> bool {
+        false
+    }
+
+    /// Leave the projection of the lake `lake` names as a writer that keeps
+    /// no chosen field (a binary before them) would after folding one more
+    /// commit: every row of the order index holding one sort key, as rows
+    /// its fold left behind, and the position folded through and every
+    /// `sorted.<type>` mark moved on by one. `false` for an engine whose
+    /// projection no other build opens.
+    fn fold_as_before(&self, _lake: &LakeId) -> bool {
+        false
+    }
+
+    /// Leave the projection of the lake `lake` names as a writer that keeps
+    /// no chosen field would after rebuilding it through the same position:
+    /// its order index emptied and every mark kept. `false` for an engine
+    /// whose rebuild drops its marks with its tables, or whose projection no
+    /// other build opens.
+    fn rebuild_as_before(&self, _lake: &LakeId) -> bool {
+        false
+    }
+
+    /// Leave the projection of the lake `lake` names as a build that keeps
+    /// no text statistics left it: with `behind`, as one folding a commit
+    /// past them would, their mark one position behind the one folded
+    /// through and their counts no longer the head's (each doubled, the
+    /// lengths gone); without, as one before them made it, their tables and
+    /// their mark gone. `false` for an engine whose projection no other
+    /// build opens.
+    fn stale_text_stats(&self, _lake: &LakeId, _behind: bool) -> bool {
+        false
+    }
+
+    /// A handle onto the scratch beside the projection of the lake `lake`
+    /// names, as `EngineOpener::open_scratch` opens it in a second process;
+    /// unbound, as this default answers, for an engine that keeps none.
+    fn scratch(&self, _lake: &LakeId) -> lakelands_api::Result<Box<dyn LakeEngine>> {
+        Err(lakelands_api::Error::unbound(
+            lakelands_api::error::Seam::Operation {
+                op: "open_scratch".to_owned(),
+            },
+        ))
+    }
+
+    /// Leave the scratch of the lake `lake` names, marked built and opened
+    /// by no handle, marked with a hash the log does not hold at its mark,
+    /// as a scratch of a lake whose log was replaced would be. `false` for
+    /// an engine that keeps no scratch.
+    fn forge_scratch_mark(&self, _lake: &LakeId) -> bool {
         false
     }
 }
@@ -119,6 +169,10 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     log::GREATER_FENCE,
     log::WHOLE_OR_NOTHING,
     log::SEGMENT_DIGEST,
+    log::FRAMED_UNCHANGED,
+    log::FRAME_HELD_WHOLE,
+    log::BLOCK_DIGEST_OVER_RESTORED_EVENTS,
+    log::BLOCK_CHANGED_IS_A_BREAK,
     log::RELEASE_STALE,
     log::READ_BOUNDS,
     log::FENCE_AT_ZERO,
@@ -129,7 +183,9 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     log::OPENING,
     log::READ_ONLY_OPEN,
     log::DROPPED_WRITER,
+    log::HELD_LEASE_BESIDE_A_FOLD,
     log::READ_ONLY_HANDLE,
+    log::LEASE_FREE,
     log::UNLEASED_HANDLE,
     projection::VIEW_AT_A_POSITION,
     projection::PAST_THE_FOLD,
@@ -139,32 +195,59 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::GET_MANY,
     projection::MUCH_WRITTEN_KEY,
     projection::HEAD_ONLY_NAME,
+    projection::ORDER_ENTRY,
+    projection::WITHDRAWAL_IS_A_DECLARATION,
+    projection::RETIRED_SETTING_POSITION,
     projection::EDGES_TO_RETIRED,
     projection::EDGES_FOLLOW_THE_LATEST_STATE,
     projection::COMMIT_INVALID,
     projection::OPEN_TRANSACTION,
     projection::VIEW_KEEPS_POSITION,
     projection::SAME_POSITION,
+    projection::THINNED_TABLES,
+    projection::A_KEYS_STATES,
     projection::PUT_BEFORE_A_LATER_STATE,
+    projection::VECTOR_PUT_BEFORE_A_LATER_STATE,
     projection::PUTS_IN_ONE_TRANSACTION,
     projection::CLEAR,
     projection::OTHER_LAYOUT,
+    rebuild::BUILT_BESIDE,
+    rebuild::KEPT_SCRATCH,
     reads::MIXED_KINDS,
     reads::AFTER_AND_LIMIT,
     reads::KEY_BATCHES,
     reads::REPLACED,
     reads::PROPOSALS_PAGED,
     reads::KEPT_NAME,
+    reads::KEPT_RANGE,
     reads::TEXT_PAGE,
     reads::FIELD_ORDER_WALK,
     reads::SETTINGS_ORDERED,
     reads::SORTED_PAGE,
+    reads::CHOSEN_ORDER,
+    reads::CHOSEN_LEFT_BEHIND,
+    reads::SERIES_STARTED,
+    reads::SERIES_READS_ITS_WINDOW,
+    reads::SERIES_NO_VALUE_LAST,
+    reads::SERIES_IN_MERGES,
+    reads::SERIES_PAIR_WITHOUT_ORDER_INDEX,
     reads::SORTED_PAGE_PINNED,
     reads::FILTER_AS_EVALUATOR,
     reads::EQUAL_IS_IDENTITY,
     reads::EQUAL_ANY_IS_EACH,
     reads::FLAGS_AND_VALID_AT,
     reads::COUNT_IS_THE_SCAN,
+    reads::ROWS_WALKED_COUNTED,
+    reads::WINDOW_READS_ITS_ROWS,
+    reads::WINDOW_WALKS_THE_SMALLER_SIDE,
+    reads::WINDOW_ADMITS_LIKE_A_PAGE,
+    reads::WINDOW_KEEPS_KEY_ORDER,
+    reads::WINDOW_HOLDS_WHAT_IS_ADMITTED,
+    reads::WINDOW_TAKES_ONE_RANK,
+    reads::WINDOW_SKIPS_NO_VALUE,
+    reads::NUMBER_LOOKUP_READS_ITS_HOLDERS,
+    reads::NUMBER_LOOKUP_ONE_TOKEN,
+    reads::NUMBER_OUTSIDE_THE_SETTING,
     reads::LEXICAL_HITS,
     reads::LEXICAL_BEYOND_ASCII,
     reads::RANKED_ONE_STATE,
@@ -173,12 +256,15 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::CHANGED_ROWS,
     reads::MANY_PUTS,
     reads::LEXICAL_REDECLARED_MID_FOLD,
+    reads::STATS_COUNTED_AT_OPEN,
     reads::NEAREST_BY_COSINE,
     reads::ZERO_AND_WRONG_LENGTH,
     reads::PUT_AND_REMOVE,
+    reads::PUT_OVER_A_STATE,
     reads::EARLIER_STATES,
     reads::LATER_OUTPUT_HOLDS,
     reads::FIRST_APPLIED,
+    reads::APPLIED_AFTER_CLEAR,
     reads::ROUTES,
     reads::SOURCE_ROUTES,
     reads::PROPOSALS,
@@ -233,10 +319,17 @@ pub fn run_engine_check(harness: &dyn EngineHarness, check: &EngineCheck) -> Hel
 }
 
 /// One event whose canonical bytes are those of `body` with the envelope
-/// members the engine checks, hashed as the log hashes events.
+/// members the engine checks, hashed as the log hashes events. Its line
+/// holds its id, as every event's line does.
 pub fn event(position: u64, prev: &Digest, fence: u64, body: Value) -> CanonicalEvent {
+    event_of(position, &format!("{position:032x}"), prev, fence, body)
+}
+
+/// [`event`] with the id `id`.
+pub fn event_of(position: u64, id: &str, prev: &Digest, fence: u64, body: Value) -> CanonicalEvent {
     let preimage = json!({
         "position": position,
+        "id": id,
         "prev": prev.0,
         "fence": fence,
         "body": body,
@@ -246,11 +339,12 @@ pub fn event(position: u64, prev: &Digest, fence: u64, body: Value) -> Canonical
     whole["hash"] = Value::String(hash.0.clone());
     CanonicalEvent {
         position: Position(position),
-        id: EventId(format!("{position:032x}")),
+        id: EventId(id.to_owned()),
         prev: prev.clone(),
         hash,
         fence,
         bytes: crate::canonical::to_vec(&whole),
+        frame: None,
     }
 }
 

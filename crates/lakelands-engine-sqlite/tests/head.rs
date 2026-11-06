@@ -50,6 +50,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
         ty: FieldType::kind(StorageKind::Text),
         required: false,
         authority: Default::default(),
+        admits: vec![],
         derived: None,
         function: None,
         computed_at: None,

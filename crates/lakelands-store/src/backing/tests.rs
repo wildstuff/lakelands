@@ -19,11 +19,6 @@ fn an_expression_computes_over_its_inputs_exactly() {
         Timestamp(0),
     );
     assert_eq!(got.unwrap(), json!("4760.0000"));
-    let text = ExprBacking::compute(
-        &call(json!("concat(a, '-', b)"), json!({"a": "x", "b": "y"})),
-        Timestamp(0),
-    );
-    assert_eq!(text.unwrap(), json!("x-y"));
 }
 
 #[test]

@@ -9,9 +9,10 @@
 mod common;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::id::{Position, Version};
+use lakelands_api::id::Position;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_core::engines;
 use lakelands_engine_pg::PgOpener;
 use serde_json::{Value, json};
@@ -32,17 +33,7 @@ fn set(of: &str, filter: &str) -> Declaration {
 }
 
 fn record(ty: &str, key: &str, fields: Value, at: u64) -> StoredRecord {
-    StoredRecord {
-        ty: ty.into(),
-        key: key.into(),
-        version: Version(1),
-        fields: serde_json::from_value(fields).unwrap(),
-        meta: Default::default(),
-        position: Position(at),
-        made: Position(at),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(ty, key, serde_json::from_value(fields).unwrap(), at)
 }
 
 /// The steps, each one transaction: its declarations, and the

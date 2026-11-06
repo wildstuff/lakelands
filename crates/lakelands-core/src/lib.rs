@@ -38,8 +38,7 @@ pub mod graph;
 pub mod links;
 pub mod log;
 pub mod names;
-#[doc(hidden)]
-pub mod rights;
+pub(crate) mod rights;
 #[doc(hidden)]
 pub mod shape;
 #[doc(hidden)]
@@ -49,15 +48,15 @@ mod stem;
 pub mod valid_time;
 pub mod value;
 
-use lakelands_api::error::{Detail, Doing, Flaw, Part, Said, Situation};
-use lakelands_api::{Error, Position};
-
-/// A refusal of what the caller asked for as not well-formed, naming no
-/// field.
+/// The rules of [`rights`] that judge no principal, which a door applies
+/// beside its sight ([`sight::Sight`]): a system type's name, a view where a
+/// record is written, a source's write over another hand's. Every other
+/// rule is asked of a sight.
 #[doc(hidden)]
-pub fn invalid(said: impl Into<Said>) -> Error {
-    Error::invalid(said)
-}
+pub use rights::{check_admitted, is_system, not_a_view};
+
+use lakelands_api::error::{Detail, Doing, Flaw, Part, Situation};
+use lakelands_api::{Error, Position};
 
 /// Stored or exported events, or the files that hold them, are damaged:
 /// `part`, at `position` if one, by `flaw`.
@@ -70,15 +69,28 @@ pub fn damaged(part: Part, position: Option<Position>, flaw: Flaw) -> Error {
     })
 }
 
-/// The storage failed `doing` to `part`, in the operating system's words.
+/// The storage failed `doing` to `part`, in the operating system's words:
+/// one with no room left is named as that, the operator's to mend.
 #[doc(hidden)]
 pub fn io_failed(doing: Doing, part: Part, e: &std::io::Error) -> Error {
     let detail = Detail::io(e);
+    if no_room(e) {
+        let part = Some(part);
+        return Error::unavailable(Situation::NoRoom { part, detail });
+    }
     Error::unavailable(Situation::Storage {
         doing,
         part,
         detail,
     })
+}
+
+/// Whether `e` says the disk or the volume had no room left, or the
+/// writer's quota of it was spent.
+#[doc(hidden)]
+pub fn no_room(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{QuotaExceeded, StorageFull};
+    matches!(e.kind(), StorageFull | QuotaExceeded)
 }
 
 /// Locks a mutex, carrying on past a panic in another holder: a caller

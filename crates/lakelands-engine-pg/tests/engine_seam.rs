@@ -70,6 +70,76 @@ impl EngineHarness for Pg {
         marked.expect("marking the projection");
         true
     }
+
+    fn fold_as_before(&self, lake: &LakeId) -> bool {
+        let schema = self.schemas.lock().unwrap()[lake.as_str()].clone();
+        let url = self.url.clone();
+        let folded = std::thread::spawn(move || {
+            let mut db = postgres::Client::connect(&url, postgres::NoTls)?;
+            db.batch_execute(&format!(
+                "UPDATE \"{schema}\".sort_index SET sort_key = '\\x00'::bytea; \
+                 UPDATE \"{schema}\".meta SET n = n + 1 WHERE k = 'folded' OR k LIKE 'sorted.%'"
+            ))
+        });
+        let folded = folded.join().expect("the folding thread");
+        folded.expect("folding as a writer without the chosen fields");
+        true
+    }
+
+    fn rebuild_as_before(&self, lake: &LakeId) -> bool {
+        let schema = self.schemas.lock().unwrap()[lake.as_str()].clone();
+        let url = self.url.clone();
+        let rebuilt = std::thread::spawn(move || {
+            let mut db = postgres::Client::connect(&url, postgres::NoTls)?;
+            db.batch_execute(&format!("DELETE FROM \"{schema}\".sort_index"))
+        });
+        let rebuilt = rebuilt.join().expect("the rebuilding thread");
+        rebuilt.expect("rebuilding as a writer without the chosen fields");
+        true
+    }
+
+    fn stale_text_stats(&self, lake: &LakeId, behind: bool) -> bool {
+        let schema = self.schemas.lock().unwrap()[lake.as_str()].clone();
+        let url = self.url.clone();
+        let stale = match behind {
+            true => format!(
+                "UPDATE \"{schema}\".meta SET n = n - 1 WHERE k = 'text_stats'; \
+                 UPDATE \"{schema}\".text_stats SET records = records * 2, tokens = tokens * 2 + 1; \
+                 DELETE FROM \"{schema}\".text_lengths"
+            ),
+            false => format!(
+                "DROP TABLE \"{schema}\".text_stats; DROP TABLE \"{schema}\".text_lengths; \
+                 DELETE FROM \"{schema}\".meta WHERE k = 'text_stats'"
+            ),
+        };
+        let left = std::thread::spawn(move || {
+            let mut db = postgres::Client::connect(&url, postgres::NoTls)?;
+            db.batch_execute(&stale)
+        });
+        let left = left.join().expect("the staling thread");
+        left.expect("leaving the text statistics stale");
+        true
+    }
+
+    fn scratch(&self, lake: &LakeId) -> lakelands_api::Result<Box<dyn LakeEngine>> {
+        PgOpener.open_scratch(&self.location(lake.as_str()))
+    }
+
+    fn forge_scratch_mark(&self, lake: &LakeId) -> bool {
+        let schema = self.schemas.lock().unwrap()[lake.as_str()].clone();
+        let (url, scratch) = (self.url.clone(), common::scratch_of(&schema));
+        let forged = std::thread::spawn(move || {
+            let mut db = postgres::Client::connect(&url, postgres::NoTls)?;
+            db.batch_execute(&format!(
+                "UPDATE \"{scratch}\".meta SET t = repeat('0', 64) WHERE k = 'built'"
+            ))
+        });
+        forged
+            .join()
+            .expect("the forging thread")
+            .expect("forging the mark");
+        true
+    }
 }
 
 #[test]

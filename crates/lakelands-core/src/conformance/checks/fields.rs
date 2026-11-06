@@ -7,15 +7,10 @@
 //! per field, and a field that depends on another is cleared or kept by
 //! the fold, never by the caller.
 
-use lakelands_api::ontology::{OnInputChange, StorageKind};
-use lakelands_api::{Catalog, Error, FieldName, LakeStore, Outcome, Principal, Refusal, TypeName};
-use serde_json::{Value, json};
+use lakelands_api::ontology::OnInputChange;
 
-use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, read, refused_on,
-    try_upsert, type_decl, upsert, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{doors, get_at, owner, read, upsert};
+use crate::conformance::prelude::*;
 
 check!(
     RECORD_CHECKS_IN_ORDER = a_write_breaking_two_record_checks_is_refused_by_the_earlier,

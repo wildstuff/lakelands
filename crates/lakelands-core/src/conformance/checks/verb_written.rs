@@ -4,16 +4,12 @@
 //! it. A refusal names the verbs that write it which its writer is shown
 //! and may call, and none it is not.
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::Authority;
-use lakelands_api::write::{ProposedWrite, WriteOpts};
-use lakelands_api::{Error, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::write::WriteOpts;
 
 use super::only::holder;
 use super::paths::{accept, call, proposal_of};
-use crate::conformance::fixture::{Lake, Must, head_unmoved, ingest, patch, try_upsert, upsert};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{ingest, upsert};
+use crate::conformance::prelude::*;
 
 check!(
     VERB_ONLY = a_field_only_its_verbs_write_is_refused_at_every_other_door,

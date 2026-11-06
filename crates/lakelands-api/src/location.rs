@@ -26,6 +26,44 @@ pub struct Location {
     /// Limits that bound the work one call may cause.
     #[serde(default)]
     pub limits: Limits,
+    /// The doors of the processes that may hold the lake's writer lease,
+    /// the writer first and then its standbys: where a handle that does
+    /// not hold the lease forwards a write. None, and nothing forwards
+    /// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writers: Vec<WriterDoor>,
+    /// The zone a new lake starts in, as the IANA time-zone database names
+    /// it: the writer's first open records it as the lake's `zone`
+    /// setting where the lake has recorded none, and no later open reads
+    /// it. The lake's own setting is changed by a write of it
+    /// (`docs/decisions/101-a-lake-keeps-its-calendar-in-one-named-zone.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
+}
+
+/// The REST door of a process that may hold a lake's writer lease. It
+/// says where to connect, never with what key: a host's key is given to
+/// the forwarding handle by value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct WriterDoor {
+    /// The server's base URL, `http` or `https`, without user-info.
+    pub url: String,
+    /// The certificate authorities an `https` door is verified against;
+    /// the first system bundle at a well-known path when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_file: Option<PathBuf>,
+}
+
+impl WriterDoor {
+    /// The door at `url`, verified against the system's bundle.
+    pub fn new(url: impl Into<String>) -> WriterDoor {
+        WriterDoor {
+            url: url.into(),
+            ca_file: None,
+        }
+    }
 }
 
 impl Location {
@@ -34,6 +72,7 @@ impl Location {
         Location {
             engine: EngineConfig::Sqlite {
                 dir: dir.into(),
+                projection_dir: None,
                 tuning: SqliteTuning::default(),
             },
             ..Location::memory(lake)
@@ -49,6 +88,7 @@ impl Location {
                 schema: None,
                 tls: PgTls::default(),
                 tuning: PgTuning::default(),
+                tablespaces: None,
             },
             ..Location::memory(lake)
         }
@@ -61,6 +101,8 @@ impl Location {
             engine: EngineConfig::Memory,
             key: None,
             limits: Limits::default(),
+            writers: Vec::new(),
+            zone: None,
         }
     }
 }
@@ -70,11 +112,14 @@ impl Location {
 #[serde(tag = "engine", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum EngineConfig {
-    /// The SQLite engine: the lake's log segments and its projection
-    /// file live in `dir`.
+    /// The SQLite engine: the lake's log segments live in `dir`, its
+    /// projection file in `projection_dir`.
     Sqlite {
         /// The lake's directory; created on first open.
         dir: PathBuf,
+        /// The projection's directory, one lake's alone; `dir` when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        projection_dir: Option<PathBuf>,
         /// How the engine sizes its caches and checkpoints its projection.
         #[serde(default)]
         tuning: SqliteTuning,
@@ -96,6 +141,9 @@ pub enum EngineConfig {
         /// Timeouts the engine sets on its connections.
         #[serde(default)]
         tuning: PgTuning,
+        /// The tablespaces the lake's tables and indexes are made in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tablespaces: Option<PgTablespaces>,
     },
     /// An engine this crate does not name, selected by `name` and
     /// configured by `settings` (a host's own engine, for instance).
@@ -137,6 +185,21 @@ pub enum PgTlsMode {
     /// Plaintext, for a server on the same machine or a network the
     /// operator secures otherwise.
     Disable,
+}
+
+/// Where a lake's parts are made, each where `default_tablespace` puts it
+/// if unnamed; a part is not moved, but a rebuild remakes all but the log and `meta`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PgTablespaces {
+    /// The log's and the lease's tables, with their indexes.
+    pub log: Option<String>,
+    /// The projection's tables but `vectors`.
+    pub projection: Option<String>,
+    /// Their indexes, primary keys included.
+    pub indexes: Option<String>,
+    /// The `vectors` table and its indexes, vector indexes included.
+    pub vectors: Option<String>,
 }
 
 /// The PostgreSQL engine's timeouts. None of them can change an answer.
@@ -238,6 +301,10 @@ pub struct Limits {
     pub max_reactive_depth: u32,
     /// The most events one group-commit window holds.
     pub commit_window_events: u32,
+    /// The largest commit window an ingest may ask for its own delivery,
+    /// and the most `commit_window_events` may be; a lake whose location
+    /// sets more is not opened.
+    pub commit_window_max: u32,
     /// The most records a whole-graph measure may reach; past it the
     /// measure is refused `too_large`, never cut. Also the largest
     /// `limit` a measure may ask for, where it is above `max_limit`.
@@ -250,10 +317,88 @@ pub struct Limits {
     /// `too_large`, naming the set, and nothing is appended
     /// (`docs/seams.md`, "Declaring a set over a large type").
     pub max_set_changes: u32,
+    /// The most records one change to records may select; past it `plan`
+    /// and `enact` refuse it `too_large`, naming the ceiling, and never
+    /// cut it
+    /// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
+    pub max_change_records: u32,
     /// The largest `top` a search's `rerank` may ask for: the window the
     /// second stage ranks, which a cursor carries
     /// (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
     pub max_rerank_top: u32,
+    /// The most records a search with `text_as_of` may rank, at most
+    /// [`Limits::TEXT_AS_OF_CEILING`]: one whose `where` selects more at
+    /// the position is refused `limit_range`, never cut, so 0 turns it off
+    /// (`docs/decisions/089-a-search-may-rank-by-the-text-at-the-position-it-reads.md`).
+    pub max_text_as_of: u32,
+    /// Whether the lake chooses an order index from the pages it had to
+    /// sort whole, beside the fields `sort_index.<type>` names
+    /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`). Off, only
+    /// what the host sets is indexed.
+    pub choose_order_index: bool,
+    /// How many whole-sorted pages a field must have within
+    /// `order_window_secs` to be chosen.
+    pub order_after_pages: u32,
+    /// The window those pages are counted in, in seconds.
+    pub order_window_secs: u32,
+    /// The fewest live records a type holds for a field of it to be
+    /// chosen.
+    pub order_min_records: u32,
+    /// The most fields the lake chooses for one type.
+    pub order_max_fields: u32,
+    /// How long a chosen field may go without a page ordered by it before
+    /// the lake drops it, in seconds of the writer's life.
+    pub order_unused_secs: u32,
+    /// The records one chunk of a chosen index's build writes while it
+    /// holds the writer.
+    pub order_chunk: u32,
+    /// The most rows of a filter's window an aggregate gathers and sorts
+    /// to read by its keys; past it the aggregate takes the other side,
+    /// having lost only the counts
+    /// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`
+    /// §The smaller side).
+    pub window_keys: u32,
+    /// The most events one part of an act appends, each part a turn of
+    /// the writer of its own
+    /// (`docs/decisions/099-work-beside-the-writer-runs-in-parts.md`).
+    pub part_events: u32,
+    /// The most events past its view a job's first turn reads under the
+    /// writer; a longer tail lets the writer go and moves the view up (099).
+    pub part_tail: u32,
+    /// The most events one page of a restate refolds in a turn; a job
+    /// whose page holds more restates beside the projection instead (099).
+    pub page_events: u32,
+    /// Whether a forgetting always rebuilds the projection, never
+    /// refolding the records its sources wrote alone
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    pub forget_rebuild: bool,
+    /// The bytes past which the writer seals the active segment after an
+    /// append, on an engine that reports its size, counted as its events
+    /// restore, a block by its `raw` and never by its stored bytes
+    /// (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`); 0
+    /// never seals by size,
+    /// and a bound below [`Limits::SEAL_FLOOR`] is read as it
+    /// (`docs/decisions/074-a-segment-is-sealed-by-size.md`).
+    pub seal_after_bytes: u64,
+    /// The most open quarantined records one source keeps; a refusal past
+    /// it ends the stream, `quarantine_full` beside it
+    /// (`docs/decisions/085-a-refused-record-may-be-quarantined-until-it-is-run-again-dismissed-or-its-key-lands.md`).
+    pub quarantined_max: u32,
+}
+
+impl Limits {
+    /// The smallest bound a segment is sealed by size at: every checkpoint
+    /// lists every sealed segment, and an open reads each one's end.
+    pub const SEAL_FLOOR: u64 = 1 << 20;
+
+    /// The most `max_text_as_of` may be: a lake whose location sets more
+    /// is not opened.
+    pub const TEXT_AS_OF_CEILING: u32 = 1_000_000;
+
+    /// The bound a segment is sealed by size at, none where it is off.
+    pub fn seal_bound(&self) -> Option<u64> {
+        (self.seal_after_bytes > 0).then(|| self.seal_after_bytes.max(Self::SEAL_FLOOR))
+    }
 }
 
 impl Default for Limits {
@@ -263,11 +408,28 @@ impl Default for Limits {
             max_limit: 1000,
             max_depth: 16,
             max_reactive_depth: 8,
-            commit_window_events: 32,
+            commit_window_events: 256,
+            commit_window_max: 4096,
             max_graph_nodes: 100_000,
             max_offset: 100_000,
             max_set_changes: 20_000,
+            max_change_records: 10_000,
             max_rerank_top: 100,
+            max_text_as_of: 10_000,
+            choose_order_index: true,
+            order_after_pages: 3,
+            order_window_secs: 600,
+            order_min_records: 2_000,
+            order_max_fields: 2,
+            order_unused_secs: 604_800,
+            order_chunk: 1_000,
+            window_keys: 1_048_576,
+            part_events: 500,
+            part_tail: 1_000,
+            page_events: 2_000,
+            forget_rebuild: false,
+            seal_after_bytes: 64 << 20,
+            quarantined_max: 10_000,
         }
     }
 }

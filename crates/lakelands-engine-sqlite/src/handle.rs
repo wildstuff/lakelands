@@ -8,30 +8,38 @@
 //! read-only refuses the lease, every append and every seal.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use fs4::{FileExt, TryLockError};
 use lakelands_api::engine::{
-    Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
+    Applied, CanonicalEvent, Choose, Compact, Declared, LakeEngine, Lease, Look, OpenMode,
+    ProjectionStore, ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
 };
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::SqliteTuning;
+use lakelands_api::quarantine::Quarantined;
+use lakelands_api::read::ThinnedAct;
 use lakelands_api::record::{StoredRecord, Value};
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal};
-use lakelands_core::engines::{self, vector_bytes, vector_of};
+use lakelands_core::engines;
+use lakelands_core::engines::pool::{self, Pool, Taken};
+use rusqlite::config::DbConfig;
 use rusqlite::{Connection, OpenFlags, params};
 
 use crate::lease::{Held, LeaseFile};
 use crate::log::Log;
-use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS};
+use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS, QUARANTINED};
+use crate::scratch::{self, Building, Mark};
 use crate::view::SqliteView;
 use lakelands_api::error::{Case, Detail, Doing, Error, Part, Situation};
 
-use crate::{NAME, REBUILD_RATE, invalid, io_error, lock, sql};
+use crate::{NAME, REBUILD_RATE, io_error, lock, sql};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach.
@@ -45,6 +53,8 @@ struct Transaction {
     /// the transaction, and all forgotten when a declaration or a
     /// `sort_index.<type>` setting is put, which may change one.
     kept: projection::Kept,
+    /// The bases of the write it puts, inline until it shares them.
+    sharing: engines::Sharing,
     /// The declarations and the `lookup_index.<type>` settings it put: the
     /// commit decides the exact-text index's fields again for what they move.
     relook: engines::Relook,
@@ -59,11 +69,19 @@ pub struct SqliteLake {
     lease_file: LeaseFile,
     held: Mutex<Option<Held>>,
     writer: Mutex<Option<Connection>>,
-    pub(crate) reader: Mutex<Connection>,
+    readers: Pool<Connection>,
     transaction: Mutex<Option<Transaction>>,
     /// The head's declarations as the last commit left them, and the
     /// position it folded through, for the next one's relook.
     heads: Mutex<Option<(Position, engines::Heads)>>,
+    /// The projection's directory and the tuning its connections are made
+    /// with, for a swap that connects again.
+    dir: PathBuf,
+    tuning: SqliteTuning,
+    /// On a handle onto the scratch, its lock and mark (`scratch.rs`).
+    building: Mutex<Option<Building>>,
+    /// On a handle onto the projection, its hold on it ([`hold`]).
+    opened: Option<File>,
 }
 
 /// How long a statement waits for another connection's lock.
@@ -72,7 +90,11 @@ const BUSY: Duration = Duration::from_secs(10);
 /// Open a connection to the projection with the tuning for its role. A
 /// reader's connection is read-only: it never creates the file, never
 /// changes its journal and never writes a page.
-fn connect(path: &std::path::Path, tuning: &SqliteTuning, writer: bool) -> Result<Connection> {
+pub(crate) fn connect(
+    path: &std::path::Path,
+    tuning: &SqliteTuning,
+    writer: bool,
+) -> Result<Connection> {
     let flags = if writer {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
     } else {
@@ -86,6 +108,14 @@ fn connect(path: &std::path::Path, tuning: &SqliteTuning, writer: bool) -> Resul
         tuning.reader_cache_kb
     };
     conn.busy_timeout(BUSY).map_err(sql)?;
+    // A statement's plan is chosen from its text and the schema alone,
+    // never from the values bound to it. The engine keeps no statistics
+    // and binds no pattern, so no plan of its own changes; but a planner
+    // free to look at the values marks a kept statement for compiling
+    // again, and SQLite 3.54 does so whenever the cache clears its values,
+    // at each run (lakelands#1378).
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_QPSG, true)
+        .map_err(sql)?;
     conn.execute_batch(&format!(
         "PRAGMA cache_size = -{cache};
          PRAGMA mmap_size = {};",
@@ -95,9 +125,20 @@ fn connect(path: &std::path::Path, tuning: &SqliteTuning, writer: bool) -> Resul
     if writer {
         // The journal and its synchronisation are fixed, not tuning: the
         // projection is rebuilt from the log, and the fold's crash safety
-        // rests on a write-ahead journal committed whole.
+        // rests on a write-ahead journal committed whole. A new file is
+        // made with pages of 4 KiB and incremental vacuum, which the file
+        // holds; a file made before is left as it is, since setting either
+        // again writes its header. A connection that deletes overwrites
+        // what it deletes, so an erased value leaves the file with its
+        // page: the setting is the connection's, not the file's.
+        let pages: i64 = (conn.query_row("PRAGMA page_count", [], |r| r.get(0))).map_err(sql)?;
+        if pages == 0 {
+            conn.execute_batch("PRAGMA page_size = 4096; PRAGMA auto_vacuum = INCREMENTAL;")
+                .map_err(sql)?;
+        }
         conn.execute_batch(&format!(
-            "PRAGMA journal_mode = WAL;
+            "PRAGMA secure_delete = ON;
+             PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA wal_autocheckpoint = {};",
             tuning.wal_autocheckpoint_pages
@@ -107,10 +148,37 @@ fn connect(path: &std::path::Path, tuning: &SqliteTuning, writer: bool) -> Resul
     Ok(conn)
 }
 
+/// Make the projection `conn` opens with this build's tables and mark; for
+/// the writer that holds the lease (`leased`), also rebuild from the head,
+/// once, an order index or text statistics a writer did not keep (a binary
+/// that lacks them folded past their mark or wrote their setting).
+fn make(conn: &Connection, leased: bool) -> Result<()> {
+    let (schema, mark) = (projection::SCHEMA, projection::mark());
+    conn.execute_batch(&format!("BEGIN IMMEDIATE; {schema} {mark} COMMIT;"))
+        .map_err(sql)?;
+    if leased {
+        projection::catch_up_sorted(conn)?;
+        projection::catch_up_text_stats(conn)?;
+    }
+    Ok(())
+}
+
+/// Hold the projection in `dir` against a swap: a shared lock on the
+/// lake's name file, which every handle onto `projection.db` takes before
+/// it connects and keeps while it lives, and a swap takes exclusively. A
+/// handle that opens while a swap holds it waits for the swap, and then
+/// connects to the file the swap put in place. The name file is there in
+/// every lake, so a reader's hold makes nothing.
+fn hold(dir: &std::path::Path) -> Result<File> {
+    let file = File::open(dir.join("lake")).map_err(|e| io_error(Doing::Open, Part::File, e))?;
+    FileExt::lock_shared(&file).map_err(|e| io_error(Doing::Lock, Part::Projection, e))?;
+    Ok(file)
+}
+
 impl SqliteLake {
     pub(crate) fn open(
         lake: LakeId,
-        dir: PathBuf,
+        (dir, projection): (PathBuf, PathBuf),
         tuning: SqliteTuning,
         mode: OpenMode,
     ) -> Result<SqliteLake> {
@@ -130,7 +198,11 @@ impl SqliteLake {
             let (lake, schema) = (lake.to_string(), None);
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         };
-        let path = dir.join("projection.db");
+        let path = projection.join("projection.db");
+        if mode != OpenMode::Read || path.is_file() {
+            check_name(&projection, &lake, mode != OpenMode::Read)?;
+        }
+        let opened = hold(&dir)?;
         let no_projection = || {
             let lake = lake.to_string();
             Error::unavailable(Situation::NoProjection { lake })
@@ -143,17 +215,17 @@ impl SqliteLake {
             OpenMode::Write | OpenMode::Create => {
                 let conn = connect(&path, &tuning, true)?;
                 // A projection is read only by the layout it was made
-                // with; one that holds no table yet is made with this build's.
+                // with; one that holds no table yet is made with this
+                // build's. Nothing else is written before the lease is
+                // taken ([`make`]): a holder inside a long
+                // transaction would keep this open waiting on its lock,
+                // and fail it as the storage's, where the lease's refusal
+                // names the holder at once.
                 if projection::made(&conn)? {
                     engines::layout(&lake, projection::layout(&conn)?, projection::LAYOUT)?;
+                } else {
+                    make(&conn, false)?;
                 }
-                let (schema, mark) = (projection::SCHEMA, projection::mark());
-                conn.execute_batch(&format!("BEGIN IMMEDIATE; {schema} {mark} COMMIT;"))
-                    .map_err(sql)?;
-                // An order index a writer did not keep (a binary that lacks
-                // it folded past its mark or wrote its setting) is rebuilt
-                // from the head, once.
-                projection::catch_up_sorted(&conn)?;
                 Some(conn)
             }
             // Whatever layout made the projection, nothing is read from it
@@ -177,10 +249,157 @@ impl SqliteLake {
             log: Mutex::new(log),
             held: Mutex::new(None),
             writer: Mutex::new(writer),
-            reader: Mutex::new(reader),
+            readers: Pool::new(vec![reader], pool::per_core()),
             transaction: Mutex::new(None),
             heads: Mutex::new(None),
+            dir: projection,
+            tuning,
+            building: Mutex::new(None),
+            opened: Some(opened),
         })
+    }
+
+    /// A handle onto the scratch of the lake in `dir`: it reads the log as
+    /// a reader does, and folds into the scratch, never the projection.
+    /// A scratch unfit to keep is removed and made anew.
+    pub(crate) fn open_scratch(
+        lake: LakeId,
+        (dir, projection): (PathBuf, PathBuf),
+        tuning: SqliteTuning,
+    ) -> Result<SqliteLake> {
+        if !crate::log::kept(&dir)? {
+            let (lake, schema) = (lake.to_string(), None);
+            return Err(Error::unavailable(Situation::NoLake { lake, schema }));
+        }
+        let mut log = Log::open(&dir, false)?;
+        check_name(&dir, &lake, false)?;
+        check_name(&projection, &lake, true)?;
+        let mut building = scratch::lock(&projection)?.ok_or_else(|| scratch::rebuilding(&lake))?;
+        if building.fit(&lake, &mut log, false)?.is_none() {
+            building.remove()?;
+        }
+        let path = building.path();
+        let conn = connect(&path, &tuning, true)?;
+        make(&conn, true)?;
+        let reader = connect(&path, &tuning, false)?;
+        Ok(SqliteLake {
+            lease_file: LeaseFile::new(&dir),
+            lake,
+            mode: OpenMode::Read,
+            path,
+            log: Mutex::new(log),
+            held: Mutex::new(None),
+            writer: Mutex::new(Some(conn)),
+            readers: Pool::new(vec![reader], pool::per_core()),
+            transaction: Mutex::new(None),
+            heads: Mutex::new(None),
+            dir: projection,
+            tuning,
+            building: Mutex::new(Some(building)),
+            opened: None,
+        })
+    }
+
+    /// Close this handle's connections to its projection, so that its file
+    /// can be replaced or removed, once the reads on them have ended; a
+    /// read waits until the readers are opened again.
+    fn disconnect(&self) {
+        *lock(&self.transaction) = None;
+        *lock(&self.heads) = None;
+        drop(lock(&self.writer).take());
+        self.readers.shut();
+    }
+
+    /// A reader connection of this handle's own, for one read.
+    pub(crate) fn reader(&self) -> Result<Taken<'_, Connection>> {
+        self.readers
+            .take(|| connect(&self.path, &self.tuning, false))
+    }
+
+    /// Put the scratch in the projection's place, checked as
+    /// [`LakeEngine::swap`] says. The swap takes the projection's hold
+    /// ([`hold`]) exclusively, so no other handle of this engine has the
+    /// file open when it is replaced, and none connects until it is in
+    /// place. A process that takes no hold (a release before this one) is
+    /// kept out as far as SQLite can: the projection is taken out of its
+    /// write-ahead journal, which SQLite allows only to the one connection
+    /// that has it open. The rename is one step of the directory, synced.
+    fn swapping(&self, lease: &Lease) -> Result<Option<Position>> {
+        let _held = self.check_lease(lease)?;
+        let mut building =
+            scratch::lock(&self.dir)?.ok_or_else(|| scratch::rebuilding(&self.lake))?;
+        let no_scratch = || {
+            Error::unavailable(Situation::NoScratch {
+                lake: self.lake.to_string(),
+            })
+        };
+        let mut log = lock(&self.log);
+        log.refresh()?;
+        let mark = building
+            .fit(&self.lake, &mut log, false)?
+            .ok_or_else(no_scratch)?;
+        let tip = log.tip();
+        drop(log);
+        if Mark::of_tip(&self.lake, tip.as_ref()) != mark {
+            return Err(Error::unavailable(Situation::ScratchBehind {
+                lake: self.lake.to_string(),
+                marked: mark.position.map(Position),
+                tip: tip.map(|(p, _)| p),
+            }));
+        }
+        building.settle(&self.lake)?;
+        self.disconnect();
+        let replaced = (|| {
+            let opened = self.opened.as_ref().ok_or_else(|| self.read_only())?;
+            match FileExt::try_lock(opened) {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => {
+                    let lake = self.lake.to_string();
+                    return Err(Error::unavailable(Situation::SwapBusy { lake }));
+                }
+                Err(TryLockError::Error(e)) => {
+                    return Err(io_error(Doing::Lock, Part::Projection, e));
+                }
+            }
+            let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+            let live = Connection::open_with_flags(&self.path, flags).map_err(sql)?;
+            live.busy_timeout(Duration::ZERO).map_err(sql)?;
+            let mode = live.query_row("PRAGMA journal_mode = DELETE", [], |r| {
+                r.get::<_, String>(0)
+            });
+            if mode.ok().as_deref() != Some("delete")
+                || live.execute_batch("BEGIN EXCLUSIVE").is_err()
+            {
+                let lake = self.lake.to_string();
+                return Err(Error::unavailable(Situation::SwapBusy { lake }));
+            }
+            for end in ["-wal", "-shm"] {
+                let _ = std::fs::remove_file(self.dir.join(format!("projection.db{end}")));
+            }
+            std::fs::rename(building.path(), &self.path)
+                .and_then(|()| crate::log::sync_dir(&self.dir))
+                .map_err(|e| io_error(Doing::Rename, Part::Projection, e))?;
+            drop(live);
+            building.set(None)
+        })();
+        // The writer puts the file back in its write-ahead journal while the
+        // hold is still exclusive: a handle that waits on the hold, a
+        // writer's open the lease then refuses among them, would otherwise
+        // change the journal or write beside it, and SQLite answers one of
+        // two such connections busy without waiting (lakelands#1485).
+        // Taking the hold exclusively may have given up the shared one,
+        // whether it was taken or not: it is taken again, and the reads are
+        // let in whether either failed or not.
+        let back = connect(&self.path, &self.tuning, true).map(|c| *lock(&self.writer) = Some(c));
+        let shared = self.opened.as_ref().map_or(Ok(()), |opened| {
+            FileExt::lock_shared(opened).map_err(|e| io_error(Doing::Lock, Part::Projection, e))
+        });
+        self.readers.open();
+        back?;
+        shared?;
+        replaced?;
+        drop(building);
+        projection::folded(&*self.reader()?)
     }
 
     /// Run `f` on the writer connection; a handle opened read-only has
@@ -222,8 +441,15 @@ impl SqliteLake {
     /// release, lets no other handle take the lease meanwhile.
     fn check_lease(&self, lease: &Lease) -> Result<MutexGuard<'_, Option<Held>>> {
         self.writable()?;
-        let held = lock(&self.held);
-        let (fence, holder) = self.lease_file.current()?;
+        let mut held = lock(&self.held);
+        // The fence is read through the file this handle holds locked: a
+        // second handle is refused the read on Windows while the lock is
+        // held. One that holds no lease reads the path, and is told the
+        // lease is stale, unnamed, when that read is refused the same way.
+        let (fence, holder) = match held.as_mut() {
+            Some(h) => self.lease_file.recorded(h)?,
+            None => self.lease_file.current()?,
+        };
         if held.as_ref().is_some_and(|h| h.lease == *lease) && fence == lease.fence {
             return Ok(held);
         }
@@ -255,7 +481,7 @@ impl SqliteLake {
         if let Some((tip, _)) = log.tip()
             && self.lease_file.imported(held)? != Some(tip.0)
         {
-            return Err(invalid(Case::ImportIntoHeld { tip }));
+            return Err(Error::invalid(Case::ImportIntoHeld { tip }));
         }
         let (answer, last) = write(&mut log)?;
         if let Some((position, fence)) = last {
@@ -298,11 +524,12 @@ fn check_name(dir: &std::path::Path, lake: &LakeId, create: bool) -> Result<()> 
         Ok(name) if name.trim_end() == lake.as_str() => Ok(()),
         Ok(name) => {
             let (schema, held, lake) = (None, name.trim_end().to_owned(), Box::new(lake.clone()));
-            Err(invalid(Case::LakeOther { schema, held, lake }))
+            Err(Error::invalid(Case::LakeOther { schema, held, lake }))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
-            std::fs::write(&path, format!("{lake}\n"))
-                .map_err(|e| io_error(Doing::Write, Part::File, e))
+            let made = std::fs::create_dir_all(dir)
+                .and_then(|()| std::fs::write(&path, format!("{lake}\n")));
+            made.map_err(|e| io_error(Doing::Write, Part::File, e))
         }
         Err(e) => Err(io_error(Doing::Read, Part::File, e)),
     }
@@ -310,10 +537,21 @@ fn check_name(dir: &std::path::Path, lake: &LakeId, create: bool) -> Result<()> 
 
 impl Drop for SqliteLake {
     /// A handle that is dropped gives up the lease it holds, as a process
-    /// that ends does.
+    /// that ends does, and a handle onto the scratch removes it unless it
+    /// is marked built through the position it is folded through.
     fn drop(&mut self) {
         if let Some(held) = lock(&self.held).take() {
             let _ = self.lease_file.release(held);
+        }
+        if let Some(mut building) = lock(&self.building).take() {
+            self.disconnect();
+            let log = self
+                .log
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !matches!(building.fit(&self.lake, log, false), Ok(Some(_))) {
+                let _ = building.remove();
+            }
         }
     }
 }
@@ -344,6 +582,17 @@ impl LakeEngine for SqliteLake {
         log.recover()?;
         log.settle()?;
         log.sweep()?;
+        // A scratch an earlier builder left unfit to swap in is removed by
+        // the next writer once it holds the lease: an open the lease then
+        // refuses never locks the scratch the holder is about to swap in
+        // (lakelands#1485).
+        scratch::sweep(&self.dir, &self.lake, &mut log)?;
+        drop(log);
+        // The projection is brought to this build's under the lease, before
+        // the holder folds; a rebuild's is cleared and made anew instead.
+        if self.mode != OpenMode::Rebuild {
+            self.write(|conn| make(conn, true))?;
+        }
         let lease = taken.lease.clone();
         *held = Some(taken);
         Ok(lease)
@@ -366,6 +615,10 @@ impl LakeEngine for SqliteLake {
                 .release(held.take().expect("checked above"))?;
         }
         Ok(())
+    }
+
+    fn lease_free(&self) -> Result<bool> {
+        self.lease_file.free()
     }
 
     fn tip(&self) -> Result<Option<(Position, Digest)>> {
@@ -415,30 +668,56 @@ impl LakeEngine for SqliteLake {
         lock(&self.log).segments()
     }
 
+    fn active_segment_bytes(&self) -> Option<u64> {
+        lock(&self.log).active_raw()
+    }
+
     fn projection(&self) -> &dyn ProjectionStore {
         self
     }
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
-        let folded = projection::folded(&lock(&self.reader))?;
+        let folded = projection::folded(&*self.reader()?)?;
         let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(SqliteView { lake: self, at }))
     }
 
     /// One read transaction holds the position and every list.
     fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
-        let conn = lock(&self.reader);
+        let conn = self.reader()?;
         conn.execute_batch("BEGIN").map_err(sql)?;
         let ranked = projection::folded(&conn).and_then(|position| {
             let mut lists = Vec::new();
-            if let Some((text, fields)) = &asked.text {
-                let (fields, weights) = (fields.as_deref(), &asked.text_weights);
-                lists.push(crate::view::lexical(&conn, ty, text, fields, weights, k)?);
+            if asked.text.is_some() {
+                lists.push(crate::view::lexical(&conn, ty, asked, k)?);
             }
+            let decl = match &asked.seen {
+                Some(_) if !asked.vectors.is_empty() => projection::type_at(&conn, ty, position)?,
+                _ => None,
+            };
+            let seen = asked.seen.as_ref().map(|s| (s, decl.as_ref()));
+            let at = position.map_or(0, |p| p.0 as i64);
             for (field, query) in &asked.vectors {
-                lists.push(nearest(&conn, ty, field, query, k)?);
+                let read = |keys: Vec<RecordKey>| {
+                    let head = |key: RecordKey| {
+                        let at = params![ty.as_str(), key.as_str(), at];
+                        projection::records(&conn, crate::view::RECORD_AT, at)
+                    };
+                    Ok(keys
+                        .into_iter()
+                        .map(head)
+                        .collect::<Result<Vec<_>>>()?
+                        .concat())
+                };
+                let top = |m| nearest(&conn, ty, field, query, m);
+                lists.push(engines::rank_seen(k, seen, top, read)?);
             }
-            Ok(Ranked { position, lists })
+            let judged = asked.seen.is_some();
+            Ok(Ranked {
+                position,
+                lists,
+                judged,
+            })
         });
         let _ = conn.execute_batch("COMMIT");
         ranked
@@ -446,6 +725,66 @@ impl LakeEngine for SqliteLake {
 
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         Some(self)
+    }
+
+    /// Checkpoints the scratch's journal into its file, then writes the
+    /// mark: a mark that is there names a scratch whole through it.
+    fn mark_built(&self) -> Result<Option<Position>> {
+        let mut building = lock(&self.building);
+        let Some(building) = building.as_mut() else {
+            let lake = self.lake.to_string();
+            return Err(Error::unavailable(Situation::NoScratch { lake }));
+        };
+        *lock(&self.transaction) = None;
+        let folded = self.write(|conn| {
+            abandon(conn)?;
+            if !truncate_journal(conn)? {
+                let lake = self.lake.to_string();
+                return Err(Error::unavailable(Situation::Busy { lake }));
+            }
+            projection::folded(conn)
+        })?;
+        let at = match folded {
+            Some(p) => {
+                let at = lock(&self.log)
+                    .read(p, 1)?
+                    .pop()
+                    .filter(|e| e.position == p);
+                let tip = || lock(&self.log).tip().map(|(p, _)| p);
+                let lake = self.lake.to_string();
+                Some(at.ok_or_else(|| {
+                    Error::unavailable(Situation::ScratchBehind {
+                        lake,
+                        marked: folded,
+                        tip: tip(),
+                    })
+                })?)
+            }
+            None => None,
+        };
+        building.set(Some(&Mark::of(&self.lake, at.as_ref())))?;
+        Ok(folded)
+    }
+
+    fn swap(&self, lease: &Lease) -> Result<Option<Position>> {
+        self.swapping(lease)
+    }
+
+    /// Tries the projection's hold exclusively, as the swap takes it, and
+    /// takes it shared again: false while another handle of this engine
+    /// holds it. A process that takes no hold is not seen here; the swap
+    /// still refuses it.
+    fn may_swap(&self) -> Result<bool> {
+        let Some(opened) = &self.opened else {
+            return Ok(true);
+        };
+        let free = match FileExt::try_lock(opened) {
+            Ok(()) => true,
+            Err(TryLockError::WouldBlock) => false,
+            Err(TryLockError::Error(e)) => return Err(io_error(Doing::Lock, Part::Projection, e)),
+        };
+        FileExt::lock_shared(opened).map_err(|e| io_error(Doing::Lock, Part::Projection, e))?;
+        Ok(free)
     }
 }
 
@@ -466,7 +805,7 @@ impl ProjectionStore for SqliteLake {
         let mut transaction = lock(&self.transaction);
         let t = transaction
             .take()
-            .ok_or_else(|| invalid(Case::CommitUnbegun))?;
+            .ok_or_else(|| Error::invalid(Case::CommitUnbegun))?;
         let kept = lock(&self.heads).take();
         let heads = self.write(|conn| {
             let folded = projection::folded(conn)?;
@@ -486,7 +825,8 @@ impl ProjectionStore for SqliteLake {
                 projection::index_older(conn, ty, *at)?;
             }
             projection::set_folded(conn, through)?;
-            projection::mark_sorted(conn, through)?;
+            projection::mark_sorted(conn, folded, through)?;
+            projection::mark_text_stats(conn, folded, through)?;
             conn.execute_batch("COMMIT").map_err(sql)?;
             Ok(heads)
         })?;
@@ -500,7 +840,7 @@ impl ProjectionStore for SqliteLake {
     }
 
     fn folded_through(&self) -> Result<Option<Position>> {
-        projection::folded(&lock(&self.reader))
+        projection::folded(&*self.reader()?)
     }
 
     fn put_declaration(
@@ -526,17 +866,113 @@ impl ProjectionStore for SqliteLake {
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
+        self.put_record_for(record, true)
+    }
+
+    fn put_record_for(&self, record: &StoredRecord, whole: bool) -> Result<()> {
+        // A live `lookup_index.<type>` setting is built beside the writer:
+        // the fold marks its fields, and the commit does not decide the
+        // exact-text index again for it.
+        let beside = !whole
+            && !record.retired
+            && lakelands_core::engines::lookup_index_type(record).is_some();
         self.stage(record.position, |conn, t| {
-            t.relook.record(record);
-            projection::put_record(conn, &mut t.kept, record)
+            if !beside {
+                t.relook.record(record);
+            }
+            projection::put_record(conn, (&mut t.kept, &mut t.sharing), record, whole)
         })
     }
 
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         engines::head_only(name)?;
         self.stage(at, |conn, _| {
-            let gone = conn.execute("DELETE FROM records WHERE ty = ?1", [name.as_str()]);
-            gone.map(drop).map_err(sql)
+            let gone = "DELETE FROM records WHERE ty = ?1; DELETE FROM keys WHERE ty = ?1";
+            for statement in gone.split("; ") {
+                conn.execute(statement, [name.as_str()]).map_err(sql)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        self.stage(Position::GENESIS, |conn, _| {
+            projection::put_order(conn, name, key, entry)
+        })
+    }
+
+    fn end_order(&self, name: &TypeName) -> Result<()> {
+        self.stage(Position::GENESIS, |conn, _| {
+            projection::end_order(conn, name)
+        })
+    }
+
+    fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
+        self.stage(Position::GENESIS, |conn, t| match of {
+            StatesOf::Record(ty, key) => projection::drop_record(conn, ty, key),
+            StatesOf::Output(seam, input) => projection::drop_output(conn, seam, &input.0),
+            // A row the write kept may go: its later states count afresh.
+            StatesOf::Bases(ids, past) => {
+                t.sharing = engines::Sharing::default();
+                projection::drop_bases(conn, ids, past)
+            }
+        })
+    }
+
+    fn states(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        after: Option<Position>,
+        through: Position,
+        limit: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        let after = after.map_or(-1, |p| p.0 as i64);
+        self.write(|conn| {
+            projection::records(
+                conn,
+                "SELECT r.ty, k.key, r.since, r.state FROM keys k CROSS JOIN records r \
+                 ON r.ty = k.ty AND r.id = k.id WHERE k.ty = ?1 AND k.key = ?2 \
+                 AND r.since > ?3 AND r.since <= ?4 ORDER BY r.since LIMIT ?5",
+                params![ty.as_str(), key.as_str(), after, through.0 as i64, limit],
+            )
+        })
+    }
+
+    fn put_thinned_act(&self, act: &ThinnedAct, at: Position) -> Result<()> {
+        self.stage(at, |conn, _| {
+            projection::run(
+                conn,
+                "INSERT INTO thinned_types (ty, \"by\", \"before\", at, through, gone) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                 ON CONFLICT (ty, \"by\", \"before\") DO UPDATE SET \
+                 through = excluded.through, gone = excluded.gone",
+                params![
+                    act.ty.as_str(),
+                    act.by.as_str(),
+                    act.before.0,
+                    at.0 as i64,
+                    act.through.0 as i64,
+                    act.gone as i64,
+                ],
+            )
+        })
+    }
+
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: Timestamp,
+        at: Position,
+    ) -> Result<()> {
+        self.stage(at, |conn, _| {
+            projection::run(
+                conn,
+                "INSERT INTO thinned (ty, key, \"before\", at) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (ty, key) DO NOTHING",
+                params![ty.as_str(), key.as_str(), before.0, at.0 as i64],
+            )
         })
     }
 
@@ -545,6 +981,17 @@ impl ProjectionStore for SqliteLake {
         self.stage(at, |conn, _| {
             PROPOSALS
                 .put(conn, &[&proposal.id.as_str()], at, &state)
+                .map(drop)
+        })
+    }
+
+    fn put_quarantined(&self, row: &Quarantined, at: Position) -> Result<()> {
+        let state = serde_json::to_string(row).expect("a quarantined record serialises");
+        let (source, delivery) = (row.id.source.as_str(), row.id.delivery.as_str());
+        let ix = row.id.index as i64;
+        self.stage(at, |conn, _| {
+            QUARANTINED
+                .put(conn, &[&source, &delivery, &ix], at, &state)
                 .map(drop)
         })
     }
@@ -576,20 +1023,28 @@ impl ProjectionStore for SqliteLake {
     fn mark_applied(&self, applied: &Applied) -> Result<()> {
         let at = applied.at.0 as i64;
         self.stage(applied.at, |conn, _| {
-            conn.prepare_cached("INSERT OR IGNORE INTO applied (id, at) VALUES (?1, ?2)")
-                .and_then(|mut s| s.execute(params![applied.id.0, at]))
-                .map_err(sql)?;
+            if applied.id.of_form() {
+                let insert = "INSERT OR IGNORE INTO applied (id, at) VALUES (unhex(?1), ?2)";
+                conn.prepare_cached(insert)
+                    .and_then(|mut s| s.execute(params![applied.id.0, at]))
+                    .map_err(sql)?;
+            }
             let mut route = conn
                 .prepare_cached(
                     "INSERT INTO routes (at, kind, ty, key, source) VALUES (?1, ?2, ?3, ?4, ?5)",
                 )
                 .map_err(sql)?;
+            let kind = engines::kind_code(applied.kind).expect("a kind the format lists");
             let source = applied.source.as_ref().map(SourceId::as_str);
+            let source = source.map(|s| projection::name_id(conn, s)).transpose()?;
             for a in &applied.about {
-                let (ty, key) = (a.ty.as_ref().map(TypeName::as_str), a.key.as_ref());
-                let key = key.map(RecordKey::as_str);
+                let ty = a.ty.as_ref().map(|t| projection::name_id(conn, t.as_str()));
+                let named = a.ty.as_ref().map_or("", TypeName::as_str);
+                let key =
+                    (a.key.as_ref()).map(|k| projection::make_key_id(conn, named, k.as_str()));
+                let key = key.transpose()?.map(|(id, _)| id);
                 route
-                    .execute(params![at, applied.kind, ty, key, source])
+                    .execute(params![at, kind, ty.transpose()?, key, source])
                     .map_err(sql)?;
             }
             Ok(())
@@ -616,41 +1071,104 @@ impl ProjectionStore for SqliteLake {
         })
     }
 
-    /// Truncates the write-ahead journal, rewrites `projection.db` without
-    /// its free pages (`VACUUM`), and truncates the journal again. The log
-    /// is not touched. `VACUUM` is one transaction: when it fails, the
-    /// projection is as it was.
-    fn compact(&self) -> Result<Reclaimed> {
+    /// [`Compact::Whole`] truncates the write-ahead journal, rewrites
+    /// `projection.db` without its free pages (`VACUUM`), and truncates the
+    /// journal again. [`Compact::Journal`] truncates the journal alone, and
+    /// [`Compact::Pages`] gives back at most its bytes of free pages
+    /// (`incremental_vacuum`, which the file's `auto_vacuum` allows), the
+    /// journal truncated after the last; each says whether free pages are
+    /// left. [`Compact::Beside`] needs the
+    /// writer's lock, so it does nothing. The log is not touched. `VACUUM`
+    /// is one transaction: when it fails, the projection is as it was.
+    fn compact_step(&self, how: Compact) -> Result<Reclaimed> {
+        if how == Compact::Beside {
+            return Ok(Reclaimed::nothing());
+        }
         let transaction = lock(&self.transaction);
         if transaction.is_some() {
-            return Err(invalid(Case::CompactInTransaction));
+            return Err(Error::invalid(Case::CompactInTransaction));
         }
+        let busy = || {
+            let lake = self.lake.to_string();
+            Error::unavailable(Situation::Busy { lake })
+        };
         self.write(|conn| {
             // A transaction a failed commit left open is abandoned, as
             // `begin` and `clear` abandon it.
             abandon(conn)?;
             let before = self.size()?;
-            if !truncate_journal(conn)? {
-                let lake = self.lake.to_string();
-                return Err(Error::unavailable(Situation::Busy { lake }));
+            let free = || -> Result<i64> {
+                (conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))).map_err(sql)
+            };
+            let was = free()?;
+            match how {
+                Compact::Pages(bytes) => {
+                    let size: i64 =
+                        (conn.query_row("PRAGMA page_size", [], |r| r.get(0))).map_err(sql)?;
+                    let pages = (bytes / u64::try_from(size).unwrap_or(1).max(1)).max(1);
+                    let vacuum = format!("PRAGMA incremental_vacuum({pages})");
+                    conn.execute_batch(&vacuum).map_err(sql)?;
+                }
+                _ if !truncate_journal(conn)? => return Err(busy()),
+                Compact::Whole => {
+                    conn.execute_batch("VACUUM").map_err(|e| {
+                        let detail = Detail::scrubbed(crate::told(&e));
+                        let lake = self.lake.to_string();
+                        Error::unavailable(Situation::CompactFailed { lake, detail })
+                    })?;
+                    // The rewrite is committed. A reader that holds a
+                    // snapshot now keeps the journal from being truncated,
+                    // and the journal still holds the pages the rewrite
+                    // freed: the compact answers busy, so what is owed of it
+                    // (058) stays owed, and the next one truncates. No
+                    // answer has changed.
+                    if !truncate_journal(conn)? {
+                        return Err(busy());
+                    }
+                }
+                _ => {}
             }
-            conn.execute_batch("VACUUM").map_err(|e| {
-                let (lake, detail) = (self.lake.to_string(), Detail::scrubbed(crate::told(&e)));
-                Error::unavailable(Situation::CompactFailed { lake, detail })
-            })?;
-            // The rewrite is committed. A reader that holds a snapshot now
-            // keeps the journal from being truncated, and the journal still
-            // holds the pages the rewrite freed: the compact answers busy,
-            // so what is owed of it (058) stays owed, and the next one
-            // truncates. No answer has changed.
-            if !truncate_journal(conn)? {
-                let lake = self.lake.to_string();
-                return Err(Error::unavailable(Situation::Busy { lake }));
+            // A file made without incremental vacuum, before it was the
+            // default or by a rebuild in place, keeps its free pages under
+            // `incremental_vacuum`: a pages step that gave none back is the
+            // last, or the act's turns would never end.
+            let left = free()?;
+            let more = left > 0 && (how == Compact::Journal || left < was);
+            // The pages given back went through the journal: the last step
+            // truncates it again, unless a reader holds it, so `after` is
+            // the file without them.
+            if matches!(how, Compact::Pages(_)) && !more {
+                truncate_journal(conn)?;
             }
             Ok(Reclaimed {
                 before: Some(before),
                 after: Some(self.size()?),
+                more,
             })
+        })
+    }
+
+    /// One step of a chosen order index, in a transaction of its own
+    /// (`projection::choose_order`), outside the fold's.
+    fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
+        let transaction = lock(&self.transaction);
+        if transaction.is_some() {
+            return Err(Error::invalid(Case::CompactInTransaction));
+        }
+        self.write(|conn| {
+            abandon(conn)?;
+            projection::choose_order(conn, ty, step)
+        })
+    }
+
+    fn look_index(&self, ty: &TypeName, step: &Look) -> Result<Option<RecordKey>> {
+        let transaction = lock(&self.transaction);
+        if transaction.is_some() {
+            return Err(Error::invalid(Case::CompactInTransaction));
+        }
+        self.write(|conn| {
+            abandon(conn)?;
+            projection::look_index(conn, ty, step)
         })
     }
 }
@@ -688,17 +1206,21 @@ fn nearest(
     k: u32,
 ) -> Result<Vec<(RecordKey, f64)>> {
     let mut stmt = conn
-        .prepare_cached("SELECT key, data FROM vectors WHERE ty = ?1 AND field = ?2 ORDER BY key")
+        .prepare_cached(
+            "SELECT key, single, data FROM vectors WHERE ty = ?1 AND field = ?2 \
+             AND until IS NULL ORDER BY key",
+        )
         .map_err(sql)?;
     let rows = stmt
         .query_map(params![ty.as_str(), field], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+            let e = engines::Elements::new(r.get(1)?, r.get(2)?);
+            Ok((r.get::<_, String>(0)?, e))
         })
         .map_err(sql)?;
     let mut top = lakelands_core::engines::TopK::new(k);
     for row in rows {
-        let (key, data) = row.map_err(sql)?;
-        let v = vector_of(&data);
+        let (key, e) = row.map_err(sql)?;
+        let v = e.ranked();
         if v.len() != query.len() {
             return Err(engines::dimensions(query.len(), v.len(), ty, field));
         }
@@ -710,32 +1232,25 @@ fn nearest(
     Ok(top.into_ranked())
 }
 
-/// The vector index's write side and its size: each field's vectors in
-/// one table, indexed at the head only, in the fold's transaction.
+/// The vector index's write side and its size: the rows the records'
+/// states hold in force, each field's ranked together, in the fold's
+/// transaction. The state's row holds a vector the fold puts already; one
+/// put or removed after it holds over the state's until the record's next
+/// state.
 impl VectorIndex for SqliteLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
-        self.write(|conn| {
-            projection::run(
-                conn,
-                "INSERT INTO vectors (ty, field, key, data) VALUES (?1, ?2, ?3, ?4) \
-                 ON CONFLICT (ty, field, key) DO UPDATE SET data = ?4",
-                params![ty.as_str(), field, key.as_str(), vector_bytes(vector)],
-            )
-        })
+        self.write(|conn| projection::put_vector(conn, (ty.as_str(), key.as_str(), field), vector))
     }
 
     fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()> {
-        self.write(|conn| {
-            conn.prepare_cached("DELETE FROM vectors WHERE ty = ?1 AND field = ?2 AND key = ?3")
-                .and_then(|mut s| s.execute(params![ty.as_str(), field, key.as_str()]))
-                .map(|_| ())
-                .map_err(sql)
-        })
+        self.write(|conn| projection::remove_vector(conn, (ty.as_str(), key.as_str(), field)))
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {
-        lock(&self.reader)
-            .prepare_cached("SELECT count(*) FROM vectors WHERE ty = ?1 AND field = ?2")
+        self.reader()?
+            .prepare_cached(
+                "SELECT count(*) FROM vectors WHERE ty = ?1 AND field = ?2 AND until IS NULL",
+            )
             .and_then(|mut s| s.query_row(params![ty.as_str(), field], |r| r.get::<_, i64>(0)))
             .map(|n| n as u64)
             .map_err(sql)

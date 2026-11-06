@@ -1,60 +1,48 @@
 //! What an expression means: the one evaluator every filter, guard,
 //! derived field, constraint and view measure goes through.
 //!
-//! # Values
-//!
-//! An expression computes a [`Val`]: null, a boolean, an exact decimal
-//! number, text, an instant, a duration, or a JSON value it cannot look
-//! into. Record values enter by their JSON form (`docs/log-format.md` §5):
-//! a JSON number and a decimal string are both numbers when arithmetic or
-//! a comparison needs one, and text that is a timestamp is an instant when
-//! compared with an instant.
-//!
-//! # The rules
+//! An expression computes a [`Val`]: null, a boolean, an exact decimal,
+//! text, an instant, a duration, or an opaque JSON value. Record values
+//! enter by their JSON form (`docs/log-format.md` §5): a JSON number and a
+//! decimal string are both numbers where one is needed, and timestamp text
+//! is an instant when compared with an instant.
 //!
 //! - **Absent never matches.** A field with no value is null. A comparison
-//!   with a null operand is false — `!=` included — so a filter never
-//!   selects a record for what it does not hold; `is null` is the way to
-//!   ask. Arithmetic and functions on null give null; `coalesce` picks the
-//!   first operand that is not null.
-//! - **Numbers compare as numbers.** `1 = 1.0`, and `'10' > 9`: whenever
-//!   both sides read as numbers, they compare exactly as decimals.
-//!   Otherwise instants compare as instants, and everything else compares
-//!   as text. A boolean equals only a boolean and has no order.
-//! - **Arithmetic is exact and checked.** Decimal arithmetic never passes
-//!   through a binary float; overflow and division by zero are errors,
-//!   never a wrapped or infinite value. An instant plus or minus a duration
-//!   is an instant; the difference of two instants is a duration. A
-//!   duration divided by a duration is a number; a duration times or
-//!   divided by a number is a duration, to the microsecond.
-//! - **`and`, `or` and `if` are lazy.** Only the operands that decide the
-//!   answer are evaluated, so `if(b != 0, a / b, 0)` never divides by zero.
-//!   An operand that is not a boolean counts as false.
+//!   with a null operand is false, `!=` included, so a filter never selects
+//!   a record for what it does not hold; `is null` asks. Arithmetic and
+//!   functions on null give null; `coalesce` picks the first non-null.
+//! - **Numbers compare as numbers.** `1 = 1.0`, `'10' > 9`: when both sides
+//!   read as numbers they compare as decimals; else instants as instants,
+//!   else text. A boolean equals only a boolean and has no order.
+//! - **Arithmetic is exact and checked.** Never through a binary float;
+//!   overflow and division by zero are errors. Instant ± duration is an
+//!   instant; instant − instant a duration; duration ÷ duration a number;
+//!   duration × or ÷ number a duration, to the microsecond.
+//! - **`and`, `or` and `if` are lazy.** Only the deciding operands are
+//!   evaluated, so `if(b != 0, a / b, 0)` never divides by zero. A
+//!   non-boolean operand counts as false.
 //! - **Text functions count characters,** not bytes. `replace` with an
 //!   empty pattern changes nothing. `matches` takes an I-Regexp (RFC 9485)
 //!   and matches the whole text.
-//! - **`round` rounds half away from zero,** the rule money is kept by.
-//!   `floor` is the greatest whole number not above its operand.
+//! - **`round` rounds half away from zero;** `floor` is the greatest whole
+//!   number not above its operand.
 //! - **Time is the caller's.** `now()` and `today()` read the scope's
 //!   clock: the fold binds it to the `known_at` of the event it folds, so a
-//!   replay computes the same value; a read binds it to the time of the
-//!   read.
+//!   replay computes the same value; a read binds it to the read's time.
 //!
-//! An expression that cannot be evaluated — a type misuse, an overflow, a
-//! function used where it has no meaning — is a [`Case`]. What an
-//! error means is the caller's posture, stated where each caller lives: a
-//! record its filter fails for does not match, a group key that fails is
-//! null, a trigger guard does not fire, a derived field is cleared. One
-//! record's value never fails a read of the others. What can never be
-//! evaluated, whatever the record holds, is refused before any of them
-//! runs (`lakelands_api::expr::kind`).
+//! An expression that cannot be evaluated is a [`Case`]. What it means is
+//! the caller's posture: a failed filter does not match, a failed group key
+//! is null, a guard does not fire, a derived field is cleared. One record's
+//! value never fails a read of the others. What can never be evaluated is
+//! refused before any record runs (`lakelands_api::expr::kind`).
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use lakelands_api::error::{Case, Operand};
-use lakelands_api::expr::{ArithOp, CmpOp, Expr, Func, Literal};
+use lakelands_api::expr::{ArithOp, CmpOp, Expr, Func, Literal, zone};
+pub use lakelands_api::expr::{Place, check};
 use lakelands_api::{FieldMeta, FieldName, Timestamp};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -86,12 +74,10 @@ pub(crate) fn err<T>(case: Case) -> Result<T> {
     Err(case)
 }
 
-/// What an expression can see: the record in scope and the context of the
-/// evaluation.
+/// What an expression can see.
 pub trait Scope {
-    /// The value at a path: a field of the record in scope, or
-    /// `<name>.<field>` of a record a pattern's row binds. `None` when
-    /// absent.
+    /// The value at a path: a field, or `<name>.<field>` of a record a
+    /// pattern's row binds. `None` when absent.
     fn value(&self, path: &[FieldName]) -> Option<Value>;
 
     /// In a guard: the field's value before the write. `None` outside a
@@ -100,8 +86,22 @@ pub trait Scope {
         None
     }
 
-    /// Whether the evaluation is a guard over a write, where `changed` and
-    /// `previous` have meaning.
+    /// In a constraint: `field` of the record before this one in the
+    /// series `series` names, its `by` and then its matched fields. `None`
+    /// where none is or the field is absent.
+    fn preceding(&self, _series: &[FieldName], _field: &FieldName) -> Option<Value> {
+        None
+    }
+
+    /// In a field computed at the read or a guard: `field` of the record
+    /// of another type in force in the pairing `series` names
+    /// ([`Pairing::series`](lakelands_api::expr::Pairing::series)). `None`
+    /// where none is or the field is absent.
+    fn paired(&self, _series: &[FieldName], _field: &FieldName) -> Option<Value> {
+        None
+    }
+
+    /// Whether this is a guard over a write (`changed`, `previous`).
     fn in_write(&self) -> bool {
         false
     }
@@ -111,8 +111,8 @@ pub trait Scope {
         false
     }
 
-    /// Whether every operand is read where the first that decides would
-    /// stop the evaluation: a strict guard's (lakelands#1215).
+    /// Whether every operand is read even after one decides: a strict
+    /// guard's (lakelands#1215).
     fn eager(&self) -> bool {
         false
     }
@@ -140,6 +140,14 @@ pub trait Scope {
 
     /// The clock `now()` and `today()` read.
     fn now(&self) -> Timestamp;
+
+    /// What `today()` reads: the day of the lake's calendar holding the
+    /// clock, cut in the zone its `zone` setting names (101).
+    fn today(&self) -> Timestamp {
+        let zone = self.setting(lakelands_api::seam::ZONE_SETTING);
+        let zone = lakelands_api::seam::zone(zone.as_ref());
+        Timestamp(zone::day(self.now().0, zone))
+    }
 
     /// In a verb: whether the path that begins at `relation` reaches a
     /// record. `None` outside a verb.
@@ -192,25 +200,35 @@ impl Scope for RecordScope<'_> {
     }
 }
 
-/// A guard over a write: the record after the write, the record before it
-/// (`None` for a create), its per-field provenance, the lake's settings and
-/// the event's time.
+/// A guard over a write: the record after and before it, with provenance,
+/// settings and the event's time.
 pub struct WriteScope<'a> {
     /// The record's fields after the write.
     pub after: &'a BTreeMap<FieldName, Value>,
     /// The record's fields before the write; `None` for a create.
     pub before: Option<&'a BTreeMap<FieldName, Value>>,
-    /// Whether the write retires the record: live before, retired after.
-    /// A retirement keeps the fields, so only this tells it from an
-    /// update.
+    /// Whether the write retires the record (live before, retired after);
+    /// the fields are kept, so only this tells it from an update.
     pub retiring: bool,
     /// Per-field provenance after the write, if kept.
     pub meta: Option<&'a BTreeMap<FieldName, FieldMeta>>,
     /// The lake's settings, by key.
     pub settings: Option<&'a BTreeMap<String, Value>>,
+    /// In a constraint or a guard, the record before this one in each
+    /// series it reads, as the write resolved it; none where it found none.
+    pub preceding: Option<&'a Preceding>,
+    /// In a field computed at the read or a guard, the record in force in
+    /// each series it pairs by, as the read or the write resolved it; kept
+    /// apart from `preceding`, whose series can be spelled alike.
+    pub paired: Option<&'a Preceding>,
     /// The `known_at` of the event being folded.
     pub now: Timestamp,
 }
+
+/// The records before a written one, by series: its `by` and then its
+/// matched fields, as `preceding` names them; or those in force at one,
+/// by [`Pairing::series`](lakelands_api::expr::Pairing::series).
+pub type Preceding = BTreeMap<Vec<FieldName>, BTreeMap<FieldName, Value>>;
 
 impl Scope for WriteScope<'_> {
     fn value(&self, path: &[FieldName]) -> Option<Value> {
@@ -219,6 +237,16 @@ impl Scope for WriteScope<'_> {
 
     fn previous(&self, field: &FieldName) -> Option<Value> {
         self.before.and_then(|b| b.get(field)).cloned()
+    }
+
+    fn preceding(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
+        let record = self.preceding?.get(series)?;
+        record.get(field).filter(|v| !v.is_null()).cloned()
+    }
+
+    fn paired(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
+        let record = self.paired?.get(series)?;
+        record.get(field).filter(|v| !v.is_null()).cloned()
     }
 
     fn in_write(&self) -> bool {
@@ -278,8 +306,9 @@ fn decimal_of_number(n: &serde_json::Number) -> Option<Decimal> {
     // A float enters by its shortest decimal form, never by its binary
     // expansion: 0.1 is 0.1.
     let shortest = crate::canonical::number(n.as_f64()?);
+    // `1e+21`: a decimal reads no sign on the exponent.
     Decimal::from_str(&shortest)
-        .or_else(|_| Decimal::from_scientific(&shortest))
+        .or_else(|_| Decimal::from_scientific(&shortest.replace("e+", "e")))
         .ok()
 }
 
@@ -327,32 +356,6 @@ pub fn eval(e: &Expr, scope: &dyn Scope) -> Result<Val> {
     }
 }
 
-/// Where an expression is evaluated, which decides the functions it may
-/// use. A host names a place; it does not match on all of them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Place {
-    /// Over one record, outside a write: a filter, a constraint.
-    Record,
-    /// Over one record in a write: a derived field, where `changed` and
-    /// `previous` have meaning.
-    Write,
-    /// A trigger's guard: a write, where `retired` has meaning as well.
-    Guard,
-    /// Over a group of records: a view measure, where aggregates have
-    /// meaning.
-    Group,
-    /// Over one source record of a view: its `where`, or an aggregate's
-    /// argument in a measure. Like `Record`, and `param` has meaning.
-    View,
-    /// A verb's `requires` and set values, and an object set's `where`:
-    /// like `Record`, and `exists` has meaning.
-    Verb,
-}
-
-/// The units `date_bucket` knows.
-const BUCKET_UNITS: [&str; 5] = ["day", "week", "month", "quarter", "year"];
-
 /// The instant, in UTC, at which the bucket of `unit` holding `t` starts:
 /// midnight of the day, Monday 00:00 of the ISO week, or the first of the
 /// month, of the quarter's first month, or of January.
@@ -369,94 +372,6 @@ fn bucket_start(t: Timestamp, unit: &str) -> Result<Timestamp> {
         "quarter" => first((m - 1) / 3 * 3 + 1),
         "year" => first(1),
         other => err(Case::BucketUnit { unit: other.into() }),
-    }
-}
-
-/// Check an expression before evaluating it: every call has a count of
-/// arguments its function takes, a function that names a field is given
-/// one, `setting` is given a quoted key, numbers are numbers this
-/// evaluator can hold exactly, and `changed`, `previous` and the
-/// aggregates appear only where they have meaning. The store checks every
-/// typed expression it is handed this way and refuses it as invalid; a
-/// text expression is checked the same way after parsing.
-pub fn check(e: &Expr, place: Place) -> Result<()> {
-    match e {
-        Expr::Lit { value } => literal(value).map(|_| ()),
-        Expr::Path { path } if path.is_empty() => err(Case::PathEmpty),
-        Expr::Path { .. } => Ok(()),
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
-            check(lhs, place)?;
-            check(rhs, place)
-        }
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => check(arg, place),
-        Expr::And { args } | Expr::Or { args } => args.iter().try_for_each(|a| check(a, place)),
-        Expr::In { arg, list } => {
-            if list.is_empty() {
-                return err(Case::InEmpty);
-            }
-            check(arg, place)?;
-            list.iter().try_for_each(|a| check(a, place))
-        }
-        Expr::Call { func, args } => {
-            let name = super::func_name(*func).to_owned();
-            let (min, max) = super::arity(*func);
-            if args.len() < min || max.is_some_and(|m| args.len() > m) {
-                return err(Case::CallArity {
-                    name,
-                    given: args.len(),
-                });
-            }
-            match func {
-                Func::KnownAt | Func::SeenAt | Func::Previous | Func::Changed if !matches!(args.first(), Some(Expr::Path { path }) if path.len() == 1) =>
-                {
-                    return err(Case::CallTakesField { name });
-                }
-                Func::Setting | Func::Param | Func::InSet if quoted(args.first()).is_none() => {
-                    return err(Case::CallTakesQuoted { name });
-                }
-                // A calendar unit, quoted, starts where the calendar says and
-                // takes no origin; a width is a duration above zero, with
-                // the origin its windows are counted from.
-                Func::DateBucket => {
-                    let unit = quoted(args.get(1));
-                    let width = matches!(args.get(1),
-                        Some(Expr::Lit { value: Literal::Duration(w) }) if *w > 0);
-                    let known = |u: &&String| BUCKET_UNITS.contains(&u.as_str());
-                    if let Some(u) = unit.filter(|u| !known(u)) {
-                        return err(Case::BucketUnit { unit: u.clone() });
-                    }
-                    if (unit.is_some(), width) != (args.len() == 2, args.len() == 3) {
-                        return err(Case::BucketArguments);
-                    }
-                }
-                Func::Previous | Func::Changed if !matches!(place, Place::Write | Place::Guard) => {
-                    return err(Case::OnlyInWrite { name });
-                }
-                Func::Retired if place != Place::Guard => return err(Case::RetiredOnlyInGuard),
-                Func::Created if place != Place::Guard => return err(Case::CreatedOnlyInGuard),
-                Func::Exists if !matches!(place, Place::Verb | Place::Guard) => {
-                    return err(Case::ExistsHere);
-                }
-                Func::Exists if !matches!(args.first(), Some(Expr::Path { path }) if path.len() == 1) =>
-                {
-                    return err(Case::CallTakesField { name });
-                }
-                f if f.is_aggregate() && place != Place::Group => {
-                    return err(Case::AggregateHere { name });
-                }
-                Func::Param if !matches!(place, Place::View | Place::Group) => {
-                    return err(Case::ParamOutsideView);
-                }
-                _ => {}
-            }
-            // An aggregate's argument is evaluated per source record.
-            let inner = if func.is_aggregate() {
-                Place::View
-            } else {
-                place
-            };
-            args.iter().try_for_each(|a| check(a, inner))
-        }
     }
 }
 
@@ -542,6 +457,12 @@ impl Scope for Strict<'_> {
     fn previous(&self, field: &FieldName) -> Option<Value> {
         self.noted(self.inner.previous(field))
     }
+    fn preceding(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
+        self.noted(self.inner.preceding(series, field))
+    }
+    fn paired(&self, series: &[FieldName], field: &FieldName) -> Option<Value> {
+        self.noted(self.inner.paired(series, field))
+    }
     fn in_write(&self) -> bool {
         self.inner.in_write()
     }
@@ -565,6 +486,9 @@ impl Scope for Strict<'_> {
     }
     fn now(&self) -> Timestamp {
         self.inner.now()
+    }
+    fn today(&self) -> Timestamp {
+        self.inner.today()
     }
     fn exists(&self, relation: &FieldName) -> Option<bool> {
         self.inner.exists(relation)
@@ -611,10 +535,9 @@ fn number(v: &Val) -> Result<Decimal> {
 }
 
 /// A value as the instant it denotes, if it reads as one. A text is read
-/// without the bound of the years 0000 to 9999: here it is compared or
-/// computed with, and `'9999-12-31T23:30:00-01:00'` is after every
-/// instant a field holds, not a text to compare letter by letter. What
-/// is written is judged where it lands.
+/// without the bound of the years 0000 to 9999: `'9999-12-31T23:30:00-01:00'`
+/// is after every instant a field holds, not a text to compare letter by
+/// letter. What is written is judged where it lands.
 pub(crate) fn as_time(v: &Val) -> Option<Timestamp> {
     match v {
         Val::Time(t) => Some(*t),
@@ -641,10 +564,9 @@ pub(crate) fn operand(v: &Val) -> Box<Operand> {
 }
 
 /// The order of two non-null values, when they have one: numbers (and
-/// text that reads as a number) numerically, instants as instants,
-/// durations as durations, other text as text. Values of kinds that do not
-/// compare — a number against text that is not one, a boolean against
-/// anything but a boolean, a JSON value against anything — have none.
+/// number-like text) numerically, instants, durations, other text as text.
+/// A number against other text, a boolean against a non-boolean and JSON
+/// have none.
 fn order(l: &Val, r: &Val) -> Option<Ordering> {
     if let (Some(a), Some(b)) = (as_number(l), as_number(r)) {
         return Some(a.cmp(&b));
@@ -660,11 +582,9 @@ fn order(l: &Val, r: &Val) -> Option<Ordering> {
     }
 }
 
-/// A comparison. It never fails: null on either side, or two values of
-/// kinds that do not compare, make every operator false — `!=` included —
-/// so a filter over mixed data selects what matches and skips the rest
-/// rather than failing the whole read. Booleans and JSON values are equal
-/// or not, and have no order.
+/// A comparison. It never fails: null on either side, or kinds that do not
+/// compare, make every operator false, `!=` included, so a filter over
+/// mixed data skips what does not match rather than failing the read.
 pub fn compare(op: CmpOp, l: &Val, r: &Val) -> Result<bool> {
     if *l == Val::Null || *r == Val::Null {
         return Ok(false);
@@ -862,6 +782,25 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             };
             return Ok(Val::Bool(!same));
         }
+        Func::Preceding => {
+            let named = |a: &Expr| match a {
+                Expr::Path { path } if path.len() == 1 => Some(path[0].clone()),
+                _ => None,
+            };
+            let named: Option<Vec<FieldName>> = args.iter().map(named).collect();
+            let Some((field, series)) = named.as_deref().and_then(<[_]>::split_first) else {
+                return err(Case::CallTakesField { name: name.into() });
+            };
+            let found = scope.preceding(series, field);
+            return Ok(found.map_or(Val::Null, |v| from_json(&v)));
+        }
+        Func::InForce => {
+            let Some(p) = lakelands_api::expr::Pairing::of(args) else {
+                return err(Case::InForceHere);
+            };
+            let found = scope.paired(&p.series(), p.read);
+            return Ok(found.map_or(Val::Null, |v| from_json(&v)));
+        }
         Func::Retired => {
             if !scope.in_write() {
                 return err(Case::RetiredOnlyInGuard);
@@ -886,7 +825,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             };
             return (scope.in_set(set)).map_or(err(Case::InSetHere), |b| Ok(Val::Bool(b)));
         }
-        Func::Count | Func::Sum | Func::Min | Func::Max | Func::Avg => {
+        f if f.is_aggregate() => {
             if let Some(v) = scope.aggregate(func, args) {
                 return v;
             }
@@ -904,22 +843,30 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
     let s = |i: usize| text(&vals[i]).unwrap_or_default();
     Ok(match func {
         Func::Now => Val::Time(scope.now()),
-        Func::Today => {
-            let day = 86_400_000_000;
-            Val::Time(Timestamp(scope.now().0.div_euclid(day) * day))
-        }
+        Func::Today => Val::Time(scope.today()),
+        // The value in force on the day of `at`, else of the clock (090).
         Func::Setting => match &vals[0] {
-            Val::Text(key) => scope.setting(key).map_or(Val::Null, |v| from_json(&v)),
+            Val::Text(key) => {
+                let at = match vals.get(1) {
+                    Some(v) => {
+                        as_time(v).ok_or_else(|| Case::SettingTakesDate { value: operand(v) })?
+                    }
+                    None => scope.now(),
+                };
+                let periods = scope.setting(&lakelands_api::settings::periods_key(key));
+                let value = scope.setting(key);
+                value.map_or(Val::Null, |v| {
+                    from_json(&lakelands_api::settings::in_force(v, periods.as_ref(), at))
+                })
+            }
             other => {
                 return err(Case::SettingTakesKey {
                     value: operand(other),
                 });
             }
         },
-        // Answered above, from the scope, where the set's filter did not
-        // stand in the call's place before ([`expand`]).
+        // Answered above, from the scope ([`expand`]).
         Func::InSet => return err(Case::InSetHere),
-        // Answered above, from the scope.
         Func::Exists => return err(Case::ExistsHere),
         Func::Param => match &vals[0] {
             Val::Text(name) => scope.param(name).map_or(Val::Null, |v| from_json(&v)),
@@ -957,7 +904,24 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         Func::Abs => Val::Num(number(&vals[0])?.abs()),
         Func::Floor => Val::Num(number(&vals[0])?.floor()),
         Func::DateBucket => match (as_time(&vals[0]), &vals[1]) {
-            (Some(t), Val::Text(unit)) => Val::Time(bucket_start(t, unit)?),
+            (Some(t), Val::Text(unit)) => match vals.get(2) {
+                // Cut in a zone's local calendar; the declaration has
+                // refused a zone the database does not name. A date, which
+                // has no time of day, is that same date in the zone.
+                Some(Val::Text(zone)) => match match &vals[0] {
+                    Val::Text(day) if day.len() == 10 => zone::date_start(t.0, unit, zone),
+                    _ => zone::local_start(t.0, unit, zone),
+                } {
+                    Some(start) => Val::Time(Timestamp(start)),
+                    None if !zone::known(zone) => {
+                        return err(Case::BucketZone { zone: zone.clone() });
+                    }
+                    // A unit it does not know, else an instant past the
+                    // calendar.
+                    None => return bucket_start(t, unit).and(Err(overflow())),
+                },
+                _ => Val::Time(bucket_start(t, unit)?),
+            },
             // The window of that width `t` falls in, counted from the origin
             // in both directions: an instant before it is in a window too.
             (Some(t), Val::Duration(w)) if *w > 0 => match vals.get(2).and_then(as_time) {
@@ -991,6 +955,8 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         | Func::KnownAt
         | Func::SeenAt
         | Func::Previous
+        | Func::Preceding
+        | Func::InForce
         | Func::Changed
         | Func::Retired
         | Func::Created
@@ -998,7 +964,9 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         | Func::Sum
         | Func::Min
         | Func::Max
-        | Func::Avg => unreachable!("handled above"),
+        | Func::Avg
+        | Func::First
+        | Func::Last => unreachable!("handled above"),
     })
 }
 
@@ -1033,9 +1001,7 @@ pub fn to_json(
     scale: Option<u32>,
 ) -> Option<Value> {
     use lakelands_api::ontology::StorageKind as K;
-    // A value at a declared scale is rounded half away from zero and then
-    // written with exactly that many fractional digits, as a written value
-    // of the type is.
+    // Rounded half away from zero, then written with exactly `scale` digits.
     let rounded = |d: Decimal| scale.map_or(d, |s| crate::value::at_scale(d, s));
     match (v, kind) {
         (Val::Null, _) => Some(Value::Null),

@@ -13,6 +13,9 @@ fn intent(e: &Error) -> &'static str {
     match e {
         Error::Refused { reason, .. } => match reason {
             Refusal::NotGranted => "the principal lacks a grant; nothing was written",
+            Refusal::GrantNeeded { .. } => {
+                "the principal lacks the grant named; nothing was written"
+            }
             Refusal::WrongDoor => "the field belongs to another authority's door",
             Refusal::VerbsOnly { .. } => "only the type's verbs write the field; call one it names",
             Refusal::Reserved => "a `sys.` name is the system's",
@@ -36,6 +39,7 @@ fn intent(e: &Error) -> &'static str {
             Missing::Verb { .. } => "no such verb",
             Missing::Function { .. } => "no such function",
             Missing::Proposal { .. } => "no such proposal",
+            Missing::Quarantined { .. } => "no such quarantined record open to the caller",
             Missing::Unknown(_) => "a thing a newer lake knows: its message says it",
         },
         Error::Conflict { .. } => "the record moved: retry against its version",
@@ -98,6 +102,7 @@ fn a_feed_that_cannot_wait_answers_at_once() {
                 next: from.max(head.next()),
                 head,
                 overruled: Vec::new(),
+                appends: Vec::new(),
             })
         }
         async fn ack(&self, _: &str, _: Position) -> lakelands_api::Result<()> {

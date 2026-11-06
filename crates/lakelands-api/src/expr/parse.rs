@@ -51,6 +51,7 @@ pub fn parse(text: &str) -> Result<Expr> {
     let mut p = Parser {
         chars: text.chars().collect(),
         pos: 0,
+        depth: 0,
     };
     let e = p.or()?;
     p.ws();
@@ -68,6 +69,8 @@ pub fn func_name(f: Func) -> &'static str {
         Func::KnownAt => "known_at",
         Func::SeenAt => "seen_at",
         Func::Previous => "previous",
+        Func::Preceding => "preceding",
+        Func::InForce => "in_force",
         Func::Setting => "setting",
         Func::Param => "param",
         Func::InSet => "in_set",
@@ -96,12 +99,14 @@ pub fn func_name(f: Func) -> &'static str {
         Func::Min => "min",
         Func::Max => "max",
         Func::Avg => "avg",
+        Func::First => "first",
+        Func::Last => "last",
     }
 }
 
 /// A function by its text name, which is its serde name (`func_name`
 /// spells the same names out).
-fn func_by_name(name: &str) -> Option<Func> {
+pub fn func_by_name(name: &str) -> Option<Func> {
     serde_json::from_value(serde_json::Value::from(name)).ok()
 }
 
@@ -113,7 +118,6 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         Func::KnownAt
         | Func::SeenAt
         | Func::Previous
-        | Func::Setting
         | Func::Param
         | Func::InSet
         | Func::Exists
@@ -129,11 +133,13 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         | Func::Max
         | Func::Avg => (1, Some(1)),
         Func::Count => (0, Some(1)),
-        Func::Round => (1, Some(2)),
+        Func::Round | Func::Setting => (1, Some(2)),
         Func::Contains | Func::StartsWith | Func::Matches => (2, Some(2)),
+        Func::First | Func::Last => (2, Some(2)),
         Func::DateBucket => (2, Some(3)),
         Func::Substr => (2, Some(3)),
         Func::If | Func::Replace => (3, Some(3)),
+        Func::Preceding | Func::InForce => (3, None),
         Func::Coalesce | Func::Concat => (1, None),
     }
 }
@@ -143,15 +149,22 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
 fn takes_field(f: Func) -> bool {
     matches!(
         f,
-        Func::KnownAt | Func::SeenAt | Func::Previous | Func::Changed
+        Func::KnownAt | Func::SeenAt | Func::Previous | Func::Preceding | Func::Changed
     )
 }
 
 const KEYWORDS: [&str; 8] = ["and", "or", "not", "in", "is", "null", "true", "false"];
 
+/// How deep an expression nests: every way back into `or` (a
+/// parenthesis, a call argument, a list item) and every `not` and unary
+/// `-` goes one deeper. A deeper expression is refused before the parser
+/// recurses further, so no text runs it out of stack.
+const NESTING: usize = 32;
+
 struct Parser {
     chars: Vec<char>,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
@@ -203,6 +216,22 @@ impl Parser {
         }
     }
 
+    /// `f`, one level deeper; a level too many is refused at `begins`,
+    /// the character where it starts.
+    fn nested(&mut self, begins: usize, f: fn(&mut Self) -> Result<Expr>) -> Result<Expr> {
+        if self.depth == NESTING {
+            let case = Case::ExprTooDeep {
+                max: NESTING,
+                offset: begins,
+            };
+            return Err(ParseError { at: begins, case });
+        }
+        self.depth += 1;
+        let e = f(self);
+        self.depth -= 1;
+        e
+    }
+
     fn or(&mut self) -> Result<Expr> {
         let mut args = vec![self.and()?];
         while self.keyword("or") {
@@ -229,8 +258,11 @@ impl Parser {
 
     fn not(&mut self) -> Result<Expr> {
         if self.keyword("not") {
-            return Ok(Expr::Not {
-                arg: Box::new(self.not()?),
+            let begins = self.pos - "not".len();
+            return self.nested(begins, |p| {
+                Ok(Expr::Not {
+                    arg: Box::new(p.not()?),
+                })
             });
         }
         self.cmp()
@@ -312,8 +344,11 @@ impl Parser {
 
     fn unary(&mut self) -> Result<Expr> {
         if self.eat("-") {
-            return Ok(Expr::Neg {
-                arg: Box::new(self.unary()?),
+            let begins = self.pos - 1;
+            return self.nested(begins, |p| {
+                Ok(Expr::Neg {
+                    arg: Box::new(p.unary()?),
+                })
             });
         }
         self.atom()
@@ -323,10 +358,13 @@ impl Parser {
         self.ws();
         match self.peek() {
             Some('(') => {
+                let begins = self.pos;
                 self.pos += 1;
-                let e = self.or()?;
-                self.expect(")")?;
-                Ok(e)
+                self.nested(begins, |p| {
+                    let e = p.or()?;
+                    p.expect(")")?;
+                    Ok(e)
+                })
             }
             Some('\'') => self.string(),
             Some(c) if c.is_ascii_digit() => self.number(),
@@ -455,7 +493,15 @@ impl Parser {
                     },
                 }));
             }
-            if takes_field(func) && !matches!(args.first(), Some(Expr::Path { .. })) {
+            // `preceding` names a field in every argument, the others in
+            // their first.
+            let named = if func == Func::Preceding {
+                args.len()
+            } else {
+                1
+            };
+            let path = |a: &Expr| matches!(a, Expr::Path { .. });
+            if takes_field(func) && !args.iter().take(named).all(path) {
                 self.pos = start;
                 return Err(self.err(|offset| Case::ParseTakesField {
                     name: first,
@@ -496,7 +542,8 @@ impl Parser {
             return Ok(out);
         }
         loop {
-            out.push(self.or()?);
+            self.ws();
+            out.push(self.nested(self.pos, Self::or)?);
             if self.eat(close) {
                 return Ok(out);
             }

@@ -4,19 +4,10 @@
 //! The suite's reranker scores a text by its count of `overdue` (twice)
 //! and `reminder`, and records every call it receives.
 
-use lakelands_api::error::{Case, Seam};
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::query::{Hits, QueryResult};
-use lakelands_api::seam::{RerankCall, Reranker, Seams};
+use lakelands_api::seam::{RerankCall, Reranker};
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Access, Error, LakeStore, Principal};
-use serde_json::{Value, json};
 
-use crate::conformance::fixture::{
-    Lake, Must, field, field_access, head_unmoved, invalid_case, pattern, reads_all, restrict,
-    searchable, type_decl, vector,
-};
-use crate::conformance::{Failure, Given, Held, Store, backing};
+use crate::conformance::prelude::*;
 
 check!(
     RERANK_REORDERS_THE_WINDOW =
@@ -34,6 +25,11 @@ check!(
     RERANK_ONE_WINDOW_ONLY =
         a_holder_of_only_is_answered_every_hit_it_was_scored_whatever_lands_after_its_window,
     "067 and 051 (lakelands#993): a holder of `only` is answered every hit of its window the reranker scored, judged where the window was read, never at the head: a scored record retired, or moved out of the holder's `only`, during the reranker's call or between two pages is still answered, once, in the stage's order"
+);
+
+check!(
+    RERANK_ONLY_ANY = a_holder_of_a_set_is_reranked_over_the_records_its_set_admits,
+    "067 and 006 (lakelands#1588): a holder of an `only_any` set on a type is answered, reranked, only the records whose field holds one of its values, and the reranker is handed those alone"
 );
 
 check!(
@@ -207,8 +203,8 @@ async fn a_reranked_window_is_answered_in_the_stages_order_and_pages_without_ask
         texts(&asked[0])
     );
     // A write that would rank first lands between the pages.
-    l.upsert("doc", "d0", json!({"body": "invoice overdue overdue"}))
-        .await?;
+    let d0 = json!({"body": "invoice invoice invoice invoice overdue overdue"});
+    l.upsert("doc", "d0", d0).await?;
     let mut next = first.clone();
     next["cursor"] = json!(one.next_cursor);
     let two = ask(&l, own, next).await?;
@@ -895,6 +891,31 @@ async fn a_reranked_hybrid_search_embeds_its_text_on_the_first_page_alone(store:
         "a reranked hybrid search over three pages must embed its text once and answer \
          every scored key though the backend fails after the first page; it embedded it \
          {calls} times, answered {keys} keys, and a later page answered {later:?}"
+    );
+    Ok(())
+}
+
+async fn a_holder_of_a_set_is_reranked_over_the_records_its_set_admits(store: Store) -> Held {
+    let l = invoices(store.as_ref()).await?;
+    bound(store.as_ref())?;
+    // `d2` is tagged `y`, `d6` and `d3` `z`: the set admits `x` and `y`.
+    for (key, tag) in [("d2", "y"), ("d3", "z"), ("d6", "z")] {
+        l.upsert("doc", key, json!({"tag": tag})).await?;
+    }
+    let set = json!({"default": "read", "types": {"doc": {"only_any": {"tag": ["x", "y"]}}}});
+    let holder = super::only::holder(store.as_ref(), "holder", set);
+    let since = backing::rerank_calls().len();
+    let search = json!({"mode": "lexical", "text": "invoice", "rerank": {"top": 10}});
+    let hits = ask(&l, &holder, search).await?;
+    let mut answered: Vec<&str> = hits.hits.iter().map(|h| h.record.key.as_str()).collect();
+    answered.sort_unstable();
+    let calls = calls_since(since);
+    let mut handed: Vec<&str> = calls.iter().flat_map(texts).map(|(k, _)| k).collect();
+    handed.sort_unstable();
+    let admitted = ["d1", "d2", "d4", "d5"];
+    ensure!(
+        answered == admitted && handed == admitted,
+        "a holder of the set `x`, `y` must be answered and have the reranker handed `d1 d2 d4 d5` alone; it was answered {answered:?}, the reranker handed {handed:?}"
     );
     Ok(())
 }

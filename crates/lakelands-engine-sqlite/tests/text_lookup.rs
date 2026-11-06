@@ -15,6 +15,7 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::Declaration;
+use lakelands_core::conformance::fixture::stored_record;
 use lakelands_core::engines;
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
@@ -50,15 +51,13 @@ fn walked() -> Vec<StoredRecord> {
                 fields["x"] = json!(i % 7);
             }
             StoredRecord {
-                ty: "t".into(),
-                key: format!("k{i:05}").into(),
-                version: Version(1),
-                fields: serde_json::from_value(fields).unwrap(),
-                meta: Default::default(),
-                position: Position(1),
-                made: Position(1),
-                retired: false,
                 restricted: i % 13 == 4,
+                ..stored_record(
+                    "t",
+                    format!("k{i:05}"),
+                    serde_json::from_value(fields).unwrap(),
+                    1,
+                )
             }
         })
         .collect();
@@ -79,17 +78,12 @@ fn a_count_and_a_page_under_an_exact_text_are_handed_the_records_holding_it() {
     p.begin().unwrap();
     for i in 0..N {
         let v = if i % 1000 == 500 { "b" } else { "a" };
-        p.put_record(&StoredRecord {
-            ty: "t".into(),
-            key: format!("k{i:04}").into(),
-            version: Version(1),
-            fields: serde_json::from_value(json!({"v": v})).unwrap(),
-            meta: Default::default(),
-            position: Position(1),
-            made: Position(1),
-            retired: false,
-            restricted: false,
-        })
+        p.put_record(&stored_record(
+            "t",
+            format!("k{i:04}"),
+            serde_json::from_value(json!({"v": v})).unwrap(),
+            1,
+        ))
         .unwrap();
     }
     p.commit(Position(1)).unwrap();
@@ -213,13 +207,18 @@ fn walk_under_each_text(engine: &dyn LakeEngine) {
     // A page of one under a filter that passes over all but a fortieth of
     // the holders: each batch the engine answers may read every holder.
     // And pages of one under `at` that pass over its first holders in
-    // `w`'s order, none to eight of them.
+    // `w`'s order, none to eight of them. `w + 0` keeps the bound out of
+    // `engines::window`: a bound on the page's order field narrows its
+    // index (097), and these pages are here to ask for the batch growth a
+    // walk past the rejected rows does.
     let w = |r: &StoredRecord| r.fields.get("w").and_then(Value::as_u64);
     let held = |r: &&StoredRecord| r.fields.get("v") == Some(&json!("at"));
     let mut first: Vec<u64> = states.iter().filter(held).filter_map(w).collect();
     first.sort_unstable();
-    let passing = first[..9].iter().map(|w| format!("v = 'at' and w >= {w}"));
-    let rejecting = ["at", "past"].map(|text| format!("v = '{text}' and w > 40000"));
+    let passing = first[..9]
+        .iter()
+        .map(|w| format!("v = 'at' and w + 0 >= {w}"));
+    let rejecting = ["at", "past"].map(|text| format!("v = '{text}' and w + 0 > 40000"));
     let view = engine.view(None).unwrap();
     let mut asked_by_few = std::collections::BTreeSet::new();
     for filter in passing.chain(rejecting) {
@@ -360,6 +359,122 @@ fn a_page_in_a_fields_order_under_an_exact_text_is_handed_its_page() {
         .open(&Location::sqlite("texts", &dir), OpenMode::Create)
         .unwrap();
     walk_under_each_text(engine.as_ref());
+    drop(engine);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A find and a count whose `where` holds the type's key of one text
+/// field equal to a text read the state at the key the text makes, at the
+/// head and as of an earlier position, not the type (057, lakelands#1318).
+/// The exact-text index keeps no rows for that field, so a walk would
+/// hand the rulebook every record.
+fn read_by_key(engine: &dyn LakeEngine) {
+    let decl: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "t", "key": ["id"],
+        "fields": [{"name": "id", "type": {"kind": "text"}}, {"name": "n", "type": {"kind": "number"}}]
+    }))
+    .unwrap();
+    let state = |id: &str, n: u64| StoredRecord {
+        version: Version(n),
+        made: Position(1),
+        ..stored_record(
+            "t",
+            lakelands_api::key::key_component(&json!(id)).unwrap(),
+            serde_json::from_value(json!({"id": id, "n": n})).unwrap(),
+            n,
+        )
+    };
+    let ids = (0..N).map(|i| format!("k{i:04}"));
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.put_declaration(&decl, 1, None, Position(0)).unwrap();
+    for id in ids.chain(["a:b".into(), "50%".into()]) {
+        p.put_record(&state(&id, 1)).unwrap();
+    }
+    p.commit(Position(1)).unwrap();
+    p.begin().unwrap();
+    p.put_record(&state("a:b", 2)).unwrap();
+    p.commit(Position(2)).unwrap();
+    let ty = TypeName::from("t");
+    let by_n = || Order {
+        field: "n".into(),
+        by: OrderBy::Value,
+        dir: Direction::Asc,
+    };
+    for (at, n) in [(None, 2), (Some(Position(1)), 1)] {
+        let view = engine.view(at).unwrap();
+        let ask = |what: &str, scan: Scan, want: &[&str]| {
+            let before = engines::rows_read();
+            let counted = view.count(&ty, &scan).unwrap();
+            let page = view.scan(&ty, &scan).unwrap();
+            let sorted = view
+                .scan(
+                    &ty,
+                    &Scan {
+                        order_by: vec![by_n()],
+                        ..scan
+                    },
+                )
+                .unwrap();
+            let read = engines::rows_read() - before;
+            let found = |page: &[StoredRecord]| -> Vec<String> {
+                let mut found: Vec<String> = page.iter().map(|r| r.key.to_string()).collect();
+                found.sort();
+                found
+            };
+            let (listed, ordered) = (found(&page), found(&sorted));
+            // The count is not printed: CodeQL follows the engine's
+            // connection into it and calls that logging a certificate.
+            let count = match counted == want.len() as u64 {
+                true => "right",
+                false => "wrong",
+            };
+            assert!(
+                count == "right"
+                    && listed == want
+                    && ordered == want
+                    && read <= 3 * want.len().max(1) as u64,
+                "as of {at:?}, {what} counted {count}, found {listed:?}, and {ordered:?} in \
+                 `n`'s order, from {read} rows handed to the rulebook, of a type of {N}; the \
+                 records at the keys the texts make are read"
+            );
+        };
+        let held = format!("id = 'a:b' and n = {n}");
+        for (filter, want) in [
+            (held.as_str(), &["a%3Ab"][..]),
+            ("id = 'k0500'", &["k0500"]),
+            ("n = 1 and id = '50%'", &["50%25"]),
+            ("id = 'a:b' and n = 3", &[]),
+            ("id = 'absent'", &[]),
+        ] {
+            let scan = Scan {
+                filter: Some(lakelands_core::expr::parse(filter).unwrap()),
+                limit: 10,
+                ..Scan::default()
+            };
+            ask(&format!("`{filter}`"), scan, want);
+        }
+        // A derived relation's match asks for several texts at once.
+        let scan = Scan {
+            equal_any: ["k0500", "a:b", "absent"]
+                .map(|t| vec![("id".into(), json!(t))])
+                .into(),
+            limit: 10,
+            ..Scan::default()
+        };
+        ask("a match of three texts", scan, &["a%3Ab", "k0500"]);
+    }
+}
+
+#[test]
+fn a_find_and_a_count_by_a_text_key_read_its_record_by_key() {
+    let dir =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("text-key-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let engine = SqliteOpener
+        .open(&Location::sqlite("texts", &dir), OpenMode::Create)
+        .unwrap();
+    read_by_key(engine.as_ref());
     drop(engine);
     let _ = std::fs::remove_dir_all(&dir);
 }

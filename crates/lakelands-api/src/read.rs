@@ -7,12 +7,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Case;
 use crate::expr::Condition;
-use crate::id::{Cursor, FieldName, ParamName, Position, RecordKey};
+use crate::id::{Cursor, FieldName, ParamName, Position, RecordKey, TypeName};
 use crate::record::{Record, Value};
 use crate::time::Timestamp;
 
 /// The header every HTTP transport puts the reply's position in.
 pub const POSITION_HEADER: &str = "Lakelands-Position";
+
+/// The header a host sends, over the link between hosts, the id of the
+/// principal a forwarded call is made as (076).
+pub const PRINCIPAL_HEADER: &str = "Lakelands-Principal";
+
+/// The header a host sends, over the link between hosts, the write
+/// context of a forwarded call in, as JSON (021, extended by 076).
+pub const CONTEXT_HEADER: &str = "Lakelands-Context";
 
 /// Every answer the store gives: the data and the position it reflects
 /// (`docs/decisions/009-every-response-carries-its-position.md`).
@@ -135,6 +143,12 @@ pub enum AggFunc {
     Max,
     /// The mean of a field.
     Avg,
+    /// The value of a field on the member whose `by` comes first in its
+    /// order, ties by the least key.
+    First,
+    /// The value of a field on the member whose `by` comes last in its
+    /// order, ties by the least key.
+    Last,
 }
 
 /// One aggregate an answer carries.
@@ -148,6 +162,9 @@ pub struct AggMeasure {
     /// The field it folds (none for `count`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<FieldName>,
+    /// For `first` and `last`: the field whose order picks the member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<FieldName>,
 }
 
 /// An aggregation: measures, optionally per group.
@@ -216,6 +233,18 @@ impl GroupKey {
         match self {
             GroupKey::Field(f) => f,
             GroupKey::Named { name, .. } => name,
+        }
+    }
+
+    /// The field its value comes from: the field, or the first one its
+    /// expression reads. A term that does not parse, which a declaration
+    /// refuses, answers its own name; a read parses its terms first.
+    pub fn source(&self) -> FieldName {
+        match self {
+            GroupKey::Field(f) => f.clone(),
+            GroupKey::Named { name, expr } => (expr.typed().ok())
+                .and_then(|e| e.fields_read().into_iter().next().cloned())
+                .unwrap_or_else(|| name.clone()),
         }
     }
 }
@@ -304,6 +333,24 @@ pub struct After {
     pub key: RecordKey,
 }
 
+/// One act that thinned a type past a horizon, as a read names what it
+/// can no longer answer (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ThinnedAct {
+    /// The type the act took records of.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The field of instants or dates the act judged.
+    pub by: FieldName,
+    /// The horizon: the act took the records whose field was certainly
+    /// before it.
+    pub before: Timestamp,
+    /// The last position the act had got through.
+    pub through: Position,
+    /// How many records it had taken.
+    pub gone: u64,
+}
+
 /// The answer to `find`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape", rename_all = "snake_case")]
@@ -323,11 +370,28 @@ pub enum Found {
         /// the same position.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retired: Option<u64>,
+        /// The acts that thinned the type this page answers, oldest first;
+        /// for a view, those on its sources.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        thinned: Vec<ThinnedAct>,
+        /// How many of the type's or the view's groups a read at an
+        /// earlier position could not answer because they are stranded,
+        /// and so answer at the head alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stranded: Option<u64>,
     },
     /// Aggregated groups.
     Groups {
         /// One row per group.
         rows: Vec<Group>,
+        /// The acts that thinned the type or the view's sources, oldest
+        /// first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        thinned: Vec<ThinnedAct>,
+        /// How many groups the read could not answer because they are
+        /// stranded, and so answer at the head alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stranded: Option<u64>,
     },
 }
 
@@ -338,6 +402,10 @@ pub struct Group {
     pub by: BTreeMap<FieldName, Value>,
     /// The measures' results.
     pub values: BTreeMap<FieldName, Value>,
+    /// Whether the group is stranded: it held a member the act thinned,
+    /// so it answers its kept record and never a computation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stranded: bool,
 }
 
 /// `get`: one record by key.

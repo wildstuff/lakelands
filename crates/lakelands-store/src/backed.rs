@@ -44,18 +44,19 @@ use std::sync::Arc;
 use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::error::{Case, Exchange, Flaw, Part, Remote, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
+use lakelands_api::expr::Expr;
 use lakelands_api::ontology::{EmbedDecl, FieldDecl, TypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, Patch};
 use lakelands_api::seam::{Accepted, CallCause, EmbedBackend, FunctionCall};
 use lakelands_api::write::{FunctionDecl, ProposalFilter, ProposalState, ProposedWrite};
 use lakelands_api::{
-    FieldName, LakeId, Position, ProposalId, RecordKey, Result, SourceId, Timestamp, TypeName,
-    Value, WriteContext,
+    Error, FieldName, LakeId, Position, ProposalId, RecordKey, Result, SourceId, Timestamp,
+    TypeName, Value, WriteContext,
 };
 use serde_json::json;
 
 use crate::backing::EXPR;
-use crate::exec;
+use crate::exec::{self, Turn};
 use crate::lake::Lake;
 use crate::log::Draft;
 use crate::ontology::{Entry, Ontology};
@@ -145,6 +146,9 @@ pub struct Outputs<'a> {
     /// The sources' keys, where the reader has the writer's: a call that
     /// reads a source's erasable values is digested under its key (058).
     pub keys: Option<&'a crate::sealing::Keys>,
+    /// The keys apart read from the log so far, and those a plan staged
+    /// for its own events: none where each call reads its own.
+    pub apart: Option<&'a crate::sealing::Apart>,
 }
 
 /// The outputs one transaction recorded, by seam and input: every
@@ -167,6 +171,7 @@ impl Outputs<'_> {
             waiting,
             plans,
             keys: Some(keys),
+            apart: None,
         }
     }
 
@@ -412,23 +417,22 @@ const TWO_SOURCES: &str = "its inputs hold erasable values of two sources, and a
 /// The digest of `call`, as `computer` makes it from `fields`: by the
 /// sources of the erasable values it reads, through the fields it reads
 /// and those they are derived from. One source's are digested under the
-/// version of its key `version` names, a recorded output's own, else the
-/// oldest of those that sealed the values it reads: the last first used
-/// at or before each value's position ([`crate::sealing::USED`]), as the
-/// fold keeps it and a write's plan stages it for its own events. A value
-/// written in plaintext, before its field was erasable, counts as sealed
-/// by the version in force at its position, which only ever makes an
-/// output die sooner, and as none before any; where no value names one,
-/// the first is taken. So the digest is a
-/// function of the log, whatever the key store holds now, and the output
-/// lives as long as the oldest key period it read: destroying a version,
-/// and every older one with it, takes the outputs of its values. A source
-/// that sealed nothing has no key to digest under.
+/// keys `version` names, a recorded output's own, else under the oldest of
+/// those that sealed the values it reads: the last first used at or before
+/// each value's position ([`crate::sealing::USED`]). A value written in
+/// plaintext, before its field was erasable, counts as sealed by the
+/// version in force at its position, which only ever makes an output die
+/// sooner, and as none before any; where no value names one, the first is
+/// taken. That version is composed with every key of a delivery sealed
+/// apart that sealed a value it reads (065). So the digest is a function
+/// of the log, whatever the key store holds now, and the output lives as
+/// long as the oldest key period and every delivery sealed apart it read.
+/// A source that sealed nothing has no key to digest under.
 fn input_of(
     (decl, computer): (&TypeDecl, &Computer<'_>),
     (fields, metas): (&BTreeMap<FieldName, Value>, &BTreeMap<FieldName, FieldMeta>),
     (outputs, event): (&Outputs<'_>, &Event),
-    version: Option<&lakelands_api::id::KeyId>,
+    version: Option<&lakelands_api::event::Sealed>,
     call: &Value,
 ) -> Result<Input> {
     let mut todo: Vec<&FieldName> = match computer {
@@ -472,27 +476,71 @@ fn input_of(
         .filter_map(|p| crate::sealing::sealed_at(firsts, *p))
         .min_by_key(rank);
     let first = firsts.first().map(|(k, _)| k);
-    let Some(key) = version.or(oldest).or(first).or(sealing).cloned() else {
+    let Some(key) = (version.map(|s| &s.key))
+        .or(oldest)
+        .or(first)
+        .or(sealing)
+        .cloned()
+    else {
         return Ok(Input::Plain(digest(call)));
     };
     let Some(keys) = outputs.keys else {
         return Ok(Input::Keyless);
     };
-    let k = keys.key(&source, &key)?;
-    let source = Some(source);
-    let sealed = lakelands_api::event::Sealed {
-        key,
-        source,
-        fields: Vec::new(),
+    // With every key of a delivery sealed apart that sealed a value it
+    // reads, so the output dies with any of them (065).
+    let apart = match version {
+        Some(s) => s.apart.clone(),
+        None => apart_of((outputs, event, keys), (&source, list.as_deref()), &read)?,
     };
+    let mut sealed = lakelands_api::event::Sealed {
+        key,
+        source: None,
+        fields: Vec::new(),
+        apart,
+        boxed: None,
+    };
+    let k = keys.sealed(&source, &sealed)?;
+    sealed.source = Some(source);
     Ok(Input::Sealed(crate::sealing::digest(&k, call), sealed))
 }
 
+/// The keys of deliveries sealed apart that sealed `source`'s values
+/// written at `read`, in id order: `event`'s own where it wrote one, else
+/// as the event at the value's position names them in the log
+/// ([`crate::sealing::Keys::apart_named`]), read only at a value whose version
+/// `list` marks as sealing one, so a source that never sealed apart costs
+/// no read.
+fn apart_of(
+    (outputs, event, keys): (&Outputs<'_>, &Event, &crate::sealing::Keys),
+    (source, list): (&lakelands_api::SourceId, Option<&crate::sealing::List>),
+    read: &[Position],
+) -> Result<Vec<lakelands_api::id::KeyId>> {
+    let mut apart = BTreeSet::new();
+    let own = crate::sealing::Apart::default();
+    let known = outputs.apart.unwrap_or(&own);
+    let (firsts, marked) = list.map_or((&[][..], &[][..]), |l| (&l.firsts[..], &l.apart[..]));
+    let marks =
+        |p: Position| crate::sealing::sealed_at(firsts, p).is_some_and(|k| marked.contains(k));
+    for p in read {
+        let own = (event.sealed.as_ref())
+            .filter(|_| *p == event.position && event.source.as_ref() == Some(source))
+            .filter(|_| matches!(event.body, EventBody::RecordIngested { .. }));
+        match own {
+            Some(s) => apart.extend(s.apart.iter().cloned()),
+            None if marks(*p) => apart.extend(keys.apart_named(known, source, *p)?),
+            None => {}
+        }
+    }
+    Ok(apart.into_iter().collect())
+}
+
 /// The metadata of a value an output filled, or of a field it cleared.
-fn meta(event: &Event, version: String, error: Option<String>) -> FieldMeta {
+fn meta(event: &Event, computer: &Computer, error: Option<String>) -> FieldMeta {
     FieldMeta {
         upstream: None,
-        procedure_version: Some(version),
+        procedure: Some(computer.name().to_owned()),
+        procedure_version: Some(computer.version()),
         error,
         ..crate::record::meta_of(event, Origin::Derived)
     }
@@ -530,16 +578,15 @@ fn put(
             Some(why)
         }
     };
-    metas.insert(field.name.clone(), meta(event, computer.version(), error));
+    metas.insert(field.name.clone(), meta(event, &computer, error));
     true
 }
 
 /// The fields a computed field reads: a derived expression's reads, the
-/// inputs of the function that computes it, or the fields an embedding
-/// is made from. `None` for a field the fold does not compute, and for an
-/// expression whose reads cannot be told. A derived expression is read as
-/// its declaration is checked, in a write, where `previous` and `changed`
-/// read the field they name.
+/// inputs of its function, or the fields an embedding is made from. `None`
+/// for a field the fold does not compute, and for an expression whose
+/// reads cannot be told. A derived expression is read as its declaration
+/// is checked, where `previous` and `changed` read the field they name.
 pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<FieldName>> {
     if let Some(e) = &f.embed {
         return Some(e.from.iter().cloned().collect());
@@ -548,7 +595,7 @@ pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<Fie
         return Some(func.decl.inputs.iter().map(|i| i.name().clone()).collect());
     }
     let e = f.derived.as_ref()?;
-    let e = crate::declare::condition(e, lakelands_core::expr::Place::Write, &[]).ok()?;
+    let e = crate::declare::condition(e, crate::declare::computed_at(f), &[]).ok()?;
     Some(lakelands_core::derive::reads(&e))
 }
 
@@ -597,11 +644,10 @@ pub fn computed_order(
 /// `event` is a value type's rename, which retries nothing.
 ///
 /// A backed field that reads, directly or through derived fields, one
-/// that is waiting for its output waits too: it is cleared and not
-/// called, since its call would carry an input that is not computed yet
-/// and record an output under that input for good. It is settled when
-/// what it reads is filled, by the fill's own pass. Answers the fields it
-/// changed.
+/// that is waiting waits too: it is cleared and not called, since its call
+/// would carry an input not computed yet and record an output under that
+/// input for good. It is settled by the fill's own pass. Answers the
+/// fields it changed.
 #[allow(clippy::too_many_arguments)]
 pub fn settle_fields(
     ontology: &Ontology,
@@ -624,10 +670,7 @@ pub fn settle_fields(
     }
     let plan = outputs.plans.get(ontology, decl);
     let order = plan.settled.as_ref().map_err(|why| {
-        let (ty, cause) = (
-            decl.name.clone(),
-            Box::new(lakelands_core::invalid(why.clone())),
-        );
+        let (ty, cause) = (decl.name.clone(), Box::new(Error::invalid(why.clone())));
         lakelands_core::damaged(Part::Projection, None, Flaw::CannotOrder { ty, cause })
     })?;
     let mut waiting: BTreeSet<FieldName> = BTreeSet::new();
@@ -665,7 +708,7 @@ pub fn settle_fields(
                     .is_some_and(|m| m.error.is_none() && computer.same_version(m));
             if !already {
                 fields.remove(&name);
-                metas.insert(name.clone(), meta(event, computer.version(), None));
+                metas.insert(name.clone(), meta(event, &computer, None));
                 changed.push(name.clone());
             }
             continue;
@@ -684,7 +727,7 @@ pub fn settle_fields(
             two @ (Input::Two | Input::Keyless) => {
                 fields.remove(&name);
                 let error = matches!(two, Input::Two).then(|| TWO_SOURCES.to_owned());
-                metas.insert(name.clone(), meta(event, computer.version(), error));
+                metas.insert(name.clone(), meta(event, &computer, error));
                 changed.push(name.clone());
                 continue;
             }
@@ -758,7 +801,7 @@ pub fn settle_fields(
                 call,
                 retry,
                 cause: event.position,
-                context: event.context,
+                context: event.context.clone(),
             });
         }
     }
@@ -791,8 +834,8 @@ pub fn put_output(
     else {
         return Ok(false);
     };
-    // Digested under the version the output names, as it was recorded.
-    let version = event.sealed.as_ref().map(|s| &s.key);
+    // Digested under the keys the output names, as it was recorded.
+    let version = event.sealed.as_ref();
     let now = match input_of(
         (decl, &computer),
         (fields, metas),
@@ -886,13 +929,21 @@ pub enum Of {
         /// The calls whose failure it called again; `None` after a value
         /// type's rename, whose sweep makes the waiting calls and no other.
         retried: Option<BTreeSet<(String, Digest)>>,
+        /// Whether it reads only the records an embedding of the bound
+        /// backend's model and dimensions is empty on, and makes those
+        /// embeddings' waiting calls alone: what fell due while no backend
+        /// made it ([`make_waiting`]).
+        waiting: bool,
     },
 }
 
 impl Owed {
     /// What the event `e` leaves owed of the type `ty`.
     pub fn new(e: &Event, ty: TypeName, of: Of) -> Owed {
-        let (cause, context) = (e.cause.unwrap_or(e.position), e.context);
+        let (cause, mut context) = (e.cause.unwrap_or(e.position), e.context.clone());
+        // The envelope holds whom the write was for; the deferred writes
+        // it leaves owed are made for the same principal.
+        context.on_behalf_of = e.on_behalf_of.clone();
         let by = By {
             at: e.position,
             writer: e.writer.clone(),
@@ -928,6 +979,7 @@ impl Owed {
                 let of = Of::Sweep {
                     after: None,
                     retried: Some(BTreeSet::new()),
+                    waiting: false,
                 };
                 (ty, function, None, of)
             }
@@ -996,6 +1048,7 @@ pub(crate) fn call_now(
         waiting: true,
         plans: &w.plans,
         keys: Some(&lake.keys),
+        apart: None,
     };
     let (o, lake_id) = (&w.ontology, &lake.id);
     let (key, before) = ((&r.key, r.made), Some(&r.fields));
@@ -1038,27 +1091,38 @@ fn bound(lake: &Lake, call: &Call) -> bool {
 
 /// The records the next page of an entry holds, by key, each with the
 /// calls it owes and the output the lake holds for each; and whether the
-/// page ends the entry. Read under the writer taken for a write, released
-/// after the page. A record owes what [`settle_fields`] makes due over it
-/// as it stands, forced in a sweep, and a waiting field whose output is
-/// recorded. An entry whose type is gone ends.
+/// page ends the entry. Read under the writer taken for a write. A record
+/// owes what [`settle_fields`] makes due over it as it stands, forced in a
+/// sweep, and a waiting field whose output is recorded; a waiting sweep
+/// reads only the records an embedding of the bound backend is empty on,
+/// and owes those embeddings alone. An entry whose type is gone ends.
 #[allow(clippy::type_complexity)]
-pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<Value>)>)>, bool)> {
+pub fn page(
+    lake: &Turn<'_>,
+    o: &Owed,
+) -> Result<(Vec<(RecordKey, Vec<(Due, Option<Value>)>)>, bool)> {
     let w = lake.for_write()?;
     let view = lake.engine.view(None)?;
     let Ok(decl) = w.ontology.ty(&o.ty) else {
         return Ok((Vec::new(), true));
     };
+    let made = match o.of {
+        Of::Sweep { waiting: true, .. } => made_here(lake, decl),
+        _ => Vec::new(),
+    };
     let (rows, end) = match &o.of {
         Of::Record(key) => (view.get(&o.ty, key)?.into_iter().collect(), true),
+        Of::Sweep { waiting: true, .. } if made.is_empty() => (Vec::new(), true),
         Of::Sweep { after, .. } => {
             let after = after.clone().map(|key| After {
                 values: vec![],
                 key,
             });
+            let filter = (!made.is_empty()).then(|| empty_on(&made));
             let scan = Scan {
                 limit: EMBED_BATCH as u32,
                 after,
+                filter,
                 ..crate::lake::every(false)
             };
             let rows = view.scan(&o.ty, &scan)?;
@@ -1067,7 +1131,7 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
         }
     };
     let draft = Draft {
-        context: o.context,
+        context: o.context.clone(),
         ..Draft::system(Timestamp(0), EventBody::LakeCreated { format: 0 })
     };
     let event = crate::writes::provisional(lake, o.cause, &draft);
@@ -1084,6 +1148,7 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
                 waiting: true,
                 plans: &w.plans,
                 keys: Some(&lake.keys),
+                apart: None,
             };
             let sweep = matches!(
                 o.of,
@@ -1104,6 +1169,9 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
                 sweep,
                 &mut outputs,
             )?;
+            if !made.is_empty() {
+                due.retain(|d| made.contains(&d.field));
+            }
         }
         let mut owes = Vec::new();
         for mut d in due {
@@ -1120,7 +1188,7 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
                     ty: d.ty.clone(),
                     key: d.key.clone(),
                     source: o.by.source.clone(),
-                    context: o.context,
+                    context: o.context.clone(),
                     accepted,
                 });
             }
@@ -1177,6 +1245,160 @@ impl Batch {
     }
 }
 
+/// The embedding fields of `decl` the backend bound now makes.
+fn made_here(lake: &Lake, decl: &TypeDecl) -> Vec<FieldName> {
+    let Some(e) = lake.embed() else {
+        return Vec::new();
+    };
+    let makes = |f: &&FieldDecl| {
+        f.embed.as_ref().is_some_and(|m| m.model == e.model())
+            && f.ty.dimensions == Some(e.dimensions())
+    };
+    decl.fields
+        .iter()
+        .filter(makes)
+        .map(|f| f.name.clone())
+        .collect()
+}
+
+/// A record that holds no value of one of `fields` or more.
+fn empty_on(fields: &[FieldName]) -> Expr {
+    let empty = fields.iter().map(|f| Expr::IsNull {
+        arg: Box::new(Expr::Path {
+            path: vec![f.clone()],
+        }),
+    });
+    Expr::Or {
+        args: empty.collect(),
+    }
+}
+
+/// Make what fell due to the embedding backend bound now while none made
+/// it: on a writer, each type with an embedding of its model and
+/// dimensions that a live record holds none of is owed a sweep of those
+/// records, unless one is owed already (one that waits reads from the
+/// first record again, for the backend bound now), and [`apart`] makes
+/// the waiting calls. A call that failed is not made again; `recompute`
+/// makes it.
+pub fn make_waiting(lake: &Arc<Lake>, turn: &Turn<'_>) {
+    if let Ok(own) = owe_waiting(turn) {
+        apart(lake, own);
+    }
+}
+
+/// Make what `own` owes as [`settle`] does, but in a task of its own that
+/// no caller waits for, a batch at a time, while the lake is open: a
+/// write made with `defer_computed_fields`, and [`make_waiting`]. Outside
+/// a runtime, or once a batch fails, what is left stays owed, made as
+/// orphans by the writes after. A handle the host drops gives its lease
+/// up once the batch in flight is recorded.
+pub fn apart(lake: &Arc<Lake>, own: BTreeSet<Position>) {
+    if own.is_empty() {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let weak = Arc::downgrade(lake);
+    runtime.spawn(async move {
+        while let Some(lake) = weak.upgrade() {
+            let _waits = Waits::new(&lake, &own);
+            let _lane = lake.calls.lock().await;
+            let Ok(Some(batch)) = take(&lake, Whose::Mine(own.clone())).await else {
+                return;
+            };
+            if make(&lake, batch).await.is_err() {
+                return;
+            }
+        }
+    });
+}
+
+/// The sweeps [`make_waiting`] owes, each caused by its type's
+/// declaration in force, and those causes.
+fn owe_waiting(lake: &Turn<'_>) -> Result<BTreeSet<Position>> {
+    let mut own = BTreeSet::new();
+    if !lake.is_writer() || lake.embed().is_none() {
+        return Ok(own);
+    }
+    let view = lake.engine.view(None)?;
+    let mut w = lake.writer();
+    let mut owed = Vec::new();
+    let w = &mut *w;
+    for (ty, entry) in &w.ontology.types {
+        let made = made_here(lake, &entry.decl);
+        let mut swept = false;
+        for o in w.owed.iter_mut().filter(|o| o.ty == *ty) {
+            if let Of::Sweep { after, waiting, .. } = &mut o.of {
+                swept = true;
+                if *waiting {
+                    *after = None;
+                }
+            }
+        }
+        if made.is_empty() || swept {
+            continue;
+        }
+        let mut scan = Scan {
+            filter: Some(empty_on(&made)),
+            limit: EMBED_BATCH as u32,
+            ..crate::lake::every(false)
+        };
+        let waits = loop {
+            let rows = view.scan(ty, &scan)?;
+            let text = |r: &lakelands_api::record::StoredRecord| {
+                (entry.decl.fields.iter())
+                    .filter(|f| {
+                        made.contains(&f.name) && r.fields.get(&f.name).is_none_or(Value::is_null)
+                    })
+                    .any(|f| {
+                        f.embed
+                            .as_ref()
+                            .and_then(|e| embed_text(e, &r.fields))
+                            .is_some()
+                    })
+            };
+            if rows.iter().any(text) {
+                break true;
+            }
+            match rows.last() {
+                Some(last) if rows.len() == EMBED_BATCH => {
+                    scan.after = Some(After {
+                        values: vec![],
+                        key: last.key.clone(),
+                    });
+                }
+                _ => break false,
+            }
+        };
+        if !waits {
+            continue;
+        }
+        let by = By {
+            at: entry.since,
+            writer: "system:lakelands".to_owned(),
+            source: None,
+        };
+        owed.push(Owed {
+            ty: ty.clone(),
+            cause: entry.since,
+            context: WriteContext::default(),
+            of: Of::Sweep {
+                after: None,
+                retried: None,
+                waiting: true,
+            },
+            moved: 0,
+            by,
+            decided: None,
+            proposing: BTreeMap::new(),
+        });
+        own.insert(entry.since);
+    }
+    w.owed.extend(owed);
+    Ok(own)
+}
+
 /// Call the backings for what the write behind `own` owes, and record each
 /// answer, a batch at a time, until no entry of its causes is left; then
 /// make one batch of orphans, the entries no write waits for any more (as
@@ -1188,15 +1410,12 @@ impl Batch {
 /// out. An entry leaves the list once its batch is recorded, so a drain
 /// that fails or is dropped loses nothing, and an answer is held until it
 /// is recorded, so no input is sent to a backing twice by one handle. The
-/// calls a fill makes due are owed to the same write; they end, since a
-/// type's computed fields read one another without a cycle (refused at
-/// declare).
+/// calls a fill makes due are owed to the same write; they end, since
+/// computed fields read one another without a cycle (refused at declare).
 ///
 /// `own` is what [`crate::lake::owing`] answered for the write. Answers
-/// the lake's head read once nothing of it is left, from which its
-/// computed fields are visible, whoever recorded them, whatever the
-/// orphans' batch then answers; `None` when it owed nothing: the write's
-/// own position stands.
+/// the lake's head read once nothing of it is left, whoever recorded the
+/// computed fields; `None` when it owed nothing.
 pub async fn settle(lake: &Arc<Lake>, own: &BTreeSet<Position>) -> Result<Option<Position>> {
     if own.is_empty() {
         return Ok(None);
@@ -1204,24 +1423,27 @@ pub async fn settle(lake: &Arc<Lake>, own: &BTreeSet<Position>) -> Result<Option
     let _waits = Waits::new(lake, own);
     loop {
         let _lane = lake.calls.lock().await;
-        let mine = |o: &Owed| own.contains(&o.cause);
-        if lake.writer().owed.iter().any(mine) {
-            let batch = take(lake, &mine).await?;
+        if let Some(batch) = take(lake, Whose::Mine(own.clone())).await? {
             make(lake, batch).await?;
             continue;
         }
         // The write's own calls are recorded, and visible from this head.
         // The orphans' batch is the drain's: its failure is not the write's.
         let head = lake.head();
-        let waited = lakelands_core::lock(&lake.waiting).clone();
-        let orphan = |o: &Owed| !waited.contains_key(&o.cause);
-        if lake.writer().owed.iter().any(orphan)
-            && let Ok(batch) = take(lake, &orphan).await
-        {
+        if let Ok(Some(batch)) = take(lake, Whose::Orphans).await {
             let _ = make(lake, batch).await;
         }
         return Ok(Some(head));
     }
+}
+
+/// Whose entries a batch takes first.
+#[derive(Clone)]
+enum Whose {
+    /// A write's: the entries of its causes.
+    Mine(BTreeSet<Position>),
+    /// The orphans: the entries no write waits for any more.
+    Orphans,
 }
 
 /// A write waiting in [`settle`] for its causes, until it ends or is
@@ -1252,32 +1474,25 @@ impl Drop for Waits<'_> {
 /// write's failure. The write is answered as itself, its computed fields
 /// waiting. The failure is not lost: where a recording's fold failed the
 /// writer is behind, and the next write catches up first or is answered
-/// `unavailable` in that fold's words; what was not recorded stays owed on
-/// this handle, its answer held, and the next write's drain records it.
+/// `unavailable`; what was not recorded stays owed, its answer held.
 pub async fn settle_after(lake: &Arc<Lake>, own: &BTreeSet<Position>) -> Option<Position> {
     settle(lake, own).await.unwrap_or(None)
 }
 
 /// Read the next batch: the entries `ours` holds first, then the others,
-/// entry by entry, a page each, until it is full. A record whose calls do
-/// not all join stops its entry there; the batch goes on with the next.
-/// A call no backing bound here makes is left out, unless its output is
-/// recorded and not a failure to call again: its field waits.
-async fn take(lake: &Arc<Lake>, ours: &impl Fn(&Owed) -> bool) -> Result<Batch> {
-    let entries: Vec<(usize, Owed)> = {
-        let w = lake.writer();
-        let all = w.owed.iter().cloned().enumerate();
-        let (mine, rest): (Vec<_>, Vec<_>) = all.partition(|(_, o)| ours(o));
-        mine.into_iter().chain(rest).collect()
+/// a page each, until it is full. A record whose calls do not all join
+/// stops its entry there. A call no backing bound here makes is left out,
+/// unless its output is recorded and not a failure to call again: its
+/// field waits. `None` where `whose` has no entry. Each page is a job of
+/// its own, so a write waits for a page, never for a batch.
+async fn take(lake: &Arc<Lake>, whose: Whose) -> Result<Option<Batch>> {
+    let Some((entries, risky)) = exec::write(lake, move |l| Ok(listed(l, &whose))).await? else {
+        return Ok(None);
     };
-    let risky: BTreeSet<String> = (lake.writer().ontology.functions.iter())
-        .filter(|(_, f)| !f.decl.risk.is_low())
-        .map(|(name, _)| name.clone())
-        .collect();
     let mut batch = Batch::default();
     for (at, read) in entries {
-        let (l, o) = (lake.clone(), read.clone());
-        let (rows, end) = exec::run(move || page(&l, &o)).await?;
+        let o = read.clone();
+        let (rows, end) = exec::write(lake, move |l| page(l, &o)).await?;
         let (t, mut left, mut whole) = (batch.took.len(), read.clone(), true);
         let mut propose = Vec::new();
         for (key, calls) in rows {
@@ -1335,73 +1550,52 @@ async fn take(lake: &Arc<Lake>, ours: &impl Fn(&Owed) -> bool) -> Result<Batch> 
             break;
         }
     }
-    Ok(batch)
+    Ok(Some(batch))
+}
+
+/// The entries a batch reads, those of `whose` first, then the others in
+/// the order they were handed out, each with where it stands in the list;
+/// and the functions above `low`. `None` where `whose` has no entry.
+#[allow(clippy::type_complexity)]
+fn listed(lake: &Turn<'_>, whose: &Whose) -> Option<(Vec<(usize, Owed)>, BTreeSet<String>)> {
+    let waited = match whose {
+        Whose::Mine(_) => BTreeMap::new(),
+        Whose::Orphans => lakelands_core::lock(&lake.waiting).clone(),
+    };
+    let ours = |o: &Owed| match whose {
+        Whose::Mine(own) => own.contains(&o.cause),
+        Whose::Orphans => !waited.contains_key(&o.cause),
+    };
+    let w = lake.writer();
+    if !w.owed.iter().any(ours) {
+        return None;
+    }
+    let all = w.owed.iter().cloned().enumerate();
+    let (mine, rest): (Vec<_>, Vec<_>) = all.partition(|(_, o)| ours(o));
+    let risky = (w.ontology.functions.iter())
+        .filter(|(_, f)| !f.decl.risk.is_low())
+        .map(|(name, _)| name.clone())
+        .collect();
+    Some((mine.into_iter().chain(rest).collect(), risky))
 }
 
 /// Make a batch's calls and record each answer, then leave its entries as
 /// it took them, unless a migration moved one meanwhile. A call is
 /// answered by the answer held for it, else by the output recorded, else
-/// by its backing; a sweep calls a failure again, recorded or held, once,
-/// and notes the call in its entry before it is made. Every answer is
-/// held before the first is recorded, and until its first recording.
+/// by its backing; a sweep calls a failure again once, and notes the call
+/// in its entry before it is made. Every answer is held before the first
+/// is recorded. What takes the writer is a job of its own in the lake's
+/// queue; the backings are asked between them, holding no turn.
 async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
-    let Batch { mut took, calls } = batch;
-    let held: BTreeMap<Key, Value> = {
-        let w = lake.writer();
-        let held = calls.iter().map(|(_, d, _)| key(d));
-        held.filter_map(|k| Some((k.clone(), w.held.get(&k)?.clone())))
-            .collect()
-    };
-    let mut answers: BTreeMap<Key, Value> = BTreeMap::new();
-    // The calls whose answer the lake holds already.
-    let mut known: BTreeSet<Key> = BTreeSet::new();
-    let mut ask: Vec<&Due> = Vec::new();
-    for (t, d, recorded) in &calls {
-        let k = key(d);
-        if answers.contains_key(&k) || ask.iter().any(|a| key(a) == k) {
-            continue;
-        }
-        // A rejected call is answered so, and no backing is asked (064).
-        if let Some(why) = took[*t].read.decides(d).and_then(|x| x.rejected.as_ref()) {
-            answers.insert(k, rejected(why));
-            continue;
-        }
-        let retried = match &mut took[*t].left.of {
-            Of::Sweep { retried, .. } => retried.as_mut(),
-            Of::Record(_) => None,
-        };
-        let again = retried.as_ref().is_some_and(|r| !r.contains(&k));
-        let usable = |v: &&Value| !(again && is_failure(v));
-        let answer = held.get(&k).filter(usable);
-        match answer.or(recorded.as_ref().filter(usable)) {
-            Some(v) => {
-                if recorded.as_ref() == Some(v) {
-                    known.insert(k.clone());
-                }
-                answers.insert(k, v.clone());
-            }
-            None => {
-                if let (true, Some(r)) = (again, retried) {
-                    r.insert(k);
-                }
-                ask.push(d);
-            }
-        }
-    }
-    {
-        let mut w = lake.writer();
-        for t in &mut took {
-            let Of::Sweep { retried, .. } = &t.left.of else {
-                continue;
-            };
-            if let Some(o) = w.owed.get_mut(t.at).filter(|o| **o == t.read)
-                && let Of::Sweep { retried: noted, .. } = &mut o.of
-            {
-                noted.clone_from(retried);
-                t.read = o.clone();
-            }
-        }
-    }
+    let job = move |l: &Turn<'_>| Ok(answered(l, batch));
+    let Answered {
+        mut took,
+        calls,
+        mut answers,
+        mut known,
+        ask,
+    } = exec::write(lake, job).await?;
+    let ask: Vec<&Due> = ask.iter().map(|i| &calls[*i].1).collect();
     let asked: Vec<(Key, Value)> = match ask.first().map(|d| &d.call) {
         None => Vec::new(),
         Some(c @ Call::Embed { .. }) => {
@@ -1431,30 +1625,112 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
         }
     };
     let asked: Vec<(Key, Value)> = asked.into_iter().map(|(k, v)| (k, written(v))).collect();
-    lake.writer().held.extend(asked.iter().cloned());
+    // Held by the first recording's job, before it records.
+    let mut hold = asked.clone();
     answers.extend(asked);
     for (_, d, _) in &calls {
         let k = key(d);
         if let Some(output) = answers.get(&k) {
-            let output = output.clone();
-            record_async(lake, d, output, known.contains(&k)).await?;
-            lake.writer().held.remove(&k);
+            let (d, output, was) = (d.clone(), output.clone(), known.contains(&k));
+            let (hold, done) = (std::mem::take(&mut hold), k.clone());
+            exec::write(lake, move |l| {
+                l.writer().held.extend(hold);
+                record(l, d, output, was)?;
+                l.writer().held.remove(&done);
+                Ok(())
+            })
+            .await?;
             known.insert(k);
         }
     }
-    propose(lake, &took).await?;
+    exec::write(lake, move |l| {
+        propose(l, &took)?;
+        let mut w = l.writer();
+        took.sort_by_key(|t| std::cmp::Reverse(t.at));
+        for t in took {
+            if w.owed.get(t.at) != Some(&t.read) {
+                continue;
+            }
+            match t.done {
+                true => drop(w.owed.remove(t.at)),
+                false => w.owed[t.at] = t.left,
+            }
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// A batch as [`make`] asks it: the answers the lake holds or keeps for
+/// its calls, by call, those of them it holds recorded, and the calls left
+/// to ask, by their place in `calls`.
+struct Answered {
+    took: Vec<Took>,
+    calls: Vec<(usize, Due, Option<Value>)>,
+    answers: BTreeMap<Key, Value>,
+    known: BTreeSet<Key>,
+    ask: Vec<usize>,
+}
+
+/// What of `batch` is answered before a backing is asked, read under the
+/// writer, with the calls a sweep makes again noted in its entry.
+fn answered(lake: &Turn<'_>, batch: Batch) -> Answered {
+    let Batch { mut took, calls } = batch;
     let mut w = lake.writer();
-    took.sort_by_key(|t| std::cmp::Reverse(t.at));
-    for t in took {
-        if w.owed.get(t.at) != Some(&t.read) {
+    let mut answers: BTreeMap<Key, Value> = BTreeMap::new();
+    // The calls whose answer the lake holds already.
+    let mut known: BTreeSet<Key> = BTreeSet::new();
+    let mut ask: Vec<usize> = Vec::new();
+    for (i, (t, d, recorded)) in calls.iter().enumerate() {
+        let k = key(d);
+        if answers.contains_key(&k) || ask.iter().any(|a| key(&calls[*a].1) == k) {
             continue;
         }
-        match t.done {
-            true => drop(w.owed.remove(t.at)),
-            false => w.owed[t.at] = t.left,
+        // A rejected call is answered so, and no backing is asked (064).
+        if let Some(why) = took[*t].read.decides(d).and_then(|x| x.rejected.as_ref()) {
+            answers.insert(k, rejected(why));
+            continue;
+        }
+        let retried = match &mut took[*t].left.of {
+            Of::Sweep { retried, .. } => retried.as_mut(),
+            Of::Record(_) => None,
+        };
+        let again = retried.as_ref().is_some_and(|r| !r.contains(&k));
+        let usable = |v: &&Value| !(again && is_failure(v));
+        let answer = w.held.get(&k).filter(usable);
+        match answer.or(recorded.as_ref().filter(usable)) {
+            Some(v) => {
+                if recorded.as_ref() == Some(v) {
+                    known.insert(k.clone());
+                }
+                answers.insert(k, v.clone());
+            }
+            None => {
+                if let (true, Some(r)) = (again, retried) {
+                    r.insert(k);
+                }
+                ask.push(i);
+            }
         }
     }
-    Ok(())
+    for t in &mut took {
+        let Of::Sweep { retried, .. } = &t.left.of else {
+            continue;
+        };
+        if let Some(o) = w.owed.get_mut(t.at).filter(|o| **o == t.read)
+            && let Of::Sweep { retried: noted, .. } = &mut o.of
+        {
+            noted.clone_from(retried);
+            t.read = o.clone();
+        }
+    }
+    Answered {
+        took,
+        calls,
+        answers,
+        known,
+        ask,
+    }
 }
 
 /// The output a rejected call is recorded with (064).
@@ -1531,13 +1807,12 @@ pub(crate) fn closing(
 /// each record's call that no pending proposal holds already, and a
 /// sweep's calls as one once it ends (064). The proposer is the writer
 /// that set them off, and the proposal is caused by its event.
-async fn propose(lake: &Arc<Lake>, took: &[Took]) -> Result<()> {
+fn propose(lake: &Turn<'_>, took: &[Took]) -> Result<()> {
     let ends = |t: &&Took| t.done && !t.left.proposing.is_empty();
     if took.iter().all(|t| t.propose.is_empty()) && !took.iter().any(|t| ends(&t)) {
         return Ok(());
     }
-    let (l, took) = (lake.clone(), took.iter().map(Took::proposals).collect());
-    exec::run(move || proposed(&l, took)).await
+    proposed(lake, took.iter().map(Took::proposals).collect())
 }
 
 impl Took {
@@ -1575,7 +1850,7 @@ impl Took {
 /// record.
 type Proposing = (ProposedWrite, Option<Position>);
 
-fn proposed(lake: &Lake, took: Vec<(Owed, Vec<Proposing>)>) -> Result<()> {
+fn proposed(lake: &Turn<'_>, took: Vec<(Owed, Vec<Proposing>)>) -> Result<()> {
     let mut w = lake.for_write()?;
     let view = lake.engine.view(None)?;
     // A record's call a pending proposal holds is not proposed again; the
@@ -1633,7 +1908,7 @@ fn proposed(lake: &Lake, took: Vec<(Owed, Vec<Proposing>)>) -> Result<()> {
             drafts.push(Draft {
                 writer: o.by.writer.clone(),
                 origin: lakelands_api::record::Origin::Authored,
-                context: o.context,
+                context: o.context.clone(),
                 cause: Some(o.by.at),
                 ..Draft::system(
                     now,
@@ -1664,12 +1939,6 @@ fn written(output: Value) -> Value {
         Some(n) => json!({ "error": Case::IntegerTooLarge { n: n.clone() }.to_string() }),
         None => output,
     }
-}
-
-async fn record_async(lake: &Arc<Lake>, d: &Due, output: Value, known: bool) -> Result<()> {
-    let (l, d) = (lake.clone(), d.clone());
-    exec::run(move || record(&l, d, output, known)).await?;
-    Ok(())
 }
 
 /// The output of each text, in order. A request of several texts that the
@@ -1732,11 +2001,10 @@ async fn embed_each(backend: &dyn EmbedBackend, texts: &[String]) -> Vec<Value> 
 /// judged on the record as the fold will leave it, as for any write.
 ///
 /// An output the lake already holds (`known`) is recorded again only when
-/// it fills something: a due issued twice appends nothing the second time.
-/// Where it is the call's latest output, and no failure, the fill names it
-/// by `output_at` instead of carrying it again
+/// it fills something. Where it is the call's latest output, and no
+/// failure, the fill names it by `output_at` instead of carrying it again
 /// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
-fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Position>> {
+fn record(lake: &Turn<'_>, d: Due, output: Value, known: bool) -> Result<Option<Position>> {
     let mut w = lake.for_write()?;
     let now = lake.clock(&mut w);
     let view = lake.engine.view(None)?;
@@ -1752,7 +2020,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
     let draft = Draft {
         cause: Some(d.cause),
         procedure: Some(d.procedure.clone()),
-        context,
+        context: context.clone(),
         sealed,
         ..Draft::system(
             now,
@@ -1791,6 +2059,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
                 waiting: false,
                 plans: &w.plans,
                 keys: Some(&lake.keys),
+                apart: None,
             },
         )?;
         if let Some(after) = after {
@@ -1799,7 +2068,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
             let call = crate::writes::Call {
                 lake,
                 who: &host,
-                context,
+                context: context.clone(),
                 followed: None,
                 shown: None,
             };

@@ -4,12 +4,15 @@
 //! order they came, a commit, a `begin` or a view to refuse, a look at
 //! the lake before each commit, while its transaction is open, and a seal
 //! that hands another digest than the engine took or asks twice; and it
-//! counts the rows its scans hand out by type and the reads of a kept
-//! view's state, and keeps the last record put under each kept name and
-//! key, and the entries of the kept views' orders since the last clear;
+//! counts the views asked for, the rows its scans hand out by type and
+//! the reads of a kept view's state, and keeps the last record put under
+//! each kept name and key, and the entries of the kept views' orders since the last clear;
 //! and it can hand one event of the log out damaged, and the head's view
 //! out at an earlier position, and let a write land just before the
-//! engine answers a `ranked`.
+//! engine answers a `ranked`; and it can panic in a read of a record, in
+//! a commit, before or after the engine takes it, and in the view asked
+//! for next; and it can let a write land just before an `of_source`
+//! answers, and keeps the keys and the window of every `matching`.
 //! [`calls`] reads what a lake owes as the drain would.
 
 #![allow(dead_code)]
@@ -86,8 +89,8 @@ pub struct Probe {
     /// The last record put under each kept name and key.
     pub kept: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
     /// The entries of the kept views' orders put since the last clear, by
-    /// name and key, an ended one left out.
-    pub orders: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
+    /// name and key, a deleted one left out.
+    pub orders: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), Vec<u8>>>,
     /// Called before each commit reaches the engine, with the position it
     /// commits through: its transaction is still open.
     pub before_commit: Mutex<Option<Look>>,
@@ -107,6 +110,9 @@ pub struct Probe {
     /// Whether the feed's index decides nothing, as when a projection a
     /// rebuild cleared has not refolded the range asked.
     pub undecided: std::sync::atomic::AtomicBool,
+    /// Where the feed's index stops deciding a source's events, by the
+    /// source's id, as when a rebuild has refolded the log only so far.
+    pub decided: Mutex<std::collections::BTreeMap<String, Position>>,
     /// How often a view was asked for the declarations in force.
     pub declarations: AtomicUsize,
     /// How often a view was asked for the lake's list of renames.
@@ -116,9 +122,28 @@ pub struct Probe {
     pub before_ranked: Mutex<Option<(usize, Write)>>,
     /// How often the engine was asked for a search's rankings.
     pub ranked: AtomicUsize,
+    /// A write to land just before the engine answers an `of_source`: the
+    /// n-th from now, counted from 1.
+    pub before_source: Mutex<Option<(usize, Write)>>,
+    /// Each `matching` asked: the keys it names, which an engine seeks
+    /// one by one, and the window it reads.
+    pub seeks: Mutex<Vec<(usize, Position, Position)>>,
     /// A reader to park inside the next `declarations`: it says so on the
     /// first and waits on the second before it reads.
     pub park: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// A record whose every `get` and `get_many` panics while it is set.
+    pub panic_get: Mutex<Option<(TypeName, RecordKey)>>,
+    /// A commit to panic at: the n-th from now, counted from 1, and
+    /// whether the engine takes it first.
+    pub panic_commit: Mutex<Option<(usize, bool)>>,
+    /// Whether the view asked for next after a commit panicked panics too.
+    pub then_view: std::sync::atomic::AtomicBool,
+    /// A view to panic at: the n-th asked for from now, counted from 1.
+    pub panic_view: Mutex<Option<usize>>,
+    /// Whether the next view asked for as of a position panics.
+    pub panic_as_of: std::sync::atomic::AtomicBool,
+    /// How many views were asked for.
+    pub views: AtomicUsize,
 }
 
 impl Probe {
@@ -145,6 +170,15 @@ impl Probe {
                 detail: lakelands_api::error::Detail::scrubbed(message),
             },
         ))
+    }
+
+    /// A read of `ty`'s records at `keys`, panicking where `panic_get`
+    /// names one of them.
+    fn read_at(&self, ty: &TypeName, keys: &[RecordKey]) {
+        let planted = self.panic_get.lock().unwrap().clone();
+        if planted.is_some_and(|(t, k)| t == *ty && keys.contains(&k)) {
+            std::panic::panic_any("a read panicked (planted)");
+        }
     }
 
     /// Whether this call is the one `planted` names: it counts down.
@@ -185,6 +219,7 @@ impl ProjectionView for ProbedView<'_> {
         self.inner.declarations()
     }
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
+        self.probe.read_at(ty, std::slice::from_ref(key));
         self.probe.got(ty, 1)?;
         *self
             .probe
@@ -195,7 +230,37 @@ impl ProjectionView for ProbedView<'_> {
             .or_default() += 1;
         self.inner.get(ty, key)
     }
+
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        let entry = self.inner.order(name, key)?;
+        *self
+            .probe
+            .rows
+            .lock()
+            .unwrap()
+            .entry(name.clone())
+            .or_default() += usize::from(entry.is_some());
+        Ok(entry)
+    }
+
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        let page = self.inner.order_page(name, after, n)?;
+        *self
+            .probe
+            .rows
+            .lock()
+            .unwrap()
+            .entry(name.clone())
+            .or_default() += page.len();
+        Ok(page)
+    }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        self.probe.read_at(ty, keys);
         self.probe.got(ty, keys.len())?;
         self.inner.get_many(ty, keys)
     }
@@ -246,6 +311,12 @@ impl ProjectionView for ProbedView<'_> {
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.inner.proposals(filter)
     }
+    fn quarantined(
+        &self,
+        filter: &lakelands_api::quarantine::QuarantineFilter,
+    ) -> Result<Vec<lakelands_api::quarantine::Quarantined>> {
+        self.inner.quarantined(filter)
+    }
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.inner.is_member(set, ty, key)
     }
@@ -271,6 +342,8 @@ impl ProjectionView for ProbedView<'_> {
         through: Position,
         limit: u32,
     ) -> Result<lakelands_api::engine::Matched> {
+        let seek = (filter.keys.len(), from, through);
+        self.probe.seeks.lock().unwrap().push(seek);
         if self.probe.undecided.load(Ordering::SeqCst) {
             return Ok(lakelands_core::feed::undecided());
         }
@@ -283,10 +356,34 @@ impl ProjectionView for ProbedView<'_> {
         through: Position,
         limit: u32,
     ) -> Result<lakelands_api::engine::Matched> {
+        let mut planted = self.probe.before_source.lock().unwrap();
+        let now = planted.as_mut().is_some_and(|(n, _)| {
+            *n -= 1;
+            *n == 0
+        });
+        let write = planted.take_if(|_| now);
+        drop(planted);
+        if let Some((_, write)) = write {
+            write();
+        }
         if self.probe.undecided.load(Ordering::SeqCst) {
             return Ok(lakelands_core::feed::undecided());
         }
-        self.inner.of_source(source, from, through, limit)
+        match self.probe.decided.lock().unwrap().get(source.as_str()) {
+            Some(at) if from > *at => Ok(lakelands_core::feed::undecided()),
+            Some(at) => self.inner.of_source(source, from, through.min(*at), limit),
+            None => self.inner.of_source(source, from, through, limit),
+        }
+    }
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        self.inner.thinned_acts(ty)
+    }
+    fn thinned_at(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
+        self.inner.thinned_at(ty, key)
     }
 }
 
@@ -360,10 +457,17 @@ impl LakeEngine for Probed {
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
         self.inner.segments()
     }
+    fn active_segment_bytes(&self) -> Option<u64> {
+        self.inner.active_segment_bytes()
+    }
     fn projection(&self) -> &dyn ProjectionStore {
         self
     }
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
+        let as_of_panics = || self.probe.panic_as_of.swap(false, Ordering::SeqCst);
+        if Probe::refused(&self.probe.panic_view) || (as_of.is_some() && as_of_panics()) {
+            std::panic::panic_any("a view panicked (planted)");
+        }
         if Probe::refused(&self.probe.refuse_view) {
             let message = "the view was refused (planted)".to_owned();
             return Err(lakelands_api::Error::unavailable(
@@ -374,6 +478,7 @@ impl LakeEngine for Probed {
                 },
             ));
         }
+        self.probe.views.fetch_add(1, Ordering::SeqCst);
         let lags = *self.probe.lags.lock().unwrap();
         Ok(Box::new(ProbedView {
             inner: self.inner.view(as_of.or(lags))?,
@@ -435,7 +540,27 @@ impl ProjectionStore for Probed {
                 },
             ));
         }
-        self.inner.projection().commit(through)
+        let panics = {
+            let mut planted = self.probe.panic_commit.lock().unwrap();
+            let now = planted.as_mut().is_some_and(|(n, _)| {
+                *n -= 1;
+                *n == 0
+            });
+            match now {
+                true => planted.take().map(|(_, taken)| taken),
+                false => None,
+            }
+        };
+        let Some(taken) = panics else {
+            return self.inner.projection().commit(through);
+        };
+        if taken {
+            self.inner.projection().commit(through)?;
+        }
+        if self.probe.then_view.load(Ordering::SeqCst) {
+            *self.probe.panic_view.lock().unwrap() = Some(1);
+        }
+        std::panic::panic_any("a commit panicked (planted)");
     }
     fn rollback(&self) {
         self.inner.projection().rollback();
@@ -466,22 +591,49 @@ impl ProjectionStore for Probed {
                 .lock()
                 .unwrap()
                 .insert((ty, key), record.clone());
-        } else if lakelands_api::seam::is_head_only(&ty) {
-            let mut orders = self.probe.orders.lock().unwrap();
-            match record.is_ended() {
-                true => drop(orders.remove(&(ty, key))),
-                false => drop(orders.insert((ty, key), record.clone())),
-            }
         }
         self.inner.projection().put_record(record)
     }
+    fn drop_states(&self, of: lakelands_api::engine::StatesOf<'_>) -> Result<()> {
+        self.inner.projection().drop_states(of)
+    }
+    fn states(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        after: Option<Position>,
+        through: Position,
+        limit: u32,
+    ) -> Result<Vec<lakelands_api::record::StoredRecord>> {
+        self.inner
+            .projection()
+            .states(ty, key, after, through, limit)
+    }
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        self.inner.projection().end_head_only(name, at)
+    }
+    fn put_order(&self, name: &TypeName, key: &RecordKey, entry: Option<&[u8]>) -> Result<()> {
+        let mut orders = self.probe.orders.lock().unwrap();
+        match entry {
+            None => drop(orders.remove(&(name.clone(), key.clone()))),
+            Some(entry) => drop(orders.insert((name.clone(), key.clone()), entry.to_vec())),
+        }
+        self.inner.projection().put_order(name, key, entry)
+    }
+    fn end_order(&self, name: &TypeName) -> Result<()> {
         let mut orders = self.probe.orders.lock().unwrap();
         orders.retain(|(ty, _), _| ty != name);
-        self.inner.projection().end_head_only(name, at)
+        self.inner.projection().end_order(name)
     }
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.inner.projection().put_proposal(proposal, at)
+    }
+    fn put_quarantined(
+        &self,
+        row: &lakelands_api::quarantine::Quarantined,
+        at: Position,
+    ) -> Result<()> {
+        self.inner.projection().put_quarantined(row, at)
     }
     fn put_membership(
         &self,
@@ -504,8 +656,20 @@ impl ProjectionStore for Probed {
         self.probe.orders.lock().unwrap().clear();
         self.inner.projection().clear()
     }
-    fn compact(&self) -> Result<Reclaimed> {
-        self.inner.projection().compact()
+    fn compact_step(&self, how: lakelands_api::engine::Compact) -> Result<Reclaimed> {
+        self.inner.projection().compact_step(how)
+    }
+    fn put_thinned_act(&self, act: &lakelands_api::read::ThinnedAct, at: Position) -> Result<()> {
+        self.inner.projection().put_thinned_act(act, at)
+    }
+    fn put_thinned(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        before: lakelands_api::time::Timestamp,
+        at: Position,
+    ) -> Result<()> {
+        self.inner.projection().put_thinned(ty, key, before, at)
     }
 }
 
@@ -524,9 +688,25 @@ impl EngineOpener for ProbedOpener {
     }
 }
 
+/// A handle on the lake `name` of `opener`: two opens of one name through
+/// it are two handles on one lake.
+pub async fn open(
+    opener: &Arc<dyn EngineOpener>,
+    name: &str,
+    mode: OpenMode,
+) -> Arc<dyn lakelands_api::LakeStore> {
+    let engines = vec![opener.clone()];
+    let seams = lakelands_api::seam::Seams {
+        engines,
+        ..Default::default()
+    };
+    let opened = lakelands_store::open(Location::memory(name), seams, mode);
+    opened.await.expect("a handle on the lake")
+}
+
 /// The calls the lake owes now, entry by entry, a sweep's over every
 /// page; the entries taken.
-pub fn calls(lake: &lakelands_store::lake::Lake) -> Vec<lakelands_store::backed::Due> {
+pub fn calls(lake: &lakelands_store::lake::Turn<'_>) -> Vec<lakelands_store::backed::Due> {
     use lakelands_store::backed::{Of, page};
     let owed = std::mem::take(&mut lake.writer().owed);
     let mut calls = Vec::new();

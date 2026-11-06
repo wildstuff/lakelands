@@ -414,7 +414,7 @@ cut.
 | `{pg}/src/tls.rs` | 478 | imported, carried | pg | the rustls connector came across: roots from a named CA file, a client certificate with its key, both or neither; the URL keys and the machine store were cut for the location's `tls` and well-known bundle paths (`connect::tls_config`) |
 | `{pg}/src/type_cache.rs` | 88 | imported, read and cut | pg | nothing is cached that a write invalidates; a view reads its declarations |
 | `{pg}/src/vectors.rs` | 192 | imported, read and cut | pg | `pgvector` is not used; vectors are compared by the one cosine, by brute force |
-| `{pg}/src/version.rs` | 78 | imported, carried | pg | the server floor came across as a check at open, at PostgreSQL 16, the release the conformance job runs (`connect`) |
+| `{pg}/src/version.rs` | 78 | imported, carried | pg | the server floor came across as a check at open, at PostgreSQL 16, the release the conformance job then ran (`connect`) |
 | `{pg}/src/view.rs` | 1,441 | imported, read and cut | pg | replaced by `view`: history reads in one repeatable-read transaction, the rulebook deciding |
 | `{pg}/tests/batch_cursor.rs` | 256 | never imported | — | engine-local tests: behaviour claims are in the suite |
 | `{pg}/tests/batch_write.rs` | 222 | never imported | — | engine-local tests: behaviour claims are in the suite |

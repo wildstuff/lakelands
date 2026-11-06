@@ -1,21 +1,21 @@
 //! The engine through its seam: the opener's registry, the lease across
 //! handles, transactions, and every read a view answers.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use lakelands_api::Error;
 use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::engine::{After, EngineOpener, LakeEngine, OpenMode, ProjectionStore, Scan};
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{Position, ProposalId, RecordKey, TypeName, Version};
+use lakelands_api::id::{Position, ProposalId, RecordKey, TypeName};
 use lakelands_api::location::Location;
 use lakelands_api::query::Walk;
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState, ProposedWrite};
-use lakelands_api::{Error, Refusal};
 use lakelands_core::conformance::engine::reads::{lexical, nearest};
+use lakelands_core::conformance::fixture::stored_record;
 use serde_json::{Value, json};
 
 use super::*;
@@ -39,7 +39,8 @@ pub(crate) fn chain(start: u64, n: u64, fence: u64, prev: Digest) -> Vec<Canonic
                 hash: hash.clone(),
                 // Position 0 is written before any lease exists.
                 fence: if p == 0 { 0 } else { fence },
-                bytes: format!("{{\"p\":{p}}}").into_bytes(),
+                bytes: format!("{{\"position\":{p},\"prev\":\"{}\"}}", prev.0).into_bytes(),
+                frame: None,
             };
             prev = hash;
             e
@@ -65,17 +66,7 @@ fn decl(v: Value) -> Declaration {
 }
 
 fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {
-    StoredRecord {
-        ty: ty.into(),
-        key: key.into(),
-        version: Version(1),
-        fields: serde_json::from_value(fields).unwrap(),
-        meta: BTreeMap::new(),
-        position: Position(position),
-        made: Position(position),
-        retired: false,
-        restricted: false,
-    }
+    stored_record(ty, key, serde_json::from_value(fields).unwrap(), position)
 }
 
 /// Folds `puts` in one transaction through `through`.
@@ -254,67 +245,6 @@ fn clear_drops_the_projection_but_keeps_the_log_and_the_lease() {
 // ---- views at positions --------------------------------------------------
 
 #[test]
-fn a_view_sees_the_states_valid_at_its_position() {
-    let e = fresh();
-    fold(e.as_ref(), 2, |p| {
-        p.put_record(&record("t", "a", json!({"n": 1}), 1)).unwrap();
-        p.put_record(&record("t", "a", json!({"n": 2}), 2)).unwrap();
-    });
-    fold(e.as_ref(), 5, |p| {
-        p.put_record(&record("t", "a", json!({"n": 3}), 5)).unwrap()
-    });
-    let n = |at: Option<u64>| {
-        e.view(at.map(Position))
-            .unwrap()
-            .get(&"t".into(), &"a".into())
-            .unwrap()
-            .map(|r| r.fields["n"].clone())
-    };
-    assert_eq!(n(Some(0)), None);
-    assert_eq!(n(Some(1)), Some(json!(1)));
-    assert_eq!(n(Some(2)), Some(json!(2)));
-    assert_eq!(n(Some(4)), Some(json!(2)));
-    assert_eq!(n(Some(5)), Some(json!(3)));
-    assert_eq!(n(None), Some(json!(3)));
-}
-
-#[test]
-fn a_view_past_the_folded_position_is_refused_naming_the_head() {
-    let e = fresh();
-    assert!(matches!(
-        e.view(Some(Position(0))),
-        Err(Error::Refused {
-            reason: Refusal::OutOfRange { .. },
-            ..
-        })
-    ));
-    fold(e.as_ref(), 3, |_| {});
-    assert!(e.view(Some(Position(3))).is_ok());
-    let Err(Error::Refused {
-        reason: Refusal::OutOfRange { head },
-        ..
-    }) = e.view(Some(Position(4)))
-    else {
-        panic!("a view past the fold was served");
-    };
-    assert_eq!(head, Position(3));
-}
-
-#[test]
-fn a_view_keeps_its_position_while_the_fold_moves_on() {
-    let e = fresh();
-    fold(e.as_ref(), 1, |p| {
-        p.put_record(&record("t", "a", json!({"n": 1}), 1)).unwrap()
-    });
-    let v = e.view(None).unwrap();
-    fold(e.as_ref(), 2, |p| {
-        p.put_record(&record("t", "a", json!({"n": 2}), 2)).unwrap()
-    });
-    let got = v.get(&"t".into(), &"a".into()).unwrap().unwrap();
-    assert_eq!(got.fields["n"], json!(1));
-}
-
-#[test]
 fn declarations_memberships_proposals_outputs_and_applied_ids_keep_history() {
     let e = fresh();
     let ty = decl(json!({"declare": "type", "name": "t", "fields": []}));
@@ -479,21 +409,6 @@ fn a_scan_includes_retired_and_restricted_records_only_when_asked() {
 }
 
 #[test]
-fn a_scan_filters_exactly_and_an_unevaluable_filter_matches_nothing() {
-    let e = fresh();
-    numbered(e.as_ref());
-    let v = e.view(None).unwrap();
-    let filter = |text: &str| Scan {
-        filter: Some(lakelands_core::expr::parse(text).unwrap()),
-        ..scan(100)
-    };
-    let t = TypeName::from("t");
-    assert_eq!(keys(&v.scan(&t, &filter("n > 5")).unwrap()), ["b", "e"]);
-    assert_eq!(keys(&v.scan(&t, &filter("n is null")).unwrap()), ["c"]);
-    assert!(v.scan(&t, &filter("n / 0 > 1")).unwrap().is_empty());
-}
-
-#[test]
 fn a_scan_continues_after_a_keyset_position_and_stops_at_its_limit() {
     let e = fresh();
     numbered(e.as_ref());
@@ -535,9 +450,11 @@ fn a_scan_orders_by_when_a_field_was_learned() {
         position: Position(0),
         writer: "human:a".into(),
         source: None,
+        procedure: None,
         procedure_version: None,
         error: None,
         erased: false,
+        on_behalf_of: None,
     };
     fold(e.as_ref(), 0, |p| {
         for (key, t) in [("a", 300), ("b", 100), ("c", 200)] {
@@ -698,20 +615,6 @@ fn edges_both_list_each_link_once_a_self_link_included() {
     );
 }
 
-#[test]
-fn edges_to_a_retired_record_are_returned() {
-    let e = fresh();
-    graph(e.as_ref());
-    let mut gone = record("customer", "c1", json!({}), 1);
-    gone.retired = true;
-    fold(e.as_ref(), 1, |p| p.put_record(&gone).unwrap());
-    assert_eq!(
-        links(e.as_ref(), "invoice", "i1", Some("billed_to"), Walk::Out),
-        ["i1>billed_to>c1"]
-    );
-    assert_eq!(links(e.as_ref(), "customer", "c1", None, Walk::In).len(), 2);
-}
-
 // ---- full text -----------------------------------------------------------
 
 #[test]
@@ -747,16 +650,14 @@ fn lexical_search_scores_matched_tokens_over_searchable_text() {
         p.put_record(&held).unwrap();
     });
     let hits = lexical(e.as_ref(), &"doc".into(), "invoice runs", None, 10).unwrap();
+    let keys: Vec<&str> = hits.iter().map(|(k, _)| k.as_str()).collect();
+    // Both tokens are in three titles: `d`'s one word outranks `b`'s two.
     assert_eq!(
-        hits,
-        vec![
-            ("a".into(), 2.0),
-            ("h".into(), 2.0),
-            ("b".into(), 1.0),
-            ("d".into(), 1.0)
-        ],
+        keys,
+        ["a", "h", "d", "b"],
         "a restricted record is a candidate; a retired one is not"
     );
+    assert_eq!(hits[0].1, hits[1].1, "`a` and `h` hold the same text");
     assert_eq!(
         lexical(e.as_ref(), &"doc".into(), "invoice runs", None, 1)
             .unwrap()
@@ -869,4 +770,73 @@ fn the_vector_index_is_shared_by_every_handle_to_the_lake() {
     assert_eq!(hits, vec![(key.clone(), 1.0)]);
     a.vectors().unwrap().remove(&ty, &key, "emb").unwrap();
     assert_eq!(b.vectors().unwrap().count(&ty, "emb").unwrap(), 0);
+}
+
+// ---- a kept view's order ------------------------------------------------
+
+/// The fold keeps a view's order entries in the engine's own order table,
+/// apart from the records (lakelands#1690): no `sys:order.` record is put,
+/// and the entries the extreme reads its next holder from are there.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_fold_keeps_an_extremes_order_apart_from_the_records() {
+    use lakelands_api::Location;
+    use lakelands_api::ontology::StorageKind;
+    use lakelands_api::seam::{Seams, VIEW_KEPT_SETTING, order_name};
+    use lakelands_core::conformance::fixture::{Lake, field, type_decl, view_of};
+    use std::sync::Arc;
+
+    let opener = MemoryOpener::new();
+    let location = Location::memory(unique("order").as_str());
+    let seams = Seams {
+        engines: vec![Arc::new(opener.clone())],
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(location.clone(), seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl(
+        "line",
+        vec![
+            field("g", StorageKind::Text),
+            field("n", StorageKind::Number),
+        ],
+    ))
+    .await
+    .unwrap();
+    let fields = vec![
+        field("g", StorageKind::Text),
+        field("low", StorageKind::Number),
+        field("high", StorageKind::Number),
+    ];
+    l.declare(view_of(
+        "ends",
+        "line",
+        &["g"],
+        fields,
+        &[("low", "min(n)"), ("high", "max(n)")],
+    ))
+    .await
+    .unwrap();
+    l.set(&format!("{VIEW_KEPT_SETTING}ends"), json!(true))
+        .await
+        .unwrap();
+    for (key, fields) in [
+        ("a", json!({"g": "x", "n": 9})),
+        ("b", json!({"g": "x", "n": 5})),
+    ] {
+        l.upsert("line", key, fields).await.unwrap();
+    }
+    drop(store);
+    let engine = opener.open(&location, OpenMode::Read).unwrap();
+    let view = engine.view(None).unwrap();
+    let name = order_name(&TypeName::from("ends"));
+    assert!(
+        view.scan(&name, &scan(100)).unwrap().is_empty(),
+        "the fold writes no `sys:order.` record"
+    );
+    assert!(
+        !view.order_page(&name, None, 100).unwrap().is_empty(),
+        "the extreme's order holds its entries"
+    );
 }

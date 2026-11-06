@@ -31,6 +31,12 @@ Failed in:
 Failed in:
   enum Shape in file /work/crates/lakelands-api/src/shape.rs:5
 
+--- warning partial_ord_enum_variants_reordered: enum variants reordered in #[derive(PartialOrd)] enum ---
+
+Failed in:
+  Case::Later moved from position 4 to 5, in /work/crates/lakelands-api/src/error.rs:9
+  Order::Desc moved from position 0 to 1, in /work/crates/lakelands-api/src/read.rs:4
+
      Summary semver requires new major version: 6 major and 0 minor checks failed
 === lakelands-store
 --- failure function_missing: pub fn removed or renamed ---

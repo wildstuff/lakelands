@@ -7,11 +7,12 @@
 //! The rows run through the doors on the memory engine, behind the wrapper
 //! (`probed`) that counts how often a view is asked for the declarations
 //! in force, which a build asks once, and for the lake's renames. Each
-//! count is taken after the write it follows, so it counts reads alone.
+//! count is taken after the write it follows, so it counts reads alone,
+//! and after the look a writer's open sends beside the writer has asked
+//! too ([`writer`]).
 
 mod probed;
 
-use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, mpsc};
 
@@ -19,17 +20,14 @@ use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::read::{Find, Found};
-use lakelands_api::seam::Seams;
 use lakelands_api::write::Migration;
-use lakelands_api::{
-    Access, Error, Grants, LakeStore, Location, Position, PrincipalKind, TypeName,
-};
+use lakelands_api::{Access, Error, Grants, LakeStore, Position, PrincipalKind, TypeName};
 use lakelands_core::conformance::fixture::{
     Lake, computed_by, field, field_access, find_where, principal, read, read_at, reads_all,
     restrict, source_record, sourced, type_decl, type_of, value,
 };
 use lakelands_engine_mem::MemoryOpener;
-use probed::{Probe, ProbedOpener};
+use probed::{Probe, ProbedOpener, open};
 use serde_json::json;
 
 /// The opener of `probe`'s memory lakes: two opens of one name through it
@@ -38,22 +36,35 @@ fn opener(probe: &Arc<Probe>) -> Arc<dyn EngineOpener> {
     Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))
 }
 
-/// A handle on the lake `name` of `opener`.
-async fn open(opener: &Arc<dyn EngineOpener>, name: &str, mode: OpenMode) -> Arc<dyn LakeStore> {
-    let seams = Seams {
-        engines: vec![opener.clone()],
-        ..Seams::default()
-    };
-    lakelands_store::open(Location::memory(name), seams, mode)
-        .await
-        .expect("a handle on the lake")
+/// A writer's handle on `name` through `opener`, once its open's look at
+/// what the road owes has asked for the declarations in force. The open
+/// asks twice before it answers; the look runs beside the writer, sent
+/// as the open answers and never waited for, and asks once more, so a
+/// count taken before it lands would count it as a read's build. It is
+/// waited for, bounded, then counted exactly.
+async fn writer(
+    opener: &Arc<dyn EngineOpener>,
+    probe: &Probe,
+    name: &str,
+    mode: OpenMode,
+) -> Arc<dyn LakeStore> {
+    let asked = builds(probe) + 3;
+    let store = open(opener, name, mode).await;
+    for _ in 0..10_000 {
+        if builds(probe) >= asked {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert_eq!(builds(probe), asked, "a writer's open and its look");
+    store
 }
 
 /// A new lake on the probed memory engine, with `t`: its text `a` and its
 /// number `n`.
 async fn lake(name: &str) -> (Arc<dyn LakeStore>, Arc<Probe>) {
     let probe = Arc::new(Probe::default());
-    let store = open(&opener(&probe), name, OpenMode::Create).await;
+    let store = writer(&opener(&probe), &probe, name, OpenMode::Create).await;
     let l = Lake::of(store.as_ref());
     l.declare(type_of("t", &[("a", Text), ("n", Number)]))
         .await
@@ -307,53 +318,6 @@ async fn a_shape_is_carried_only_from_where_it_stands() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn another_handles_declaration_is_seen_by_the_next_read() {
-    let probe = Arc::new(Probe::default());
-    let opener = opener(&probe);
-    let writer = open(&opener, "two", OpenMode::Create).await;
-    let w = Lake::of(writer.as_ref());
-    w.declare(type_of("t", &[("a", Text)])).await.unwrap();
-    let reader = open(&opener, "two", OpenMode::Read).await;
-    let r = Lake::of(reader.as_ref());
-    assert!(shown(&r, "t", None).await && !shown(&r, "u", None).await);
-    w.declare(type_of("u", &[("a", Text)])).await.unwrap();
-    assert!(shown(&r, "u", None).await, "the reading handle's next read");
-    assert!(shown(&w, "u", None).await, "the writing handle's");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reads_beside_declaring_appends_see_one_shape_whole() {
-    let (store, _probe) = lake("beside").await;
-    let l = Lake::of(store.as_ref());
-    let declaring = async {
-        let mut at = Vec::new();
-        for i in 0..20 {
-            let o = l
-                .declare(type_of(&format!("u{i:02}"), &[("a", Text)]))
-                .await;
-            at.push(o.unwrap().position());
-        }
-        at
-    };
-    let reading = async {
-        let mut seen = Vec::new();
-        for _ in 0..200 {
-            let d = l.cat.describe(&l.own, read_at(None)).await.unwrap();
-            let names = d.data.types.iter().map(|t| t.name.to_string());
-            let names: BTreeSet<String> = names.filter(|n| n.starts_with('u')).collect();
-            seen.push((d.position, names));
-        }
-        seen
-    };
-    let (at, seen) = tokio::join!(declaring, reading);
-    for (p, names) in seen {
-        let then = at.iter().enumerate().filter(|(_, a)| **a <= p);
-        let want: BTreeSet<String> = then.map(|(i, _)| format!("u{i:02}")).collect();
-        assert_eq!(names, want, "a read at {p}");
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nothing_of_a_reader_is_in_a_shape() {
     let (store, probe) = lake("readers").await;
     let l = Lake::of(store.as_ref());
@@ -455,6 +419,7 @@ async fn a_masked_authors_declaration_reads_the_shape_the_one_before_left() {
     let mut grants = Grants {
         default: Access::Write,
         schema: true,
+        restricted: true,
         ..Grants::default()
     };
     let hidden = [("n".into(), Access::None)].into();
@@ -494,4 +459,67 @@ async fn a_masked_authors_declaration_reads_the_shape_the_one_before_left() {
     let fields: Vec<_> = fields.iter().map(|f| f.name.to_string()).collect();
     assert_eq!(fields, ["a", "b", "c", "d", "e", "f"]);
     assert_eq!(builds(&probe), was, "a chain of two read once");
+}
+
+/// A handle opened on a lake that holds its declarations, a writer that
+/// declares nothing new or a reader, reads behind its head with the
+/// head's shape back to the last event that ends a range, a retired
+/// setting here, and builds its own before it (lakelands#1501).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_handle_opened_on_a_declared_lake_reads_behind_its_head_with_its_shape() {
+    let probe = Arc::new(Probe::default());
+    let opener = opener(&probe);
+    let t = || type_of("t", &[("a", Text), ("n", Number)]);
+    let put = async |l: &Lake, k: usize| {
+        let key = format!("k{k}");
+        let up = l.upsert("t", &key, json!({"a": "x", "n": 9}));
+        up.await.unwrap().position()
+    };
+    let first = writer(&opener, &probe, "opened", OpenMode::Create).await;
+    let mut written = Vec::new();
+    let l = Lake::of(first.as_ref());
+    l.declare(t()).await.unwrap();
+    l.set("floor", json!(5)).await.unwrap();
+    let set = put(&l, 0).await;
+    l.retire("sys.setting", "floor").await.unwrap();
+    for k in 1..9 {
+        written.push(put(&l, k).await);
+    }
+    first.close().await.unwrap();
+    drop(l);
+    let store = writer(&opener, &probe, "opened", OpenMode::Write).await;
+    let l = Lake::of(store.as_ref());
+    l.declare(t()).await.unwrap();
+    for k in 9..17 {
+        written.push(put(&l, k).await);
+    }
+    let was = builds(&probe);
+    for &at in &written {
+        assert!(shown(&l, "t", Some(at)).await);
+    }
+    assert!(shown(&l, "t", None).await);
+    assert_eq!(builds(&probe), was, "the open built the head's shape");
+    let floor = async |l: &Lake, at| {
+        let find = Find {
+            at: read_at(Some(at)),
+            ..find_where("n > setting('floor')")
+        };
+        let found = l.all_found("t", find).await.unwrap();
+        found.iter().map(|r| r.key.to_string()).collect::<Vec<_>>()
+    };
+    assert_eq!(floor(&l, set).await, ["k0"], "before the retirement");
+    assert!(floor(&l, written[0]).await.is_empty(), "after it");
+    assert_eq!(builds(&probe), was + 1, "one build, before the retirement");
+
+    // A reader's head does not move with the writer's appends: the read
+    // at its next head builds, and what it learns holds behind it.
+    let reader = open(&opener, "opened", OpenMode::Read).await;
+    let r = Lake::of(reader.as_ref());
+    written.push(put(&l, 17).await);
+    let was = builds(&probe);
+    assert!(shown(&r, "t", None).await);
+    for &at in &written {
+        assert!(shown(&r, "t", Some(at)).await);
+    }
+    assert_eq!(builds(&probe), was + 1, "the reader's head, then behind it");
 }

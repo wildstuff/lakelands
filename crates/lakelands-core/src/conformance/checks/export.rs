@@ -8,29 +8,49 @@
 //! files back byte by byte.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use lakelands_api::error::{Case, Flaw, Situation};
-use lakelands_api::event::EventBody;
+use lakelands_api::error::Flaw;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::principal::PrincipalKind;
-use lakelands_api::{Error, LakeStore, Position, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::seam::{ChangeFeed, FeedBatch};
 use sha2::{Digest as _, Sha256};
 
 use super::rekey;
 use crate::canonical;
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, count_view, doors, find_at, invalid_case, log_events, owner, reason,
-    type_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{self, doors, owner, type_of};
+use crate::conformance::prelude::*;
 use crate::export::{self, Manifest};
 
 check!(
     ONE_FILE_PER_SEGMENT = an_export_writes_one_file_per_segment_of_canonical_lines,
-    "030 and log-format §4.2: an export writes one file per segment, named by its first position in 20 digits, holding each event's canonical bytes and a line feed, and the sealed file's digest is the one the checkpoint after it lists",
+    "030 and log-format §4.2: an export writes one file per segment, named by its first position in 20 digits, holding its events in a copy's stored form, whose lines restore to each event's canonical bytes, and the sealed file's digest, over those bytes each followed by a line feed, is the one the checkpoint after it lists",
     scratch
+);
+
+check!(
+    EXPORT_IMPORT_KEEPS_APPENDS = an_export_frames_each_append_and_imports_byte_for_byte,
+    "098 and log-format §4.2: an export holds each append of two or more events the feed tells in blocks of its own and each other event on its line, every such line holding its `position` and only its file's first its `prev`; imported into a fresh lake, which restores each event and appends each append's blocks as one append, it answers the head and verify as the lake it came from, its feed tells the same appends, and it exports the same files byte for byte",
+    given
+);
+
+check!(
+    FRAMED_DAMAGE = a_framed_export_whose_stored_form_breaks_is_refused_naming_the_flaw,
+    "098 and log-format §1.5 and §4.2: verifying an export, and importing it, refuses a block's first line holding a member no block's holds, a block whose `hash`, `prev` or `first` is not the one its events and the line before give, a frame line among a block's event lines, a line in a block holding `position`, `v` or a member its frame holds, a line in a block changed, a line more than the block says, a byte of its stored bytes changed, and a file's first line that holds no `prev`, each naming its flaw and the position of the event it stands for",
+    given
+);
+
+check!(
+    BACKUP_FRAME_CUT = a_backup_stopped_among_a_frames_lines_writes_its_run_again_whole,
+    "077 and log-format §4.2: a backup whose file ends inside a block, after its first line, among its stored bytes or before its last line feed, a stopped run's, is cut at the block's first line, and the next run writes that run again whole, so the backup holds the files an export of the head writes and restores the lake",
+    given
+);
+
+check!(
+    APPEND_TORN_BETWEEN_BLOCKS =
+        an_append_torn_between_its_blocks_is_refused_and_a_backup_writes_it_again,
+    "098 and log-format §1.5: a copy whose last append, a delivery of 1 100 records stored in two blocks, ends after its first block is refused by verify and by an import as `damaged` at the second block's first position, naming `append_short` with the append's `end`; a backup stopped there writes that append again from its first position, so it holds the files an export of the head writes and restores the lake",
+    given
 );
 
 check!(
@@ -40,14 +60,32 @@ check!(
 );
 
 check!(
-    PREFIX = a_later_export_repeats_the_sealed_files_and_extends_the_active_one,
-    "030: an export reads through the head as it stood when it began; a lake never checkpointed exports one file 00000000000000000000.jsonl, and a later export has the earlier sealed files byte for byte and an active file the earlier one begins",
+    GROWS = a_backup_writes_an_exports_files_and_grows_by_what_follows,
+    "030 and 077: an export, and a backup, read through the head as it stood when they began; a lake never checkpointed writes one file 00000000000000000000.jsonl; a backup writes the files an export of its head writes and no manifest, and run again into its directory writes only the events after its last line, leaving its sealed files byte for byte and extending its last",
     scratch
 );
 
 check!(
+    BACKUP_CUT = a_backup_taken_while_writes_land_restores_the_lake_at_its_cut,
+    "077: a backup run while writes land, each before a page of the feed it reads, holds the log through the head it read before them, its cut, and imported into a fresh lake answers at its head as the lake answers at the cut: the head, its hash, the feed, and every type's records with provenance; run again while writes land, it copies after its last line through its own cut",
+    given
+);
+
+check!(
+    BACKUP_TORN = a_backup_cuts_a_torn_tail_and_refuses_a_log_the_lake_does_not_continue,
+    "077: a run cuts the bytes after its directory's last line feed, a stopped run's, removing a file that holds no whole line, and continues; a directory whose last line is not the lake's event at its position, another lake's or another log's or one past the lake's head, is refused as a failed precondition, `backup_other_log` naming the position, and nothing in it is changed, its torn tail included",
+    scratch
+);
+
+check!(
+    BACKUP_DAMAGED = a_damaged_backup_is_refused_at_its_import,
+    "077: a backup restored is an import, which verifies it whole first: a byte changed in a sealed file or in its last line, or its first file removed, is refused as `damaged`",
+    given
+);
+
+check!(
     NOT_EMPTY = an_export_into_a_directory_that_holds_anything_is_refused,
-    "030: an export writes only into an empty or absent directory; into any other it is refused as a failed precondition, the export's directory not empty (no path on the host is named), and writes nothing",
+    "030 and 077: an export writes only into an empty or absent directory, a backup only into one holding nothing beside `log/` and `export.json` (no lake's directory), one holding only `export.json` taking the whole log; into any other each is refused as a failed precondition, the export's directory not empty (no path on the host is named), and writes nothing",
     scratch
 );
 
@@ -73,7 +111,7 @@ check!(
 check!(
     ANOTHER_RELEASES =
         a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_where_it_is_read,
-    "054: a lake whose newest event another release wrote, in the format before the release's or the one after, is refused as `log_format` at an open to read, to write and to rebuild, naming the lake and both formats, and is left as it was: its tip, the position its projection is folded through and its free lease; once a writer of the release's format follows, the lake opens to read, and the event of another format is refused as `format_other` at its position by `verify`, by a writer's open and by a rebuild, with the tip where it was and the lease free",
+    "054: a lake whose newest event another release wrote, in the format after the release's, is refused as `log_format` at an open to read, to write and to rebuild, naming the lake and both formats, and is left as it was: its tip, the position its projection is folded through and its free lease; in the format before the release's, which no release appends onto a newer lake, it is refused instead as `damaged` at that event, naming `format_other` and both formats, and is left as it was too; once a writer of the release's format follows, the lake opens to read, and the event of another format is refused as `format_other` at its position by `verify`, by a writer's open and by a rebuild, with the tip where it was and the lease free",
     given
 );
 
@@ -113,6 +151,18 @@ check!(
     given
 );
 
+check!(
+    ON_BEHALF_OF_PLACE = an_on_behalf_of_out_of_its_place_is_refused_naming_it,
+    "088 (lakelands#1489) and log-format §1.1: `on_behalf_of` sits in the envelope, never inside `context`; an export whose line carries it in `context`, its hash made right, is refused by its verification and its import at that position, naming the member",
+    given
+);
+
+check!(
+    IMPORT_ID_FORM = an_import_refuses_an_id_not_of_its_form_naming_its_position,
+    "086 and log-format §3: an export whose line carries an `id` that is not 32 lower-case hex digits, its hash made right, is refused on import naming the flaw and the line's position, on every engine, as PostgreSQL keeps an id as its bytes",
+    given
+);
+
 /// The check's scratch directory, cleared of anything an earlier run
 /// left, and removed again when the check ends, however it ends.
 pub(super) struct Scratch(PathBuf);
@@ -146,7 +196,7 @@ fn read(dir: &Path, file: &str) -> Result<Vec<u8>, Failure> {
 }
 
 /// The files under `log/`, sorted.
-fn files(dir: &Path) -> Result<Vec<String>, Failure> {
+pub(super) fn files(dir: &Path) -> Result<Vec<String>, Failure> {
     let mut out: Vec<String> = fs::read_dir(dir.join("log"))
         .map_err(|e| Failure::new(format!("listing the export's log/: {e}")))?
         .filter_map(|e| e.ok())
@@ -203,9 +253,9 @@ async fn an_export_writes_one_file_per_segment_of_canonical_lines(
             lines.push(b'\n');
         }
         ensure!(
-            read(&dir, file)? == lines,
-            "{file} holds the canonical line of each event from position {} and a line feed after \
-             each, and it does not",
+            restored(&dir, file)? == lines,
+            "{file} restores to the canonical bytes of each event from position {} and a line \
+             feed after each, and it does not",
             run[0].position
         );
     }
@@ -218,11 +268,11 @@ async fn an_export_writes_one_file_per_segment_of_canonical_lines(
             )));
         }
     };
-    let digest = canonical::hex(&Sha256::digest(read(&dir, &want[0])?));
+    let digest = canonical::hex(&Sha256::digest(restored(&dir, &want[0])?));
     ensure!(
         listed.len() == 1 && listed[0].digest.0 == digest,
-        "the checkpoint lists the sealed file with the digest {digest} of its bytes, and it lists \
-         {listed:?}"
+        "the checkpoint lists the sealed file with the digest {digest} of its events as \
+         restored, and it lists {listed:?}"
     );
     Ok(())
 }
@@ -267,10 +317,10 @@ async fn an_export_verifies_to_the_through_and_hash_the_lake_answers(
         "the manifest lists every file of the export, and it lists {listed:?}"
     );
     for s in &manifest.segments {
-        let digest = canonical::hex(&Sha256::digest(read(&dir, &s.file)?));
+        let digest = canonical::hex(&Sha256::digest(restored(&dir, &s.file)?));
         ensure!(
             s.digest.0 == digest,
-            "the manifest gives {} the digest of its bytes, {digest}, and it gives {}",
+            "the manifest gives {} the digest of its events as restored, {digest}, and it gives {}",
             s.file,
             s.digest.0
         );
@@ -296,46 +346,252 @@ async fn an_export_verifies_to_the_through_and_hash_the_lake_answers(
     Ok(())
 }
 
-async fn a_later_export_repeats_the_sealed_files_and_extends_the_active_one(
+async fn backup(store: &dyn LakeStore, dir: &Path) -> Result<export::Backup, Failure> {
+    export::backup(store, &*store.feed(), dir)
+        .await
+        .must(&format!("backing up into {}", dir.display()))
+}
+
+/// Whether `dir` holds under `log/`, byte for byte, the files an export
+/// of the lake's head writes into `to`.
+async fn as_exported(store: &dyn LakeStore, dir: &Path, to: &Path) -> Result<bool, Failure> {
+    write(store, to).await?;
+    let names = files(dir)?;
+    for f in &names {
+        if read(dir, f)? != read(to, f)? {
+            return Ok(false);
+        }
+    }
+    Ok(names == files(to)?)
+}
+
+/// `from`'s files under `log/`, copied into `to`.
+fn copied(from: &Path, to: &Path) -> Result<(), Failure> {
+    fs::create_dir_all(to.join("log")).map_err(|e| Failure::new(format!("making {to:?}: {e}")))?;
+    for f in files(from)? {
+        let copy = fs::copy(from.join(&f), to.join(&f));
+        copy.map_err(|e| Failure::new(format!("copying {f}: {e}")))?;
+    }
+    Ok(())
+}
+
+async fn a_backup_writes_an_exports_files_and_grows_by_what_follows(
     store: Store,
     scratch: PathBuf,
 ) -> Held {
-    let scratch = Scratch::new(scratch);
-    let first = invoices(store.as_ref(), 0, 2).await?;
-    let (a, b, c) = (scratch.dir("a"), scratch.dir("b"), scratch.dir("c"));
-    let early = write(store.as_ref(), &a).await?;
+    let (scratch, s) = (Scratch::new(scratch), store.as_ref());
+    let (first, dir) = (invoices(s, 0, 2).await?, scratch.dir("backup"));
+    let new = backup(s, &dir).await?;
     let only = export::file_name(Position::GENESIS);
     ensure!(
-        files(&a)? == [only.clone()] && early.through == first,
-        "a lake never checkpointed exports one file, {only}, through its head {first}; it wrote \
-         {:?} through {}",
-        files(&a)?,
-        early.through
+        files(&dir)? == [only.clone()]
+            && as_exported(s, &dir, &scratch.dir("a")).await?
+            && (new.since, new.through, new.copied) == (None, first, first.0 + 1)
+            && !dir.join("export.json").exists(),
+        "a lake never checkpointed exports and backs up one file, {only}, the same, through its \
+         head {first}, and the backup no manifest; it answered {new:?}",
     );
     let sealed_at = store.checkpoint().await.must("checkpointing")?;
-    invoices(store.as_ref(), 2, 1).await?;
-    write(store.as_ref(), &b).await?;
-    invoices(store.as_ref(), 3, 2).await?;
-    let late = write(store.as_ref(), &c).await?;
+    let head = invoices(s, 2, 3).await?;
+    let grown = backup(s, &dir).await?;
     ensure!(
-        read(&a, &only)? == read(&c, &only)?,
-        "the segment sealed at {sealed_at} is exported byte for byte as the earlier export wrote \
-         it"
+        (grown.since, grown.copied) == (Some(first), head.0 - first.0)
+            && as_exported(s, &dir, &scratch.dir("b")).await?,
+        "a backup run again after {first} copies the events through {head}, into the files an \
+         export writes; it answered {grown:?}"
     );
-    let active = export::file_name(sealed_at);
-    let (was, is) = (read(&b, &active)?, read(&c, &active)?);
+    let (sealed, active) = (read(&dir, &only)?, export::file_name(sealed_at));
+    let was = read(&dir, &active)?;
+    invoices(s, 5, 2).await?;
+    let late = backup(s, &dir).await?;
+    let is = read(&dir, &active)?;
     ensure!(
-        is.len() > was.len() && is.starts_with(&was),
-        "a later export's active file begins with the earlier one's and is longer: {} bytes \
-         then {}",
+        late.copied == 2
+            && read(&dir, &only)? == sealed
+            && is.len() > was.len()
+            && is.starts_with(&was)
+            && as_exported(s, &dir, &scratch.dir("c")).await?,
+        "a later run copies 2 events, leaves the file sealed at {sealed_at} as it was and \
+         extends the active one, as an export writes them: it answered {late:?}, the active \
+         file {} bytes then {}",
         was.len(),
         is.len()
     );
+    Ok(())
+}
+
+/// The store's feed, writing an invoice before it answers each poll: the
+/// run reading it runs while every one of those writes lands.
+struct Writing(Store);
+
+#[async_trait::async_trait]
+impl ChangeFeed for Writing {
+    async fn poll(&self, from: Position, filter: &FeedFilter, n: u32) -> Result<FeedBatch, Error> {
+        let _ = invoices(self.0.as_ref(), 100 + from.0 as u32, 1).await;
+        self.0.feed().poll(from, filter, n).await
+    }
+    async fn ack(&self, consumer: &str, through: Position) -> Result<(), Error> {
+        self.0.feed().ack(consumer, through).await
+    }
+}
+
+async fn a_backup_taken_while_writes_land_restores_the_lake_at_its_cut(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use lakelands_api::{Find, ReadAt};
+    let scratch = Scratch::new(given.scratch.clone());
+    let (store, _) = exported_lake(store, &given.reopen).await?;
+    let (dir, s) = (scratch.dir("backup"), store.as_ref());
+    let before = s.head().await.must("reading the head")?;
+    let cut = export::backup(s, &Writing(store.clone()), &dir)
+        .await
+        .must("backing up")?;
+    let after = s.head().await.must("reading the head")?;
     ensure!(
-        late.through == store.head().await.must("reading the head")?,
-        "an export reads through the head, {}",
-        late.through
+        before == cut.through && cut.through < after,
+        "a run cuts at the head as it began, {before}, before the lake's head {after}: {}",
+        cut.through
     );
+    let grown = scratch.dir("grown");
+    copied(&dir, &grown)?;
+    let more = export::backup(s, &Writing(store.clone()), &grown).await;
+    let (more, head) = (
+        more.must("backing up again")?,
+        s.head().await.must("reading the head")?,
+    );
+    let says = export::verify(&grown).must("verifying the grown backup")?;
+    ensure!(
+        more.since == Some(cut.through)
+            && after < more.through
+            && more.through < head
+            && (says.through, &says.hash) == (more.through, &more.hash),
+        "a run again while writes land copies after {} through its own cut, before the head \
+         {head}, and verifies to it: it answered {more:?}, the files {says:?}",
+        cut.through
+    );
+    let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
+    let imported = imported.map_err(|e| Failure::new(format!("restoring the backup: {e}")))?;
+    let i = imported.store.as_ref();
+    let mut feed = log_events(s).await?;
+    feed.truncate(cut.through.0 as usize + 1);
+    ensure!(
+        log_events(i).await? == feed && feed.last().map(|e| &e.hash) == Some(&cut.hash),
+        "the restored lake's feed is the lake's through the cut {}, hash {}",
+        cut.through,
+        cut.hash.0
+    );
+    let (own, cat, theirs, restored) = (owner(s), doors(s), owner(i), doors(i));
+    let described = cat.describe(&own, ReadAt::default()).await;
+    for t in &described.must("describing")?.data.types {
+        let wide = |at| Find {
+            limit: Some(1_000),
+            ..find_at(at)
+        };
+        let want = cat.find(&own, &t.name, wide(Some(cut.through))).await;
+        let got = restored.find(&theirs, &t.name, wide(None)).await;
+        ensure!(
+            format!("{:?}", want.map(|r| r.data)) == format!("{:?}", got.map(|r| r.data)),
+            "the restored lake finds `{}` at its head as the lake does at the cut {}",
+            t.name,
+            cut.through
+        );
+    }
+    Ok(())
+}
+
+async fn a_backup_cuts_a_torn_tail_and_refuses_a_log_the_lake_does_not_continue(
+    store: Store,
+    scratch: PathBuf,
+) -> Held {
+    let (scratch, s) = (Scratch::new(scratch), store.as_ref());
+    let (dir, export) = (scratch.dir("backup"), scratch.dir("export"));
+    let held = invoices(s, 0, 3).await?;
+    backup(s, &dir).await?;
+    let only = export::file_name(Position::GENESIS);
+    // A stopped run: half a line after the last, and a file of half a line.
+    let (next, half) = (export::file_name(Position(99)), b"{\"body\":{\"kind\"");
+    let tear = || -> Result<Vec<Vec<u8>>, Failure> {
+        let torn = [read(&dir, &only)?, half.to_vec()].concat();
+        let w = fs::write(dir.join(&only), torn).and_then(|()| fs::write(dir.join(&next), half));
+        w.map_err(|e| Failure::new(format!("tearing the backup: {e}")))?;
+        Ok(vec![read(&dir, &only)?, read(&dir, &next)?])
+    };
+    tear()?;
+    let head = invoices(s, 3, 1).await?;
+    let run = backup(s, &dir).await?;
+    ensure!(
+        (run.since, run.copied) == (Some(held), 1) && as_exported(s, &dir, &export).await?,
+        "a run over a torn tail cuts it and copies the event after {held} through {head}, as an \
+         export writes it; it answered {run:?}",
+    );
+    let mut lines = lines_of(&dir, &only)?;
+    let past = Position(head.0 + 5);
+    let others = [
+        ("lake", json!("another-lake"), head),
+        ("known_at", json!(1), head),
+        ("position", json!(past.0), past),
+    ];
+    for (member, value, held) in others {
+        let last = lines.len() - 1;
+        lines[last] = rehashed(&lines_of(&export, &only)?[last], |e| e[member] = value)?;
+        rewrite(&dir, &only, &lines)?;
+        let before = tear()?;
+        let said = export::backup(s, &*s.feed(), &dir).await;
+        ensure!(
+            matches!(&said, Err(e) if e.case().map(|c| &c.case) == Some(&Case::BackupOtherLog { held }))
+                && [read(&dir, &only)?, read(&dir, &next)?] == *before,
+            "a backup whose last line's `{member}` is another log's is refused as \
+             `backup_other_log` at {held}, changing nothing, and it answered {said:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_damaged_backup_is_refused_at_its_import(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (scratch, s) = (Scratch::new(given.scratch.clone()), store.as_ref());
+    invoices(s, 0, 3).await?;
+    store.checkpoint().await.must("checkpointing")?;
+    invoices(s, 3, 2).await?;
+    let from = scratch.dir("from");
+    backup(s, &from).await?;
+    let names = files(&from)?;
+    // A hex digit of a line's hash changed, so its hash no longer holds.
+    let flip = |file: &str, at_end: bool, dir: &Path| -> Held {
+        let mut lines = lines_of(dir, file)?;
+        let n = if at_end { lines.len() - 1 } else { 1 };
+        let line = &mut lines[n];
+        let at = line
+            .windows(8)
+            .position(|w| w == b"\"hash\":\"")
+            .unwrap_or(0)
+            + 8;
+        line[at] = if line[at] == b'a' { b'b' } else { b'a' };
+        rewrite(dir, file, &lines)
+    };
+    let damages = [
+        "a byte in a sealed file",
+        "a byte in its last line",
+        "its first file removed",
+    ];
+    for (n, damage) in damages.into_iter().enumerate() {
+        let dir = scratch.dir(&format!("damaged-{n}"));
+        copied(&from, &dir)?;
+        match n {
+            0 => flip(&names[0], false, &dir)?,
+            1 => flip(&names[names.len() - 1], true, &dir)?,
+            _ => fs::remove_file(dir.join(&names[0])).map_err(|e| Failure::new(format!("{e}")))?,
+        }
+        let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
+        let why = refused(imported, damage)?;
+        ensure!(
+            damaged(&why).is_some(),
+            "a backup with {damage} is refused as damaged at its import; it was refused with: {why}"
+        );
+    }
     Ok(())
 }
 
@@ -343,26 +599,38 @@ async fn an_export_into_a_directory_that_holds_anything_is_refused(
     store: Store,
     scratch: PathBuf,
 ) -> Held {
-    let scratch = Scratch::new(scratch);
-    invoices(store.as_ref(), 0, 1).await?;
+    let (scratch, s) = (Scratch::new(scratch), store.as_ref());
+    invoices(s, 0, 1).await?;
     let dir = scratch.dir("full");
-    fs::create_dir_all(&dir).map_err(|e| Failure::new(format!("creating {dir:?}: {e}")))?;
+    backup(s, &dir).await?;
+    let only = export::file_name(Position::GENESIS);
+    let kept = read(&dir, &only)?;
     fs::write(dir.join("notes.txt"), b"kept\n")
         .map_err(|e| Failure::new(format!("writing into {dir:?}: {e}")))?;
-    let said = export::write(store.as_ref(), &dir).await;
+    let said = export::write(s, &dir).await.map(|_| ());
+    let again = export::backup(s, &*s.feed(), &dir).await.map(|_| ());
     ensure!(
-        matches!(reason(&said), Some(Refusal::Precondition(said)) if said.case == Case::ExportNotEmpty),
-        "an export into {dir:?}, which holds a file, is refused as a failed precondition, the \
-         export's directory not empty, and it answered {said:?}"
+        [&said, &again].iter().all(|said| matches!(reason(said), Some(Refusal::Precondition(said)) if said.case == Case::ExportNotEmpty)),
+        "an export, and a backup, into {dir:?}, which holds a file beside a backup's log/, are \
+         refused as a failed precondition, the export's directory not empty, and they answered \
+         {said:?} and {again:?}"
     );
-    let left: Vec<String> = fs::read_dir(&dir)
-        .map_err(|e| Failure::new(format!("listing {dir:?}: {e}")))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
+    let left = fs::read_dir(&dir).map(Iterator::count);
+    let left = left.map_err(|e| Failure::new(format!("listing {dir:?}: {e}")))?;
     ensure!(
-        left == ["notes.txt"] && read(&dir, "notes.txt")? == b"kept\n",
-        "a refused export writes nothing, and the directory holds {left:?}"
+        left == 2
+            && files(&dir)? == [only.clone()]
+            && read(&dir, &only)? == kept
+            && read(&dir, "notes.txt")? == b"kept\n",
+        "a refused export or backup writes nothing; the directory holds {left} entries"
+    );
+    let lone = scratch.dir("lone");
+    let made = fs::create_dir_all(&lone).and_then(|()| fs::write(lone.join("export.json"), "{}"));
+    made.map_err(|e| Failure::new(format!("writing into {lone:?}: {e}")))?;
+    let new = backup(s, &lone).await?;
+    ensure!(
+        new.since.is_none() && files(&lone)? == [only],
+        "a backup into a directory holding only export.json takes the whole log: {new:?}"
     );
     Ok(())
 }
@@ -379,19 +647,30 @@ fn refused_at(dir: &Path, position: Position, damage: &str) -> Held {
     Ok(())
 }
 
-/// A file's lines, without their line feeds.
-fn lines_of(dir: &Path, file: &str) -> Result<Vec<Vec<u8>>, Failure> {
-    let bytes = read(dir, file)?;
-    Ok(bytes
-        .strip_suffix(b"\n")
-        .unwrap_or(&bytes)
-        .split(|b| *b == b'\n')
-        .map(<[u8]>::to_vec)
+/// A file's events as they are restored from its lines and its blocks
+/// (log-format §1.2, §1.5), each the canonical bytes of its whole event,
+/// without a line feed.
+pub(super) fn lines_of(dir: &Path, file: &str) -> Result<Vec<Vec<u8>>, Failure> {
+    Ok(copy_lines(dir, file)?
+        .into_iter()
+        .map(|l| canonical::to_vec(&l.event))
         .collect())
 }
 
-/// Writes `lines` as `file`, each with its line feed.
-fn rewrite(dir: &Path, file: &str, lines: &[Vec<u8>]) -> Held {
+/// The bytes a file's digest is taken over: its events as restored, each
+/// followed by a line feed.
+fn restored(dir: &Path, file: &str) -> Result<Vec<u8>, Failure> {
+    let mut bytes = Vec::new();
+    for event in lines_of(dir, file)? {
+        bytes.extend(event);
+        bytes.push(b'\n');
+    }
+    Ok(bytes)
+}
+
+/// Writes `lines` as `file`, each with its line feed: each a whole event,
+/// a line a reader takes as it stands.
+pub(super) fn rewrite(dir: &Path, file: &str, lines: &[Vec<u8>]) -> Held {
     let mut bytes = lines.join(&b'\n');
     bytes.push(b'\n');
     fs::write(dir.join(file), bytes).map_err(|e| Failure::new(format!("damaging {file}: {e}")))
@@ -399,7 +678,7 @@ fn rewrite(dir: &Path, file: &str, lines: &[Vec<u8>]) -> Held {
 
 /// `line` with `change` applied to its object and its hash computed
 /// again, so only the change is wrong.
-fn rehashed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<Vec<u8>, Failure> {
+pub(super) fn rehashed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<Vec<u8>, Failure> {
     let mut event: Value = serde_json::from_slice(line)
         .map_err(|e| Failure::new(format!("an exported line is not JSON: {e}")))?;
     change(&mut event);
@@ -410,6 +689,67 @@ fn rehashed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<Vec<u8>, Fai
     let hash = canonical::sha256_hex(&event);
     event["hash"] = json!(hash);
     Ok(canonical::to_vec(&event))
+}
+
+/// Every event of `file` rewritten into log format `older`, each hash and
+/// the next line's `prev` made right and `lake_created` saying the same
+/// format, so the whole file is one release's and only its log format is
+/// another's.
+fn as_format(dir: &Path, file: &str, older: u32) -> Result<Vec<Vec<u8>>, Failure> {
+    let mut prev = Value::Null;
+    let mut lines = Vec::new();
+    for line in lines_of(dir, file)? {
+        let line = rehashed(&line, |e| {
+            e["v"] = json!(older);
+            if !prev.is_null() {
+                e["prev"] = prev.clone();
+            }
+            if e["body"]["kind"] == "lake_created" {
+                e["body"]["format"] = json!(older);
+            }
+        })?;
+        let event: Value = serde_json::from_slice(&line)
+            .map_err(|e| Failure::new(format!("an exported line is not JSON: {e}")))?;
+        prev = event["hash"].clone();
+        lines.push(line);
+    }
+    rewrite(dir, file, &lines)?;
+    Ok(lines)
+}
+
+/// `lines` with all but the first laid in one block after it (log-format
+/// §1.5), as the writer stores an append of two events or more: the first
+/// event on its line, the rest of the file's events in a block whose
+/// hashes and `prev` are as `as_format` made them.
+fn as_block(dir: &Path, file: &str, lines: &[Vec<u8>]) -> Held {
+    let mut events: Vec<lakelands_api::engine::CanonicalEvent> = lines
+        .iter()
+        .skip(1)
+        .map(|line| {
+            let event: Value = serde_json::from_slice(line)
+                .map_err(|e| Failure::new(format!("an exported line is not JSON: {e}")))?;
+            Ok(export::stored_of(&event))
+        })
+        .collect::<Result<_, Failure>>()?;
+    crate::log::frame_append(&mut events);
+    let frame = events
+        .first()
+        .and_then(|event| event.frame.clone())
+        .ok_or_else(|| {
+            Failure::new(format!(
+                "{} events are not stored as a block; the archive holds no block to lay",
+                events.len()
+            ))
+        })?;
+    let first = lines
+        .first()
+        .ok_or_else(|| Failure::new(format!("{file} holds no event to lay")))?;
+    let mut bytes = first.clone();
+    bytes.push(b'\n');
+    bytes.extend_from_slice(&frame.bytes);
+    bytes.push(b'\n');
+    fs::write(dir.join(file), bytes)
+        .map_err(|e| Failure::new(format!("laying the block of {file}: {e}")))
 }
 
 async fn a_damaged_export_is_refused_naming_the_position(store: Store, scratch: PathBuf) -> Held {
@@ -803,6 +1143,7 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
     let crate::conformance::ImportedLake {
         store: imported,
         writer,
+        ..
     } = (given.import)(from.clone(), lake.clone(), None, import_seams())
         .await
         .map_err(|e| Failure::new(format!("importing the export into a fresh lake: {e}")))?;
@@ -886,12 +1227,7 @@ async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holdin
     };
     // One byte changed in the first segment's third line.
     let damaged = scratch.dir("damaged");
-    fs::create_dir_all(damaged.join("log"))
-        .map_err(|e| Failure::new(format!("making the damaged export: {e}")))?;
-    for f in files(&from)? {
-        fs::copy(from.join(&f), damaged.join(&f))
-            .map_err(|e| Failure::new(format!("copying {f}: {e}")))?;
-    }
+    copied(&from, &damaged)?;
     let first = files(&damaged)?.remove(0);
     let mut lines = lines_of(&damaged, &first)?;
     let at = lines[2]
@@ -1021,6 +1357,91 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
     Ok(())
 }
 
+async fn an_on_behalf_of_out_of_its_place_is_refused_naming_it(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let cases: [Misplaced; 1] = [(
+        "carries `on_behalf_of` in its `context`",
+        Flaw::OnBehalfOfInContext,
+        |e| e["context"]["on_behalf_of"] = json!("human:alice"),
+    )];
+    misplaced_refused(store, given, &cases).await
+}
+
+/// What an export's last line is made to say, the flaw a reader names
+/// for it, and the change that makes it.
+type Misplaced = (&'static str, Flaw, fn(&mut Value));
+
+/// An export whose last line, its hash made right, is changed by each of
+/// `cases` is refused by its verification and its import at that
+/// position, naming the case's flaw.
+async fn misplaced_refused(
+    store: Store,
+    given: crate::conformance::Given,
+    cases: &[Misplaced],
+) -> Held {
+    let scratch = Scratch::new(given.scratch.clone());
+    invoices(store.as_ref(), 0, 1).await?;
+    let head = store.head().await.must("reading the head")?;
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let names = files(&from)?;
+    let active = names[names.len() - 1].clone();
+    for (n, (said, flaw, made)) in cases.iter().enumerate() {
+        let dir = scratch.dir(&format!("misplaced-{n}"));
+        copied(&from, &dir)?;
+        let mut lines = lines_of(&dir, &active)?;
+        let last = lines.len() - 1;
+        lines[last] = rehashed(&lines[last], made)?;
+        rewrite(&dir, &active, &lines)?;
+        let verified = export::verify(&dir);
+        let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
+        let imported = refused(imported, &format!("an export whose last line {said}"))?;
+        for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
+            ensure!(
+                e.as_ref().and_then(damaged) == Some(flaw)
+                    && matches!(e.as_ref().and_then(Error::situation),
+                        Some(Situation::Damaged { position: Some(p), .. }) if *p == head),
+                "{door} of an export whose last line {said} is refused at {head} as {flaw:?}; \
+                 it answered {e:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn an_import_refuses_an_id_not_of_its_form_naming_its_position(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let scratch = Scratch::new(given.scratch.clone());
+    invoices(store.as_ref(), 0, 1).await?;
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let file = (files(&from)?.pop()).ok_or_else(|| Failure::new("the export holds a file"))?;
+    let mut lines = lines_of(&from, &file)?;
+    let at = lines.len() - 1;
+    let position = serde_json::from_slice::<Value>(&lines[at]).ok();
+    let position = position.and_then(|e| e["position"].as_u64());
+    lines[at] = rehashed(&lines[at], |e| {
+        e["id"] = json!(e["id"].as_str().map(str::to_uppercase));
+    })?;
+    rewrite(&from, &file, &lines)?;
+    let imported = (given.import)(from, store.lake().clone(), None, import_seams()).await;
+    let why = refused(
+        imported,
+        "an export whose last line's `id` is upper-case hex",
+    )?;
+    ensure!(
+        matches!(why.situation(), Some(Situation::Damaged { position: Some(p), flaw: Flaw::IdNotOfForm, .. })
+            if Some(p.0) == position),
+        "an export whose line at {position:?} carries an upper-case `id` must be refused naming \
+         the flaw and that position; it was refused with: {why:?}"
+    );
+    Ok(())
+}
+
 async fn a_lake_is_written_in_one_format_and_another_is_refused_whole(
     store: Store,
     given: crate::conformance::Given,
@@ -1097,14 +1518,28 @@ async fn a_lake_is_written_in_one_format_and_another_is_refused_whole(
         let verified = export::verify(&dir);
         let imported = (given.import)(dir, lake.clone(), None, import_seams()).await;
         let imported = refused(imported, "an export holding an event of another format")?;
+        // An archive is refused as the open of the same events refuses it:
+        // another release's data is `log_format`, and the two ends
+        // contradicting each other is damage named as the open names it. A
+        // first line whose `v` alone is changed still carries a
+        // `lake_created` saying `reads`, so the open calls that
+        // `CreatedInAnother` and the archive is that damage, not
+        // `log_format`; a `lake_created` that contradicts its own line, or
+        // a format where the chain has already run, is damage too.
+        let want = match (&want, last) {
+            (Flaw::FormatOther { .. }, false) => Flaw::CreatedInAnother {
+                format: reads.into(),
+                reads: reads.into(),
+            },
+            _ => want,
+        };
         for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
             ensure!(
                 e.as_ref().and_then(damaged) == Some(&want)
                     && matches!(e.as_ref().and_then(Error::situation),
                         Some(Situation::Damaged { position: Some(p), .. }) if *p == at),
-                "{door} of an export whose event at {at} is {what} is refused at that position \
-                 as {want:?}, which names the format and the one this release reads; it \
-                 answered {e:?}"
+                "{door} of an export whose event at {at} is {what} is refused at that position as \
+                 {want:?}, which is what the open of the same events answers; it answered {e:?}"
             );
         }
     }
@@ -1164,13 +1599,30 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
                 .await
                 .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
             let e = c.opened.err();
+            // A tip newer than the first event is another release's lake,
+            // refused as `log_format`; one older than it is a
+            // contradiction no release writes, damage at that event.
+            let want = if other < reads {
+                Situation::Damaged {
+                    part: lakelands_api::error::Part::Log,
+                    position: c.before.tip.as_ref().map(|(at, _)| *at),
+                    flaw: Flaw::FormatOther {
+                        v: other.into(),
+                        reads: reads.into(),
+                    },
+                }
+            } else {
+                Situation::LogFormat {
+                    lake: lake.as_str().to_owned(),
+                    found: other.into(),
+                    reads: reads.into(),
+                    oldest: Some(lakelands_api::event::OLDEST_LOG_FORMAT.into()),
+                }
+            };
             ensure!(
-                matches!(e.as_ref().and_then(Error::situation),
-                    Some(Situation::LogFormat { lake: l, found, reads: r, .. })
-                        if l == lake.as_str() && *found == u64::from(other) && *r == u64::from(reads)),
+                e.as_ref().and_then(Error::situation) == Some(&want),
                 "a lake whose newest event is in format {other} is refused at an open for \
-                 {mode:?} as `log_format`, naming the lake, that format and the one this \
-                 release reads, {reads}; it answered {e:?}"
+                 {mode:?} as {want:?}; it answered {e:?}"
             );
             ensure!(
                 c.before.lease_free && c.after.as_ref() == Some(&c.before),
@@ -1228,6 +1680,338 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
              refused as `format_other` at that position, the tip where it was ({tip:?}) and \
              the lease free; it answered {e:?}, and the lake is {after:?}"
         );
+    }
+    Ok(())
+}
+
+check!(
+    OLDER_FORMAT_REFUSED =
+        a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_read,
+    "098 and the log format §6: a release reads one format and older ones are not read at all. A lake every line of which is of format 22 and which says so in its `lake_created` is refused at an open in every mode as `log_format`, naming the lake, 22 and the one format this release reads, leaving its log, its projection and its lease as they were; an export of format 22 is refused by its verification and its import as `log_format` the same way, naming its lake, 22 and the one format this release reads, and no lake is left behind it",
+    given
+);
+
+async fn a_lake_and_an_export_of_format_22_are_refused_and_nothing_of_them_is_read(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use crate::conformance::Lines;
+    use crate::conformance::fixture::canonical_line;
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::seam::Seams;
+    const OLDER: u32 = 22;
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let scratch = Scratch::new(given.scratch.clone());
+    let l = Lake::of(store.as_ref());
+    l.declare(type_of("note", &[("body", Text)])).await?;
+    l.upsert("note", "n1", json!({"body": "x"})).await?;
+    let events = log_events(store.as_ref()).await?;
+    // The export first: the lake's own, every line of it in format 22,
+    // its hash and the next one's `prev` made right.
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let file = match files(&from)?.as_slice() {
+        [one] => one.clone(),
+        more => {
+            return Err(Failure::new(format!(
+                "a small lake's export is one file: {more:?}"
+            )));
+        }
+    };
+    as_format(&from, &file, OLDER)?;
+    let lake: lakelands_api::LakeId = format!("{}_{OLDER}", store.lake()).into();
+    let verified = export::verify(&from);
+    let imported = (given.import)(from, lake.clone(), None, import_seams()).await;
+    let imported = refused(imported, "an export of format 22")?;
+    for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
+        ensure!(
+            matches!(e.as_ref().and_then(Error::situation),
+                Some(Situation::LogFormat { lake: l, found, reads: r, oldest })
+                    if l == store.lake().as_str() && *found == u64::from(OLDER)
+                        && *r == u64::from(reads) && *oldest == Some(u64::from(reads))),
+            "{door} of an export of format {OLDER} is refused as `log_format`, naming the \
+             lake, that format and the one this release reads, {reads}; it answered {e:?}"
+        );
+    }
+    // Then a lake: the same events laid in a log of their own, as a
+    // release of that format left them.
+    let mut prev = None;
+    let older: Vec<_> = (events.into_iter())
+        .map(|mut event| {
+            event.v = OLDER;
+            if let Some(prev) = prev.take() {
+                event.prev = prev;
+            }
+            if let EventBody::LakeCreated { format } = &mut event.body {
+                *format = OLDER;
+            }
+            let line = canonical_line(event);
+            prev = Some(line.hash.clone());
+            line
+        })
+        .collect();
+    let mut lines: Option<Lines> = Some(Box::new(move |_, _| (older, 0)));
+    let mut first = None;
+    for mode in [OpenMode::Read, OpenMode::Write, OpenMode::Rebuild] {
+        let lines = lines.take();
+        let lines = lines.unwrap_or_else(|| Box::new(|_, _| (Vec::new(), 0)));
+        let c = (given.continued)(None, lake.clone(), lines, mode, Seams::default());
+        let c = c
+            .await
+            .map_err(|e| Failure::new(format!("laying the older lake below the store: {e}")))?;
+        let e = c.opened.err();
+        ensure!(
+            matches!(e.as_ref().and_then(Error::situation),
+                Some(Situation::LogFormat { lake: l, found, reads: r, oldest })
+                    if l == lake.as_str() && *found == u64::from(OLDER)
+                        && *r == u64::from(reads) && *oldest == Some(u64::from(reads))),
+            "a lake of format {OLDER} is refused at an open for {mode:?} as `log_format`, naming \
+             the lake, that format and the one this release reads, {reads}; it answered {e:?}"
+        );
+        let before = &*first.get_or_insert(c.before.clone());
+        ensure!(
+            before.tip.is_some()
+                && c.before.lease_free
+                && c.before == *before
+                && c.after.as_ref() == Some(before),
+            "an open for {mode:?} of a lake of format {OLDER} reads nothing of it and leaves \
+             its tip, its projection and its free lease as they were, {before:?}; they are \
+             {:?} and {:?}",
+            c.before,
+            c.after
+        );
+    }
+    Ok(())
+}
+
+check!(
+    OLDER_ARCHIVE_REFUSED =
+        an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_written,
+    "098 and the log format §6: a backup or an export of another release's format is the operator's data, not damage. An archive whose two ends contradict each other — a first line whose own `lake_created` says a format other than its `v`, or a last line older than the first — is damage, refused as the open of the same events refuses it. Its verification — the check `restore <dir> --check` runs — and its import — what `restore <dir>` and `import <dir>` run — are refused as `log_format`, naming its lake, 22 and the one format this release reads and writes; the target lake is not looked at, so an import into a lake that holds events answers `log_format` and not its non-empty precondition, and the lake's head is where it was. An archive of that format whose appends are stored as blocks — any append of two events or more — is refused the same way, its ends read from the events its line and its block restore to rather than from its bytes as lines",
+    given
+);
+
+async fn an_archive_of_an_older_format_is_refused_as_a_format_and_nothing_is_written(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    const OLDER: u32 = 22;
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let scratch = Scratch::new(given.scratch.clone());
+    let l = Lake::of(store.as_ref());
+    l.declare(type_of("note", &[("body", Text)])).await?;
+    l.upsert("note", "n1", json!({"body": "x"})).await?;
+    // A third event, so the archive below can hold an append of two
+    // events or more, which the writer stores as a block (§1.5).
+    l.upsert("note", "n2", json!({"body": "y"})).await?;
+    let lake = store.lake().clone();
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let file = match files(&from)?.as_slice() {
+        [one] => one.clone(),
+        more => {
+            return Err(Failure::new(format!(
+                "a small lake's export is one file: {more:?}"
+            )));
+        }
+    };
+    as_format(&from, &file, OLDER)?;
+    let as_older = |e: &Error| {
+        matches!(e.situation(),
+            Some(Situation::LogFormat { lake: l, found, reads: r, oldest })
+                if l == lake.as_str() && *found == u64::from(OLDER)
+                    && *r == u64::from(reads) && *oldest == Some(u64::from(reads)))
+    };
+    // What `restore --check` runs.
+    let e = export::verify(&from)
+        .err()
+        .ok_or_else(|| Failure::new("an export of another format verified".to_owned()))?;
+    ensure!(
+        as_older(&e),
+        "the verification of an archive of format {OLDER}, which `restore --check` runs, is \
+         refused as `log_format`, naming its lake, that format and the one this release reads, \
+         {reads}; it answered {e:?}"
+    );
+    // What `restore` and `import` run, into a lake that holds nothing.
+    let fresh: lakelands_api::LakeId = format!("{}_{OLDER}", lake).into();
+    let e = refused(
+        (given.import)(from.clone(), fresh, None, import_seams()).await,
+        "an archive of format 22 into a lake that holds nothing",
+    )?;
+    ensure!(
+        as_older(&e),
+        "an import of an archive of format {OLDER}, which `restore` and `import` run into a \
+         lake that holds nothing, is refused as `log_format`; it answered {e:?}"
+    );
+    // And before the target is looked at: the lake it came from holds
+    // events, which an import refuses as a failed precondition -- unless
+    // the archive is refused first, as it must be.
+    let head = store.head().await.must("reading the head")?;
+    let e = refused(
+        (given.import)(
+            from.clone(),
+            lake.clone(),
+            Some(store.clone()),
+            import_seams(),
+        )
+        .await,
+        "an archive of format 22 into a lake that holds events",
+    )?;
+    ensure!(
+        as_older(&e),
+        "an import of an archive of format {OLDER} into a lake that holds events is refused as \
+         `log_format` before the lake's non-empty precondition is asked, so nothing of the \
+         target was read or written; it answered {e:?}"
+    );
+    let after = store.head().await.must("reading the head after")?;
+    ensure!(
+        after == head,
+        "the head of the lake an import of an archive of format {OLDER} was refused into is \
+         where it was, {head}; it is now {after}"
+    );
+    // And however its appends are stored: an append of two events or more
+    // is a block (log-format §1.5), whose events are not lines, and the
+    // archive is judged by the events its two ends restore to. An archive
+    // of the same format written this way is the same format refusal, not
+    // damage read off the bytes of a block as if they were lines.
+    let blocked_from = scratch.dir("blocked");
+    write(store.as_ref(), &blocked_from).await?;
+    let blocked_file = match files(&blocked_from)?.as_slice() {
+        [one] => one.clone(),
+        more => {
+            return Err(Failure::new(format!(
+                "a small lake's export is one file: {more:?}"
+            )));
+        }
+    };
+    let blocked = as_format(&blocked_from, &blocked_file, OLDER)?;
+    as_block(&blocked_from, &blocked_file, &blocked)?;
+    let bytes = read(&blocked_from, &blocked_file)?;
+    let mut input = bytes.as_slice();
+    let mut units = Vec::new();
+    while let Some(unit) = crate::log::read_unit(&mut input).map_err(|f| {
+        Failure::new(format!(
+            "reading a unit of the block-bearing archive: {f:?}"
+        ))
+    })? {
+        units.push(unit);
+    }
+    ensure!(
+        matches!(
+            units.as_slice(),
+            [crate::log::Unit::Line(_), crate::log::Unit::Block(block, v, ..)]
+                if block.last() == head && *v == u64::from(OLDER)
+        ),
+        "the block-bearing archive is a whole line and a block of format {OLDER} ending at \
+         {head}; it is {units:?}"
+    );
+    let e = export::verify(&blocked_from)
+        .err()
+        .ok_or_else(|| Failure::new("an export of another format verified".to_owned()))?;
+    ensure!(
+        as_older(&e),
+        "the verification of an archive of format {OLDER} whose appends are blocks is refused \
+         as `log_format`, not as damage at position 0: its two ends are the events its line \
+         and its block restore to; it answered {e:?}"
+    );
+    let fresh: lakelands_api::LakeId = format!("{}_{OLDER}_blocked", lake).into();
+    let e = refused(
+        (given.import)(blocked_from.clone(), fresh, None, import_seams()).await,
+        "a block-bearing archive of format 22 into a lake that holds nothing",
+    )?;
+    ensure!(
+        as_older(&e),
+        "an import of an archive of format {OLDER} whose appends are blocks is refused as \
+         `log_format`; it answered {e:?}"
+    );
+    // And an archive whose two ends contradict each other is not another
+    // release's data but damage, refused as the open of the same events
+    // refuses it. Two contradictions no release writes: a first line
+    // saying `22` whose own `lake_created` says `reads` (one release
+    // wrote the line and its body at once), and a first line newer than
+    // the last (a release appends only onto a lake whose first event it
+    // reads).
+    let events = log_events(store.as_ref()).await?;
+    let newest = reads + 1;
+    let before_oldest = lakelands_api::event::OLDEST_LOG_FORMAT - 9;
+    type Change = Box<dyn Fn(&mut [lakelands_api::event::Event]) + Send>;
+    let changes: Vec<(&str, Change)> = vec![
+        (
+            "a first line whose `v` is not its own `lake_created`'s `format`",
+            Box::new(move |events: &mut [_]| events[0].v = OLDER),
+        ),
+        (
+            "a first line newer than the last",
+            Box::new(move |events: &mut [_]| {
+                events[0].v = newest;
+                if let EventBody::LakeCreated { format } = &mut events[0].body {
+                    *format = newest;
+                }
+                let last = events.len() - 1;
+                events[last].v = before_oldest;
+            }),
+        ),
+    ];
+    for (n, (what, change)) in changes.into_iter().enumerate() {
+        let mut changed = events.clone();
+        change(&mut changed);
+        let mut prev = None;
+        let lines: Vec<_> = changed
+            .into_iter()
+            .map(|mut event| {
+                if let Some(prev) = prev.take() {
+                    event.prev = prev;
+                }
+                let line = crate::conformance::fixture::canonical_line(event);
+                prev = Some(line.hash.clone());
+                line
+            })
+            .collect();
+        let bytes: Vec<Vec<u8>> = lines.iter().map(|e| e.bytes.clone()).collect();
+        // The same events laid as a lake of their own: the open's answer.
+        let twin: lakelands_api::LakeId = format!("{}_contradiction{n}", store.lake()).into();
+        let c = (given.continued)(
+            None,
+            twin,
+            Box::new(move |_, _| (lines, 0)),
+            lakelands_api::engine::OpenMode::Read,
+            Seams::default(),
+        )
+        .await
+        .map_err(|e| Failure::new(format!("laying a contradictory lake below the store: {e}")))?;
+        let open = c.opened.err();
+        ensure!(
+            matches!(
+                open.as_ref().and_then(Error::situation),
+                Some(Situation::Damaged { .. })
+            ),
+            "{what}, laid as a lake, is not damage at its open: {open:?}"
+        );
+        // The same events as an archive, and the two doors an operator
+        // uses, refused as that open refuses them.
+        let dir = scratch.dir(&format!("contradiction{n}"));
+        fs::create_dir_all(dir.join("log"))
+            .map_err(|e| Failure::new(format!("making {}: {e}", dir.display())))?;
+        for name in files(&from)? {
+            fs::copy(from.join(&name), dir.join(&name))
+                .map_err(|e| Failure::new(format!("copying {name}: {e}")))?;
+        }
+        rewrite(&dir, &file, &bytes)?;
+        let verified = export::verify(&dir).err();
+        let target: lakelands_api::LakeId = format!("{}_backup{n}", store.lake()).into();
+        let imported = refused(
+            (given.import)(dir, target, None, import_seams()).await,
+            what,
+        )?;
+        let open_said = open.as_ref().and_then(Error::situation);
+        for (door, e) in [("verify", verified), ("an import", Some(imported))] {
+            let said = e.as_ref().and_then(Error::situation);
+            ensure!(
+                said == open_said,
+                "{what}: {door} of the archive answers {said:?} where the open of the same \
+                 events answers {open_said:?}"
+            );
+        }
     }
     Ok(())
 }
@@ -1566,5 +2350,585 @@ async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
         let d = cat.describe(who, Default::default()).await;
         d.must(&format!("describing the lake to `{}`", who.id))?;
     }
+    Ok(())
+}
+
+/// One event of an export's file: the line it stands on, none for an
+/// event of a block, the event it restores to, and the block it is among,
+/// by the byte that block begins at, with the block's `end`.
+pub(super) struct CopyLine {
+    pub(super) line: Option<Value>,
+    pub(super) event: Value,
+    pub(super) block: Option<(u64, Position)>,
+}
+
+/// The events of an export's file, restored in order (log-format §1.5).
+pub(super) fn copy_lines(dir: &Path, file: &str) -> Result<Vec<CopyLine>, Failure> {
+    let bytes = read(dir, file)?;
+    let broken = |e: String| Failure::new(format!("{file} of the export does not restore: {e}"));
+    let mut events = crate::log::Restoring::new(bytes.as_slice(), true);
+    let mut out = Vec::new();
+    while let Some(read) = events.next_event().map_err(|e| broken(format!("{e:?}")))? {
+        let at = bytes.get(read.unit as usize..).unwrap_or_default();
+        let first = at.split(|b| *b == b'\n').next().unwrap_or_default();
+        let first: Value = serde_json::from_slice(first).map_err(|e| broken(e.to_string()))?;
+        let (line, block) = match crate::log::is_block(&first) {
+            true => (None, Some((read.unit, read.end))),
+            false => (Some(first), None),
+        };
+        out.push(CopyLine {
+            line,
+            event: read.event,
+            block,
+        });
+    }
+    events.end().map_err(|f| broken(format!("{f:?}")))?;
+    Ok(out)
+}
+
+/// The last position of the append of each event of `store`'s log, by
+/// its position, as the feed tells it.
+pub(super) async fn append_ends(
+    store: &dyn LakeStore,
+) -> Result<BTreeMap<Position, Position>, Failure> {
+    let (feed, mut from, mut ends) = (store.feed(), Position::GENESIS, BTreeMap::new());
+    loop {
+        let batch = feed.poll(from, &FeedFilter::default(), 100).await;
+        let batch = batch.must(&format!("polling the feed from {from}"))?;
+        if batch.events.is_empty() {
+            return Ok(ends);
+        }
+        for e in &batch.events {
+            ends.insert(
+                e.position,
+                batch.append_of(e.position).unwrap_or(e.position),
+            );
+        }
+        from = batch.next;
+    }
+}
+
+/// Fails unless `dir`'s files hold their events in a copy's stored form
+/// (log-format §4.2): each append of two or more events `ends` tells in
+/// blocks of its own, each other event on a line holding its position,
+/// only a file's first its `prev`, and some block among them.
+pub(super) fn copy_form(dir: &Path, ends: &BTreeMap<Position, Position>) -> Held {
+    let mut blocked = false;
+    let end = |l: &CopyLine| {
+        let at = l.event["position"].as_u64().map(Position);
+        at.and_then(|at| ends.get(&at).map(|end| (at, *end)))
+    };
+    for file in files(dir)? {
+        let lines = copy_lines(dir, &file)?;
+        for (i, l) in lines.iter().enumerate() {
+            let at = &l.event["position"];
+            let shared = end(l).is_some_and(|(p, end)| {
+                end != p || p.0 > 0 && ends.get(&Position(p.0 - 1)) == Some(&end)
+            });
+            blocked |= l.block.is_some();
+            ensure!(
+                l.block.is_some() == shared,
+                "every event of {file} the feed tells in an append of two or more is in a block, \
+                 and only those; the event at {at} is {}",
+                if shared { "on a line" } else { "in a block" }
+            );
+            let Some(line) = &l.line else { continue };
+            ensure!(
+                line.get("position") == Some(at) && (line.get("prev").is_some() == (i == 0)),
+                "every event of {file} on a line holds its position, and only the file's first \
+                 its `prev`; the line of {at} is {line}"
+            );
+        }
+        for pair in lines.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            let shared = end(a).map(|e| e.1) == end(b).map(|e| e.1);
+            let of = |l: &CopyLine| l.block.map(|(_, end)| end);
+            let together = of(a).is_some() && of(a) == of(b);
+            ensure!(
+                together == (shared && of(a).is_some()),
+                "in {file} the events at {} and {} are in the blocks of one append where the feed \
+                 tells them of one append, and only then, and they are in {:?} and {:?}",
+                a.event["position"],
+                b.event["position"],
+                a.block,
+                b.block
+            );
+        }
+    }
+    ensure!(
+        blocked,
+        "an export of a lake that ingested records in one delivery holds a block, and it holds none"
+    );
+    Ok(())
+}
+
+/// A lake with a `reading` type, a checkpoint, and readings ingested
+/// before it and after it, each delivery one append of events that share
+/// `known_at`.
+async fn ingested(store: &dyn LakeStore) -> Held {
+    let l = Lake::of(store);
+    l.declare_json(json!({"declare": "type", "name": "reading", "fields": [
+        {"name": "amount", "type": {"kind": "number"}, "authority": "source"}]}))
+        .await?;
+    let records = |from: u32| -> Vec<_> {
+        (from..from + 6)
+            .map(|i| fixture::source_record("reading", &format!("r{i}"), json!({"amount": i})))
+            .collect()
+    };
+    fixture::delivered(store, &l, "meter", records(0), "ingesting six readings").await?;
+    store.checkpoint().await.must("checkpointing")?;
+    fixture::delivered(store, &l, "meter", records(6), "ingesting six more").await?;
+    Ok(())
+}
+
+async fn an_export_frames_each_append_and_imports_byte_for_byte(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let scratch = Scratch::new(given.scratch.clone());
+    ingested(store.as_ref()).await?;
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let ends = append_ends(store.as_ref()).await?;
+    copy_form(&from, &ends)?;
+    let imported = (given.import)(from.clone(), store.lake().clone(), None, import_seams());
+    let imported = imported
+        .await
+        .map_err(|e| Failure::new(format!("importing the framed export: {e}")))?
+        .store;
+    let (want, got) = (
+        store.verify(None, None).await.must("verifying the lake")?,
+        imported
+            .verify(None, None)
+            .await
+            .must("verifying the imported lake")?,
+    );
+    ensure!(
+        (want.through, &want.hash) == (got.through, &got.hash),
+        "the imported lake verifies to {} {}, as the lake it came from, {} {}",
+        got.through,
+        got.hash.0,
+        want.through,
+        want.hash.0
+    );
+    let told = append_ends(imported.as_ref()).await?;
+    ensure!(
+        told == ends,
+        "the imported lake's feed tells the appends the lake's tells, {ends:?}; it tells {told:?}"
+    );
+    let again = scratch.dir("again");
+    write(imported.as_ref(), &again).await?;
+    let names = files(&from)?;
+    ensure!(
+        names == files(&again)?,
+        "the imported lake exports the files {names:?} again"
+    );
+    for f in &names {
+        ensure!(
+            read(&from, f)? == read(&again, f)?,
+            "the imported lake's {f} holds the same bytes as the lake's"
+        );
+    }
+    Ok(())
+}
+
+/// `line`, a line of an export's file, with `change` applied to it.
+fn changed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<Vec<u8>, Failure> {
+    let mut value: Value = serde_json::from_slice(line)
+        .map_err(|e| Failure::new(format!("an exported line is not JSON: {e}")))?;
+    change(&mut value);
+    Ok(canonical::to_vec(&value))
+}
+
+/// One unit of an export's file as it stands: a line, or a block as its
+/// first line and the lines its stored bytes inflate to.
+#[derive(Clone)]
+enum Stood {
+    Line(Vec<u8>),
+    Block(Value, Vec<Vec<u8>>),
+}
+
+/// The units of `file` of the export in `dir`, in order.
+fn stood(dir: &Path, file: &str) -> Result<Vec<Stood>, Failure> {
+    let bytes = read(dir, file)?;
+    let broken = |e: String| Failure::new(format!("{file} of the export is not read: {e}"));
+    let (mut input, mut out) = (bytes.as_slice(), Vec::new());
+    while let Some(unit) =
+        crate::log::read_unit(&mut input).map_err(|e| broken(format!("{e:?}")))?
+    {
+        out.push(match unit {
+            crate::log::Unit::Line(line) => Stood::Line(line),
+            crate::log::Unit::Block(block, _, head, z) => {
+                let raw = crate::log::inflate(&block, &z).map_err(|f| broken(format!("{f:?}")))?;
+                let head = serde_json::from_slice(&head).map_err(|e| broken(e.to_string()))?;
+                let body = raw.strip_suffix(b"\n").unwrap_or(&raw);
+                Stood::Block(
+                    head,
+                    body.split(|b| *b == b'\n').map(<[u8]>::to_vec).collect(),
+                )
+            }
+        });
+    }
+    Ok(out)
+}
+
+/// `units` as a file's bytes, each block's lines compressed again and its
+/// `raw` and `stored` theirs, so that only what was changed is wrong.
+fn unstood(units: &[Stood]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut out = Vec::new();
+    for unit in units {
+        match unit {
+            Stood::Line(line) => out.extend_from_slice(line),
+            Stood::Block(head, lines) => {
+                let mut raw = Vec::new();
+                for line in lines {
+                    raw.extend_from_slice(line);
+                    raw.push(b'\n');
+                }
+                let mut z =
+                    flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+                let z = z
+                    .write_all(&raw)
+                    .and_then(|()| z.finish())
+                    .unwrap_or_default();
+                let mut head = head.clone();
+                head["block"]["raw"] = json!(raw.len());
+                head["block"]["stored"] = json!(z.len());
+                out.extend(canonical::to_vec(&head));
+                out.push(b'\n');
+                out.extend(z);
+            }
+        }
+        out.push(b'\n');
+    }
+    out
+}
+
+async fn a_framed_export_whose_stored_form_breaks_is_refused_naming_the_flaw(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let scratch = Scratch::new(given.scratch.clone());
+    ingested(store.as_ref()).await?;
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let file = export::file_name(Position::GENESIS);
+    let units = stood(&from, &file)?;
+    ensure!(
+        unstood(&units) == read(&from, &file)?,
+        "{file} of the export, its blocks compressed again at level 6, is the same bytes"
+    );
+    // The file's first block, the position of its first event, its frame
+    // line and the index of its first event's line.
+    let Some((k, head, lines)) = units.iter().enumerate().find_map(|(k, u)| match u {
+        Stood::Block(head, lines) => Some((k, head.clone(), lines.clone())),
+        Stood::Line(_) => None,
+    }) else {
+        return Err(Failure::new(format!(
+            "{file} of an export of a lake that ingested records in one delivery holds a block, \
+             and it holds none"
+        )));
+    };
+    let frame: Option<Value> = lines.first().and_then(|l| serde_json::from_slice(l).ok());
+    let (Some(p), Some(frame)) = (
+        head["block"]["first"].as_u64(),
+        frame.filter(crate::log::is_frame),
+    ) else {
+        return Err(Failure::new(format!(
+            "the block of {file} names its first position, and its events, which share \
+             `known_at`, begin with a frame line; they are {head} and {:?}",
+            lines
+                .first()
+                .map(|l| String::from_utf8_lossy(l).into_owned())
+        )));
+    };
+    let known_at = frame["frame"]["known_at"].clone();
+    let second = 2;
+    type Edit<'a> = &'a dyn Fn(&mut Value, &mut Vec<Vec<u8>>) -> Held;
+    let mut breaks: Vec<(&str, u64, Flaw, Vec<u8>)> = Vec::new();
+    let mut with = |what, at, flaw, edit: Edit| -> Held {
+        let mut units = units.clone();
+        if let Stood::Block(head, lines) = &mut units[k] {
+            edit(head, lines)?;
+        }
+        breaks.push((what, at, flaw, unstood(&units)));
+        Ok(())
+    };
+    with(
+        "a block's first line holding a member no block's first line holds",
+        p,
+        Flaw::NotABlock,
+        &|h, _| {
+            h["extra"] = json!(1);
+            Ok(())
+        },
+    )?;
+    with(
+        "a block whose `hash` is not its last event's",
+        p,
+        Flaw::HashMismatch,
+        &|h, _| {
+            h["block"]["hash"] = json!(lakelands_api::event::Digest::zero().0);
+            Ok(())
+        },
+    )?;
+    with(
+        "a block whose `prev` is not the hash before it",
+        p,
+        Flaw::PrevHash,
+        &|h, _| {
+            h["block"]["prev"] = json!(lakelands_api::event::Digest::zero().0);
+            Ok(())
+        },
+    )?;
+    with(
+        "a block whose `first` is not the position the line before gives",
+        p,
+        Flaw::Position {
+            expected: Position(p),
+            found: Some(Position(p + 6)),
+        },
+        &|h, _| {
+            h["block"]["first"] = json!(p + 6);
+            h["block"]["end"] = json!(h["block"]["end"].as_u64().unwrap_or(0) + 6);
+            Ok(())
+        },
+    )?;
+    with(
+        "a frame line among a block's event lines",
+        p + 1,
+        Flaw::FrameInFrame,
+        &|_, l| {
+            l.insert(second, l[0].clone());
+            Ok(())
+        },
+    )?;
+    for (member, value) in [
+        ("position", json!(p + 1)),
+        ("v", json!(1)),
+        ("known_at", known_at),
+    ] {
+        with(
+            "a line in a block holding a member its block or its frame decides",
+            p + 1,
+            Flaw::FramedTwice {
+                member: member.into(),
+            },
+            &|_, l| {
+                l[second] = changed(&l[second], |e| e[member] = value.clone())?;
+                Ok(())
+            },
+        )?;
+    }
+    with(
+        "a line in a block changed",
+        p,
+        Flaw::HashMismatch,
+        &|_, l| {
+            l[second] = changed(&l[second], |e| e["body"]["changed"] = json!(true))?;
+            Ok(())
+        },
+    )?;
+    with(
+        "a block holding an event line more than it says",
+        p,
+        Flaw::BlockBytes,
+        &|_, l| {
+            l.push(l[l.len() - 1].clone());
+            Ok(())
+        },
+    )?;
+    // A byte of the block's stored bytes changed.
+    let mut bytes = unstood(&units);
+    let at = unstood(&units[..k]).len()
+        + canonical::to_vec(&head).len()
+        + 1
+        + head["block"]["stored"].as_u64().unwrap_or(0) as usize / 2;
+    bytes[at] ^= 0x10;
+    breaks.push((
+        "a byte of a block's stored bytes changed",
+        p,
+        Flaw::BlockBytes,
+        bytes,
+    ));
+    // The file's first line, its lake's creation, holding no `prev`.
+    let mut first = units.clone();
+    if let Stood::Line(line) = &mut first[0] {
+        *line = changed(line, |e| _ = e.as_object_mut().map(|e| e.remove("prev")))?;
+    }
+    breaks.push((
+        "the file's first line holding no `prev`",
+        0,
+        Flaw::StartUnheld,
+        unstood(&first),
+    ));
+    for (i, (what, at, flaw, bytes)) in breaks.into_iter().enumerate() {
+        let dir = scratch.dir(&format!("broken-{i}"));
+        copied(&from, &dir)?;
+        fs::write(dir.join(&file), bytes).map_err(|e| Failure::new(format!("damaging: {e}")))?;
+        let said = export::verify(&dir);
+        let named = match said.as_ref().err().and_then(Error::situation) {
+            Some(Situation::Damaged { position, flaw, .. }) => Some((*position, flaw)),
+            _ => None,
+        };
+        ensure!(
+            named == Some((Some(Position(at)), &flaw)),
+            "verifying an export with {what} is refused as `damaged` at {at}, naming {flaw:?}, \
+             and it answered {said:?}"
+        );
+        let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
+        let e = refused(imported, &format!("an import of an export with {what}"))?;
+        ensure!(
+            damaged(&e) == Some(&flaw),
+            "an import of an export with {what} is refused as `damaged`, naming {flaw:?}, and it \
+             answered {e}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_backup_stopped_among_a_frames_lines_writes_its_run_again_whole(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (scratch, s) = (Scratch::new(given.scratch.clone()), store.as_ref());
+    ingested(s).await?;
+    let whole = scratch.dir("whole");
+    backup(s, &whole).await?;
+    let last = files(&whole)?.pop().unwrap_or_default();
+    let lines = copy_lines(&whole, &last)?;
+    let Some((start, _)) = lines.last().and_then(|l| l.block) else {
+        return Err(Failure::new(format!(
+            "the last event of {last} is in a block, the last delivery's, and it is not"
+        )));
+    };
+    let bytes = read(&whole, &last)?;
+    let start = start as usize;
+    let head = bytes[start..].iter().position(|b| *b == b'\n').unwrap_or(0) + 1;
+    let after = start + head;
+    for (cut, what) in [
+        (after, "its block's first line"),
+        (
+            after + (bytes.len() - 1 - after) / 2,
+            "half its block's stored bytes",
+        ),
+        (bytes.len() - 1, "its block but its last line feed"),
+    ] {
+        let tear = |dir: &Path| {
+            fs::write(dir.join(&last), &bytes[..cut])
+                .map_err(|e| Failure::new(format!("tearing: {e}")))
+        };
+        stopped_and_run_again(s, &given, (&whole, &scratch), tear, what).await?;
+    }
+    Ok(())
+}
+
+/// Fails unless a backup of `s`, copied from `whole` and torn by `tear`,
+/// stopped after `what`, run again holds the files an export of the head
+/// writes, and restores the lake at its head.
+pub(super) async fn stopped_and_run_again(
+    s: &dyn LakeStore,
+    given: &crate::conformance::Given,
+    (whole, scratch): (&Path, &Scratch),
+    tear: impl Fn(&Path) -> Held,
+    what: &str,
+) -> Result<export::Backup, Failure> {
+    let tag = what.replace(|c: char| !c.is_ascii_alphanumeric(), "-");
+    let (dir, export) = (
+        scratch.dir(&format!("stopped-{tag}")),
+        scratch.dir(&format!("export-{tag}")),
+    );
+    copied(whole, &dir)?;
+    tear(&dir)?;
+    let run = backup(s, &dir).await?;
+    ensure!(
+        as_exported(s, &dir, &export).await?,
+        "a backup stopped after {what} writes its append's run again whole, counts the new \
+         events and holds the files an export of the head writes; it answered {run:?}"
+    );
+    let restored = (given.import)(dir.clone(), s.lake().clone(), None, import_seams());
+    let restored = restored
+        .await
+        .map_err(|e| Failure::new(format!("restoring the backup stopped after {what}: {e}")))?
+        .store;
+    let (want, got) = (s.head().await, restored.head().await);
+    ensure!(
+        want.as_ref().ok() == got.as_ref().ok(),
+        "the backup stopped after {what}, run again, restores the lake at its head {want:?}, \
+         and it restores {got:?}"
+    );
+    Ok(run)
+}
+
+async fn an_append_torn_between_its_blocks_is_refused_and_a_backup_writes_it_again(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (scratch, s) = (Scratch::new(given.scratch.clone()), store.as_ref());
+    let (before, delivered, head) = super::stored_form::big(s).await?;
+    // The file cut at the first byte of the delivery's second block: its
+    // last append ends after its first block, the note after it gone too.
+    let whole = scratch.dir("whole");
+    backup(s, &whole).await?;
+    let last = files(&whole)?.pop().unwrap_or_default();
+    let lines = copy_lines(&whole, &last)?;
+    let second = Position(before.0 + 1 + 1_000);
+    let at = |p: Position| {
+        lines
+            .iter()
+            .find(|l| l.event["position"].as_u64() == Some(p.0))
+            .and_then(|l| l.block)
+    };
+    let (Some((cut, end)), Some((first, _))) = (at(second), at(before.next())) else {
+        return Err(Failure::new(format!(
+            "the delivery of {last} is stored in two blocks, the second from {second}, and it \
+             is not"
+        )));
+    };
+    ensure!(
+        first < cut && end == delivered && head == delivered.next(),
+        "the delivery's blocks begin at bytes {first} and {cut} of {last}, each naming {delivered} \
+         as its `end`, and they name {end}"
+    );
+    let bytes = read(&whole, &last)?;
+    let torn = &bytes[..cut as usize];
+    // Verified, and imported, the file torn between the blocks is refused.
+    let dir = scratch.dir("torn");
+    copied(&whole, &dir)?;
+    fs::write(dir.join(&last), torn).map_err(|e| Failure::new(format!("tearing: {e}")))?;
+    let flaw = Flaw::AppendShort { end: delivered };
+    let said = export::verify(&dir);
+    let named = match said.as_ref().err().and_then(Error::situation) {
+        Some(Situation::Damaged { position, flaw, .. }) => Some((*position, flaw)),
+        _ => None,
+    };
+    ensure!(
+        named == Some((Some(second), &flaw)),
+        "verifying a copy whose last append is torn between its blocks is refused as `damaged` \
+         at {second}, naming {flaw:?}, and it answered {said:?}"
+    );
+    let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
+    let e = refused(
+        imported,
+        "an import of a copy torn between an append's blocks",
+    )?;
+    ensure!(
+        damaged(&e) == Some(&flaw),
+        "an import of a copy torn between an append's blocks is refused as `damaged`, naming \
+         {flaw:?}, and it answered {e}"
+    );
+    // A backup stopped there writes the append again whole.
+    let tear = |dir: &Path| {
+        fs::write(dir.join(&last), torn).map_err(|e| Failure::new(format!("tearing: {e}")))
+    };
+    let what = "the first of its last append's blocks";
+    let run = stopped_and_run_again(s, &given, (&whole, &scratch), tear, what).await?;
+    ensure!(
+        run.again == Some(before.next()),
+        "a backup stopped between an append's blocks writes that append again from its first \
+         position {}, and it answered {run:?}",
+        before.next()
+    );
     Ok(())
 }

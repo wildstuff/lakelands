@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use lakelands_api::engine::{After, Declared, Matched, ProjectionView, Scan};
 use lakelands_api::event::{Digest, EventBody, EventId};
+use lakelands_api::quarantine::{QuarantineFilter, Quarantined};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::FeedFilter;
@@ -22,19 +23,16 @@ use lakelands_core::engines as core_engines;
 
 use crate::lake::Lake;
 
-/// The records a count reads at once.
 const PAGE: u32 = 1024;
 
 /// Where a record of an earlier position stands at the head: under the
 /// name its type bears there, after each rename since, and under the key
 /// it bears there, after each re-key since.
 pub(crate) struct Since {
-    /// The types renamed since, in the log's order, each with its position.
     renamed: Vec<(Position, TypeName, TypeName)>,
     /// By a type's name at the head, each key a re-key since moved, and
     /// the key it bears at the head.
     moved: BTreeMap<TypeName, BTreeMap<RecordKey, RecordKey>>,
-    /// The same, from the key at the head back to the key then.
     back: BTreeMap<TypeName, BTreeMap<RecordKey, RecordKey>>,
 }
 
@@ -129,7 +127,6 @@ impl Since {
         Ok(since)
     }
 
-    /// The name at the head of a type named `ty` at `at`.
     fn name_after(&self, ty: &TypeName, at: Position) -> TypeName {
         let mut name = ty.clone();
         for (_, from, to) in self.renamed.iter().filter(|r| r.0 > at) {
@@ -140,13 +137,10 @@ impl Since {
         name
     }
 
-    /// The name at the head of a type of the earlier position.
     pub(crate) fn name(&self, ty: &TypeName) -> TypeName {
         self.name_after(ty, Position::GENESIS)
     }
 
-    /// The key at the head of the record `key` of the type named `name`
-    /// there.
     pub(crate) fn key(&self, name: &TypeName, key: &RecordKey) -> RecordKey {
         let moved = self.moved.get(name).and_then(|m| m.get(key));
         moved.unwrap_or(key).clone()
@@ -165,7 +159,6 @@ impl Since {
     }
 }
 
-/// The view at a position, with the head beside it.
 pub(crate) struct HeldNow<'a> {
     then: Box<dyn ProjectionView + 'a>,
     head: Rc<dyn ProjectionView + 'a>,
@@ -236,6 +229,19 @@ impl ProjectionView for HeldNow<'_> {
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         let row = self.then.get(ty, key)?.into_iter().collect();
         Ok(self.now(ty, row)?.pop())
+    }
+
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        self.then.order(name, key)
+    }
+
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        self.then.order_page(name, after, n)
     }
 
     /// The engine selects what the hold then would not, and a page without
@@ -313,6 +319,10 @@ impl ProjectionView for HeldNow<'_> {
         self.then.proposals(filter)
     }
 
+    fn quarantined(&self, filter: &QuarantineFilter) -> Result<Vec<Quarantined>> {
+        self.then.quarantined(filter)
+    }
+
     fn proposals_before(
         &self,
         filter: &ProposalFilter,
@@ -355,6 +365,18 @@ impl ProjectionView for HeldNow<'_> {
         limit: u32,
     ) -> Result<Matched> {
         self.then.of_source(source, from, through, limit)
+    }
+
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        self.then.thinned_acts(ty)
+    }
+
+    fn thinned_at(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
+        self.then.thinned_at(ty, key)
     }
 }
 

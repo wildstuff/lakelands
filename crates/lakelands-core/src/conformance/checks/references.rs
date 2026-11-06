@@ -2,15 +2,8 @@
 //! (`docs/decisions/011-storage-kind-and-value-type.md`, the log format
 //! §5: a reference is the target record's key).
 
-use lakelands_api::ontology::{Authority, StorageKind};
-use lakelands_api::{Error, LakeStore, TypeName, WriteOpts};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, committed, field, head_unmoved, patch, reference, refused_on, source_record,
-    type_decl, value, windows_reach_head,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{committed, reference, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     REFERENCE_MUST_RESOLVE = a_write_referencing_a_record_that_does_not_exist_is_refused,

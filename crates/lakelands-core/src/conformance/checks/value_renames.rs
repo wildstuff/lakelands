@@ -12,22 +12,10 @@
 //! computed again, the sets decide again, and a field's `initial` that
 //! names an old value is declared again with the new one.
 
-use lakelands_api::error::Case;
-use lakelands_api::event::{Event, EventBody};
-use lakelands_api::ontology::{StorageKind, ValueTypeDecl};
-use lakelands_api::seam::{FeedFilter, Seams};
-use lakelands_api::write::{
-    Declaration, Migration, Outcome, ProposedWrite, ValueTypeMigration, ValueTypeReport,
-};
-use lakelands_api::{Access, LakeStore, Position, Refusal, TypeName};
-use serde_json::{Value, json};
+use lakelands_api::write::{Outcome, ValueTypeMigration, ValueTypeReport};
 
-use crate::conformance::fixture::{
-    Lake, Must, all_found, computed_by, derived, events_after, field, field_access, find_at,
-    followed, get_at, head_unmoved, migration, object_set_on, outputs_from, reason, refused_like,
-    restrict, reviewer, trigger_on, try_upsert, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, get_at, reviewer};
+use crate::conformance::prelude::*;
 
 check!(
     RENAMES_IN_ONE_STEP = a_value_type_migration_renames_a_value_in_every_record_in_one_event,
@@ -51,7 +39,7 @@ check!(
 
 check!(
     RENAMES_NO_KEY = a_rename_of_a_value_a_key_field_holds_is_refused,
-    "027, extended (lakelands#553): a rename of a value a key field holds is refused as invalid, naming the type and the field and pointing to a re-key through the type's migration, and nothing is appended; a key field that holds no old value does not refuse it"
+    "027, extended (lakelands#553): a rename of a value a key field holds is refused as invalid, naming the type and the field and pointing to a re-key through the type's migration, and nothing is appended; a key field that holds no old value does not refuse it, and once the rename is applied a `where` on the key field still answers the record its text keys (057, lakelands#1318)"
 );
 
 check!(
@@ -427,6 +415,16 @@ async fn a_rename_of_a_value_a_key_field_holds_is_refused(store: Store) -> Held 
         "a key field that holds no old value does not refuse the rename; the report says \
          {report:?}"
     );
+    let m = renamed(&["active", "done"], &[("open", "active")]);
+    apply(store.as_ref(), &l, m).await?;
+    for (filter, want) in [("name = 'done'", vec!["done"]), ("name = 'active'", vec![])] {
+        let rows = l.all_found("stage", find_where(filter)).await?;
+        let keys: Vec<String> = rows.into_iter().map(|r| r.key.0).collect();
+        ensure!(
+            keys == want,
+            "after the rename, `{filter}` answers {keys:?}"
+        );
+    }
     Ok(())
 }
 
@@ -511,13 +509,8 @@ async fn a_value_rename_decides_set_membership_in_its_append(
     l.upsert("task", "t4", json!({"state": "done"})).await?;
     let m = renamed(&["active", "finished"], &[("done", "finished")]);
     let id = propose(&l, &m).await?;
-    let lower = lakelands_api::location::Limits {
-        max_set_changes: 1,
-        ..crate::conformance::fixture::limits()
-    };
-    let store = (given.relimit)(store, lakelands_api::seam::Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
+    let store =
+        at_one_set_change(&given, store, "opening the lake again with a lower ceiling").await?;
     let l = Lake::of(store.as_ref());
     let before = store.head().await.must("reading the head")?;
     let accepted = l.cat.accept(&l.own, &id).await;
@@ -635,7 +628,7 @@ async fn a_value_rename_is_not_granted_to_one_not_shown_every_field_it_writes(
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     l.upsert("task", "t1", json!({"state": "open"})).await?;
     let mut blank = reviewer(store.as_ref(), true);
-    blank.grants.default = Access::None;
+    (blank.grants.default, blank.grants.restricted) = (Access::None, true);
     let before = store.head().await.must("reading the head")?;
     let m = renamed(&["active", "done"], &[("open", "active")]);
     let id = preflight(&l, m.clone()).await?.report_id;
@@ -937,7 +930,7 @@ async fn a_rename_report_names_a_type_by_what_its_reader_is_described_of_it(stor
     // and holds no `schema`, which shows every definition.
     let reader = |name, ty: &str, fields: &[(&str, Access)], unseen: bool| {
         let mut p = field_access(s, name, ty, fields);
-        (p.grants.schema, p.grants.review) = (true, true);
+        (p.grants.schema, p.grants.review, p.grants.restricted) = (true, true, true);
         p.grants.types.entry(ty.into()).or_default().default = unseen.then_some(Access::None);
         p
     };

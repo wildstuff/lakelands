@@ -6,23 +6,10 @@
 //! the sort field is still listed, last, in either direction. Both are
 //! where two engines drift apart silently, each consistent with itself.
 
-use std::collections::BTreeSet;
+use lakelands_api::read::{After, Found, Order};
 
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::query::{Projection, QueryResult};
-use lakelands_api::read::{After, AggFunc, Aggregate, Direction, Found, Order, OrderBy};
-use lakelands_api::seam::Seams;
-use lakelands_api::{
-    Access, Catalog, Cursor, Find, Grants, LakeStore, Principal, PrincipalKind, Record, Refusal,
-};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, agg, all_found, count_view, is_invalid, limits, order, pattern, principal,
-    refused_on, type_of, value,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{order, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     EVERY_RECORD_ONCE = paging_through_find_visits_every_record_exactly_once,

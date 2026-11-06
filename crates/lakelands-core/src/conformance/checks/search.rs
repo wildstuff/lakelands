@@ -3,21 +3,12 @@
 //! `docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`,
 //! `docs/decisions/029-every-answer-has-one-order.md`).
 
-use lakelands_api::error::Case;
 use lakelands_api::key::link_key;
-use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::PrincipalKind;
-use lakelands_api::query::{Hits, Projection, QueryResult, Search, SearchMode};
-use lakelands_api::write::{Recompute, WriteOpts};
-use lakelands_api::{Access, Error, LakeStore, Position, Principal, ReadAt, Refusal, TypeName};
-use serde_json::json;
+use lakelands_api::write::WriteOpts;
 
-use crate::conformance::fixture::{
-    Lake, Must, doors, embedding, field, field_access, field_writer, get_at, invalid_case,
-    invalid_like, no_such_field, owner, patch, pattern, principal, read_at, refused_alike,
-    refused_on, restrict, searchable, type_decl, vector,
-};
-use crate::conformance::{Failure, Held, Reopen, Store, backing};
+use crate::conformance::fixture::{doors, get_at, owner};
+use crate::conformance::prelude::*;
 
 check!(
     MATCH_SET = full_text_matches_words_whatever_their_case_inflection_or_accents,
@@ -309,7 +300,7 @@ async fn a_vector_search_over_an_unreadable_vector_field_is_refused(store: Store
 
 check!(
     EMBED_PROBE_REFUSED = a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused,
-    "024: a vector embedded from a field encodes that field, so a vector or hybrid search over it is refused, naming the field, when the principal may not read one of the fields it is embedded from, even though it may read the vector; a vector field named in `also` is probed like the first, and one the principal may not know of is answered as undeclared",
+    "024: a vector embedded from a field encodes that field, so a vector or hybrid search over it, one bringing text the lake embeds too (lakelands#1567), is refused, naming the field and asking the backend nothing, when the principal may not read one of the fields it is embedded from, even though it may read the vector; a vector field named in `also` is probed like the first, and one the principal may not know of is answered as undeclared",
     embedding
 );
 
@@ -366,6 +357,7 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(sto
             field: "vec".into(),
             vector: Some(vec![1.0, 0.0]),
             fields: None,
+            text_fields: None,
             weight: None,
             text_weight: None,
             model: None,
@@ -375,6 +367,22 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(sto
          sees `body` only masked,",
     )
     .await?;
+    let before = backing::embed_calls();
+    refused(
+        store.as_ref(),
+        &reader,
+        doc_search(SearchMode::embedded("harbour", "vec")),
+        "body",
+        "a vector search bringing text over `vec`, embedded from `title` and `body`, by a \
+         reader who sees `body` only masked,",
+    )
+    .await?;
+    ensure!(
+        backing::embed_calls() == before,
+        "a vector search bringing text that its reader may not make must ask the backend \
+         nothing; it made {} calls",
+        backing::embed_calls() - before
+    );
     // Named in `also`, `vec` is probed as the first field is.
     let also = || doc_search(super::fusion::along(None, "vec", None));
     let what = "a vector search over `v` and, in `also`, `vec`, by a reader who sees `body` \
@@ -406,14 +414,14 @@ check!(
 check!(
     HYBRID_WITHOUT_BACKEND =
         a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_so,
-    "the embedding seam (docs/seams.md): with no embedding backend bound, a hybrid search that brings no vector over a field a model fills ranks by its text alone, and its answer and its one axis say it ranked lexically",
+    "the embedding seam (docs/seams.md) and 025: with no embedding backend bound, a hybrid search that brings no vector over a field a model fills ranks by its text alone, its answer and its one axis say it ranked lexically, and its `unranked` names the field and the backend that is not bound, on every page",
     reopens
 );
 
 check!(
     HYBRID_THROUGH_BACKEND =
         a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_else,
-    "the embedding seam (docs/seams.md): a hybrid search without a vector ranks through the bound backend and says `hybrid`; a vector search or a hybrid one bringing its vector never calls it; a backend that fails, whatever error it answers, or that answers a vector of no direction, makes the search unavailable, never lexical or invalid",
+    "the embedding seam (docs/seams.md): a hybrid search without a vector ranks through the bound backend and says `hybrid`, naming nothing unranked; a vector search or a hybrid one bringing its vector never calls it",
     embedding
 );
 
@@ -825,15 +833,7 @@ async fn two_embedded_docs(store: &dyn LakeStore) -> Result<Lake, Failure> {
 
 /// A hybrid search for `text` over the embedding `e`, without a vector.
 fn over_e(text: &str) -> SearchMode {
-    SearchMode::Hybrid {
-        text: text.into(),
-        field: "e".into(),
-        vector: None,
-        fields: None,
-        weight: None,
-        text_weight: None,
-        model: None,
-    }
+    SearchMode::hybrid(text, "e")
 }
 
 pub(super) fn doc_search(mode: SearchMode) -> Search {
@@ -844,8 +844,10 @@ pub(super) fn doc_search(mode: SearchMode) -> Search {
         cursor: None,
         filter: None,
         with_meta: false,
+        matches: false,
         at: ReadAt::default(),
         rerank: None,
+        text_as_of: false,
     }
 }
 
@@ -855,6 +857,7 @@ fn hybrid(text: &str, vector: Option<Vec<f32>>) -> SearchMode {
         field: "v".into(),
         vector,
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -882,13 +885,52 @@ async fn a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_
         .data;
     let lexical =
         got.axes.len() == 1 && got.axes[0].axis == "lexical" && got.axes[0].field.is_none();
+    let unbound = got.unranked.as_ref().is_some_and(|u| {
+        u.field.as_str() == "e"
+            && matches!(&u.why, Error::Unbound { seam } if matches!(
+                &**seam, Seam::Embedding { model, field, bound: None, .. }
+                    if model == backing::EMBED_MODEL && field == "e"
+            ))
+    });
     ensure!(
-        keys(&got) == ["a"] && got.ranked_by.starts_with("lexical") && lexical,
+        keys(&got) == ["a"] && got.ranked_by == "lexical" && lexical && unbound,
         "with no embedding backend bound, a hybrid search for \"quayside\" without a \
-         vector must rank by its text alone, finding only `a`, and say `lexical`; it \
-         found {:?}, ranked by {:?}",
+         vector must rank by its text alone, finding only `a`, say `lexical`, and name \
+         in `unranked` the field `e` and the embedding backend that is not bound; it \
+         found {:?}, ranked by {:?}, unranked {:?}",
         keys(&got),
-        got.ranked_by
+        got.ranked_by,
+        got.unranked
+    );
+    // Its later pages rank so too, and repeat why.
+    let (cat, own) = (doors(store.as_ref()), owner(store.as_ref()));
+    let mut pages: Vec<Hits> = Vec::new();
+    let mut cursor = None;
+    let both = |cursor| Search {
+        k: 1,
+        cursor,
+        ..doc_search(over_e("quayside harbour"))
+    };
+    for _ in 0..2 {
+        let page = cat.search(&own, both(cursor)).await;
+        let page = page
+            .must("a page of a hybrid search, no backend bound")?
+            .data;
+        cursor = page.next_cursor.clone();
+        pages.push(page);
+    }
+    ensure!(
+        pages
+            .iter()
+            .all(|p| p.ranked_by == "lexical" && p.unranked == got.unranked)
+            && pages.iter().flat_map(keys).count() == 2,
+        "with no embedding backend bound, every page of a hybrid search without a vector \
+         must rank by its text alone and name the field and the backend in `unranked`; \
+         the pages answered {:?}",
+        pages
+            .iter()
+            .map(|p| (keys(p).join(","), p.ranked_by.clone(), p.unranked.clone()))
+            .collect::<Vec<_>>()
     );
     Ok(())
 }
@@ -896,7 +938,7 @@ async fn a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_
 async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_else(
     store: Store,
 ) -> Held {
-    use crate::conformance::backing::{NOWHERE, UNREACHABLE, embed_calls};
+    use crate::conformance::backing::embed_calls;
     let l = two_embedded_docs(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     // The backend makes every text (1, 0), so both records' `e` point
@@ -912,12 +954,16 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
     let mut found = keys(&got);
     found.sort();
     ensure!(
-        found == ["a", "b"] && got.ranked_by == "hybrid" && embed_calls() == before + 1,
+        found == ["a", "b"]
+            && got.ranked_by == "hybrid"
+            && got.unranked.is_none()
+            && embed_calls() == before + 1,
         "with an embedding backend bound, a hybrid search without a vector must embed \
          its text in one call and rank over text and vector, finding `a` by its text and \
-         `b` by its vector, and say `hybrid`; it found {found:?}, ranked by {:?}, with {} \
-         calls to the backend",
+         `b` by its vector, say `hybrid` and name nothing unranked; it found {found:?}, \
+         ranked by {:?}, unranked {:?}, with {} calls to the backend",
         got.ranked_by,
+        got.unranked,
         embed_calls() - before
     );
     let before = embed_calls();
@@ -934,22 +980,429 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
          the embedding backend; they made {} calls",
         embed_calls() - before
     );
-    // A vector of zeros is the backend's fault, not the caller's.
-    for text in [
-        format!("{UNREACHABLE} quayside"),
-        format!("{NOWHERE} quayside"),
-    ] {
-        match cat.search(own, doc_search(over_e(&text))).await {
-            Err(Error::Unavailable { .. }) => {}
-            other => Err(Failure::new(format!(
-                "a hybrid search for {text:?} whose bound embedding backend fails or \
-                 answers a vector of no direction must be unavailable, never ranked \
-                 lexically or refused as the caller's: the same query must not rank \
-                 differently by the backend's weather; it answered {:?}",
-                other.map(|r| (keys(&r.data).join(","), r.data.ranked_by))
-            )))?,
+    Ok(())
+}
+
+check!(
+    HYBRID_FALLS_BACK =
+        a_hybrid_search_whose_query_the_lake_cannot_embed_ranks_by_its_text_and_says_why,
+    "025, extended (lakelands#1566): a hybrid search without a vector whose bound backend fails, whatever error it answers, or answers a vector of no direction or other than one vector, ranks by its text alone, says `lexical`, and names in `unranked` the vector field and the backend's failure; every page of it does, a reranked one too, though the backend is up again; with the backend up the same search ranks through it and names nothing unranked; a later page of a search its vector ranked, and a vector search whose `text` the backend fails on, are unavailable",
+    embedding
+);
+
+/// Whether `u` names the field `e` and the suite's backend failing.
+fn backend_down(u: Option<&lakelands_api::query::Unranked>) -> bool {
+    use lakelands_api::error::Remote;
+    u.is_some_and(|u| {
+        u.field.as_str() == "e"
+            && matches!(&u.why, Error::Unavailable { situation } if matches!(
+                &**situation, Situation::Remote { remote: Remote::Embedding { model }, .. }
+                    if model == backing::EMBED_MODEL
+            ))
+    })
+}
+
+async fn a_hybrid_search_whose_query_the_lake_cannot_embed_ranks_by_its_text_and_says_why(
+    store: Store,
+) -> Held {
+    use crate::conformance::backing::{
+        NOWHERE, TWICE, UNREACHABLE, WEATHER, plug_text, unplug_text,
+    };
+    let l = two_embedded_docs(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    let up = cat
+        .search(own, doc_search(over_e("quayside")))
+        .await
+        .must("a hybrid search for \"quayside\" without a vector, the backend up")?
+        .data;
+    ensure!(
+        up.ranked_by == "hybrid" && up.unranked.is_none(),
+        "with the embedding backend up, a hybrid search without a vector must rank \
+         through it and name nothing unranked; it ranked by {:?}, unranked {:?}",
+        up.ranked_by,
+        up.unranked
+    );
+    // Weather, a refusal of the backend's own, a vector of no direction,
+    // two vectors for one text: each is the backend's, and the search has
+    // a leg without it.
+    for text in [WEATHER, UNREACHABLE, NOWHERE, TWICE].map(|w| format!("{w} quayside")) {
+        let got = cat
+            .search(own, doc_search(over_e(&text)))
+            .await
+            .must(&format!(
+                "a hybrid search for {text:?}, its backend failing"
+            ))?
+            .data;
+        let lexical = got.axes.len() == 1 && got.axes[0].axis == "lexical";
+        ensure!(
+            keys(&got) == ["a"]
+                && got.ranked_by == "lexical"
+                && lexical
+                && backend_down(got.unranked.as_ref()),
+            "a hybrid search for {text:?} without a vector, whose bound backend fails or \
+             answers a vector of no direction, must rank by its text alone, finding only \
+             `a`, say `lexical` on its answer and its one axis, and name in `unranked` the \
+             field `e` and the backend's failure; it found {:?}, ranked by {:?}, unranked \
+             {:?}",
+            keys(&got),
+            got.ranked_by,
+            got.unranked
+        );
+    }
+    // As of an earlier position too, whose search the head's model embeds.
+    let then = l
+        .upsert(
+            "doc",
+            "c",
+            json!({"body": "quayside again", "v": [1.0, 0.0]}),
+        )
+        .await?
+        .position();
+    let text = format!("{WEATHER} quayside");
+    let earlier = Search {
+        at: read_at(Some(then)),
+        ..doc_search(over_e(&text))
+    };
+    let got = cat.search(own, earlier).await;
+    let got = got.must("a hybrid search as of an earlier position, its backend failing")?;
+    let mut found = keys(&got.data);
+    found.sort();
+    ensure!(
+        found == ["a", "c"]
+            && got.data.ranked_by == "lexical"
+            && backend_down(got.data.unranked.as_ref()),
+        "a hybrid search for {text:?} as of the position `c` was written at, its backend \
+         failing, must rank by its text alone, finding `a` and `c`, and name the failure \
+         in `unranked`; it found {found:?}, ranked by {:?}, unranked {:?}",
+        got.data.ranked_by,
+        got.data.unranked
+    );
+    l.retire("doc", "c").await?;
+    // A vector search has no other leg.
+    let pure = cat
+        .search(own, doc_search(SearchMode::embedded(&text, "e")))
+        .await;
+    ensure!(
+        matches!(pure, Err(Error::Unavailable { .. })),
+        "a vector search for the text {text:?} over `e`, whose bound backend fails, must \
+         be unavailable; it answered {:?}",
+        pure.map(|r| (keys(&r.data).join(","), r.data.ranked_by))
+    );
+    // Every page of an answer its text alone ranked is ranked so, though the
+    // backend is up again; a page of one its vector ranked is not ranked
+    // otherwise when the backend fails.
+    let both = "quayside harbour";
+    let paged = |cursor| Search {
+        k: 1,
+        cursor,
+        ..doc_search(over_e(both))
+    };
+    unplug_text(both);
+    let first = cat.search(own, paged(None)).await;
+    plug_text(both);
+    let first = first
+        .must("the first page of a hybrid search, its backend failing")?
+        .data;
+    let second = match first.next_cursor.clone() {
+        Some(c) => cat.search(own, paged(Some(c))).await.map(|r| r.data),
+        None => Err(Error::invalid(Case::CursorForeign)),
+    };
+    let second = second.must("the second page, the backend up again")?;
+    let pages = [&first, &second].map(|p| (keys(p).join(","), p.ranked_by.as_str()));
+    ensure!(
+        pages == [("a".into(), "lexical"), ("b".into(), "lexical")]
+            && backend_down(first.unranked.as_ref())
+            && second.unranked == first.unranked,
+        "a hybrid search for {both:?} paged one hit at a time, its backend failing on the \
+         first page and up on the second, must rank both by its text and name on both the \
+         first page's `unranked`; it answered {pages:?}, unranked {:?} and {:?}",
+        first.unranked,
+        second.unranked
+    );
+    let fused = cat.search(own, paged(None)).await;
+    let fused = fused
+        .must("the first page of a hybrid search, the backend up")?
+        .data;
+    unplug_text(both);
+    let next = match fused.next_cursor {
+        Some(c) => cat.search(own, paged(Some(c))).await.map(|r| r.data),
+        None => Err(Error::invalid(Case::CursorForeign)),
+    };
+    plug_text(both);
+    ensure!(
+        matches!(next, Err(Error::Unavailable { .. })),
+        "the second page of a hybrid search its vector ranked, the backend failing, must be \
+         unavailable, never ranked by its text alone; it answered {:?}",
+        next.map(|h| (keys(&h).join(","), h.ranked_by))
+    );
+    // A second stage repeats on every page what its first stage said.
+    store
+        .bind_rerank(backing::reranker())
+        .must("binding the reranker")?;
+    let staged = |cursor| Search {
+        rerank: Some(lakelands_api::query::Rerank { top: 2, text: None }),
+        ..paged(cursor)
+    };
+    unplug_text(both);
+    let first = cat.search(own, staged(None)).await;
+    plug_text(both);
+    let first = first
+        .must("a reranked hybrid search, its backend failing")?
+        .data;
+    let second = match first.next_cursor.clone() {
+        Some(c) => cat.search(own, staged(Some(c))).await.map(|r| r.data),
+        None => Err(Error::invalid(Case::CursorForeign)),
+    };
+    let second = second.must("its second page")?;
+    ensure!(
+        backend_down(first.unranked.as_ref())
+            && second.unranked == first.unranked
+            && first.ranked_by == "lexical + rerank"
+            && second.ranked_by == first.ranked_by,
+        "a reranked hybrid search whose backend fails must say `lexical + rerank` and name \
+         the failure in `unranked` on every page; it said {:?} and {:?}, unranked {:?} and \
+         {:?}",
+        first.ranked_by,
+        second.ranked_by,
+        first.unranked,
+        second.unranked
+    );
+    Ok(())
+}
+
+check!(
+    VECTOR_BY_TEXT = a_vector_search_may_bring_text_the_lake_embeds_with_the_fields_model,
+    "025, extended (lakelands#1567): a vector search over a field a model fills may bring `text` in place of `vector`: the lake embeds it in one call with the field's model and answers, page for page, beside an `also` vector and through a second stage of its own text, what the same search bringing that vector answers; over a field that holds no vectors or a vector field no model fills it is refused as invalid naming the field, beside a `vector` or a `model` it is refused, with an `also` vector of another length too, and as a pattern's start it is refused, none of them asking the backend; with no backend bound, or one of another model, it is unbound",
+    reopens
+);
+
+async fn a_vector_search_may_bring_text_the_lake_embeds_with_the_fields_model(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    use super::embeddings::{reopen_failed, with_embedder};
+    use crate::conformance::backing::{embed_calls, embedded};
+    let store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    let l = two_embedded_docs(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    // The suite's backend makes "harbour" (1, 0): the vector `brought`.
+    let (text, brought) = ("harbour", vec![1.0, 0.0]);
+    let paged = |mode: SearchMode, cursor| Search {
+        k: 1,
+        cursor,
+        ..doc_search(mode)
+    };
+    let mut pages = Vec::new();
+    let (before, sent) = (embed_calls(), embedded(text));
+    let mut cursors = [None, None];
+    for _ in 0..2 {
+        let [by_text, by_vector] = cursors.clone();
+        let t = cat.search(own, paged(SearchMode::embedded(text, "e"), by_text));
+        let t = t.await.must("a vector search over `e` bringing text")?.data;
+        let v = cat.search(
+            own,
+            paged(SearchMode::vector("e", brought.clone()), by_vector),
+        );
+        let v = v.await.must("the same search bringing the vector")?.data;
+        cursors = [t.next_cursor.clone(), v.next_cursor.clone()];
+        pages.push((t, v));
+    }
+    // A cursor holds the clock its page read, which is each search's own.
+    let alike = pages.iter().all(|(t, v)| {
+        let paged = |h: &Hits| h.next_cursor.is_some();
+        Hits {
+            next_cursor: None,
+            ..t.clone()
+        } == Hits {
+            next_cursor: None,
+            ..v.clone()
+        } && paged(t) == paged(v)
+    });
+    ensure!(
+        alike && embed_calls() == before + 2 && embedded(text) == sent + 2,
+        "a vector search over `e` bringing the text {text:?} must embed it in one call a \
+         page and answer, page for page, what the same search bringing the vector the \
+         field's model makes of it answers; it answered {:?} with {} calls",
+        pages
+            .iter()
+            .map(|(t, v)| (keys(t).join(","), keys(v).join(",")))
+            .collect::<Vec<_>>(),
+        embed_calls() - before
+    );
+    // Beside an `also` vector, and with a second stage of its own text, it
+    // answers what the same search bringing the vector answers.
+    store
+        .bind_rerank(backing::reranker())
+        .must("binding the reranker")?;
+    let also = |vector: Vec<f32>, text: Option<&str>| SearchMode::Vector {
+        field: "e".into(),
+        vector,
+        text: text.map(Into::into),
+        weight: None,
+        also: vec![lakelands_api::query::VectorTerm {
+            field: "v".into(),
+            vector: vec![0.0, 1.0],
+            weight: None,
+            model: None,
+        }],
+        model: None,
+    };
+    let staged = |mode| Search {
+        rerank: Some(lakelands_api::query::Rerank {
+            top: 2,
+            text: Some(text.into()),
+        }),
+        ..doc_search(mode)
+    };
+    let alike = [
+        (
+            "beside an `also` vector",
+            doc_search(also(Vec::new(), Some(text))),
+            doc_search(also(brought.clone(), None)),
+        ),
+        (
+            "with a second stage of its own text",
+            staged(SearchMode::embedded(text, "e")),
+            staged(SearchMode::vector("e", brought.clone())),
+        ),
+    ];
+    let (before, mut unlike) = (embed_calls(), Vec::new());
+    for (what, by_text, by_vector) in alike {
+        let t = cat.search(own, by_text).await.must(what)?.data;
+        let v = cat.search(own, by_vector).await.must(what)?.data;
+        if (&t.hits, &t.ranked_by, &t.axes) != (&v.hits, &v.ranked_by, &v.axes) {
+            unlike.push(format!("{what}: {} against {}", t.ranked_by, v.ranked_by));
         }
     }
+    ensure!(
+        unlike.is_empty() && embed_calls() == before + 2,
+        "a vector search bringing text must rank beside an `also` vector, and through a \
+         second stage of its own text, as the same search bringing the vector, in one call \
+         each; it did not: {unlike:?}, with {} calls",
+        embed_calls() - before
+    );
+    let before = embed_calls();
+    let refusals = [
+        (
+            "over `body`, which holds no vectors",
+            doc_search(SearchMode::embedded(text, "body")),
+            json!({"code": "search_not_vector", "field": "body"}),
+        ),
+        (
+            "over `v`, which no model fills",
+            doc_search(SearchMode::embedded(text, "v")),
+            json!({"code": "search_needs_vector", "field": "v"}),
+        ),
+        (
+            "beside a vector",
+            doc_search(SearchMode::Vector {
+                field: "e".into(),
+                vector: brought.clone(),
+                text: Some(text.into()),
+                weight: None,
+                also: Vec::new(),
+                model: None,
+            }),
+            json!({"code": "vector_with_text", "field": "e"}),
+        ),
+        (
+            "naming a model",
+            doc_search(SearchMode::Vector {
+                field: "e".into(),
+                vector: Vec::new(),
+                text: Some(text.into()),
+                weight: None,
+                also: Vec::new(),
+                model: Some(backing::EMBED_MODEL.into()),
+            }),
+            json!({"code": "model_without_vector"}),
+        ),
+        (
+            "with a second stage and no text of its own",
+            Search {
+                rerank: Some(lakelands_api::query::Rerank { top: 2, text: None }),
+                ..doc_search(SearchMode::embedded(text, "e"))
+            },
+            json!({"code": "rerank_needs_text"}),
+        ),
+        (
+            "with an `also` vector of no elements",
+            doc_search(SearchMode::Vector {
+                field: "e".into(),
+                vector: Vec::new(),
+                text: Some(text.into()),
+                weight: None,
+                also: vec![lakelands_api::query::VectorTerm {
+                    field: "v".into(),
+                    vector: Vec::new(),
+                    weight: None,
+                    model: None,
+                }],
+                model: None,
+            }),
+            json!({"code": "query_dimensions", "query": 0, "held": 2}),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (what, s, expected) in refusals {
+        let got = cat.search(own, s).await;
+        if !invalid_like(&got, &expected) {
+            wrong.push(format!("{what}: {:?}", got.map(|r| r.data.ranked_by)));
+        }
+    }
+    let mut start = pattern("doc", None, vec![], Projection::Rows { fields: Vec::new() });
+    start.start.search = Some(SearchMode::embedded(text, "e"));
+    let got = cat.query(own, start).await;
+    if !invalid_like(&got, &json!({"code": "start_needs_vector", "field": "e"})) {
+        wrong.push(format!("as a pattern's start: {:?}", got.map(|_| ())));
+    }
+    ensure!(
+        wrong.is_empty() && embed_calls() == before,
+        "a vector search bringing text must be refused as invalid, asking the backend \
+         nothing, where it cannot be embedded or ranked so; it was not: {wrong:?}, with {} \
+         calls",
+        embed_calls() - before
+    );
+    let store = reopen(store, with_embedder(None))
+        .await
+        .map_err(|e| reopen_failed("with no embedding backend", e))?;
+    let got = doors(store.as_ref())
+        .search(
+            &owner(store.as_ref()),
+            doc_search(SearchMode::embedded(text, "e")),
+        )
+        .await;
+    ensure!(
+        matches!(&got, Err(Error::Unbound { seam }) if matches!(&**seam, Seam::Embedding { field, .. } if field == "e")),
+        "with no embedding backend bound, a vector search over `e` bringing text must be \
+         unbound, naming the field; it answered {:?}",
+        got.map(|r| r.data.ranked_by)
+    );
+    let other = backing::embedder_as("another-model", 2);
+    let store = reopen(store, with_embedder(Some(other)))
+        .await
+        .map_err(|e| reopen_failed("with a backend of another model", e))?;
+    let before = embed_calls();
+    let got = doors(store.as_ref())
+        .search(
+            &owner(store.as_ref()),
+            doc_search(SearchMode::embedded(text, "e")),
+        )
+        .await;
+    let named = |seam: &Seam| {
+        matches!(seam, Seam::Embedding { field, bound: Some(b), .. }
+            if field == "e" && b.model == "another-model")
+    };
+    ensure!(
+        matches!(&got, Err(Error::Unbound { seam }) if named(seam)) && embed_calls() == before,
+        "with a backend of another model bound, a vector search over `e` bringing text must \
+         be unbound, naming the field and the model bound, asking it nothing; it answered \
+         {:?} with {} calls",
+        got.map(|r| r.data.ranked_by),
+        embed_calls() - before
+    );
     Ok(())
 }
 
@@ -986,6 +1439,7 @@ async fn a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use(
         field: field.into(),
         vector,
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -993,6 +1447,7 @@ async fn a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use(
     let along = |field: &str, also: &[&str]| SearchMode::Vector {
         field: field.into(),
         vector: vec![1.0, 0.0],
+        text: None,
         weight: None,
         also: (also.iter())
             .map(|f| VectorTerm {
@@ -1242,6 +1697,7 @@ fn hybrid_over(field: &str, text: &str, vector: Option<Vec<f32>>) -> SearchMode 
         field: field.into(),
         vector,
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -1405,6 +1861,7 @@ async fn a_search_as_of_a_position_ranks_by_the_heads_declaration(
     let mode = SearchMode::Lexical {
         text: "quayside".into(),
         fields: Some(vec!["t".into()]),
+        text_fields: None,
     };
     let got = as_of(s, &own, "s5", mode, p).await;
     row(
@@ -1527,13 +1984,15 @@ async fn a_search_as_of_a_position_ranks_by_the_heads_declaration(
         ),
         (
             // A tie, in the order of the keys at the head: `q`, then `z`.
+            // Each token is held by one of two heads, ln(6/3), and to `w`
+            // by the one head it is counted over, ln(4/3) (025).
             "lexical, both",
             "keyed",
             Some(pk),
             SearchMode::lexical("quay harbour"),
             10.0,
-            &[("z", 10.0), ("a", 10.0)],
-            &[("z", 10.0)],
+            &[("z", 7.0), ("a", 7.0)],
+            &[("z", 3.0)],
         ),
         (
             "lexical, the held one",
@@ -1541,7 +2000,7 @@ async fn a_search_as_of_a_position_ranks_by_the_heads_declaration(
             Some(pk),
             SearchMode::lexical("quay"),
             10.0,
-            &[("a", 10.0)],
+            &[("a", 7.0)],
             &[],
         ),
         // Fused by reciprocal rank: `z` by its text and second by its
@@ -1663,4 +2122,397 @@ async fn a_search_as_of_a_position_ranks_by_the_heads_declaration(
         absent,
         ("nosuch", "secret"),
     )
+}
+
+check!(
+    TEXT_AS_OF_FINDS_THE_TEXT_THEN = a_search_with_text_as_of_ranks_the_text_the_records_held_then,
+    "089 (lakelands#1541): a lexical search as of a position with `text_as_of` ranks the records its `where` selects there by the text they held there, so of two pages whose words a later write swapped it finds the one that held them then, its matches in that text; without `text_as_of` it ranks by the head, as before, and at the head it finds the page that holds them now"
+);
+
+check!(
+    TEXT_AS_OF_SAME_AT_EVERY_HEAD = a_search_with_text_as_of_answers_the_same_at_every_head,
+    "089 (lakelands#1541): a search with `text_as_of` answers the same pages, scores to the bit and matches at every head: writes after its position to the records it ranks, and a record written after it, move none of it, its cursor's next page neither; a record its `where` leaves out weighs in no score"
+);
+
+check!(
+    TEXT_AS_OF_REFUSED = text_as_of_is_refused_where_it_cannot_rank_the_text_then,
+    "089 (lakelands#1541): `text_as_of` without `as_of`, without `where`, beside a vector axis or beside `rerank` is refused as invalid naming `text_as_of`, before the `where`, the fields or a reranker are judged; a `where` that selects more records at the position read than the lake's `limits.max_text_as_of` is refused as `limit_range` naming the setting, never cut short, and one that selects as many is answered whole, however many it selects at the head; a location whose `limits.max_text_as_of` is above 1 000 000 is refused at open, naming the setting",
+    given
+);
+
+check!(
+    TEXT_AS_OF_HOLDS_BOTH_POSITIONS =
+        text_as_of_ranks_a_field_only_where_it_is_shown_at_both_positions,
+    "089 and 025 (lakelands#1541): a search with `text_as_of` ranks and matches a field of a record only where its reader is shown it there both at the position read and at the head: a field a hiding lowers on the record at the head, or lowered on it at the position, is neither matched nor ranked nor counted, the record scored as one that never held it; a record retired at the head since is ranked as it was"
+);
+
+check!(
+    TEXT_AS_OF_DECLARED_THEN = a_search_with_text_as_of_reads_the_declaration_then,
+    "089 and 025 (lakelands#1541): a search with `text_as_of` tokenises in the language its type declared at the position read, not the head's, and ranks and matches a field only where it is searchable both there and at the head"
+);
+
+/// `page`: `doc` names its document, `state` its state, `title` and
+/// `text` are searchable.
+async fn pages(store: &dyn LakeStore, rows: &[(&str, Value)]) -> Result<Lake, Failure> {
+    let l = Lake::of(store);
+    let text = |name| field(name, StorageKind::Text);
+    let fields = vec![
+        text("doc"),
+        text("state"),
+        searchable("title"),
+        searchable("text"),
+    ];
+    l.declare(type_decl("page", fields)).await?;
+    for (key, fields) in rows {
+        l.upsert("page", key, fields.clone()).await?;
+    }
+    Ok(l)
+}
+
+/// A search of `page` for `text` in `doc` d1, with its matches, as of
+/// `at`, with `text_as_of` where `then`.
+fn dated(text: &str, at: Option<Position>, then: bool) -> Search {
+    Search {
+        ty: "page".into(),
+        filter: Some("doc = 'd1'".into()),
+        matches: true,
+        text_as_of: then,
+        at: ReadAt {
+            as_of: at,
+            ..ReadAt::default()
+        },
+        ..doc_search(SearchMode::lexical(text))
+    }
+}
+
+/// Each hit's key, and each field it matched with its spans.
+fn matched(h: &Hits) -> String {
+    let hit = |h: &lakelands_api::query::Hit| {
+        let fields = h.matches.iter().map(|(f, m)| {
+            let spans = m.spans.iter().map(|s| format!("{}-{}", s.start, s.end));
+            format!("{f}@{}", spans.collect::<Vec<_>>().join(","))
+        });
+        let fields: Vec<String> = fields.collect();
+        format!("{}:{}", h.record.key.as_str(), fields.join(" "))
+    };
+    h.hits.iter().map(hit).collect::<Vec<_>>().join(" / ")
+}
+
+async fn a_search_with_text_as_of_ranks_the_text_the_records_held_then(store: Store) -> Held {
+    let s = store.as_ref();
+    let page = |text: &str| json!({"doc": "d1", "text": text});
+    let (cover, invoice) = ("Cover letter", "Invoice 4711, total");
+    let l = pages(s, &[("p1", page(cover)), ("p2", page(invoice))]).await?;
+    let before = s.head().await.must("the head")?;
+    // The second ingest swaps the pages' words.
+    l.upsert("page", "p1", page(invoice)).await?;
+    l.upsert("page", "p2", page(cover)).await?;
+    let own = owner(s);
+    let mut wrong = Vec::new();
+    let rows = [
+        (
+            "before, with `text_as_of`",
+            Some(before),
+            true,
+            "p2:text@8-12",
+        ),
+        ("before, without it", Some(before), false, "p1:"),
+        ("at the head", None, false, "p1:text@8-12"),
+    ];
+    for (what, at, then, want) in rows {
+        let got = l.cat.search(&own, dated("4711", at, then)).await;
+        let got = got.must(what)?.data;
+        let said = matched(&got);
+        if said != want {
+            wrong.push(format!("{what}: want {want:?}, got {said:?}"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a search for `4711` in d1, whose two pages swapped their words after `before`, must \
+         find the page that held it at the position it ranks the text of; {}",
+        wrong.join("; ")
+    );
+    Ok(())
+}
+
+/// A page's matches and its scores' bits.
+fn scored(h: &Hits) -> String {
+    let bits = h.hits.iter().map(|h| format!("{:x}", h.score.to_bits()));
+    format!("{} {}", matched(h), bits.collect::<Vec<_>>().join(" "))
+}
+
+/// Every page of `asked`, `k` 1, each its keys, scores' bits and
+/// matches, and the first page's cursor.
+async fn walked(l: &Lake, asked: Search) -> Result<(Vec<String>, Option<Cursor>), Failure> {
+    let (mut said, mut cursor, mut first) = (Vec::new(), None, None);
+    loop {
+        let s = Search {
+            k: 1,
+            cursor: cursor.clone(),
+            ..asked.clone()
+        };
+        let got = l.cat.search(&l.own, s).await.must("a page")?.data;
+        said.push(scored(&got));
+        first = first.or(got.next_cursor.clone());
+        cursor = got.next_cursor;
+        if cursor.is_none() || said.len() > 4 {
+            return Ok((said, first));
+        }
+    }
+}
+
+async fn a_search_with_text_as_of_answers_the_same_at_every_head(store: Store) -> Held {
+    let s = store.as_ref();
+    let page = |doc: &str, text: &str| json!({"doc": doc, "text": text});
+    let rows = [
+        ("p1", page("d1", "Cover letter")),
+        ("p2", page("d1", "Invoice 4711, total")),
+        ("p3", page("d1", "Total due in 30 days")),
+        ("p4", page("d2", "4711 4711 total total")),
+    ];
+    let l = pages(s, &rows).await?;
+    let before = s.head().await.must("the head")?;
+    l.upsert("page", "p1", page("d1", "Invoice 4711, total"))
+        .await?;
+    l.upsert("page", "p2", page("d1", "Cover letter")).await?;
+    let asked = dated("4711 total", Some(before), true);
+    let (first, cursor) = walked(&l, asked.clone()).await?;
+    // p4, which d1's `where` leaves out, moves the scores where it is in.
+    let wide = Search {
+        filter: Some("doc in ('d1', 'd2')".into()),
+        ..asked.clone()
+    };
+    let wide = (l.cat.search(&l.own, wide).await).must("d1 and d2")?.data;
+    let p2 = |h: &Hits| {
+        (h.hits.iter())
+            .find(|h| h.record.key.as_str() == "p2")
+            .map(|h| h.score)
+    };
+    let wide = p2(&wide);
+    ensure!(
+        first.len() == 2
+            && first[0].starts_with("p2:")
+            && first[1].starts_with("p3:")
+            && wide.is_some_and(|w| !first[0].ends_with(&format!(" {:x}", w.to_bits()))),
+        "a search for `4711 total` in d1 as of before, with `text_as_of`, must answer p2, then \
+         p3, a page each, p2 scored over d1's pages alone, not as over d1's and d2's \
+         ({wide:?}); it answered {first:?}"
+    );
+    // More writes to the records it ranks, and one it did not hold.
+    l.upsert("page", "p2", page("d1", "4711 4711 4711 total"))
+        .await?;
+    l.upsert("page", "p3", page("d2", "Total")).await?;
+    l.upsert("page", "p5", page("d1", "4711 total")).await?;
+    let (again, _) = walked(&l, asked.clone()).await?;
+    let next = Search {
+        k: 1,
+        cursor,
+        ..asked
+    };
+    let next = (l.cat.search(&l.own, next).await).must("the cursor's next page")?;
+    let next = scored(&next.data);
+    ensure!(
+        again == first && first.get(1) == Some(&next),
+        "a search with `text_as_of` must answer the same at every head, as must its cursor's \
+         next page: it answered {first:?}, after more writes {again:?}, and its cursor then \
+         {next:?}"
+    );
+    Ok(())
+}
+
+async fn text_as_of_is_refused_where_it_cannot_rank_the_text_then(
+    store: Store,
+    given: Given,
+) -> Held {
+    let page = |doc: &str| json!({"doc": doc, "text": "4711"});
+    let rows = [
+        ("p1", page("d1")),
+        ("p2", page("d1")),
+        ("p3", page("d1")),
+        ("q1", page("d2")),
+        ("q2", page("d2")),
+    ];
+    let l = pages(store.as_ref(), &rows).await?;
+    let before = store.head().await.must("the head")?;
+    l.upsert("page", "q3", page("d2")).await?;
+    // Each `where` names a field `page` does not declare, and the rerank
+    // has no reranker bound: neither is reached.
+    let nowhere = |mut s: Search| {
+        s.filter = s.filter.map(|_| "nope = 'x'".into());
+        s
+    };
+    let needs = |member: &str| Case::TextAsOfNeeds {
+        member: member.into(),
+    };
+    let beside = |member: &str| Case::TextAsOfBeside {
+        member: member.into(),
+    };
+    let then = dated("4711", Some(before), true);
+    let (mut no_where, mut vector, mut rerank) = (then.clone(), then.clone(), then.clone());
+    no_where.filter = None;
+    vector.mode = hybrid("4711", Some(vec![1.0, 0.0]));
+    rerank.rerank = Some(lakelands_api::query::Rerank {
+        top: u32::MAX,
+        text: None,
+    });
+    for (what, asked, want) in [
+        ("without `as_of`", dated("4711", None, true), needs("as_of")),
+        ("without `where`", no_where, needs("where")),
+        ("with a vector axis", vector, beside("vector")),
+        ("with `rerank`", rerank, beside("rerank")),
+    ] {
+        let err = (l.cat.search(&l.own, nowhere(asked)).await).must_fail(what)?;
+        ensure!(
+            refused_on(&err).is_some_and(|(f, _)| f == "text_as_of")
+                && invalid_case(&err) == Some(&want),
+            "a search with `text_as_of` {what} must be refused as invalid naming `text_as_of` \
+             with {want:?}, before its `where` is read; it failed with {err:?}"
+        );
+    }
+    let two = Limits {
+        max_text_as_of: 2,
+        ..crate::conformance::fixture::limits()
+    };
+    let store = (given.relimit)(store, Seams::default(), two).await;
+    let store = store.map_err(|e| Failure::new(format!("reopening with two: {e:?}")))?;
+    let l = Lake::of(store.as_ref());
+    let err = (l.cat.search(&l.own, then.clone()).await)
+        .must_fail("a `where` selecting three pages, past the lake's two")?;
+    ensure!(
+        refused_on(&err).is_some_and(|(f, _)| f == "limits.max_text_as_of")
+            && invalid_case(&err) == Some(&Case::LimitRange { max: 2 }),
+        "a `where` selecting three records at the position read, past the lake's \
+         `limits.max_text_as_of` of 2, must be refused as `limit_range` naming the setting; it \
+         failed with {err:?}"
+    );
+    let d2 = Search {
+        filter: Some("doc = 'd2'".into()),
+        ..then
+    };
+    let got = l.cat.search(&l.own, d2).await.must("two pages of d2")?.data;
+    ensure!(
+        keys(&got) == ["q1", "q2"],
+        "a `where` selecting two records at the position read, three at the head, must be \
+         answered whole under a `limits.max_text_as_of` of 2; it answered {:?}",
+        keys(&got)
+    );
+    let above = Limits {
+        max_text_as_of: Limits::TEXT_AS_OF_CEILING + 1,
+        ..crate::conformance::fixture::limits()
+    };
+    let err = (given.relimit)(store, Seams::default(), above).await;
+    let err = err.err().ok_or_else(|| {
+        Failure::new("a location whose `limits.max_text_as_of` is above 1 000 000 must not be opened; it was")
+    })?;
+    ensure!(
+        matches!(&err, Error::Refused { field: Some(f), .. } if f == "limits.max_text_as_of")
+            && invalid_case(&err)
+                == Some(&Case::LimitRange {
+                    max: Limits::TEXT_AS_OF_CEILING
+                }),
+        "a location whose `limits.max_text_as_of` is above 1 000 000 must be refused at open \
+         as `limit_range`, naming the setting; it failed with {err:?}"
+    );
+    Ok(())
+}
+
+async fn text_as_of_ranks_a_field_only_where_it_is_shown_at_both_positions(store: Store) -> Held {
+    let s = store.as_ref();
+    let page = |doc: &str, state: &str, text: bool| {
+        let mut p = json!({"doc": doc, "state": state, "title": "4711", "text": "4711 total"});
+        _ = (!text).then(|| p.as_object_mut().map(|o| o.remove("text")));
+        p
+    };
+    // `a1` is sealed at the head, `a2` before, `a3` never; d2's `b1` and
+    // `b2` are their twins that never held `text`.
+    let rows = [
+        ("a1", page("d1", "open", true)),
+        ("a2", page("d1", "sealed", true)),
+        ("a3", page("d1", "open", true)),
+        ("b1", page("d2", "open", false)),
+        ("b2", page("d2", "open", false)),
+        ("b3", page("d2", "open", true)),
+    ];
+    let l = pages(s, &rows).await?;
+    let before = s.head().await.must("the head")?;
+    l.upsert("page", "a1", json!({"state": "sealed"})).await?;
+    l.upsert("page", "a2", json!({"state": "open"})).await?;
+    let sealed = json!({"field": "state", "values": ["sealed"], "fields": {"text": "none"}});
+    let grants = json!({"default": "read", "types": {"page": {"hide_where": [sealed]}}});
+    let bea = super::only::holder(s, "bea", grants);
+    let search = |doc: &str| Search {
+        filter: Some(format!("doc = '{doc}'").as_str().into()),
+        ..dated("4711 total", Some(before), true)
+    };
+    let bits = |h: &Hits| h.hits.iter().map(|h| h.score.to_bits()).collect::<Vec<_>>();
+    let got = l
+        .cat
+        .search(&bea, search("d1"))
+        .await
+        .must("bea's search")?
+        .data;
+    let twin = l.cat.search(&bea, search("d2")).await.must("d2")?.data;
+    // A page retired at the head was there at the position.
+    l.retire("page", "a3").await?;
+    let then = l
+        .cat
+        .search(&bea, search("d1"))
+        .await
+        .must("after a3's retiring")?
+        .data;
+    let said = matched(&got);
+    let want = "a3:text@0-4,5-10 title@0-4 / a1:title@0-4 / a2:title@0-4";
+    ensure!(
+        said == want && bits(&got) == bits(&twin) && scored(&then) == scored(&got),
+        "bea, shown `text` on a page only where it is not sealed, must find in d1 as of \
+         before, with `text_as_of`, `a3`'s text and every title, and neither `a1`'s text, \
+         sealed at the head, nor `a2`'s, sealed before, scored as d2's twins that never held \
+         it, and the same after `a3` is retired at the head: want {want:?}, got {said:?}, \
+         scored {:?} against {:?}, then {:?}",
+        bits(&got),
+        bits(&twin),
+        scored(&then)
+    );
+    Ok(())
+}
+
+async fn a_search_with_text_as_of_reads_the_declaration_then(store: Store) -> Held {
+    let s = store.as_ref();
+    let l = Lake::of(s);
+    // `title` is searchable before only, `note` at the head only, and
+    // English is dropped since.
+    let decl = |then: bool| {
+        let text = |name| field(name, StorageKind::Text);
+        let mut fields = vec![text("doc"), text("title"), searchable("text"), text("note")];
+        fields[if then { 1 } else { 3 }].searchable = true;
+        let mut decl = type_decl("page", fields);
+        decl.language = then.then(|| "en".into());
+        decl
+    };
+    l.declare(decl(true)).await?;
+    let page =
+        |text: &str| json!({"doc": "d1", "title": "running", "text": text, "note": "running"});
+    l.upsert("page", "p1", page("running invoices")).await?;
+    l.upsert("page", "p2", page("invoices")).await?;
+    let before = s.head().await.must("the head")?;
+    l.declare(decl(false)).await?;
+    let (mut said, want) = (Vec::new(), "p1:text@0-7");
+    for named in [None, Some(vec!["text".into(), "title".into()])] {
+        let mut s = dated("run", Some(before), true);
+        if let SearchMode::Lexical { fields, .. } = &mut s.mode {
+            *fields = named;
+        }
+        said.push(matched(
+            &l.cat.search(&l.own, s).await.must("the search")?.data,
+        ));
+    }
+    ensure!(
+        said.iter().all(|s| s == want),
+        "a search for `run` as of before, with `text_as_of`, naming no field and naming `text` \
+         and `title`, must stem by the English the type declared then and rank neither `title`, \
+         searchable then alone, nor `note`, searchable at the head alone: want {want:?}, got \
+         {said:?}"
+    );
+    Ok(())
 }

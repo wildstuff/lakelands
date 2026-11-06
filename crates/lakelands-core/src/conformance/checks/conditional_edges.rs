@@ -3,16 +3,10 @@
 //! (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`,
 //! extended).
 
-use lakelands_api::ontology::{Derived, MatchPair, RelationDecl, StorageKind, TypeDecl};
-use lakelands_api::query::{Projection, QueryResult, Walk};
-use lakelands_api::{Access, Catalog, LakeStore, Position, Principal, Refusal, Timestamp, Value};
-use serde_json::json;
+use lakelands_api::Value;
 
-use crate::conformance::fixture::{
-    Lake, Must, derived, doors, field, field_access, head_unmoved, is_invalid, pattern, pause,
-    refused_alike, refused_like, refused_on, step, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, doors, step};
+use crate::conformance::prelude::*;
 
 check!(
     CONDITIONAL_WALK = a_derived_relation_with_a_where_connects_only_the_pairs_it_holds_for,

@@ -108,6 +108,36 @@
    "constraint": "c"
   },
   {
+   "code": "clock_not_compared",
+   "constraint": "c"
+  },
+  {
+   "code": "preceding_unlooked",
+   "field": "f"
+  },
+  {
+   "code": "preceding_unordered",
+   "field": "f"
+  },
+  {
+   "code": "in_force_form",
+   "field": "f"
+  },
+  {
+   "code": "in_force_pair",
+   "field": "f",
+   "left": "f",
+   "right": "f"
+  },
+  {
+   "code": "guard_in_force_form"
+  },
+  {
+   "code": "guard_in_force_pair",
+   "left": "f",
+   "right": "f"
+  },
+  {
    "code": "constraint_reads_beyond",
    "constraint": "c",
    "reads": {
@@ -194,6 +224,19 @@
    "code": "erasable_reference"
   },
   {
+   "code": "admits_not_authored"
+  },
+  {
+   "code": "admits_not_of_type"
+  },
+  {
+   "code": "admits_no_provenance"
+  },
+  {
+   "code": "admits_twice",
+   "source": "src"
+  },
+  {
    "code": "verb_required"
   },
   {
@@ -213,10 +256,27 @@
    "code": "verb_key"
   },
   {
+   "code": "writer_not_of_type"
+  },
+  {
+   "code": "writer_not_text"
+  },
+  {
+   "code": "writer_key"
+  },
+  {
+   "code": "writer_computed"
+  },
+  {
    "code": "expr_no_expression"
   },
   {
    "code": "expr_risk"
+  },
+  {
+   "code": "expr_too_deep",
+   "max": 1,
+   "offset": 1
   },
   {
    "backing": "s",
@@ -249,8 +309,21 @@
    "name": "s"
   },
   {
+   "code": "withdrawn_name_held",
+   "type": "t"
+  },
+  {
    "code": "withdrawn_kind",
    "kind": "type"
+  },
+  {
+   "code": "group_term",
+   "name": "f",
+   "second": true
+  },
+  {
+   "code": "group_term_merged",
+   "name": "f"
   },
   {
    "code": "group_unkeyable",
@@ -410,6 +483,27 @@
    "type": "t"
   },
   {
+   "call": "s",
+   "code": "set_reads_clock",
+   "set": "s"
+  },
+  {
+   "code": "set_at_read_steps",
+   "path": "s",
+   "set": "s"
+  },
+  {
+   "code": "set_at_read_named",
+   "kind": "type",
+   "name": "s",
+   "set": "s"
+  },
+  {
+   "code": "set_at_read_of_view",
+   "set": "s",
+   "view": "t"
+  },
+  {
    "code": "set_reads_computed",
    "field": "f",
    "type": "t"
@@ -530,6 +624,10 @@
    "field": "f"
   },
   {
+   "code": "view_building",
+   "type": "t"
+  },
+  {
    "code": "view_kept_for_set",
    "type": "t"
   },
@@ -564,6 +662,18 @@
    "type": "t"
   },
   {
+   "code": "vocabulary_changed",
+   "reasons": [
+    {
+     "field": "f",
+     "reason": "field_added",
+     "relation": "r",
+     "required": true
+    }
+   ],
+   "type": "t"
+  },
+  {
    "code": "watches_via_links",
    "owner": "t",
    "relation": "r",
@@ -593,6 +703,10 @@
    "unit": "s"
   },
   {
+   "code": "bucket_zone",
+   "zone": "s"
+  },
+  {
    "code": "bucket_unit_text",
    "value": {
     "kind": "null"
@@ -612,6 +726,101 @@
    "name": "s"
   },
   {
+   "code": "cypher_alias",
+   "item": "s"
+  },
+  {
+   "code": "cypher_computed",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "cypher_count",
+   "item": "s"
+  },
+  {
+   "code": "cypher_function",
+   "name": "s",
+   "offset": 1
+  },
+  {
+   "code": "cypher_key_missing",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "cypher_key_null",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "cypher_member",
+   "member": "s"
+  },
+  {
+   "code": "cypher_merge_on",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "cypher_order_item",
+   "item": "s"
+  },
+  {
+   "code": "cypher_outside",
+   "construct": "create",
+   "offset": 1
+  },
+  {
+   "code": "cypher_param_missing",
+   "name": "p"
+  },
+  {
+   "code": "cypher_param_unused",
+   "name": "p"
+  },
+  {
+   "code": "cypher_param_value",
+   "name": "p"
+  },
+  {
+   "code": "cypher_row_item",
+   "item": "s"
+  },
+  {
+   "code": "cypher_second_write",
+   "construct": "create",
+   "offset": 1
+  },
+  {
+   "code": "cypher_skip",
+   "skip": 1
+  },
+  {
+   "code": "cypher_start_type",
+   "offset": 1
+  },
+  {
+   "code": "cypher_too_deep",
+   "max": 1,
+   "offset": 1
+  },
+  {
+   "code": "cypher_tool_writes",
+   "construct": "create",
+   "offset": 1
+  },
+  {
+   "code": "cypher_unbound",
+   "name": "s",
+   "offset": 1
+  },
+  {
+   "clause": "s",
+   "code": "cypher_whole",
+   "offset": 1
+  },
+  {
    "code": "division_by_zero"
   },
   {
@@ -619,6 +828,12 @@
   },
   {
    "code": "exists_here"
+  },
+  {
+   "code": "preceding_here"
+  },
+  {
+   "code": "in_force_here"
   },
   {
    "code": "in_set_here"
@@ -636,6 +851,11 @@
   },
   {
    "code": "kind_takes_number",
+   "expr": "s",
+   "kind": "boolean"
+  },
+  {
+   "code": "kind_takes_date",
    "expr": "s",
    "kind": "boolean"
   },
@@ -853,6 +1073,20 @@
    }
   },
   {
+   "code": "setting_takes_date",
+   "value": {
+    "kind": "null"
+   }
+  },
+  {
+   "code": "statement_not_parsed",
+   "why": {
+    "code": "unknown_field",
+    "field": "f",
+    "type": "t"
+   }
+  },
+  {
    "code": "steps_into_reference",
    "expr": "s",
    "field": "f"
@@ -903,15 +1137,6 @@
   },
   {
    "code": "kept_clock"
-  },
-  {
-   "call": "s",
-   "code": "kept_extreme_grouped_by",
-   "field": "f"
-  },
-  {
-   "call": "s",
-   "code": "kept_extreme_ungrouped"
   },
   {
    "code": "kept_group_at_read",
@@ -966,6 +1191,9 @@
    "code": "after_with_cursor"
   },
   {
+   "code": "cheapest_needs_to"
+  },
+  {
    "code": "components_both_ways",
    "relation": "r"
   },
@@ -1002,6 +1230,16 @@
    "code": "instant_not_text"
   },
   {
+   "bound": [
+    "a"
+   ],
+   "code": "join_never_holds",
+   "name": "s",
+   "reached": [
+    "a"
+   ]
+  },
+  {
    "code": "latest_no_change",
    "type": "t"
   },
@@ -1012,6 +1250,9 @@
   {
    "code": "limit_range",
    "max": 1
+  },
+  {
+   "code": "matches_without_text"
   },
   {
    "code": "measure_no_depth",
@@ -1080,6 +1321,18 @@
    "type": "t"
   },
   {
+   "code": "writes_only_unappliable",
+   "type": "t"
+  },
+  {
+   "code": "hiding_unappliable",
+   "type": "t"
+  },
+  {
+   "code": "whole_set_needed",
+   "type": "t"
+  },
+  {
    "code": "order_at_read",
    "field": "f",
    "type": "t"
@@ -1134,6 +1387,11 @@
    "code": "pattern_to_not_graph"
   },
   {
+   "code": "pattern_tree_member",
+   "member": "s",
+   "projection": "s"
+  },
+  {
    "code": "position_not_integer"
   },
   {
@@ -1170,8 +1428,36 @@
    "kind": "text"
   },
   {
+   "code": "search_text_fields_empty"
+  },
+  {
+   "code": "start_needs_vector",
+   "field": "f"
+  },
+  {
    "asks": "s",
    "code": "start_no_type"
+  },
+  {
+   "code": "step_after_no_name"
+  },
+  {
+   "code": "step_binds_no_name",
+   "join": true,
+   "member": "s"
+  },
+  {
+   "code": "step_name_unbound",
+   "member": "s",
+   "name": "s"
+  },
+  {
+   "code": "step_optional_no_name",
+   "join": true
+  },
+  {
+   "code": "step_past_optional",
+   "name": "s"
   },
   {
    "also": [
@@ -1186,12 +1472,27 @@
     "a"
    ],
    "code": "step_several_types",
+   "field": "f",
+   "missing": [
+    "a"
+   ],
+   "other": [
+    "a"
+   ],
    "reached": "t"
   },
   {
    "asked": 1,
    "code": "step_too_deep",
    "max": 1
+  },
+  {
+   "code": "text_as_of_beside",
+   "member": "s"
+  },
+  {
+   "code": "text_as_of_needs",
+   "member": "s"
   },
   {
    "code": "text_weight_range"
@@ -1203,6 +1504,10 @@
    "code": "vector_aimless",
    "field": "f",
    "why": "not_finite"
+  },
+  {
+   "code": "vector_with_text",
+   "field": "f"
   },
   {
    "code": "vector_field_twice",
@@ -1223,17 +1528,94 @@
    "code": "weight_alone"
   },
   {
+   "code": "weight_missing",
+   "from": "k",
+   "relation": "r",
+   "to": "k"
+  },
+  {
+   "code": "weight_negative",
+   "from": "k",
+   "relation": "r",
+   "to": "k"
+  },
+  {
+   "code": "weight_not_number",
+   "field": "f",
+   "relation": "r"
+  },
+  {
+   "code": "weight_not_on_link",
+   "field": "f",
+   "relation": "r"
+  },
+  {
    "code": "weight_range",
    "field": "f"
   },
   {
+   "code": "thin_by",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "before": "2026-01-01T00:00:00Z",
+   "code": "thinned",
+   "key": "k",
+   "type": "t"
+  },
+  {
+   "code": "stranded_at_head_only",
+   "position": 1,
+   "type": "t"
+  },
+  {
+   "code": "kept_over_thinned",
+   "type": "t",
+   "view": "t"
+  },
+  {
+   "code": "kept_not_exact",
+   "type": "t",
+   "view": "t"
+  },
+  {
+   "code": "stranded_make",
+   "type": "t",
+   "view": "t"
+  },
+  {
    "code": "call_declined",
+   "reason": "d",
    "verb": "v"
+  },
+  {
+   "cause": "s",
+   "code": "refused_by_host",
+   "reason": "s"
+  },
+  {
+   "code": "host_refusal_form",
+   "max": 1
+  },
+  {
+   "code": "host_line_missing"
+  },
+  {
+   "code": "quarantine_line_missing"
   },
   {
    "cause": 1,
    "code": "cause_past_head",
    "head": 1
+  },
+  {
+   "code": "on_behalf_of_form",
+   "value": "s"
+  },
+  {
+   "code": "occasion_form",
+   "max": 1
   },
   {
    "code": "changed_since_proposed",
@@ -1266,6 +1648,17 @@
   },
   {
    "code": "forget_report_stale"
+  },
+  {
+   "code": "forget_set_empty"
+  },
+  {
+   "code": "forget_source_twice",
+   "source": "src"
+  },
+  {
+   "code": "forget_source_unknown",
+   "source": "src"
   },
   {
    "code": "idempotency_key_nul"
@@ -1391,6 +1784,7 @@
   {
    "code": "requires_unmet",
    "key": "k",
+   "part": "a = 1",
    "type": "t",
    "verb": "v"
   },
@@ -1439,6 +1833,18 @@
   },
   {
    "code": "delivery_not_carried"
+  },
+  {
+   "code": "sealed_apart_not_carried"
+  },
+  {
+   "code": "commit_window_not_carried"
+  },
+  {
+   "code": "quarantine_refused_not_carried"
+  },
+  {
+   "code": "host_quarantine_not_carried"
   },
   {
    "code": "trigger_too_deep",
@@ -1542,6 +1948,10 @@
    "code": "aging_same_value"
   },
   {
+   "code": "aging_scoped_setting",
+   "key": "s"
+  },
+  {
    "code": "aging_system_type",
    "type": "t"
   },
@@ -1588,10 +1998,23 @@
    "type": "t"
   },
   {
+   "code": "series_field_kind",
+   "field": "f",
+   "kind": "text"
+  },
+  {
+   "code": "series_index_shape",
+   "type": "t"
+  },
+  {
    "code": "setting_kept_holds"
   },
   {
    "code": "setting_key_period"
+  },
+  {
+   "code": "setting_zone",
+   "value": 1
   },
   {
    "code": "setting_unlisted",
@@ -1603,6 +2026,34 @@
   },
   {
    "code": "setting_group_stamped"
+  },
+  {
+   "code": "setting_period_undeclared"
+  },
+  {
+   "code": "setting_period_first"
+  },
+  {
+   "code": "setting_period_held",
+   "from": "s"
+  },
+  {
+   "code": "setting_period_unknown",
+   "period": "s"
+  },
+  {
+   "code": "setting_periods_named"
+  },
+  {
+   "code": "setting_periods_stamped"
+  },
+  {
+   "code": "setting_from_or_period"
+  },
+  {
+   "code": "setting_dated_kept",
+   "key": "s",
+   "name": "s"
   },
   {
    "code": "setting_store_group"
@@ -1683,6 +2134,11 @@
   {
    "code": "migration_to_view",
    "type": "t"
+  },
+  {
+   "code": "migration_view_not_over",
+   "type": "t",
+   "view": "t"
   },
   {
    "code": "migration_view_to_stored",
@@ -1976,6 +2432,10 @@
    "position": 1
   },
   {
+   "code": "append_frame",
+   "position": 1
+  },
+  {
    "code": "append_line_feed",
    "position": 1
   },
@@ -1989,6 +2449,10 @@
    "hash": "s",
    "named": "s",
    "position": 1
+  },
+  {
+   "code": "backup_other_log",
+   "held": 1
   },
   {
    "code": "client_cert_half"
@@ -2127,6 +2591,16 @@
    "code": "find_where_text"
   },
   {
+   "code": "host_header_from_caller",
+   "header": "s"
+  },
+  {
+   "code": "no_forwarded_principal"
+  },
+  {
+   "code": "forwarded_context_form"
+  },
+  {
    "code": "idempotency_key_header"
   },
   {
@@ -2160,6 +2634,11 @@
   {
    "code": "member_missing",
    "member": "s"
+  },
+  {
+   "code": "mode_needs_member",
+   "member": "s",
+   "mode": "s"
   },
   {
    "code": "migration_both"
@@ -2276,6 +2755,10 @@
    "name": "c"
   },
   {
+   "code": "precondition",
+   "name": "pc"
+  },
+  {
    "code": "object_set",
    "name": "s"
   },
@@ -2340,6 +2823,9 @@
   },
   {
    "code": "authority"
+  },
+  {
+   "code": "admits"
   },
   {
    "code": "links",

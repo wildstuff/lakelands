@@ -54,9 +54,9 @@ pub struct Ontology {
     /// A host's own settings, by key (063, extended).
     pub settings: BTreeMap<String, Entry<SettingDecl>>,
     /// Each declaration withdrawn and not declared again, by its identity
-    /// ([`declaration_key`]): the version and the position of its
-    /// withdrawal, which a later declaration of the name continues.
-    withdrawn: BTreeMap<String, (u32, Position)>,
+    /// ([`declaration_key`]): its withdrawal as stored, whose version a
+    /// later declaration of the name continues.
+    withdrawn: BTreeMap<String, Declared>,
     /// Each type's `depends_on` lists as they were declared, field by
     /// field: the completed lists are made again from them.
     listed: BTreeMap<TypeName, Vec<Vec<FieldName>>>,
@@ -85,7 +85,6 @@ impl ToolNames {
         self.judge(name);
     }
 
-    /// Whether `name` is a problem: empty, too long, or made twice.
     fn judge(&mut self, name: &str) {
         let made = self.names.get(name).map_or(0, Vec::len);
         let bad = made > 1 || made == 1 && (name.is_empty() || name.len() > MAX_TOOL_NAME);
@@ -95,7 +94,6 @@ impl ToolNames {
         };
     }
 
-    /// The verb `verb` out of force: the name it made gives way.
     fn take_verb(&mut self, verb: &VerbName) {
         let name = tools::tool_base(verb.as_str());
         if let Some(held) = self.names.get_mut(&name) {
@@ -107,13 +105,12 @@ impl ToolNames {
         self.judge(&name);
     }
 
-    /// `t` in force: the names it made give way to those it makes.
-    fn put_type(&mut self, t: &TypeDecl) {
+    fn take_type(&mut self, ty: &TypeName) {
         let of = |s: &NameSource| match s {
-            NameSource::Type { ty } | NameSource::Link { ty, .. } => ty == &t.name,
+            NameSource::Type { ty: t } | NameSource::Link { ty: t, .. } => t == ty,
             _ => false,
         };
-        for name in self.by.remove(&t.name).unwrap_or_default() {
+        for name in self.by.remove(ty).unwrap_or_default() {
             if let Some(held) = self.names.get_mut(&name) {
                 held.retain(|s| !of(s));
                 if held.is_empty() {
@@ -122,6 +119,14 @@ impl ToolNames {
             }
             self.judge(&name);
         }
+    }
+
+    fn put_type(&mut self, t: &TypeDecl) {
+        let of = |s: &NameSource| match s {
+            NameSource::Type { ty } | NameSource::Link { ty, .. } => ty == &t.name,
+            _ => false,
+        };
+        self.take_type(&t.name);
         let links = crate::declare::link_relations(t);
         for (name, from) in tools::all_names(std::slice::from_ref(&t.name), &[], &links) {
             for s in from.into_iter().filter(of) {
@@ -201,7 +206,7 @@ impl Ontology {
         self
     }
 
-    /// The tool names it keeps, if it is the writer's or made from it.
+    /// The tool names it keeps, if the writer's.
     pub fn tool_names(&self) -> Option<&ToolNames> {
         self.names.as_deref()
     }
@@ -216,7 +221,6 @@ impl Ontology {
     /// The ontology a set of declarations in force makes.
     pub fn from_declared(declared: &[Declared]) -> Ontology {
         let mut o = Ontology::default();
-        // The functions first, so that each type is completed once.
         let function = |d: &&Declared| matches!(d.declaration, Declaration::Function(_));
         let rest = declared.iter().filter(|d| !function(d));
         for d in declared.iter().filter(function).chain(rest) {
@@ -230,7 +234,7 @@ impl Ontology {
         o
     }
 
-    /// Put one declaration in force, replacing an earlier version.
+    /// Put one declaration in force.
     pub fn put(&mut self, declaration: Declaration, version: u32, schema_hash: Option<String>) {
         self.put_at(declaration, version, schema_hash, Position::GENESIS)
     }
@@ -308,20 +312,25 @@ impl Ontology {
             Declaration::Setting(t) => put(&mut self.settings, t.key.clone(), t, v, h, s),
             Declaration::Withdraw(t) => {
                 self.take_out(t.kind, &t.name);
-                let key = declaration_key(&Declaration::Withdraw(t));
-                self.withdrawn.insert(key, (v, s));
+                let declaration = Declaration::Withdraw(t);
+                let key = declaration_key(&declaration);
+                let held = Declared {
+                    declaration,
+                    version: v,
+                    schema_hash: h,
+                    since: s,
+                };
+                self.withdrawn.insert(key, held);
             }
             _ => {}
         }
     }
 
-    /// A shape with every computed field's `depends_on` holding each field
-    /// it is computed from: what its expression reads, or its function's
-    /// inputs. A field is read no further than what it depends on, so a
-    /// computed field must list what it hands out, whether or not its
-    /// declaration did (024, extended). An expression whose reads cannot
-    /// be told reads every other field beside it, of its type or of its
-    /// relation: such a field is closed, never open.
+    /// Completes every computed field's `depends_on` with what it is
+    /// computed from, its expression's reads or its function's inputs: a
+    /// field is read no further than what it depends on (024, extended).
+    /// An expression whose reads cannot be told reads every other field
+    /// beside it: such a field is closed, never open.
     pub fn complete(&self, t: &mut TypeDecl) {
         let links = t.relations.iter_mut().map(|r| &mut r.fields);
         for fields in std::iter::once(&mut t.fields).chain(links) {
@@ -341,11 +350,10 @@ impl Ontology {
         }
     }
 
-    /// The entries a recomputation of `types` reads, and nothing else:
-    /// theirs, and those of the functions and the value types their fields
-    /// name, each shared with this ontology as it stands now. A name this
-    /// ontology does not hold is one the answer does not hold: a field
-    /// whose function is not declared yet is not computed, here as there.
+    /// The entries a recomputation of `types` reads, shared with this
+    /// ontology: theirs and those of the functions and value types their
+    /// fields name. A name not held here is not held there: a field whose
+    /// function is not declared yet is not computed, here as there.
     pub fn computing(&self, types: &[TypeName]) -> Ontology {
         let mut o = Ontology::default();
         for (name, t) in types.iter().filter_map(|n| self.types.get_key_value(n)) {
@@ -395,7 +403,7 @@ impl Ontology {
             })
     }
 
-    /// The value types, as a list.
+    /// The value types.
     pub fn value_type_list(&self) -> Vec<ValueTypeDecl> {
         self.value_types.values().map(|e| e.decl.clone()).collect()
     }
@@ -425,11 +433,20 @@ impl Ontology {
         }
     }
 
-    /// The trigger, verb, object set or function `name` out of force, a
-    /// verb with the tool name it made. What reads it refuses its
-    /// withdrawal, so no type is completed again.
+    /// The type, trigger, verb, object set or function `name` out of
+    /// force, a type or a verb with the tool names it made. What reads it
+    /// refuses its withdrawal, so no type is completed again.
     pub fn take_out(&mut self, kind: DeclarationKind, name: &str) {
         match kind {
+            DeclarationKind::Type => {
+                let ty = TypeName::from(name);
+                if self.types.remove(&ty).is_some() {
+                    self.listed.remove(&ty);
+                    if let Some(names) = &mut self.names {
+                        Arc::make_mut(names).take_type(&ty);
+                    }
+                }
+            }
             DeclarationKind::Trigger => drop(self.triggers.remove(name)),
             DeclarationKind::Verb => {
                 let verb = VerbName::from(name);
@@ -483,7 +500,7 @@ impl Ontology {
             Declaration::Withdraw(w) => {
                 let held = self.held_named(w.kind, &w.name);
                 let held = held.and_then(|h| self.entry_of(&h));
-                held.or_else(|| self.withdrawn.get(&declaration_key(d)).copied())
+                held.or_else(|| self.withdrawn_of(d))
             }
             _ => None,
         }
@@ -521,7 +538,7 @@ impl Ontology {
 
     /// The version a declaration of this name and kind would take next.
     pub fn next_version(&self, declaration: &Declaration) -> u32 {
-        let withdrawn = || self.withdrawn.get(&declaration_key(declaration)).copied();
+        let withdrawn = || self.withdrawn_of(declaration);
         let held = self.entry_of(declaration).or_else(withdrawn);
         held.map_or(1, |(v, _)| v + 1)
     }
@@ -564,6 +581,28 @@ impl Ontology {
         each(&self.object_sets, Declaration::ObjectSet, &mut out);
         each(&self.settings, Declaration::Setting, &mut out);
         out
+    }
+
+    /// Every declaration with each withdrawal still in force: the states a
+    /// read at a past position finds now.
+    pub fn declared_and_withdrawn(&self) -> Vec<Declared> {
+        let mut all = self.declared();
+        all.extend(self.withdrawn.values().cloned());
+        all
+    }
+
+    /// The state in force that the declaration `d` replaces, a withdrawal's
+    /// included.
+    pub fn replaced_by(&self, d: &Declaration) -> Option<Declared> {
+        let key = declaration_key(d);
+        let mut all = self.declared_and_withdrawn().into_iter();
+        all.find(|e| declaration_key(&e.declaration) == key)
+    }
+
+    /// The version and position of `d`'s withdrawal, while it is in force.
+    fn withdrawn_of(&self, d: &Declaration) -> Option<(u32, Position)> {
+        let w = self.withdrawn.get(&declaration_key(d));
+        w.map(|w| (w.version, w.since))
     }
 }
 

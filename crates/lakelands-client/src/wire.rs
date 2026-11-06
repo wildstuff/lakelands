@@ -1,10 +1,18 @@
 //! One exchange with the REST door: the request a door becomes, sent
 //! with the key of the principal it is made as, and its answer decoded
 //! into the contract's types or the contract's error.
+//!
+//! A forwarding handle's wire sends its host's key instead, and names the
+//! principal in a header (`crate::forward`). It tells a call that was not
+//! sent, which may go to the next door, from one that was: a failure
+//! after the request left is `ForwardLost`, never sent again. Which it
+//! was is recorded here, in [`SENT`], as the request is made, never read
+//! from an answer, so a writer's own refusal is the call's answer.
 
 use std::collections::BTreeMap;
 use std::error::Error as _;
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -46,6 +54,47 @@ pub(crate) struct Wire {
     pub(crate) silence: Duration,
     /// The most bytes one answer, one event or one line may hold.
     pub(crate) cap: usize,
+    /// A forwarding handle's host key, which every call is sent with.
+    host: Option<ApiKey>,
+    /// The highest position an answer has named.
+    seen: AtomicU64,
+}
+
+tokio::task_local! {
+    /// What became of the requests of the forwarded call this task
+    /// makes: whether any left, and whether one was not sent.
+    pub(crate) static SENT: std::cell::Cell<Sent>;
+}
+
+/// What became of a forwarded call's requests.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Sent {
+    /// A request left: the door may have acted on it.
+    pub(crate) left: bool,
+    /// A request was not sent: the door was not reached, or the request
+    /// could not be made.
+    pub(crate) unsent: bool,
+}
+
+impl Sent {
+    /// Whether the call was sent nothing at all.
+    pub(crate) fn nothing(self) -> bool {
+        self.unsent && !self.left
+    }
+}
+
+/// Record, for the forwarded call this task makes, what became of a
+/// request; outside one, nothing.
+fn record(left: bool) {
+    let _ = SENT.try_with(|s| {
+        let mut sent = s.get();
+        if left {
+            sent.left = true;
+        } else {
+            sent.unsent = true;
+        }
+        s.set(sent);
+    });
 }
 
 /// One request: the route under the lake, already encoded, and what it
@@ -160,6 +209,16 @@ impl Wire {
         config: &RemoteConfig,
         silence: Duration,
     ) -> std::result::Result<Wire, ConfigError> {
+        Wire::build(config, silence, None)
+    }
+
+    /// A wire that, when `forward` is given, sends every call with its
+    /// host's key and connects within its bound.
+    pub(crate) fn build(
+        config: &RemoteConfig,
+        silence: Duration,
+        forward: Option<(ApiKey, Duration)>,
+    ) -> std::result::Result<Wire, ConfigError> {
         let bad = |what: &str| ConfigError(format!("the lake's URL {what}"));
         let uri: Uri = config
             .url
@@ -212,6 +271,13 @@ impl Wire {
                 "the key of `{id}` holds a character a header cannot carry"
             )));
         }
+        if let Some((k, _)) = &forward
+            && HeaderValue::from_str(&format!("Bearer {}", k.expose())).is_err()
+        {
+            return Err(ConfigError(
+                "the host's key holds a character a header cannot carry".into(),
+            ));
+        }
         if let Some(id) = &config.feed_key
             && !config.keys.contains_key(id)
         {
@@ -227,7 +293,7 @@ impl Wire {
         if silence < Duration::from_millis(8) {
             return Err(ConfigError("the silence bound must be 8 ms or more".into()));
         }
-        let client = pooled(Connector::new(tls));
+        let client = pooled(Connector::new(tls, forward.as_ref().map(|(_, c)| *c)));
         let scheme = if secure { "https" } else { "http" };
         Ok(Wire {
             client,
@@ -242,6 +308,8 @@ impl Wire {
             timeout: Duration::from_secs(config.timeout_secs.max(1)),
             silence,
             cap: config.max_answer_bytes,
+            host: forward.map(|(k, _)| k),
+            seen: AtomicU64::new(0),
         })
     }
 
@@ -258,7 +326,25 @@ impl Wire {
         if who.lake != self.lake {
             return Err(not_granted());
         }
+        if let Some(host) = &self.host {
+            return Ok(host);
+        }
         self.keys.get(&who.id).ok_or_else(not_granted)
+    }
+
+    /// Whether this is a forwarding handle's wire.
+    pub(crate) fn forwards(&self) -> bool {
+        self.host.is_some()
+    }
+
+    /// An answer named `p`.
+    pub(crate) fn saw(&self, p: Position) {
+        self.seen.fetch_max(p.0, Ordering::SeqCst);
+    }
+
+    /// The highest position an answer has named.
+    pub(crate) fn seen(&self) -> Position {
+        Position(self.seen.load(Ordering::SeqCst))
     }
 
     /// The key the feed and the head are read with.
@@ -270,6 +356,17 @@ impl Wire {
     /// A failure below the contract, naming the lake and what, never its
     /// address, a path, a key or a body.
     pub(crate) fn unavailable(&self, exchange: Exchange) -> Error {
+        let lake = self.lake.to_string();
+        if self.forwards() {
+            record(true);
+            return Error::unavailable(Situation::ForwardLost { lake, exchange });
+        }
+        self.not_sent(exchange)
+    }
+
+    /// A failure before the request left: the call was not made.
+    pub(crate) fn not_sent(&self, exchange: Exchange) -> Error {
+        record(false);
         let lake = self.lake.to_string();
         let remote = Remote::Door { lake };
         Error::unavailable(Situation::Remote { remote, exchange })
@@ -289,7 +386,7 @@ impl Wire {
         }
         // Every key was checked at `connect`.
         let mut bearer = HeaderValue::from_str(&format!("Bearer {}", key.expose()))
-            .map_err(|_| self.unavailable(Exchange::KeyNotSent))?;
+            .map_err(|_| self.not_sent(Exchange::KeyNotSent))?;
         bearer.set_sensitive(true);
         req = req.header(AUTHORIZATION, bearer);
         let body = match call.body {
@@ -301,9 +398,17 @@ impl Wire {
         };
         let req = req
             .body(body)
-            .map_err(|_| self.unavailable(Exchange::NotSent))?;
+            .map_err(|_| self.not_sent(Exchange::NotSent))?;
         match tokio::time::timeout(self.timeout, self.client.request(req)).await {
-            Ok(Ok(r)) => Ok(r),
+            Ok(Ok(r)) => {
+                record(true);
+                if let Some(p) = position_of(&r) {
+                    self.saw(p);
+                }
+                Ok(r)
+            }
+            // A door that could not be reached was sent nothing.
+            Ok(Err(e)) if e.is_connect() => Err(self.not_sent(failed(&e))),
             Ok(Err(e)) => Err(self.unavailable(failed(&e))),
             Err(_) => {
                 let secs = self.timeout.as_secs();

@@ -22,8 +22,9 @@
 //! The suite's embedding backend, [`embedder`], is bound in the lakes of
 //! the checks that ask for it. Its model is [`EMBED_MODEL`], its vectors
 //! have two dimensions, and every text becomes `(1, 0)`, but one starting
-//! with [`NOWHERE`], which becomes the vector of zeros, and one starting
-//! with [`VAST`], which becomes `(1e16, 0)`. A call fails
+//! with [`NOWHERE`], which becomes the vector of zeros, one starting with
+//! [`NORTH`], which becomes `(0, 1)`, and one starting with [`VAST`],
+//! which becomes `(1e16, 0)`. A call fails
 //! when one of its texts starts with [`UNREACHABLE`], or was unplugged
 //! ([`unplug_text`], until [`plug_text`]): it refuses the request as
 //! `Invalid`, so the store asks again in halves until the text is alone.
@@ -38,7 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use async_trait::async_trait;
-use lakelands_api::error::{Case, Exchange, Remote, Situation};
+use lakelands_api::error::{Case, Detail, Exchange, Remote, Situation};
 use lakelands_api::seam::{
     CallCause, EmbedBackend, FunctionBacking, FunctionCall, RerankCall, Reranker,
 };
@@ -141,6 +142,12 @@ pub const WEATHER: &str = "weather";
 /// A text the suite's embedding backend makes the vector of zeros.
 pub const NOWHERE: &str = "nowhere";
 
+/// A text it answers two vectors for, where one was asked.
+pub const TWICE: &str = "twice";
+
+/// A text the suite's embedding backend makes `(0, 1)`.
+pub const NORTH: &str = "north";
+
 /// A text the suite's embedding backend makes a vector whose first
 /// component is `1e16`.
 pub const VAST: &str = "vast";
@@ -200,12 +207,15 @@ impl EmbedBackend for Embedder {
             return Err(fail(Remote::Embedding { model }));
         }
         let dimensions = self.dimensions as usize;
+        let twice = matches!(texts, [one] if one.starts_with(TWICE));
         Ok(texts
             .iter()
+            .chain(texts.iter().take(usize::from(twice)))
             .map(|t| {
                 let mut v = vec![0.0; dimensions];
-                if let (Some(first), false) = (v.first_mut(), t.starts_with(NOWHERE)) {
-                    *first = if t.starts_with(VAST) { 1e16 } else { 1.0 };
+                let at = usize::from(t.starts_with(NORTH));
+                if let (Some(one), false) = (v.get_mut(at), t.starts_with(NOWHERE)) {
+                    *one = if t.starts_with(VAST) { 1e16 } else { 1.0 };
                 }
                 v
             })
@@ -435,6 +445,10 @@ impl lakelands_api::seam::VerbExecutor for Executor {
         }
         if invocation.payload.get("decline") == Some(&Value::Bool(true)) {
             return Err(Error::declined(&invocation.verb));
+        }
+        if invocation.payload.get("decline_because") == Some(&Value::Bool(true)) {
+            let reason = Detail::scrubbed("above this executor's ceiling – über");
+            return Err(Error::declined_because(&invocation.verb, reason));
         }
         if invocation.payload.get("vast_error") == Some(&Value::Bool(true)) {
             let n = serde_json::Number::from(i64::MAX);

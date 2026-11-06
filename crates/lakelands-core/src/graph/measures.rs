@@ -1,6 +1,7 @@
-//! Whole-graph measures: degree centrality and connected components.
+//! Whole-graph measures: degree centrality, connected components and
+//! PageRank.
 //!
-//! Both are walks over the same [`EdgeSource`] every other walk reads, so
+//! Each is a walk over the same [`EdgeSource`] every other walk reads, so
 //! they count what a walk would reach: a link to a record that is missing,
 //! retired or hidden from the caller is not there
 //! (`docs/decisions/026-the-store-walks-the-graph.md`).
@@ -12,13 +13,16 @@
 //!   links taken both ways. It holds every record it reaches, so it is
 //!   bounded: past `max_nodes` records it refuses `too_large` rather than
 //!   answer a partition of part of the graph, which would look whole.
+//! - [`page_rank`] ranks a [`Held`] graph in integers: a score summed in
+//!   floating point could differ in its last bit with the order links
+//!   came in, and an integer sum cannot.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::query::Walk;
 use lakelands_api::{RelationName, Result};
 
-use super::{EdgeId, EdgeSource, Links, Node, PAGE, edge_id};
+use super::{EdgeId, EdgeSource, Held, Links, Node, PAGE, edge_id};
 
 /// For each of `nodes`, in their order, the number of its distinct links
 /// over the given relations, each walked in its own direction, whose far
@@ -110,12 +114,8 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
     }
 
     /// The component `index` was joined into.
-    fn root(&mut self, mut index: usize) -> usize {
-        while self.joined[index] != index {
-            self.joined[index] = self.joined[self.joined[index]];
-            index = self.joined[index];
-        }
-        index
+    fn root(&mut self, index: usize) -> usize {
+        root(&mut self.joined, index)
     }
 
     /// Adds a page of seeds and everything linked to them, reading the
@@ -173,8 +173,7 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
                 };
                 match self.member_of.get(&other) {
                     Some(&there) => {
-                        let (a, b) = (self.root(here), self.root(there));
-                        self.joined[a.max(b)] = a.min(b);
+                        join(&mut self.joined, here, there);
                     }
                     None => {
                         self.reach(other.clone(), here)?;
@@ -198,11 +197,94 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
             let root = self.root(index);
             all[root].push(node);
         }
-        // A component joined into another holds nothing of its own.
-        all.retain(|c| !c.is_empty());
-        all.sort_by(|a, b| (b.len(), a.first()).cmp(&(a.len(), b.first())));
-        all
+        ordered(all)
     }
+}
+
+/// The set `index` was joined into, each step on the way pointed nearer.
+fn root(joined: &mut [usize], mut index: usize) -> usize {
+    while joined[index] != index {
+        joined[index] = joined[joined[index]];
+        index = joined[index];
+    }
+    index
+}
+
+/// Joins the sets of `a` and `b`, into the lesser root.
+pub(super) fn join(joined: &mut [usize], a: usize, b: usize) {
+    let (a, b) = (root(joined, a), root(joined, b));
+    joined[a.max(b)] = a.min(b);
+}
+
+/// The records grouped by the set each was joined into, in `nodes`' order
+/// within a group, then ordered as components are.
+pub(super) fn grouped(nodes: &[Node], joined: &mut [usize]) -> Vec<Component> {
+    let mut all: Vec<Component> = vec![Vec::new(); nodes.len()];
+    for (i, node) in nodes.iter().enumerate() {
+        all[root(joined, i)].push(node.clone());
+    }
+    ordered(all)
+}
+
+/// Components largest first, then by their least `(type, key)`; one
+/// joined into another holds nothing of its own and is dropped.
+fn ordered(mut all: Vec<Component>) -> Vec<Component> {
+    all.retain(|c| !c.is_empty());
+    all.sort_by(|a, b| (b.len(), a.first()).cmp(&(a.len(), b.first())));
+    all
+}
+
+/// The whole mass PageRank spreads, in units of 10^-12.
+pub const RANK_MASS: u64 = 1_000_000_000_000;
+
+/// The rounds PageRank runs at most.
+const RANK_ROUNDS: usize = 100;
+
+/// Each record's PageRank in units of 10^-12, in `g`'s order; they sum to
+/// [`RANK_MASS`] exactly. Damping is 85/100, fixed. At most 100 rounds,
+/// ended early by the first that changes no score: every round after it
+/// would give the same scores (026).
+pub fn page_rank(g: &Held) -> Vec<u64> {
+    let mut out = vec![0u64; g.nodes.len()];
+    for &(u, _) in &g.arcs {
+        out[u as usize] += 1;
+    }
+    let mut old = spread(RANK_MASS, g.nodes.len());
+    for _ in 0..RANK_ROUNDS {
+        let new = round(&out, &g.arcs, &old);
+        if new == old {
+            break;
+        }
+        old = new;
+    }
+    old
+}
+
+/// One round: each record with arcs sends `floor(85 · mass / (100 · arcs))`
+/// along each of them, one floor a record and none an arc; what no arc
+/// carried, the damping's part, the mass of records with no arc and every
+/// unit a floor dropped, is spread over every record. The sum stays
+/// [`RANK_MASS`], and no sum can pass it.
+fn round(out: &[u64], arcs: &[(u32, u32)], old: &[u64]) -> Vec<u64> {
+    let share: Vec<u64> = (old.iter().zip(out))
+        .map(|(&m, &n)| if n == 0 { 0 } else { 85 * m / (100 * n) })
+        .collect();
+    let sent: u64 = share.iter().zip(out).map(|(s, n)| s * n).sum();
+    let mut new = spread(RANK_MASS - sent, old.len());
+    for &(u, v) in arcs {
+        new[v as usize] += share[u as usize];
+    }
+    new
+}
+
+/// `mass` spread evenly over `n` records, the units left over one each
+/// to the first records by index.
+fn spread(mass: u64, n: usize) -> Vec<u64> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let (each, left) = (mass / n as u64, (mass % n as u64) as usize);
+    (0..n).map(|i| each + u64::from(i < left)).collect()
 }
 
 #[cfg(test)]

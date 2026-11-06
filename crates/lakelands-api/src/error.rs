@@ -21,13 +21,13 @@ mod case;
 mod outage;
 
 pub use case::{
-    Beyond, Case, Form, JsonFault, Named, Names, Naming, Operand, Place, RecordName, Regexp,
-    Revision, Said, Segment, Shape,
+    Beyond, Case, Construct, Form, JsonFault, Named, Names, Naming, Operand, Place, Printed,
+    RecordName, Regexp, Revision, Said, Segment, Shape,
 };
 pub(crate) use case::{Param, catalog, render};
 pub use outage::{
-    Act, Aimless, Bound, Closed, Detail, Doing, Exchange, Flaw, Left, Part, Remote, Resent, Retry,
-    Seam, Situation, Tls, Unknown, closed,
+    Act, Aimless, Bound, Closed, Detail, Doing, Exchange, Flaw, Left, Part, Per, Remote, Requests,
+    Resent, Retry, Seam, Situation, Tls, Unknown, closed,
 };
 
 /// What went wrong.
@@ -79,6 +79,8 @@ pub enum Error {
     /// type and key its source sent; and the refusal. On the wire it is
     /// the refusal, its code and shape kept, with `index`, `from` and
     /// `record` beside it; [`Error::unwrapped`] answers the refusal.
+    /// A refusal the call asked to quarantine past the source's bound
+    /// carries `quarantine_full` too (085).
     #[serde(skip)]
     Ingested {
         /// The record's place in the stream.
@@ -89,6 +91,9 @@ pub enum Error {
         record: RecordName,
         /// The refusal.
         error: Box<Error>,
+        /// The bound that was full, where the record was not quarantined
+        /// for it.
+        quarantine_full: Option<crate::quarantine::QuarantineFull>,
     },
     /// An error of a kind this build does not know: a newer lake's.
     #[serde(skip)]
@@ -119,6 +124,7 @@ impl Serialize for Error {
             from,
             record,
             error,
+            quarantine_full,
         } = self
         else {
             return closed::serialize(&Plain(self.clone()), s);
@@ -133,6 +139,12 @@ impl Serialize for Error {
         map.insert("index".into(), Value::from(*index));
         map.insert("from".into(), Value::from(*from));
         map.insert("record".into(), record);
+        if let Some(full) = quarantine_full {
+            map.insert(
+                "quarantine_full".into(),
+                serde_json::json!({"max": full.max}),
+            );
+        }
         map.serialize(s)
     }
 }
@@ -156,6 +168,8 @@ impl<'de> Deserialize<'de> for Error {
             let (index, from) = (place(map.remove("index"))?, place(map.remove("from"))?);
             let record = closed::deserialize(map.remove("record").unwrap_or_default());
             let record = record.map_err(|e: serde_json::Error| custom(e.to_string()))?;
+            let full = map.remove("quarantine_full").map(serde_json::from_value);
+            let quarantine_full = full.transpose().map_err(|e| custom(e.to_string()))?;
             let error = Error::deserialize(Value::Object(map));
             let error = Box::new(error.map_err(|e| custom(e.to_string()))?);
             return Ok(Error::Ingested {
@@ -163,6 +177,7 @@ impl<'de> Deserialize<'de> for Error {
                 from,
                 record,
                 error,
+                quarantine_full,
             });
         }
         let message = map
@@ -211,10 +226,30 @@ impl Error {
     /// no field.
     pub fn invalid(said: impl Into<Said>) -> Error {
         let reason = Refusal::Invalid(Box::new(said.into()));
-        Error::Refused {
-            field: None,
-            reason,
-        }
+        Error::refused(None, reason)
+    }
+
+    /// A refusal of `field`'s value as not well-formed.
+    pub fn invalid_at(field: &FieldName, said: impl Into<Said>) -> Error {
+        let reason = Refusal::Invalid(Box::new(said.into()));
+        Error::refused(Some(field.clone()), reason)
+    }
+
+    /// A refusal of what a constraint does not allow, at `field` if one is
+    /// named.
+    pub fn constraint(field: Option<FieldName>, said: impl Into<Said>) -> Error {
+        let reason = Refusal::Constraint(Box::new(said.into()));
+        Error::refused(field, reason)
+    }
+
+    /// A refusal for want of a grant, naming no field.
+    pub fn not_granted() -> Error {
+        Error::refused(None, Refusal::NotGranted)
+    }
+
+    /// A refusal for `reason`, at `field` if one is named.
+    pub fn refused(field: Option<FieldName>, reason: Refusal) -> Error {
+        Error::Refused { field, reason }
     }
 
     /// The error itself; of a refused record of an ingest, its refusal
@@ -224,6 +259,30 @@ impl Error {
             Error::Ingested { error, .. } => error.unwrapped(),
             e => e,
         }
+    }
+
+    /// Its kind alone: its `error` and, for a refusal, its `reason`
+    /// code, with no field, case, place, parameter or record name, as a
+    /// quarantined record's refusal is shown to a reader not shown every
+    /// name it holds (085).
+    pub fn kind_alone(&self) -> Error {
+        let wire = serde_json::to_value(self.unwrapped()).unwrap_or_default();
+        let code = |v: &Value, tag: &str| v[tag].as_str().unwrap_or_default().to_owned();
+        let error = code(&wire, "error");
+        let alone = match self.unwrapped() {
+            Error::Refused { .. } => {
+                let reason = code(&wire["reason"], "refusal");
+                let said = format!("refused: {reason}, its names not shown");
+                Error::refused(None, Refusal::Unknown(Unknown::bare(&reason, said)))
+            }
+            _ => Error::Unknown(Unknown::bare(
+                &error,
+                format!("{error}, its names not shown"),
+            )),
+        };
+        // As the wire reads it back: a kind with no parameter as itself.
+        let read = serde_json::to_value(&alone).and_then(serde_json::from_value);
+        read.unwrap_or(alone)
     }
 
     /// What a refusal of `invalid`, `constraint`, `precondition`,
@@ -248,11 +307,24 @@ impl Error {
     }
 
     /// A verb's executor declines the call by the host's policy: it did
-    /// not run, and a retry under the same idempotency key answers the same. The host's reason is not
-    /// carried; it belongs in the host's own trail, under the invocation's
-    /// dedup key.
+    /// not run, and a retry under the same idempotency key answers the
+    /// same. It says no reason; [`Error::declined_because`] does.
     pub fn declined(verb: &VerbName) -> Error {
-        let case = Case::CallDeclined { verb: verb.clone() };
+        Error::declined_for(verb, None)
+    }
+
+    /// A verb's executor declines the call by the host's policy, and
+    /// says why: the host's own words, scrubbed as any [`Detail`] is,
+    /// recorded in the call's answer beside the verb.
+    pub fn declined_because(verb: &VerbName, reason: Detail) -> Error {
+        Error::declined_for(verb, Some(reason))
+    }
+
+    fn declined_for(verb: &VerbName, reason: Option<Detail>) -> Error {
+        let case = Case::CallDeclined {
+            verb: verb.clone(),
+            reason,
+        };
         let said = Said::from(case).within(Place::Verb { name: verb.clone() });
         Error::Refused {
             field: None,
@@ -335,9 +407,18 @@ impl Error {
 pub enum Refusal {
     /// The principal holds no grant for it.
     NotGranted,
+    /// The call needs the grant it names, which the principal does not
+    /// hold, whatever the lake holds: a change of the lake's types is made
+    /// by a holder of `restricted` alone (062).
+    GrantNeeded {
+        /// The grant, as `Grants` names it.
+        grant: String,
+    },
     /// The field is written by another authority, through another door
-    /// (a source field through `upsert`, a derived field by anyone), or
-    /// `retire` is used where only its type's verbs retire the record.
+    /// (a source field through `upsert`, a derived field by anyone, an
+    /// authored field by a source it does not admit or over another
+    /// hand's write), or `retire` is used where only its type's verbs
+    /// retire the record.
     WrongDoor,
     /// Only its type's verbs write the field, or retire the record
     /// (lakelands#1148): these, which its writer may call; shown none, it
@@ -357,7 +438,8 @@ pub enum Refusal {
     /// A value breaks a declared constraint or a required field is
     /// missing.
     Constraint(Box<Said>),
-    /// A verb's `requires` does not hold for the record.
+    /// A verb's `requires` or one of its preconditions does not hold for
+    /// the record.
     Precondition(Box<Said>),
     /// A chain of reactive writes went deeper than the lake allows.
     TooDeep {
@@ -369,10 +451,12 @@ pub enum Refusal {
     /// then names `offset`), a pattern's rows read whole for an order over
     /// a record a step reaches or for an aggregate would be more than it
     /// allows (`order_by`, `project`), or a set's declaration or a migration would
-    /// change more memberships than it allows (the refusal names the set);
-    /// nothing partial is answered or appended.
+    /// change more memberships than it allows (the refusal names the set),
+    /// or a change to records would select more records than it allows
+    /// (`where`); nothing partial is answered or appended.
     TooLarge {
-        /// The lake's `max_graph_nodes`, `max_offset` or `max_set_changes`.
+        /// The lake's `max_graph_nodes`, `max_offset`, `max_set_changes` or
+        /// `max_change_records`.
         max: u32,
     },
     /// A migration would lose information; the report says where.
@@ -448,6 +532,7 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Refusal::NotGranted => write!(f, "you hold no grant for this"),
+            Refusal::GrantNeeded { grant } => write!(f, "this needs the `{grant}` grant"),
             Refusal::WrongDoor => write!(f, "another authority does this, through another door"),
             Refusal::VerbsOnly { verbs } => {
                 let named: Vec<String> = verbs.iter().map(|v| format!("`{v}`")).collect();
@@ -509,6 +594,11 @@ pub enum Missing {
         /// Its identifier.
         id: ProposalId,
     },
+    /// A quarantined record (085).
+    Quarantined {
+        /// Its id.
+        id: crate::quarantine::QuarantineId,
+    },
     /// A thing of a kind this build does not know, said by its error's
     /// sentence.
     #[serde(skip)]
@@ -539,6 +629,7 @@ impl fmt::Display for Missing {
             Missing::Verb { name } => write!(f, "there is no verb `{name}`"),
             Missing::Function { name } => write!(f, "there is no function `{name}`"),
             Missing::Proposal { id } => write!(f, "there is no proposal `{id}`"),
+            Missing::Quarantined { id } => write!(f, "there is no quarantined record `{id}`"),
             Missing::Unknown(u) => f.write_str(u.message()),
         }
     }
@@ -552,10 +643,15 @@ impl fmt::Display for Error {
                 from,
                 record,
                 error,
-            } => write!(
-                f,
-                "record {index} of the stream ({record}): {error}; nothing from record {from} on was written"
-            ),
+                quarantine_full,
+            } => {
+                write!(f, "record {index} of the stream ({record}): {error}")?;
+                if let Some(full) = quarantine_full {
+                    let max = full.max;
+                    write!(f, ", not quarantined: its source holds {max} open")?;
+                }
+                write!(f, "; nothing from record {from} on was written")
+            }
             // A refusal of a kind this build does not know is its sentence.
             Error::Refused {
                 reason: reason @ Refusal::Unknown(_),
@@ -584,6 +680,12 @@ impl fmt::Display for Error {
                             ": an aggregate over rows reads them whole, and there may be {max}, no more; narrow the start, or start from a step's type and walk back"
                         )
                     }
+                    Refusal::TooLarge { max } if field.as_ref().is_some_and(|f| f == "where") => {
+                        write!(
+                            f,
+                            ": the condition selects more than {max} records, the lake's `limits.max_change_records`; a change is never cut, so narrow the condition"
+                        )
+                    }
                     Refusal::TooLarge { max } if field.is_some() => {
                         write!(f, ": more than {max} of the set's memberships would change")
                     }
@@ -591,11 +693,27 @@ impl fmt::Display for Error {
                 }
             }
             Error::NotFound { missing } => write!(f, "{missing}"),
+            Error::Conflict {
+                expected: Version(0),
+                ..
+            } => {
+                write!(f, "a record with this key already exists")
+            }
             Error::Conflict { expected, actual } => write!(
                 f,
                 "the record changed: expected version {expected}, found {actual}"
             ),
             Error::Unbound { seam } => write!(f, "nothing is bound for {seam}"),
+            // A bound on a caller is no state of the lake: its sentence
+            // is the whole message.
+            Error::Unavailable { situation }
+                if matches!(
+                    **situation,
+                    Situation::RateBound { .. } | Situation::InFlightBound { .. }
+                ) =>
+            {
+                write!(f, "{situation}")
+            }
             Error::Unavailable { situation } => write!(f, "the lake is unavailable: {situation}"),
             Error::Unknown(u) => f.write_str(u.message()),
         }

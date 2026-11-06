@@ -4,28 +4,55 @@
 
 ### The exact-text index keeps rows for the fields that are looked up
 
-Each engine that keeps an exact-text index (SQLite and PostgreSQL) keeps
-a row for each string a record's latest state holds, but only in the
-fields of its type that are looked up. The memory engine keeps no such
-index.
+099 builds these rows in parts; a reader decides from the setting's mark
+until the build is whole.
+
+Every engine keeps the exact-text index: SQLite and PostgreSQL as rows
+of a table, the memory engine as a set in its projection (097 §The
+memory engine). It keeps an entry for each string a record's latest
+state holds, but only in the fields of its type that are looked up. A
+number field named in the setting keeps an entry of its value's token,
+and a value that reads as no number keeps none and is scanned for
+(097 §A number's exact lookup).
 
 **The declarations look up these fields of a type:**
-- its key;
+- its key, but a key that is one text field;
 - its references;
 - the fields a derived relation matches at either end (044);
 - those a set's condition, or a view's `where` over the type, compares
   to a text at the top level (`field = 'text'`, alone or as an `and`
-  term).
+  term);
+- the fields its constraints' and its triggers' `preceding` matches on,
+  so a write reads one series of the type, never the type (059, 004).
+- the fields another type's `in_force` matches on, so a read pairs by
+  one partition of the type, never the type (052).
 
 **The setting adds others.** The `sys.setting` record
 `lookup_index.<type>` holds a JSON array of text fields, as
-`sort_index.<type>` does for the order index (041). Its write is refused
-as invalid, naming the field, when the field is no text or is computed
-at the read.
+`sort_index.<type>` does for the order index (041), and from 097 of
+number and decimal fields too. Its write is refused as invalid, naming
+the field, when the field is of no such kind or is computed at the read.
+
+**A key of one text field is read by key.** A record's key is its key
+fields' values made components by the key rule (`docs/log-format.md`
+§2.3), and a single text component reads back into its value, so the
+only record that can hold a text there is the one at the key the text
+makes. A `where` that the field equals a text, or a derived relation's
+match asking for one of texts, reads those keys' states
+(`engines::key_lookup`), at the head and at an earlier position alike,
+and the rulebook admits each. The index keeps no rows for the field:
+they would only repeat the key. What holds the key and its field
+together is the store: it fills a record's key fields from its key and
+refuses a write whose key fields make another key (`KeyDisagrees`), and
+a key field cannot be erasable (`ErasableKey`), so no erasure blanks it
+while the key stays. What could break the inversion otherwise cannot
+happen: a rename of a value a key field holds is refused (027), a change
+of the key fields re-keys the type's records, and a link type's key is
+two fields.
 
 `lakelands_core::engines::looked_up` decides the set from the
-declarations and the setting at the head. Both engines call it, and no
-other field has rows.
+declarations and the setting at the head. Every engine calls it, and no
+other field has an entry.
 
 **A reader decides from the same set, never from which rows exist.** A
 string the index keeps is looked up. A string of any other field is
@@ -109,3 +136,21 @@ on every engine.
 - **Not every text kept and only the deletes taken off.** That was
   measured: +9 % ingest against +23 %, with every find unchanged. It was
   not taken, because the rows themselves are the cost.
+
+## How it came to be
+
+- The first version: the exact-text index keeps rows for the fields the
+  declarations and the setting look up, every field of a view's kept
+  records, and a reader decides from that set (lakelands#1019).
+- A commit decides the set again only for the types it moved
+  (lakelands#1098).
+- A key of one text field is read by key, and the index keeps no rows
+  for it (lakelands#1318).
+- A field a constraint's `preceding` matches on is looked up
+  (lakelands#1552).
+- So is one a trigger's `preceding` matches on (lakelands#1604).
+- A field another type's `in_force` matches on is looked up
+  (lakelands#1606).
+- A number field can be named, and the memory engine keeps the index
+  (`docs/decisions/097-a-read-in-a-window-walks-its-window.md`).
+- Amended by 099 (lakelands#1652), proposed for 0.23.0.

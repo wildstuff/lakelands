@@ -17,7 +17,8 @@
 //!   once per event of the kinds it asked for ([`CHANGE_KINDS`] by
 //!   default) from its position on, when the principal may `get` the
 //!   record at the event's position (at the position before, for a
-//!   retirement). It names the position, the kind, the type, the key and,
+//!   retirement). It names the position, the last position of its append
+//!   the session is told (083), the kind, the type, the key and,
 //!   for a write, the changed fields the principal is shown (masked ones
 //!   by name, hidden ones not at all); a write with none left is not
 //!   sent. Never a value. The write that made the record (its event says
@@ -39,7 +40,7 @@
 //!   field it may not read, or reads masked, is never probed this way
 //!   (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
 //!   A condition over `sys.setting` is told only to one from whom nothing
-//!   is held, the only principal no setting is told narrowed or withheld.
+//!   is held, the only principal no setting is withheld from.
 //!   One the feed names overruled, decided over a value an act erased
 //!   since, is told to no one
 //!   (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
@@ -344,11 +345,23 @@ pub async fn pump(
     // subscription leaves its hub for its own, joining it as every
     // follower joins.
     let mut follow: Option<(u64, Vec<String>, crate::hub::Follow)> = None;
+    let mut held = Held::default();
     'poll: loop {
         if queue.is_closed() {
             return;
         }
         let (generation, subscription, next, declared) = watch.snapshot();
+        if held.generation != generation {
+            // A new subscription re-reads the changes; a declaration is
+            // not re-read, so its notification goes now.
+            if !held.send_tools(&queue).await {
+                return;
+            }
+            held = Held {
+                generation,
+                ..Held::default()
+            };
+        }
         let mut kinds: Vec<String> = vec![
             "declared".into(),
             "migrated".into(),
@@ -406,6 +419,9 @@ pub async fn pump(
             if watch.generation() != generation {
                 continue 'poll;
             }
+            if held.end.is_some_and(|end| e.position > end) && !held.send(&queue).await {
+                return;
+            }
             if matches!(
                 e.body.kind(),
                 "declared" | "migrated" | "value_type_migrated"
@@ -415,20 +431,34 @@ pub async fn pump(
             let queued = match e.body.kind() {
                 "declared" | "migrated" | "value_type_migrated" if e.position >= declared => {
                     watch.inner().tools_made += 1;
-                    Some(Queued {
-                        generation: None,
-                        message: json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
-                    })
+                    match held.end {
+                        // In the append's order, after the changes before it.
+                        Some(_) => {
+                            held.shown.push((e.position, Held::TOOLS));
+                            None
+                        }
+                        None => Some(Queued {
+                            generation: None,
+                            message: json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
+                        }),
+                    }
                 }
                 "declared" | "migrated" | "value_type_migrated" => None,
                 _ if batch.overruled.binary_search(&e.position).is_ok() => None,
                 kind => match &subscription {
                     Some(s) if e.position >= next && reads_kind(s, kind) => {
                         match view.of(e, s).await {
-                            Seen::Shown(params) => Some(Queued {
-                                generation: Some(generation),
-                                message: json!({"jsonrpc": "2.0", "method": CHANGED, "params": params}),
-                            }),
+                            Seen::Shown(params) => match batch.append_of(e.position) {
+                                Some(end) => {
+                                    held.end = Some(end);
+                                    held.shown.push((e.position, params));
+                                    None
+                                }
+                                None => Some(Queued {
+                                    generation: Some(generation),
+                                    message: json!({"jsonrpc": "2.0", "method": CHANGED, "params": params}),
+                                }),
+                            },
                             Seen::Hidden => None,
                             Seen::Retry => {
                                 // Not past this event: read it again.
@@ -448,9 +478,83 @@ pub async fn pump(
             }
             watch.advance(generation, e.position.next());
         }
+        if held.end.is_some_and(|end| batch.next > end) && !held.send(&queue).await {
+            return;
+        }
         let to = batch.next.max(from);
         watch.advance(generation, to);
         view_at = Some(to);
+    }
+}
+
+/// The changes a session is shown of the append the pump is reading,
+/// held until it reads past the append's end. Each then names the last
+/// of them as its `append` (083), so an event of the append the
+/// principal is not told of, such as a firing whose condition reads a
+/// field masked from it, moves no mark it is told.
+#[derive(Default)]
+struct Held {
+    /// The subscription the changes were made for.
+    generation: u64,
+    /// The end of the append, while a change of it is held.
+    end: Option<Position>,
+    /// Each change's position and its notification's parameters, or null
+    /// for a `tools/list_changed` between them.
+    shown: Vec<(Position, Value)>,
+}
+
+impl Held {
+    /// The marker of a `tools/list_changed` among the changes.
+    const TOOLS: Value = Value::Null;
+
+    /// Queue the held `tools/list_changed`, dropping the changes.
+    async fn send_tools(&mut self, queue: &mpsc::Sender<Queued>) -> bool {
+        let tools = self.shown.iter().filter(|(_, p)| *p == Self::TOOLS);
+        for _ in tools {
+            let message = json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
+            if queue
+                .send(Queued {
+                    generation: None,
+                    message,
+                })
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Queue the held changes; false when the queue is gone.
+    async fn send(&mut self, queue: &mpsc::Sender<Queued>) -> bool {
+        self.end = None;
+        let last = self.shown.iter().rfind(|(_, p)| !p.is_null());
+        let last = last.map(|(at, _)| at.0);
+        for (_, mut params) in std::mem::take(&mut self.shown) {
+            let (generation, message) = if params.is_null() {
+                let message =
+                    json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
+                (None, message)
+            } else {
+                if let Some(p) = params.as_object_mut() {
+                    p.insert("append".into(), json!(last));
+                }
+                let message = json!({"jsonrpc": "2.0", "method": CHANGED, "params": params});
+                (Some(self.generation), message)
+            };
+            if queue
+                .send(Queued {
+                    generation,
+                    message,
+                })
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -512,6 +616,9 @@ struct View<'a> {
 struct Shown {
     fields: Vec<String>,
     initial: Vec<String>,
+    /// Each field a hiding lowers on some records, with the field and
+    /// values of each hiding that does.
+    hidden: BTreeMap<String, Vec<(lakelands_api::FieldName, BTreeSet<String>)>>,
 }
 
 impl<'a> View<'a> {
@@ -545,14 +652,17 @@ impl<'a> View<'a> {
             EventBody::RecordUpserted { made: true, .. }
                 | EventBody::RecordIngested { made: true, .. }
         );
+        // A box holds the members it seals out of the patch (format 20).
+        let boxed = (e.sealed.iter())
+            .filter(|s| s.boxed.is_some())
+            .flat_map(|s| s.fields.iter().map(|f| f.to_string()));
         let (ty, key, mut fields, read_at) = match &e.body {
             EventBody::RecordUpserted { ty, key, patch, .. }
-            | EventBody::RecordIngested { ty, key, patch, .. } => (
-                ty,
-                key,
-                Some(patch.keys().map(|k| k.to_string()).collect::<Vec<_>>()),
-                at,
-            ),
+            | EventBody::RecordIngested { ty, key, patch, .. } => {
+                let mut named: Vec<_> = patch.keys().map(|k| k.to_string()).chain(boxed).collect();
+                named.sort();
+                (ty, key, Some(named), at)
+            }
             EventBody::RecordRetired { ty, key, .. } => {
                 (ty, key, None, Position(at.0.saturating_sub(1)))
             }
@@ -608,6 +718,10 @@ impl<'a> View<'a> {
         if !setting && let Err(seen) = got {
             return seen;
         }
+        let hides = (self.who.grants.types.values()).any(|g| !g.hide_where.is_empty());
+        let now = (hides && !setting)
+            .then(|| got.as_ref().ok().cloned())
+            .flatten();
         // A setting's write as its principal is told the record before it
         // and after: what it is not told alone is not told, and a record
         // it is no longer told is told as retired (063).
@@ -671,8 +785,41 @@ impl<'a> View<'a> {
                     changed.sort();
                     changed.dedup();
                 }
-                let shown = shown.fields;
-                let kept: Vec<String> = changed.into_iter().filter(|f| shown.contains(f)).collect();
+                let mut kept: Vec<String> = changed
+                    .into_iter()
+                    .filter(|f| shown.fields.contains(f))
+                    .collect();
+                // A field hidden on the record before the write or after it
+                // is not told changed (006).
+                if hides && kept.iter().any(|f| shown.hidden.contains_key(f)) {
+                    let was = match at.0.checked_sub(1) {
+                        Some(p) => self.told(ty, key, Position(p)).await,
+                        None => Ok(None),
+                    };
+                    let was = match was {
+                        Ok(was) => was,
+                        Err(seen) => return seen,
+                    };
+                    let selects =
+                        |r: &Record, g: &lakelands_api::FieldName, v: &BTreeSet<String>| {
+                            r.fields
+                                .get(g)
+                                .and_then(Value::as_str)
+                                .is_some_and(|s| v.contains(s))
+                        };
+                    let hidden = |f: &String| {
+                        let on = |r: &Record| {
+                            shown
+                                .hidden
+                                .get(f)
+                                .into_iter()
+                                .flatten()
+                                .any(|(g, v)| selects(r, g, v))
+                        };
+                        was.as_ref().is_some_and(on) || now.as_ref().is_some_and(on)
+                    };
+                    kept.retain(|f| !hidden(f));
+                }
                 if kept.is_empty() {
                     return Seen::Hidden;
                 }
@@ -730,22 +877,25 @@ impl<'a> View<'a> {
             .map_err(|e| failed(&e))?;
         let appears = d.data.fields.iter().filter(|f| f.access.appears());
         let name = |f: &lakelands_api::describe::FieldDescription| f.name.to_string();
+        let hidden = d.data.fields.iter().filter(|f| !f.hidden_where.is_empty());
         let s = Shown {
             fields: appears.clone().map(name).collect(),
             initial: appears.filter(|f| f.initial.is_some()).map(name).collect(),
+            hidden: hidden.map(|f| (name(f), f.hidden_where.clone())).collect(),
         };
         self.shown.insert(ty.clone(), s.clone());
         Ok(s)
     }
 
     /// Whether the principal reads every field of `ty` in full at `at`,
-    /// as the host sees the type: none hidden, none masked.
+    /// as the host sees the type: none hidden, none masked, none hidden on
+    /// some records.
     async fn whole(&mut self, ty: &TypeName, at: Position) -> Result<bool, Seen> {
         if let Some(w) = self.whole.get(ty) {
             return Ok(*w);
         }
-        // A setting may be told narrowed, or not at all, to one from whom
-        // something is held, so a condition over it is never its (063).
+        // A setting may be withheld from one from whom something is held,
+        // so a condition over it is never its (063).
         if ty.as_str() == SETTING_TYPE && !self.who.grants.reads_everything() {
             self.whole.insert(ty.clone(), false);
             return Ok(false);
@@ -764,7 +914,9 @@ impl<'a> View<'a> {
             .await
             .map_err(|e| failed(&e))?;
         let reads = |n: &lakelands_api::FieldName| {
-            (mine.data.fields.iter()).any(|f| &f.name == n && f.access.reads())
+            let read = |f: &&lakelands_api::describe::FieldDescription| f.access.reads();
+            let whole = |f: &&lakelands_api::describe::FieldDescription| f.hidden_where.is_empty();
+            (mine.data.fields.iter()).any(|f| &f.name == n && read(&f) && whole(&f))
         };
         let w = d.data.fields.iter().all(|f| reads(&f.name));
         self.whole.insert(ty.clone(), w);

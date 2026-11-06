@@ -63,7 +63,10 @@ impl Kept {
         };
         let lake = Lake::open(&Location::memory("kept"), seams, OpenMode::Create);
         let lake = Arc::new(lake.expect("the lake opens"));
-        let store = Store { lake: lake.clone() };
+        let store = Store {
+            lake: lake.clone(),
+            owns: false,
+        };
         let cat = store.catalog(WriteContext::default());
         let who = |id: &str, grants: Grants| Principal {
             kind: PrincipalKind::Human,
@@ -110,6 +113,9 @@ impl Kept {
             key: key.as_str().into(),
             fields: serde_json::from_value(json!({"site": site, "value": value})).expect("a patch"),
             seen_at: None,
+            delivery: None,
+            resubmits: None,
+            line: None,
         };
         let records = records.into_iter().map(reading).collect();
         let meter = lakelands_api::SourceId::from("meter");
@@ -740,13 +746,14 @@ async fn not_folded(bodies: &[(Value, &str)]) {
         let rest = |t: &Kept| format!("{:?} {:?}", t.state("book"), t.lake.renames(None));
         let seen = [t.same("book", "").await, t.same("above", "").await];
         let before = rest(&t);
-        let folded = {
-            let mut w = t.lake.writer();
-            let body = serde_json::from_value(body.clone()).expect("an event");
-            let draft = crate::log::Draft::system(t.lake.clock(&mut w), body);
-            let folded = t.lake.append(&mut w, vec![draft]);
-            folded.expect_err("not folded").to_string()
-        };
+        let body = serde_json::from_value(body.clone()).expect("an event");
+        let folded = crate::exec::write(&t.lake, move |lake| {
+            let mut w = lake.writer();
+            let draft = crate::log::Draft::system(lake.clock(&mut w), body);
+            let folded = lake.append(&mut w, vec![draft]);
+            Ok(folded.expect_err("not folded").to_string())
+        });
+        let folded = folded.await.expect("its turn");
         let own = &t.owner;
         let now = [t.read(own, "book").await, t.read(own, "above").await];
         assert_eq!((now, rest(&t)), (seen, before), "{what}: as it was");
@@ -972,12 +979,13 @@ async fn a_value_rename_that_names_other_types_is_not_folded() {
         let body = json!({"kind": "value_type_migrated", "renames": [["k", "j"]],
                           "report_id": "r", "version": 2, "types": types,
                           "declaration": {"name": "kinds", "kind": "text", "one_of": ["j"]}});
-        let folded = {
-            let mut w = t.lake.writer();
-            let body = serde_json::from_value(body).expect("an event");
-            let draft = crate::log::Draft::system(t.lake.clock(&mut w), body);
-            t.lake.append(&mut w, vec![draft]).map(drop)
-        };
+        let body = serde_json::from_value(body).expect("an event");
+        let folded = crate::exec::write(&t.lake, move |lake| {
+            let mut w = lake.writer();
+            let draft = crate::log::Draft::system(lake.clock(&mut w), body);
+            Ok(lake.append(&mut w, vec![draft]).map(drop))
+        });
+        let folded = folded.await.expect("its turn");
         let now = t.read(&t.owner, "line").await;
         match folds {
             true => assert!(folded.is_ok() && now.contains(r#"{"kind":"j"}"#), "{now}"),
@@ -991,4 +999,483 @@ async fn a_value_rename_that_names_other_types_is_not_folded() {
             }
         }
     }
+}
+
+/// A kept view a zone cuts, whose state names another copy of the
+/// time-zone database than the binary's, is read as none until its writer
+/// folds it again: it answers as its twin computes, though its kept
+/// records say otherwise, and `describe_type` says it is not kept here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zoned_view_cut_under_another_copy_computes_until_it_is_folded_again() {
+    let day = |name: &str| {
+        let day = json!({"name": "day", "expr": "date_bucket(at, 'day', 'Europe/Berlin')"});
+        json!({"declare": "type", "name": name, "key": ["day"], "fields": [
+            {"name": "day", "type": {"kind": "date_time"}},
+            {"name": "s", "type": {"kind": "number"}}],
+            "view": {"source": "reading", "group_by": [day],
+                     "measures": [{"name": "s", "expr": "sum(v)"}]}})
+    };
+    let reading = json!({"declare": "type", "name": "reading", "fields": [
+        {"name": "at", "type": {"kind": "date_time"}},
+        {"name": "v", "type": {"kind": "number"}}]});
+    let t = Kept::new(vec![reading, day("local"), day("local_twin")]).await;
+    t.set("view_kept.local", json!(true)).await;
+    for (key, at, v) in [
+        ("r1", "2030-03-30T22:30:00Z", 1),
+        ("r2", "2030-03-31T12:00:00Z", 2),
+    ] {
+        t.put("reading", key, json!({"at": at, "v": v})).await;
+    }
+    t.same("local", "as made").await;
+    assert_eq!(t.kept("local").await, r#"{"state":"kept"}"#);
+    let engine = &t.lake.engine;
+    let (view, head) = (engine.view(None).expect("the head"), t.lake.head());
+    let name = TypeName::from("local");
+    let mut state = state(view.as_ref(), &name)
+        .expect("its state")
+        .expect("kept");
+    assert_eq!(
+        state.tzdb.as_deref(),
+        Some(zone::copy()),
+        "the copy that cut it"
+    );
+    state.tzdb = Some("2000a".into());
+    let scan = lakelands_api::engine::Scan {
+        limit: u32::MAX,
+        restricted: true,
+        ..Default::default()
+    };
+    let records = view.scan(&lakelands_api::seam::kept_name(&name), &scan);
+    let p = engine.projection();
+    p.begin().expect("a batch");
+    for mut r in records.expect("its kept records") {
+        let s = r
+            .fields
+            .get("s")
+            .and_then(Value::as_f64)
+            .unwrap_or_default();
+        r.fields.insert("s".into(), json!(s + 1000.0));
+        p.put_record(&r).expect("a record given another sum");
+    }
+    let input = crate::backed::digest(&Value::from("local"));
+    p.put_output(KEPT, &input, &json!(state), head)
+        .expect("the state marked");
+    p.commit(head).expect("committed");
+    t.same("local", "cut under another copy").await;
+    let said = t.kept("local").await;
+    assert!(said.contains("not_kept_here"), "{said}");
+}
+
+/// A zoned view's build records the copy of the time-zone database that
+/// cuts it, as a whole view's does: a writer that opens under another copy
+/// finds the build cut elsewhere, ends it, and folds the view again under
+/// the copy in force, rather than fold its parts under two copies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zoned_view_building_under_another_copy_is_folded_again() {
+    let day = |name: &str| {
+        let day = json!({"name": "day", "expr": "date_bucket(at, 'day', 'Europe/Berlin')"});
+        json!({"declare": "type", "name": name, "key": ["day"], "fields": [
+            {"name": "day", "type": {"kind": "date_time"}},
+            {"name": "s", "type": {"kind": "number"}}],
+            "view": {"source": "reading", "group_by": [day],
+                     "measures": [{"name": "s", "expr": "sum(v)"}]}})
+    };
+    let reading = json!({"declare": "type", "name": "reading", "fields": [
+        {"name": "at", "type": {"kind": "date_time"}},
+        {"name": "v", "type": {"kind": "number"}}]});
+    let t = Kept::new(vec![reading, day("local"), day("local_twin")]).await;
+    for (key, at, v) in [
+        ("r1", "2030-03-30T22:30:00Z", 1),
+        ("r2", "2030-03-31T12:00:00Z", 2),
+        ("r3", "2030-04-01T12:00:00Z", 3),
+    ] {
+        t.put("reading", key, json!({"at": at, "v": v})).await;
+    }
+    appended(
+        &t.lake,
+        json!({"kind": "record_upserted", "type": "sys.setting", "key": "view_kept.local",
+               "version": 1, "patch": {"key": "view_kept.local", "value": true}, "made": true}),
+    )
+    .await;
+    let name = TypeName::from("local");
+    let engine = &t.lake.engine;
+    let (view, head) = (engine.view(None).expect("the head"), t.lake.head());
+    let held = state(view.as_ref(), &name)
+        .expect("its state")
+        .expect("a state");
+    assert_eq!(
+        held.tzdb.as_deref(),
+        Some(zone::copy()),
+        "the copy the build is cut under"
+    );
+    assert_eq!(
+        marked(&t, "local"),
+        (Some(vec![None]), false),
+        "the build is marked, no cursor reached"
+    );
+    assert!(part(&t.lake, &name, 1).await.is_some(), "one part folded");
+    assert_eq!(
+        marked(&t, "local"),
+        (Some(vec![Some(RecordKey::from("r1"))]), false),
+        "the cursor the part reached"
+    );
+    // The writer opens under another copy: the state names a copy that is
+    // not the one in force, as a writer that read another database's would.
+    let mut state = state(view.as_ref(), &name)
+        .expect("its state")
+        .expect("a state");
+    state.tzdb = Some("2000a".into());
+    let p = engine.projection();
+    p.begin().expect("a batch");
+    let input = crate::backed::digest(&Value::from("local"));
+    p.put_output(KEPT, &input, &json!(state), head)
+        .expect("the state marked");
+    p.commit(head).expect("committed");
+    appended(
+        &t.lake,
+        json!({"kind": "lease_taken", "fence": 2, "holder": "a writer"}),
+    )
+    .await;
+    assert_eq!(
+        marked(&t, "local"),
+        (None, false),
+        "the build cut elsewhere ends; the view is folded again"
+    );
+    assert_eq!(t.state("local"), WHOLE, "and it is whole");
+    t.same("local", "folded again under the copy in force")
+        .await;
+    assert!(t.records("local") > 0, "its groups are the kept ones");
+}
+
+/// Append `body` as the fold of an event no door wrote: a setting in
+/// force with no build sent for it, or a retirement no drop follows.
+async fn appended(lake: &Arc<Lake>, body: Value) {
+    let body = serde_json::from_value(body).expect("an event");
+    let lake = lake.clone();
+    crate::exec::write(&lake, move |t| {
+        let mut w = t.writer();
+        let draft = crate::log::Draft::system(t.clock(&mut w), body);
+        t.append(&mut w, vec![draft]).map(drop)
+    })
+    .await
+    .expect("its turn");
+}
+
+/// One part of `view`'s build at the head, in a transaction of its own:
+/// the state the last left is read from the projection, as a runner that
+/// opens the lake again finds it.
+async fn part(lake: &Arc<Lake>, view: &TypeName, limit: u32) -> Option<RecordKey> {
+    let (lake, view) = (lake.clone(), view.clone());
+    crate::exec::write(&lake, move |t| {
+        let projection = t.engine.projection();
+        projection.begin()?;
+        let w = t.writer();
+        let head = w.tip.as_ref().map_or(Position::GENESIS, |(p, _)| *p);
+        let filled = (|| {
+            let view_at = t.engine.view(None)?;
+            let at = At {
+                view: view_at.as_ref(),
+                projection: Some(projection),
+                ontology: &w.ontology,
+                settings: &w.settings,
+            };
+            let mut staged = Staged::default();
+            match fill(&at, &mut staged, &view, limit, head)? {
+                Some(last) => Ok(Some(last)),
+                None => keep(&at, &mut staged, &view, head).map(|_| None),
+            }
+        })();
+        match filled {
+            Ok(last) => projection.commit(head).map(|()| last),
+            Err(e) => {
+                projection.rollback();
+                Err(e)
+            }
+        }
+    })
+    .await
+    .expect("its turn")
+}
+
+/// One part of `view`'s take-back at the head, in a transaction of its
+/// own and from no cursor: the records a part ended are no scan's, so a
+/// runner that stopped goes on.
+async fn unpart(lake: &Arc<Lake>, view: &TypeName, limit: u32) -> Option<RecordKey> {
+    let (lake, view) = (lake.clone(), view.clone());
+    crate::exec::write(&lake, move |t| {
+        let projection = t.engine.projection();
+        projection.begin()?;
+        let w = t.writer();
+        let head = w.tip.as_ref().map_or(Position::GENESIS, |(p, _)| *p);
+        let dropped = (|| {
+            let view_at = t.engine.view(None)?;
+            let at = At {
+                view: view_at.as_ref(),
+                projection: Some(projection),
+                ontology: &w.ontology,
+                settings: &w.settings,
+            };
+            let mut staged = Staged::default();
+            drop_chunk(&at, &mut staged, &view, limit, None, head)
+        })();
+        match dropped {
+            Ok(last) => projection.commit(head).map(|()| last),
+            Err(e) => {
+                projection.rollback();
+                Err(e)
+            }
+        }
+    })
+    .await
+    .expect("its turn")
+}
+
+/// What the fold's state says of `view`: the cursors its build has
+/// reached, if it builds, and whether a take-back is clearing it.
+fn marked(t: &Kept, view: &str) -> (Option<Vec<Option<RecordKey>>>, bool) {
+    let at = t.lake.engine.view(None).expect("a view of the head");
+    let held = state(at.as_ref(), &view.into())
+        .expect("reading the state")
+        .expect("a state");
+    let cursors = held.building.as_ref().map(|b| b.cursors.clone());
+    (cursors, held.dropping)
+}
+
+/// A build the road stopped between two parts goes on from the cursor the
+/// projection kept, not from 0: the part after the stop is a transaction
+/// of its own and folds no member twice, and `describe_type` says the view
+/// `building` until its `Keep`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kept_build_goes_on_from_the_cursor_a_restart_finds() {
+    let mut declarations = vec![stored("line", &[("kind", "text"), ("net", "decimal")])];
+    let measures = [("c", "count()"), ("total", "sum(net)")];
+    declarations.extend(views("book", "line", &["kind"], json!({}), &measures));
+    let t = Kept::new(declarations).await;
+    for i in 1..=6 {
+        let kind = if i <= 3 { "a" } else { "b" };
+        t.put(
+            "line",
+            &format!("r{i}"),
+            json!({"kind": kind, "net": i.to_string()}),
+        )
+        .await;
+    }
+    // The setting's event with no door behind it: the build is owed, and
+    // no runner has taken a part of it.
+    appended(
+        &t.lake,
+        json!({"kind": "record_upserted", "type": "sys.setting", "key": "view_kept.book",
+               "version": 1, "patch": {"key": "view_kept.book", "value": true}, "made": true}),
+    )
+    .await;
+    assert_eq!(
+        marked(&t, "book"),
+        (Some(vec![None]), false),
+        "the mark holds a cursor for each source, none reached"
+    );
+    assert_eq!(t.records("book"), 0, "no part has folded a record");
+    let said = t.kept("book").await;
+    assert!(said.contains("building"), "{said}");
+    // Two records a part: the first part reaches `r2`, and the state says
+    // so; the part after it, another transaction, reaches `r4` and not
+    // `r2` again.
+    let view = TypeName::from("book");
+    assert_eq!(part(&t.lake, &view, 2).await, Some(RecordKey::from("r2")));
+    assert_eq!(
+        marked(&t, "book"),
+        (Some(vec![Some(RecordKey::from("r2"))]), false),
+        "the cursor the part reached"
+    );
+    assert_eq!(part(&t.lake, &view, 2).await, Some(RecordKey::from("r4")));
+    while part(&t.lake, &view, 2).await.is_some() {}
+    assert_eq!(t.state("book"), WHOLE, "the build is kept");
+    assert_eq!(t.kept("book").await, r#"{"state":"kept"}"#);
+    // Each member counted once: the kept records answer the twin's
+    // computation, whose counts and sums a fold from 0 would double.
+    t.same("book", "built in parts across a stop").await;
+    assert_eq!(t.records("book"), 2, "one record for each group");
+}
+
+/// An outer view's setting appended before its inner view's: when the
+/// inner's build is marked, the outer starts where a build is marked, not
+/// made whole over the part the inner has not reached, and its own parts
+/// fold once the inner is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_view_set_before_its_inner_view_starts_where_the_inner_builds() {
+    let mut declarations = vec![stored("line", &[("kind", "text"), ("net", "decimal")])];
+    let measures = [("c", "count()"), ("total", "sum(net)")];
+    declarations.extend(views("book", "line", &["kind"], json!({}), &measures));
+    declarations.extend(views(
+        "ledger",
+        "book",
+        &[],
+        json!({}),
+        &[("total", "sum(total)")],
+    ));
+    let t = Kept::new(declarations).await;
+    for i in 1..=4 {
+        t.put(
+            "line",
+            &format!("r{i}"),
+            json!({"kind": "a", "net": i.to_string()}),
+        )
+        .await;
+    }
+    appended(
+        &t.lake,
+        json!({"kind": "record_upserted", "type": "sys.setting", "key": "view_kept.ledger",
+               "version": 1, "patch": {"key": "view_kept.ledger", "value": true}, "made": true}),
+    )
+    .await;
+    appended(
+        &t.lake,
+        json!({"kind": "record_upserted", "type": "sys.setting", "key": "view_kept.book",
+               "version": 1, "patch": {"key": "view_kept.book", "value": true}, "made": true}),
+    )
+    .await;
+    assert!(!t.state("book").0, "the inner view's build is marked");
+    assert_eq!(
+        marked(&t, "ledger").0,
+        Some(vec![None]),
+        "the outer view's build is marked, not made over the inner's part"
+    );
+    assert_eq!(
+        t.records("ledger"),
+        0,
+        "no part of the outer view has folded"
+    );
+    let book = TypeName::from("book");
+    while part(&t.lake, &book, 2).await.is_some() {}
+    assert_eq!(t.state("book"), WHOLE, "the inner view is kept");
+    let ledger = TypeName::from("ledger");
+    while part(&t.lake, &ledger, 2).await.is_some() {}
+    assert_eq!(t.state("ledger"), WHOLE, "the outer view is kept after it");
+    t.same("ledger", "built over its inner view").await;
+}
+
+/// The door that builds a view also builds the views that read it, after
+/// it: a view declared before the view it merges is sent after that one,
+/// so the door answers with both kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merge_view_is_built_after_the_view_it_merges_by_the_door() {
+    let mut declarations = vec![stored("line", &[("kind", "text"), ("net", "decimal")])];
+    declarations.extend(views(
+        "book",
+        "line",
+        &["kind"],
+        json!({}),
+        &[("c", "count()")],
+    ));
+    declarations.extend(views("inner", "book", &[], json!({}), &[("c", "sum(c)")]));
+    let merge = json!({"merge": [{"source": "inner", "group_by": [],
+        "measures": [{"name": "d", "expr": "sum(c)"}]}]});
+    let mut alpha = views("alpha", "book", &[], merge, &[("c", "sum(c)")]);
+    for v in &mut alpha {
+        let field = json!({"name": "d", "type": {"kind": "decimal"}});
+        v["fields"].as_array_mut().expect("fields").push(field);
+    }
+    declarations.extend(alpha);
+    let t = Kept::new(declarations).await;
+    t.put("line", "a", json!({"kind": "k", "net": "1"})).await;
+    t.set("view_kept.alpha", json!(true)).await;
+    t.set("view_kept.inner", json!(true)).await;
+    t.set("view_kept.book", json!(true)).await;
+    assert_eq!(t.state("inner"), WHOLE, "the view the merge reads is built");
+    assert_eq!(
+        t.state("alpha"),
+        WHOLE,
+        "the merge view is sent after the view it merges, so the door answers with it kept"
+    );
+    t.same("alpha", "merged with a view built beside it").await;
+}
+
+/// One door keeps a view two views away as well: nothing is sent before a
+/// view it reads, so a view declared before, and several hops from, the
+/// view it merges is still built by the door that builds that one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_view_two_views_away_is_built_by_the_same_door() {
+    let mut declarations = vec![stored("line", &[("kind", "text"), ("net", "decimal")])];
+    declarations.extend(views(
+        "book",
+        "line",
+        &["kind"],
+        json!({}),
+        &[("c", "count()")],
+    ));
+    let merge = json!({"merge": [{"source": "deep", "group_by": [],
+        "measures": [{"name": "d", "expr": "sum(c)"}]}]});
+    let mut alpha = views("alpha", "book", &[], merge, &[("c", "sum(c)")]);
+    for v in &mut alpha {
+        let field = json!({"name": "d", "type": {"kind": "decimal"}});
+        v["fields"].as_array_mut().expect("fields").push(field);
+    }
+    declarations.extend(views("mid", "book", &[], json!({}), &[("c", "sum(c)")]));
+    declarations.extend(views("deep", "mid", &[], json!({}), &[("c", "sum(c)")]));
+    declarations.extend(alpha);
+    let t = Kept::new(declarations).await;
+    t.put("line", "a", json!({"kind": "k", "net": "1"})).await;
+    t.set("view_kept.alpha", json!(true)).await;
+    t.set("view_kept.deep", json!(true)).await;
+    t.set("view_kept.mid", json!(true)).await;
+    t.set("view_kept.book", json!(true)).await;
+    assert_eq!(
+        t.state("mid"),
+        WHOLE,
+        "the view nearest the one built is kept"
+    );
+    assert_eq!(t.state("deep"), WHOLE, "the view two hops out is kept");
+    assert_eq!(
+        t.state("alpha"),
+        WHOLE,
+        "the door that builds the view nearest keeps the one two views away beside it"
+    );
+    t.same("alpha", "merged with a view two views away").await;
+}
+
+/// A setting taken back marks its view `dropping`, and the records go a
+/// key range a turn: no read looks at them meanwhile, and the last part,
+/// answering none, ends the order and the mark.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kept_view_is_taken_back_in_chunks() {
+    let mut declarations = vec![stored("line", &[("kind", "text"), ("net", "decimal")])];
+    let measures = [("c", "count()"), ("total", "sum(net)")];
+    declarations.extend(views("book", "line", &["kind"], json!({}), &measures));
+    let t = Kept::new(declarations).await;
+    t.put("line", "a", json!({"kind": "a", "net": "1"})).await;
+    t.put("line", "b", json!({"kind": "b", "net": "2"})).await;
+    t.set("view_kept.book", json!(true)).await;
+    assert_eq!((t.state("book"), t.records("book")), (WHOLE, 2));
+    // The retirement with no door behind it: the mark says dropping, and
+    // the records are still there for the parts to end.
+    appended(
+        &t.lake,
+        json!({"kind": "record_retired", "type": "sys.setting", "key": "view_kept.book",
+               "version": 2}),
+    )
+    .await;
+    assert_eq!(
+        marked(&t, "book"),
+        (None, true),
+        "the take-back marks the view, and it builds no more"
+    );
+    assert_eq!(t.records("book"), 2, "no chunk has ended a record");
+    t.same("book", "beside its take-back").await;
+    let view = TypeName::from("book");
+    assert!(unpart(&t.lake, &view, 1).await.is_some());
+    assert_eq!(
+        (t.records("book"), marked(&t, "book").1),
+        (1, true),
+        "one chunk, one record less, and the mark stays"
+    );
+    t.same("book", "between two chunks").await;
+    assert!(unpart(&t.lake, &view, 1).await.is_some());
+    assert_eq!(t.records("book"), 0);
+    assert_eq!(
+        unpart(&t.lake, &view, 1).await,
+        None,
+        "the last part ends nothing and clears the mark"
+    );
+    assert_eq!(marked(&t, "book"), (None, false));
+    assert_eq!(t.state("book"), (false, [0; 3]));
+    t.same("book", "taken back").await;
 }

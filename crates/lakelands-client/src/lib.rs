@@ -27,13 +27,20 @@
 //! - **The feed** is the log itself, unmasked, so it is read as the
 //!   configured `feed_key` principal, one that reads everything
 //!   (`docs/decisions/037-the-feed-over-a-network-door.md`).
+//! - **A forwarding handle** ([`ForwardingLake`]) is the other way to
+//!   hold a lake another process writes: it reads the lake's engine
+//!   itself and forwards its writes to the writer as a host, configured by
+//!   [`ForwardConfig`].
 
 #![forbid(unsafe_code)]
 
 mod connect;
 mod doors;
 mod feed;
+mod forward;
 mod wire;
+
+pub use forward::{ForwardConfig, ForwardingLake};
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -43,14 +50,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use lakelands_api::error::{Error, Result};
-use lakelands_api::id::{LakeId, Position, RecordKey, SourceId, TypeName};
+use lakelands_api::id::{Cursor, LakeId, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::Limits;
+use lakelands_api::query::StatementAnswer;
 use lakelands_api::seam::ChangeFeed;
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{
     AgeReport, CompactReport, ForgetReport, PurgeReport, RemoveReport, Selection,
 };
-use lakelands_api::{Catalog, LakeStore, Verification, WriteContext};
+use lakelands_api::{Catalog, LakeStore, Params, Principal, ReadAt, Verification, WriteContext};
 
 use crate::wire::Wire;
 
@@ -162,6 +170,43 @@ impl RemoteLake {
         })
     }
 
+    /// A statement of the openCypher subset, as `who`, over the REST door
+    /// (`POST …/cypher`): translated there into one pattern and read as
+    /// [`Catalog::query`] reads it, at `at` and from `cursor`, or, for a
+    /// statement that begins with `EXPLAIN`, answered with that pattern;
+    /// a write is the one door call it translates into, a `MATCH … SET`,
+    /// `REMOVE` or `DELETE` answered with its plan. Its parameters travel
+    /// beside it, never in its text.
+    pub async fn cypher(
+        &self,
+        who: &Principal,
+        statement: &str,
+        params: &Params,
+        at: ReadAt,
+        cursor: Option<&Cursor>,
+    ) -> Result<StatementAnswer> {
+        let doors = doors::RemoteCatalog::new(self.wire.clone());
+        doors.cypher(who, statement, params, at, cursor, None).await
+    }
+
+    /// A `MATCH … SET`, `REMOVE` or `DELETE` of the openCypher subset, as
+    /// `who`, over the same door, made only against the plan `plan_id`:
+    /// the statement sent through [`cypher`](RemoteLake::cypher) answers
+    /// that plan, and this enacts it, refused `plan_stale` where it moved.
+    pub async fn cypher_enact(
+        &self,
+        who: &Principal,
+        statement: &str,
+        params: &Params,
+        plan_id: &str,
+    ) -> Result<StatementAnswer> {
+        let doors = doors::RemoteCatalog::new(self.wire.clone());
+        let at = ReadAt::default();
+        doors
+            .cypher(who, statement, params, at, None, Some(plan_id))
+            .await
+    }
+
     /// As [`connect`](RemoteLake::connect), with another silence bound
     /// for the feed, so a test need not wait for the real one.
     #[cfg(test)]
@@ -254,6 +299,10 @@ impl LakeStore for RemoteLake {
 
     async fn age(&self, _today: Timestamp) -> Result<AgeReport> {
         Err(host_only("age"))
+    }
+
+    async fn zone(&self) -> Result<String> {
+        Err(host_only("zone()"))
     }
 
     async fn purge_source(

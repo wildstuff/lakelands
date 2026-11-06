@@ -28,7 +28,7 @@
 //!    beside the server, imported into a fresh lake, read alike at the
 //!    head and as of earlier positions;
 //! 4. the model's sums: `debtor` and `cash_position` against the
-//!    driver's own fold, the set `overdue` against its filter;
+//!    driver's own fold, `days_overdue` against its fold;
 //! 5. the feed: a gap or a repeat in its positions across the kills;
 //! 6. a refusal the driver did not ask for;
 //! 7. a reader with `only` on one partner and without `restricted`
@@ -269,8 +269,8 @@ impl Book {
         let mut book = Book {
             rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
             day: 0,
-            // The run's days end at today, so that `days_overdue` and the
-            // set `overdue`, which read today, read the run's calendar.
+            // The run's days end at today, so that `days_overdue`,
+            // which reads today, reads the run's calendar.
             start: today() - days,
             partners: Vec::new(),
             limits: BTreeMap::new(),
@@ -394,9 +394,12 @@ fn location(plan: &Plan, root: &Path, tag: &str) -> Location {
                     ..PgTls::default()
                 },
                 tuning: PgTuning::default(),
+                tablespaces: Default::default(),
             },
             key: None,
             limits: Limits::default(),
+            writers: Vec::new(),
+            zone: None,
         },
     }
 }
@@ -431,6 +434,10 @@ fn prepare(plan: &Plan, root: &Path, at: &Location) -> Result<(), String> {
         session_idle_secs: 1800,
         feed_poll_millis: 250,
         feed_floor_millis: 25,
+        workers: None,
+        metrics: None,
+        hosts: Vec::new(),
+        bounds: Default::default(),
     })
     .unwrap();
     std::fs::write(&file, serde_json::to_vec_pretty(&config).unwrap()).map_err(|e| e.to_string())
@@ -555,7 +562,8 @@ impl Server {
 
     /// The server's resident memory in KiB: the whole, what is its own
     /// (`RssAnon`: the heap, the engine's page cache) and what maps a file
-    /// (`RssFile`: the binary, a projection read through `mmap`).
+    /// (`RssFile`: the binary, a projection read through `mmap`). Read from
+    /// `/proc`, so on Linux only: elsewhere each field is null.
     fn memory(&self) -> serde_json::Value {
         let status = std::fs::read_to_string(format!("/proc/{}/status", self.pid));
         let status = status.unwrap_or_default();
@@ -745,6 +753,9 @@ impl Desk {
                         key: key.as_str().into(),
                         fields: serde_json::from_value(fields.clone()).unwrap(),
                         seen_at: None,
+                        delivery: None,
+                        resubmits: None,
+                        line: None,
                     })
                     .collect();
                 let s: lakelands_api::SourceStream = Box::pin(Stream(records.into_iter()));
@@ -1204,7 +1215,7 @@ async fn sums_hold(desk: &Desk, book: &Book) -> Result<(), String> {
         ));
     }
     let find = Find {
-        filter: Some("in_set('overdue')".into()),
+        filter: Some("direction = 'outbound' and status = 'open' and days_overdue > 30".into()),
         limit: Some(1000),
         ..Find::default()
     };
@@ -1225,7 +1236,7 @@ async fn sums_hold(desk: &Desk, book: &Book) -> Result<(), String> {
         .collect();
     if got.len() < 1000 && got != want {
         return Err(format!(
-            "the set `overdue` holds {} invoices, its filter selects {}",
+            "`days_overdue > 30` finds {} invoices, the driver's fold selects {}",
             got.len(),
             want.len()
         ));

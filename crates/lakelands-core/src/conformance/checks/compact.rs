@@ -25,26 +25,15 @@
 //! - and a rebuild, which frees the most.
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
-use lakelands_api::ontology::{FieldDecl, StorageKind, ValueTypeDecl};
-use lakelands_api::query::{Projection, Search, SearchMode, Walk};
-use lakelands_api::write::{CompactReport, ProposalFilter, ProposedWrite};
-use lakelands_api::{
-    Catalog, Find, Found, IdempotencyKey, LakeStore, Outcome, Position, Principal, RecordKey,
-    TypeName, WriteOpts,
-};
+use lakelands_api::write::CompactReport;
 use serde::Serialize;
-use serde_json::json;
 
 use super::rekey;
 use crate::conformance::backing::{EMBED_MODEL, made, plug, unplug};
-use crate::conformance::fixture::{
-    Caller, Lake, Must, embedding, field, get_at, join_all, log_events, partner_totals, patch,
-    pattern, read_at, step, type_decl, upsert,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{get_at, partner_totals, step, upsert};
+use crate::conformance::prelude::*;
 use crate::export;
 
 check!(
@@ -247,28 +236,18 @@ async fn answers(
             }
         }
         let search = Search {
-            ty: TypeName::from("invoice"),
-            mode: SearchMode::lexical("lake note"),
-            k: 20,
-            cursor: None,
-            filter: None,
             with_meta: true,
             at,
-            rerank: None,
+            ..searched("invoice", SearchMode::lexical("lake note"), 20)
         };
         out.push((
             format!("a lexical search at {p}"),
             said(cat.search(own, search).await),
         ));
         let vector = Search {
-            ty: TypeName::from("note"),
-            mode: SearchMode::vector("vec", vec![1.0, 0.0]),
-            k: 20,
-            cursor: None,
-            filter: None,
             with_meta: true,
             at,
-            rerank: None,
+            ..searched("note", SearchMode::vector("vec", vec![1.0, 0.0]), 20)
         };
         out.push((
             format!("a vector search at {p}"),

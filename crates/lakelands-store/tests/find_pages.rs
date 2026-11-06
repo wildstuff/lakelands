@@ -89,6 +89,17 @@ impl ProjectionView for CountingView<'_> {
         self.handed.ones.fetch_add(1, Ordering::SeqCst);
         self.inner.get(ty, key)
     }
+    fn order(&self, name: &TypeName, key: &RecordKey) -> Result<Option<Vec<u8>>> {
+        self.inner.order(name, key)
+    }
+    fn order_page(
+        &self,
+        name: &TypeName,
+        after: Option<&RecordKey>,
+        n: u32,
+    ) -> Result<Vec<(RecordKey, Vec<u8>)>> {
+        self.inner.order_page(name, after, n)
+    }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.handed.gets.fetch_add(1, Ordering::SeqCst);
         if keys.len() == 1 {
@@ -122,6 +133,12 @@ impl ProjectionView for CountingView<'_> {
         self.handed.wholes.fetch_add(1, Ordering::SeqCst);
         self.handed.proposed.fetch_add(all.len(), Ordering::SeqCst);
         Ok(all)
+    }
+    fn quarantined(
+        &self,
+        filter: &lakelands_api::quarantine::QuarantineFilter,
+    ) -> Result<Vec<lakelands_api::quarantine::Quarantined>> {
+        self.inner.quarantined(filter)
     }
     fn proposals_before(
         &self,
@@ -165,6 +182,16 @@ impl ProjectionView for CountingView<'_> {
     ) -> Result<lakelands_api::engine::Matched> {
         self.inner.of_source(source, from, through, limit)
     }
+    fn thinned_acts(&self, ty: &TypeName) -> Result<Vec<lakelands_api::read::ThinnedAct>> {
+        self.inner.thinned_acts(ty)
+    }
+    fn thinned_at(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<lakelands_api::time::Timestamp>> {
+        self.inner.thinned_at(ty, key)
+    }
 }
 
 impl LakeEngine for Counting {
@@ -205,6 +232,9 @@ impl LakeEngine for Counting {
     }
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
         self.inner.segments()
+    }
+    fn active_segment_bytes(&self) -> Option<u64> {
+        self.inner.active_segment_bytes()
     }
     fn projection(&self) -> &dyn ProjectionStore {
         self.inner.projection()

@@ -45,7 +45,9 @@ is.
 
 A date is a midnight. `age` takes a `Timestamp` at UTC midnight, the
 form the aging id already writes the date in; any other time is refused
-as invalid, naming `today`. Aging gains no date type of its own: the
+as invalid, naming `today`. The date is the day of the lake's calendar,
+read in its zone (101): `serve` cuts the host's clock in the zone the
+lake names, and the run takes the date as given. Aging gains no date type of its own: the
 contract holds a storage kind `date` for a field's values (011), and
 `age` takes its date, as `today()` gives one, as a `Timestamp`.
 
@@ -63,6 +65,11 @@ can change after a rule is written: its type or field gone, the field
 no longer written by `upsert`, `from` no longer a value of it. Such a
 rule moves nothing, the report names it with the reason, and the other
 rules run, so one stale rule neither stops the day nor goes unnoticed.
+So is a rule whose `when` reads a setting kept for one type or one
+source, refused at its write since the run judges it once for every
+reader
+(`docs/decisions/063-every-setting-is-in-one-list.md`, extended): one
+written before that refusal is skipped, naming the setting.
 A move the store would refuse for one record leaves that record and is
 counted with the failed guards, for the reason a failed guard does,
 except two refusals, which are counted as refused (below): a constraint
@@ -144,3 +151,5 @@ shape, and every change is a version with its writer.
 - A move a constraint or the set ceiling refuses is counted as refused,
   and listed with its record's key and the refusal, not as a failed
   guard (lakelands#1182).
+- lakelands#1665: the date is the lake's calendar day, read in its zone
+  (101), and the root's fixed `aging.utc_offset` is gone.

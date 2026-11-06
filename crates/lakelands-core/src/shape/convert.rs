@@ -1,9 +1,8 @@
 //! How stored values convert when a migration changes a field's type,
 //! and the preflight that says whether every stored value will.
 //!
-//! A value converts only when nothing is lost: converting it back gives
-//! the same information. The table, over the JSON forms of
-//! `docs/log-format.md` §5 (any pair not listed is lossy):
+//! A value converts only when nothing is lost. The table, over the JSON
+//! forms of `docs/log-format.md` §5 (any pair not listed is lossy):
 //!
 //! | value → target | rule |
 //! |---|---|
@@ -19,25 +18,23 @@
 //! | date → date-time | its midnight |
 //! | anything → json | kept as it is |
 //!
-//! Deliberately lossy: a fractional number into a decimal (a binary
-//! float only approximates the decimal it was written from, and a
-//! decimal promises exactness), a fractional number into anything
-//! integral, a boolean into a number, a date-time with an offset (the
-//! offset is dropped), and any value into a vector or a geometry unless
-//! it already is one.
+//! Deliberately lossy: a fractional number into a decimal (a binary float
+//! only approximates the decimal it was written from), a fractional number
+//! into anything integral, a boolean into a number, a date-time with an
+//! offset, and any value into a vector or a geometry unless it already is
+//! one. `null` stays `null` under every conversion.
 //!
-//! `null` is not a value: it stays `null` under every conversion.
-//!
-//! [`preflight`] runs the table over every stored record of a type
-//! before a migration and reports what it found; [`migrate_record`] is
-//! the same plan applied to one record, which is what the fold does once
-//! the migration is applied. Both read renames from the migration, so a
-//! renamed field's values move to its new name.
+//! [`preflight`] runs the table over every stored record of a type before
+//! a migration and reports what it found; [`migrate_record`] applies the
+//! same plan to one record, as the fold does. Both read renames from the
+//! migration.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::error::{Case, Said};
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl, is_vector_component};
+use lakelands_api::ontology::{
+    Authority, FieldDecl, FieldType, StorageKind, TypeDecl, is_vector_component,
+};
 use lakelands_api::write::{FieldConversion, Migration, MigrationReport};
 use lakelands_api::{FieldName, RecordKey, Timestamp};
 use serde_json::Value;
@@ -55,10 +52,9 @@ pub enum Conversion {
     Lossy,
 }
 
-/// Convert a stored value from one field type to another, by the table
-/// in the module documentation. `from` is the type the value was stored
-/// under: when it has the same storage kind as `to`, the value is kept
-/// unchanged or not at all.
+/// Convert a stored value from one field type to another, by the table in
+/// the module documentation. `from` is the type it was stored under: with
+/// the same storage kind as `to`, the value is kept unchanged or not at all.
 pub fn convert(value: &Value, from: &FieldType, to: &FieldType) -> Conversion {
     if value.is_null() || fits(to, value) {
         return Conversion::Exact(value.clone());
@@ -89,11 +85,9 @@ pub fn convert(value: &Value, from: &FieldType, to: &FieldType) -> Conversion {
 }
 
 /// Whether a (non-null) value is in the JSON form of a field type
-/// (`docs/log-format.md` §5), including a vector's declared length and
-/// the range of a number written as an integer (§1.2): what a field's
-/// type would not take when it is written, it does not take computed.
-/// Value-type constraints are not checked here; they need the value
-/// type's declaration.
+/// (`docs/log-format.md` §5), including a vector's declared length and the
+/// range of an integer (§1.2): what a field would not take written, it does
+/// not take computed. Value-type constraints are not checked here.
 pub fn fits(ty: &FieldType, value: &Value) -> bool {
     if canonical::integer_too_large(value).is_some() {
         return false;
@@ -125,20 +119,19 @@ pub fn fits(ty: &FieldType, value: &Value) -> bool {
 /// Run a migration's conversions over the stored records of the type it
 /// migrates, without changing anything, and report what would happen.
 ///
-/// The report lists every field of the new declaration whose stored
-/// values must pass a check: a field whose type changes, and a field
-/// that becomes required (or is added as required), where a record
-/// without a value counts as not convertible. Up to five record keys per
-/// field name records that would not convert, the five smallest, so the
-/// report does not depend on the order the records arrive in. Values
-/// never appear in the report.
+/// The report lists every field of the new declaration whose stored values
+/// must pass a check: a field whose type changes, and one that becomes
+/// required, where a record without a value counts as not convertible. Up
+/// to the five smallest keys of records that would not convert are named
+/// per field, so the report does not depend on arrival order. Values never
+/// appear in it.
 ///
 /// Fields the new declaration no longer has, and no rename carries, are
 /// listed in `dropped` with the number of records holding a value there.
 ///
 /// `report_id` is the SHA-256 of the report's canonical bytes with
-/// `report_id` set to `""`: any difference in the report is a different
-/// id, so applying a migration by id applies exactly what was shown.
+/// `report_id` set to `""`, so applying a migration by id applies exactly
+/// what was shown.
 pub fn preflight(
     before: &TypeDecl,
     migration: &Migration,
@@ -159,8 +152,7 @@ pub fn referring(
 ) -> Result<MigrationReport, Said> {
     let plan = Plan::new(before, migration)?;
     let mut tallies: Vec<Tally> = plan.checked().map(|_| Tally::default()).collect();
-    // Fields of the old declaration no step of the new one reads from:
-    // the migration removes them, and the report names what that discards.
+    // Old fields no step reads from: the migration discards them.
     let kept: std::collections::BTreeSet<&FieldName> = plan
         .steps
         .iter()
@@ -259,6 +251,16 @@ pub fn migrate_record(
     Ok(Some(out))
 }
 
+/// The fields a migration makes ones the store fills with the writer that
+/// made each record (084): added so, or changed to it from another
+/// authority, under its new name. The fold fills each in every live record
+/// with the writer that made it and drops what it held before.
+pub fn becoming_writer(before: &TypeDecl, migration: &Migration) -> Result<Vec<FieldName>, Said> {
+    let plan = Plan::new(before, migration)?;
+    let steps = plan.steps.iter().filter(|s| s.writer);
+    Ok(steps.map(|s| s.to.name.clone()).collect())
+}
+
 /// Per field of the new declaration: where its values come from and
 /// whether they must pass a check.
 struct Plan<'a> {
@@ -277,6 +279,10 @@ struct Step<'a> {
     /// holds no value for it takes its `initial` in the fold, or, retired,
     /// is left as it was.
     fill: bool,
+    /// Whether it becomes a field the store fills with the writer that made
+    /// its record (084): it takes over no value, and the fold fills every
+    /// live record, so a required one is no record's loss.
+    writer: bool,
 }
 
 impl<'a> Plan<'a> {
@@ -304,6 +310,9 @@ impl<'a> Plan<'a> {
                     None => None,
                 };
                 let from = source.and_then(|name| old.get(name).copied());
+                let writer = to.authority == Authority::Writer
+                    && from.is_none_or(|f| f.authority != Authority::Writer);
+                let from = from.filter(|_| !writer);
                 let retyped = from.is_some_and(|f| f.ty != to.ty);
                 let tightened = to.required && !from.is_some_and(|f| f.required);
                 Step {
@@ -311,6 +320,7 @@ impl<'a> Plan<'a> {
                     from,
                     checked: retyped || tightened,
                     fill: migration.fill.contains(&to.name),
+                    writer,
                 }
             })
             .collect();
@@ -339,7 +349,7 @@ impl Step<'_> {
                 Conversion::Exact(v) => Some(Some(v)),
                 Conversion::Lossy => None,
             },
-            _ if self.to.required && !self.fill => None,
+            _ if self.to.required && !self.fill && !self.writer => None,
             _ => Some(None),
         }
     }

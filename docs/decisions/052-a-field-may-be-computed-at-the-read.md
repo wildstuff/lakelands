@@ -40,7 +40,10 @@ is. A value that cannot be computed is none.
 A read has one clock, which `now()` and `today()` read wherever the read
 evaluates them: a `where`, a field computed at the read, a group key, a
 measure, a view's `where` and measures, a pattern's starts and rows,
-and a search's `where`. It is decided once, when the read opens:
+a search's `where`, and the `where` of a set decided at the read, which
+`in_set` expands there
+(`066 § A set may be decided at the read`). It is decided once, when
+the read opens:
 - a read `valid_at` an instant reads that instant, at the head and as of
   a position: a read of what was true at a business date counts its
   days to that date;
@@ -77,6 +80,57 @@ whether it is listed, so a clock the reviewer may name would let it
 move the clock until the listing changes, and learn to the microsecond
 when a value it may not read lets a hidden record in.
 
+### A field computed at the read may pair its record with another type's record in force
+
+`in_force(T.f, T.by <= by, T.m = m, …)`, the expression of a field
+computed at the read, is `f` of the record of `T` that holds the
+record's values in every matched pair and whose `by` is the greatest at
+or below the record's `by`; ties go to the first in key order (029). It
+is none where no record of `T` is in force, where the record's `by` or a
+matched field is none, or where the one in force holds no `f`. So
+`price: in_force(tariff.price, tariff.from <= at, tariff.meter = meter)`
+answers each reading the price of its meter's tariff from its `at`, and
+a view's `sum(kwh * price)` reads it as every read does.
+
+- **The form.** A path `T.f` first; exactly `T.by <= by` second; one or
+  more `T.m = m`. Every `T.` is one type, another stored type, and every
+  bare name a stored field of the record. Each call answers one value:
+  a host that wants two declares two fields. A link type is never `T`:
+  its name is dotted, and `T.f` is two names.
+- **Pairs pair.** The two fields of a pair are of one kind; a matched
+  pair is text or a reference, which the exact-text index keeps (057);
+  an order pair is of a kind the lake sorts (041). Of `T`, each field
+  named is stored: one computed at the read is refused `reads_at_read`.
+  Where the call is the whole of a field, `f` holds a kind that lands in
+  it, or the field is refused `never_lands`, as any derived field is.
+- **Only here.** Anywhere else (a constraint, a field computed at the
+  write, a `find`'s `where`) it is refused `in_force_here`: a stored
+  pairing would go stale when a tariff is written after the readings it
+  governs. A trigger's `when` may call it, for a firing claims only what
+  held at its write (100). Another form is refused `in_force_form`, a pair that cannot
+  pair `in_force_pair`, naming the field and both sides.
+- **Whose records.** The candidates are the records of `T` the reader's
+  `find` on `T` would answer in the same read: at its position, so a
+  record of `T` written after it is never paired, at its `valid_at`
+  where `T` has one, under its sight. A record the reader is not
+  answered, or whose `by` or a matched field a hiding lowers for the
+  reader, is passed over, so the answer never rests on a record the
+  reader cannot see. Where a hiding lowers `f` on the record in force,
+  the field reads none, never the older record's `f` in its place.
+- **Its rights.** It is computed from the record's `by` and matched
+  fields and from `T`'s `f`, `by` and matched fields, so a reader not
+  shown one of them is not shown it, and one shown one masked reads it
+  masked (024). `T`'s `f` is judged as the reader's `find` on `T`
+  judges it: one derived there is shown where what it reads is.
+- **Its cost.** A read pairs a page at a time: each partition of `T`
+  (one set of matched values) is read once, in `by` order, and each
+  record found in it by a binary search. A partition of more than 1 024
+  records is not kept, and each record is paired by a scan of its own.
+  A constraint's `preceding` reads its series by the same scan.
+- **The guard.** `T` declared again, or migrated, so that a field an
+  `in_force` in force reads is removed, changes its kind or is computed
+  at the read is refused, naming the field alone.
+
 ### Nothing holds the value of a field computed at the read
 
 No event, so no feed and no export, holds its value, and it carries no
@@ -99,7 +153,9 @@ is computed at the read already) or of a link; no field computed at the
 write reads it; a trigger, a verb and an object set that read it are
 refused; a view that reads it is not kept; an order or a vector index
 does not name it; and a grant's `only` on it cannot be applied, as on
-any field an engine cannot filter by. A type declared again so that a
+any field an engine cannot filter by. A set decided at the read is no
+reader of stored records: its `where` is evaluated in the read, and may
+name it (066). A type declared again so that a
 field a trigger, a verb, an object set or another type's derived
 relation in force reads is computed at the read is refused, naming the
 field alone. Each is refused as invalid where it is declared, naming the
@@ -111,13 +167,13 @@ all.
 ### `order_by` a field computed at the read is refused
 
 `order_by` a field computed at the read is refused, in `find` and in a
-pattern: its value moves with the clock, so the order one page is read
-in would not hold to the next. Since a cursor carries its clock, that
-holds no longer for a cursor; it still holds for `after`, which carries
-no clock, and for a cursor handed out before. Whether the refusal stays
-is asked in lakelands#1189. The refusal comes after the reader is known
-to read the field: one kept from the field, or from its type, is
-told nothing of it.
+pattern. No engine holds such a field, so each page would compute it
+for every record of the type and sort them all; the store does not take
+that cost per page. The order would also move with the clock, and
+`after` carries no clock, so a page's order would not hold to the next.
+A host orders by a stored field the value is computed from. The refusal
+comes after the reader is known to read the field: one kept from the
+field, or from its type, is told nothing of it.
 
 ### A declaration that changes `computed_at` computes the type's records again
 
@@ -167,3 +223,9 @@ absent for it.
   pin of the head carries the instant it was set at; a listing of
   proposals judges under the position's clock or the host's, never
   `valid_at` (lakelands#571).
+- A set decided at the read reads the read's clock and may name a field
+  computed at the read (lakelands#1412).
+- A field computed at the read may pair its record with the record of
+  another type in force, `in_force`, read by the reader's sight at the
+  read's position, as a view reads it (lakelands#1606).
+- Amended by 100 (lakelands#1640), proposed for 0.23.0.

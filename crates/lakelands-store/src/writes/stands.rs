@@ -14,14 +14,18 @@
 //! `where` over the record then, as a read inlines it, and before the
 //! cause the membership the write read unless the record held an erased
 //! value the `where` reads ([`member`]). One that does not
-//! hold so is *overruled*. A trigger with no `when`, or withdrawn at its
-//! cause, stands, and so does a reaction whose record is not there as of
-//! its cause; so does every reaction no act follows, unread: one after
+//! hold so is *overruled*. A conjunct of a `when` that reads `preceding`
+//! is its write's alone and is not decided again, unless the record then
+//! holds an erased value it reads on it. A trigger with no
+//! `when`, or withdrawn at its cause, stands, and so does a reaction
+//! whose record is not there as of its cause; so does every reaction no
+//! act follows, unread: one after
 //! the last act that does not share its time, which every event of its
 //! append shares.
 
 use super::*;
 use crate::lake::Shape;
+use lakelands_api::expr::{Expr, Func};
 
 /// The views and shapes of one decision, each read once a position, and
 /// whether the event at a cause ends a range of one shape.
@@ -72,9 +76,11 @@ impl<'l> AsOf<'l> {
 }
 
 /// The positions of the reactions among `events` that an act overruled,
-/// in order; and the first one past what the projection has folded, as
-/// while a rebuild runs, where deciding stops: such a reaction is told
-/// neither standing nor overruled.
+/// in order; and the first one before which deciding stops: a reaction
+/// past what the projection has folded, as while a rebuild runs, or one
+/// while any act is owed, its restate not yet run, since the projection
+/// cannot decide it yet (099). Such a reaction is told neither standing
+/// nor overruled.
 pub(crate) fn overruled<'e>(
     lake: &Lake,
     events: impl IntoIterator<Item = &'e Event>,
@@ -88,9 +94,10 @@ pub(crate) fn overruled<'e>(
         shapes: BTreeMap::new(),
         ends: BTreeMap::new(),
     };
-    let (mut out, mut folded) = (Vec::new(), None);
-    // The act's own append decided its retirements' reactions over the
-    // values it erases: they share its time.
+    let (mut out, mut folded, mut owed) = (Vec::new(), None, None);
+    // The act's end decided its retirements' reactions over the values it
+    // erases: a reaction inside the act is followed, and so is one that
+    // shares the end's time.
     let followed = |e: &&Event| e.position < acted || e.known_at == known;
     for e in events.into_iter().filter(followed) {
         let reaction = matches!(
@@ -102,6 +109,13 @@ pub(crate) fn overruled<'e>(
         let Some(cause) = e.cause.filter(|_| reaction) else {
             continue;
         };
+        let is_owed = match owed {
+            Some(is) => is,
+            None => *owed.insert(lake.acts_owed()?),
+        };
+        if is_owed {
+            return Ok((out, Some(e.position)));
+        }
         let folded = match folded {
             Some(f) => f,
             None => *folded.insert(lake.engine.projection().folded_through()?),
@@ -139,17 +153,41 @@ fn stands(asof: &mut AsOf<'_>, e: &Event, cause: Position) -> Result<bool> {
             let at = [Place::Trigger {
                 name: t.name.clone(),
             }];
-            let when = declare::filter(&|n| o.set(n), &t.on, c, Eval::Guard, &at)?;
+            let mut when = declare::filter(&|n| o.set(n), &t.on, c, Eval::Guard, &at)?;
             let was = asof.get(before, ty, key)?.filter(|b| !b.retired);
             let Some(after) = asof.get(cause, ty, key)? else {
                 return Ok(true);
             };
+            // What `preceding` and `in_force` decided, their write decided
+            // alone, unless the record then holds an erased value they read
+            // on it, as [`member`]: a bound taken back later moves no firing.
+            let write = [Func::Preceding, Func::InForce];
+            if when.calls(&write) {
+                let (theirs, rest): (Vec<_>, Vec<_>) =
+                    (when.conjuncts().into_iter()).partition(|c| c.calls(&write));
+                let mut reads = BTreeSet::new();
+                theirs.into_iter().for_each(|c| own_reads(c, &mut reads));
+                if reads
+                    .iter()
+                    .any(|f| after.meta.get(f).is_some_and(|m| m.erased))
+                {
+                    return Ok(false);
+                }
+                if rest.is_empty() {
+                    return Ok(true);
+                }
+                when = Expr::And {
+                    args: rest.into_iter().cloned().collect(),
+                };
+            }
             let scope = WriteScope {
                 after: &after.fields,
                 before: was.as_ref().map(|b| &b.fields),
                 retiring: was.is_some() && after.retired,
                 meta: Some(&after.meta),
                 settings: Some(&shape.settings),
+                preceding: None,
+                paired: None,
                 now: e.known_at,
             };
             let settings = (&shape.settings, t.when_strict);
@@ -175,6 +213,19 @@ fn stands(asof: &mut AsOf<'_>, e: &Event, cause: Position) -> Result<bool> {
             Ok(was != *joined && is == *joined)
         }
         _ => Ok(true),
+    }
+}
+
+/// The fields of its own record `e` reads: every path but the first
+/// argument of a `preceding`, which it reads on the record before.
+fn own_reads(e: &Expr, out: &mut BTreeSet<FieldName>) {
+    match e {
+        Expr::Call {
+            func: Func::Preceding,
+            args,
+        } => args.iter().skip(1).for_each(|a| own_reads(a, out)),
+        Expr::Path { path } => out.extend(path.first().cloned()),
+        _ => lakelands_api::expr::children(e).for_each(|c| own_reads(c, out)),
     }
 }
 

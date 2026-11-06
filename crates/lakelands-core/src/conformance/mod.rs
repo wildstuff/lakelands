@@ -128,6 +128,7 @@ pub mod backing;
 pub mod checks;
 pub mod engine;
 pub mod fixture;
+pub mod prelude;
 
 /// Opens lakes for the suite: one engine, as its test configures it.
 ///
@@ -229,6 +230,47 @@ pub trait Harness: Send + Sync {
         })
     }
 
+    /// Where this harness keeps a lake it handed out: the location a
+    /// check hands an [`Ahead`] or a [`Lower`]. None where it keeps none a
+    /// check can name.
+    fn location(&self, lake: &lakelands_api::LakeId) -> Option<lakelands_api::Location> {
+        let _ = lake;
+        None
+    }
+
+    /// How this harness builds a lake's projection ahead: the [`Ahead`] a
+    /// check of an upgrade is given. A harness without one answers
+    /// `unbound`.
+    fn aheader(&self) -> Ahead {
+        Arc::new(|_, _| {
+            Box::pin(async {
+                let op = "build_ahead".to_owned();
+                let seam = lakelands_api::error::Seam::Operation { op };
+                Err(lakelands_api::Error::unbound(seam))
+            })
+        })
+    }
+
+    /// How this harness opens a standby beside a lake it handed out: the
+    /// [`Standby`] a check of a writer's failover is given. A harness
+    /// without one answers `unbound`.
+    fn standbyer(&self) -> Standby {
+        Arc::new(|_, _, _, _| {
+            Box::pin(async {
+                let op = "standby".to_owned();
+                let seam = lakelands_api::error::Seam::Operation { op };
+                Err(lakelands_api::Error::unbound(seam))
+            })
+        })
+    }
+
+    /// How this harness marks a lake's projection as the release before
+    /// laid it out: the [`Lower`] a check of an upgrade is given. A
+    /// harness without one marks nothing.
+    fn lowerer(&self) -> Lower {
+        Arc::new(|_| false)
+    }
+
     /// How many records the suite's large lake holds at its first size;
     /// it grows to four times this. [`LARGE_LAKE`] unless the engine's
     /// test asks for more, as a long run does.
@@ -282,7 +324,59 @@ pub struct Given {
     /// How the harness opens the check's lake again through a wrapped
     /// engine.
     pub fault: Fault,
+    /// Where the harness keeps the check's lake, if it can name it.
+    pub location: Option<lakelands_api::Location>,
+    /// How the harness builds a lake's projection ahead.
+    pub ahead: Ahead,
+    /// How the harness marks a lake's projection one layout back.
+    pub lower: Lower,
+    /// How the harness opens a standby beside the check's lake.
+    pub standby: Standby,
 }
+
+/// Opens a standby beside the lake named, with `seams` and the engine
+/// [`Wrap`] makes of the harness's own, as `lakelands_store::standby`
+/// does: it follows the lake's writer and tries the lease at every
+/// interval given (076).
+pub type Standby = Arc<
+    dyn Fn(lakelands_api::LakeId, Seams, std::time::Duration, Wrap) -> StandbyFuture + Send + Sync,
+>;
+
+/// The future a [`Standby`] answers: the standby's store, and what its
+/// tries come to.
+pub type StandbyFuture =
+    Pin<Box<dyn Future<Output = lakelands_api::Result<(Arc<dyn LakeStore>, Standing)>> + Send>>;
+
+/// What a standby's tries come to: `Ok` once it holds the lease, or the
+/// error of the try that failed, after which it tries no more.
+pub type Standing = Pin<Box<dyn Future<Output = lakelands_api::Result<()>> + Send>>;
+
+/// Builds the projection of the lake at a location of the harness's
+/// engine ahead, beside the writer that holds it, as `lakelands
+/// build-ahead` does (`lakelands_store::build_ahead`, 071). An engine
+/// that keeps no scratch answers it `unbound`.
+pub type Ahead = Arc<dyn Fn(lakelands_api::Location, Seams) -> AheadFuture + Send + Sync>;
+
+/// The future an [`Ahead`] answers.
+pub type AheadFuture =
+    Pin<Box<dyn Future<Output = lakelands_api::Result<BuiltAhead>> + Send + 'static>>;
+
+/// What an [`Ahead`] folded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuiltAhead {
+    /// Where the build before it stopped, and it went on from.
+    pub ahead: Option<lakelands_api::Position>,
+    /// Where its scratch is folded through and marked.
+    pub through: Option<lakelands_api::Position>,
+    /// The events it folded.
+    pub events: u64,
+}
+
+/// Marks the projection kept at a location of the harness's engine one
+/// layout older than its own, as the release before laid it out, and
+/// changes nothing it holds: what a writer's open after an upgrade
+/// meets. False where the harness cannot.
+pub type Lower = Arc<dyn Fn(&lakelands_api::Location) -> bool + Send + Sync>;
 
 /// Closes a lake the harness opened and opens it again for writing with
 /// `seams` and the harness's engine, as a host's next process opens it:
@@ -348,6 +442,8 @@ pub type Continue = Arc<
 
 /// The lines a [`Continue`] appends, made from the log's tip and the
 /// fence of the lease they are appended under; none, to append nothing.
+/// Where the lake is not made yet they are its log from the start, and
+/// the tip they are told means nothing.
 /// With them, how many positions past the tip they leave the projection
 /// is then committed through, as no fold leaves it: 0 leaves the
 /// projection where it is.
@@ -413,22 +509,26 @@ pub fn continue_below(
     location: &lakelands_api::Location,
     lines: Lines,
 ) -> lakelands_api::Result<Below> {
-    let engine = opener.open(location, lakelands_api::engine::OpenMode::Write)?;
-    let lease = engine.take_lease("another release")?;
-    let appended = match engine.tip()? {
-        Some(tip) => {
-            let (lines, ahead) = lines(tip, lease.fence);
-            engine.append(&lease, &lines).and_then(|()| {
-                let Some((tip, _)) = engine.tip()?.filter(|_| ahead > 0) else {
-                    return Ok(());
-                };
-                let projection = engine.projection();
-                projection.begin()?;
-                projection.commit(lakelands_api::Position(tip.0 + ahead))
-            })
-        }
-        None => Ok(()),
+    use lakelands_api::engine::OpenMode;
+    let mode = match opener.log_ends(location)? {
+        Some(_) => OpenMode::Write,
+        None => OpenMode::Create,
     };
+    let engine = opener.open(location, mode)?;
+    let lease = engine.take_lease("another release")?;
+    let start = (
+        lakelands_api::Position::GENESIS,
+        lakelands_api::event::Digest::zero(),
+    );
+    let (lines, ahead) = lines(engine.tip()?.unwrap_or(start), lease.fence);
+    let appended = engine.append(&lease, &lines).and_then(|()| {
+        let Some((tip, _)) = engine.tip()?.filter(|_| ahead > 0) else {
+            return Ok(());
+        };
+        let projection = engine.projection();
+        projection.begin()?;
+        projection.commit(lakelands_api::Position(tip.0 + ahead))
+    });
     engine.release_lease(&lease)?;
     drop(engine);
     appended?;
@@ -448,6 +548,8 @@ pub struct ImportedLake {
     pub store: Arc<dyn LakeStore>,
     /// Closes a handle onto the imported lake and opens it for writing.
     pub writer: Reopen,
+    /// Where the harness keeps the imported lake.
+    pub location: lakelands_api::Location,
 }
 
 /// The future [`Harness::fresh`] answers: a new, empty lake, or why none
@@ -614,14 +716,20 @@ pub async fn run_one(harness: &dyn Harness, name: &str) -> Option<Result<(), Fai
     Some(run_check(harness, check).await)
 }
 
-/// Runs `checks` in order, never stopping at a failure.
-async fn run_checks(harness: &dyn Harness, checks: &[Check]) -> Report {
+/// Runs `checks` in order, never stopping at a failure, and prints what
+/// each asserted, one line per check (`tally <evaluations> <sites>
+/// <check>`), for a change to the suite to compare before and after.
+pub async fn run_checks<'a>(
+    harness: &dyn Harness,
+    checks: impl IntoIterator<Item = &'a Check>,
+) -> Report {
     let mut report = Report {
         harness: harness.name().to_owned(),
         ..Report::default()
     };
     for check in checks {
         let (outcome, tally) = counted(run_check(harness, check)).await;
+        println!("tally {} {} {}", tally.evaluations, tally.sites, check.name);
         report.tallies.push((check.name, tally));
         match outcome {
             Ok(()) => report.passed.push(check.name),
@@ -665,6 +773,10 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         continued: harness.continuer(),
         twin: harness.twinner(),
         fault: harness.faulter(),
+        location: harness.location(store.lake()),
+        ahead: harness.aheader(),
+        lower: harness.lowerer(),
+        standby: harness.standbyer(),
     };
     match caught((check.run)(store, given)).await {
         Ok(outcome) => outcome,

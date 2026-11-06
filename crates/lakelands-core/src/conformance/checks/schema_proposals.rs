@@ -10,19 +10,10 @@
 //! change the head no longer admits is refused and the proposal stays
 //! pending.
 
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{FieldType, StorageKind};
-use lakelands_api::write::{
-    Declaration, ProposalFilter, ProposalKind, ProposalState, ProposedWrite,
-};
-use lakelands_api::{LakeStore, Outcome, ProposalId, Refusal, TypeName};
-use serde_json::{Value, json};
+use lakelands_api::write::ProposalKind;
 
-use crate::conformance::fixture::{
-    Lake, Must, doors, events_after, field_access, field_writer, head_unmoved, invalid_like,
-    migration, reason, reviewer, type_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{doors, reviewer, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     DECLARED_ON_ACCEPT = a_proposed_declaration_takes_effect_only_when_accepted,

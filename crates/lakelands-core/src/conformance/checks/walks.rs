@@ -3,13 +3,11 @@
 //! `docs/decisions/026-the-store-walks-the-graph.md`,
 //! `docs/decisions/029-every-answer-has-one-order.md`).
 
-use lakelands_api::ontology::{RelationDecl, StorageKind};
-use lakelands_api::query::{Depth, Pattern, QueryResult, Step, Walk};
-use lakelands_api::{Error, LakeStore, RecordKey, Refusal, TypeName, Value};
-use serde_json::json;
+use lakelands_api::Value;
+use lakelands_api::query::Depth;
 
-use crate::conformance::fixture::{Lake, Must, field, limits, reason, reference, type_decl};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{cites, learnings, reference, walked};
+use crate::conformance::prelude::*;
 
 check!(
     UNDECLARED_RELATION = a_step_over_a_relation_the_type_does_not_declare_is_refused,
@@ -33,12 +31,17 @@ check!(
 
 check!(
     STEP_BINDS_ONE_TYPE = a_step_whose_records_a_row_binds_reaches_one_type,
-    "018, extended (lakelands#680, lakelands#990): a step whose records rows or an aggregate bind reaches one type over its whole range or names its `type`, unless it is the last step and nothing reads its fields: over a relation two types declare it is refused where another step follows it, in a chain and from depth 0, at its step under the relation as its caller wrote it and naming every type it reaches; as the last step, at the first or a later one, in a chain and from depth 0, one whose second hop reaches other types and one from depth 0 that reaches another type than it stands on, it is answered under the relation's name with each record's key, `_type` and `_depth` and no field, counted over every type it reaches and grouped by `_type`, a type its reader is not shown neither counted nor named; a `where` over such a step is refused alike for rows, a graph and a path, and with the `type` of either declarer it is read against that type's records (lakelands#753), and a chain's graph is judged over its range as its rows are, a second hop's type named and a step from depth 0 with a `where` naming one, and its step that another follows names its `type` while a last one keeps every type it reaches; a `type` the step does not reach is refused naming every type it does, at depth 0 as in a chain, and degree and components take no step `type` at all; with its `type` it binds that type alone, as a step by an inverse binds its owner's, a range that reaches nothing is judged by its first hop, and the step after it is read from that type, by an order, `fields`, a group key, a `where` and a `type` of its own; a reader masked from the field that carries the first hop is answered that before the step is judged, in rows, an aggregate and a graph, and a relation a neighbourhood meets around another type when it is walked and not before; a path asked as rows or an aggregate is refused as that, and rows from depth 0 over a relation their type does not declare as a chain's are; a reader not shown one of the two types is answered as on a lake without it, by a measure too"
+    "018, extended (lakelands#680, lakelands#990): a step whose records rows or an aggregate bind reaches one type over its whole range or names its `type`, unless it is the last step and reads only what its types declare alike (lakelands#1186): over a relation two types declare it is refused where another step follows it, in a chain and from depth 0, at its step under the relation as its caller wrote it and naming every type it reaches; as the last step, at the first or a later one, in a chain and from depth 0, one whose second hop reaches other types and one from depth 0 that reaches another type than it stands on, it is answered under the relation's name with each record's key, `_type` and `_depth`, counted over every type it reaches and grouped by `_type`, a type its reader is not shown neither counted nor named; a `where` on a field one of its types lacks is refused, naming the field and those types, for rows, a graph and a path, and with the `type` of either declarer it is read against that type's records (lakelands#753), and a chain's graph is judged over its range as its rows are, a second hop's type named and a step from depth 0 with a `where` naming one, and its step that another follows names its `type` while a last one keeps every type it reaches; a `type` the step does not reach is refused naming every type it does, at depth 0 as in a chain, and degree and components take no step `type` at all; with its `type` it binds that type alone, as a step by an inverse binds its owner's, a range that reaches nothing is judged by its first hop, and the step after it is read from that type, by an order, `fields`, a group key, a `where` and a `type` of its own; a reader masked from the field that carries the first hop is answered that before the step is judged, in rows, an aggregate and a graph, and a relation a neighbourhood meets around another type when it is walked and not before; a path asked as rows or an aggregate is refused as that, and rows from depth 0 over a relation their type does not declare as a chain's are; a reader not shown one of the two types is answered as on a lake without it, by a measure too"
 );
 
 check!(
     OPEN_STEP = a_last_step_over_several_types_reads_the_lakes_columns_alone,
     "018, extended (lakelands#990): under a name a last step over several types binds, `key`, `_type` and `_depth` are the lake's columns, read against no type and never probed, so a field `key` its reader may not know of, on either declarer in either order of declaration, turns neither its rows, nor an order or a group by it, and the owner reads the record's key; `_type` orders rows, is projected and is read by a key's expression; rows across the types page by an order of `_type` and the key; a relation carried by link records is bound alike; a reader kept by `only` counts what it is shown; at a `valid_at` the step probes the valid time of every type it may meet, so a reader masked on one is refused that; a step by an inverse's name binds under it; `as` gives a reader shown both types and one shown one the same columns"
+);
+
+check!(
+    ALIKE_STEP = a_step_over_several_types_reads_the_fields_they_declare_alike,
+    "018, extended (lakelands#1186): a step over several types reads a field every type it reaches and its reader is shown declares in one storage kind, value type, target and dimensions against each: its `where`, for rows, a graph, a reach and a graph from depth 0 walked both ways that reaches the start's type too, an order, `fields`, a group key and a decimal sum, which adds as decimals across the types, make one answer in one order, paged by one cursor, with `_type` naming each row's type, rows over an inverse from depth 0 included, and over a range a group key is judged by the types the step binds, not the type its first hop reaches; a field one of the types lacks or declares in another kind, value type, target or dimensions than most of them is refused, in a `where`, an order, `fields` and a group key, `step_several_types`, naming the field and the types that differ and how, and only the types its reader is shown, a reader not shown the odd one answered; a reader masked on it in one type, or who may only write it there, is refused as a read of that type is, the field named by its type, in an order, an aggregate and a `where`, while `fields` leaves it out of that type's rows"
 );
 
 check!(
@@ -477,11 +480,22 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
         async move { answered(cat.as_ref(), &who, p, read).await }
     };
     let said = |s: Said| format!("{:?}", Ok::<_, ()>(&s));
-    let several = |step, relation: &str, all: &[&str]| {
+    // Refused naming every type, and where a field is read, those that
+    // lack it.
+    let lacks = |step, relation: &str, all: &[&str], lack: Option<(&str, &[&str])>| {
         let (reached, also) = (Some(all[0].into()), Some(all[1..].iter().collect()));
-        let case = Case::StepSeveralTypes { reached, also };
+        let field = lack.map(|(f, _)| f.into());
+        let missing = lack.map(|(_, m)| Box::new(m.iter().collect()));
+        let case = Case::StepSeveralTypes {
+            reached,
+            also,
+            field,
+            missing,
+            other: None,
+        };
         said(Said::from(case).within(at(step, relation)))
     };
+    let several = |step, relation: &str, all: &[&str]| lacks(step, relation, all, None);
     let mut wrong = Vec::new();
     // Refused where another step follows it: that step is judged from one
     // type, and a row holds one type under a name.
@@ -563,8 +577,8 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
             wrong.push(format!("{what}, with no `type`: {rows} | {counted}"));
         }
     }
-    // A `where` over it is refused alike, for rows and a graph, and a `type`
-    // it does not reach names every type it does.
+    // A `where` on a field a type lacks is refused, for rows and a graph,
+    // and a `type` it does not reach names every type it does.
     for (min, project, also) in [
         (1, all(), &["quote"][..]),
         (1, Graph, &["quote"]),
@@ -588,7 +602,8 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
         let all_types = [&["bill"][..], also].concat();
         let (reached, ty, also) = ("bill".into(), "ware".into(), Some(also.iter().collect()));
         let reaches = Said::from(Case::StepReaches { reached, ty, also });
-        if got != several(1, "of", &all_types) || far != said(reaches.within(at(1, "of"))) {
+        let lack = Some(("x", &all_types[..all_types.len() - 1]));
+        if got != lacks(1, "of", &all_types, lack) || far != said(reaches.within(at(1, "of"))) {
             wrong.push(format!(
                 "from depth {min} as {project:?}: a `where` {got}, a `type` not reached {far}"
             ));
@@ -613,7 +628,7 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
     let untyped = answer(own, path.clone(), &[]).await;
     path.steps[0].ty = Some("quote".into());
     let named = answer(own, path, &[]).await;
-    if untyped != several(1, "of", &["bill", "quote"]) || named != "2 nodes" {
+    if untyped != lacks(1, "of", &["bill", "quote"], Some(("x", &["bill"]))) || named != "2 nodes" {
         wrong.push(format!(
             "a path to `q1` with a `where`: untyped {untyped}, typed `quote` {named}"
         ));
@@ -631,7 +646,15 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
         let got = answer(own, named, &["quote.x"]).await;
         let read = far(kept("x = 'qa'", of(Walk::Both, 1, 2)));
         let untyped = answer(own, read, &[]).await;
-        if got != want || untyped != several(1, "of", &["bill", "customer", "quote"]) {
+        if got != want
+            || untyped
+                != lacks(
+                    1,
+                    "of",
+                    &["bill", "customer", "quote"],
+                    Some(("x", &["bill", "customer"])),
+                )
+        {
             wrong.push(format!(
                 "two hops both ways as {project:?}: typed `{ty}` {got}, a `where` {untyped}"
             ));
@@ -775,7 +798,7 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
     let untyped = answer(own, wares(m(step("by", Walk::Out, 0, 1))), &[]).await;
     let named = wares(m(typed("ware", step("by", Walk::Out, 0, 1))));
     let got = answer(own, named, &[]).await;
-    if untyped != several(2, "by", &["quote", "ware"]) || got != "4 nodes" {
+    if untyped != lacks(2, "by", &["quote", "ware"], Some(("z", &["quote"]))) || got != "4 nodes" {
         wrong.push(format!(
             "a graph's second step from depth 0 with a `where`: {untyped}, typed `ware` {got}"
         ));
@@ -1127,7 +1150,7 @@ async fn a_pattern_is_refused_for_what_it_says_and_a_step_reads_what_it_keeps(
         "outsider",
         grants.clone(),
     );
-    grants.schema = true;
+    (grants.schema, grants.restricted) = (true, true);
     let architect = principal(store.as_ref(), PrincipalKind::Human, "architect", grants);
     let mut told = Vec::new();
     for who in [&outsider, own] {
@@ -1594,5 +1617,576 @@ async fn a_last_step_over_several_types_reads_the_lakes_columns_alone(store: Sto
         wrong.push(format!("`as` answers both readers {columns:?}"));
     }
     ensure!(wrong.is_empty(), "{}", wrong.join("; "));
+    Ok(())
+}
+
+async fn a_step_over_several_types_reads_the_fields_they_declare_alike(store: Store) -> Held {
+    use crate::conformance::fixture::principal;
+    use lakelands_api::error::{Case, Names, Place, Said};
+    use lakelands_api::principal::{Grants, PrincipalKind, TypeGrants};
+    use lakelands_api::{Access, Principal};
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    // Invoices, mail and notes about a partner declare `status` and
+    // `amount` alike, `n` as text and as a number, `g` as text and as a
+    // grade, `r` to a partner and to an invoice, `v` of two dimensions and
+    // of three, and a note `memo` alone; only an invoice's `about` has an
+    // inverse, and a partner a `status` and a boolean `amount`.
+    let status = || field("status", StorageKind::Text);
+    let partner = vec![status(), field("amount", StorageKind::Boolean)];
+    l.declare(type_decl("partner", partner)).await?;
+    l.declare_json(json!({"declare": "value_type", "name": "grade", "kind": "text"}))
+        .await?;
+    let number = StorageKind::Number;
+    for (name, n) in [
+        ("inv", StorageKind::Text),
+        ("mail", number),
+        ("note", number),
+    ] {
+        let note = name == "note";
+        let amount = field("amount", StorageKind::Decimal);
+        let mut t = type_decl(name, vec![status(), amount, field("n", n)]);
+        let (mut g, mut v) = (
+            field("g", StorageKind::Text),
+            field("v", StorageKind::Vector),
+        );
+        g.ty.value_type = note.then(|| "grade".into());
+        v.ty.dimensions = Some(if name == "mail" { 3 } else { 2 });
+        let r = reference("r", if note { "inv" } else { "partner" });
+        t.fields.extend([reference("p", "partner"), g, v, r]);
+        note.then(|| t.fields.push(field("memo", StorageKind::Text)));
+        t.relations = vec![RelationDecl {
+            via: Some("p".into()),
+            inverse: (name == "inv").then(|| "invoices".into()),
+            ..RelationDecl::to("about", "partner")
+        }];
+        l.declare(t).await?;
+    }
+    for (t, k, status, amount) in [
+        ("partner", "p1", "open", None),
+        ("inv", "i1", "open", Some("0.1")),
+        ("inv", "i2", "shut", Some("10")),
+        ("note", "n1", "open", Some("9.2")),
+    ] {
+        let mut f = json!({"status": status});
+        if let Some(a) = amount {
+            (f["amount"], f["p"]) = (json!(a), json!("p1"));
+        }
+        l.upsert(t, k, f).await?;
+    }
+    let grant = |id: &str, ty: &str, t: TypeGrants| {
+        let types = [(ty.into(), t)].into();
+        let g = Grants {
+            default: Access::Read,
+            types,
+            ..Grants::default()
+        };
+        principal(store.as_ref(), PrincipalKind::Agent, id, g)
+    };
+    let amount = |a| TypeGrants {
+        fields: [("amount".into(), a)].into(),
+        ..Default::default()
+    };
+    let masked = grant("masked", "note", amount(Access::Masked));
+    let write_only = grant("write_only", "note", amount(Access::WriteOnly));
+    let not_mail = TypeGrants {
+        default: Some(Access::None),
+        ..Default::default()
+    };
+    let not_mail = grant("not_mail", "mail", not_mail);
+    let ask = |who: &Principal, mut p: serde_json::Value, read: &'static [&'static str]| {
+        let (cat, who) = (cat.clone(), who.clone());
+        if p.get("start").is_none() {
+            p["start"] = json!({"type": "partner", "key": "p1"});
+        }
+        async move {
+            match serde_json::from_value::<Pattern>(p) {
+                Ok(p) => answered(cat.as_ref(), &who, p, read).await,
+                Err(e) => e.to_string(),
+            }
+        }
+    };
+    let about =
+        |filter: Option<&str>| json!([{"relation": "about", "walk": "in", "where": filter}]);
+    let rows = |order: &str| {
+        let by = json!([{"field": order, "dir": "desc"}]);
+        json!({"steps": about(None), "project": {"as": "rows"}, "order_by": by})
+    };
+    let summed = |key: &str| {
+        let sum = json!({"name": "n", "func": "sum", "field": "about.amount"});
+        let a = json!({"as": "aggregate", "group_by": [key], "measures": [sum]});
+        json!({"steps": about(None), "project": a})
+    };
+    let both = |filter: &str| {
+        let step = json!({"relation": "about", "walk": "both", "depth": {"min": 0, "max": 1}, "where": filter});
+        json!({"steps": [step], "project": {"as": "graph"}})
+    };
+    // Refused at `about` for `field`, reaching `inv` and `also` the types
+    // its reader is shown.
+    let several = |also: &[&str], field: &str, missing: &[&str], other: &[&str]| {
+        let names = |n: &[&str]| n.iter().collect::<Names>();
+        let some = |n: &[&str]| (!n.is_empty()).then(|| Box::new(names(n)));
+        let case = Case::StepSeveralTypes {
+            reached: Some("inv".into()),
+            also: Some(names(also)),
+            field: Some(field.into()),
+            missing: some(missing),
+            other: some(other),
+        };
+        let at = Place::Step {
+            step: 1,
+            relation: "about".into(),
+        };
+        format!("{:?}", Ok::<_, ()>(&Said::from(case).within(at)))
+    };
+    let not_granted = Error::Refused {
+        field: Some("note.amount".into()),
+        reason: Refusal::NotGranted,
+    };
+    // One cursor pages the answer across the types.
+    let mut paged = rows("about.amount");
+    (paged["limit"], paged["start"]) = (json!(2), json!({"type": "partner", "key": "p1"}));
+    let first = serde_json::from_value(paged.clone()).map_err(|e| Failure::new(e.to_string()))?;
+    let next = match cat.query(own, first).await.must("the first page")?.data {
+        QueryResult::Rows { next_cursor, .. } => next_cursor,
+        _ => None,
+    };
+    paged["cursor"] = json!(next);
+    let all = ["mail", "note"];
+    let refused = format!("{:?}", Err::<(), _>(&not_granted));
+    let mut rows_of = vec![
+        (
+            own,
+            json!({"steps": about(Some("status = 'open'")), "project": {"as": "rows", "fields": ["about.key", "about._type", "about.amount"]}}),
+            &["about.key", "about._type", "about.amount"][..],
+            r#""i1""inv""0.1","n1""note""9.2""#.to_owned(),
+        ),
+        (
+            own,
+            json!({"steps": about(Some("status = 'open'")), "project": {"as": "graph"}}),
+            &[],
+            "3 nodes".into(),
+        ),
+        (
+            own,
+            json!({"steps": about(Some("status = 'open'")), "project": {"as": "reach"}}),
+            &["key"],
+            r#""i1","n1""#.into(),
+        ),
+        // From depth 0, walked both ways, the step reaches the partner too.
+        (own, both("status = 'open'"), &[], "3 nodes".into()),
+        (
+            own,
+            both("amount > 1"),
+            &[],
+            several(&["mail", "note", "partner"], "amount", &[], &["partner"]),
+        ),
+        (
+            own,
+            rows("about.amount"),
+            &["about.amount"],
+            r#""10","9.2","0.1""#.into(),
+        ),
+        (
+            own,
+            summed("about.status"),
+            &[],
+            r#"Some(String("open"))="9.3"Some(String("shut"))="10""#.into(),
+        ),
+        // Over a range whose first hop reaches a partner, judged as the
+        // types it binds declare `amount`.
+        (
+            own,
+            json!({"start": {"type": "inv", "key": "i1"}, "steps": [{"relation": "about", "walk": "both", "depth": {"min": 2, "max": 2}}], "project": {"as": "aggregate", "measures": [{"name": "n", "func": "count"}], "group_by": [{"name": "big", "expr": "about.amount * 1 > 1"}]}}),
+            &[],
+            r#"Some(Bool(false))="1"Some(Bool(true))="2""#.into(),
+        ),
+        (
+            own,
+            json!({"steps": [{"relation": "invoices", "walk": "both", "depth": {"min": 0, "max": 1}, "where": "status = 'open'"}], "project": {"as": "rows"}}),
+            &["invoices._type", "invoices.key"],
+            r#""partner""p1","inv""i1""#.into(),
+        ),
+        (
+            own,
+            json!({"steps": about(Some("memo = 'm'"))}),
+            &[],
+            several(&all, "memo", &["inv", "mail"], &[]),
+        ),
+        (
+            own,
+            json!({"steps": about(None), "project": {"as": "rows", "fields": ["about.memo"]}}),
+            &[],
+            several(&all, "memo", &["inv", "mail"], &[]),
+        ),
+        (own, rows("about.n"), &[], several(&all, "n", &[], &["inv"])),
+        (
+            own,
+            rows("about.g"),
+            &[],
+            several(&all, "g", &[], &["note"]),
+        ),
+        (
+            own,
+            rows("about.r"),
+            &[],
+            several(&all, "r", &[], &["note"]),
+        ),
+        (
+            own,
+            rows("about.v"),
+            &[],
+            several(&all, "v", &[], &["mail"]),
+        ),
+        (
+            own,
+            summed("about.memo"),
+            &[],
+            several(&all, "memo", &["inv", "mail"], &[]),
+        ),
+        (own, paged, &["about.amount"], r#""0.1""#.into()),
+        // A reader not shown mail reads `v` alike, and is refused `n`
+        // naming only the types it is shown.
+        (
+            &not_mail,
+            rows("about.v"),
+            &["about._type"],
+            r#""inv","inv","note""#.into(),
+        ),
+        (
+            &not_mail,
+            rows("about.n"),
+            &[],
+            several(&["note"], "n", &[], &["note"]),
+        ),
+    ];
+    for who in [&masked, &write_only] {
+        rows_of.extend([
+            (who, rows("about.amount"), &[][..], refused.clone()),
+            (who, summed("about.status"), &[], refused.clone()),
+            (
+                who,
+                json!({"steps": about(None), "project": {"as": "rows", "fields": ["about.key", "about.amount"]}}),
+                &["about.key", "about.amount"],
+                r#""i1""0.1","i2""10","n1"-"#.into(),
+            ),
+            (
+                who,
+                json!({"steps": about(Some("amount > 1"))}),
+                &[],
+                refused.clone(),
+            ),
+        ]);
+    }
+    let mut wrong = Vec::new();
+    for (who, p, read, want) in rows_of {
+        let got = ask(who, p.clone(), read).await;
+        if got != want {
+            wrong.push(format!("{p} for `{}`: {got}, not {want}", who.id));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a step over invoices, mail and notes about a partner:\n{}",
+        wrong.join("\n")
+    );
+    Ok(())
+}
+
+check!(
+    ARRAY_FIELD_EDGE_PER_KEY = a_field_holding_an_array_of_keys_links_once_to_each_distinct_string,
+    "091: a relation carried by a `json` field that holds an array links its record once to the record of each distinct string element: a repeat links once, a number, `null`, a boolean, a nested array, an object and an empty array none, and a key with no record is walked to nothing, while the field reads back as written; a single string links as before; the same as of after the writes, after a rebuild and after a reopen",
+    reopens
+);
+
+check!(
+    ARRAY_FIELD_REWRITE_MOVES_EDGES = a_rewrite_of_an_array_of_keys_moves_its_edges_at_its_position,
+    "091 and 009: a write that drops a key from the array drops its edge and one that adds a key adds it, at the write's position, a read as of before answering the edges then; the same keys in another order answer the same bytes; a key written later is reached from that position on"
+);
+
+check!(
+    ARRAY_FIELD_EVERY_READER = every_reader_of_the_graph_sees_one_edge_per_key_of_an_array,
+    "091, 018 and 026: over an array reaching three records a rows projection binds three rows, a two-step chain and a shortest path go through an array edge, a degree counts each distinct key once and the components hold the record with those it cites, at the head and at a position alike"
+);
+
+check!(
+    ARRAY_FIELD_HIDDEN_WITH_ITS_FIELD = no_edge_of_an_array_is_walked_where_its_field_is_hidden,
+    "091 and 006: where a hiding lowers the array's field on one record, its holder is answered none of that record's edges, out of it or into what it cites, and every other record's; a reader who sees the field masked is refused the walk not granted, naming it; a reader shown it is answered every edge"
+);
+
+/// The head, then a note written past it, so a read as of it is a read
+/// at a position.
+async fn passed(store: &dyn LakeStore, l: &Lake) -> Result<Position, Failure> {
+    let then = store.head().await.must("reading the head")?;
+    l.upsert("note", "later", json!({"text": "later"})).await?;
+    Ok(then)
+}
+
+/// Where each walk of `want` from its learning answers `who` otherwise.
+async fn walks_from(
+    l: &Lake,
+    who: &Principal,
+    at: Option<Position>,
+    want: &[(&str, Walk, &str)],
+) -> Result<Vec<String>, Failure> {
+    let mut wrong = Vec::new();
+    for (key, walk, want) in want {
+        let (got, _) = walked(l, who, cites(key, *walk, at)).await?;
+        if got != *want {
+            wrong.push(format!(
+                "{walk:?} from {key} at {at:?}: `{got}`, not `{want}`"
+            ));
+        }
+    }
+    Ok(wrong)
+}
+
+async fn a_field_holding_an_array_of_keys_links_once_to_each_distinct_string(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let mixed = json!(["a", "b", "b", 7, null, true, ["c"], {"key": "c"}, "", "ghost"]);
+    let cited = [
+        ("a", Value::Null),
+        ("b", Value::Null),
+        ("c", Value::Null),
+        ("x", mixed.clone()),
+        ("y", json!("a")),
+        ("z", json!([])),
+        ("w", json!(7)),
+    ];
+    learnings(&l, &cited).await?;
+    let want = [
+        ("x", Walk::Out, "x>a x>b / x a b"),
+        ("a", Walk::In, "x>a y>a / a x y"),
+        ("b", Walk::In, "x>b / b x"),
+        ("c", Walk::In, " / c"),
+        ("y", Walk::Out, "y>a / y a"),
+        ("z", Walk::Out, " / z"),
+        ("w", Walk::Out, " / w"),
+    ];
+    let then = passed(store.as_ref(), &l).await?;
+    let mut wrong = walks_from(&l, &l.own, None, &want).await?;
+    wrong.extend(walks_from(&l, &l.own, Some(then), &want).await?);
+    let x = l.read("learning", "x").await?;
+    if x.fields.get("cites") != Some(&mixed) {
+        wrong.push(format!(
+            "x's `cites` reads back {:?}",
+            x.fields.get("cites")
+        ));
+    }
+    store.rebuild().await.must("rebuilding the projection")?;
+    for (when, at) in [("after a rebuild", None), ("as of then", Some(then))] {
+        let w = walks_from(&l, &l.own, at, &want).await?;
+        wrong.extend(w.into_iter().map(|w| format!("{when}: {w}")));
+    }
+    drop(l);
+    let store = reopen(store, Seams::default())
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake again: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let w = walks_from(&l, &l.own, None, &want).await?;
+    wrong.extend(w.into_iter().map(|w| format!("after a reopen: {w}")));
+    ensure!(
+        wrong.is_empty(),
+        "an array of keys links once to the record of each distinct string in it, and to \
+         nothing else: {wrong:#?}"
+    );
+    Ok(())
+}
+
+async fn a_rewrite_of_an_array_of_keys_moves_its_edges_at_its_position(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let cited = [
+        ("a", Value::Null),
+        ("b", Value::Null),
+        ("d", Value::Null),
+        ("x", json!(["a", "b"])),
+    ];
+    learnings(&l, &cited).await?;
+    let before = store.head().await.must("reading the head")?;
+    l.upsert("learning", "x", json!({"cites": ["b", "d"]}))
+        .await?;
+    let mut wrong = walks_from(
+        &l,
+        &l.own,
+        None,
+        &[("x", Walk::Out, "x>b x>d / x b d"), ("a", Walk::In, " / a")],
+    )
+    .await?;
+    let then = [
+        ("x", Walk::Out, "x>a x>b / x a b"),
+        ("a", Walk::In, "x>a / a x"),
+    ];
+    wrong.extend(walks_from(&l, &l.own, Some(before), &then).await?);
+    let wire = async |l: &Lake| -> Result<Vec<String>, Failure> {
+        let mut all = Vec::new();
+        for (key, walk) in [("x", Walk::Out), ("b", Walk::In), ("d", Walk::In)] {
+            let (told, wire) = walked(l, &l.own, cites(key, walk, None)).await?;
+            all.push(format!("{told} {wire}"));
+        }
+        Ok(all)
+    };
+    let ordered = wire(&l).await?;
+    l.upsert("learning", "x", json!({"cites": ["d", "b"]}))
+        .await?;
+    let turned = wire(&l).await?;
+    if turned != ordered {
+        wrong.push(format!("[b, d] answered {ordered:?}, [d, b] {turned:?}"));
+    }
+    l.upsert("learning", "x", json!({"cites": ["d", "b", "ghost"]}))
+        .await?;
+    let unwritten = store.head().await.must("reading the head")?;
+    l.upsert("learning", "ghost", json!({"kind": "open"}))
+        .await?;
+    let ghost = [("x", Walk::Out, "x>b x>d x>ghost / x b d ghost")];
+    wrong.extend(walks_from(&l, &l.own, None, &ghost).await?);
+    let unborn = [("x", Walk::Out, "x>b x>d / x b d")];
+    wrong.extend(walks_from(&l, &l.own, Some(unwritten), &unborn).await?);
+    ensure!(
+        wrong.is_empty(),
+        "a rewrite of an array of keys moves its edges at its position: {wrong:#?}"
+    );
+    Ok(())
+}
+
+async fn every_reader_of_the_graph_sees_one_edge_per_key_of_an_array(store: Store) -> Held {
+    use crate::conformance::fixture::order;
+    let l = Lake::of(store.as_ref());
+    let cited = [
+        ("a", Value::Null),
+        ("b", Value::Null),
+        ("d", Value::Null),
+        ("c", json!(["d"])),
+        ("x", json!(["a", "b", "c", "a"])),
+    ];
+    learnings(&l, &cited).await?;
+    let then = passed(store.as_ref(), &l).await?;
+    let named = |name: &str| Step {
+        named: Some(name.into()),
+        ..step("cites", Walk::Out, 1, 1)
+    };
+    let rows = |steps: Vec<Step>, by: &str| {
+        let fields = vec![by.to_owned()];
+        let mut p = pattern("learning", Some("x"), steps, Projection::Rows { fields });
+        p.order_by = vec![order(by, OrderBy::Value, Direction::Asc)];
+        p
+    };
+    let measure =
+        |walk, project| pattern("learning", None, vec![step("cites", walk, 1, 1)], project);
+    let (degree, components) = (&["key", "degree"][..], &["component", "size", "key"][..]);
+    let asked = [
+        (
+            rows(vec![named("near")], "near.key"),
+            &["near.key"][..],
+            "a b c",
+        ),
+        (
+            rows(vec![named("near"), named("far")], "far.key"),
+            &["far.key"][..],
+            "d",
+        ),
+        (
+            measure(Walk::Out, Projection::Degree),
+            degree,
+            "x:3 c:1 a:0 b:0 d:0",
+        ),
+        (
+            measure(Walk::Both, Projection::Components),
+            components,
+            "0:5:a 0:5:b 0:5:c 0:5:d 0:5:x",
+        ),
+    ];
+    let cell = |row: &BTreeMap<String, Value>, c: &str| match row.get(c) {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => v.to_string(),
+        None => "-".to_owned(),
+    };
+    let mut wrong = Vec::new();
+    for at in [None, Some(then)] {
+        for (p, cols, want) in &asked {
+            let mut p = p.clone();
+            p.at.as_of = at;
+            let what = format!("{p:?}");
+            let QueryResult::Rows { rows, .. } = l.cat.query(&l.own, p).await.must(&what)?.data
+            else {
+                return Err(Failure::new(format!("{what} answered no rows")));
+            };
+            let got: Vec<String> = (rows.iter())
+                .map(|r| {
+                    cols.iter()
+                        .map(|c| cell(r, c))
+                        .collect::<Vec<_>>()
+                        .join(":")
+                })
+                .collect();
+            if got.join(" ") != *want {
+                wrong.push(format!(
+                    "{what} at {at:?}: `{}`, not `{want}`",
+                    got.join(" ")
+                ));
+            }
+        }
+        let mut path = lakelands_api::query::Pattern::path(
+            ("learning".into(), "x".into()),
+            ("learning".into(), "d".into()),
+            vec!["cites".into()],
+            3,
+        );
+        path.at.as_of = at;
+        let (got, _) = walked(&l, &l.own, path).await?;
+        if got != "x>c c>d / x c d" {
+            wrong.push(format!("the path from x to d at {at:?}: `{got}`"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "every reader of the graph sees one edge per distinct key of an array: {wrong:#?}"
+    );
+    Ok(())
+}
+
+async fn no_edge_of_an_array_is_walked_where_its_field_is_hidden(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let cited = [
+        ("a", Value::Null),
+        ("b", Value::Null),
+        ("x", json!(["a", "b"])),
+        ("y", json!("a")),
+    ];
+    learnings(&l, &cited).await?;
+    l.upsert("learning", "x", json!({"kind": "secret"})).await?;
+    let hide = json!({"field": "kind", "values": ["secret"], "fields": {"cites": "none"}});
+    let grants = json!({"default": "read", "types": {"learning": {"hide_where": [hide]}}});
+    let ann = super::only::holder(store.as_ref(), "ann", grants);
+    let told = [
+        ("x", Walk::Out, " / x"),
+        ("a", Walk::In, "y>a / a y"),
+        ("b", Walk::In, " / b"),
+    ];
+    let mut wrong = walks_from(&l, &ann, None, &told).await?;
+    let shown = [
+        ("x", Walk::Out, "x>a x>b / x a b"),
+        ("a", Walk::In, "x>a y>a / a x y"),
+        ("b", Walk::In, "x>b / b x"),
+    ];
+    wrong.extend(walks_from(&l, &l.own, None, &shown).await?);
+    let masked = field_access(
+        store.as_ref(),
+        "mo",
+        "learning",
+        &[("cites", Access::Masked)],
+    );
+    for (key, walk) in [("x", Walk::Out), ("a", Walk::In)] {
+        let got = l.cat.query(&masked, cites(key, walk, None)).await;
+        if !matches!(refused_on(&got), Some(("cites", Refusal::NotGranted))) {
+            wrong.push(format!("masked from `cites`, {walk:?} from {key}: {got:?}"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "an array's edges are walked only by a reader shown its field there: {wrong:#?}"
+    );
     Ok(())
 }

@@ -1,0 +1,16 @@
+name: product
+description: A product the trading house sells, made by one supplier.
+key: sku
+fields:
+  sku: { type: text, authority: source }
+  name: { type: text, authority: source, searchable: true }
+  description: { type: text, authority: source, searchable: true, description: "What the product is and what it is for, in the catalogue's words." }
+  category: { type: text, authority: source }
+  unit_price: { type: decimal, authority: source }
+  supplier: { type: reference(supplier), authority: source }
+relations:
+  supplied_by:
+    target: supplier
+    cardinality: many_to_one
+    via: supplier
+    inverse: products

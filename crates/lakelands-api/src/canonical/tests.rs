@@ -185,3 +185,161 @@ fn a_sealed_object_writes_its_members_once_and_hash_where_it_sorts() {
         );
     }
 }
+
+fn written(f: f64) -> String {
+    let mut out = Vec::new();
+    number_into(f, &mut out);
+    String::from_utf8(out).unwrap()
+}
+
+/// The buffer writer agrees with `number`, the oracle, on `f`.
+fn agrees(f: f64) {
+    assert_eq!(written(f), number(f), "bits {:016x}", f.to_bits());
+}
+
+/// A seeded xorshift stream: the same doubles on every run.
+fn stream(seed: u64) -> impl Iterator<Item = u64> {
+    let mut x = seed;
+    std::iter::repeat_with(move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    })
+}
+
+#[test]
+fn the_buffer_writer_agrees_with_number_on_random_doubles() {
+    for bits in stream(0x9e37_79b9_7f4a_7c15).take(200_000) {
+        let f = f64::from_bits(bits);
+        if f.is_finite() {
+            agrees(f);
+        }
+    }
+    // Doubles that people write: short decimals, in all magnitudes.
+    for bits in stream(42).take(100_000) {
+        let m = (bits % 1_000_000) as f64;
+        let e = ((bits >> 40) % 60) as i32 - 30;
+        agrees(m * 10f64.powi(e));
+        agrees(-m / 1000.0);
+    }
+}
+
+#[test]
+fn the_buffer_writer_agrees_with_number_on_the_edges() {
+    for f in [
+        0.0,
+        -0.0,
+        f64::MIN_POSITIVE,
+        f64::MAX,
+        f64::MIN,
+        f64::EPSILON,
+    ] {
+        agrees(f);
+    }
+    // Subnormals and the extreme exponents.
+    for bits in (1..2000_u64).chain((0x7fe0_0000_0000_0000..).take(2000)) {
+        agrees(f64::from_bits(bits));
+        agrees(-f64::from_bits(bits));
+    }
+    for bits in stream(7).take(5000) {
+        agrees(f64::from_bits(bits & 0x000f_ffff_ffff_ffff)); // subnormal
+    }
+    // Integers around 2^53 and the other powers of two.
+    for p in 0..64 {
+        let base = (1u64 << p) as f64;
+        for d in -3..=3 {
+            agrees(base + f64::from(d));
+            agrees(-(base + f64::from(d)));
+        }
+    }
+    let start = 1u64 << 53;
+    for i in start - 100..start + 100 {
+        agrees(i as f64);
+    }
+}
+
+/// One ulp on each side of every boundary where the notation changes:
+/// 10^-7 and 10^-6 (plain or exponent), 10^20 and 10^21, and each power
+/// of ten between.
+#[test]
+fn the_buffer_writer_agrees_with_number_at_the_notation_boundaries() {
+    for e in -30..=30 {
+        let f = 10f64.powi(e);
+        let bits = f.to_bits();
+        for d in -3..=3_i64 {
+            agrees(f64::from_bits(bits.wrapping_add_signed(d)));
+            agrees(-f64::from_bits(bits.wrapping_add_signed(d)));
+        }
+    }
+    for f in [1e21, 1e-6, 999_999_999_999_999_900_000.0, 1e-7] {
+        let bits = f64::to_bits(f);
+        for d in -2..=2_i64 {
+            agrees(f64::from_bits(bits.wrapping_add_signed(d)));
+        }
+    }
+}
+
+#[test]
+fn the_buffer_writer_agrees_with_number_on_widened_f32() {
+    for bits in stream(11).take(100_000) {
+        let f = f32::from_bits(bits as u32);
+        if f.is_finite() {
+            agrees(f64::from(f));
+        }
+    }
+    for f in [
+        0.1_f32,
+        0.2,
+        1.0 / 3.0,
+        f32::MAX,
+        f32::MIN_POSITIVE,
+        f32::EPSILON,
+    ] {
+        agrees(f64::from(f));
+    }
+}
+
+#[test]
+fn integers_print_as_their_digits() {
+    for i in [
+        0,
+        1,
+        -1,
+        9,
+        10,
+        99,
+        100,
+        i64::MAX,
+        i64::MIN,
+        1 << 53,
+        -(1 << 53),
+    ] {
+        assert_eq!(to_vec(&json!(i)), i.to_string().into_bytes());
+    }
+    for u in [0, u64::MAX, u64::MAX - 1, 1 << 63, 10_u64.pow(19)] {
+        assert_eq!(to_vec(&json!(u)), u.to_string().into_bytes());
+    }
+    for bits in stream(3).take(10_000) {
+        assert_eq!(
+            to_vec(&json!(bits as i64)),
+            (bits as i64).to_string().into_bytes()
+        );
+        assert_eq!(to_vec(&json!(bits)), bits.to_string().into_bytes());
+    }
+}
+
+/// `to_vec` of a vector of doubles is the oracle's strings joined.
+#[test]
+fn a_vector_of_doubles_is_the_oracle_joined() {
+    let items: Vec<f64> = stream(5)
+        .take(384)
+        .map(|b| (b >> 11) as f64 / (1u64 << 53) as f64 - 0.5)
+        .collect();
+    let want = items
+        .iter()
+        .map(|f| number(*f))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(to_vec(&json!(items)), format!("[{want}]").into_bytes());
+}

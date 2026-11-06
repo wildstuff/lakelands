@@ -8,16 +8,8 @@
 //! only source fields, an author only authored ones, and a record or
 //! patch that crosses the line is refused whole.
 
-use lakelands_api::ontology::{StorageKind, TypeDecl};
-use lakelands_api::{Error, Refusal, SourceId, SourceRecord, TypeName, Version};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, all, committed, delivered, events_from, field, get_at, head_unmoved, log_events,
-    read, refused_on, refused_unmoved, source_record, sourced, try_upsert, type_decl, value,
-    windows_reach_head,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{committed, delivered, get_at, ingest, read, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     SAME_CONTENT_TWICE = the_same_content_ingested_twice_appends_nothing_the_second_time,
@@ -57,9 +49,122 @@ check!(
 );
 
 check!(
+    ON_BEHALF_OF_NOT_IN_ID = whom_a_delivery_is_for_is_not_in_its_events_id,
+    "088 (lakelands#1489) and log-format §3: whom a write is for is not in a `record_ingested`'s id, so the same record delivered for `human:alice` and then for `human:carol` appends one event and answers the second as a duplicate"
+);
+
+check!(
     A_SOURCE_PER_RECORD = one_ingest_carries_a_source_per_record,
     "016 and 039: one ingest may name a source per record, the call's where a record names none: each record's provenance holds its own, a redelivery under it is a duplicate, the same record under another source is a duplicate unchanged and a new event under it changed, and `purge_source` of one takes only its records"
 );
+
+check!(
+    A_DELIVERY_PER_RECORD = one_ingest_carries_a_delivery_per_record,
+    "016 and 065, extended (lakelands#1528): one call in `page` carries `k0` naming `page`, `k1` naming no delivery, `k2` naming `item-2` and `k3` and `k4` naming `item-3`: their events name `page`, `page`, `item-2`, `item-3` and `item-3`, alike at a `commit_window` of 1 and of 256; taking back `item-3` selects `k3` and `k4` alone, `[item-2, item-3]` three, `page` two, and the act on `item-3` leaves `k1` and `k2` and retires `k3` and `k4`; the same record under `item-5` and then `item-6` in one call is one event in `item-5` and a duplicate; a record naming `d7` or the empty id is refused `delivery_id_form` with its `index` and `from`, nothing of its window appended"
+);
+
+async fn one_ingest_carries_a_delivery_per_record(store: Store) -> Held {
+    use lakelands_api::error::Case;
+    use lakelands_api::write::Selection;
+    use lakelands_api::{DeliveryId, IngestOpts, ingest_all_with};
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let r = |key: &str, delivery: Option<&str>| SourceRecord {
+        delivery: delivery.map(DeliveryId::from),
+        ..source_record("feed", key, json!({"body": key}))
+    };
+    let page = |window: u32| IngestOpts {
+        delivery: Some("page".into()),
+        commit_window: Some(window),
+        ..IngestOpts::default()
+    };
+    let named = [
+        ("k0", Some("page")),
+        ("k1", None),
+        ("k2", Some("item-2")),
+        ("k3", Some("item-3")),
+        ("k4", Some("item-3")),
+    ];
+    // Each run under keys of its own, so `all`'s records are its alone.
+    for (window, source, of) in [(1, "one", "-1"), (256, "all", "")] {
+        let before = store.head().await.must("reading the head")?;
+        let key = |k: &str| format!("{k}{of}");
+        let batch = named.iter().map(|(k, d)| r(&key(k), *d)).collect();
+        let source = SourceId::from(source);
+        let said = ingest_all_with(l.cat.as_ref(), &l.own, &source, page(window), batch);
+        let what = format!("ingesting five records in three deliveries at a window of {window}");
+        said.await.must(&what)?;
+        let events = events_from(store.as_ref(), before.next()).await?;
+        let got: Vec<_> = (events.into_iter())
+            .filter_map(|e| match e.body {
+                EventBody::RecordIngested { key, .. } => Some((key.0, e.delivery?.to_string())),
+                _ => None,
+            })
+            .collect();
+        let want: Vec<_> = (named.iter())
+            .map(|(k, d)| (key(k), d.unwrap_or("page").to_owned()))
+            .collect();
+        ensure!(got == want, "{what}, the events name {got:?}, not {want:?}");
+    }
+    let all = SourceId::from("all");
+    for (selection, want) in [
+        (Selection::Delivery("item-3".into()), 2),
+        (
+            Selection::Deliveries(vec!["item-2".into(), "item-3".into()]),
+            3,
+        ),
+        (Selection::Delivery("page".into()), 2),
+    ] {
+        let report = store.remove_values_preflight(&all, &selection).await;
+        let report = report.must("the preflight")?;
+        ensure!(
+            report.events == want,
+            "taking back {selection:?} selects {want} events: {report:?}"
+        );
+    }
+    store
+        .remove_values(&all, &Selection::Delivery("item-3".into()), false, None)
+        .await
+        .must("taking `item-3` back")?;
+    for (key, live) in [("k1", true), ("k2", true), ("k3", false), ("k4", false)] {
+        let got = l.cat.get(&l.own, &"feed".into(), get_at(key, None)).await;
+        ensure!(
+            got.is_ok() == live,
+            "after taking `item-3` back, `{key}` read {got:?}"
+        );
+    }
+    let before = store.head().await.must("reading the head")?;
+    let twice = vec![r("k5", Some("item-5")), r("k5", Some("item-6"))];
+    let windows = delivered(store.as_ref(), &l, "all", twice, "one record in two").await?;
+    let events = events_from(store.as_ref(), before.next()).await?;
+    let in_five = (events.iter()).all(|e| e.delivery == Some("item-5".into()));
+    ensure!(
+        committed(&windows) == (1, 1) && events.len() == 1 && in_five,
+        "the same record under `item-5` then `item-6` is one event in `item-5` and a \
+         duplicate: {windows:?}, {events:?}"
+    );
+    for id in ["d7", ""] {
+        let before = store.head().await.must("reading the head")?;
+        let batch = vec![r("k6", None), r("k7", Some(id))];
+        let said = ingest_all_with(l.cat.as_ref(), &l.own, &all, page(256), batch).await;
+        let what = format!("a record naming the delivery {id:?}");
+        let e = refused_unmoved(store.as_ref(), before, &what, said).await?;
+        let formed = match &e {
+            Error::Ingested {
+                index: 1,
+                from: 0,
+                error,
+                ..
+            } => crate::conformance::fixture::invalid_case(&**error).cloned(),
+            _ => None,
+        };
+        ensure!(
+            formed == Some(Case::DeliveryIdForm),
+            "{what} is refused `delivery_id_form` at index 1 from 0: {e}"
+        );
+    }
+    Ok(())
+}
 
 /// `feed`: a source's `body` and an author's `verdict`.
 fn feed() -> TypeDecl {
@@ -654,6 +759,91 @@ async fn an_ingest_refusal_names_its_record_and_where_its_window_began(store: St
 }
 
 check!(
+    OWN_WINDOW = a_delivery_may_ask_its_own_commit_window_up_to_the_lakes_ceiling,
+    "016, extended (lakelands#1496): an ingest that asks its own `commit_window` is committed in windows of that many records: at 2 a refused record takes back only its own window, `from` its start, and at twice the lake's `commit_window_events` the lake's two windows are one; a window of 0 or above `limits.commit_window_max` is refused as `limit_range` on `commit_window`, naming the ceiling, and nothing is appended; a location whose `commit_window_events` is above its ceiling is refused at open, naming the setting",
+    given
+);
+
+async fn a_delivery_may_ask_its_own_commit_window_up_to_the_lakes_ceiling(
+    store: Store,
+    given: Given,
+) -> Held {
+    use crate::conformance::fixture::limits;
+    use lakelands_api::{IngestOpts, ingest_all_with};
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let (src, rec) = (SourceId::from("wire"), |k: String| {
+        source_record("feed", &k, json!({"body": "x"}))
+    });
+    let at = |w: u32, records| {
+        let opts = IngestOpts {
+            commit_window: Some(w),
+            ..IngestOpts::default()
+        };
+        ingest_all_with(l.cat.as_ref(), &l.own, &src, opts, records)
+    };
+    // At 2 the sixth record is refused: `s0`..`s3` are written, its own
+    // window, from `s4`, is not.
+    let mut small: Vec<_> = (0..5).map(|i| rec(format!("s{i}"))).collect();
+    small.push(source_record("feed", "s5", json!({"verdict": "no"})));
+    let fed = at(2, small).await;
+    let (s3, s4) = (l.read("feed", "s3").await, l.read("feed", "s4").await);
+    ensure!(
+        matches!(
+            fed,
+            Err(Error::Ingested {
+                index: 5,
+                from: 4,
+                ..
+            })
+        ) && s3.is_ok()
+            && s4.is_err(),
+        "at a window of 2 the refused sixth record takes back only its own window, from 4, \
+         `s3` written and `s4` not; it answered {fed:?}, {s3:?}, {s4:?}"
+    );
+    let lake = limits().commit_window_events;
+    let bulk = |p: &str| (0..2 * lake).map(|i| rec(format!("{p}{i}"))).collect();
+    let own = at(2 * lake, bulk("b"))
+        .await
+        .must("ingesting at twice the lake's window")?;
+    let theirs = l
+        .ingest("wire", bulk("c"))
+        .await
+        .must("ingesting at the lake's window")?;
+    ensure!(
+        own.len() == 1 && theirs.len() == 2,
+        "{} records commit in one window at twice the lake's window and in two at its own; \
+         they answered {own:?} and {theirs:?}",
+        2 * lake
+    );
+    let max = limits().commit_window_max;
+    let head = store.head().await.must("reading the head")?;
+    for w in [0, max + 1] {
+        let what = format!("an ingest asking a window of {w}");
+        let said = at(w, vec![rec("r".into())]).await;
+        let e = refused_unmoved(store.as_ref(), head, &what, said).await?;
+        ensure!(
+            matches!(&e, Error::Refused { field: Some(f), .. } if f == "commit_window")
+                && invalid_case(&e) == Some(&Case::LimitRange { max }),
+            "{what} is refused on `commit_window` as `limit_range` naming {max}: {e:?}"
+        );
+    }
+    let over = lakelands_api::location::Limits {
+        commit_window_max: lake - 1,
+        ..limits()
+    };
+    let err = (given.relimit)(store, Seams::default(), over).await.err();
+    ensure!(
+        matches!(&err, Some(e @ Error::Refused { field: Some(f), .. })
+            if f == "limits.commit_window_events"
+                && invalid_case(e) == Some(&Case::LimitRange { max: lake - 1 })),
+        "a location whose `commit_window_events` is above its ceiling is refused at open, \
+         naming the setting; it answered {err:?}"
+    );
+    Ok(())
+}
+
+check!(
     INSERT_ONLY = an_insert_only_type_is_written_once_by_its_source,
     "016 and 027, extended (lakelands#1044): a type marked `insert_only` takes a record from its source once: the same record again is a duplicate, other values for a key that holds a record, live or retired, or that the window wrote already, are refused as `written_once`, naming the record and appending nothing, and the pair cut after its first record on a signal is refused alike at its second, the first written and `from` 1 (lakelands#886), while an author still writes its authored fields; a key held from its writer answers as on an unmarked type; `describe_type` says the mark; declared on a type that holds records it is taken with no migration, its version moving and its schema hash not, and taken off, a key moves its version again"
 );
@@ -795,6 +985,7 @@ async fn an_ingests_delivery_is_the_callers_or_the_stores_own(store: Store) -> H
     let source = SourceId::from("sensor");
     let with = |delivery: Option<&str>| IngestOpts {
         delivery: delivery.map(DeliveryId::from),
+        ..IngestOpts::default()
     };
     let r = |key: &str, body: &str| source_record("feed", key, json!({"body": body}));
     // Each call's events and its answer, as the log and the windows hold them.
@@ -830,13 +1021,14 @@ async fn an_ingests_delivery_is_the_callers_or_the_stores_own(store: Store) -> H
     // A call of many windows, the first of them all duplicates: one id,
     // from the first event the call appended, and none before it.
     let bulk = |n: usize| (0..n).map(|i| r(&format!("b{i}"), "e")).collect::<Vec<_>>();
-    call(Some("bulk"), bulk(32)).await?;
-    let (before, windows, ingested) = call(None, bulk(100)).await?;
+    let window = limits().commit_window_events.max(1) as usize;
+    call(Some("bulk"), bulk(window)).await?;
+    let (before, windows, ingested) = call(None, bulk(3 * window + 4)).await?;
     let own = Some(DeliveryId::from(format!("d{}", before.next())));
     let (empty, appended): (Vec<_>, Vec<_>) = windows.iter().partition(|w| w.records == 0);
     ensure!(
         appended.len() >= 2
-            && ingested.len() == 68
+            && ingested.len() == 2 * window + 4
             && ingested.iter().all(|(_, d)| *d == own)
             && appended.iter().all(|w| w.delivery == own)
             && empty.iter().all(|w| w.delivery.is_none()),
@@ -896,5 +1088,29 @@ async fn an_ingested_reference_holding_nul_is_refused_on_its_field(store: Store)
             "a reference holding NUL is refused on `r` as a text holding NUL; it answered {err:?}"
         );
     }
+    Ok(())
+}
+
+async fn whom_a_delivery_is_for_is_not_in_its_events_id(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let before = store.head().await.must("reading the head")?;
+    let mut answered = Vec::new();
+    for whom in ["human:alice", "human:carol"] {
+        let cat = store.catalog(super::context::made_for(whom));
+        let fed = vec![source_record("feed", "r1", json!({"body": "a"}))];
+        let windows = ingest(cat.as_ref(), &l.own, "sensor", fed).await;
+        answered.push(committed(&windows.must("ingesting `r1`")?));
+    }
+    let events = events_after(store.as_ref(), before).await?;
+    let ingested: Vec<_> = (events.iter())
+        .filter(|e| matches!(e.body, EventBody::RecordIngested { .. }))
+        .map(|e| e.on_behalf_of.as_deref())
+        .collect();
+    ensure!(
+        answered == [(1, 0), (0, 1)] && ingested == [Some("human:alice")],
+        "`r1` delivered for alice and then for carol appends one `record_ingested`, for \
+         alice, and answers the second as a duplicate: windows {answered:?}, events {ingested:?}"
+    );
     Ok(())
 }

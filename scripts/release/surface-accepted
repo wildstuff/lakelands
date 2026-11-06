@@ -5,15 +5,36 @@
 # any other, and any line here that no change answers. At a release the
 # baseline becomes the new tag and the list empties
 # (docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md).
-baseline v0.15.0
-lakelands-api	derive_trait_impl_removed	type Committed no longer derives Copy
-lakelands-api	enum_marked_non_exhaustive	enum Authority
-lakelands-api	enum_marked_non_exhaustive	enum Declaration
-lakelands-api	enum_marked_non_exhaustive	enum VerbEffect
-lakelands-api	enum_variant_missing	variant Case::WindowLinksAlready
-lakelands-api	struct_field_type_changed	field FunctionDecl.inputs
-lakelands-api	trait_method_added	trait method Catalog::accept_planned
-lakelands-api	trait_method_added	trait method Catalog::enact
-lakelands-api	trait_method_added	trait method Catalog::plan
-lakelands-api	trait_method_added	trait method LakeStore::remove_values
-lakelands-api	trait_method_added	trait method LakeStore::remove_values_preflight
+baseline v0.19.0
+lakelands-api	trait_method_added	trait method Catalog::dismiss_quarantined
+lakelands-api	trait_method_added	trait method Catalog::quarantined
+lakelands-api	trait_method_added	trait method LakeStore::zone
+lakelands-api	trait_method_added	trait method ProjectionStore::end_order
+lakelands-api	trait_method_added	trait method ProjectionStore::put_order
+lakelands-api	trait_method_added	trait method ProjectionStore::put_quarantined
+lakelands-api	trait_method_added	trait method ProjectionStore::put_thinned
+lakelands-api	trait_method_added	trait method ProjectionStore::put_thinned_act
+lakelands-api	trait_method_added	trait method ProjectionStore::states
+lakelands-api	trait_method_added	trait method ProjectionView::order
+lakelands-api	trait_method_added	trait method ProjectionView::order_page
+lakelands-api	trait_method_added	trait method ProjectionView::quarantined
+lakelands-api	trait_method_added	trait method ProjectionView::thinned_acts
+lakelands-api	trait_method_added	trait method ProjectionView::thinned_at
+lakelands-api	derive_trait_impl_removed	type WriteContext no longer derives Copy
+lakelands-api	enum_variant_missing	variant Beyond::Clock
+lakelands-api	enum_variant_missing	variant Case::KeptExtremeGroupedBy
+lakelands-api	enum_variant_missing	variant Case::KeptExtremeUngrouped
+lakelands-api	enum_variant_missing	variant EventBody::LakeUpgraded
+lakelands-api	enum_variant_missing	variant Flaw::ApartBefore
+lakelands-api	enum_variant_missing	variant Flaw::ChangeBefore
+lakelands-api	enum_variant_missing	variant Flaw::DroppedBefore
+lakelands-api	enum_variant_missing	variant Flaw::ForgottenBefore
+lakelands-api	enum_variant_missing	variant Flaw::FormatStep
+lakelands-api	enum_variant_missing	variant Flaw::RemovedBefore
+lakelands-api	enum_variant_missing	variant Flaw::SealedBefore
+lakelands-api	enum_variant_missing	variant Flaw::SelectsLater
+lakelands-api	enum_variant_missing	variant Situation::LogUpgradeOwed
+lakelands-api	struct_field_type_changed	field ViewDecl.group_by
+lakelands-api	method_signature_changed	method TypeDecl::key_fields
+lakelands-api	method_signature_changed	method TypeDecl::key_sources
+lakelands-store	function_missing	function lakelands_store::written_in

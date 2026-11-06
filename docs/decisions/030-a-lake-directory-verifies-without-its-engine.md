@@ -4,19 +4,39 @@
 
 ### The SQLite engine keeps a lake as a directory whose log anyone can read
 
+098 compresses an append's lines into blocks of zlib, and a reader still
+needs this document and a standard library alone.
+
 The SQLite engine keeps a lake as a directory whose log anyone can read:
 
 - `log/<first position>.jsonl` holds the segments exactly as the log
   format names them, each event's canonical bytes and a line feed,
   nothing else. A verifier needs the format and these files, not the
-  engine.
+  engine. From format 20 the lines are the stored form the log format
+  names, from which each event's canonical bytes are restored; that is
+  accepted for 0.20.0 (lakelands#1413)
+  (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`).
 - `index/<first position>.idx` holds, per event, the members the engine
   was handed beside the bytes (position, id, `prev`, `hash`, fence) and
   where the bytes lie, and one commit line closing each append. An
   append writes its segment lines, then its index lines and the commit
   line, and syncs both files at once; every open checks the last group
   a crash may have left ahead of its bytes
-  (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`). Only
+  (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`). As
+  083 accepts for 0.20.0, an event's index line after a segment's
+  first names `prev` empty, as it is the hash of the line before, and
+  a frame has no index line: its line is the gap before the first
+  event it covers, and the lines that name `prev` empty after it are
+  the events it covers, so the index keeps the shapes 0.19.0 reads
+  (lakelands#1468); the index is the engine's own and no part of the
+  format. As 086 decides for 0.21.0, an event's index line names `id`
+  empty, and the engine reads the id from the event's line, which holds
+  it whole; a line written before names it and is read as it stands
+  (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`). The open's check of the last group reads its lines as whole
+  events of their format; the store writes the append that creates a
+  lake, and the one that upgrades it, whole (`docs/log-format.md`
+  §1.2), so 0.19.0 counts that group even while it is a lake's only one
+  of 20, and names the format (lakelands#1477). Only
   events before the last commit line exist, so an append is whole after
   a crash or not there at all. The next writer
   cuts off what an interrupted append left. A writer that goes on after
@@ -116,7 +136,9 @@ lake as a writer's open would.
   answers a position out of turn fails it.
 - It reads the feed a page at a time and writes each line as it comes,
   and a verifier reads a line at a time, so neither holds the log in
-  memory.
+  memory. Under 083, accepted for 0.20.0, the export holds a run of at
+  most 1 000 events sharing `known_at` until it writes their frame
+  (`docs/log-format.md` §4.2), and a verifier holds a frame line.
 - Beside `log/` it writes `export.json`, a manifest of the lake, the
   position and hash it read through, the format version this release
   writes, and each
@@ -176,7 +198,10 @@ file's contents; the operating system's lock does not.
 - It is not a promise that the index or the projection can be read by
   another program. They are the engine's; only the segments are the
   format. The projection is derived and a rebuild makes it again; the
-  index is not, and goes into a backup with the segments.
+  index is not, and a file copy of the directory takes it with the
+  segments. A backup the store writes holds the segments alone, and its
+  import makes the index again
+  (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
 - It is not a replication scheme. Copying a directory while a writer
   appends can catch an uncommitted tail, which the next writer cuts off.
 - It is not a requirement on other engines. An engine that keeps events
@@ -194,6 +219,15 @@ file's contents; the operating system's lock does not.
   engines.
 - An export opens as the lake it came from, on any engine
   (lakelands#215).
+- The segment files holding the stored form, the index line of an event
+  without `prev` and a frame's own, and the export holding a run of
+  events for its frame, accepted with 083 (lakelands#1413).
+- The index in the two line shapes 0.19.0 reads, `prev` named empty and
+  a frame found by its gap, so that release refuses a lake of 20 by its
+  format and does not call it damaged (lakelands#1468).
+- The last group of a lake just made or just upgraded counted by 0.19.0,
+  its append stored whole; before, that release took it for a crash's
+  tail (lakelands#1477).
 - A writer that goes on after a failed append cuts off what it left;
   the cut takes the index first and never a whole commit line
   (lakelands#618).
@@ -222,3 +256,7 @@ file's contents; the operating system's lock does not.
 - An append syncs its segment and its index at once, and every open
   checks the active segment's last group against its hashes; before, it
   synced the segment, then the index (lakelands#1037).
+- The index goes into a file copy of the directory, and a backup the
+  store writes holds the segments alone; before, every backup was said
+  to hold the index (lakelands#1369).
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

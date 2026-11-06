@@ -31,8 +31,8 @@ use super::outage::{Aimless, Exchange, closed, named};
 use crate::expr::Condition;
 use crate::expr::kind::Kind;
 use crate::id::{
-    ConstraintName, FieldName, KeyId, LakeId, ParamName, Position, ProposalId, RecordKey,
-    RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName,
+    ConstraintName, FieldName, KeyId, LakeId, ParamName, Position, PreconditionName, ProposalId,
+    RecordKey, RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName,
 };
 use crate::ontology::{Authority, Cardinality, FieldType, StorageKind};
 use crate::query::Walk;
@@ -170,8 +170,8 @@ pub struct Named {
 impl Named {
     /// Whether a reviewer is shown all of it by `listed`, a proposal as
     /// its listing shows it: each type one it `sees`; each field one it
-    /// `reads` of the type written, a verb's counting those its `requires`
-    /// reads; each verb the one called; what a declaration
+    /// `reads` of the type written, a verb's counting the record's its
+    /// `requires` reads; each verb the one called; what a declaration
     /// says only beside a field; each key the one written or, as each
     /// value, one listed under a field named, or in a call's payload,
     /// which is listed only whole.
@@ -198,7 +198,10 @@ impl Named {
         let mut read = Vec::new();
         for v in &self.verbs {
             match requires(v).map(|c| c.typed()) {
-                Some(Ok(e)) => read.extend(e.fields_read().into_iter().cloned()),
+                Some(Ok(e)) => {
+                    let paths = crate::ontology::record_paths(&e).into_iter();
+                    read.extend(paths.filter_map(|p| p.into_iter().next()));
+                }
                 Some(Err(_)) => return false,
                 None => {}
             }
@@ -310,6 +313,7 @@ said_by_display!(
     RelationName,
     TriggerName,
     ConstraintName => constraints,
+    PreconditionName => nothing,
     TypeName => types,
     ValueTypeName => declared,
     VerbName => verbs,
@@ -318,6 +322,7 @@ said_by_display!(
     KeyId => nothing,
     Timestamp => nothing,
     super::Detail,
+    super::Requests => nothing,
 );
 
 /// Write a template with its parameters.
@@ -409,6 +414,21 @@ impl fmt::Display for Names {
         }
         Ok(())
     }
+}
+
+/// A part of a declared condition in the text form, as
+/// [`crate::expr::print`] writes it. It names nothing of its own: what it
+/// reads is read by the declaration named beside it, and judged with it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Printed(pub String);
+
+impl Param for Printed {
+    fn said(&self) -> Option<String> {
+        Some(self.0.clone())
+    }
+
+    fn names(&self, _: &mut Named) {}
 }
 
 /// A cardinality by its name in a declaration: `many_to_one`.
@@ -521,6 +541,8 @@ named! {
         Trigger = "trigger" => "trigger",
         /// A type's constraint.
         Constraint = "constraint" => "constraint",
+        /// A verb's precondition.
+        Precondition = "precondition" => "precondition",
         /// An object set.
         ObjectSet = "object_set" => "object set",
         /// A function.
@@ -581,6 +603,8 @@ catalog! {
         Trigger { name: TriggerName } => "trigger `{name}`",
         /// A type's constraint.
         TypeConstraint { name: ConstraintName } => "constraint `{name}`",
+        /// A verb's precondition.
+        Precondition { name: PreconditionName } => "precondition `{name}`",
         /// An object set.
         ObjectSet { name: String } => "object set `{name}`",
         /// A function.
@@ -617,6 +641,8 @@ catalog! {
         Erasable => "`erasable`",
         /// A field's `authority`.
         Authority => "`authority`",
+        /// A field's `admits`.
+        Admits => "`admits`",
         /// The link types of a type's relations.
         Links { name: TypeName } => "the links of `{name}`",
         /// A pattern's start.
@@ -696,6 +722,117 @@ named! {
         Proposal = "proposal" => "the proposal",
         /// A source.
         Source = "source" => "the source",
+    }
+}
+
+named! {
+    /// An openCypher construct outside the subset Lakelands takes, spelt
+    /// as the statement spells it.
+    pub enum Construct {
+        /// A `CREATE` clause.
+        Create = "create" => "`CREATE`",
+        /// A `MERGE` clause.
+        Merge = "merge" => "`MERGE`",
+        /// A `SET` clause.
+        Set = "set" => "`SET`",
+        /// A `DELETE` clause.
+        Delete = "delete" => "`DELETE`",
+        /// A `DETACH DELETE` clause.
+        DetachDelete = "detach_delete" => "`DETACH DELETE` (a retirement that unlinks is two writes; the plan tells what still names the record)",
+        /// A `REMOVE` clause.
+        Remove = "remove" => "`REMOVE`",
+        /// A `FOREACH` clause.
+        Foreach = "foreach" => "`FOREACH`",
+        /// A `LOAD CSV` clause.
+        LoadCsv = "load_csv" => "`LOAD CSV`",
+        /// A procedure call or a `CALL` subquery.
+        Call = "call" => "`CALL` (a procedure or a subquery)",
+        /// A `WITH` clause.
+        With = "with" => "`WITH`",
+        /// A `UNION` of statements.
+        Union = "union" => "`UNION`",
+        /// An `UNWIND` clause.
+        Unwind = "unwind" => "`UNWIND`",
+        /// A `USE` clause.
+        Use = "use" => "`USE`",
+        /// `PROFILE` before a statement.
+        Profile = "profile" => "`PROFILE` (there is no plan to profile; `EXPLAIN` shows the pattern)",
+        /// A statement after the first.
+        SeveralStatements = "several_statements" => "a second statement",
+        /// `DISTINCT`.
+        Distinct = "distinct" => "`DISTINCT`",
+        /// A list comprehension.
+        ListComprehension = "list_comprehension" => "a list comprehension",
+        /// A pattern comprehension.
+        PatternComprehension = "pattern_comprehension" => "a pattern comprehension",
+        /// A map projection.
+        MapProjection = "map_projection" => "a map projection",
+        /// A `COUNT` subquery.
+        CountSubquery = "count_subquery" => "`COUNT` over a subquery",
+        /// An `EXISTS` other than a `NOT EXISTS` conjunct.
+        Exists = "exists" => "`EXISTS` (a `WHERE` reads only `NOT EXISTS` over a part of one relationship, as a whole conjunct)",
+        /// A `CASE` expression.
+        Case = "case" => "`CASE`",
+        /// `XOR`.
+        Xor = "xor" => "`XOR`",
+        /// The `%` operator.
+        Modulo = "modulo" => "`%`",
+        /// The `^` operator.
+        Power = "power" => "`^`",
+        /// `ENDS WITH`.
+        EndsWith = "ends_with" => "`ENDS WITH`",
+        /// A list outside `IN`.
+        ListLiteral = "list_literal" => "a list outside `IN`",
+        /// A map outside a node.
+        MapLiteral = "map_literal" => "a map outside a node",
+        /// A path bound to a name.
+        NamedPath = "named_path" => "a named path",
+        /// `shortestPath` or `allShortestPaths`.
+        ShortestPath = "shortest_path" => "a shortest path",
+        /// A variable on a relationship.
+        RelationshipVariable = "relationship_variable" => "a variable on a relationship (a link's fields are read through its link type)",
+        /// Properties on a relationship.
+        RelationshipProperties = "relationship_properties" => "properties on a relationship (a link's fields are read through its link type)",
+        /// A choice of relationship types.
+        RelationAlternation = "relation_alternation" => "a choice of relationship types (`:a|b`)",
+        /// A node of more than one label.
+        SeveralLabels = "several_labels" => "a node of several labels",
+        /// A variable length with no upper bound.
+        UnboundedLength = "unbounded_length" => "a length with no upper bound (`*`, `*2..`; none is made up)",
+        /// A duration in months or years.
+        CalendarDuration = "calendar_duration" => "a duration in months or years, which has no fixed length",
+        /// A `MATCH` part reading a name only an optional part binds.
+        MatchFromOptional = "match_from_optional" => "a `MATCH` reading a name only an `OPTIONAL MATCH` binds (it would drop the rows the optional part keeps; write the part as a `MATCH`)",
+        /// An `OPTIONAL MATCH` walking from a name another one binds.
+        OptionalFromOptional = "optional_from_optional" => "an `OPTIONAL MATCH` walking from a name only another `OPTIONAL MATCH` binds (the two would match or miss as one)",
+        /// An `OPTIONAL MATCH` hanging from more than one bound name.
+        OptionalParts = "optional_parts" => "an `OPTIONAL MATCH` walking from more than one name bound before it (an optional part is one branch from one name)",
+        /// An aggregate inside an expression.
+        AggregateInExpression = "aggregate_in_expression" => "an aggregate inside an expression (a measure is one function of one path)",
+        /// A `USING` hint.
+        Using = "using" => "`USING` (an index hint)",
+        /// `ON CREATE`.
+        OnCreate = "on_create" => "`ON CREATE` (a door writes one patch, whether the record is there or not)",
+        /// `ON MATCH`.
+        OnMatch = "on_match" => "`ON MATCH` (a door writes one patch, whether the record is there or not)",
+        /// A label set or removed.
+        Label = "label" => "a label set or removed (a record's type is declared, never written)",
+        /// An index, a constraint or a `DROP`.
+        Schema = "schema" => "an index or a constraint (the ontology is declared through its own doors)",
+        /// `RETURN` after a write.
+        ReturnBesideWrite = "return_beside_write" => "a `RETURN` beside a write (a write statement answers its door's outcome or its plan)",
+        /// A value written that is computed or read from a record.
+        ComputedValue = "computed_value" => "a value computed or read from a record (a write sets values: literals or parameters)",
+        /// A selection the change's condition cannot say.
+        WriteSelection = "write_selection" => "a `MATCH` the condition of a change to one type cannot say (a second name, an optional part, a part that must not match, or a link's end not named by its key)",
+        /// A relationship written without a direction.
+        UndirectedWrite = "undirected_write" => "a relationship written or changed without a direction",
+        /// `EXPLAIN` before a write.
+        ExplainWrite = "explain_write" => "`EXPLAIN` before a write (a `MATCH … SET` sent alone answers its plan)",
+        /// A map set on a name.
+        SetMap = "set_map" => "a map set on a name (`=` or `+=`; set each property by its path)",
+        /// `ORDER BY` beside an aggregate.
+        OrderByAggregate = "order_by_aggregate" => "`ORDER BY` beside an aggregate (its groups come in one fixed order, by the fields returned beside it: leave `ORDER BY` out)",
     }
 }
 
@@ -785,6 +922,22 @@ catalog! {
         ComputedReadsItself { field: FieldName } => "the computed field `{field}` reads itself",
         /// A type naming two constraints alike.
         ConstraintNamedTwice { constraint: ConstraintName } => "two constraints are named `{constraint}`",
+        /// A constraint whose `now()` or `today()` is no clock term on one
+        /// side of a comparison with a field.
+        ClockNotCompared { constraint: ConstraintName } => "constraint `{constraint}` reads the clock other than as `now()` or `today()`, with or without a duration added or taken away, on one side of a comparison whose other side is a field, with or without a duration added or taken away; the rule is fixed and only the write's instant moves",
+        /// A `preceding` whose matched field the exact-text index cannot
+        /// keep.
+        PrecedingUnlooked { field: FieldName } => "a `preceding` matches its series on `{field}`, which is not text or a reference",
+        /// A `preceding` ordered by a field whose kind has no order.
+        PrecedingUnordered { field: FieldName } => "a `preceding` orders its series by `{field}`, whose kind has no order",
+        /// A field's `in_force` not of the form it pairs by.
+        InForceForm { field: FieldName } => "the field `{field}` pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of this record",
+        /// A field's `in_force` pair whose two fields cannot pair.
+        InForcePair { field: FieldName, left: FieldName, right: FieldName } => "the field `{field}` pairs `{left}` with `{right}`: two fields of one kind, a match of text or a reference, an order bound of a kind with an order",
+        /// A trigger's `in_force` not of the form it pairs by.
+        GuardInForceForm => "its `when` pairs by `in_force(T.f, T.by <= by, T.m = m, …)`: a field of another stored type `T` first, its order bound second, then one match or more, each over `T` and a stored field of the trigger's type",
+        /// A trigger's `in_force` pair whose two fields cannot pair.
+        GuardInForcePair { left: FieldName, right: FieldName } => "its `when` pairs `{left}` with `{right}`: two fields of one kind, a match of text or a reference, an order bound of a kind with an order",
         /// A constraint that reads what can change without a write of the
         /// record.
         ConstraintReadsBeyond { constraint: ConstraintName, reads: Box<Beyond> } => "constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields",
@@ -835,6 +988,14 @@ catalog! {
         ErasableKey => "a key's field is the record's key, which stays plaintext in every event",
         /// A field that names a record declared erasable.
         ErasableReference => "a field that names a record is read by every walk, so it stays plaintext",
+        /// `admits` on a field whose authority is not `authored`.
+        AdmitsNotAuthored => "only an authored field admits a source: a shared field takes every source already, a source field is any source's, and no source writes a derived field or one only verbs write",
+        /// `admits` on a field no `ingest` writes.
+        AdmitsNotOfType => "only a field of a type's own records admits a source; no ingest writes a view's field, a relation's, a verb's payload or a function's input",
+        /// `admits` on a field of a type that keeps no per-field provenance.
+        AdmitsNoProvenance => "the type keeps no per-field provenance, so a source's value could not be told from an author's, nor taken back by its purge",
+        /// A source `admits` names twice.
+        AdmitsTwice { source: SourceId } => "it admits `{source}` twice",
         /// A field only verbs write declared required with no `initial`.
         VerbRequired => "a required field is written by every create, and a verb writes only a record that stands; it needs an `initial`",
         /// A field only verbs write that the fold computes.
@@ -848,10 +1009,20 @@ catalog! {
         NoInitialBreaks { constraint: ConstraintName, field: FieldName } => "`{field}`, which only the type's verbs write, has no `initial`, and a create leaves it null, which the constraint `{constraint}` refuses: no record of the type could be made",
         /// A key field only verbs write.
         VerbKey => "a key's field is written by every create, and a verb writes only a record that stands",
+        /// A field of `authority: writer` that is not a stored type's own.
+        WriterNotOfType => "the store fills it when a record is made, so it is a field of a stored type's own records, not a view's, a relation's, a verb's payload or a function's input",
+        /// A field of `authority: writer` of another kind than plain `text`.
+        WriterNotText => "it holds a writer as `<kind>:<id>`, so it is a `text` field with no value type",
+        /// A key field of `authority: writer`.
+        WriterKey => "a key's field is given by the record's key, and this one by the store",
+        /// A field of `authority: writer` that is computed or cleared.
+        WriterComputed => "the store fills it with the writer that made its record, so nothing computes or clears it",
         /// An `expr` function with no expression.
         ExprNoExpression => "it is backed by `expr` and has no expression",
         /// An `expr` function declared above `low` risk.
         ExprRisk => "it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low`",
+        /// An expression nested deeper than the parser reads.
+        ExprTooDeep { max: usize, offset: usize } => "an expression nests at most {max} levels deep: a parenthesis, a call argument, a list item, `not` and a unary `-` each go one deeper (at character {offset})",
         /// An expression on a function another backing computes.
         ExpressionNotExpr { backing: String } => "it has an expression but is backed by `{backing}`",
         /// A function's input the type holds as another kind.
@@ -864,8 +1035,16 @@ catalog! {
         WithdrawnInUse { kind: Naming, name: String, by: String } => "the {kind} `{name}` is in use by {by}, so it is not withdrawn",
         /// A withdrawal of a name not in force.
         WithdrawnUndeclared { kind: Naming, name: String } => "the {kind} `{name}` is not declared, so it is not withdrawn",
+        /// A type declared again where the lake keeps records of the one withdrawn.
+        WithdrawnNameHeld { #[serde(rename = "type")] ty: TypeName } => "the lake keeps the records of the withdrawn type `{ty}`; take another name",
         /// A withdrawal of a kind that leaves force another way.
-        WithdrawnKind { kind: Naming } => "a {kind} is not withdrawn: a trigger, a verb, an object set or a function is; a type leaves by `migrate`, and a setting by its record",
+        WithdrawnKind { kind: Naming } => "a {kind} is not withdrawn: a type, a trigger, a verb, an object set or a function is, and a setting leaves by its record",
+        /// A view's group term that is not one `date_bucket` over a field
+        /// of instants or dates, or is its second term.
+        GroupTerm { name: FieldName, second: bool } => "its group term `{name}` [{?second}is its second, and a view groups by one term at most|is no `date_bucket` over one field of its source that holds an instant or a date, its other arguments written out]",
+        /// A view grouped by a term that merges a source, whose groups are
+        /// fields.
+        GroupTermMerged { name: FieldName } => "its group term `{name}` meets no group of a merged source, which groups by fields alone; group the view by fields, or merge into a view without a term",
         /// A view grouped by a field no key may be.
         GroupUnkeyable { field: FieldName } => "it groups by `{field}`, whose kind cannot be part of a key",
         /// An `initial` value on a field its inputs clear.
@@ -934,9 +1113,18 @@ catalog! {
         /// A verb's assignment reading a payload member the payload does not have.
         PayloadNoMember { member: FieldName } => "it reads `payload.{member}`, which the payload does not have",
         /// A field taken to the read that something reads as stored.
-        ReadAsStored => "a trigger, a verb, an object set or another type's derived relation in force reads it as stored, so it is not computed at the read",
+        ReadAsStored => "a trigger, a verb, an object set, another type's derived relation or another type's `in_force` in force reads it as stored, so it is not computed at the read",
         /// A declaration reading as stored a field computed at the read.
         ReadsAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}`, which `{ty}` computes at the read; it is evaluated over the record as stored, which never holds it",
+        /// A set's `where` reading the clock.
+        SetReadsClock { set: String, call: String } => "the set `{set}` reads `{call}` in its `where`; a kept set is decided at the write and keeps what it decided, so a read of `in_set` would drift from it; declare it decided at the read, or keep a time window in a view's `where` or a computed field",
+        /// A set decided at the read whose `where` steps across a
+        /// reference or a relation.
+        SetAtReadSteps { set: String, path: String } => "the set `{set}` is decided at the read, which steps through no reference, and its `where` reads `{path}`",
+        /// A set decided at the read named by what a write decides.
+        SetAtReadNamed { set: String, kind: Naming, name: String } => "the set `{set}` is decided at the read and the {kind} `{name}` names it, which is decided at a write: what a write decides by it would drift from what a read of it answers",
+        /// A set decided at the read of a view.
+        SetAtReadOfView { set: String, view: TypeName } => "the set `{set}` is decided at the read and holds `{view}`, a view: in this release a set of a view is decided at the write; declare it kept, or of the view's source",
         /// A set's `where` or a trigger's `when` reading across an edge a
         /// field computed outside the lake.
         SetReadsComputed { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}` of `{ty}` across an edge, which is computed outside the lake: its value lands with no write that would decide this again",
@@ -992,11 +1180,13 @@ catalog! {
         ViewCycle { chain: Names } => "its view closes a cycle, reading {chain} in turn; a view may not read itself, through other views or directly",
         /// A view's field nothing fills.
         ViewFieldUnfilled { field: FieldName } => "its field `{field}` is neither a `group_by` field nor a measure of its view, so nothing would fill it",
-        /// A view a set holds no longer kept.
-        ViewKeptForSet { #[serde(rename = "type")] ty: TypeName } => "it holds `{ty}`, a view the lake keeps, and the view stays kept while the set holds it: withdraw the set first",
+        /// A set or a trigger declared over a kept view whose build is not whole.
+        ViewBuilding { #[serde(rename = "type")] ty: TypeName } => "it reads `{ty}`, a view the lake is building and has not kept whole yet, and a set or a trigger reads only a whole view: declare it again when the build has ended",
+        /// A view a set holds, or a trigger watches, no longer kept.
+        ViewKeptForSet { #[serde(rename = "type")] ty: TypeName } => "it reads `{ty}`, a view the lake keeps, and the view stays kept while a set holds it or a trigger watches it: withdraw it first",
         /// A change of a view's source that no write decides a set over the
-        /// view again for.
-        ViewSourceStepped { #[serde(rename = "type")] ty: TypeName, source: TypeName } => "it holds `{ty}`, a view over `{source}`, and the change moves records of `{source}` where no write decides the set again: withdraw the set, make the change, then declare the set again",
+        /// view, or a trigger on it, again for.
+        ViewSourceStepped { #[serde(rename = "type")] ty: TypeName, source: TypeName } => "it reads `{ty}`, a view over `{source}`, and the change moves records of `{source}` where no write decides it again: withdraw it, make the change, then declare it again",
         /// A view's `key` that names other fields than its `group_by`.
         ViewKey { group_by: Option<Names> } => "a view's records are keyed by its `group_by`[ ({group_by})|, and it has none]; its `key` names the same fields in that order, or is left out",
         /// A stored relation on a view.
@@ -1007,10 +1197,12 @@ catalog! {
         ViewValueNoField { field: FieldName } => "its view computes `{field}`, which has no declared field to land in; a view declares a field for each value it computes, of the kind it holds",
         /// A host vocabulary's type under a name the store keeps.
         VocabularyReserved { #[serde(rename = "type")] ty: TypeName, link: bool } => "the host vocabulary's type `{ty}` is reserved: [{?link}the store derives the link types under `sys.link.` from relations itself|the store keeps it for its own reader]; nothing was appended, and the lake is not opened for writing until the vocabulary names it otherwise",
-        /// A trigger on a link type of a relation carried by a reference.
-        WatchesViaLinks { #[serde(rename = "type")] ty: TypeName, relation: RelationName, via: FieldName, owner: Box<TypeName> } => "it watches `{ty}`, but `{relation}` is carried by a reference field, not by link records; watch `{owner}` with `changed({via})`",
-        /// A trigger on a view.
-        WatchesView { #[serde(rename = "type")] ty: TypeName } => "it watches `{ty}`, a view; a view is never written, so no write of it fires a trigger",
+        /// A host vocabulary's type the lake holds in a form the vocabulary changes beyond adding optional fields and rewording it.
+        VocabularyChanged { #[serde(rename = "type")] ty: TypeName, #[serde(with = "closed::list")] reasons: Vec<Revision> } => "the host vocabulary declares `{ty}` otherwise than the lake holds it ({reasons}); between releases a vocabulary only adds optional fields to a type it declared, so the lake is not opened until the vocabulary declares `{ty}` as the lake holds it, or with optional fields added and nothing else changed but its descriptions, labels, annotations or the order of its fields",
+        /// A trigger on a link type of a relation carried by a field (a reference, or JSON holding keys).
+        WatchesViaLinks { #[serde(rename = "type")] ty: TypeName, relation: RelationName, via: FieldName, owner: Box<TypeName> } => "it watches `{ty}`, but `{relation}` is carried by the field `{via}`, not by link records; watch `{owner}` with `changed({via})`",
+        /// A trigger on a view the lake does not keep.
+        WatchesView { #[serde(rename = "type")] ty: TypeName } => "it watches `{ty}`, a view the lake does not keep, and a trigger fires on rows the lake keeps: set `view_kept.{ty}` to keep it first",
         /// A write effect that sets nothing.
         WritesNothing => "it writes nothing",
 
@@ -1020,9 +1212,11 @@ catalog! {
         /// An aggregate other than `count` with no argument.
         AggregateNeedsField { name: String } => "{name}() needs a field",
         /// A `date_bucket` given neither a unit nor a width and an origin.
-        BucketArguments => "date_bucket() takes a calendar unit quoted ('day', 'week', 'month', 'quarter' or 'year') and no origin, or a width above zero and the origin its windows are counted from, as in date_bucket(t, 30d, origin)",
+        BucketArguments => "date_bucket() takes a calendar unit quoted ('day', 'week', 'month', 'quarter' or 'year'), and no origin but the time zone it is cut in quoted or none, or a width above zero and the origin its windows are counted from, as in date_bucket(t, 'day', 'Europe/Berlin') or date_bucket(t, 30d, origin)",
         /// A `date_bucket` unit it does not know.
         BucketUnit { unit: String } => "date_bucket() knows no unit '{unit}'; the units are 'day', 'week', 'month', 'quarter' and 'year', and a width is written unquoted, as in date_bucket(t, 30d, origin)",
+        /// A `date_bucket` zone the time-zone database does not name.
+        BucketZone { zone: String } => "date_bucket() knows no time zone '{zone}'; a zone is named as the IANA time-zone database names it, as in 'Europe/Berlin'",
         /// A `date_bucket` unit that is no text.
         BucketUnitText { #[serde(with = "closed")] value: Box<Operand> } => "date_bucket() takes its unit as text, not {value}",
         /// A call with a number of arguments its function does not take.
@@ -1031,12 +1225,60 @@ catalog! {
         CallTakesField { name: String } => "{name}() takes one field name",
         /// A call that takes a quoted name given something else.
         CallTakesQuoted { name: String } => "{name}() takes a quoted name",
+        /// An aggregate or an expression returned with no name.
+        CypherAlias { item: String } => "an aggregate or an expression is named with `AS`: `{item} AS <name>`",
+        /// A field a statement writes that the lake computes.
+        CypherComputed { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}`.`{field}` is computed by the lake; no statement writes it",
+        /// A `count` of what is no row.
+        CypherCount { item: String } => "`count` counts rows: `count(*)` or `count(<name>)` of a name no optional part binds, not `{item}`",
+        /// A function the expression grammar does not have.
+        CypherFunction { name: String, offset: usize } => "`{name}()` is no function of Lakelands' expression grammar (at character {offset})",
+        /// A key field a `CREATE` or `MERGE` does not give.
+        CypherKeyMissing { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a record of `{ty}` is keyed by `{field}`, which the statement does not give",
+        /// A key field a `CREATE` or `MERGE` gives as null.
+        CypherKeyNull { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a record of `{ty}` is keyed by `{field}`, which the statement gives as null",
+        /// A member a statement of its kind does not take.
+        CypherMember { member: String } => "the statement takes no `{member}`: a read takes the axes and a cursor, a `MATCH … SET`, `REMOVE` or `DELETE` the id of its plan, and every other write nothing beside its parameters",
+        /// A `MERGE` on a field that keys no record.
+        CypherMergeOn { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`MERGE` keys on what keys a record, and `{field}` keys no record of `{ty}`: give its key fields alone, or `MATCH` it and `SET`",
+        /// A sort key that is no path.
+        CypherOrderItem { item: String } => "`ORDER BY` names a path, as in `a.amount`, not `{item}`",
+        /// A construct outside the openCypher subset.
+        CypherOutside { construct: Construct, offset: usize } => "{construct} is outside the openCypher subset Lakelands takes (at character {offset})",
+        /// A parameter the statement reads that is not given.
+        CypherParamMissing { name: ParamName } => "the statement reads `${name}`, which is not given",
+        /// A parameter given that the statement does not read.
+        CypherParamUnused { name: ParamName } => "`{name}` is given and the statement does not read it",
+        /// A parameter whose value cannot stand where it is read.
+        CypherParamValue { name: ParamName } => "`${name}` cannot stand where it is read: an object, a list outside `IN`, a key that is not text, or a limit or skip that is no whole number",
+        /// A row item that is neither a path nor every bound name.
+        CypherRowItem { item: String } => "a row holds paths (`a.amount`) or every bound name (`RETURN *`); `{item}` is neither",
+        /// A write after the statement's first, which a second door call would make.
+        CypherSecondWrite { construct: Construct, offset: usize } => "{construct} is a second write: a statement is one call of one write door (at character {offset})",
+        /// A `SKIP` other than 0.
+        CypherSkip { skip: u64 } => "`SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement",
+        /// A first node with no label.
+        CypherStartType { offset: usize } => "the first node names its type, as in `(a:invoice)` (at character {offset})",
+        /// A condition nested deeper than the subset reads.
+        CypherTooDeep { max: usize, offset: usize } => "a condition nests at most {max} levels deep: parentheses, `NOT` and a unary `-` each go one deeper (at character {offset})",
+        /// A write statement sent to the `cypher` tool, which reads.
+        CypherToolWrites { construct: Construct, offset: usize } => "the `cypher` tool reads; {construct} writes, through the typed write tools (at character {offset})",
+        /// A part that begins at a name nothing bound.
+        CypherUnbound { name: String, offset: usize } => "`{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset})",
+        /// A `SKIP` or `LIMIT` given what is no whole number.
+        CypherWhole { clause: String, offset: usize } => "`{clause}` takes a whole number, written or a parameter (at character {offset})",
         /// A division by zero.
         DivisionByZero => "division by zero",
         /// An `in` with an empty list.
         InEmpty => "an `in` lists one value at least",
         /// An `exists` outside a verb's `requires` and set values.
         ExistsHere => "exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at",
+        /// A `preceding` outside a constraint and a trigger's `when`, or
+        /// over a view's rows.
+        PrecedingHere => "preceding() has meaning in a type's constraint and in the `when` of a trigger on a type that is no view, over the record before it in its series",
+        /// An `in_force` outside a field computed at the read and a
+        /// trigger's `when`, or over a view's rows.
+        InForceHere => "in_force() has meaning in a field computed at the read and in the `when` of a trigger on a type that is no view, over another type's record in force",
         /// An `in_set` left where no set's filter stands.
         InSetHere => "in_set() has meaning in an object set's `where`, a trigger's `when` and a read's `where`",
         /// A negation of what has no negative.
@@ -1045,6 +1287,8 @@ catalog! {
         KindSides { expr: String, left: Kind, right: Kind } => "`{expr}` has no meaning: its sides are {left} and {right}",
         /// A number's function over what is no number.
         KindTakesNumber { expr: String, kind: Kind } => "`{expr}` has no meaning: it takes a number, not {kind}",
+        /// A `setting` read on what is no date or instant.
+        KindTakesDate { expr: String, kind: Kind } => "`{expr}` has no meaning: it takes a date or an instant, not {kind}",
         /// A difference of what are not two instants.
         MinusNoMeaning { #[serde(with = "closed")] left: Box<Operand>, #[serde(with = "closed")] right: Box<Operand> } => "{left} minus {right} has no meaning",
         /// A provenance function where no record stands.
@@ -1115,7 +1359,7 @@ catalog! {
         RegexUnmatchable { pattern: String, limit: Option<usize> } => "`{pattern}` cannot be matched[: its compiled form is over {limit} bytes]",
         /// A path through a relation that may hold several links from a record.
         RelationHoldsMany { relation: RelationName, cardinality: Cardinality } => "`{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern",
-        /// A path through a relation carried by a reference field.
+        /// A path through a relation carried by a field (a reference, or JSON holding keys).
         RelationViaField { relation: RelationName, field: FieldName } => "`{relation}` is carried by the field `{field}`: a path steps through `{field}`",
         /// A `retired` outside a trigger's guard.
         RetiredOnlyInGuard => "retired() has meaning only in a trigger's guard",
@@ -1129,6 +1373,10 @@ catalog! {
         SetUndeclared { set: String } => "in_set('{set}') names an object set that is not declared",
         /// A `setting` given what is no key.
         SettingTakesKey { #[serde(with = "closed")] value: Box<Operand> } => "setting() takes a key, not {value}",
+        /// A `setting` read on a day of what denotes no instant.
+        SettingTakesDate { #[serde(with = "closed")] value: Box<Operand> } => "setting() reads the value in force on a date or an instant, not {value}",
+        /// An openCypher statement that does not parse.
+        StatementNotParsed { #[serde(with = "closed")] why: Box<Case> } => "the statement does not parse as the openCypher subset Lakelands takes (`MATCH … RETURN …`, or one write): {why}",
         /// A path into a reference's members.
         StepsIntoReference { expr: String, field: FieldName } => "`{expr}` steps into `{field}`, which is a reference: a condition reads the record's own fields. Compare the reference's key, or walk to the record it names in a pattern",
         /// A path into the members of what has none.
@@ -1149,18 +1397,14 @@ catalog! {
         KeptAtRead { field: FieldName, source: TypeName } => "it reads `{field}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written",
         /// A measure reading the clock.
         KeptClock => "it reads the clock, and a kept record is computed when its source is written",
-        /// A minimum or maximum under a group field that is no text or reference.
-        KeptExtremeGroupedBy { call: String, field: FieldName } => "`{call}` is kept only in a view grouped by text or reference fields, and `{field}` is neither",
-        /// A minimum or maximum in a view with no group field.
-        KeptExtremeUngrouped { call: String } => "`{call}` is kept only in a view grouped by text or reference fields, and this one has no group field",
         /// A grouping by a field computed at the read.
         KeptGroupAtRead { field: FieldName, source: TypeName } => "it groups by what reads `{field}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written",
         /// An aggregate call with no argument.
         KeptNoArgument { call: String } => "`{call}` has no argument",
-        /// A minimum or maximum of a kind that is no number or instant.
-        KeptOrdersKind { call: String, kind: Kind } => "`{call}` orders {kind}; it is kept where its argument is certainly a number or an instant",
-        /// A minimum or maximum of what is of no certain kind.
-        KeptOrdersUncertain { call: String } => "`{call}` orders what is of no certain kind: it is kept where its argument is certainly a number or an instant",
+        /// An extreme ordering by a kind that is no number or instant.
+        KeptOrdersKind { call: String, kind: Kind } => "`{call}` orders {kind}; it is kept where what it orders by is certainly a number or an instant",
+        /// An extreme ordering by what is of no certain kind.
+        KeptOrdersUncertain { call: String } => "`{call}` orders what is of no certain kind: it is kept where what it orders by is certainly a number or an instant",
         /// A view with a parameter.
         KeptParam { name: ParamName } => "it declares the parameter `{name}`, and a kept record is the same for every read",
         /// A `where` reading a field computed at the read.
@@ -1177,8 +1421,10 @@ catalog! {
         AfterWithAggregate => "`after` pages records; an `aggregate` has no pages",
         /// An `after` beside a cursor.
         AfterWithCursor => "`after` and `cursor` both name where a page starts; give one",
-        /// A `components` step that does not walk both ways.
-        ComponentsBothWays { relation: RelationName } => "`components` takes every link both ways; the step over `{relation}` must walk `both`",
+        /// A `cheapest` walk with no `to`.
+        CheapestNeedsTo => "`cheapest` answers the walk that costs least from the start to one record; name that record with `to`",
+        /// A `components` or `communities` step that does not walk both ways.
+        ComponentsBothWays { relation: RelationName } => "`components` and `communities` take every link both ways; the step over `{relation}` must walk `both`",
         /// A cursor the lake did not hand out.
         CursorForeign => "the cursor is not one this lake handed out",
         /// A cursor handed out for another door or type.
@@ -1195,12 +1441,16 @@ catalog! {
         GroupKeyTwice { name: FieldName } => "two group keys are named `{name}`; each needs a name of its own",
         /// An instant of an `after` that is no text.
         InstantNotText => "an instant is given as text",
+        /// A join whose relation reaches no type the joined name binds.
+        JoinNeverHolds { name: String, bound: Names, reached: Names } => "`join` names `{name}`, which binds {bound}, and over its whole range the step reaches only {reached}: the join could never hold",
         /// A `latest` order where no record has a change of its own.
         LatestNoChange { #[serde(rename = "type")] ty: Option<TypeName> } => "`order_by` `latest` orders records by their latest change, and [`{ty}` is a view, whose records are computed and have none|a query's rows are projections of a walk, not records]",
         /// A `latest` order given a field.
         LatestTakesNoField { field: FieldName } => "`latest` orders by the position of each record's latest change and takes no field, and `{field}` was given",
         /// A limit out of range.
         LimitRange { max: u32 } => "a limit is between 1 and {max}",
+        /// A search that asks for `matches` and brings no text.
+        MatchesWithoutText => "`matches` says where a search's text matched each hit, and a vector search ranks no text; a lexical or hybrid search is told it",
         /// A measure's step with a depth.
         MeasureNoDepth { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `depth`: it reads each record's links, not hops",
         /// A measure with an order.
@@ -1213,7 +1463,7 @@ catalog! {
         MeasureNoType { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches",
         /// A measure's step with a `where`.
         MeasureNoWhere { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `where`",
-        /// A `model` on a hybrid search that brings no query vector.
+        /// A `model` on a search whose query vector the lake makes.
         ModelWithoutVector => "`model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model",
         /// A `rerank` whose `top` is 0.
         RerankTopZero => "`rerank.top` is how many of the search's first hits the second stage ranks, and it is 1 at least",
@@ -1245,8 +1495,26 @@ catalog! {
             #[serde(rename = "type")]
             ty: TypeName,
         } => "the grant's `only` on `{ty}` cannot be applied here; the host's grants need fixing",
+        /// A grant's `writes_only` that cannot be applied to the write.
+        WritesOnlyUnappliable {
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "the grant's `writes_only` on `{ty}` cannot be applied here; the host's grants need fixing",
+        /// A grant's hiding of a field on some records that cannot be
+        /// applied to the read.
+        HidingUnappliable {
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "the grant's `hide_where` on `{ty}` cannot be applied here; the host's grants need fixing",
+        /// A read that computes over a set of records (a view over them, an
+        /// aggregate, a count) of a type the reader's grant admits only some
+        /// records of and holds `whole_sets_only` on.
+        WholeSetNeeded {
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "this read needs every record of `{ty}`; you may read only some of them",
         /// An order by a field computed at the read.
-        OrderAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`order_by` names `{field}` of `{ty}`, which is computed at the read and moves with the clock; a page's order would not hold to the next",
+        OrderAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`order_by` names `{field}` of `{ty}`, which is computed at the read; order by a stored field it is computed from",
         /// An order by a value or a time that names no field.
         OrderNamesNoField => "an order by a value, `known_at` or `seen_at` names its field",
         /// A view's parameter not given, or met where no read binds it.
@@ -1269,6 +1537,9 @@ catalog! {
         PatternToChain => "a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0",
         /// A pattern with `to` not projected as a graph.
         PatternToNotGraph => "a pattern with `to` answers the walk to it as a graph; ask `project` `graph`",
+        /// A member that makes a pattern a tree beside a projection that
+        /// answers by a walk's own shape.
+        PatternTreeMember { member: String, projection: String } => "`{member}` makes the pattern a tree, which rows and an aggregate answer; `{projection}` answers by its walk's own shape",
         /// A position of an `after` that is no whole number.
         PositionNotInteger => "a position is a non-negative integer",
         /// An order of proposals by what is not one of their members.
@@ -1282,31 +1553,66 @@ catalog! {
         RetiredWithAggregate => "`retired` counts the retired records a page's `where` matches; an `aggregate` answers groups, so give one",
         /// A search's `fields` that names none.
         SearchFieldsEmpty => "`fields` names no field; leave it out to search every searchable field",
-        /// A hybrid search without a vector over a vector field no model
-        /// fills: its writers chose the space, so no bound model may stand
-        /// in for one.
-        SearchNeedsVector { field: FieldName } => "`{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector",
+        /// A search whose query vector the lake would make, over a vector
+        /// field no model fills: its writers chose the space, so no bound
+        /// model may stand in for one.
+        SearchNeedsVector { field: FieldName } => "`{field}` holds vectors its writers make, in a space the lake does not know; a search over it brings its own query vector",
         /// A vector ranking over a field that holds no vectors.
         SearchNotVector { field: FieldName, kind: StorageKind } => "`{field}` is a {kind} field; a vector ranking reads a vector field",
+        /// A search's `text_fields` that weighs no field.
+        SearchTextFieldsEmpty => "`text_fields` weighs no field; leave it out to weigh each as its type's setting does",
+        /// A pattern's start search whose query vector the lake would
+        /// embed: a pattern's rows cannot say how they were ranked.
+        StartNeedsVector { field: FieldName } => "a pattern's start ranks `{field}` by a `vector` it brings; the lake embeds a vector search's `text` for `search` alone, whose answer says how it ranked",
         /// A start with no type where a type is needed.
         StartNoType { asks: String } => "`{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params`",
+        /// A step with no `from` after one that binds no name.
+        StepAfterNoName => "the step before binds no name, as a join and an absent step bind none; say with `from` which name this step walks from",
+        /// A member given to a join or an absent step, which bind no name.
+        StepBindsNoName { member: String, join: bool } => "a[{?join} join|n absent step] binds no name of its own[{?join}, and the record it reaches is judged where its name was bound]; it takes no `{member}`",
+        /// A `from` or `join` naming no name bound before the step.
+        StepNameUnbound { member: String, name: String } => "`{member}` names `{name}`, which neither the start nor a step listed before this one binds; a step walks from and joins only a name bound before it",
+        /// A join or an absent step that says `optional` outside an
+        /// optional branch.
+        StepOptionalNoName { join: bool } => "a[{?join} join|n absent step] binds no name to bind null where it has no match; it may say `optional` only where its `from` or `join` is a name an optional step binds, as a step of that branch",
+        /// A step from or joining a name an optional step binds that is
+        /// not optional itself.
+        StepPastOptional { name: String } => "`{name}` is bound by an optional step, so a step that walks from it or joins it says `optional` too, and never drops the row the optional step kept",
         /// A step that reaches another type than it names.
         StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName, also: Option<Names> } => "it reaches `{reached}`[, {also}], not `{ty}`",
-        /// A step reaching several types where a `where`, the next step or a path that reads a field reads one.
+        /// A step reaching several types where the next step reads one, or
+        /// where a `where` or a path reads a field they do not all declare
+        /// alike: `field`, missing from the types `missing` names and of
+        /// another kind, value type, target or dimensions than most of them in
+        /// those `other` names.
         StepSeveralTypes {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             reached: Option<TypeName>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             also: Option<Names>,
-        } => "it reaches several types[, `{reached}`][, {also}], and a `where`, the step after it or a path that reads one of its fields reads one; name the step's `type`",
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            field: Option<FieldName>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            missing: Option<Box<Names>>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            other: Option<Box<Names>>,
+        } => "it reaches several types[, `{reached}`][, {also}], and [it reads `{field}`, which is[ missing from {missing}][[{?missing},] of another kind, value type, target or dimensions in {other}]|the step after it reads one]; name the step's `type`",
         /// A step deeper than the lake walks.
         StepTooDeep { max: u32, asked: u32 } => "a step may walk at most {max} hops; this one asks for {asked}",
+        /// A search with `text_as_of` beside what ranks by the head: a vector
+        /// or a second stage.
+        TextAsOfBeside { member: String } => "`text_as_of` ranks the text the records held at an earlier position, and a search's `{member}` ranks by the head; search the text alone, with no `vector` and no `rerank`",
+        /// A search with `text_as_of` that names no earlier position or no
+        /// `where` to bound its records.
+        TextAsOfNeeds { member: String } => "`text_as_of` ranks the text the records a `where` selects held at an earlier position, and the search names no `{member}`; name one, or search at the head without it",
         /// A `text_weight` out of range.
         TextWeightRange => "`text_weight` must be above 0 and at most 1000000",
         /// A `total` beside an aggregate.
         TotalWithAggregate => "`total` counts the records a page lists; an `aggregate` answers groups, so give one",
         /// A query vector with no direction to rank along.
         VectorAimless { field: FieldName, why: Aimless } => "`{field}`'s vector {why}",
+        /// A vector search that brings both a `vector` and a `text`.
+        VectorWithText { field: FieldName } => "`{field}`'s query is a `vector` the search brings or a `text` the lake embeds with the field's model, not both",
         /// A vector field a search names twice.
         VectorFieldTwice { field: FieldName } => "`{field}` is named twice; a search ranks a vector field once",
         /// A search of a view.
@@ -1315,14 +1621,92 @@ catalog! {
         ViewReadsItself { #[serde(rename = "type")] ty: TypeName, chain: Names } => "view `{ty}` reads itself through other views, reading {chain} in turn, so it has no records",
         /// A `weight` on a vector search of one field.
         WeightAlone => "`weight` weighs one vector field's ranking against another's, and the search names no other in `also`",
+        /// A link the cheapest walk weighs that has no weight.
+        WeightMissing { relation: RelationName, from: RecordKey, to: RecordKey } => "the `{relation}` link from `{from}` to `{to}` has no weight, and the cheapest walk neither skips a link nor prices it by default; declare an `initial` on the weight field for one",
+        /// A link the cheapest walk weighs whose weight is below 0.
+        WeightNegative { relation: RelationName, from: RecordKey, to: RecordKey } => "the `{relation}` link from `{from}` to `{to}` weighs less than 0, and over a cycle that costs less than 0 no walk is cheapest",
+        /// A weight field of a kind other than `number` or `decimal`.
+        WeightNotNumber { relation: RelationName, field: FieldName } => "`{field}` of the links of `{relation}` is neither a `number` nor a `decimal`, so it weighs nothing",
+        /// A weight field the links of a step's relation do not hold.
+        WeightNotOnLink { relation: RelationName, field: FieldName } => "the links of `{relation}` hold no field `{field}` to weigh by; a relation carried by `via` or `derived` holds no link record",
         /// A field's weight out of range.
         WeightRange { field: FieldName } => "the weight of `{field}` must be above 0 and at most 1000000",
 
+        // ---- thinning
+        /// A thinning act's field that holds neither an instant nor a
+        /// date.
+        ThinBy {
+            #[serde(rename = "type")]
+            ty: TypeName,
+            field: FieldName,
+        } => "`{ty}` cannot be thinned by `{field}`: the field is neither of instants nor of dates",
+        /// A record a thinning act took: a write, an ingest, a retirement
+        /// or a read of its key.
+        Thinned {
+            #[serde(rename = "type")]
+            ty: TypeName,
+            key: RecordKey,
+            before: Timestamp,
+        } => "`{ty}` `{key}` was thinned before {before}, so its values are out of the projection: it is not written, corrected, retired or read through it, and the log keeps what it held",
+        /// A group a read at an earlier position cannot answer: it held a
+        /// member a thinning took, and a stranded group answers at the
+        /// head alone.
+        StrandedAtHeadOnly {
+            #[serde(rename = "type")]
+            ty: TypeName,
+            position: Position,
+        } => "`{ty}` at position {position} cannot be answered: its group held a member that was thinned, and a stranded group answers at the head alone",
+        /// A view made a kept one over a type whose records a thinning
+        /// took.
+        KeptOverThinned {
+            view: TypeName,
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "`{view}` cannot be kept: records of its source `{ty}` were thinned, and its make would count the live ones alone",
+        /// A thinning refused because a kept view of the type holds a
+        /// group that is not exact.
+        KeptNotExact {
+            view: TypeName,
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "`{view}`, kept over `{ty}`, holds a group that is not exact, so a thinning of `{ty}` is refused whether or not this act would strand it: make the view exact first, or thin another way",
+        /// A view made again over a source whose records a thinning took,
+        /// by an event that changes what its stranded groups fold.
+        StrandedMake {
+            view: TypeName,
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "`{view}` cannot be made again over `{ty}`: its stranded groups' records would answer a rule the event no longer states, and the records they were computed from are gone; end the view first",
+
         // ---- writes
         /// A call a verb's executor declined by the host's policy.
-        CallDeclined { verb: VerbName } => "the host declined the call of `{verb}`: it did not run, and a retry under the same idempotency key answers the same",
+        CallDeclined {
+            verb: VerbName,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            reason: Option<super::Detail>,
+        } => "the host declined the call of `{verb}`[ ({reason})]: it did not run, and a retry under the same idempotency key answers the same",
+        /// A record the host refused before any ingest, quarantined with
+        /// the host's stable cause code and its sentence for the operator.
+        RefusedByHost { cause: String, reason: String } => "the host refused the record as `{cause}`: {reason}",
+        /// A host's refusal whose cause or reason is not of its form.
+        HostRefusalForm { max: usize } => "a host's refusal names a cause of 1 to 64 bytes of `a` to `z`, `0` to `9` and `_`, and a reason that is not empty, is at most {max} bytes and holds no control character",
+        /// A record the host refused under a named run or delivery that
+        /// names no line, so its place would not tell it from the run's
+        /// other rows.
+        HostLineMissing => "a record the host refused under a named run or delivery names its `line`, which keys it apart from the other rows of the run",
+        /// A record of an ingest that asks `quarantine_refused` under a
+        /// delivery that names no line: its place counts per call, so two
+        /// calls of one delivery would quarantine different records under
+        /// one id.
+        QuarantineLineMissing => "a record of an ingest that quarantines its refused records under a delivery names its `line`, which keys it apart from the delivery's other records across calls",
         /// A host's cause past the head.
         CausePastHead { cause: Position, head: Option<Position> } => "the cause {cause} is past the lake's head [{head}|(none)]",
+        /// A host's `on_behalf_of` that is not a principal the store may
+        /// record a write as made for.
+        OnBehalfOfForm { value: String } => "`on_behalf_of` holds `{value}`, which is not `human:`, `agent:` or `service:` followed by an id that is not empty and holds no NUL character, or which is the writer itself",
+        /// A host's `occasion` that is empty, too long or holds a control
+        /// character.
+        OccasionForm { max: usize } => "`occasion` is not empty, is at most {max} bytes and holds no control character",
         /// A type declared again since its migration was proposed.
         ChangedSinceProposed { #[serde(rename = "type")] ty: TypeName } => "`{ty}` changed since this migration was proposed; propose it again",
         /// A bundle's declaration under a name declared again since it was proposed.
@@ -1332,11 +1716,18 @@ catalog! {
         /// A new field whose name begins with `_`, which the lake keeps for its own columns.
         FieldNameKept { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a new field of `{ty}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`, `<name>._type`); name it `{field}` without the `_`",
         /// A field taken away that another part of the type reads.
-        FieldReadElsewhere { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`{field}` is read by another part of `{ty}` and cannot be removed or changed",
+        FieldReadElsewhere { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`{field}` is read by another part of `{ty}`, or another type pairs by it, and cannot be removed or changed",
         /// A forgetting refused while the log holds plaintext values of the source in erasable fields.
         ForgetPlaintext { source: SourceId, count: u64 } => "the log holds {count} value(s) of `{source}` in erasable fields in plaintext, written before the field was erasable or before the log sealed them; destroying its key cannot reach them, so it is not forgotten: export the lake, leave the source out and import that as a new lake",
-        /// A forgetting's report of another source or head.
-        ForgetReportStale => "that report is not of this forgetting at this head; run the preflight again",
+        /// A forgetting's report of another source, or of a selection the
+        /// log has moved past.
+        ForgetReportStale => "that report is not of this forgetting at its position; run the preflight again",
+        /// A forgetting of several sources that names none.
+        ForgetSetEmpty => "a forgetting of several sources names at least one",
+        /// A forgetting of several sources that names one twice.
+        ForgetSourceTwice { source: SourceId } => "the set names `{source}` twice; a source is forgotten once",
+        /// A forgetting of several sources that names one the log does not.
+        ForgetSourceUnknown { source: SourceId } => "the log holds no event of `{source}`, so the set is not forgotten; forget it alone to keep the id from the lake",
         /// An idempotency key holding a NUL.
         IdempotencyKeyNul => "an idempotency key holds no NUL character",
         /// A view at a door that writes or holds a record.
@@ -1370,18 +1761,18 @@ catalog! {
         PayloadRequired { verb: VerbName, member: FieldName } => "verb `{verb}` requires `{member}` in its payload",
         /// A payload member a verb does not declare.
         PayloadUndeclared { verb: VerbName, member: FieldName } => "verb `{verb}` has no `{member}` in its payload",
-        /// A change enacted against a plan of another head, or one its caller was not shown.
-        PlanStale => "the lake moved since that plan, or it is not the one this caller was shown; plan the change again",
+        /// A change enacted against a plan a write since has reached, or one its caller was not shown.
+        PlanStale => "a write since that plan reached what it names, or it is not the one this caller was shown; plan the change again",
         /// A proposal accepted against a plan that changes no declaration.
         ProposalPlansNothing { proposal: ProposalId } => "the proposal `{proposal}` changes no declaration, so it has no plan; accept it without one",
-        /// A purge's report of another purge or head.
-        PurgeReportStale => "that report is not of this purge at this head; run the preflight again",
-        /// A purge of records another hand wrote too.
-        PurgeShared { source: SourceId, #[serde(rename = "type")] ty: Option<TypeName>, count: usize, #[serde(with = "closed::list")] first: Vec<RecordName> } => "the purge of `{source}`[ from `{ty}`] is refused whole: {count} record(s) it brought in were also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them or clear those fields, then purge again. First: {first}",
+        /// A purge's report of another purge, or of a selection the log has moved past.
+        PurgeReportStale => "that report is not of this purge at its position; run the preflight again",
+        /// A purge of records another hand made or wrote too.
+        PurgeShared { source: SourceId, #[serde(rename = "type")] ty: Option<TypeName>, count: usize, #[serde(with = "closed::list")] first: Vec<RecordName> } => "the purge of `{source}`[ from `{ty}`] is refused whole: {count} record(s) it brought in were made or also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them, clear the fields another hand wrote on those the source made, or take the source's values off them with `remove_values`; then purge again. First: {first}",
         /// A removal asked to shred that would redact values of erasable fields only.
         RemoveNotShredded { source: SourceId, count: u64 } => "{count} value(s) of erasable fields of `{source}` the removal takes would be redacted only, not shredded: in plaintext, or sealed under a version of its key that also seals values outside the selection; nothing is removed",
-        /// A removal's report of another removal or head.
-        RemoveReportStale => "that report is not of this removal at this head; run the preflight again",
+        /// A removal's report of another removal, or of a selection the log has moved past.
+        RemoveReportStale => "that report is not of this removal at its position; run the preflight again",
         /// A record with no value for a required field.
         Required { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}` requires a value for `{field}`",
         /// A write that would leave a record breaking its type's
@@ -1391,8 +1782,18 @@ catalog! {
         /// constraint: a declaration's or a migration's computing again, a
         /// re-key's rewritten references, a value type's renames.
         ConstraintLeftBroken { constraint: ConstraintName, #[serde(rename = "type")] ty: TypeName, records: u64 } => "{records} record(s) of `{ty}` would be left breaking the constraint `{constraint}`; fix them first",
-        /// A verb's `requires` that does not hold.
-        RequiresUnmet { verb: VerbName, #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "verb `{verb}` requires what `{ty}` `{key}` does not hold",
+        /// A verb's `requires` that does not hold, and the part of it the
+        /// record fails: of a conjunction, its first conjunct that does
+        /// not hold; else the whole condition (006). Said within the
+        /// precondition it is of, for one of a verb's preconditions.
+        RequiresUnmet {
+            verb: VerbName,
+            #[serde(rename = "type")]
+            ty: TypeName,
+            key: RecordKey,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            part: Option<Box<Printed>>,
+        } => "verb `{verb}` requires what `{ty}` `{key}` does not hold[: `{part}`]",
         /// A restriction of what is restricted, or a release of what is not.
         Restriction { #[serde(rename = "type")] ty: TypeName, key: RecordKey, already: bool } => "`{ty}` `{key}` is [{?already}already|not] restricted",
         /// A set of declarations that names one twice.
@@ -1415,6 +1816,14 @@ catalog! {
         DeliveryIdForm => "a delivery id is not empty, holds no NUL character, and is not `d` followed by digits, the form of the store's own",
         /// A delivery id given to a catalog that does not carry it.
         DeliveryNotCarried => "this catalog does not carry a delivery id to the store",
+        /// An ingest asked to seal its delivery apart through a catalog that does not carry it.
+        SealedApartNotCarried => "this catalog does not carry a delivery sealed apart to the store",
+        /// An ingest asked for a commit window of its own through a catalog that does not carry it.
+        CommitWindowNotCarried => "this catalog does not carry an ingest's own commit window to the store",
+        /// An ingest asked to quarantine its refused records through a catalog that does not carry it.
+        QuarantineRefusedNotCarried => "this catalog does not carry an ingest's asking to quarantine its refused records to the store",
+        /// A record the host refused, given to a catalog that does not carry it.
+        HostQuarantineNotCarried => "this catalog does not carry a record the host refused to the store's quarantine",
         /// A trigger's ceiling above the lake's.
         TriggerTooDeep { depth: u32, max: u32 } => "its `max_depth` {depth} is above the lake's `max_reactive_depth` {max}",
         /// A retry that finds no answer of the verb's executor recorded.
@@ -1457,14 +1866,16 @@ catalog! {
         AgingNotText { member: FieldName } => "an aging rule's `{member}` is text",
         /// An aging rule that moves a value to itself.
         AgingSameValue => "`to` equals `from`; a rule moves a value to another",
+        /// An aging rule whose condition reads a setting for a type or a source.
+        AgingScopedSetting { key: String } => "it reads the setting `{key}`, which is kept for one type or source and not told to every reader; a rule's condition is judged once for every reader",
         /// An aging rule on a system type.
         AgingSystemType { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is a system type; aging never moves it",
 
         // ---- settings
         /// An exact-text index of a field computed at the read.
         LookupIndexAtRead { field: FieldName } => "`{field}` is computed at the read; an exact-text index keeps stored values",
-        /// An exact-text index of a field that is no text.
-        LookupIndexKind { field: FieldName, kind: StorageKind } => "`{field}` is of kind {kind}; an exact-text index keeps text fields",
+        /// An exact-text index of a field that is no text, number or decimal.
+        LookupIndexKind { field: FieldName, kind: StorageKind } => "`{field}` is of kind {kind}; an exact-text index keeps text, number and decimal fields",
         /// A type named as a stored type that is none.
         NoStoredType {
             #[serde(rename = "type")]
@@ -1493,10 +1904,19 @@ catalog! {
             #[serde(rename = "type")]
             ty: TypeName,
         } => "it holds an array of field names of `{ty}`, or null for no index",
+        /// A series index of a field that is no series field.
+        SeriesFieldKind { field: FieldName, kind: StorageKind } => "`{field}` is of kind {kind}; a series index keeps text, reference, number and decimal fields as its series field",
+        /// A `series_index` setting that is no list of pairs.
+        SeriesIndexShape {
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "it holds an array of pairs of field names of `{ty}`, the series field first, as [[\"symbol\", \"at\"]], or null for no index",
         /// A `view_kept` setting that holds no boolean.
         SettingKeptHolds => "it holds `true` for a view that is kept, or `false`",
         /// A key period that names none.
         SettingKeyPeriod => "it holds `day`, `week` or `month`, the period a source's key is used for, or null for no period",
+        /// A lake's zone the time-zone database does not name.
+        SettingZone { value: Value } => "it holds a time zone as the IANA time-zone database names it, as 'Europe/Berlin', and {value} is none",
         /// A key under the prefix of the store's own settings that names
         /// none of them.
         SettingUnlisted { prefix: String } => "keys under `{prefix}.` are the store's own settings, and this is none of them",
@@ -1506,6 +1926,23 @@ catalog! {
         /// A write of `sys.setting` naming a group other than the one the
         /// store stamps from the setting's declaration.
         SettingGroupStamped => "the store writes a setting's group from its declaration; leave `group` out",
+        /// A value from a date written to a setting no host declares.
+        SettingPeriodUndeclared => "only a setting a host declares holds a value from a date",
+        /// A value from a date written to a setting with no live record.
+        SettingPeriodFirst => "a setting's first value holds from the start; write it without `from`",
+        /// A value added from a date one already holds from.
+        SettingPeriodHeld { from: String } => "a value already holds from {from}; correct it with `period`",
+        /// A correction naming a period the setting does not hold.
+        SettingPeriodUnknown { period: String } => "no value of this setting holds from {period}; name `start` or a date one holds from",
+        /// An undated write of a setting that holds values from dates.
+        SettingPeriodsNamed => "it holds values from dates; name the one to correct with `period`, `start` for the first, or the date a new one holds from with `from`",
+        /// A write of `sys.setting` naming `periods`.
+        SettingPeriodsStamped => "the store writes `periods` from `from` and `period`; leave it out",
+        /// A write of `sys.setting` naming `from` and `period`.
+        SettingFromOrPeriod => "a write adds a value `from` a date or corrects one `period`, not both",
+        /// What the fold keeps reading, without a date, a setting that
+        /// holds values from dates.
+        SettingDatedKept { key: String, name: String } => "`{name}` is kept by the fold and reads `{key}` without a date, which holds values from dates, so it would drift at each period's start: read it as setting('{key}', <date>), or decide it at the read",
         /// A host's setting declared into the store's own group.
         SettingStoreGroup => "the group `store` holds the store's own settings; a host's setting is in a group of its own",
         /// A host's setting declared to hold a reference, whose record
@@ -1536,8 +1973,8 @@ catalog! {
         MigrationOfView { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is a view, and a view changes by being declared again, never by a migration",
         /// A migration that declares another type.
         MigrationOtherType { from: TypeName, to: TypeName } => "a migration of `{from}` declares the type `{to}`",
-        /// A migration applied against a report of another head.
-        MigrationStale => "the lake moved since that preflight report; run the preflight again",
+        /// A migration applied against a report a write since has reached.
+        MigrationStale => "a write since that preflight report reached what it names; run the preflight again",
         /// A migration that takes every key field away.
         MigrationTakesKey { #[serde(rename = "type")] ty: TypeName } => "the migration takes every key field of `{ty}` away, and leaves no rule to make its records' keys",
         /// A migration that removes a relation a verb is declared on the link type of.
@@ -1548,6 +1985,8 @@ catalog! {
         MigrationTakesRead { unnamed: bool, field: FieldName, #[serde(rename = "type")] ty: TypeName, renamed: Option<FieldName> } => "[{?unnamed}a declaration|it] reads `{field}` of `{ty}`, which the migration [renames to `{renamed}`|drops]",
         /// A migration that would make a stored type a view.
         MigrationToView { #[serde(rename = "type")] ty: TypeName } => "the migration would turn the stored type `{ty}` into a view; declare the view under another name, and the type keeps its name and its records",
+        /// A view a migration declares again that is no view over the type it migrates.
+        MigrationViewNotOver { view: TypeName, #[serde(rename = "type")] ty: TypeName } => "the migration declares `{view}` again, and only a view in force that reads `{ty}` is declared again with its migration; declare `{view}` by itself",
         /// A migration that would make a view a stored type.
         MigrationViewToStored { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is a view, and it becomes a stored type by being declared as one, never by a migration",
         /// A narrowing of a cardinality that existing links break.
@@ -1684,12 +2123,16 @@ catalog! {
         // ---- engines
         /// A segment to append to, named for another position than the event's.
         ActiveSegmentNamed { named: Position, position: Position } => "the active segment is named for position {named}, and the event to append is at position {position}; nothing was appended",
+        /// An event whose frame the append does not hold whole.
+        AppendFrame { position: Position } => "the event at position {position} shares a frame the append does not hold whole and in order, from its first event on; nothing was appended",
         /// An event with a line feed in its bytes.
         AppendLineFeed { position: Position } => "the event at position {position} holds a line feed in its bytes, which canonical bytes never do; nothing was appended",
         /// An event not at the log's next position.
         AppendNotNext { position: Position, next: u64 } => "the event at position {position} does not continue the log, whose next position is {next}; nothing was appended",
         /// An event whose `prev` is not the hash before it.
         AppendPrev { position: Position, named: String, hash: String } => "the event at position {position} names `{named}` as the hash before it, but that hash is `{hash}`; nothing was appended",
+        /// A backup's directory holding a log the lake's does not continue.
+        BackupOtherLog { held: Position } => "the backup's directory holds a log through position {held} that this lake's log does not continue; back up into a new directory",
         /// A PostgreSQL client certificate without its key, or a key without its certificate.
         ClientCertHalf => "a client certificate needs both `tls.client_cert` and `tls.client_key`",
         /// A commit through a position the projection is past.
@@ -1759,6 +2202,12 @@ catalog! {
         FilterKeyEmpty => "a feed filter names an empty key",
         /// A typed condition sent where REST takes text.
         FindWhereText => "over REST, `find` takes `where` in its text form only; give the condition as text",
+        /// A header of the link between hosts sent with a principal's key.
+        HostHeaderFromCaller { header: String } => "`{header}` is sent only over the link between hosts, with a host's key; a principal's key carries no write context and acts as no other principal",
+        /// A host's key with no principal named.
+        NoForwardedPrincipal => "a host's key acts for the principal `Lakelands-Principal` names by its id, and the call names none",
+        /// A forwarded write context that is not one.
+        ForwardedContextForm => "`Lakelands-Context` is not a write context: give its `origin`, `depth`, `cause`, `on_behalf_of` and `occasion` as JSON",
         /// An idempotency key a header cannot carry.
         IdempotencyKeyHeader => "the idempotency key holds a character a header cannot carry, such as a line break",
         /// Both compare-and-set headers.
@@ -1777,6 +2226,8 @@ catalog! {
         LineTooLong { line: usize, max: usize } => "line {line} is longer than {max} bytes",
         /// A member the arguments need and do not give.
         MemberMissing { member: String } => "the member `{member}` is missing",
+        /// A member the arguments' mode needs and they do not give.
+        ModeNeedsMember { mode: String, member: String } => "the `{mode}` mode needs the member `{member}`, and it is missing",
         /// A migration naming both a type and a value type.
         MigrationBoth => "a migration names a type (`to`) or a value type (`value_type`), not both",
         /// A migration naming neither a type nor a value type.
@@ -1884,8 +2335,6 @@ catalog! {
         InSet => "`in_set`",
         /// A setting.
         Setting => "`setting`",
-        /// The clock.
-        Clock => "the clock",
         /// A relation's links.
         Exists => "`exists`",
         /// A field computed outside the lake.
@@ -1907,6 +2356,8 @@ catalog! {
         FieldRetyped { field: FieldName, relation: Option<RelationName>, from: FieldType, to: FieldType } => "field `{field}`[ of relation `{relation}`] changes type from {from} to {to}",
         /// An optional field made required; it reshapes.
         FieldRequired { field: FieldName, relation: Option<RelationName> } => "field `{field}`[ of relation `{relation}`] becomes required",
+        /// A field made `authority: writer`, added so or changed to it; it reshapes, as every live record takes a writer.
+        FieldWriter { field: FieldName } => "field `{field}` becomes filled by the store with its record's writer",
         /// A required field made optional.
         FieldOptional { field: FieldName, relation: Option<RelationName> } => "field `{field}`[ of relation `{relation}`] becomes optional",
         /// The key's fields or their order changed; it reshapes.
@@ -1925,6 +2376,8 @@ catalog! {
         BecameView => "a stored type becomes a view",
         /// A view made a stored type.
         StoppedBeingView => "a view becomes a stored type",
+        /// A part of the declaration beyond its shape changed, said only of a host's vocabulary type: no door's comparison weighs it.
+        Otherwise { part: String } => "{part} is declared otherwise",
     }
 }
 

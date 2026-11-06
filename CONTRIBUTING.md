@@ -1,10 +1,11 @@
 # Contributing to Lakelands
 
-Thank you for considering a contribution. A contribution is a pull
-request against `develop`, every commit signed off (below). The pages
-under `docs/` are the specification, and the conformance suite holds the
-code to them, so a change of behaviour changes a page and a check along
-with the code.
+Thank you for considering a contribution. The code is here: 0.23.0 is
+released, and 0.24.0 is being built on `develop`. A contribution is a
+pull request against `develop`, every commit signed off (below). The
+pages under `docs/` are the specification, and the conformance suite
+holds the code to them, so a change of behaviour changes a page and a
+check along with the code.
 
 Start from an issue. A small fix may come straight as a pull request;
 anything larger is talked through on its issue first, so the work fits
@@ -37,7 +38,10 @@ the result before you push.
 The tree is built and tested on Linux in CI, and it builds and passes
 its tests on macOS as well. You need:
 
-- Rust stable, at least the workspace's `rust-version` (1.88);
+- Rust: the toolchain comes from `rust-toolchain.toml`, which rustup
+  installs on first use. The workspace's `rust-version` (1.89) is the
+  floor the `msrv` job proves. A toolchain bump is one pull request that
+  moves the file and the CI pins (`ci.yml`, `release.yml`) together;
 - `cargo-nextest`, which `scripts/conformance.sh` runs
   (`cargo install cargo-nextest --locked`);
 - for the PostgreSQL engine's suite, a PostgreSQL you run yourself,
@@ -107,7 +111,10 @@ Each is red when:
   (`python3 scripts/settings.py --write` makes it), or a setting the
   store reads is not in the list;
 - `brand-tokens`: `brand/tokens.css` is not what
-  `scripts/brand/tokens-css.pl` makes from `brand/tokens.json`.
+  `scripts/brand/tokens-css.pl` makes from `brand/tokens.json`;
+- `rights-private`: code outside `lakelands-core` names its `rights`
+  module, the module is made public, or code outside the sight reads
+  `grants.restricted`; a door asks its `Sight`.
 
 `scripts/gates/README.md` says exactly what each one reads, and each
 script's header states its rule.

@@ -4,8 +4,18 @@
 //! canonicalises the event without its `hash`, hashes those bytes, links
 //! the event to its predecessor, and hands the engine the canonical bytes
 //! of the whole event (`docs/decisions/020-events-are-hash-chained-over-canonical-bytes.md`).
-//! Reading back, it parses the bytes, recomputes the hash and checks the
-//! link, so an engine that altered a byte is caught at the first read.
+//! It writes each append in the log's stored form
+//! (`docs/log-format.md` §1.2, §1.5): blocks where it is two or more
+//! events, each compressed with its lines framed and the members the
+//! block decides left out, and `position` and `prev` left to the event
+//! before but on a segment's first line
+//! ([`lakelands_core::log::frame_append`]). Reading back, it restores the
+//! event from its line, its block and the members the engine keeps beside
+//! them, recomputes the hash and checks the link. A block is inflated whole
+//! and kept while its events are read ([`lakelands_core::log::Restorer`]),
+//! and the line the engine hands beside it must be the block's, so an
+//! engine that altered a byte, of a line or anywhere in a block, is caught
+//! at the first read of an event it restores.
 
 use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::error::{Case, Detail, Flaw, Part};
@@ -14,6 +24,7 @@ use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::{Error, IdempotencyKey, LakeId, Position, Result, SourceId, Timestamp};
 use lakelands_core::canonical;
+use lakelands_core::log::Restorer;
 
 /// Everything about an event the writer decides; the store fills in the
 /// rest (format version, lake, position, id, link, fence, hash).
@@ -58,7 +69,7 @@ impl Draft {
         Draft {
             upstream: None,
             known_at,
-            writer: "system:lakelands".into(),
+            writer: crate::record::STORE_WRITER.into(),
             origin: Origin::System,
             source: None,
             seen_at: None,
@@ -75,7 +86,8 @@ impl Draft {
 }
 
 pub use lakelands_core::log::{
-    accepted_id, aging_id, authored_id, ingest_id, output_id, positional_id,
+    accepted_id, aging_id, authored_id, boxed_ingest_id, ingest_id, output_id, positional_id,
+    quarantined_id,
 };
 
 /// The hash of an event's line as it was written, without its `hash`.
@@ -135,6 +147,7 @@ pub(crate) fn seal_judged(
         hash: event.hash.clone(),
         fence,
         bytes,
+        frame: None,
     };
     (event, stored, fault)
 }
@@ -150,6 +163,13 @@ pub(crate) fn unsealed(
     d: Draft,
 ) -> Event {
     let id = d.id.unwrap_or_else(|| positional_id(lake, position));
+    let mut context = d.context;
+    // Whom the write is for goes with its writer, in the envelope: an
+    // event the store writes as itself names none, and `context` never
+    // carries it. Nor does such an event carry the host's occasion (088).
+    let own = d.writer == crate::record::STORE_WRITER;
+    let on_behalf_of = (context.on_behalf_of.take()).filter(|_| !own);
+    context.occasion = context.occasion.filter(|_| !own);
     Event {
         upstream: d.upstream,
         v: LOG_FORMAT_VERSION,
@@ -159,17 +179,15 @@ pub(crate) fn unsealed(
         prev: prev.clone(),
         known_at: d.known_at,
         writer: d.writer,
+        on_behalf_of,
         origin: d.origin,
         source: d.source,
         seen_at: d.seen_at,
         procedure: d.procedure,
         // The host's cause lands in the envelope of an event the store set
         // no cause for, and never in `context` (021).
-        context: WriteContext {
-            cause: None,
-            ..d.context
-        },
-        cause: d.cause.or(d.context.cause),
+        cause: d.cause.or(context.cause.take()),
+        context,
         fence,
         idempotency_key: d.idempotency_key,
         delivery: d.delivery,
@@ -179,116 +197,68 @@ pub(crate) fn unsealed(
     }
 }
 
-/// The format version a stored event's line says, where it is JSON.
-pub(crate) fn written_format(stored: &CanonicalEvent) -> Option<u64> {
-    serde_json::from_slice::<serde_json::Value>(&stored.bytes)
-        .ok()
-        .map(|v| format_of(&v))
-}
-
-/// The format version a stored event's line says, 0 where it says none.
-fn format_of(value: &serde_json::Value) -> u64 {
-    value
-        .get("v")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0)
-}
-
-/// The log format a lake's newest event is written in, judged at its two
-/// ends before the lake is opened; a lake this release does not read is
-/// refused by both numbers: it is another release's, not a damaged one,
-/// and it is not opened. `ends` are the log's first and last event
-/// ([`EngineOpener::log_ends`](lakelands_api::engine::EngineOpener::log_ends)).
-/// Three numbers are judged, and the first this release does not read is
-/// named: the first event's `v`, the format its `lake_created` says, and
-/// the last event's `v`; a tip older than the lake's first event is
-/// refused as one not read too. An end that is no JSON is left to
-/// [`open`], which says what is wrong with it. No log answers the
-/// release's own format.
-pub fn one_format(lake: &LakeId, ends: Option<&(CanonicalEvent, CanonicalEvent)>) -> Result<u32> {
+/// Whether a lake is written in a format this release reads, judged at
+/// its two ends before the lake is opened
+/// ([`lakelands_core::log::one_format`]): a lake this release does not
+/// read is refused by both numbers — it is another release's, not a
+/// damaged one — and it is not opened. `ends` are the log's first and
+/// last event
+/// ([`EngineOpener::log_ends`](lakelands_api::engine::EngineOpener::log_ends)),
+/// read here as the open reads a line of a format it does not run; the
+/// judgement itself, shared with the verifier of an archive, is core's.
+pub fn one_format(lake: &LakeId, ends: Option<&(CanonicalEvent, CanonicalEvent)>) -> Result<()> {
     let Some((first, tip)) = ends else {
-        return Ok(LOG_FORMAT_VERSION);
-    };
-    let read = |e: &CanonicalEvent| serde_json::from_slice::<serde_json::Value>(&e.bytes).ok();
-    let (first, tip) = (read(first), read(tip));
-    let made = |f: &&serde_json::Value| f.pointer("/body/kind") == Some(&"lake_created".into());
-    let created = (first.as_ref().filter(made)).and_then(|f| f.pointer("/body/format"));
-    let (began, newest) = (first.as_ref().map(format_of), tip.as_ref().map(format_of));
-    let made_in = created.map(|f| f.as_u64().unwrap_or(0));
-    let said = [began, made_in, newest];
-    let reads = u64::from(LOG_FORMAT_VERSION);
-    // A tip below the first event's format, or a `lake_created` that says
-    // another format than its own line, is read in none.
-    let other_than_its_line = began.zip(made_in).filter(|(b, m)| b != m).map(|(_, m)| m);
-    let fell = began.zip(newest).filter(|(b, n)| n < b).map(|(_, n)| n);
-    let fell = other_than_its_line.or(fell);
-    let unread = said
-        .into_iter()
-        .flatten()
-        .find(|v| !lakelands_core::log::reads_format(*v));
-    match unread.or(fell) {
-        Some(found) => {
-            let lake = lake.to_string();
-            let oldest = Some(lakelands_api::event::OLDEST_LOG_FORMAT.into());
-            let situation = lakelands_api::error::Situation::LogFormat {
-                lake,
-                found,
-                reads,
-                oldest,
-            };
-            Err(Error::unavailable(situation))
-        }
-        None => Ok(newest.map_or(LOG_FORMAT_VERSION, |n| n as u32)),
-    }
-}
-
-/// Refuses a reader's open of a lake whose newest event is in a format
-/// older than the release's: only a writer's open upgrades it, and an
-/// older projection is not read with newer code.
-pub fn read_as_is(lake: &LakeId, newest: u32) -> Result<()> {
-    if newest == LOG_FORMAT_VERSION {
         return Ok(());
-    }
-    let (lake, found, reads) = (lake.to_string(), newest.into(), LOG_FORMAT_VERSION.into());
-    let situation = lakelands_api::error::Situation::LogUpgradeOwed { lake, found, reads };
-    Err(Error::unavailable(situation))
+    };
+    let at = (first.position, tip.position);
+    // Every line holds its `v`; a `lake_created` may leave members to its
+    // frame.
+    let read = |e: &CanonicalEvent| {
+        let line = || serde_json::from_slice::<serde_json::Value>(&e.bytes).ok();
+        lakelands_core::log::restore(e)
+            .ok()
+            .map(|(e, _)| e)
+            .or_else(line)
+    };
+    let (first, tip) = (read(first), read(tip));
+    lakelands_core::log::one_format(lake.as_str(), at, first.as_ref(), tip.as_ref())
 }
 
 fn corrupt(position: Position, flaw: Flaw) -> Error {
     lakelands_core::damaged(Part::Log, Some(position), flaw)
 }
 
-/// Parse a stored event and verify it: the bytes are canonical, the hash
-/// is the hash of the event without it, and the members the engine keeps
-/// beside the bytes agree with them. An event in another format version
-/// than the release's one is refused before anything else of it is read
-/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+/// Restore a stored event and verify it: its line and its block are
+/// canonical and restore it (`lakelands_core::log::restore`), the hash is
+/// the hash of the restored event without it, and the members the engine
+/// keeps beside the line agree with it. An event in another format
+/// version than the release's one is refused before anything else of it
+/// is read (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 pub fn open(stored: &CanonicalEvent) -> Result<Event> {
+    open_with(&mut Restorer::default(), stored)
+}
+
+/// [`open`], the event restored by `restorer`, which keeps the last block
+/// it restored one from: what a reader of more than one event opens them
+/// with.
+pub fn open_with(restorer: &mut Restorer, stored: &CanonicalEvent) -> Result<Event> {
     let at = stored.position;
-    let value: serde_json::Value = serde_json::from_slice(&stored.bytes).map_err(|e| {
-        let detail = Detail::json(&e);
-        corrupt(at, Flaw::NotJson { detail })
-    })?;
-    let v = format_of(&value);
-    if !lakelands_core::log::reads_format(v) {
-        let reads = LOG_FORMAT_VERSION.into();
-        return Err(corrupt(at, Flaw::FormatOther { v, reads }));
-    }
-    if canonical::to_vec(&value) != stored.bytes {
-        return Err(corrupt(at, Flaw::NotCanonical));
-    }
-    // An older event is read as the release's format says its members; its
-    // bytes and its hash stay as stored.
+    let (value, whole) = restorer.restore(stored).map_err(|f| corrupt(at, f))?;
     let hash = hash_without_hash(value.clone());
-    let value = lakelands_core::log::converted(v, value);
-    let converted = canonical::to_vec(&value);
+    // Where the line is the whole event its bytes are the stored ones,
+    // already checked: no second pass.
+    let bytes = if whole {
+        stored.bytes.clone()
+    } else {
+        canonical::to_vec(&value)
+    };
     let event: Event = serde_json::from_value(value).map_err(|e| {
         let detail = Detail::json(&e);
         corrupt(at, Flaw::NotAnEvent { detail })
     })?;
     // Members read leniently (a date-time in another form) would print
     // differently: the event must re-serialise to exactly its bytes.
-    if canonical::of(&event) != converted {
+    if canonical::of(&event) != bytes {
         return Err(corrupt(at, Flaw::NotOneForm));
     }
     // A member where it never sits is refused, never read; and so is a

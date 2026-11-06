@@ -36,12 +36,27 @@ configured. With `disable` the connection is plaintext.
 
 ### The log is kept as the format's lines
 
+098 keeps a row a block, and moves the ids to `ids`.
+
 - An event's canonical bytes are stored unchanged, one row per event,
   with the position, id, `prev`, `hash` and fence beside them, and the
-  first position of the segment it belongs to.
+  first position of the segment it belongs to. As 086 decides for
+  0.21.0, `id`, `prev` and `hash` are kept as the bytes their hex digits
+  spell and handed back as the same lower-case hex; an index on the id
+  answers which position holds it, and the projection keeps no
+  `applied` table. A log kept as text is converted in place by the
+  first writer's open of 0.21.0, in one transaction
+  (`docs/decisions/086-an-engine-keeps-an-events-id-once-and-its-hashes-as-bytes.md`).
 - A segment's digest is the SHA-256 of its events' bytes, each followed
   by one line feed: the digest of the file the format describes
   (`docs/log-format.md` §4.2).
+- Accepted for 0.20.0 (lakelands#1413)
+  (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
+  a row holds its event's line of the stored form, a frame is a row of
+  its own in a table of frames beside them, and a segment's digest is
+  over its events' canonical bytes as restored, which for a row of
+  format 19 are its bytes. `lakelands_engine_pg::export` writes the
+  stored form as it stands, each frame's line before its events'.
 - `lakelands_engine_pg::export` writes a lake's segments as those files,
   and they verify with nothing but the format. It is a raw copy of the
   log's lines, for a lake whose store cannot be opened, and judges none
@@ -83,6 +98,32 @@ The lease is session state.
   pooler. A transaction-mode pooler in front of a lake is a
   misconfiguration the probe catches when it can, not one the engine
   survives.
+
+### What is proved, and against what
+
+`crates/lakelands-engine-pg/tests/live_servers.rs` runs in CI's
+`pg-live` job, on every pull request, against servers
+`scripts/pg-live/up.sh` starts in one container of the conformance job's
+image (`postgres:18`):
+
+- **PgBouncer in transaction mode** (1.26.1, the PostgreSQL project's
+  package): an open for writing, `Write` or `Create`, is refused as the
+  pooler situation, and every table of the lake holds the same rows
+  afterwards; a lake that did not exist is not made.
+- **PgBouncer in session mode**, the same version: the lake is opened,
+  and its lease is taken and given back.
+- **A server that demands a client certificate** (`hostssl ... cert`,
+  the certificate's CN the user): the connection with the certificate is
+  served, the same location without it is refused by the server, and
+  half a certificate (the certificate without the key, the key without
+  the certificate) is refused as invalid before a connection is tried,
+  with nothing listening at the URL.
+
+Each was seen failing with its refusal removed. What is not proved: any
+other pooler (PgBouncer is the one run, and its `pool_mode` the only
+setting varied), a transaction-mode pooler that passes the probe (the
+limit stated above), a server certificate that does not verify, and
+PostgreSQL versions other than 18.
 
 ### The fold writes in one `READ COMMITTED` transaction, and every read of a view runs in a `REPEATABLE READ` one
 
@@ -135,11 +176,36 @@ force at a position, so they keep no heads, which every put would write
 and no read would use. A record's key is compared bytewise
 (`COLLATE "C"`), so the primary keys hold the order keys are read in.
 
-### The layout is 2
+### The layout is 9
 
 These tables are not the ones layout 1 made, which would be read as if
-they held no heads, so the engine's layout number is 2, and a projection
-of layout 1 is refused at open and rebuilt (004).
+they held no heads, so the engine's layout number became 2, and a
+projection of an older layout is refused at open and rebuilt (004). It
+is raised whenever a table or a state changes so that an older
+projection would answer wrongly. At 6, a record's state leaves out what
+its row holds, its type, its key and its position, and its flags where
+they are false; every statement that reads a record selects the row's
+columns beside its state (lakelands#1318). A vector's elements are kept
+once, in a row of `vectors` keyed by the state that wrote them, which
+the states naming it share; a read joins it (072, lakelands#1323). A
+projection a build between those two changes laid out, marked 6 with
+`vectors` a head index, is read as layout 5 by that table's shape and
+rebuilt; the check goes at the release that ships both. At 7, a field
+the lake asks an index for keeps its graphs: a row of `graphs` per
+field and class of reader names the generation, a table of its own of
+keys and unit vectors with one HNSW index, the one built beside it and
+the position it is stale from, and `graph_keys` names the keys a write
+touched while a graph is built; `vectors` keeps no unit vector and no
+partial index
+(`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`).
+At 8, a route names its kind, type and source by number (lakelands#1427).
+At 9, the base a write's records share, their provenance less
+its position, is one row of `bases` their states name, where three or
+more records of the write, what one transaction puts, name it; a base
+fewer share stays whole in the state, since a row of its own costs
+more than it saves. A
+forgetting, or an act of removal, deletes the rows no state names any
+more (lakelands#1432).
 
 ### The rulebook decides
 
@@ -153,20 +219,23 @@ candidates:
 - exact text values;
 - links;
 - full-text tokens, one row per pipeline token of a record;
-- vectors, compared by brute-force cosine, or, for a field the lake asks
-  an index for, the candidates pgvector's HNSW index returns, ranked by
-  the same cosine (043).
+- vectors, the rows of `vectors` in force, compared by brute-force
+  cosine, or, for a field the lake asks an index for, the stream the
+  HNSW index of its reader's class's graph hands out, and the graph's
+  other entries after it, ranked by the same cosine (043, 072, 078).
 
 Selection, order, scoring and ranking are `lakelands_core::engines`'
 (031), so an answer is the same on every engine; only a field the lake
 asks an index for answers the index's set, which may differ between
 engines (043).
 
-### The server is PostgreSQL 16 or newer
+### The server is PostgreSQL 18 or newer
 
-The server is PostgreSQL 16 or newer, the release the conformance job
-runs. The engine uses nothing a newer release adds. The floor is checked
-when a handle opens, before anything is created.
+The server is PostgreSQL 18 or newer, the release the conformance job
+runs. The floor began at 16 and was raised to 18 for a host that ships
+only 18 and tests nothing older, so a 16 or a 17 server is refused
+rather than run untested. It is the engine's own and a host does not
+set it. It is checked when a handle opens, before anything is created.
 
 ## Why
 
@@ -217,3 +286,20 @@ file answers on disk: it dies with its holder.
   of them; it reads the log over a connection of its own, so a lake
   whose projection another build laid out, or that has none, is
   exported (lakelands#865).
+- The layout is 6: a record's state no longer holds its row's type, key
+  and position or a false flag, and a count in force asks for a flag that
+  is absent (lakelands#1318); nor a vector's elements, kept once in
+  `vectors` by the state that wrote them (lakelands#1323). Layouts 3 to 5 kept provenance once a
+  record (lakelands#1018), routes by source (lakelands#1151) and the
+  procedure a computed field names (lakelands#1191).
+- The layout is 7: a field the lake asks an index for keeps a graph per
+  class of reader in tables of its own, and `vectors` loses its unit
+  vector and its partial indexes (078, lakelands#1254).
+- The layout is 8: a route names its kind, type and source by number
+  (lakelands#1427).
+- The layout is 9: a base three or more records of a write share is one
+  row of `bases` their states name; a base fewer share stays in the
+  state (lakelands#1432).
+- A row holding the stored form, a table of frames, and a digest over
+  the restored bytes, accepted with 083 (lakelands#1413).
+- Amended by 098 (lakelands#1652), proposed for 0.23.0.

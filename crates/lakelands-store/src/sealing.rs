@@ -2,15 +2,21 @@
 //! in the log and opened by the fold
 //! (`docs/decisions/058-a-source-may-be-forgotten.md`).
 //!
-//! Each value is AES-256-GCM-SIV over its canonical bytes, written as the
-//! base64 of the cipher's output. The nonce is made from where the value
-//! stands: the source, the type, the record key, the version before the
-//! event and the field; or, for a recorded output, the seam and the input.
-//! So the same value against the same state seals to the same bytes, and
-//! a redelivery keeps its ingest id, while two records or two versions
-//! never share one. The fold makes the nonce again from the event, so a
-//! sealed value moved to another place does not open.
+//! What is sealed is AES-256-GCM-SIV over canonical bytes, written as the
+//! base64 of the cipher's output. A record event's members are sealed
+//! together, the object of them in one box the patch leaves out
+//! (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
+//! one tag a record, not one a field, and erasing loses nothing by it, as
+//! the members are under one key already. The nonce is made from where the
+//! values stand: the source, the type, the record key and the version
+//! before the event; or, for a recorded output, the seam and the input.
+//! So the same values against
+//! the same state seal to the same bytes, and a redelivery keeps its
+//! ingest id, while two records or two versions never share one. The fold
+//! makes the nonce again from the event, so a sealed value moved to
+//! another place does not open.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -18,17 +24,18 @@ use aes_gcm_siv::aead::{Aead, KeyInit};
 use aes_gcm_siv::{Aes256GcmSiv, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use hkdf::HkdfExtract;
 use hmac::{Hmac, Mac};
-use lakelands_api::engine::ProjectionView;
+use lakelands_api::engine::{LakeEngine, ProjectionView};
 use lakelands_api::error::{Seam, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Sealed};
 use lakelands_api::id::KeyId;
 use lakelands_api::seam::{DataKey, KeyStore};
-use lakelands_api::{Error, LakeId, Position, Result, SourceId, Value};
+use lakelands_api::{Error, FieldName, LakeId, Position, Result, SourceId, Value};
 use lakelands_core::canonical;
 use lakelands_core::lock;
 use sha2::{Digest as _, Sha256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The sources' keys an open lake was given, asked of the host's key store
 /// once and never written anywhere: by the writer, which seals and folds,
@@ -36,6 +43,9 @@ use zeroize::Zeroizing;
 pub struct Keys {
     lake: LakeId,
     store: Option<Arc<dyn KeyStore>>,
+    /// The lake's log, which names the keys a delivery sealed apart sealed
+    /// each value under ([`Self::apart_named`]).
+    log: Option<Arc<dyn LakeEngine>>,
     held: Mutex<Held>,
 }
 
@@ -68,6 +78,10 @@ pub struct List {
     pub firsts: Vec<(KeyId, Position)>,
     /// When the newest version was first used, where the list says.
     pub newest: Option<lakelands_api::Timestamp>,
+    /// The versions a delivery sealed apart sealed under, which the list
+    /// marks: only a value of one of these is read for its apart keys
+    /// ([`Keys::apart_named`]).
+    pub apart: Vec<KeyId>,
 }
 
 impl List {
@@ -77,19 +91,63 @@ impl List {
         let last = value.as_array().and_then(|l| l.last());
         let newest = last.and_then(|l| l.get(2)?.as_i64());
         let newest = newest.map(lakelands_api::Timestamp);
+        let entries = value.as_array().into_iter().flatten();
+        let marked = entries.filter(|l| l.get(3) == Some(&Value::Bool(true)));
+        let apart = marked.filter_map(|l| Some(KeyId::from(l.get(0)?.as_str()?)));
+        let apart = apart.collect();
         List {
             value,
             firsts,
             newest,
+            apart,
         }
     }
 }
 
 impl Keys {
-    /// The keys of `lake`, from `store`.
-    pub fn new(lake: LakeId, store: Option<Arc<dyn KeyStore>>) -> Keys {
+    /// The keys of `lake`, from `store`, whose log `log` holds.
+    pub fn new(
+        lake: LakeId,
+        store: Option<Arc<dyn KeyStore>>,
+        log: Option<Arc<dyn LakeEngine>>,
+    ) -> Keys {
         let held = Mutex::new(Held::default());
-        Keys { lake, store, held }
+        Keys {
+            lake,
+            store,
+            log,
+            held,
+        }
+    }
+
+    /// The keys apart that `source`'s ingest at `at` names in `sealed`
+    /// (065): as `known` holds them, else read from the log, one read a
+    /// position, and kept in `known`. None where the event there is not
+    /// an ingest of `source`'s, or the keys were given no log.
+    pub fn apart_named(
+        &self,
+        known: &Apart,
+        source: &SourceId,
+        at: Position,
+    ) -> Result<Vec<KeyId>> {
+        let cached = lock(&known.0).get(&at).cloned();
+        let named = match cached {
+            Some(named) => named,
+            None => {
+                let Some(log) = &self.log else {
+                    return Ok(Vec::new());
+                };
+                let read = log.read(at, 1)?;
+                let stored = read.first().filter(|s| s.position == at);
+                let e = stored.map(crate::log::open).transpose()?;
+                let ingest = e.filter(|e| matches!(e.body, EventBody::RecordIngested { .. }));
+                let named = ingest.and_then(|e| Some((e.source?, e.sealed?.apart)));
+                lock(&known.0).insert(at, named.clone());
+                named
+            }
+        };
+        let of = named.filter(|(s, _)| s == source);
+        Ok(of.map(|(_, apart)| apart).unwrap_or_default())
     }
 
     fn store(&self) -> Result<&dyn KeyStore> {
@@ -104,9 +162,11 @@ impl Keys {
     /// newest version the log used, [`USED`]), or where `rotate` says it
     /// belongs to a period past ([`rotates`]). A key store that lost the
     /// last of them answers `key_missing` here, at the write, and is never
-    /// given a new key the old values would read as erased. So does a
-    /// version an act of removal named, which the key store may not have
-    /// destroyed yet: a value sealed under it would be erased with it.
+    /// given a new key the old values would read as erased. A version an
+    /// act of removal took is not lost, though: from its first turn it
+    /// seals nothing, and the source seals under a new one (099). One the
+    /// key store still holds, its destroy failed inside that turn, leaves
+    /// 065's case.
     /// Without a key store, refused as `Unbound`.
     pub fn sealing(
         &self,
@@ -129,13 +189,25 @@ impl Keys {
             None => {
                 let store = self.store()?;
                 let mut ids = store.ids(&self.lake, source)?;
+                let held_by_store = newest.is_some_and(|u| ids.contains(u));
                 {
                     let held = lock(&self.held);
                     ids.retain(|k| !held.doomed.contains(&(source.clone(), k.clone())));
                 }
                 if let Some(last) = newest.filter(|u| !ids.contains(u)) {
-                    let (source, key) = (source.clone(), last.clone());
-                    return Err(Error::unavailable(Situation::KeyMissing { source, key }));
+                    // A version the act destroyed is not lost: from its
+                    // first turn it seals nothing, and the source seals
+                    // under a new one (099). One the key store still
+                    // holds was not destroyed, a crash inside that turn:
+                    // it is 065's case, a lost key.
+                    let taken = !held_by_store
+                        && lock(&self.held)
+                            .doomed
+                            .contains(&(source.clone(), last.clone()));
+                    if !taken {
+                        let (source, key) = (source.clone(), last.clone());
+                        return Err(Error::unavailable(Situation::KeyMissing { source, key }));
+                    }
                 }
                 // A version made and not yet used is a new period's
                 // already.
@@ -150,6 +222,54 @@ impl Keys {
         };
         let key = self.key(source, &id)?;
         Ok((id, key))
+    }
+
+    /// A new key of `source` outside its versions, for the delivery an
+    /// ingest seals apart (065): refused as unbound where the key store
+    /// makes none.
+    pub fn apart(&self, source: &SourceId) -> Result<(KeyId, DataKey)> {
+        let id = self.store()?.create_apart(&self.lake, source)?;
+        let key = self.key(source, &id)?;
+        Ok((id, key))
+    }
+
+    /// [`Self::apart`] for each of `sources`, in order, asked of the key
+    /// store in one request (087).
+    pub fn apart_many(&self, sources: &[SourceId]) -> Result<Vec<KeyId>> {
+        let ids = self.store()?.create_apart_many(&self.lake, sources)?;
+        for (source, id) in sources.iter().zip(&ids) {
+            self.key(source, id)?;
+        }
+        Ok(ids)
+    }
+
+    /// The key `sealed` names of `source`: its version, composed with the
+    /// keys of deliveries sealed apart it names ([`compose`]). One the key
+    /// store does not give fails closed, naming it.
+    pub fn sealed(&self, source: &SourceId, sealed: &Sealed) -> Result<DataKey> {
+        present(source, self.opened_sealed(source, sealed)?)
+    }
+
+    /// [`Self::sealed`], or those of its keys the key store does not
+    /// give, in its order: destroyed, which only an act in the log makes
+    /// an erasure.
+    pub fn opened_sealed(
+        &self,
+        source: &SourceId,
+        sealed: &Sealed,
+    ) -> Result<std::result::Result<DataKey, Vec<KeyId>>> {
+        let (mut keys, mut missing) = (Vec::with_capacity(1 + sealed.apart.len()), Vec::new());
+        for id in std::iter::once(&sealed.key).chain(&sealed.apart) {
+            match self.opened(source, id)? {
+                Some(k) => keys.push(k),
+                None => missing.push(id.clone()),
+            }
+        }
+        if !missing.is_empty() {
+            return Ok(Err(missing));
+        }
+        let (version, apart) = keys.split_first().expect("a seal names its version");
+        Ok(Ok(compose(version, apart)))
     }
 
     /// The key of `source` of version `id`. One the key store does not
@@ -222,6 +342,15 @@ impl Keys {
         held.generation += 1;
     }
 
+    /// Whether the key store holds `source`'s key `id`, asked of it, not
+    /// of memory; none is held without a key store.
+    pub fn holds(&self, source: &SourceId, id: &KeyId) -> Result<bool> {
+        match &self.store {
+            Some(store) => Ok(store.key(&self.lake, source, id)?.is_some()),
+            None => Ok(false),
+        }
+    }
+
     /// The versions of `source`'s key the key store holds; none without
     /// a key store, which seals nothing.
     pub fn ids(&self, source: &SourceId) -> Result<Vec<KeyId>> {
@@ -291,6 +420,126 @@ impl Keys {
             None => Ok(()),
         }
     }
+
+    /// Drop the keys `keys` of `source`'s deliveries sealed apart from
+    /// memory, so none seals again, though the key store has not yet
+    /// destroyed it, then have the key store destroy each it still holds
+    /// (065). A key gone already is no change, so a key store that makes
+    /// no such key is never asked.
+    pub fn destroy_apart(&self, source: &SourceId, keys: &[KeyId]) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut held = lock(&self.held);
+            held.by
+                .retain(|(s, id), _| s != source || !keys.contains(id));
+            let doomed = keys.iter().map(|k| (source.clone(), k.clone()));
+            held.doomed.extend(doomed);
+        }
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        for id in keys {
+            if self.holds(source, id)? {
+                store.destroy_apart(&self.lake, source, id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Keep that an act of removal named `source`'s keys `keys`, versions
+    /// and keys apart alike, without asking the key store anything: what a
+    /// writer just opened is told of the acts the projection lists (099),
+    /// whose destroys left no trace but the versions' absence.
+    pub fn doom(&self, source: &SourceId, keys: &[KeyId]) {
+        if keys.is_empty() {
+            return;
+        }
+        let doomed = keys.iter().map(|k| (source.clone(), k.clone()));
+        lock(&self.held).doomed.extend(doomed);
+    }
+
+    /// Whether an act of removal named `source`'s key `id`: from then on
+    /// it seals nothing.
+    pub fn doomed(&self, source: &SourceId, id: &KeyId) -> bool {
+        lock(&self.held)
+            .doomed
+            .contains(&(source.clone(), id.clone()))
+    }
+}
+
+/// The ciphers one pass that seals or opens many values builds (an
+/// append, an ingest's window, a fold of a page or of an append): each
+/// key a seal names built into its [`cipher`] at its first value, not at
+/// each, by source and the versions and keys apart it is composed of.
+/// They live only as long as the pass, so none outlives a key an act
+/// drops after it, and the lake keeps none.
+#[derive(Default)]
+pub struct Ciphers(BTreeMap<(SourceId, Vec<KeyId>), Aes256GcmSiv>);
+
+impl Ciphers {
+    /// The cipher of the key `sealed` names of `source`, failing closed
+    /// as [`Keys::sealed`] does.
+    pub fn sealed(
+        &mut self,
+        keys: &Keys,
+        source: &SourceId,
+        sealed: &Sealed,
+    ) -> Result<&Aes256GcmSiv> {
+        present(source, self.opened(keys, source, sealed)?)
+    }
+
+    /// The cipher of [`Keys::opened_sealed`]'s key, or those of its keys
+    /// the key store does not give, as it answers them.
+    pub fn opened(
+        &mut self,
+        keys: &Keys,
+        source: &SourceId,
+        sealed: &Sealed,
+    ) -> Result<std::result::Result<&Aes256GcmSiv, Vec<KeyId>>> {
+        let ids = std::iter::once(&sealed.key).chain(&sealed.apart);
+        let at = (source.clone(), ids.cloned().collect());
+        Ok(Ok(match self.0.entry(at) {
+            Entry::Occupied(c) => c.into_mut(),
+            Entry::Vacant(v) => match keys.opened_sealed(source, sealed)? {
+                Ok(key) => v.insert(cipher(&key)),
+                Err(missing) => return Ok(Err(missing)),
+            },
+        }))
+    }
+}
+
+/// What `opened` gives of `source`'s keys, or a refusal naming the first
+/// of them missing.
+fn present<T>(source: &SourceId, opened: std::result::Result<T, Vec<KeyId>>) -> Result<T> {
+    opened.map_err(|mut missing| {
+        let (source, key) = (source.clone(), missing.remove(0));
+        Error::unavailable(Situation::KeyMissing { source, key })
+    })
+}
+
+/// The cipher of `key`: the AES schedule of `key` as AES-GCM-SIV's
+/// key-generating key, wiped when the cipher is dropped. Only that is
+/// saved where a cipher is kept: each value sealed or opened still
+/// derives its own authentication and encryption keys from its nonce,
+/// and expands the encryption key's schedule.
+pub fn cipher(key: &DataKey) -> Aes256GcmSiv {
+    Aes256GcmSiv::new((&key.0).into())
+}
+
+/// One key from a version of a source's key and the keys of deliveries
+/// sealed apart that seal with it (065): HKDF-SHA-256 with an empty salt
+/// over the version's bytes then each apart key's, info
+/// `lakelands:apart:v1`. With none apart it is the version itself.
+pub fn compose(version: &DataKey, apart: &[DataKey]) -> DataKey {
+    if apart.is_empty() {
+        return version.clone();
+    }
+    DataKey(*hkdf(
+        std::iter::once(version).chain(apart),
+        b"lakelands:apart:v1",
+    ))
 }
 
 /// The store's own seam under which the fold keeps the sources the log
@@ -321,10 +570,9 @@ pub fn erase(event: &mut Event) -> Vec<lakelands_api::FieldName> {
     };
     match &mut event.body {
         EventBody::RecordIngested { patch, .. } => {
+            // A box's members are not in the patch: each is erased there.
             for f in &sealed.fields {
-                if let Some(v) = patch.get_mut(f) {
-                    *v = Value::Null;
-                }
+                patch.insert(f.clone(), Value::Null);
             }
             sealed.fields
         }
@@ -332,8 +580,29 @@ pub fn erase(event: &mut Event) -> Vec<lakelands_api::FieldName> {
             *output = None;
             Vec::new()
         }
+        // A quarantined record's sealed cells are not there at all (085).
+        EventBody::RecordQuarantined { .. } => sealed.fields,
         _ => Vec::new(),
     }
+}
+
+/// A `record_quarantined` as the fold and the acts read it: its `sealed`
+/// and its `seen_at` on its envelope, where a `record_ingested` carries
+/// them, so that what opens, erases and selects a landed value reaches its
+/// cells too (085); `None` for any other event.
+pub fn lifted(e: &Event) -> Option<Event> {
+    let EventBody::RecordQuarantined {
+        sealed, seen_at, ..
+    } = &e.body
+    else {
+        return None;
+    };
+    let mut l = e.clone();
+    (l.sealed, l.seen_at) = (sealed.clone(), *seen_at);
+    if let EventBody::RecordQuarantined { sealed, .. } = &mut l.body {
+        *sealed = None;
+    }
+    Some(l)
 }
 
 /// The store's own seam under which the fold keeps, for each source, the
@@ -350,6 +619,39 @@ pub const USED: &str = "sys:sealed";
 /// The input [`USED`] keeps `source`'s versions under.
 pub fn used_by(source: &SourceId) -> Digest {
     crate::backed::digest(&Value::from(source.as_str()))
+}
+
+/// The keys outside its source's versions that each ingest a delivery
+/// sealed apart names in `sealed`, by position (065): a value's version
+/// is the one its position says ([`USED`]), and its apart keys are the
+/// ones its own event names, so a recorded output composes the same keys
+/// at the write and at a rebuild. Each is read from the log once
+/// ([`Keys::apart_named`]) and kept while a fold or a write's plan lasts; a
+/// plan stages its own events' here, as they are not in the log yet.
+#[derive(Default)]
+pub struct Apart(Mutex<BTreeMap<Position, Named>>);
+
+/// The source and keys apart of the ingest at a position, `None` where
+/// the event there is no ingest.
+type Named = Option<(SourceId, Vec<KeyId>)>;
+
+impl Apart {
+    /// Stage the keys apart `source`'s ingest at `at` names, before it is
+    /// in the log.
+    pub fn stage(&self, source: &SourceId, at: Position, apart: &[KeyId]) {
+        lock(&self.0).insert(at, Some((source.clone(), apart.to_vec())));
+    }
+
+    /// Take back what [`Apart::stage`] staged at `at`, for a write refused.
+    pub fn unstage(&self, at: Position) {
+        lock(&self.0).remove(&at);
+    }
+}
+
+impl Clone for Apart {
+    fn clone(&self) -> Apart {
+        Apart(Mutex::new(lock(&self.0).clone()))
+    }
 }
 
 /// Whether a source whose newest version was first used at `first`
@@ -401,14 +703,31 @@ pub fn firsts(list: Option<&Value>) -> Vec<(KeyId, Position)> {
     ids.filter_map(first).collect()
 }
 
+/// What the fold keeps once `sealed` seals a value of `source` at `at`,
+/// written at `known`, with the place it is kept under: the list [`USED`]
+/// where its version is first used there, or first seals a delivery
+/// sealed apart ([`first_use`]). Its apart keys stay in the log alone
+/// ([`Apart`]). The fold and a write's plan both keep it so, and read the
+/// same keys.
+pub fn kept(
+    read: (&crate::backed::Recorded, &dyn ProjectionView, &Keys),
+    (source, sealed, at, known): (&SourceId, &Sealed, Position, lakelands_api::Timestamp),
+) -> Result<Option<((String, Digest), Value)>> {
+    let apart = !sealed.apart.is_empty();
+    first_use(read, (source, &sealed.key, at, known), apart)
+}
+
 /// The list [`USED`] keeps for `source` once `key` seals a value at `at`,
-/// written at `known`, with the place it is kept under: none where the
-/// list, as `staged` holds it or else `view` ([`Keys::listed`]), names
-/// `key` already. The fold and a write's plan both keep it so, and read
-/// the same versions.
-pub fn first_use(
+/// written at `known`, `apart` where a delivery sealed apart seals it,
+/// with the place it is kept under: none where the list, as `staged`
+/// holds it or else `view` ([`Keys::listed`]), names `key` already, and
+/// marks it where `apart`. A mark is a fourth member, `true`, of the
+/// version's entry, so a recorded output reads a value's apart keys only
+/// at a value whose version it marks ([`Keys::apart_named`]).
+fn first_use(
     (staged, view, keys): (&crate::backed::Recorded, &dyn ProjectionView, &Keys),
     (source, key, at, known): (&SourceId, &KeyId, Position, lakelands_api::Timestamp),
+    apart: bool,
 ) -> Result<Option<((String, Digest), Value)>> {
     let place = (USED.to_owned(), used_by(source));
     let list = match staged.get(&place).and_then(|l| l.last()) {
@@ -417,12 +736,22 @@ pub fn first_use(
     };
     // A source seals with its newest version, so it is looked for first.
     let named = |l: &Arc<List>| l.firsts.iter().rev().any(|(k, _)| k == key);
-    if list.as_ref().is_some_and(named) {
+    let marked = |l: &Arc<List>| !apart || l.apart.contains(key);
+    if list.as_ref().is_some_and(|l| named(l) && marked(l)) {
         return Ok(None);
     }
     let used = list.and_then(|l| l.value.as_array().cloned());
     let mut used = used.unwrap_or_default();
-    used.push(serde_json::json!([key, at, known.0]));
+    let entry =
+        (used.iter_mut().rev()).find(|l| l.get(0).and_then(Value::as_str) == Some(key.as_str()));
+    match entry.and_then(Value::as_array_mut) {
+        Some(entry) => {
+            entry.resize(3, Value::Null);
+            entry.push(Value::Bool(true));
+        }
+        None if apart => used.push(serde_json::json!([key, at, known.0, true])),
+        None => used.push(serde_json::json!([key, at, known.0])),
+    }
     Ok(Some((place, Value::Array(used))))
 }
 
@@ -440,87 +769,125 @@ fn nonce(parts: &[&[u8]]) -> [u8; 12] {
         }
         h.update(p);
     }
-    let mut n = [0; 12];
-    n.copy_from_slice(&h.finalize()[..12]);
-    n
+    let digest = h.finalize();
+    std::array::from_fn(|i| digest[i])
 }
 
-/// The places of what `sealed` names in `body`, each with its nonce: the
-/// patch members, or the recorded output.
-fn places(body: &EventBody, sealed: &Sealed, source: &SourceId) -> Vec<(Option<String>, [u8; 12])> {
+/// The nonce of what a source's key seals in `body`, by its place: a
+/// record's box, from its source, type, key and version before; a
+/// quarantined record's box, from its source, the word `quarantined`, its id's delivery and index and its
+/// version before (085); or a recorded output, from its source, seam and
+/// input. No other event holds a sealed value.
+fn place(source: &SourceId, body: &EventBody) -> Option<[u8; 12]> {
     let source = source.as_str().as_bytes();
     match body {
         EventBody::RecordIngested {
             ty, key, version, ..
         } => {
             let before = version.0.saturating_sub(1).to_string();
-            let at = |f: &str| {
-                let parts = [source, ty.as_str().as_bytes(), key.as_str().as_bytes()];
-                nonce(&[&parts[..], &[before.as_bytes(), f.as_bytes()]].concat())
-            };
-            sealed
-                .fields
-                .iter()
-                .map(|f| (Some(f.to_string()), at(f.as_str())))
-                .collect()
+            let parts = [source, ty.as_str().as_bytes(), key.as_str().as_bytes()];
+            Some(nonce(&[&parts[..], &[before.as_bytes()]].concat()))
+        }
+        EventBody::RecordQuarantined { id, version, .. } => {
+            let (index, before) = (id.index.to_string(), version.saturating_sub(1).to_string());
+            let parts = [source, b"quarantined", id.delivery.as_str().as_bytes()];
+            Some(nonce(
+                &[&parts[..], &[index.as_bytes(), before.as_bytes()]].concat(),
+            ))
         }
         EventBody::OutputRecorded { seam, input, .. } => {
-            let parts: [&[u8]; 3] = [source, seam.as_bytes(), input.0.as_bytes()];
-            vec![(None, nonce(&parts))]
+            Some(nonce(&[source, seam.as_bytes(), input.0.as_bytes()]))
         }
-        _ => Vec::new(),
-    }
-}
-
-/// The member a place names in `body`.
-fn member<'a>(body: &'a mut EventBody, field: Option<&str>) -> Option<&'a mut Value> {
-    match (body, field) {
-        (EventBody::RecordIngested { patch, .. }, Some(f)) => patch.get_mut(f),
-        (EventBody::OutputRecorded { output, .. }, None) => output.as_mut(),
         _ => None,
     }
 }
 
-/// Seal in place what `sealed` names of `body`, a source's plaintext.
-pub fn seal(body: &mut EventBody, sealed: &Sealed, source: &SourceId, key: &DataKey) {
-    let cipher = Aes256GcmSiv::new((&key.0).into());
-    for (field, n) in places(body, sealed, source) {
-        if let Some(v) = member(body, field.as_deref()) {
-            let plain = canonical::to_vec(v);
-            let sealed = cipher
-                .encrypt(Nonce::from_slice(&n), plain.as_slice())
-                .expect("AES-256-GCM-SIV seals any value");
-            *v = Value::String(STANDARD.encode(sealed));
+/// Seal in place what `sealed` names of `body`, a source's plaintext: a
+/// record's members, taken out of its patch, together in `sealed`'s box,
+/// the canonical bytes of their object (083); or a recorded output.
+pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, cipher: &Aes256GcmSiv) {
+    let close = |v: &Value, n: [u8; 12]| {
+        let plain = canonical::to_vec(v);
+        let sealed = cipher
+            .encrypt(&Nonce::from(n), plain.as_slice())
+            .expect("AES-256-GCM-SIV seals any value");
+        STANDARD.encode(sealed)
+    };
+    let Some(n) = place(source, body) else {
+        return;
+    };
+    match body {
+        EventBody::RecordIngested { patch, .. }
+        | EventBody::RecordQuarantined { cells: patch, .. } => {
+            let fields = sealed.fields.iter();
+            let taken = fields.filter_map(|f| Some((f.to_string(), patch.remove(f)?)));
+            sealed.boxed = Some(close(&Value::Object(taken.collect()), n));
         }
+        EventBody::OutputRecorded {
+            output: Some(v), ..
+        } => *v = Value::String(close(v, n)),
+        _ => {}
     }
 }
 
-/// Open in place what `event`'s `sealed` names under `key`. A value that
-/// does not open under it is answered as such, at the event's position.
-pub fn open(event: &mut Event, key: &DataKey) -> Result<()> {
+/// Open in place what `event`'s `sealed` names under `cipher`'s key: a
+/// record's box back into its patch, or a recorded output. A value that
+/// does not open under it, or a box that does not hold exactly the members `sealed` names, none of them in the
+/// patch, is answered as such, at the event's position.
+pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
     let Some(sealed) = event.sealed.clone() else {
         return Ok(());
     };
     let Some(source) = sealed.source.clone().or(event.source.clone()) else {
         return Ok(());
     };
-    let cipher = Aes256GcmSiv::new((&key.0).into());
     let position = event.position;
-    for (field, n) in places(&event.body, &sealed, &source) {
-        let Some(v) = member(&mut event.body, field.as_deref()) else {
-            continue;
-        };
-        let plain = v
-            .as_str()
-            .and_then(|s| STANDARD.decode(s).ok())
-            .and_then(|b| cipher.decrypt(Nonce::from_slice(&n), b.as_slice()).ok())
-            .and_then(|b| serde_json::from_slice(&b).ok());
-        match plain {
-            Some(p) => *v = p,
-            None => return Err(Error::unavailable(Situation::Unsealable { position })),
+    let unsealable = || Error::unavailable(Situation::Unsealable { position });
+    let opened = |v: &Value, n: [u8; 12]| -> Option<Value> {
+        let b = STANDARD.decode(v.as_str()?).ok()?;
+        let plain = cipher.decrypt(&Nonce::from(n), b.as_slice()).ok()?;
+        serde_json::from_slice(&plain).ok()
+    };
+    let Some(whole) = place(&source, &event.body) else {
+        return Ok(());
+    };
+    match (&mut event.body, &sealed.boxed) {
+        (
+            EventBody::RecordIngested { patch, .. }
+            | EventBody::RecordQuarantined { cells: patch, .. },
+            Some(boxed),
+        ) => {
+            let members = opened(&Value::String(boxed.clone()), whole);
+            let Some(Value::Object(members)) = members else {
+                return Err(unsealable());
+            };
+            let named = |f: &FieldName| members.contains_key(f.as_str()) && !patch.contains_key(f);
+            if members.len() != sealed.fields.len() || !sealed.fields.iter().all(named) {
+                return Err(unsealable());
+            }
+            patch.extend(members.into_iter().map(|(f, v)| (f.as_str().into(), v)));
         }
+        (
+            EventBody::OutputRecorded {
+                output: Some(v), ..
+            },
+            _,
+        ) => *v = opened(v, whole).ok_or_else(unsealable)?,
+        _ => {}
     }
     Ok(())
+}
+
+/// HKDF-SHA-256 with an empty salt over the keys' bytes in order: the
+/// pseudorandom key between is wiped, the key out is wiped when dropped.
+fn hkdf<'a>(ikm: impl IntoIterator<Item = &'a DataKey>, info: &[u8]) -> Zeroizing<[u8; 32]> {
+    let mut extract = HkdfExtract::<Sha256>::new(None);
+    ikm.into_iter().for_each(|k| extract.input_ikm(&k.0));
+    let (mut prk, expand) = extract.finalize();
+    prk.as_mut_slice().zeroize();
+    let mut key = Zeroizing::new([0; 32]);
+    expand.expand(info, &mut *key).expect("HKDF gives 32 bytes");
+    key
 }
 
 /// The digest of a call whose input holds sealed values: HMAC-SHA-256
@@ -528,17 +895,10 @@ pub fn open(event: &mut Event, key: &DataKey) -> Result<()> {
 /// `lakelands:output:v1`), so no digest of plaintext enters the log and
 /// none links to a value once the key is gone.
 pub fn digest(key: &DataKey, call: &Value) -> Digest {
-    let mac = |k: &[u8], parts: &[&[u8]]| {
-        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(k).expect("HMAC takes any key");
-        parts.iter().for_each(|p| m.update(p));
-        Zeroizing::new(<[u8; 32]>::from(m.finalize().into_bytes()))
-    };
-    let prk = mac(&[0; 32], &[&key.0]);
-    let derived = mac(&*prk, &[b"lakelands:output:v1".as_slice(), &[1]]);
-    Digest(canonical::hex(&*mac(
-        &*derived,
-        &[&canonical::to_vec(call)],
-    )))
+    let derived = hkdf([key], b"lakelands:output:v1");
+    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&*derived).expect("HMAC takes any key");
+    m.update(&canonical::to_vec(call));
+    Digest(canonical::hex(&m.finalize().into_bytes()))
 }
 
 #[cfg(test)]

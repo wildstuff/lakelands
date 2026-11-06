@@ -42,23 +42,14 @@
 //! `describe_type` before and after must keep what the reader is not shown
 //! (lakelands#917).
 
-use std::collections::BTreeSet;
-
-use lakelands_api::event::EventBody;
-use lakelands_api::write::{ProposedWrite, WriteOpts};
-use lakelands_api::{
-    Catalog, Grants, LakeId, Outcome, Position, Principal, PrincipalKind, ProposalId, RecordKey,
-    TypeName,
-};
+use lakelands_api::LakeId;
+use lakelands_api::write::WriteOpts;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
 
-use crate::conformance::backing;
-use crate::conformance::fixture::{
-    self, Lake, Must, doors, log_events, owner, patch, principal, restrict, source_record,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture;
+use crate::conformance::fixture::{doors, owner, source_record};
+use crate::conformance::prelude::*;
 use Door::*;
 use Feature::*;
 use Hidden::*;

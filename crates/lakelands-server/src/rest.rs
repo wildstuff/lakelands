@@ -18,7 +18,8 @@
 //!   the case's sentence and `todo` its advice ([`Failure::of`]).
 //! - A write takes `If-Match: <version>` and `Idempotency-Key`; `PUT` also
 //!   takes `If-None-Match: *` for a record that must not exist yet. A read
-//!   of one record answers its version as `ETag`.
+//!   of one record answers its version as `ETag`, and so does a write that
+//!   made a version.
 //! - `POST …/ingest/<source>` takes NDJSON and answers NDJSON, one line
 //!   per commit window as it becomes durable.
 //! - `GET …/feed` is the change feed as server-sent events, each event's
@@ -40,8 +41,9 @@ use http_body_util::combinators::BoxBody;
 use hyper::body::{Body, Frame, Incoming};
 use hyper::header::{CONTENT_TYPE, HeaderValue};
 use hyper::{HeaderMap, Method, Request, Response, StatusCode};
-use lakelands_api::error::{Case, Error, Form, Names, Refusal, Said};
+use lakelands_api::error::{Case, Error, Form, Names, Refusal, Said, Situation};
 use lakelands_api::id::{LakeId, Position, SourceId};
+use lakelands_api::quarantine::QuarantineId;
 use lakelands_api::read::POSITION_HEADER;
 use lakelands_api::record::SourceRecord;
 use lakelands_api::seam::FeedFilter;
@@ -50,8 +52,13 @@ use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
+use crate::bounds::{Held, Limit, Over};
 use crate::doors::{self, Fault, to_json, unknown_argument};
-use crate::http::{State, Turn, Turned, admit, header, json_response, read_json, resolve};
+use crate::http::{
+    State, Turn, Turned, admit, forwarded, header, json_response, no_link_headers, read_json,
+    resolve, retry_after,
+};
+use crate::resolver::host_of;
 use crate::say::Failure;
 
 /// A reply: its body whole, or streamed.
@@ -89,6 +96,7 @@ fn status_of(e: &Error) -> StatusCode {
         Error::Ingested { error, .. } => status_of(error),
         Error::Refused { reason, .. } => match reason {
             Refusal::NotGranted
+            | Refusal::GrantNeeded { .. }
             | Refusal::WrongDoor
             | Refusal::VerbsOnly { .. }
             | Refusal::Reserved
@@ -121,9 +129,14 @@ fn contract(e: Error) -> Stop {
 /// A request the server cannot take as it is: refused as `invalid`,
 /// saying its case and the case's advice.
 fn invalid(status: StatusCode, said: impl Into<Said>) -> Stop {
+    Box::new(json_reply(status, &invalid_json(said)))
+}
+
+/// A refusal as `invalid` with its case, as JSON with the two sentences.
+pub(crate) fn invalid_json(said: impl Into<Said>) -> Value {
     let said = said.into();
     let f = Failure::of(&said);
-    Box::new(json_reply(status, &failure_json(&Error::invalid(said), &f)))
+    failure_json(&Error::invalid(said), &f)
 }
 
 /// A request the door turned away, said as REST says a refusal.
@@ -138,7 +151,24 @@ fn turned(t: Turned) -> Stop {
             Box::new(json_reply(t.status, &failure_json(&e, &f)))
         }
         Turn::Invalid(case) => invalid(t.status, case),
+        Turn::Bounded(over) => {
+            let (_, v) = bounded_json(&over);
+            Box::new(retry_after(json_reply(t.status, &v), &over))
+        }
     }
+}
+
+/// A request the door turned away before its route was known.
+pub(crate) fn refused(t: Turned) -> Answer {
+    *turned(t)
+}
+
+/// A bound reached, as the contract's error and as its JSON with the
+/// two sentences.
+pub(crate) fn bounded_json(over: &Over) -> (Error, Value) {
+    let e = Error::unavailable((*over.situation).clone());
+    let v = failure_json(&e, &Failure::from(e.clone()));
+    (e, v)
 }
 
 fn with_position(mut r: Answer, p: Option<Position>) -> Answer {
@@ -222,6 +252,15 @@ const PROPOSALS: [(&str, Kind); 8] = [
     ("cursor", Kind::Text),
     AT[0],
     AT[1],
+];
+const QUARANTINED: [(&str, Kind); 7] = [
+    ("source", Kind::Text),
+    ("type", Kind::Text),
+    ("delivery", Kind::Text),
+    ("index", Kind::Int),
+    ("state", Kind::Text),
+    ("limit", Kind::Int),
+    ("after", Kind::Json),
 ];
 const FEED: [(&str, Kind); 4] = [
     ("from", Kind::Int),
@@ -386,6 +425,9 @@ enum Target {
     Door(Route),
     Ingest(SourceId),
     Feed,
+    Quarantined,
+    Dismiss,
+    Quarantine,
 }
 
 fn route(method: &Method, rest: &str) -> Result<Target, Stop> {
@@ -536,6 +578,14 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Args,
             Writes::No,
         ),
+        (["cypher"], Method::POST) => r(
+            Door::Cypher,
+            "POST …/cypher",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
         (["search"], Method::POST) => r(
             Door::Search,
             "POST …/search",
@@ -662,6 +712,9 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
         }
         (["ingest", source], Method::POST) => Target::Ingest((*source).into()),
         (["feed"], Method::GET) => Target::Feed,
+        (["quarantined"], Method::GET) => Target::Quarantined,
+        (["quarantined", "dismiss"], Method::POST) => Target::Dismiss,
+        (["quarantined"], Method::POST) => Target::Quarantine,
         _ => return None,
     };
     Some(target)
@@ -686,12 +739,42 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
         Some(id) if !id.is_empty() && !id.contains('/') => LakeId::from(id.as_str()),
         _ => return Err(no_route()),
     };
-    let who = resolve(state, &lake, key).await.map_err(turned)?;
+    // A host's key makes the call one forwarded over the link between
+    // hosts, as the principal it names; a principal's key may not name
+    // another or set a write context.
+    let host = host_of(&state.hosts, &key);
+    // The request is counted against the principal's bounds until it is
+    // answered, an ingest until its last window is committed (095).
+    let (who, cx, held) = match host {
+        Some(h) => forwarded(state, h, &lake, req.headers()).await,
+        None => match no_link_headers(req.headers()) {
+            Ok(()) => resolve(state, &lake, key)
+                .await
+                .map(|(w, held)| (w, WriteContext::default(), held)),
+            Err(t) => Err(t),
+        },
+    }
+    .map_err(turned)?;
     let store = (state.open)(&lake).map_err(contract)?;
+    // A forwarded call goes to the writer and nowhere further: a host
+    // that is not it says so before the body is read, and the forwarder
+    // tries its next door, so no call is forwarded twice.
+    if host.is_some() && !store.is_writer() {
+        let lake = Some(lake.to_string());
+        let read_only = Situation::ReadOnly {
+            lake,
+            leased_elsewhere: true,
+        };
+        return Err(contract(Error::unavailable(read_only)));
+    }
+    let most = state.gate.bounds.body_bytes;
     let answer = match route(req.method(), rest) {
-        Ok(Target::Door(r)) => door(&store, &who, r, req).await,
-        Ok(Target::Ingest(source)) => ingest(&store, &who, source, req).await,
+        Ok(Target::Door(r)) => door(&store, &who, cx, r, req, most).await,
+        Ok(Target::Ingest(source)) => ingest(&store, &who, cx, source, req, held).await,
         Ok(Target::Feed) => feed(state, &store, &who, req).await,
+        Ok(Target::Quarantined) => quarantined(&store, &who, cx, req, most).await,
+        Ok(Target::Dismiss) => dismiss(&store, &who, cx, req, most).await,
+        Ok(Target::Quarantine) => quarantine(&store, &who, cx, req, most).await,
         Err(a) => Err(a),
     };
     match answer {
@@ -701,10 +784,11 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
     }
 }
 
-/// A JSON body, whole; `None` when it is empty.
-async fn json_body(req: Request<Incoming>) -> Result<Option<Value>, Stop> {
+/// A JSON body, whole and no larger than `most`; `None` when it is
+/// empty.
+async fn json_body(req: Request<Incoming>, most: Limit) -> Result<Option<Value>, Stop> {
     let (parts, body) = req.into_parts();
-    read_json(&parts.headers, body).await.map_err(turned)
+    read_json(&parts, body, most).await.map_err(turned)
 }
 
 /// The compare-and-set and idempotency headers, as the arguments they
@@ -776,8 +860,10 @@ fn once_headers(h: &HeaderMap, door: &Door, a: &mut Map<String, Value>) -> Resul
 async fn door(
     store: &Arc<dyn LakeStore>,
     who: &Principal,
+    cx: WriteContext,
     r: Route,
     req: Request<Incoming>,
+    most: Limit,
 ) -> Result<Answer, Stop> {
     let mut a = r.path;
     a.extend(query_args(req.uri().query(), r.query, r.label)?);
@@ -788,15 +874,15 @@ async fn door(
             write_headers(req.headers(), r.writes == Writes::CasOrNew, &mut a)?
         }
     }
-    let catalog = store.catalog(WriteContext::default());
+    let catalog = store.catalog(cx);
     match r.body {
         BodyAs::Nothing => {
-            if json_body(req).await?.is_some() {
+            if json_body(req, most).await?.is_some() {
                 let route = r.label.into();
                 return Err(invalid(StatusCode::BAD_REQUEST, Case::NoBody { route }));
             }
         }
-        BodyAs::One(arg, required) => match json_body(req).await? {
+        BodyAs::One(arg, required) => match json_body(req, most).await? {
             Some(v @ Value::Object(_)) => {
                 a.insert(arg.into(), v);
             }
@@ -812,7 +898,7 @@ async fn door(
             }
         },
         BodyAs::Args => {
-            let body = match json_body(req).await? {
+            let body = match json_body(req, most).await? {
                 Some(Value::Object(o)) => o,
                 None => Map::new(),
                 Some(_) => {
@@ -867,9 +953,13 @@ async fn door(
         StatusCode::OK
     };
     let mut answer = json_reply(status, &v);
-    if let Door::Get { .. } = r.door
-        && let Some(version) = v["data"]["version"].as_u64()
-    {
+    // A read answers the record's version in `data`, a write the version
+    // it made in the outcome.
+    let version = match r.door {
+        Door::Get { .. } => v["data"]["version"].as_u64(),
+        _ => v["version"].as_u64(),
+    };
+    if let Some(version) = version {
         answer.headers_mut().insert(
             "etag",
             HeaderValue::from_str(&format!("\"{version}\"")).expect("digits are a header value"),
@@ -1037,17 +1127,32 @@ impl Drop for Lines {
 async fn ingest(
     store: &Arc<dyn LakeStore>,
     who: &Principal,
+    cx: WriteContext,
     source: SourceId,
     req: Request<Incoming>,
+    held: Held,
 ) -> Result<Answer, Stop> {
     let args = query_args(
         req.uri().query(),
-        &[("delivery", Kind::Text)],
+        &[
+            ("delivery", Kind::Text),
+            ("sealed_apart", Kind::Flag),
+            ("commit_window", Kind::Int),
+            ("quarantine_refused", Kind::Flag),
+            ("run", Kind::Text),
+        ],
         "POST …/ingest/<source>",
     )?;
     let delivery = args.get("delivery").and_then(Value::as_str);
     let opts = lakelands_api::IngestOpts {
         delivery: delivery.map(Into::into),
+        sealed_apart: args.get("sealed_apart").and_then(Value::as_bool) == Some(true),
+        commit_window: args
+            .get("commit_window")
+            .and_then(Value::as_u64)
+            .map(|w| u32::try_from(w).unwrap_or(u32::MAX)),
+        quarantine_refused: args.get("quarantine_refused").and_then(Value::as_bool) == Some(true),
+        run: args.get("run").and_then(Value::as_str).map(Into::into),
     };
     if let Some(ct) = header(req.headers(), CONTENT_TYPE.as_str())
         && ![
@@ -1073,14 +1178,14 @@ async fn ingest(
         stopped: false,
         fault: fault.clone(),
     };
-    let catalog: Arc<dyn Catalog> = store.catalog(WriteContext::default());
+    let catalog: Arc<dyn Catalog> = store.catalog(cx);
     let mut commits = catalog
         .ingest_with(who, &source, opts, Box::pin(lines))
         .await
         .map_err(contract)?;
     let (tx, rx) = mpsc::channel(16);
     tokio::spawn(async move {
-        let _catalog = catalog;
+        let (_catalog, _held) = (catalog, held);
         loop {
             // A window that takes longer than the keep-alive to commit is
             // answered with an empty line meanwhile, so a client that
@@ -1118,6 +1223,107 @@ async fn ingest(
         }
     });
     Ok(with_position(streamed("application/x-ndjson", rx), head))
+}
+
+// ------------------------------------------------------------ quarantined
+
+/// `GET …/quarantined`: the quarantined records a filter asks for, in id
+/// order (085).
+async fn quarantined(
+    store: &Arc<dyn LakeStore>,
+    who: &Principal,
+    cx: WriteContext,
+    req: Request<Incoming>,
+    most: Limit,
+) -> Result<Answer, Stop> {
+    const LABEL: &str = "GET …/quarantined";
+    let a = query_args(req.uri().query(), &QUARANTINED, LABEL)?;
+    if json_body(req, most).await?.is_some() {
+        let route = LABEL.into();
+        return Err(invalid(StatusCode::BAD_REQUEST, Case::NoBody { route }));
+    }
+    let filter = doors::args(LABEL, &a).map_err(fault_answer)?;
+    let r = store
+        .catalog(cx)
+        .quarantined(who, filter)
+        .await
+        .map_err(contract)?;
+    Ok(with_position(
+        json_reply(StatusCode::OK, &to_json(&r)),
+        Some(r.position),
+    ))
+}
+
+/// The body of a `POST` that takes no query, an object read as `T`.
+async fn object_body<T: serde::de::DeserializeOwned>(
+    req: Request<Incoming>,
+    label: &'static str,
+    most: Limit,
+) -> Result<T, Stop> {
+    query_args(req.uri().query(), &[], label)?;
+    let Some(Value::Object(body)) = json_body(req, most).await? else {
+        let route = label.into();
+        return Err(invalid(
+            StatusCode::BAD_REQUEST,
+            Case::BodyNotObject { route },
+        ));
+    };
+    doors::args(label, &body).map_err(fault_answer)
+}
+
+/// `POST …/quarantined/dismiss`, its body the id: close one as
+/// dismissed (085).
+async fn dismiss(
+    store: &Arc<dyn LakeStore>,
+    who: &Principal,
+    cx: WriteContext,
+    req: Request<Incoming>,
+    most: Limit,
+) -> Result<Answer, Stop> {
+    let id: QuarantineId = object_body(req, "POST …/quarantined/dismiss", most).await?;
+    let close = store
+        .catalog(cx)
+        .dismiss_quarantined(who, &id)
+        .await
+        .map_err(contract)?;
+    let at = Some(close.position);
+    Ok(with_position(
+        json_reply(StatusCode::OK, &to_json(&close)),
+        at,
+    ))
+}
+
+/// What `POST …/quarantined` takes: the source, the call's options and
+/// the host's refusal.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostQuarantine {
+    source: SourceId,
+    #[serde(default)]
+    opts: lakelands_api::IngestOpts,
+    refused: lakelands_api::quarantine::HostRefused,
+}
+
+/// `POST …/quarantined`, its body a [`HostQuarantine`]: quarantine a
+/// record the host refused (085, extended).
+async fn quarantine(
+    store: &Arc<dyn LakeStore>,
+    who: &Principal,
+    cx: WriteContext,
+    req: Request<Incoming>,
+    most: Limit,
+) -> Result<Answer, Stop> {
+    let q: HostQuarantine = object_body(req, "POST …/quarantined", most).await?;
+    let done = store
+        .catalog(cx)
+        .quarantine(who, &q.source, q.opts, q.refused)
+        .await
+        .map_err(contract)?;
+    let at = Some(done.position);
+    Ok(with_position(
+        json_reply(StatusCode::OK, &to_json(&done)),
+        at,
+    ))
 }
 
 // ------------------------------------------------------------------- feed
@@ -1177,12 +1383,14 @@ async fn feed(
 }
 
 /// An event as one SSE frame, with the comment `: overruled` where its
-/// batch names it overruled (065).
-fn frame(e: &lakelands_api::event::Event, overruled: bool) -> Bytes {
+/// batch names it overruled (065) and `: append <position>`, the last
+/// position of its append (083).
+fn frame(e: &lakelands_api::event::Event, overruled: bool, append: Option<Position>) -> Bytes {
     let data = serde_json::to_string(&to_json(e)).expect("JSON prints");
     let (at, kind) = (e.position.0, e.body.kind());
     let mark = if overruled { ": overruled\n" } else { "" };
-    format!("id: {at}\n{mark}event: {kind}\ndata: {data}\n\n").into()
+    let end = append.map_or_else(String::new, |p| format!(": append {}\n", p.0));
+    format!("id: {at}\n{mark}{end}event: {kind}\ndata: {data}\n\n").into()
 }
 
 /// Send the feed from `from` on, then wait for more, until the client

@@ -318,7 +318,7 @@ fn reads(o: &Ontology) -> Vec<Reads> {
             r.fields.extend(fields.into_iter().map(|f| (t.clone(), f)));
             r.types.insert(t);
         }
-        kept::settings_named(&e, &mut r.settings);
+        lakelands_core::derive::settings(&e, &mut r.settings);
         out.push(r);
     }
     out

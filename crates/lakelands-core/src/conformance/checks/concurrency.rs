@@ -12,28 +12,18 @@
 //! joined in the check's one task ([`join_all`]). Every call the store
 //! makes of its engine runs on the store's blocking pool, so while one
 //! caller waits for its write the others go on, and their writes reach the
-//! engine together, contending for the writer lock as the calls of many
+//! store together, waiting their turn at the writer as the calls of many
 //! clients do. Concurrent here means that, not threads of the check's
 //! own.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind::{self, Number, Text};
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::Declaration;
-use lakelands_api::{
-    Catalog, Find, Get, IdempotencyKey, LakeStore, Position, Principal, RecordKey, Timestamp,
-    TypeName, WriteOpts,
-};
-use serde_json::{Value, json};
+use lakelands_api::Get;
+use lakelands_api::ontology::StorageKind::{Number, Text};
 
 use crate::conformance::backing::made;
-use crate::conformance::fixture::{
-    Caller, Lake, Must, all, field, join_all, log_events, patch, read_at, type_decl, type_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{self, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     WRITES_LAND_ONCE = concurrent_writes_each_land_once_in_one_order_of_the_log,
@@ -47,7 +37,7 @@ check!(
 
 check!(
     READS_AT_A_POSITION = a_read_at_a_position_answers_the_same_during_writes_and_after,
-    "008 and 009: a read at a position sees the lake as it was there, whoever is writing; `find` and `get` at one position agree, and answer the same when asked again later"
+    "008 and 009: a read at a position sees the lake as it was there, whoever is writing; `find` and `get` at one position agree, and answer the same when asked again later; a read made while more writes wait for the writer than the blocking pool holds threads waits for none of those beyond it"
 );
 
 check!(
@@ -60,10 +50,30 @@ check!(
     "008 and 022, extended: each write answers a position its own filled field is visible from, whoever else is writing, and one input is called once across all the writers"
 );
 
+check!(
+    DESCRIBED_AT_ITS_POSITION = a_description_beside_declarations_shows_what_its_position_holds,
+    "008 and 009: a description made while types are declared shows exactly the types declared at or before the position it names, read from the engine or told from what the writer keeps (lakelands#1632)"
+);
+
 const WRITERS: usize = 8;
 const EACH: usize = 25;
+/// The threads of the runtime's blocking pool, its default: the suite runs
+/// on a runtime it does not size. A pool larger than this would leave the
+/// check blind, never red.
+const POOL: usize = 512;
+/// The writes [`READS_AT_A_POSITION`] sends at once: past the [`POOL`], the
+/// [`FIRST`] that land before the read, and four times the batch bound. A
+/// batch lands whole and holds at most `commit_window_events` events, so
+/// no more writes than that; a read may be made beside the one in flight
+/// and the next, two batches, which stay under half of those beyond the
+/// pool.
+fn waiting() -> usize {
+    POOL + 2 * FIRST + 4 * fixture::limits().commit_window_events.max(1) as usize
+}
+/// The writes of those that land before the read is made.
+const FIRST: usize = 64;
 
-async fn items(store: &dyn LakeStore) -> Result<Lake, Failure> {
+pub(super) async fn items(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     l.declare(type_of("item", &[("n", Number), ("by", Text)]))
         .await?;
@@ -161,6 +171,17 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(store: Store) 
         .map(|w| writer(cat.clone(), own.clone(), w, EACH, 2))
         .collect();
     callers.extend((0..WRITERS).map(|w| sharer(cat.clone(), own.clone(), w, 15)));
+    // One caller among them writes a value its type refuses: that write
+    // alone is refused, and the rest land as if it had not been made.
+    let (rcat, rown) = (cat.clone(), own.clone());
+    callers.push(Box::pin(async move {
+        let bad = try_upsert(rcat.as_ref(), &rown, "item", "bad", json!({"n": "no"})).await;
+        ensure!(
+            matches!(refused_on(&bad), Some(("n", Refusal::Constraint(..)))),
+            "a write of a text to `n`, a number, among the others answered {bad:?}; it is refused as a constraint on `n`"
+        );
+        Ok(Vec::new())
+    }));
     let mut written = Vec::new();
     for r in join_all(callers).await {
         written.extend(r?);
@@ -273,6 +294,12 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(store: Store) 
             there.map(|e| (e.position, e.body.kind()))
         );
     }
+    ensure!(
+        !log.iter().any(
+            |e| matches!(&e.body, EventBody::RecordUpserted { key, .. } if key.as_str() == "bad")
+        ),
+        "the refused write of `bad` landed in the log"
+    );
     let fut = store.verify(None, None);
     fut.await
         .must("verifying the hash chain after the concurrent writes")?;
@@ -443,7 +470,65 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(store: St
             again.len()
         );
     }
-    Ok(())
+    // More writes sent at once than the blocking pool holds threads. A read
+    // made once the first few landed waits for none of those queued beyond
+    // the pool: fewer than half of them land meanwhile. A reader woken too
+    // late to tell is sent again.
+    for _ in 0..3 {
+        let (before, during) = read_beside_waiting(cat, own).await?;
+        let beyond = (waiting() - before).saturating_sub(POOL);
+        if beyond >= FIRST {
+            ensure!(
+                during < beyond / 2,
+                "{during} of {} writes sent at once landed while a read was made after \
+                 the first {before}: a read waits for none of the {beyond} queued beyond the \
+                 blocking pool",
+                waiting()
+            );
+            return Ok(());
+        }
+    }
+    Err(Failure::new(format!(
+        "the reader of {} writes sent at once woke after too many had landed, \
+         three times; the check could not tell",
+        waiting()
+    )))
+}
+
+/// Sends [`waiting`] writes at once and, once [`FIRST`] of them landed,
+/// one read: how many had landed as it was made, and how many during it.
+async fn read_beside_waiting(
+    cat: &Arc<dyn Catalog>,
+    own: &Principal,
+) -> Result<(usize, usize), Failure> {
+    let landed = Arc::new(AtomicUsize::new(0));
+    let mut callers: Vec<Caller<'static, Result<(usize, usize), Failure>>> = (0..waiting())
+        .map(|w| {
+            let (write, landed) = (
+                writer(cat.clone(), own.clone(), 100 + w, 1, 1),
+                landed.clone(),
+            );
+            Box::pin(async move {
+                write
+                    .await
+                    .map(|_| (landed.fetch_add(1, Ordering::SeqCst), 0_usize))
+            }) as Caller<'static, _>
+        })
+        .collect();
+    let (rcat, rown) = (cat.clone(), own.clone());
+    callers.push(Box::pin(async move {
+        while landed.load(Ordering::SeqCst) < FIRST {
+            fixture::pause(std::time::Duration::from_millis(1)).await;
+        }
+        let before = landed.load(Ordering::SeqCst);
+        let (ty, get) = ("item".into(), fixture::get_at("w0-r0", None));
+        (rcat.get(&rown, &ty, get).await).must("getting `w0-r0` while the writes wait")?;
+        Ok((before, landed.load(Ordering::SeqCst) - before))
+    }));
+    let mut answers = join_all(callers).await;
+    let read = answers.pop().expect("the reader answered")?;
+    answers.into_iter().collect::<Result<Vec<_>, _>>()?;
+    Ok(read)
 }
 
 async fn two_feed_readers_polling_during_writes_see_one_log(store: Store) -> Held {
@@ -554,6 +639,41 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
         "{WRITERS} writers wrote the same input, code AT, at once; the backing must be \
          called once for it, not {calls} times"
     );
+    Ok(())
+}
+
+async fn a_description_beside_declarations_shows_what_its_position_holds(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let (mut at, mut seen) = (BTreeMap::new(), Vec::new());
+    let declaring = async {
+        for i in 0..20 {
+            let name = format!("u{i:02}");
+            let o = l.declare(type_of(&name, &[("a", Text)])).await?;
+            at.insert(o.position(), name);
+        }
+        Ok(())
+    };
+    let describing = async {
+        for _ in 0..200 {
+            let d = l.cat.describe(&l.own, read_at(None)).await;
+            let d = d.must("describing the lake beside the declarations")?;
+            let names = d.data.types.iter().map(|t| t.name.to_string());
+            let names: BTreeSet<String> = names.filter(|n| n.starts_with('u')).collect();
+            seen.push((d.position, names));
+            // A description told from what the writer keeps does not wait.
+            pause(Duration::from_millis(1)).await;
+        }
+        Ok(())
+    };
+    let both: Vec<Caller<'_, Held>> = vec![Box::pin(declaring), Box::pin(describing)];
+    join_all(both).await.into_iter().collect::<Held>()?;
+    for (position, names) in seen {
+        let want: BTreeSet<String> = at.range(..=position).map(|(_, n)| n.clone()).collect();
+        ensure!(
+            names == want,
+            "a description naming position {position} showed {names:?}; declared by it: {want:?}"
+        );
+    }
     Ok(())
 }
 

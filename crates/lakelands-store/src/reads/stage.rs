@@ -7,28 +7,23 @@
 //! window ([`Reader::rerank_window`]), calls the reranker, and reads again
 //! ([`Reader::stage`]) at the position and on the clock of the first read.
 //! That read, and every later page, answers the scored keys themselves,
-//! each read by its key at the read's position and judged for its reader:
-//! it never ranks the first stage again, so a write that would move the
-//! ranking since cannot push a scored hit out. A cursor carries the
-//! stage's order, each entry a key of the window and its score, and what
-//! the first page said of the first stage. A key whose record its reader
-//! is not answered at the cursor's position, held since or not shown to
-//! that reader, leaves its place empty.
+//! each judged for its reader and never ranked again, so a later write
+//! cannot push a scored hit out. A cursor carries the stage's order (a key
+//! of the window and its score) and what the first page said of the first
+//! stage. A key whose record its reader is not answered leaves its place
+//! empty.
 
 use lakelands_api::error::{Case, Seam};
 use lakelands_api::query::{Axis, Hit, Hits, Pattern, Search, SearchMode};
 use lakelands_api::read::ReadAt;
 use lakelands_api::seam::RerankCandidate;
-use lakelands_api::{
-    Error, FieldName, Params, RecordKey, Refusal, Result, Timestamp, TypeName, Value,
-};
-use lakelands_core::{invalid, rights};
+use lakelands_api::{Error, FieldName, Params, RecordKey, Result, Timestamp, TypeName, Value};
 use serde::{Deserialize, Serialize};
 
+use super::search::Marking;
 use super::{CursorState, Judged, Pulled, Reader, encode, resume, same_read, search_read};
 
-/// A window of the first stage, as the reranker is asked to rank it, with
-/// what the first stage said of itself.
+/// A window of the first stage, as the reranker ranks it.
 pub struct Window {
     /// The searched type.
     pub ty: TypeName,
@@ -45,12 +40,17 @@ pub struct Window {
     pub axes: Vec<Axis>,
     /// Whether the first stage held more hits than the window.
     pub truncated: bool,
+    /// What the first stage searched, which the stage's pages mark by.
+    pub marking: Option<Marking>,
+    /// Why its vector did not rank, where its text alone did.
+    pub unranked: Option<lakelands_api::query::Unranked>,
 }
 
 /// A second stage's order and what its first page said: the keys of the
 /// window with the reranker's scores, best first, ties in the first
-/// stage's order, and the answer's `ranked_by`, `axes` and `truncated`,
-/// which every page repeats.
+/// stage's order, the answer's `ranked_by`, `axes`, `truncated` and
+/// `unranked`, which every page repeats, and what the first stage
+/// searched, which every page marks by.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Staged {
     pub(super) order: Vec<(RecordKey, f64)>,
@@ -58,6 +58,10 @@ pub struct Staged {
     axes: Vec<Axis>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    marking: Option<Marking>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unranked: Option<lakelands_api::query::Unranked>,
 }
 
 impl Staged {
@@ -81,15 +85,16 @@ impl Staged {
             ranked_by: format!("{} + rerank", window.ranked_by),
             axes,
             truncated: window.truncated,
+            marking: window.marking.clone(),
+            unranked: window.unranked.clone(),
         }
     }
 }
 
-/// The second stage of one read: what the door handed it, what a pattern's
-/// cursor carried, and what the read applied.
+/// The second stage of one read.
 #[derive(Default)]
 pub(super) struct Second {
-    /// The order the reranker's call gave, for a first page.
+    /// The order the door's reranker call gave, for a first page.
     pub staged: Option<Staged>,
     /// The order a pattern's cursor carried, for a later page.
     pub resumed: Option<Staged>,
@@ -99,18 +104,23 @@ pub(super) struct Second {
     pub judging: bool,
 }
 
-/// The first stage of a search as ranked.
 pub(super) struct First {
     pub hits: Vec<Hit>,
     pub ranked_by: String,
     pub axes: Vec<Axis>,
     pub offset: usize,
     pub read: String,
+    /// How many of the hits before `offset` were not read: those of a
+    /// list the engine judged.
+    pub skipped: usize,
+    /// What the first stage searched, where its hits may be marked.
+    pub marking: Option<Marking>,
+    /// Why its vector did not rank, where its text alone did.
+    pub unranked: Option<lakelands_api::query::Unranked>,
 }
 
 impl Reader<'_> {
-    /// Hand the reader the order the reranker's scores gave the window of
-    /// this read's first page.
+    /// Hand the reader the order the reranker gave this first page's window.
     pub fn stage(&self, staged: Staged) {
         self.second.borrow_mut().staged = Some(staged);
     }
@@ -118,10 +128,14 @@ impl Reader<'_> {
     /// The window a search with a second stage asks, or `None` for a
     /// search with none: refused for a `top` the lake does not allow and
     /// for a stage that has no text to rank against.
-    pub(super) fn rerank_top(&self, s: &Search) -> Result<Option<usize>> {
+    pub(crate) fn rerank_top(&self, s: &Search) -> Result<Option<usize>> {
         let Some(r) = &s.rerank else {
             return Ok(None);
         };
+        // `text_as_of` beside it is refused as such, first (`Search::misfit`).
+        if s.text_as_of {
+            self.searched(s)?;
+        }
         let max = self.lake.limits.max_rerank_top;
         let case = r.misfit(&s.mode).or(match r.top > max {
             true => Some(Case::RerankTopAbove { max }),
@@ -129,10 +143,7 @@ impl Reader<'_> {
         });
         match case {
             None => Ok(Some(r.top as usize)),
-            Some(case) => Err(Error::Refused {
-                field: Some("rerank".into()),
-                reason: Refusal::Invalid(Box::new(case.into())),
-            }),
+            Some(case) => Err(Error::invalid_at(&"rerank".into(), case)),
         }
     }
 
@@ -141,7 +152,7 @@ impl Reader<'_> {
     /// reranker bound as `Unbound` once this answers.
     pub fn rerank_window(&self, s: &Search, carried: Option<Pulled>) -> Result<Judged<Window>> {
         let Some(top) = self.rerank_top(s)? else {
-            return Err(invalid(Case::RerankWithoutSearch));
+            return Err(Error::invalid(Case::RerankWithoutSearch));
         };
         let first = match self.first_stage(s, Some(top), carried)? {
             Ok(first) => first,
@@ -156,7 +167,7 @@ impl Reader<'_> {
         };
         // Only a field its reader reads, and the masked record holds no
         // value of any other.
-        let readable: Vec<&FieldName> = rights::searched_fields(self.who, decl)
+        let readable: Vec<&FieldName> = (self.sight.searched_fields(decl))
             .filter(|f| named.is_none_or(|n| n.contains(f)))
             .collect();
         let text = |h: &Hit| {
@@ -182,6 +193,8 @@ impl Reader<'_> {
             ranked_by: first.ranked_by.clone(),
             axes: first.axes.clone(),
             truncated: first.hits.len() > top,
+            marking: first.marking.clone(),
+            unranked: first.unranked.clone(),
         }))
     }
 
@@ -196,16 +209,30 @@ impl Reader<'_> {
             let _ = judged?;
         }
         let Some(mode) = &p.start.search else {
-            let reason = Refusal::Invalid(Box::new(Case::RerankWithoutSearch.into()));
-            let field = Some("rerank".into());
-            return Err(Error::Refused { field, reason });
+            return Err(Error::invalid_at(
+                &"rerank".into(),
+                Case::RerankWithoutSearch,
+            ));
         };
         self.rerank_window(&self.start_search(p, mode)?, carried)
     }
 
     /// The search a pattern's start is: the best hits, one page of the
-    /// lake's `max_limit`.
+    /// lake's `max_limit`. A vector search that brings text is refused by
+    /// its shape, before any rights: a pattern's read makes no embedding
+    /// call and its rows cannot say how they ranked (025).
     pub(super) fn start_search(&self, p: &Pattern, mode: &SearchMode) -> Result<Search> {
+        if let SearchMode::Vector {
+            field,
+            text: Some(_),
+            ..
+        } = mode
+        {
+            let case = Case::StartNeedsVector {
+                field: field.clone(),
+            };
+            return Err(Error::invalid_at(field, case));
+        }
         Ok(Search {
             ty: super::start_type(p)?.clone(),
             mode: mode.clone(),
@@ -214,7 +241,9 @@ impl Reader<'_> {
             filter: p.start.filter.clone(),
             rerank: p.start.rerank.clone(),
             with_meta: false,
+            matches: false,
             at: ReadAt::default(),
+            text_as_of: false,
         })
     }
 
@@ -233,7 +262,7 @@ impl Reader<'_> {
                 same_read(&state, &read)?;
                 // A cursor this lake handed out holds at most the window.
                 let Some(stage) = state.stage.filter(|st| st.order.len() <= top) else {
-                    return Err(invalid(Case::CursorForeign));
+                    return Err(Error::invalid(Case::CursorForeign));
                 };
                 (state.offset as usize, Some(stage))
             }
@@ -250,7 +279,12 @@ impl Reader<'_> {
         };
         let k = s.k.max(1) as usize;
         let keys = stage.order.iter().skip(offset).take(k).cloned().collect();
-        let hits = self.visible_hits(&decl, filter.as_ref(), keys, s.with_meta)?;
+        let mut hits = self.visible_hits(&decl, filter.as_ref(), keys, s.with_meta)?;
+        // Marked by what the first stage searched, which the read of its
+        // window judged at the head: this read ranks nothing (025).
+        if let Some(marks) = stage.marking.as_ref().and_then(|m| m.marks(s, &decl)) {
+            marks.mark(&mut hits);
+        }
         let more = stage.order.len() > offset + k;
         self.second.borrow_mut().decided = Some(stage.clone());
         let next_cursor = more.then(|| {
@@ -264,6 +298,7 @@ impl Reader<'_> {
                 of: read,
                 now: Some(self.now),
                 stage: Some(stage.clone()),
+                unranked: None,
             })
         });
         Ok(Hits {
@@ -272,6 +307,7 @@ impl Reader<'_> {
             ranked_by: stage.ranked_by,
             truncated: stage.truncated,
             axes: stage.axes,
+            unranked: stage.unranked,
         })
     }
 }

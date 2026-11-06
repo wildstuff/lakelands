@@ -1,0 +1,24 @@
+name: advisories
+
+# A new upstream advisory is found here, daily, and not by the next
+# unrelated pull request. ci.yml's `deny (advisories)` stays, so a pull
+# request that adds a crate is still checked.
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --locked check advisories

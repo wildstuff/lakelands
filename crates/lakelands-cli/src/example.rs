@@ -79,7 +79,6 @@ pub const EXAMPLES: &[Example] = &[Example {
         "data/invoices.map.json",
         "data/partners.csv",
         "data/partners.map.json",
-        "object_sets/overdue.yaml",
         "triggers/invoice_overdue.yaml",
         "types/invoice.yaml",
         "types/partner.yaml",
@@ -272,6 +271,7 @@ async fn make(
         example.name,
         "sqlite",
         &root::PgNew::default(),
+        None,
     )?;
     let root = root::Root::open(dir)?;
     let location = root.location(Some(example.name))?;

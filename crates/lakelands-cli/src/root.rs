@@ -5,6 +5,7 @@
 //! Everything the CLI knows comes from these files and its flags; it
 //! reads no environment variable.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use std::sync::Arc;
 use lakelands_api::engine::OpenMode;
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location, PgTlsMode};
-use lakelands_api::principal::{Grants, Principal, PrincipalKind};
+use lakelands_api::principal::{Grants, Principal, PrincipalKind, WriteContext};
 use lakelands_api::seam::{Credential, EmbedBackend, PrincipalResolver, Seams};
 use lakelands_server::HttpConfig;
 use lakelands_server::resolver::{Entry, StaticResolver};
@@ -54,9 +55,9 @@ pub struct Config {
     /// changes to. Absent, nothing is delivered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deliver: Option<lakelands_backings::DeliverConfig>,
-    /// The ticker: the UTC offset `serve` reads the date at, and how
-    /// often it looks whether the date rolled over, to age each lake it
-    /// writes once a day. Absent, `serve` ages nothing, and aging is
+    /// The ticker: how often `serve` looks whether a lake's date, read in
+    /// the lake's own zone, rolled over, to age each lake it writes once a
+    /// day. Absent, `serve` ages nothing, and aging is
     /// `lakelands age --today` or the host's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aging: Option<crate::ticker::AgingConfig>,
@@ -65,6 +66,12 @@ pub struct Config {
     /// is mirrored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirror: Option<crate::mirror::MirrorConfig>,
+    /// The standby: `serve` opens each lake beside its writer, follows
+    /// its log and takes the lease once the writer is gone. Absent,
+    /// `serve` takes each lease at its open and is refused where another
+    /// process holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standby: Option<StandbyConfig>,
     /// The key store that seals a source's values of erasable fields:
     /// `lakelands-backings`' file keyring, one file per lake in a directory
     /// outside every lake's. Absent, no key store is bound, and a value
@@ -72,6 +79,41 @@ pub struct Config {
     /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keys: Option<KeysConfig>,
+    /// Where `lake new` makes a SQLite lake's directory, relative to the
+    /// root where it is relative: `lakes` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lakes_dir: Option<PathBuf>,
+    /// Where `export` writes when it is given no `--to`, as `lakes_dir`:
+    /// `exports` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exports_dir: Option<PathBuf>,
+    /// Where backups are to be kept, as `lakes_dir`: `backups` when
+    /// absent. Nothing writes there yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backups_dir: Option<PathBuf>,
+}
+
+/// The `standby` section of a root's `lakelands.json`
+/// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StandbyConfig {
+    /// How often a standby asks whether its lake's lease is free, in
+    /// milliseconds. Only the lease's lock says the writer is gone: no
+    /// wait takes the lease from a writer that holds it.
+    #[serde(default = "default_try")]
+    pub try_millis: u64,
+}
+
+fn default_try() -> u64 {
+    1000
+}
+
+impl StandbyConfig {
+    /// How often a standby tries the lease.
+    pub fn every(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.try_millis.max(1))
+    }
 }
 
 /// Where the root's key store keeps its keys.
@@ -97,6 +139,140 @@ fn show(p: &Path) -> String {
     p.display().to_string()
 }
 
+/// The name of the principal whose grant stops a configuration's `text`
+/// being read, where a grant is what stops it: the reader of a grant does not
+/// know whose it is, so the file is read again for the place it stopped at.
+fn grant_holder(text: &str) -> Option<String> {
+    use serde_path_to_error::Segment;
+    let read = &mut serde_json::Deserializer::from_str(text);
+    let refused = serde_path_to_error::deserialize::<_, Config>(read).err()?;
+    let place: Vec<&Segment> = refused.path().iter().collect();
+    let [
+        Segment::Map { key: list },
+        Segment::Seq { index },
+        Segment::Map { key: field },
+        ..,
+    ] = place[..]
+    else {
+        return None;
+    };
+    if list != "principals" || field != "grants" {
+        return None;
+    }
+    let file: serde_json::Value = serde_json::from_str(text).ok()?;
+    let name = file.get(list)?.get(index)?.get("name")?.as_str()?;
+    Some(name.to_owned())
+}
+
+/// The first key a map of a principal's grant repeats in a configuration's
+/// `text`, with the principal's name: a map keeps its last value for a key
+/// written twice, so a restriction written first would drop without a word.
+/// A `serde_json::Value` cannot tell: it has kept the last value by then, so
+/// the text is walked as it is read.
+fn repeated_in_a_grant(text: &str) -> Option<(String, String)> {
+    use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+    use std::cell::RefCell;
+
+    type Found = RefCell<Option<(Vec<String>, String)>>;
+    struct Walk<'a> {
+        path: Vec<String>,
+        found: &'a Found,
+    }
+    impl<'de> DeserializeSeed<'de> for Walk<'_> {
+        type Value = ();
+        fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+    impl<'de> Visitor<'de> for Walk<'_> {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("any JSON")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_str<E>(self, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_unit<E>(self) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+            let mut index = 0;
+            loop {
+                let mut path = self.path.clone();
+                path.push(index.to_string());
+                let next = Walk {
+                    path,
+                    found: self.found,
+                };
+                if seq.next_element_seed(next)?.is_none() {
+                    return Ok(());
+                }
+                index += 1;
+            }
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            let mut seen = BTreeSet::new();
+            while let Some(key) = map.next_key::<String>()? {
+                // Only a repeat inside a principal's grant counts: one met
+                // earlier elsewhere must not hide a later one in a grant.
+                let in_a_grant = matches!(
+                    &self.path[..],
+                    [list, _, field, ..] if list == "principals" && field == "grants"
+                );
+                if !seen.insert(key.clone()) && in_a_grant {
+                    let mut found = self.found.borrow_mut();
+                    if found.is_none() {
+                        *found = Some((self.path.clone(), key.clone()));
+                    }
+                }
+                let mut path = self.path.clone();
+                path.push(key);
+                map.next_value_seed(Walk {
+                    path,
+                    found: self.found,
+                })?;
+            }
+            Ok(())
+        }
+    }
+
+    let found = Found::default();
+    let read = &mut serde_json::Deserializer::from_str(text);
+    DeserializeSeed::deserialize(
+        Walk {
+            path: Vec::new(),
+            found: &found,
+        },
+        read,
+    )
+    .ok()?;
+    let (path, key) = found.into_inner()?;
+    let [list, index, field, ..] = &path[..] else {
+        return None;
+    };
+    if list != "principals" || field != "grants" {
+        return None;
+    }
+    let file: serde_json::Value = serde_json::from_str(text).ok()?;
+    let name = file
+        .get(list)?
+        .get(index.parse::<usize>().ok()?)?
+        .get("name")?;
+    Some((name.as_str()?.to_owned(), key))
+}
+
 /// Create a root. Refuses to overwrite an existing one.
 pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
     let file = dir.join(CONFIG);
@@ -119,7 +295,11 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         deliver: None,
         aging: None,
         mirror: None,
+        standby: None,
         keys: None,
+        lakes_dir: None,
+        exports_dir: None,
+        backups_dir: None,
     };
     fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
     write_new(&file, &config)?;
@@ -263,6 +443,19 @@ impl Root {
         }
     }
 
+    /// Where `export` writes lake `lake` when it is given no `--to`: a
+    /// directory of its own in `exports_dir`, named by the time, in UTC.
+    pub fn export_dir(&self, lake: &LakeId) -> PathBuf {
+        use crate::ticker::Clock as _;
+        let now = crate::ticker::SystemClock.now().to_string();
+        let stamp: String = (now[..19].chars())
+            .filter(|c| *c != '-' && *c != ':')
+            .collect();
+        let exports = self.config.exports_dir.as_deref();
+        let exports = self.dir.join(exports.unwrap_or(Path::new("exports")));
+        exports.join(format!("{lake}-{stamp}Z"))
+    }
+
     /// The keyring's directory, where `keys` names one.
     fn keyring(&self) -> Option<PathBuf> {
         let named = &self.config.keys.as_ref()?.keyring;
@@ -272,26 +465,84 @@ impl Root {
         })
     }
 
-    /// A keyring inside a lake's directory would go wherever the lake's
-    /// files go, a backup or a copy, and a destroyed key with them: it is
-    /// refused (058).
+    /// A keyring inside a lake's directory, or its projection's, would go
+    /// wherever the lake's files go, a backup or a copy, and a destroyed key
+    /// with them: it is refused (058).
     fn keyring_outside_the_lakes(&self) -> Result<(), Failure> {
         let Some(keyring) = self.keyring() else {
             return Ok(());
         };
         let keyring = canonical(&keyring);
+        if let Some(lake) = self.lake_holding(&keyring)? {
+            return Err(Failure::new(
+                format!(
+                    "the keyring {} is inside the lake `{lake}`'s directory",
+                    show(&keyring)
+                ),
+                "name a keyring directory outside every lake's, in the keys section of the configuration",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The lake whose directory holds `path`, canonical, if one does.
+    fn lake_holding(&self, path: &Path) -> Result<Option<String>, Failure> {
         for lake in self.lakes() {
-            if let EngineConfig::Sqlite { dir, .. } = self.location(Some(&lake))?.engine
-                && keyring.starts_with(canonical(&dir))
+            let EngineConfig::Sqlite {
+                dir,
+                projection_dir,
+                ..
+            } = self.location(Some(&lake))?.engine
+            else {
+                continue;
+            };
+            if std::iter::once(dir)
+                .chain(projection_dir)
+                .any(|dir| path.starts_with(canonical(&dir)))
             {
-                return Err(Failure::new(
-                    format!(
-                        "the keyring {} is inside the lake `{lake}`'s directory",
-                        show(&keyring)
-                    ),
-                    "name a keyring directory outside every lake's, in the keys section of the configuration",
-                ));
+                return Ok(Some(lake));
             }
+        }
+        Ok(None)
+    }
+
+    /// The root's file keyring, where `keys` names one.
+    pub fn file_keyring(&self) -> Option<lakelands_backings::keyring::FileKeyring> {
+        self.keyring()
+            .map(lakelands_backings::keyring::FileKeyring::new)
+    }
+
+    /// A copy of a lake's keys is kept apart from its backup, neither
+    /// directory inside the other, and outside every lake's directory: a
+    /// backup that holds both holds what forgetting destroys
+    /// (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
+    pub fn keys_apart(&self, keys: &Path, backup: &Path) -> Result<(), Failure> {
+        let (keys, backup) = (canonical(keys), canonical(backup));
+        let todo = "keep the keys' copy in a directory of its own, apart from the backup and \
+                    every lake's directory";
+        if keys.starts_with(&backup) || backup.starts_with(&keys) {
+            let what = format!(
+                "the keys' directory {} and the backup's {} are one inside the other",
+                show(&keys),
+                show(&backup)
+            );
+            return Err(Failure::new(what, todo));
+        }
+        self.outside_the_lakes(&keys, "keys'")
+    }
+
+    /// A backup, and a copy of a lake's keys, are written outside every
+    /// lake's directory: a run into one would write into the files its
+    /// writer appends to.
+    pub fn outside_the_lakes(&self, dir: &Path, whose: &str) -> Result<(), Failure> {
+        let dir = canonical(dir);
+        if let Some(lake) = self.lake_holding(&dir)? {
+            let what = format!(
+                "the {whose} directory {} is inside the lake `{lake}`'s directory",
+                show(&dir)
+            );
+            let todo = "name a directory of its own, outside every lake's directory";
+            return Err(Failure::new(what, todo));
         }
         Ok(())
     }
@@ -322,12 +573,46 @@ impl Root {
             }
             Err(e) => return Err(io(&file, e)),
         };
-        let config: Config = serde_json::from_str(&text).map_err(|e| {
-            Failure::new(
+        if let Some((name, key)) = repeated_in_a_grant(&text) {
+            return Err(Failure::new(
+                format!(
+                    "{}: the grant of principal `{name}` repeats the key `{key}`",
+                    show(&file)
+                ),
+                "write each key of a grant once: a repeated key keeps its last value, so a \
+                 restriction written first would drop instead of stopping the root",
+            ));
+        }
+        if let Some(why) = crate::ticker::AgingConfig::gone(&text) {
+            return Err(Failure::new(
+                format!("{}: {why}", show(&file)),
+                "remove `utc_offset` from the aging section, and name each lake's zone with \
+                 `lakelands settings set zone <IANA name>`, as `Europe/Berlin`",
+            ));
+        }
+        let config: Config = serde_json::from_str(&text).map_err(|e| match grant_holder(&text) {
+            Some(name) => Failure::new(
+                format!(
+                    "{}: the grant of principal `{name}` is not understood: {e}",
+                    show(&file)
+                ),
+                "correct the grant: a grant narrows what a principal may do, so one that is not \
+                 understood stops the root instead of dropping a restriction",
+            ),
+            None => Failure::new(
                 format!("{} is not a valid configuration: {e}", show(&file)),
                 "correct the file; `lakelands init` writes a valid one to start from",
-            )
+            ),
         })?;
+        if let Some(server) = &config.server {
+            server.check(&config.principals).map_err(|why| {
+                Failure::new(
+                    format!("{}: {why}", show(&file)),
+                    "fix the server section of the configuration: give each host keys of its \
+                     own",
+                )
+            })?;
+        }
         if let Some(backings) = &config.backings {
             backings.check().map_err(|why| {
                 Failure::new(
@@ -387,8 +672,16 @@ impl Root {
         self.dir.join("lakes").join(format!("{lake}.json"))
     }
 
-    /// Write a new lake's location. Refuses to overwrite one.
-    pub fn new_lake(&self, id: &str, engine: &str, pg: &PgNew) -> Result<Location, Failure> {
+    /// Write a new lake's location, starting it in `zone` where one is
+    /// given (101). Refuses to overwrite one, and a zone the database does
+    /// not name.
+    pub fn new_lake(
+        &self,
+        id: &str,
+        engine: &str,
+        pg: &PgNew,
+        zone: Option<String>,
+    ) -> Result<Location, Failure> {
         let valid = lakelands_core::names::is_lake_id(id);
         if !valid {
             return Err(Failure::new(
@@ -414,8 +707,21 @@ impl Root {
                 "leave them out, or choose `--engine postgres`",
             ));
         }
-        let location = match engine {
-            "sqlite" => Location::sqlite(id, Path::new("lakes").join(id)),
+        if let Some(zone) = zone
+            .as_deref()
+            .filter(|z| !lakelands_api::expr::zone::known(z))
+        {
+            return Err(Failure::new(
+                format!("`{zone}` is not a time zone the IANA time-zone database names"),
+                "name one as the database does, as `Europe/Berlin` or `America/New_York`, or \
+                 leave `--zone` out for UTC",
+            ));
+        }
+        let mut location = match engine {
+            "sqlite" => {
+                let lakes = self.config.lakes_dir.as_deref();
+                Location::sqlite(id, lakes.unwrap_or(Path::new("lakes")).join(id))
+            }
             "memory" => Location::memory(id),
             "postgres" => pg.location(id)?,
             other => {
@@ -425,6 +731,7 @@ impl Root {
                 ));
             }
         };
+        location.zone = zone;
         fs::create_dir_all(self.dir.join("lakes")).map_err(|e| io(&self.dir, e))?;
         write_new(&file, &location)?;
         Ok(location)
@@ -511,6 +818,74 @@ impl Root {
             }
         }
         Ok(())
+    }
+
+    /// Tell, on standard error, each type a grant names that none of the
+    /// `held` lakes its principal addresses declares, for the principal
+    /// `only` names or for every one. A grant may be written before its type
+    /// is declared and stands under a renamed type's old name, so this is no
+    /// refusal; each is told at every start until a lake declares the name
+    /// (`006 § A grant that is not understood stops the root`).
+    pub async fn tell_undeclared(
+        &self,
+        held: &[Arc<dyn lakelands_api::LakeStore>],
+        only: Option<&str>,
+    ) {
+        let named = |e: &&Entry| only.is_none_or(|name| name == e.name);
+        let whom: Vec<&Entry> = self.config.principals.iter().filter(named).collect();
+        if whom.iter().all(|e| e.grants.types.is_empty()) {
+            return;
+        }
+        let mut declared = Vec::new();
+        for store in held {
+            let lake = store.lake();
+            let catalog = store.catalog(WriteContext::default());
+            match catalog
+                .describe(&self.owner(lake), Default::default())
+                .await
+            {
+                Ok(told) => {
+                    let types: BTreeMap<_, BTreeSet<_>> = told
+                        .data
+                        .types
+                        .into_iter()
+                        .map(|t| (t.name, t.fields.into_iter().map(|f| f.name).collect()))
+                        .collect();
+                    declared.push((lake, types));
+                }
+                Err(e) => eprintln!("lakelands: the grants were not checked against `{lake}`: {e}"),
+            }
+        }
+        for entry in whom {
+            let lakes = || declared.iter().filter(|d| entry.addresses(d.0));
+            let list = lakes().map(|d| format!("`{}`", d.0)).collect::<Vec<_>>();
+            for (ty, grant) in &entry.grants.types {
+                if !list.is_empty() && !lakes().any(|d| d.1.contains_key(ty)) {
+                    eprintln!(
+                        "lakelands: the grant of principal `{}` on `{ty}` names a type none of \
+                         these lakes declares: {}. It has no effect until one does, unless the \
+                         name is a renamed type's old one",
+                        entry.name,
+                        list.join(", ")
+                    );
+                    continue;
+                }
+                let hidden = grant.hide_where.iter().flat_map(|h| h.fields.keys());
+                for field in grant.fields.keys().chain(hidden).collect::<BTreeSet<_>>() {
+                    if !list.is_empty()
+                        && !lakes().any(|d| d.1.get(ty).is_some_and(|f| f.contains(field)))
+                    {
+                        eprintln!(
+                            "lakelands: the grant of principal `{}` on `{ty}` names a field `{field}` \
+                             that the type declares in none of these lakes: {}. It has no effect \
+                             until one does, unless the name is a renamed field's old one",
+                            entry.name,
+                            list.join(", ")
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Start a mirror for every connection whose target lake is among
@@ -652,12 +1027,27 @@ impl Root {
                 "correct the file, or remove it and run `lakelands lake new` again",
             )
         })?;
-        if let EngineConfig::Sqlite { dir, .. } = &mut location.engine
-            && dir.is_relative()
+        if let EngineConfig::Sqlite {
+            dir,
+            projection_dir,
+            ..
+        } = &mut location.engine
         {
-            *dir = self.dir.join(&*dir);
+            for dir in std::iter::once(dir).chain(projection_dir) {
+                *dir = self.dir.join(&*dir);
+            }
         }
         Ok(location)
+    }
+
+    /// The root's owner, as a principal of `lake`.
+    fn owner(&self, lake: &LakeId) -> Principal {
+        Principal {
+            kind: PrincipalKind::Human,
+            id: self.config.owner.clone(),
+            lake: lake.clone(),
+            grants: Grants::owner(),
+        }
     }
 
     /// The principal the CLI acts as in a lake: the owner, or the entry
@@ -668,12 +1058,7 @@ impl Root {
         act_as: Option<&str>,
     ) -> Result<Principal, Failure> {
         let Some(name) = act_as else {
-            return Ok(Principal {
-                kind: PrincipalKind::Human,
-                id: self.config.owner.clone(),
-                lake: lake.clone(),
-                grants: Grants::owner(),
-            });
+            return Ok(self.owner(lake));
         };
         StaticResolver::new(self.config.principals.clone())
             .resolve(lake, &Credential::LocalUser(name.to_owned()))
