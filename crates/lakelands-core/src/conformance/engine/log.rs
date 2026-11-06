@@ -126,6 +126,11 @@ engine_check!(
 );
 
 engine_check!(
+    HELD_LEASE_BESIDE_A_FOLD = reopening a_writer_opened_beside_a_folding_holder_is_refused_at_once,
+    "008 (lakelands#1777): a handle opened for writing while the lease's holder is inside a projection transaction opens, and its take of the lease fails at once naming the holder; the holder's lock on the projection never makes it wait"
+);
+
+engine_check!(
     READ_ONLY_HANDLE = reopening a_read_only_handle_refuses_the_lease_and_appends,
     "008: any number of readers may open a lake, and none of them can take the lease, append or seal, so only the writer extends the chain"
 );
@@ -204,6 +209,36 @@ fn a_dropped_writer_releases_its_lease(
              lease again was refused: {e}; a dropped handle must give its lease up"
         ))
     })?;
+    Ok(())
+}
+
+fn a_writer_opened_beside_a_folding_holder_is_refused_at_once(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    let holder = "writer 7 on host lake-a";
+    engine.take_lease(holder).must("taking the lease")?;
+    let projection = engine.projection();
+    projection
+        .begin()
+        .must("beginning a projection transaction")?;
+    let started = Instant::now();
+    let answer = harness
+        .reopen(engine.lake(), OpenMode::Write)
+        .and_then(|second| second.take_lease("a second writer"));
+    let waited = started.elapsed();
+    projection.rollback();
+    let refused = answer.must_fail("opening a second writer and taking the held lease")?;
+    ensure!(
+        match refused.situation() {
+            Some(Situation::LeaseHeld { holder: h, .. }) => h == holder,
+            Some(Situation::LeaseLocked { holder: h, .. }) => h.as_deref() == Some(holder),
+            _ => false,
+        } && waited < Duration::from_secs(1),
+        "the holder `{holder}` is inside a projection transaction, and a second writer's open \
+         and take of the lease answered \"{refused}\" after {waited:?}; it must be the lease's \
+         refusal naming the holder, at once"
+    );
     Ok(())
 }
 
