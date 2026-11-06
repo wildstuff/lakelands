@@ -172,7 +172,7 @@ name no set has gets, and names nothing of the field.
 A read naming a set of a type its reader is not shown, where it reads
 every field the set's filter reads, was told that the set is of that
 type: the set is one that is not declared, as the type is at every
-door (above), and so in a trigger's `when`; to declare a set under its
+door (109), and so in a trigger's `when`; to declare a set under its
 name is not granted (106). A holder of `schema` is answered the same:
 it is shown the definition only of a set whose type it is shown.
 

@@ -114,7 +114,7 @@ A type its principal is not shown is not named by what is declared
 beside it either. A verb on such a type is not described and no tool
 is made of it, even where the principal could write every field the
 verb sets: `call` and `propose` answer it as a verb that is not
-declared (above), and `describe` agrees with them.
+declared (106), and `describe` agrees with them.
 
 ## Why
 

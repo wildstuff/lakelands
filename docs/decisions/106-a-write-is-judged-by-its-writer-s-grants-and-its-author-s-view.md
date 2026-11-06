@@ -172,7 +172,7 @@ is shown to the principal, and stays its to remove.
 
 What a type's shape names stands as declared only where it stands. A
 valid time left out where the one in force names a field outside the
-author's view, which `describe` does not name to it (below), stays as
+author's view, which `describe` does not name to it (109), stays as
 declared: it is left out of the author check and checked whole at apply,
 so no new member can name that field through it, and it is put back with
 the hidden fields. One the author sends, the one in force restated too,

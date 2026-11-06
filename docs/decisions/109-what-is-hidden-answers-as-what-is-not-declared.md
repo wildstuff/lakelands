@@ -44,7 +44,7 @@ held at `none`. The listing of proposals, and the accept and the reject
 that go by it, make more than one: of the lake in force, of the lake as
 an entry would leave it, and of the lake as the entry was proposed
 against, each of the reader as its call named it, its grants followed
-there (below). Following comes first, since a grant held through a
+there (108). Following comes first, since a grant held through a
 rename may hide what the grants as given do not. A write judges under
 its lock with the principal its call was made with. Where the types
 moved between its sight and its lock, as only a migration the writer
@@ -315,7 +315,7 @@ store refuses rather than answering a part as though it were the whole.
 #### `only` keeps the reference it names
 
 A reference to a type its principal is not shown is a field it may not
-know of (above). A field the effective `only` of a type names is
+know of (104). A field the effective `only` of a type names is
 kept as granted: its value is the pair the host wrote into the grant, so
 it tells the holder nothing, and `only` stays one that can be applied.
 The effective `only` counts, a view's included: a view grouped by its
@@ -350,7 +350,7 @@ is not there to a reviewer without `restricted`: not listed, its accept
 and reject answered as an id never made (lakelands#1008,
 lakelands#1016). A migration's report names, among its sample keys, neither
 a link with an end held from its reader nor the links of a link type its
-reader is not shown, and its counts stay whole (above).
+reader is not shown, and its counts stay whole (108).
 
 A relation may point at a link type, and a link of it has an end that is
 a link. An end that is a link is there where that link is, by its own
@@ -639,16 +639,16 @@ a held one, which here is a restricted record.
 What remains says a hidden thing exists, and remains on purpose:
 
 - the version, which moves on every change, a hidden one included
-  (above);
+  (104);
 - the key, the valid times and a relation's `via`, which are the shape
   and are given of a masked field too. A key field the reader may not
-  know of hides the type instead (above), since the key would give its
+  know of hides the type instead (104), since the key would give its
   value. A valid time naming such a field is not named: `describe`,
   `describe_type`, a listed proposal and a migration's report give the
   type without that bound, and a read at a `valid_at` answers as without
-  it (above);
+  it (105);
 - a valid time sent where one the author may not know of stands, which
-  is refused as taken, as a field named like a hidden one is (above). A
+  is refused as taken, as a field named like a hidden one is (106). A
   name no field has, or a hidden one, sent there answers as on a type
   with no valid time: only a field the author may name tells it, as only
   a taken name does;
@@ -717,7 +717,7 @@ other.
 refusal each say that a record the caller is not answered exists.
 
 **A value type's renames count every record.** Their counts stay whole,
-as a report's totals do (above): a field's count per pair holds the
+as a report's totals do (108): a field's count per pair holds the
 hidden and restricted records too, so it tells a caller how many records
 it is not answered hold a value.
 
