@@ -1473,7 +1473,7 @@ belongs in the suite, not beside one engine:
 
 **builds**
 
-- `a_setting_that_builds_in_parts_changes_no_answer_either_kind` — 099, R7: a `sort_index.<type>` and a `lookup_index.<type>` setting on a type with records build in parts of `limits`, each a turn beside the writer; a page ordered by the field and a `where` on a looked-up text answer during the build, and after it, exactly what they answered before it
+- `a_setting_that_builds_in_parts_changes_no_answer_either_kind` — 099, R7: a `sort_index.<type>` and a `lookup_index.<type>` setting on a type with records build in parts of `limits`, each a turn beside the writer; a page ordered by the field and a `where` on a looked-up text and on a looked-up number answer during the build, and after it, exactly what they answered before it
 - `a_page_beside_the_build_is_whole_and_never_a_part_built_index` — 099, R7: the rows of a build are not read until its `Keep`: a page ordered by the field taken while it builds is the whole type, every key in its place, never the rows filled so far
 - `a_write_beside_the_build_is_answered_before_the_setting_is` — 099, R7: the setting's door answers when the build is whole, and a write sent beside the build waits for at most the turn in hand, so it is answered before the setting is
 - `a_record_written_beside_the_build_is_in_the_index_once_it_is_whole` — 099, R7: a record written beside the build, after the setting's event, is in the index once the build is whole, beside the records written before it: a page ordered by the field ends with it

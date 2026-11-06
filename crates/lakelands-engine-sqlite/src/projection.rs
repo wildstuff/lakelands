@@ -1003,6 +1003,14 @@ pub(crate) fn look_index(
 
 /// Write the rows of `fields` for up to `limit` head records of `ty` after
 /// `after`; the key the chunk ended at, none once the type is filled.
+///
+/// A row goes by the primary key, and by the token the write that put the
+/// state wrote ([`engines::lookup_token`]), so the delete names the record
+/// and the value. Naming `ty`, `field` and `key` alone cannot seek the
+/// value, since `key` is the last column of the key: such a delete walks
+/// every row the field holds, once for each record of the build. During a
+/// build the field's rows exist for every record, because a write beside
+/// the build keeps them too, so that walk costs the type's square.
 fn fill_looked(
     conn: &Connection,
     ty: &TypeName,
@@ -1010,6 +1018,7 @@ fn fill_looked(
     after: Option<&RecordKey>,
     limit: u32,
 ) -> Result<Option<RecordKey>> {
+    let decl = type_at(conn, ty, None)?;
     let after = after.map_or("", RecordKey::as_str);
     let page = records(
         conn,
@@ -1019,19 +1028,28 @@ fn fill_looked(
     let mut last = None;
     for r in &page {
         for field in fields {
-            run(
-                conn,
-                "DELETE FROM text_index WHERE ty = ?1 AND field = ?2 AND key = ?3",
-                params![ty.as_str(), field.as_str(), r.key.as_str()],
-            )?;
-            let Some(text) = r.fields.get(field).and_then(|v| v.as_str()) else {
+            let kind = decl
+                .as_ref()
+                .and_then(|d| engines::field_kind(d, field))
+                .copied();
+            let Some(token) = r
+                .fields
+                .get(field)
+                .and_then(|value| engines::lookup_token(value, kind))
+            else {
                 continue;
             };
             run(
                 conn,
+                "DELETE FROM text_index \
+                 WHERE ty = ?1 AND field = ?2 AND value = ?3 AND key = ?4",
+                params![ty.as_str(), field.as_str(), token, r.key.as_str()],
+            )?;
+            run(
+                conn,
                 "INSERT OR IGNORE INTO text_index (ty, field, value, key) \
                  VALUES (?1, ?2, ?3, ?4)",
-                params![ty.as_str(), field.as_str(), text, r.key.as_str()],
+                params![ty.as_str(), field.as_str(), token, r.key.as_str()],
             )?;
         }
         last = Some(r.key.clone());
