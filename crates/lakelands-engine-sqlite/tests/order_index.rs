@@ -2,8 +2,8 @@
 //! names, and is used only while it describes the head
 //! (`docs/decisions/041-a-sorted-page-reads-its-page.md`). A lake whose
 //! index a writer did not keep, one written by a binary without it,
-//! answers field-ordered pages by sorting until a writer's open has
-//! rebuilt the index, and the same afterwards.
+//! answers field-ordered pages by sorting until a writer's take of the
+//! lease has rebuilt the index, and the same afterwards.
 
 use std::path::PathBuf;
 
@@ -52,6 +52,7 @@ fn a_stale_order_index_is_not_read_and_a_writers_open_rebuilds_it() {
         let reader = SqliteOpener.open(&location, OpenMode::Read).unwrap();
         walks_as_one_scan(reader.as_ref(), &format!("read-only, {left}"));
         let writer = SqliteOpener.open(&location, OpenMode::Write).unwrap();
+        writer.take_lease("writer").unwrap();
         let (sorted, rows): (Option<i64>, i64) = db()
             .query_row(
                 "SELECT (SELECT v FROM meta WHERE k = 'sorted.t'), \
@@ -110,7 +111,7 @@ fn a_writers_open_catches_up_a_kept_names_index_and_not_its_views_name() {
         "INSERT INTO sort_index (ty, field, key, sort_key) VALUES ('w', 'v', 'k0', x'00')",
     )
     .unwrap();
-    drop(SqliteOpener.open(&location, OpenMode::Write).unwrap());
+    take_and_drop(&location);
     assert_eq!(
         held("built"),
         (Some(1), 3, 1),
@@ -120,7 +121,7 @@ fn a_writers_open_catches_up_a_kept_names_index_and_not_its_views_name() {
         "DELETE FROM sort_index WHERE ty = '{kept}'; DELETE FROM meta WHERE k = 'sorted.{kept}'"
     ))
     .unwrap();
-    drop(SqliteOpener.open(&location, OpenMode::Write).unwrap());
+    take_and_drop(&location);
     assert_eq!(
         held("mark lost"),
         (Some(1), 3, 1),
@@ -463,4 +464,10 @@ fn first_pages_answer(engine: &dyn LakeEngine) {
             .collect();
         assert_eq!(page, expected, "the first page of `v` {dir:?}");
     }
+}
+
+/// A writer's open of the lake at `location` that takes the lease.
+fn take_and_drop(location: &Location) {
+    let writer = SqliteOpener.open(location, OpenMode::Write).unwrap();
+    writer.take_lease("writer").unwrap();
 }
