@@ -14,7 +14,7 @@ granted, and a patch that carries a field its principal may not write is
 refused whole. So is one that carries a field its principal's grant
 hides on the records a condition selects, where the record is selected
 before the write or after it, naming the field
-(`006 § A field may be hidden on only the records a condition selects`).
+(`109 § A field may be hidden on only the records a condition selects`).
 
 ### A field that declares `clear` is cleared in the event that changes its input, transitively
 

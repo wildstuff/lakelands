@@ -129,7 +129,7 @@ out, by a name a model can carry, and a kept set could not hold it.
   (`004 § A set's declaration decides the records already there`), and
   is refused if its `where` reads the clock.
 - **Its rights are a named set's.** It is read by its filter's right
-  (`006 § A named set is read by its filter's right`), and `describe`
+  (`105 § A named set is read by its filter's right`), and `describe`
   shows `decided_at`.
 
 ### What would leave a set of a view without its rows is refused

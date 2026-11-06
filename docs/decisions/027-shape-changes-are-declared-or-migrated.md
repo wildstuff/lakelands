@@ -110,7 +110,7 @@ A migration's `to`, and a type declared again, is read as its author's
 view of the type: a field or a relation hidden from the author is put
 back as declared, the report is made on the completed shape, and a type
 its author is not shown is to it a type that is not declared
-(`006 § A declaration or a migration is its author's view`).
+(`106 § A declaration or a migration is its author's view`).
 
 ### The report says every difference between the declaration in force and `to`
 
@@ -160,7 +160,7 @@ report.**
 **What a reader is answered of it.** An entry is answered as a
 conversion is, and a report says `more` where an entry was left out of
 it or a count is larger than the keys named beside it
-(`006 § A report is answered as its reader may know it`).
+(`108 § A report is answered as its reader may know it`).
 
 **The log.** A proposed migration is logged with its report, so with
 `restated`, which is left out when it is empty
@@ -178,7 +178,7 @@ was proposed; propose it again".
 
 A report's id is computed over the report as its reader is shown it,
 `restated` with it
-(`006 § A description, a schema hash and a report's id are those of the shape their reader is shown`).
+(`104 § A description, a schema hash and a report's id are those of the shape their reader is shown`).
 
 ### A removed relation is listed as a removed field is
 
@@ -276,7 +276,7 @@ So the order is the one the keys need, not the one the names have:
   renames is listed, under its new name. The entry is answered to a
   reader who may know of the field in the shape the migration leaves, as
   a conversion is
-  (`006 § A report is answered as its reader may know it`).
+  (`108 § A report is answered as its reader may know it`).
 
 The order repairs no lake. A `migrated` event lists its moves, and the
 fold applies exactly those: a lake re-keyed while keys were made in the
@@ -328,7 +328,7 @@ one who may call it. A trigger, a view and an object set of the link
 type do not refuse the removal. A caller who is not shown the verb is
 answered the same case without the verb: that a declaration is declared
 on the link type
-(`006 § Some things are still told, on purpose`).
+(`109 § Some things are still told, on purpose`).
 
 So is a migration that removes such a relation while a relation or a
 reference field that stands after it refers to the relation's link
@@ -348,7 +348,7 @@ The refusal names the reading declaration only to an author who is
 shown it, by the rule `describe` uses for that kind of declaration in
 force; another is told that a declaration reads the field, without its
 name
-(`006 § A declaration or a migration is its author's view`).
+(`106 § A declaration or a migration is its author's view`).
 
 One function gathers these reads, beside the one for a view. The host
 declares the reader again first, so that it reads the shape the
@@ -456,7 +456,7 @@ the records, so it is made where shape changes are made.
   type that uses the value type that moves from or to one, are listed
   in the report by their kind and name, to a reader shown them; another
   is told that there may be one
-  (`006 § A report is answered as its reader may know it`).
+  (`108 § A report is answered as its reader may know it`).
   A literal is listed wherever it stands, so the list may name more
   than reads the field: it says what may name one. Grants' `only` pairs
   and filters a host or a source holds are not in the lake's
@@ -465,7 +465,7 @@ the records, so it is made where shape changes are made.
 - **Renames write every field that uses the value type,** so a caller
   not shown one of them is not granted the preflight, the apply or the
   proposal, and nothing is named to it
-  (`006 § A declaration or a migration is its author's view`).
+  (`106 § A declaration or a migration is its author's view`).
   A proposal is accepted only over the fields its report named: one
   that came to use the value type since would be rewritten unseen by
   the proposer and the reviewer.
@@ -481,7 +481,7 @@ reviewer's only where the reviewer is listed it whole: one kept from a
 field of the type, listed `to` without it, may migrate the type itself
 through the direct door and may not accept the same migration from
 another (lakelands#867,
-`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+`108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
 
 A value type's tightening may be proposed the same way:
 its preflight runs at the proposal and again at the acceptance, and it
@@ -492,7 +492,7 @@ and the proposal.
 
 A proposed migration is listed to each reader as that reader may know
 it, its `to` and its report alike
-(`006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there`).
+(`108 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there`).
 
 ### A declaration in force appends nothing
 
@@ -838,39 +838,39 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 
 | what this record held | where it is now |
 |---|---|
-| a shape is its author's view: a field hidden from the author is put back as declared, the report is made on the completed shape, and the doors that complete it from their caller's rights (lakelands#475) | `006 § A declaration or a migration is its author's view` |
-| no refusal on the way names a field or a relation its author may not know of, and each is said where the same fault of a name the lake does not have is said (lakelands#475, lakelands#662, lakelands#727, lakelands#750) | `006 § A declaration or a migration is its author's view` |
-| a reference field to a type its author is not shown is kept, and one the author sends is refused as naming a type that is not declared (lakelands#718, lakelands#716) | `006 § A declaration or a migration is its author's view` |
-| a masked or a write-only field stays its author's to remove (lakelands#475) | `006 § A declaration or a migration is its author's view` |
-| what a shape names stands as declared only where it stands: a valid time, a key and a `via` over a field its author may not know of (lakelands#726, lakelands#692, lakelands#727, lakelands#718) | `006 § A declaration or a migration is its author's view` |
-| a type its author is not shown is a type that is not declared: `add_field`, a migration, its preview, its apply and its proposal; a trigger, a verb and an object set on it (lakelands#538) | `006 § A declaration or a migration is its author's view` |
-| to declare the type itself is not granted, nor a set, a trigger, a verb or a function under the name of one its author is not shown (lakelands#538, lakelands#877, lakelands#893) | `006 § A declaration or a migration is its author's view` |
-| a tool's name is taken the same way (lakelands#896) | `006 § A declaration or a migration is its author's view` |
-| a link field sent to a link type its author is not shown is not granted (lakelands#965) | `006 § A declaration or a migration is its author's view` |
-| the test comes before the author's view is completed and before anything is appended (lakelands#538) | `006 § A declaration or a migration is its author's view` |
-| an accepter is answered as its listing shows it; a bundle takes no place declared since it was proposed, and an entry whose tool's name was taken since by what its reviewer is not shown is not there to it (lakelands#538, lakelands#893, lakelands#896, lakelands#915) | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
-| a migration keeps what a declaration reads: the refusal names the reading declaration only to an author who is shown it, another is told that a declaration reads the field, and the field named is one the author knows of (lakelands#461, lakelands#475, lakelands#495) | `006 § A declaration or a migration is its author's view` |
-| the same refusal at an acceptance, to the one who accepts (lakelands#495) | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
-| a view is such a reader, shown only when its definition is, and what an author not shown the view is told (lakelands#504) | `006 § A declaration or a migration is its author's view` |
-| a relation's removal refused for a verb on its link type: what a caller not shown the verb is answered, and that it is told on purpose (lakelands#843) | `006 § Some things are still told, on purpose` |
-| a relation's removal refused for another relation or a reference field that refers to its link type: what a caller not shown it is answered, and that it is told on purpose (lakelands#920) | `006 § Some things are still told, on purpose` |
-| a value type's renames write every field that uses it: a caller not shown one of them is not granted the preflight, the apply or the proposal (lakelands#553) | `006 § A declaration or a migration is its author's view` |
-| the counts of a value type's renames stay whole, hidden and restricted records included (lakelands#553) | `006 § Some things are still told, on purpose` |
-| what may name an old value is listed to a reader shown it, a declaration as `describe` shows it and an aging rule as a read answers it, and another reader is told that there may be one (lakelands#553) | `006 § A report is answered as its reader may know it` |
-| a type is named in that list by what its reader is described of it (lakelands#861) | `006 § A report is answered as its reader may know it` |
-| a proposal's report of renames is listed to each reader as it is shown the lake as it stood before the proposal, and the list and the report's id are the reader's (lakelands#553) | `006 § A report is answered as its reader may know it` |
-| a proposed migration is listed as its reader may know it: `renames`, `dropped` and `fields`, `rekeyed`, `references`; the totals, the hashes, the id and `more`; `lossless` as its proposer was told it, by the records and constraints it is told of; a migration of a type its reader may not see (lakelands#499) | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
-| a report is answered as its reader may know it: one function trims it at the five places that answer one (lakelands#531) | `006 § A report is answered as its reader may know it` |
-| `sample_keys`: the keys of records the reader is answered, the first five among them (lakelands#531, lakelands#875) | `006 § A report is answered as its reader may know it` |
-| `sample_collisions`: a colliding key is named to a reader who is answered two or more of the records that would take it and reads every field of the new key, in the order of the new key (lakelands#531, lakelands#875) | `006 § A report is answered as its reader may know it` |
-| `more`: a report says it where an entry was left out or a count is larger than the keys named beside it (lakelands#531, lakelands#875) | `006 § A report is answered as its reader may know it` |
-| a report's id and what it is made over (lakelands#531, lakelands#554) | `006 § A description, a schema hash and a report's id are those of the shape their reader is shown` |
-| a preview read trimmed is applied by the id it carried (lakelands#531) | `006 § A report is answered as its reader may know it` |
-| an author is a reader like any other, in its own preview too (lakelands#531) | `006 § A report is answered as its reader may know it` |
-| one who may not see the migrated type is answered no report (lakelands#531, lakelands#762) | `006 § A report is answered as its reader may know it` |
-| a removed relation is listed under `dropped` by its own name, to one who sees the type (lakelands#531) | `006 § A report is answered as its reader may know it` |
-| a renamed reference field's entry is answered to a reader who may know of the field in the shape the migration leaves (lakelands#524) | `006 § A report is answered as its reader may know it` |
-| an entry of `restated` is answered as a conversion is, and a member as `describe` shows the field; the preview, the refusal and a proposal's listing pass the one trim, and the feed and an export carry the report whole (lakelands#554) | `006 § A report is answered as its reader may know it` |
+| a shape is its author's view: a field hidden from the author is put back as declared, the report is made on the completed shape, and the doors that complete it from their caller's rights (lakelands#475) | `106 § A declaration or a migration is its author's view` |
+| no refusal on the way names a field or a relation its author may not know of, and each is said where the same fault of a name the lake does not have is said (lakelands#475, lakelands#662, lakelands#727, lakelands#750) | `106 § A declaration or a migration is its author's view` |
+| a reference field to a type its author is not shown is kept, and one the author sends is refused as naming a type that is not declared (lakelands#718, lakelands#716) | `106 § A declaration or a migration is its author's view` |
+| a masked or a write-only field stays its author's to remove (lakelands#475) | `106 § A declaration or a migration is its author's view` |
+| what a shape names stands as declared only where it stands: a valid time, a key and a `via` over a field its author may not know of (lakelands#726, lakelands#692, lakelands#727, lakelands#718) | `106 § A declaration or a migration is its author's view` |
+| a type its author is not shown is a type that is not declared: `add_field`, a migration, its preview, its apply and its proposal; a trigger, a verb and an object set on it (lakelands#538) | `106 § A declaration or a migration is its author's view` |
+| to declare the type itself is not granted, nor a set, a trigger, a verb or a function under the name of one its author is not shown (lakelands#538, lakelands#877, lakelands#893) | `106 § A declaration or a migration is its author's view` |
+| a tool's name is taken the same way (lakelands#896) | `106 § A declaration or a migration is its author's view` |
+| a link field sent to a link type its author is not shown is not granted (lakelands#965) | `106 § A declaration or a migration is its author's view` |
+| the test comes before the author's view is completed and before anything is appended (lakelands#538) | `106 § A declaration or a migration is its author's view` |
+| an accepter is answered as its listing shows it; a bundle takes no place declared since it was proposed, and an entry whose tool's name was taken since by what its reviewer is not shown is not there to it (lakelands#538, lakelands#893, lakelands#896, lakelands#915) | `108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a migration keeps what a declaration reads: the refusal names the reading declaration only to an author who is shown it, another is told that a declaration reads the field, and the field named is one the author knows of (lakelands#461, lakelands#475, lakelands#495) | `106 § A declaration or a migration is its author's view` |
+| the same refusal at an acceptance, to the one who accepts (lakelands#495) | `108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a view is such a reader, shown only when its definition is, and what an author not shown the view is told (lakelands#504) | `106 § A declaration or a migration is its author's view` |
+| a relation's removal refused for a verb on its link type: what a caller not shown the verb is answered, and that it is told on purpose (lakelands#843) | `109 § Some things are still told, on purpose` |
+| a relation's removal refused for another relation or a reference field that refers to its link type: what a caller not shown it is answered, and that it is told on purpose (lakelands#920) | `109 § Some things are still told, on purpose` |
+| a value type's renames write every field that uses it: a caller not shown one of them is not granted the preflight, the apply or the proposal (lakelands#553) | `106 § A declaration or a migration is its author's view` |
+| the counts of a value type's renames stay whole, hidden and restricted records included (lakelands#553) | `109 § Some things are still told, on purpose` |
+| what may name an old value is listed to a reader shown it, a declaration as `describe` shows it and an aging rule as a read answers it, and another reader is told that there may be one (lakelands#553) | `108 § A report is answered as its reader may know it` |
+| a type is named in that list by what its reader is described of it (lakelands#861) | `108 § A report is answered as its reader may know it` |
+| a proposal's report of renames is listed to each reader as it is shown the lake as it stood before the proposal, and the list and the report's id are the reader's (lakelands#553) | `108 § A report is answered as its reader may know it` |
+| a proposed migration is listed as its reader may know it: `renames`, `dropped` and `fields`, `rekeyed`, `references`; the totals, the hashes, the id and `more`; `lossless` as its proposer was told it, by the records and constraints it is told of; a migration of a type its reader may not see (lakelands#499) | `108 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| a report is answered as its reader may know it: one function trims it at the five places that answer one (lakelands#531) | `108 § A report is answered as its reader may know it` |
+| `sample_keys`: the keys of records the reader is answered, the first five among them (lakelands#531, lakelands#875) | `108 § A report is answered as its reader may know it` |
+| `sample_collisions`: a colliding key is named to a reader who is answered two or more of the records that would take it and reads every field of the new key, in the order of the new key (lakelands#531, lakelands#875) | `108 § A report is answered as its reader may know it` |
+| `more`: a report says it where an entry was left out or a count is larger than the keys named beside it (lakelands#531, lakelands#875) | `108 § A report is answered as its reader may know it` |
+| a report's id and what it is made over (lakelands#531, lakelands#554) | `104 § A description, a schema hash and a report's id are those of the shape their reader is shown` |
+| a preview read trimmed is applied by the id it carried (lakelands#531) | `108 § A report is answered as its reader may know it` |
+| an author is a reader like any other, in its own preview too (lakelands#531) | `108 § A report is answered as its reader may know it` |
+| one who may not see the migrated type is answered no report (lakelands#531, lakelands#762) | `108 § A report is answered as its reader may know it` |
+| a removed relation is listed under `dropped` by its own name, to one who sees the type (lakelands#531) | `108 § A report is answered as its reader may know it` |
+| a renamed reference field's entry is answered to a reader who may know of the field in the shape the migration leaves (lakelands#524) | `108 § A report is answered as its reader may know it` |
+| an entry of `restated` is answered as a conversion is, and a member as `describe` shows the field; the preview, the refusal and a proposal's listing pass the one trim, and the feed and an export carry the report whole (lakelands#554) | `108 § A report is answered as its reader may know it` |
 | nothing of a reader is in a shape a range shares: grants, renames followed and `only` are applied per read (lakelands#557) | `006 § A call carries one principal with grants, and the store checks every read and write` |
 
 ## How it came to be
