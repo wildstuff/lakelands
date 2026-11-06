@@ -1,0 +1,201 @@
+{
+  "daily": {
+    "cut": [
+      "2026e"
+    ],
+    "stranded": 1
+  },
+  "erasable": [
+    [
+      "person",
+      "p2",
+      {
+        "id": "p2",
+        "name": "Bobby"
+      },
+      {
+        "city": {
+          "erased": true,
+          "known_at": "2026-11-05T12:49:06.871704Z",
+          "origin": "source",
+          "position": 18,
+          "source": "crm",
+          "writer": "human:owner"
+        },
+        "id": {
+          "known_at": "2026-11-05T12:49:06.876108Z",
+          "origin": "source",
+          "position": 19,
+          "source": "web",
+          "writer": "human:owner"
+        },
+        "name": {
+          "known_at": "2026-11-05T12:49:06.876108Z",
+          "origin": "source",
+          "position": 19,
+          "source": "web",
+          "writer": "human:owner"
+        }
+      }
+    ]
+  ],
+  "events": [
+    "0 lake_created",
+    "1 lease_taken",
+    "2 declared",
+    "3 declared",
+    "4 declared",
+    "5 declared",
+    "6 declared",
+    "7 declared",
+    "8 declared",
+    "9 record_upserted",
+    "10 record_upserted",
+    "11 record_upserted",
+    "12 record_upserted",
+    "13 record_ingested",
+    "14 record_ingested",
+    "15 trigger_fired",
+    "16 record_ingested",
+    "17 record_ingested",
+    "18 record_ingested",
+    "19 record_ingested",
+    "20 values_thinned",
+    "21 act_whole",
+    "22 declared",
+    "23 values_removed",
+    "24 record_retired",
+    "25 act_whole"
+  ],
+  "head": 25,
+  "made_by": "v0.23.0",
+  "records": [
+    [
+      "box",
+      "B1",
+      {
+        "from": "2026-05-31T00:00:00.000000Z",
+        "hi": 10,
+        "no": "B1",
+        "symbol": "ACME"
+      },
+      false,
+      false
+    ],
+    [
+      "box",
+      "B2",
+      {
+        "from": "2026-06-01T00:00:00.000000Z",
+        "hi": 20,
+        "no": "B2",
+        "symbol": "ACME"
+      },
+      false,
+      false
+    ],
+    [
+      "daily",
+      "2026-05-31T22%3A00%3A00.000000Z",
+      {
+        "c": 3,
+        "day": "2026-05-31T22:00:00.000000Z",
+        "t": 32
+      },
+      true,
+      true
+    ],
+    [
+      "person",
+      "p2",
+      {
+        "id": "p2",
+        "name": "Bobby"
+      },
+      false,
+      false
+    ]
+  ],
+  "remove_report": {
+    "breaches": [],
+    "events": 2,
+    "expected_ms": 3,
+    "fields": [
+      {
+        "field": "city",
+        "redacted": 2,
+        "shredded": 0,
+        "type": "person"
+      },
+      {
+        "field": "name",
+        "redacted": 2,
+        "shredded": 2,
+        "type": "person"
+      }
+    ],
+    "kept": [
+      {
+        "first": [
+          "p2"
+        ],
+        "records": 1,
+        "type": "person"
+      }
+    ],
+    "keys": [
+      "e02afd2099bc95e108c52f77921f636e"
+    ],
+    "log_events": 22,
+    "position": 25,
+    "reclaimed": {
+      "after": 245760,
+      "before": 422952,
+      "head": 25
+    },
+    "recomputed": [],
+    "references": [],
+    "retired": [
+      {
+        "retired": 1,
+        "type": "person"
+      }
+    ],
+    "selection": {
+      "delivery": "crm-1"
+    },
+    "source": "crm",
+    "types": [
+      {
+        "first": [
+          "p1",
+          "p2"
+        ],
+        "records": 2,
+        "type": "person"
+      }
+    ],
+    "undelivered": 0,
+    "unseen": 0,
+    "unshredded": 0,
+    "views": []
+  },
+  "thin_report": {
+    "before": "2026-06-02T00:00:00.000000Z",
+    "by": "at",
+    "reclaimed": {
+      "after": 245760,
+      "before": 1087688,
+      "head": 21
+    },
+    "records": 3,
+    "through": 21,
+    "type": "tick"
+  },
+  "types": [
+    "tick",
+    "box",
+    "daily",
+    "person"
+  ]
+}
