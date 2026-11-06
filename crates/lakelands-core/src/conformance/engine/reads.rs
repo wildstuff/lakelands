@@ -154,7 +154,7 @@ engine_check!(
 
 engine_check!(
     STATS_COUNTED_AT_OPEN = reopening a_projection_without_statistics_counts_them_at_open,
-    "025 and seams §ranked (lakelands#1453): a projection whose text statistics are behind its head, as a build that keeps none left them by folding past them, or absent, as a build before them left it, scores a text as one with them: read-only, it counts them from the head at the read; a writer's open counts them once, and its commits keep them, a reader's scores following; for a reader holding `restricted` over every live head, and for one without over the heads that are not held"
+    "025 and seams §ranked (lakelands#1453): a projection whose text statistics are behind its head, as a build that keeps none left them by folding past them, or absent, as a build before them left it, scores a text as one with them: read-only, it counts them from the head at the read; a writer's open, once it takes the lease, counts them once, and its commits keep them, a reader's scores following; for a reader holding `restricted` over every live head, and for one without over the heads that are not held"
 );
 
 engine_check!(
@@ -1222,6 +1222,7 @@ fn a_projection_without_statistics_counts_them_at_open(
             &format!("read-only, statistics {stats}"),
         )?;
         let writer = open(OpenMode::Write)?;
+        writer.take_lease("a writer").must("taking the lease")?;
         let when = format!("after a writer's open, statistics {stats}");
         answers(writer.as_ref(), &heads, &when)?;
         let next = record(
@@ -3523,6 +3524,7 @@ fn a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view(
         "after a commit and a step of choosing through the handle that chose",
     )?;
     let writer = open(OpenMode::Write)?;
+    writer.take_lease("a writer").must("taking the lease")?;
     answers(writer.as_ref(), &states, "after a writer's open")?;
     put(writer.as_ref(), 5, &mut states)?;
     answers(writer.as_ref(), &states, "after a commit of the writer")?;
@@ -3540,6 +3542,7 @@ fn a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view(
         chosen.kept == [v.clone()],
         "after a writer's open dropped the choice left behind, the lake must choose again; `chosen` names {chosen:?}"
     );
+    drop(writer);
     // Such a writer's rebuild through the same position empties the order
     // index and keeps every mark.
     if harness.rebuild_as_before(engine.lake()) {
@@ -3550,6 +3553,7 @@ fn a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view(
             &format!("read-only, {when}"),
         )?;
         let writer = open(OpenMode::Write)?;
+        writer.take_lease("a writer").must("taking the lease")?;
         answers(
             writer.as_ref(),
             &states,

@@ -183,6 +183,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     log::OPENING,
     log::READ_ONLY_OPEN,
     log::DROPPED_WRITER,
+    log::HELD_LEASE_BESIDE_A_FOLD,
     log::READ_ONLY_HANDLE,
     log::LEASE_FREE,
     log::UNLEASED_HANDLE,

@@ -148,6 +148,21 @@ pub(crate) fn connect(
     Ok(conn)
 }
 
+/// Make the projection `conn` opens with this build's tables and mark; for
+/// the writer that holds the lease (`leased`), also rebuild from the head,
+/// once, an order index or text statistics a writer did not keep (a binary
+/// that lacks them folded past their mark or wrote their setting).
+fn make(conn: &Connection, leased: bool) -> Result<()> {
+    let (schema, mark) = (projection::SCHEMA, projection::mark());
+    conn.execute_batch(&format!("BEGIN IMMEDIATE; {schema} {mark} COMMIT;"))
+        .map_err(sql)?;
+    if leased {
+        projection::catch_up_sorted(conn)?;
+        projection::catch_up_text_stats(conn)?;
+    }
+    Ok(())
+}
+
 /// Hold the projection in `dir` against a swap: a shared lock on the
 /// lake's name file, which every handle onto `projection.db` takes before
 /// it connects and keeps while it lives, and a swap takes exclusively. A
@@ -200,18 +215,17 @@ impl SqliteLake {
             OpenMode::Write | OpenMode::Create => {
                 let conn = connect(&path, &tuning, true)?;
                 // A projection is read only by the layout it was made
-                // with; one that holds no table yet is made with this build's.
+                // with; one that holds no table yet is made with this
+                // build's. Nothing else is written before the lease is
+                // taken ([`make`]): a holder inside a long
+                // transaction would keep this open waiting on its lock,
+                // and fail it as the storage's, where the lease's refusal
+                // names the holder at once.
                 if projection::made(&conn)? {
                     engines::layout(&lake, projection::layout(&conn)?, projection::LAYOUT)?;
+                } else {
+                    make(&conn, false)?;
                 }
-                let (schema, mark) = (projection::SCHEMA, projection::mark());
-                conn.execute_batch(&format!("BEGIN IMMEDIATE; {schema} {mark} COMMIT;"))
-                    .map_err(sql)?;
-                // An order index a writer did not keep (a binary that lacks
-                // it folded past its mark or wrote its setting) is rebuilt
-                // from the head, once.
-                projection::catch_up_sorted(&conn)?;
-                projection::catch_up_text_stats(&conn)?;
                 Some(conn)
             }
             // Whatever layout made the projection, nothing is read from it
@@ -266,11 +280,7 @@ impl SqliteLake {
         }
         let path = building.path();
         let conn = connect(&path, &tuning, true)?;
-        let (schema, mark) = (projection::SCHEMA, projection::mark());
-        conn.execute_batch(&format!("BEGIN IMMEDIATE; {schema} {mark} COMMIT;"))
-            .map_err(sql)?;
-        projection::catch_up_sorted(&conn)?;
-        projection::catch_up_text_stats(&conn)?;
+        make(&conn, true)?;
         let reader = connect(&path, &tuning, false)?;
         Ok(SqliteLake {
             lease_file: LeaseFile::new(&dir),
@@ -577,6 +587,12 @@ impl LakeEngine for SqliteLake {
         // refuses never locks the scratch the holder is about to swap in
         // (lakelands#1485).
         scratch::sweep(&self.dir, &self.lake, &mut log)?;
+        drop(log);
+        // The projection is brought to this build's under the lease, before
+        // the holder folds; a rebuild's is cleared and made anew instead.
+        if self.mode != OpenMode::Rebuild {
+            self.write(|conn| make(conn, true))?;
+        }
         let lease = taken.lease.clone();
         *held = Some(taken);
         Ok(lease)
