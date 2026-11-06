@@ -41,7 +41,7 @@ the field, so:
 - `describe` lists the type for its writes, with `may.upsert` and the
   key field `write_only`;
 - `<type>_upsert` and `propose`'s record writes take it;
-- a write answers its position and version, as 006 § "Nothing flows
+- a write answers its position and version, as 104 § "Nothing flows
   back" says, and never the key it wrote back as a read would.
 
 ### A type a principal may write and not read is not declared to a read
@@ -77,7 +77,7 @@ The write side is unchanged:
 
 - `upsert`, `ingest` under its door's authority, a verb's effect,
   `propose` and `retire` take the type as 006 says;
-- a write answers as 006 § "Nothing flows back" says;
+- a write answers as 104 § "Nothing flows back" says;
 - `describe` lists the type for its writes alone, with `may.find` and
   `may.get` false, each field the principal may write as `write_only`
   and no other. `may.find` and `may.get` come from the same judgement
@@ -155,7 +155,7 @@ grant on the type it filters:
   and by the grant on the view for its own valid time.
 
 Without the flag the reads answer as they do today
-(006 § "A read at a valid time probes the valid-time fields its reader
+(105 § "A read at a valid time probes the valid-time fields its reader
 is shown").
 
 A type's grant follows its renames as 006 says. The flag holds only

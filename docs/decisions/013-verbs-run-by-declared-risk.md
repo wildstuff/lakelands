@@ -62,7 +62,7 @@ neither is recorded as a proposal (lakelands#338).
 Accepting a proposal applies its write as it was logged, whole, in the
 proposer's name and not under its grant, and so only a reviewer listed
 it whole accepts it; one listed it in part rejects it (lakelands#867,
-`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+`108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
 At acceptance the store checks the write again at the head, as the
 order of refusals lists it, and records the write with the proposer as
 its writer, caused by the acceptance. A call that reads across a
@@ -83,7 +83,7 @@ lakelands#847). The store judges a proposed call on a link again at the
 accept, whatever the verb's effect: the link live and answered to the
 proposer, and the reviewer by the records the call reaches, the link
 and its two end records among them
-(`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+(`108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
 A verb on a link, whatever its risk or effect, finds both ends live and
 answered to its caller, at the call and again at its accept, as `link`
 with a field does: a call, or the accept of one proposed before an end
@@ -254,7 +254,7 @@ nothing included (lakelands#1187, lakelands#1267,
 `027 § A declaration in force appends nothing`).
 
 Accepting one needs `schema` as well as `review`
-(`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+(`108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
 The accept checks the set again against the head and runs the
 migration's preflight again, since the lake may have moved. A change the
 head no longer admits refuses the accept, naming why, and the proposal
@@ -264,7 +264,7 @@ and schema hashes there, not at the proposal.
 
 A proposed shape, a migration's or a redeclared type's, is logged as
 the store completed it from its proposer's view
-(`006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there`).
+(`108 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there`).
 
 A proposed migration is accepted only on the shape it was proposed on
 (lakelands#489). Its `to` is the type's whole shape, so on a type
@@ -286,7 +286,7 @@ proposer sent and is logged with the proposal, for the reviewer.
 - **A report that does not fit refuses the proposal,** as invalid, and
   nothing is appended. The refusal says how many stored values would not
   fit and names none
-  (`006 § A report is answered as its reader may know it`).
+  (`108 § A report is answered as its reader may know it`).
 - **Accepting it takes `schema` beside `review`,** as for the other two.
   It is preflighted again on the head and refused the same way when a
   value no longer fits. It is also refused when the value type was
@@ -297,7 +297,7 @@ proposer sent and is logged with the proposal, for the reviewer.
   next version, as the proposer, caused by the acceptance.
 - **A listing shows the report's uses only in fields its reader may
   read,** of types it may see
-  (`006 § A report is answered as its reader may know it`).
+  (`108 § A report is answered as its reader may know it`).
 - **The proposal came with a step of the log format**
   (`docs/log-format.md` §6).
 
@@ -320,7 +320,7 @@ called with no key.
 
 - **Grants.** They are its type's, as for any external verb: write
   access to `on`
-  (`006 § A verb is callable and described only to one who may write what it sets and read what it reads`).
+  (`107 § A verb is callable and described only to one who may write what it sets and read what it reads`).
 - **Risk.** It decides as it does for every verb. `low` runs at once;
   anything else becomes a proposal whose call carries no key, and
   accepting it runs the verb as the proposer.
@@ -367,7 +367,7 @@ the record the write makes.
 its scope (`invalid`, naming the verb); the principal may call it
 (`not_granted`), which for a call that is proposed includes that a
 holder of `only` proposes what can be pinned to its record
-(`006 § A grant may admit only the records that hold its pairs`); an
+(`109 § A grant may admit only the records that hold its pairs`); an
 external verb's executor is bound (`unbound`); the
 payload: a member the verb does not declare (`invalid`, naming the verb
 and the member, as one missing from the payload and never from the type,
@@ -383,7 +383,7 @@ not proposed.
 
 **`propose`**: the retry; a holder of `only` proposes no change of the
 ontology (`not_granted`,
-`006 § A grant may admit only the records that hold its pairs`); an
+`109 § A grant may admit only the records that hold its pairs`); an
 upsert or a retirement of a link type (`wrong_door`); for any other
 upsert or retirement, the type is shown to its proposer (`not_found`),
 then a holder of `only` proposes what can be pinned to its record
@@ -395,25 +395,25 @@ declaration as `apply` checks a set; a migration by its preflight, then
 `migration` if it is not lossless; a value type's tightening by its
 preflight, then, with renames, that its proposer is shown every field
 they write (`not_granted`,
-`006 § A declaration or a migration is its author's view`), then
+`106 § A declaration or a migration is its author's view`), then
 `invalid` with the count if a stored value would not fit. No `schema`
 grant is needed to propose a change of the ontology.
 
 **`accept`**: the `review` grant (`not_granted`); the proposal exists
 (`not_found`); it is there to its reviewer, where one that is not
 answers as an id that does not exist (`not_found`,
-`006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there`);
+`108 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there`);
 it is its reviewer's to decide, where a reviewer without `restricted`
 decides no write that reaches a held record, and a holder of `only` no
 change of the ontology and no write to a type it holds `only` on that
 it is not listed whole (`not_granted`,
-`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`);
+`108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`);
 it is pending (`decided`; an accept sent again of an external verb's
 call is answered as a retry of a call is); a change of the ontology
 also needs `schema` (`not_granted`); a pinned proposal's record, its
 type and, for a link, either end record stand as they were proposed
 (`invalid`,
-`006 § A grant may admit only the records that hold its pairs`);
+`109 § A grant may admit only the records that hold its pairs`);
 then the write, checked again at the head: an upsert through the record
 checks; a retirement for its record and version; a call for its verb,
 its scope, the verb declared differently since (`invalid`), its
@@ -432,10 +432,10 @@ A refusal of an upsert's, a retirement's or a call's write at the
 accept is told as its reviewer's listing shows the write, and what an
 upsert or a verb's write leaves lies within the pairs of a reviewer
 holding `only` (`not_granted`), judged once the write is planned
-(`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+(`108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
 A declaration and a migration are judged first for a tool's name taken
 since by what the accepter is not shown (`not_granted`,
-`006 § A declaration or a migration is its author's view`).
+`106 § A declaration or a migration is its author's view`).
 
 **`reject`**: the `review` grant, the proposal exists, it is there to
 its reviewer and its reviewer's to decide, as at `accept`, it is
@@ -453,7 +453,7 @@ says which. Without this, a caller learns that a verb cannot run in a
 lake only by calling it and being refused, and a host's interface cannot
 show the verb as unavailable beforehand. The name is no news to the
 principal: the verb is described only to one who may call it
-(`006 § A verb is callable and described only to one who may write what it sets and read what it reads`),
+(`107 § A verb is callable and described only to one who may write what it sets and read what it reads`),
 and the `unbound` refusal names the executor to that principal anyway.
 A verb that sets fields of its record has no executor and is described
 without one. The tool of an unbound verb stays in the catalog, so a host
@@ -503,25 +503,25 @@ listing and its accept need, moved to
 
 | what this record held | where it is now |
 |---|---|
-| what acceptance checks, its first sentence: whose grants an accept applies the write under | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
-| who sees which proposals: a principal with `review` lists the proposals, any other its own | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
-| who sees which proposals: who may accept or reject, and that any other principal decides none | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
-| a proposal is read as its reader's view (lakelands#499): the write as its reader may read the record, `more`, the entry without its write, the absent write as a form of the answer, the filters, a proposed bundle | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
-| a proposal is read as its reader's view (lakelands#499): a reviewer need not know all of what it accepts, and the accept applies the write whole | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
-| a proposal is read as its reader's view (lakelands#499): the refusal at the accept for a declaration that reads a field the migration takes away | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
-| a proposal is read as its reader's view (lakelands#531): an accept refused as no longer lossless carries the fresh report as the accepter may know it | `006 § A report is answered as its reader may know it` |
-| a proposal on a type its reader is not shown is not there (lakelands#762): not listed, its accept and reject as an id that does not exist, the types a proposal names, the three sights of a migration, why | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
-| a proposal on a type its reader is not shown is not there (lakelands#762): no answer that reports on a type's migration is given to one not shown the type, and its report needs no form with the type taken out | `006 § A report is answered as its reader may know it` |
-| a call of a verb that reads a field its reader may not read is not there (lakelands#779) | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
-| an entry is decided as it is listed (lakelands#798, lakelands#791, lakelands#893): one answer for the listing, the accept and the reject; three sights; what turned; the rows | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
-| an entry is decided as it is listed (lakelands#798): one listed without its write, or to a holder of `only` not whole, is not decided; what an accept applies | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
-| an entry is decided as it is listed (lakelands#798): a migration is not listed to a holder of `only`, and its accept and its reject answer as an id that does not exist | `006 § A grant may admit only the records that hold its pairs` |
-| an accept's refusal names what its reviewer's listing shows (lakelands#780, lakelands#791) | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
-| a value type's tightening (lakelands#476): the refusal of a report that does not fit names no misfit, and why | `006 § A report is answered as its reader may know it` |
-| a value type's tightening (lakelands#476): what a listing shows of the report, its totals whole | `006 § A report is answered as its reader may know it` |
-| a declaration is proposed like a write (lakelands#199): why accepting one needs `schema` as well as `review` | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
-| a declaration is proposed like a write (lakelands#475): `proposals` shows a proposed shape to each reader without the fields that reader may not know of | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
-| a verb called on its type (lakelands#277): its grants are its type's | `006 § A verb is callable and described only to one who may write what it sets and read what it reads` |
+| what acceptance checks, its first sentence: whose grants an accept applies the write under | `108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| who sees which proposals: a principal with `review` lists the proposals, any other its own | `108 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| who sees which proposals: who may accept or reject, and that any other principal decides none | `108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a proposal is read as its reader's view (lakelands#499): the write as its reader may read the record, `more`, the entry without its write, the absent write as a form of the answer, the filters, a proposed bundle | `108 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| a proposal is read as its reader's view (lakelands#499): a reviewer need not know all of what it accepts, and the accept applies the write whole | `108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a proposal is read as its reader's view (lakelands#499): the refusal at the accept for a declaration that reads a field the migration takes away | `108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a proposal is read as its reader's view (lakelands#531): an accept refused as no longer lossless carries the fresh report as the accepter may know it | `108 § A report is answered as its reader may know it` |
+| a proposal on a type its reader is not shown is not there (lakelands#762): not listed, its accept and reject as an id that does not exist, the types a proposal names, the three sights of a migration, why | `108 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| a proposal on a type its reader is not shown is not there (lakelands#762): no answer that reports on a type's migration is given to one not shown the type, and its report needs no form with the type taken out | `108 § A report is answered as its reader may know it` |
+| a call of a verb that reads a field its reader may not read is not there (lakelands#779) | `108 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| an entry is decided as it is listed (lakelands#798, lakelands#791, lakelands#893): one answer for the listing, the accept and the reject; three sights; what turned; the rows | `108 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| an entry is decided as it is listed (lakelands#798): one listed without its write, or to a holder of `only` not whole, is not decided; what an accept applies | `108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| an entry is decided as it is listed (lakelands#798): a migration is not listed to a holder of `only`, and its accept and its reject answer as an id that does not exist | `109 § A grant may admit only the records that hold its pairs` |
+| an accept's refusal names what its reviewer's listing shows (lakelands#780, lakelands#791) | `108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a value type's tightening (lakelands#476): the refusal of a report that does not fit names no misfit, and why | `108 § A report is answered as its reader may know it` |
+| a value type's tightening (lakelands#476): what a listing shows of the report, its totals whole | `108 § A report is answered as its reader may know it` |
+| a declaration is proposed like a write (lakelands#199): why accepting one needs `schema` as well as `review` | `108 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a declaration is proposed like a write (lakelands#475): `proposals` shows a proposed shape to each reader without the fields that reader may not know of | `108 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| a verb called on its type (lakelands#277): its grants are its type's | `107 § A verb is callable and described only to one who may write what it sets and read what it reads` |
 
 ## How it came to be
 
