@@ -5695,7 +5695,8 @@ fn a_read_naming_a_series_seeks_the_pairs_window(engine: &dyn LakeEngine) -> Hel
         keys_read.len()
     );
     // A window of the pair's 6 000 that is no short batch: the choice
-    // counts its row and four times its holding, and takes it.
+    // glances at the rows outside it, counts its rows and three times
+    // them outside it, and takes it.
     let wide = crate::expr::parse("sym = 'x' and at >= 1000 and at <= 2099")
         .expect("the check's filter parses");
     let wide_window = core_engines::window(&wide, &at, &StorageKind::Number)
@@ -5714,9 +5715,9 @@ fn a_read_naming_a_series_seeks_the_pairs_window(engine: &dyn LakeEngine) -> Hel
          {taken:?}"
     );
     ensure!(
-        walked == 5_500 && read == 0,
-        "the choice walked {walked} index rows and read {read}; the window's 1 100 and four \
-         times them of the holding are 5 500, and a count reads no record"
+        walked == 5_168 && read == 0,
+        "the choice walked {walked} index rows and read {read}; the glance's 768, the window's \
+         1 100 and three times them outside it are 5 168, and a count reads no record"
     );
     let (keys_read, records, walked, read) =
         window_road(head.as_ref(), &ty, t, &wide_scan, &wide_window, u64::MAX)?
