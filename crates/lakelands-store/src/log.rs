@@ -197,28 +197,15 @@ pub(crate) fn unsealed(
     }
 }
 
-/// The format version a stored event's line says, 0 where it says none.
-fn format_of(value: &serde_json::Value) -> u64 {
-    value
-        .get("v")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0)
-}
-
 /// Whether a lake is written in a format this release reads, judged at
-/// its two ends before the lake is opened; a lake this release does not
-/// read is refused by both numbers: it is another release's, not a damaged
-/// one, and it is not opened. `ends` are the log's first and last event
-/// ([`EngineOpener::log_ends`](lakelands_api::engine::EngineOpener::log_ends)).
-/// Three numbers are judged, and the first this release does not read is
-/// named: the first event's `v`, the format its `lake_created` says, and
-/// the last event's `v`. Two ends that contradict each other in a way no
-/// release writes are damage, named at the event that carries the
-/// contradiction: a `lake_created` whose `format` is not its own line's
-/// `v` (one release wrote the line and its body at once), and a last
-/// event older than the first (a release appends only onto a lake whose
-/// first event it reads). An end that is no JSON is left to [`open`],
-/// which says what is wrong with it.
+/// its two ends before the lake is opened
+/// ([`lakelands_core::log::one_format`]): a lake this release does not
+/// read is refused by both numbers — it is another release's, not a
+/// damaged one — and it is not opened. `ends` are the log's first and
+/// last event
+/// ([`EngineOpener::log_ends`](lakelands_api::engine::EngineOpener::log_ends)),
+/// read here as the open reads a line of a format it does not run; the
+/// judgement itself, shared with the verifier of an archive, is core's.
 pub fn one_format(lake: &LakeId, ends: Option<&(CanonicalEvent, CanonicalEvent)>) -> Result<()> {
     let Some((first, tip)) = ends else {
         return Ok(());
@@ -234,43 +221,7 @@ pub fn one_format(lake: &LakeId, ends: Option<&(CanonicalEvent, CanonicalEvent)>
             .or_else(line)
     };
     let (first, tip) = (read(first), read(tip));
-    // A number one end carries, where it carries one: a missing `v` is
-    // no number, and the scan below says what a line without one is.
-    let number = |v: &serde_json::Value| v.get("v").and_then(serde_json::Value::as_u64);
-    let made = |f: &&serde_json::Value| f.pointer("/body/kind") == Some(&"lake_created".into());
-    let created = (first.as_ref().filter(made)).and_then(|f| f.pointer("/body/format"));
-    let reads = u64::from(LOG_FORMAT_VERSION);
-    if let (Some(line), Some(format)) = (
-        first.as_ref().and_then(number),
-        created.and_then(serde_json::Value::as_u64),
-    ) && line != format
-    {
-        return Err(corrupt(at.0, Flaw::CreatedInAnother { format, reads }));
-    }
-    if let (Some(line), Some(last)) = (
-        first.as_ref().and_then(number),
-        tip.as_ref().and_then(number),
-    ) && last < line
-    {
-        return Err(corrupt(at.1, Flaw::FormatOther { v: last, reads }));
-    }
-    let said = [
-        first.as_ref().map(format_of),
-        created.map(|f| f.as_u64().unwrap_or(0)),
-        tip.as_ref().map(format_of),
-    ];
-    let unread = said
-        .into_iter()
-        .flatten()
-        .find(|v| !lakelands_core::log::reads_format(*v));
-    let Some(found) = unread else { return Ok(()) };
-    let situation = lakelands_api::error::Situation::LogFormat {
-        lake: lake.to_string(),
-        found,
-        reads: LOG_FORMAT_VERSION.into(),
-        oldest: Some(lakelands_api::event::OLDEST_LOG_FORMAT.into()),
-    };
-    Err(Error::unavailable(situation))
+    lakelands_core::log::one_format(lake.as_str(), at, first.as_ref(), tip.as_ref())
 }
 
 fn corrupt(position: Position, flaw: Flaw) -> Error {

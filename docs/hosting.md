@@ -840,7 +840,9 @@ nothing in it is changed, its torn tail included: back up into a new
 directory. A run reads none of the
 lines before the last, so damage there is found by the restore, or by
 `lakelands restore <dir> --check`, whose exit status is `verify`'s (0
-it holds, 1 damaged, 3 not checked). `lakelands restore <dir>` is
+it holds, 1 damaged or written in a log format this release does not
+read — a whole archive of another release is refused as its lake is,
+and is not damaged — 3 not checked). `lakelands restore <dir>` is
 `import` of the directory, with `--keys-from <dir>` putting the lake's
 keyring file back first, only where the root's keyring has none, and
 taking it out again where the import is refused. Both `--keys-to` and

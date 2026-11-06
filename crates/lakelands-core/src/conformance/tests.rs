@@ -212,10 +212,7 @@ impl Harness for DownHarness {
         "down"
     }
     fn fresh(&self, _: Seams) -> FreshLake<'_> {
-        Box::pin(async {
-            let store: Store = Arc::new(DownStore(LakeId::from("conformance")));
-            Ok(store)
-        })
+        Box::pin(async { Ok(Arc::new(DownStore(LakeId::from("conformance"))) as Store) })
     }
     fn reopener(&self) -> Reopen {
         Arc::new(|_, _| Box::pin(async { Err(down()) }))
@@ -225,6 +222,9 @@ impl Harness for DownHarness {
     }
     fn faulter(&self) -> Fault {
         Arc::new(|_, _, _| Box::pin(async { Err(down()) }))
+    }
+    fn importer(&self) -> super::Import {
+        Arc::new(|_, _, _, _| Box::pin(async { Err(down()) }))
     }
     fn scratch(&self) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("lakelands-conformance-{}", std::process::id()))

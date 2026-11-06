@@ -1402,7 +1402,7 @@ check!(
 
 /// `key` of `invoice` quarantined from `source` in `delivery`, refused
 /// for the field `nope`; its id.
-async fn quarantine_at(
+pub(super) async fn quarantine_at(
     l: &Lake,
     source: &str,
     delivery: &str,

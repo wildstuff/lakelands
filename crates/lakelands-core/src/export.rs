@@ -39,7 +39,7 @@
 //! import refuses it before it writes.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write as _};
+use std::io::{BufRead as _, BufReader, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 
 use lakelands_api::catalog::Verification;
@@ -227,7 +227,7 @@ impl Segment {
 
 /// The event at the engine seam an event's canonical value is, as the
 /// store hands it to the writer's form.
-fn stored_of(event: &Value) -> CanonicalEvent {
+pub(crate) fn stored_of(event: &Value) -> CanonicalEvent {
     let text = |name: &str| event[name].as_str().unwrap_or_default().to_owned();
     CanonicalEvent {
         position: Position(event["position"].as_u64().unwrap_or_default()),
@@ -629,6 +629,24 @@ fn first_of(path: &Path) -> Option<u64> {
     }
 }
 
+/// The lake an export holds, as its first event names it, or the frame
+/// before it where that holds it: its first line alone, and never the
+/// manifest, which is not trusted. `None` when the first line cannot be
+/// read; the import's own verification then says why.
+pub fn lake_of(dir: &Path) -> Option<String> {
+    let first = dir.join(file_name(Position::GENESIS));
+    let file = File::open(first).ok()?;
+    let mut lines = BufReader::new(file).lines();
+    let line: serde_json::Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+    if let Some(framed) = line.get("frame") {
+        let event: serde_json::Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+        return [&framed["lake"], &event["lake"]]
+            .iter()
+            .find_map(|l| l.as_str().map(str::to_owned));
+    }
+    line["lake"].as_str().map(str::to_owned)
+}
+
 /// An export's segment files, in order.
 pub fn segment_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let log = dir.join("log");
@@ -639,6 +657,81 @@ pub fn segment_files(dir: &Path) -> Result<Vec<PathBuf>> {
         .collect();
     files.sort();
     Ok(files)
+}
+
+/// The first and the last event of a segment file, restored from the line
+/// or the block each stands on (log-format §1.2, §1.5): an append of two
+/// events or more is stored as a block, whose events are not lines, and
+/// an archive of another format may hold them as this release's writer
+/// holds its own. The last is returned with the position it stands at.
+/// `None` where the file does not restore whole or holds no event; the
+/// flaw the verifier already holds is then damage.
+fn segment_ends(path: &Path) -> Option<(serde_json::Value, serde_json::Value, Position)> {
+    let file = File::open(path).ok()?;
+    let mut units = BufReader::new(file);
+    let mut first = None;
+    let mut last = None;
+    loop {
+        match crate::log::read_unit(&mut units) {
+            Ok(Some(crate::log::Unit::Line(line))) => {
+                let event: serde_json::Value = serde_json::from_slice(&line).ok()?;
+                // A frame's own line holds no event: the lines it covers
+                // follow and each keeps its own `v` and `position`.
+                if crate::log::is_frame(&event) {
+                    continue;
+                }
+                let at = Position(event.get("position")?.as_u64()?);
+                first.get_or_insert(event.clone());
+                last = Some((event, at));
+            }
+            Ok(Some(crate::log::Unit::Block(block, _, line, stored))) => {
+                let events = block_events(&line, &stored, block.events)?;
+                let tip = events.last()?;
+                let at = Position(tip.get("position")?.as_u64()?);
+                first.get_or_insert(events.first()?.clone());
+                last = Some((tip.clone(), at));
+            }
+            Ok(None) => break,
+            Err(_) => return None,
+        }
+    }
+    let (tip, at) = last?;
+    Some((first?, tip, at))
+}
+
+/// The events a block holds, restored from the block's own bytes — its
+/// first line and its stored bytes, read by a reader that starts at it,
+/// with nothing before it to check against — so that a block is read by
+/// what it says and not by the chain around it. `None` unless every event
+/// it says it holds restores; the flaw the verifier already holds is then
+/// damage.
+fn block_events(line: &[u8], stored: &[u8], events: u64) -> Option<Vec<serde_json::Value>> {
+    let mut bytes = line.to_vec();
+    bytes.push(b'\n');
+    bytes.extend_from_slice(stored);
+    bytes.push(b'\n');
+    let mut restoring = crate::log::Restoring::new(&bytes[..], false);
+    let mut out = Vec::new();
+    loop {
+        match restoring.next_event() {
+            Ok(Some(restored)) => out.push(restored.event),
+            Ok(None) => break,
+            Err(_) => return None,
+        }
+    }
+    (out.len() as u64 == events).then_some(out)
+}
+
+/// An export's two ends as the judgement over a lake's ends reads them:
+/// the first event of its first segment, the last event of its last, each
+/// restored from its line or its block, and the position that last stands
+/// at. `None` where a segment does not restore whole; the flaw the
+/// verifier already holds is then damage.
+fn ends_of(dir: &Path) -> Option<(serde_json::Value, serde_json::Value, Position)> {
+    let files = segment_files(dir).ok()?;
+    let (first, _, _) = segment_ends(files.first()?)?;
+    let (_, tip, tip_at) = segment_ends(files.last()?)?;
+    Some((first, tip, tip_at))
 }
 
 /// Verify an export from its segment files alone, a line at a time: the
@@ -678,7 +771,33 @@ pub fn verify(dir: &Path) -> Result<Verification> {
                     let name = name.to_string();
                     return damaged(chain.next, Flaw::NoLineFeed { name });
                 }
-                Err(crate::log::Fault::Flaw(flaw)) => return damaged(chain.next, flaw),
+                Err(crate::log::Fault::Flaw(flaw)) => {
+                    // An archive whose first event is written in a format
+                    // this release does not read is judged as the open of
+                    // that lake judges it, over the archive's two ends and
+                    // by the same judgement (`crate::log::one_format`): a
+                    // lake that is another release's is refused as
+                    // `log_format`, naming the lake, its format and the
+                    // one this release reads and writes, and two ends
+                    // that contradict each other are damage, named where
+                    // the open names it. A line of another format where
+                    // the chain has already passed an event is damage,
+                    // and says so.
+                    if chain.next == Position::GENESIS
+                        && matches!(flaw, Flaw::FormatOther { .. })
+                        && let Some(lake) = lake_of(dir)
+                        && let Some((first, tip, tip_at)) = ends_of(dir)
+                        && let Err(judged) = crate::log::one_format(
+                            &lake,
+                            (Position::GENESIS, tip_at),
+                            Some(&first),
+                            Some(&tip),
+                        )
+                    {
+                        return Err(judged);
+                    }
+                    return damaged(chain.next, flaw);
+                }
             };
             let event = chain.event(event.event, index, first)?;
             digest.update(&event);

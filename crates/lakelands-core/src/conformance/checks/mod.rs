@@ -71,6 +71,7 @@ mod initial;
 mod judged;
 mod kept_builds;
 mod kept_heads;
+mod kept_lake;
 mod kept_sets;
 mod kept_triggers;
 mod key_versions;
@@ -996,6 +997,7 @@ pub const ALL: &[Check] = &[
     export::BACKUP_DAMAGED,
     export::ONE_FORMAT,
     export::OLDER_FORMAT_REFUSED,
+    export::OLDER_ARCHIVE_REFUSED,
     export::ANOTHER_RELEASES,
     export::PROJECTION_AHEAD,
     export::VERIFY_THROUGH,
@@ -1057,6 +1059,7 @@ pub const ALL: &[Check] = &[
     builds::BUILD_REBUILD_SAME_LAKE,
     builds::BUILD_EXPORT_IMPORT_SAME_LAKE,
     kept_builds::KEPT_BUILD_READ_ANSWERS_AS_BEFORE,
+    kept_lake::LAKE_23_READ,
     kept_builds::KEPT_BUILD_WRITE_BESIDE,
     kept_builds::KEPT_BUILD_WRITES_GO_ON,
     kept_builds::KEPT_BUILD_RESTART_FINISHES,

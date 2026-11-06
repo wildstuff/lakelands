@@ -164,6 +164,42 @@ other commands exit 0. It appends only `lease_taken`, so 0.22.0 opens the
 lake again whole, and that is the way out. The way back is a backup taken
 before 0.22.0's first open of the lake.
 
+**0.22.x on a lake that 0.23.0 wrote.** It does not refuse the lake by
+its format as the rule above says, but by its projection's layout:
+`verify` exits 3 and `export` exits 1, both answering "lake `kept23`'s
+projection has layout 11, and this build reads layout 8; nothing was
+read from it: rebuild it from the log with `lakelands rebuild`", and
+neither writes a byte. The rebuild it advises is destruction, not a way
+in: on a copy of the lake, `rebuild` exited 0, said it had rebuilt the
+projection "from the log through position 3", and left the log
+rewritten in format 22 with four events where 26 stood — 13 380 bytes
+to 3 761, and the index 2 038 to 435 — the events from position 4 gone
+with the format-23 lines. Do not run it. The lake's exported form it
+refuses by its number: `restore --check` says "the backup is damaged at
+position 0: written in log format 23, which this release does not read;
+it writes format 22" (exit 1), and an import into an empty lake says
+the export is damaged at position 0 for the same reason (exit 1),
+writing no log. Do not restore a backup over the lake, and open it with
+0.23.0. The way back is a backup taken before 0.23.0's first open of
+the lake.
+
+**0.23.0 on a lake that 0.22.0 wrote.** It refuses the lake by its log
+format, judged on the log and not on the projection, and it names the
+way: `verify` exits 3 and `export` exits 1, both answering "lake
+`liquidity` is written in log format 22, and this release reads log
+formats 23 to 23 and writes 23; nothing was read from it and nothing
+appended", with the advice "open it with a release that reads log format
+22; restoring it would not help, it is not damaged"; nothing is written.
+`restore --check` on the lake, and `restore` and `import` of an export
+0.22.0 wrote, refuse the archive as a log format too, not as damage:
+each answers "lake `liquidity` is written in log format 22, and this
+release reads log formats 23 to 23 and writes 23; nothing was read from
+it and nothing appended", with the advice "restore it with a release
+that reads log format 22; it is not damaged" (`import` says to import
+it), exits 1 and writes no log. There is no upgrade and no translation:
+a host opens the lake with a release that reads format 22, or brings its
+data into a lake of its own.
+
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
 - **The log is never rewritten.** Each format step from 14 on ships a
@@ -194,21 +230,19 @@ before 0.22.0's first open of the lake.
   verifiers refuse any other change.
 - **There is no downgrade.** A backup taken before the upgrade is the
   way back.
-- **The proof on a lake the release before wrote**:
+- **The proof on a lake the release before wrote**: through 0.22.0,
   `docs/log-format/lakes/14/`, a small lake v0.13.1 made through its
-  doors, with what that release answered of it, is imported, upgraded
-  and read the same on every engine. `docs/log-format/lakes/15/`, the
-  lake v0.14.0 made, is held the same way from that release on, read in
-  its own format until a later one upgrades it, as 0.15.0 does;
-  `docs/log-format/lakes/16/`, the lake v0.15.0 made, from that release
-  on, `docs/log-format/lakes/17/`, the lake v0.16.0 made, from that one
-  on, `docs/log-format/lakes/18/`, the lake v0.17.0 made, from that one on,
-  `docs/log-format/lakes/19/`, the lake v0.18.0 made, from that one on,
-  `docs/log-format/lakes/20/`, the lake v0.20.0 made, from that one on,
-  `docs/log-format/lakes/21/`, the lake v0.21.0 made, from that one on,
-  and `docs/log-format/lakes/22/`, the lake v0.22.0 made, from that one
-  on. The vectors of each older format are imported and upgraded on
-  every engine too.
+  doors, with what that release answered of it, and the lakes 15 to 22,
+  each made by the release of its format, were imported, upgraded and
+  read the same on every engine, and the vectors of each older format
+  were imported and upgraded on every engine too. 0.23.0 is the release
+  at which the operator's green field ends that path: the formats 14 to
+  22 are history that no binary of this tree reads, neither their lakes
+  nor their vectors are in the tree, and `scripts/gates/vectors-kept.sh`
+  holds from format 23 on. `docs/log-format/lakes/23/`, the lake v0.23.0
+  made, is kept from that release on and read in its own format on every
+  engine, and every later release reads it, record 098 keeping every
+  format from 23 on.
 
 At 100 000 events a step that changes no fold costs one append, and
 about 5 µs an event at each later read of an older event; one that

@@ -45,6 +45,7 @@ use lakelands_api::write::{
     Breach, RecordField, RemoveReport, RemovedField, Selection, TypeRetired,
 };
 use lakelands_api::{Error, FieldName, Position, RecordKey, Result, SourceId, Timestamp, TypeName};
+use lakelands_core::links;
 use lakelands_core::sight::Sight;
 
 use crate::exec::Turn;
@@ -481,7 +482,7 @@ impl Gathered {
 
 /// A record the selection touched, as it stands, and what the selection
 /// takes of it.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Holder {
     r: StoredRecord,
     lost: BTreeSet<FieldName>,
@@ -540,6 +541,7 @@ impl Judged {
     /// Read the keys the tail moved again, as they stand under the
     /// writer, and judge them by the walk's selection: one the source
     /// wrote since is taken in, and one another hand wrote drops out.
+    /// Whether any of them judges differently than the walk did.
     fn again(
         &mut self,
         lake: &Lake,
@@ -547,8 +549,10 @@ impl Judged {
         ontology: &Ontology,
         g: &Gathered,
         moved: &BTreeSet<(TypeName, RecordKey)>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        let mut changed = false;
         for (ty, key) in moved {
+            let before = self.holders.get(ty).and_then(|h| h.get(key)).cloned();
             if let Some(h) = self.holders.get_mut(ty) {
                 h.remove(key);
             }
@@ -558,6 +562,7 @@ impl Judged {
                 }
                 _ => None,
             };
+            changed |= before.as_ref() != now.as_ref();
             let Some(h) = now else { continue };
             if !h.holds {
                 let made = made_by(
@@ -572,7 +577,7 @@ impl Judged {
                 .or_default()
                 .insert(key.clone(), h);
         }
-        Ok(())
+        Ok(changed)
     }
 }
 
@@ -810,6 +815,16 @@ fn closes(
     })
 }
 
+/// Whether any declaration here can name another record: a link type, or a
+/// relation with a `via` field. The one way a write to a record the act did
+/// not reach moves what a removal's report states (099).
+fn relating(ontology: &Ontology) -> bool {
+    ontology.types.iter().any(|(name, entry)| {
+        links::link_type_parts(name).is_some()
+            || entry.decl.relations.iter().any(|r| r.via.is_some())
+    })
+}
+
 /// The id of a report: the position it was read at, then the digest of the
 /// records it selected, by the `made` position of each (099).
 fn token(
@@ -869,10 +884,22 @@ fn settled(selection: Selection) -> Selection {
 
 /// Whether the act at `at` appended its `act_whole`.
 pub(crate) fn whole(lake: &Lake, at: Position, head: Option<Position>) -> Result<bool> {
+    whole_from(lake, at, at, head)
+}
+
+/// Whether the act at `at` appended its `act_whole` at or after `from`. The
+/// act's whole is its last event, so a turn that has appended any of the act
+/// reads only what lies past its own last append (099).
+pub(crate) fn whole_from(
+    lake: &Lake,
+    at: Position,
+    from: Position,
+    head: Option<Position>,
+) -> Result<bool> {
     let Some(head) = head.filter(|h| *h >= at) else {
         return Ok(false);
     };
-    for page in lake.pages(at) {
+    for page in lake.pages(from) {
         for e in page? {
             if e.position > head {
                 return Ok(false);
@@ -973,7 +1000,17 @@ pub(crate) struct Remove {
     tail: Vec<Event>,
     /// The acts the walk knew: one written since is judged again.
     walked: BTreeSet<Position>,
+    /// The walk's report, carried past the first turn and read again only
+    /// where the tail moved what it states (099).
     report: Option<RemoveReport>,
+    /// The ontology the walk's report was made under: a declaration the
+    /// tail's catch-up took since is not one it stands on.
+    walk_ontology: Option<Ontology>,
+    /// Whether the walk found the source forgotten, as its report states.
+    walk_forgot: bool,
+    /// Whether the tail holds an event of the source, which moves the
+    /// walk's tally of its events, undelivered and unseen.
+    tail_of_source: bool,
     /// The position of the act's first event; `None` until it is in the log.
     act: Option<Position>,
     /// The versions and the apart keys the act destroys.
@@ -1018,6 +1055,9 @@ pub(crate) fn owed(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Box<dyn
             tail: Vec::new(),
             walked: BTreeSet::new(),
             report: None,
+            walk_ontology: None,
+            walk_forgot: false,
+            tail_of_source: false,
             act: Some(act.at),
             keys: act.keys.clone(),
             apart: act.apart.clone(),
@@ -1187,10 +1227,10 @@ impl Job for Remove {
         let (keys, apart) = g.keys(lake)?;
         let forgot =
             crate::lake::forgotten_list(view, &Staged::default())?.contains_key(&self.source);
+        // The closes the act owes, found off the writer: the first turn
+        // appends them, and reads them again only where the tail moved
+        // what they rest on (099).
         let (shut, quarantined) = closes(lake, view, &self.source, &self.selection, &g)?;
-        if self.act.is_some() {
-            self.closes = shut.into();
-        }
         let report = report_of(
             lake,
             (&lake.reading(view)?, view),
@@ -1207,7 +1247,10 @@ impl Job for Remove {
             .collect();
         self.keys = keys;
         self.apart = apart;
+        self.closes = shut.into();
         self.report = Some(report);
+        self.walk_ontology = Some(ontology);
+        self.walk_forgot = forgot;
         self.judged = judged;
         self.gathered = Some(g);
         // The restate the act leaves, planned here off the writer with
@@ -1220,6 +1263,10 @@ impl Job for Remove {
     /// keys it moved, which the first turn reads again under the writer.
     fn fold(&mut self, tail: &[Event]) -> Result<()> {
         for e in tail {
+            // An event of the source moves the tally the walk made of its
+            // events, undelivered and unseen, and may close a quarantine
+            // the walk did not see (099).
+            self.tail_of_source |= e.source.as_ref() == Some(&self.source);
             for about in lakelands_core::feed::about(&e.body) {
                 if let (Some(ty), Some(key)) = (about.ty, about.key) {
                     self.moved.insert((ty, key));
@@ -1285,6 +1332,40 @@ impl Remove {
         })
     }
 
+    /// Whether the walk's report and closes stand as the walk read them:
+    /// nothing the tail or another hand wrote since reaches what they
+    /// state, so only what the writer states alone — the log's head, the
+    /// act's expected time, the reclaim owed — is read (099).
+    ///
+    /// The keys the report and the closes name are the walk's where no
+    /// event of the source is in the tail: only such an event moves the
+    /// selection's tally, and only the act's own steps move the key store,
+    /// so an act the walk has not seen is the new-act branch above (099).
+    fn stands(
+        &self,
+        ontology: &Ontology,
+        g: &Gathered,
+        forgot: bool,
+        changed: bool,
+        moved: &BTreeSet<(TypeName, RecordKey)>,
+    ) -> bool {
+        let Some(report) = self.report.as_ref() else {
+            return false;
+        };
+        !changed
+            && !self.tail_of_source
+            // The walk read a reader's ontology and the writer holds its
+            // own, which carries the tool names: what must agree is the
+            // declarations, not those (099).
+            && self.walk_ontology.as_ref().is_some_and(|o| o.same(ontology))
+            && forgot == self.walk_forgot
+            && g.before == report.before
+            // A record another hand wrote moves the report where a type can
+            // name another record's: `references` is read from the live
+            // records, and a tail that moved any is read again whole.
+            && (moved.is_empty() || !relating(ontology))
+    }
+
     /// One turn beside the writer (099): the act's first event, a part of
     /// its retirements, or its restate.
     fn one_turn(&mut self, t: &Turn<'_>, w: &mut Writer) -> Result<Turned> {
@@ -1307,9 +1388,19 @@ impl Remove {
             self.act = Some(at);
             self.gathered = None;
         }
-        if let Some(at) = self.act
-            && whole(lake, at, view.position())?
-        {
+        // The act's whole lies past the last position it wrote: only an act
+        // this handle has not written a turn of reads from its start.
+        let is_whole = match self.act {
+            Some(at) => {
+                let from = match self.position >= at {
+                    true => self.position.next(),
+                    false => at,
+                };
+                whole_from(lake, at, from, view.position())?
+            }
+            None => false,
+        };
+        if is_whole {
             // The appends ended in a turn this handle did not run: the
             // restate and the reclaim are left, answered as owed through
             // the head the act's appends reached.
@@ -1362,6 +1453,15 @@ impl Remove {
         restate.absorb(reached, acts, &self.tail);
         self.restate = Some(restate);
         Ok(())
+    }
+
+    /// The records the act retires, as the walk judged them: the parts
+    /// take them in this order, each read again at its live version at the
+    /// part ([`crate::parts::part`]).
+    fn taken(&self) -> BTreeMap<(TypeName, RecordKey), StoredRecord> {
+        (self.judged.retirable())
+            .map(|h| ((h.r.ty.clone(), h.r.key.clone()), h.r.clone()))
+            .collect()
     }
 
     /// The act as the walk judged it, for the restate's plan: what the
@@ -1463,7 +1563,7 @@ impl Remove {
                 .as_ref()
                 .expect("the selection was gathered")
                 .keys(lake)?;
-            let (_, quarantined) = closes(
+            let (shut, quarantined) = closes(
                 lake,
                 view,
                 &self.source,
@@ -1485,6 +1585,12 @@ impl Remove {
             )?);
             self.keys = keys;
             self.apart = apart;
+            self.closes = shut.into();
+            self.retire = self.taken();
+            // This is the plan the turns carry from: the act it names is
+            // acted as this turn's (099).
+            self.walk_ontology = Some(ontology);
+            self.walk_forgot = forgot;
             // The walk's plan was made with the walk's act: an act of the
             // source since it is another plan, and the restate plans again
             // at this turn (099).
@@ -1513,29 +1619,58 @@ impl Remove {
         }
         {
             let g = self.gathered.as_ref().expect("the walk gathered");
-            let (keys, apart) = g.keys(lake)?;
+            // The walk read the keys from the tally and the key store, off
+            // the writer. Only an event of the source in the tail moves the
+            // tally, and only the act's own steps move the store, so a tail
+            // of other hands' writes leaves them as the walk read them; a
+            // tail of the source's own is read again (099).
+            let (keys, apart) = match self.tail_of_source {
+                false => (self.keys.clone(), self.apart.clone()),
+                true => g.keys(lake)?,
+            };
             let forgot =
                 crate::lake::forgotten_list(view, &Staged::default())?.contains_key(&self.source);
-            let (shut, quarantined) = closes(lake, view, &self.source, &self.selection, g)?;
-            self.judged.again(lake, view, &w.ontology, g, &moved)?;
+            let changed = self.judged.again(lake, view, &w.ontology, g, &moved)?;
             if !self.named.is_empty() && self.stale() {
                 return Err(Error::invalid(Case::RemoveReportStale));
             }
-            // The report is read again from the records as they stand: a
-            // tail event the act takes changes which records it retires,
-            // what is computed from them and what they strand, not only
-            // the tally (099).
-            let report = report_of(
-                lake,
-                (w, view),
-                &w.ontology,
-                g,
-                &self.judged,
-                (&keys, &apart),
-                forgot,
-                quarantined,
-                view.position(),
-            )?;
+            // The walk's report and closes stand where nothing since
+            // reaches what they state, and only what the writer states is
+            // read again; a tail that moved either reads them whole (099).
+            let carried = match self.stands(&w.ontology, g, forgot, changed, &moved) {
+                true => self.report.take(),
+                false => None,
+            };
+            let report = match carried {
+                Some(mut report) => {
+                    let log_events = view.position().map_or(0, |p| p.0);
+                    report.log_events = log_events;
+                    report.expected_ms = lake.expected_ms(log_events);
+                    report.reclaim_untimed = lake.untimed();
+                    report.reclaim_owed = lake.reclaim_owed();
+                    report
+                }
+                None => {
+                    let (shut, quarantined) = closes(lake, view, &self.source, &self.selection, g)?;
+                    self.closes = shut.into();
+                    self.retire = self.taken();
+                    // The report is read again from the records as they
+                    // stand: a tail event the act takes changes which
+                    // records it retires, what is computed from them and
+                    // what they strand, not only the tally (099).
+                    report_of(
+                        lake,
+                        (w, view),
+                        &w.ontology,
+                        g,
+                        &self.judged,
+                        (&keys, &apart),
+                        forgot,
+                        quarantined,
+                        view.position(),
+                    )?
+                }
+            };
             if self.shredded && report.unshredded > 0 {
                 let (source, count) = (self.source.clone(), report.unshredded);
                 return Err(Error::invalid(Case::RemoveNotShredded { source, count }));
@@ -1549,12 +1684,8 @@ impl Remove {
             }
             self.keys = keys;
             self.apart = apart;
-            self.closes = shut.into();
             self.report = Some(report);
         }
-        self.retire = (self.judged.retirable())
-            .map(|h| ((h.r.ty.clone(), h.r.key.clone()), h.r.clone()))
-            .collect();
         let empty = {
             let g = self.gathered.as_ref().expect("the walk gathered");
             g.events == 0 && self.retire.is_empty() && self.closes.is_empty()
@@ -1639,11 +1770,14 @@ impl Remove {
             self.closes = shut.into();
             self.keys = keys;
             self.apart = apart;
+            self.retire = self.taken();
+            self.walk_ontology = Some(ontology);
+            self.walk_forgot = forgot;
             self.gathered = Some(g);
         }
-        self.retire = (self.judged.retirable())
-            .map(|h| ((h.r.ty.clone(), h.r.key.clone()), h.r.clone()))
-            .collect();
+        // The retirements were taken once, at the turn that judged them, and
+        // [`crate::parts::part`] maintains them: each record it takes is
+        // dropped and read again at its live version, as this turn would (099).
         let now = lake.clock(w);
         let room = usize::try_from(lake.limits.part_events.max(1)).unwrap_or(usize::MAX);
         let (mut part, whole) = self.fill(lake, (w, view), now, room, Vec::new())?;
@@ -1711,6 +1845,9 @@ pub(crate) fn start(
         tail: Vec::new(),
         walked: BTreeSet::new(),
         report: None,
+        walk_ontology: None,
+        walk_forgot: false,
+        tail_of_source: false,
         act: None,
         keys: Vec::new(),
         apart: Vec::new(),
