@@ -211,6 +211,24 @@ impl Ontology {
         self.names.as_deref()
     }
 
+    /// Whether the two govern the same declarations: every kind's entries
+    /// and their versions, the withdrawals and the lists dependents were
+    /// completed from. The tool names are not declarations — a reader's
+    /// ontology holds none, a writer's holds them all — so an ontology read
+    /// off the writer and the writer's own compare equal where nothing was
+    /// declared between them.
+    pub fn same(&self, other: &Ontology) -> bool {
+        self.types == other.types
+            && self.value_types == other.value_types
+            && self.verbs == other.verbs
+            && self.triggers == other.triggers
+            && self.object_sets == other.object_sets
+            && self.functions == other.functions
+            && self.settings == other.settings
+            && self.withdrawn == other.withdrawn
+            && self.listed == other.listed
+    }
+
     /// The declarations in force at a view. Every shape the store shows or
     /// judges comes from here, so that each computed field lists what it
     /// is computed from (024, extended).
