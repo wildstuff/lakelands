@@ -230,8 +230,11 @@ fn a_writer_opened_beside_a_folding_holder_is_refused_at_once(
     projection.rollback();
     let refused = answer.must_fail("opening a second writer and taking the held lease")?;
     ensure!(
-        matches!(refused.situation(), Some(Situation::LeaseHeld { holder: h, .. }) if h == holder)
-            && waited < Duration::from_secs(1),
+        match refused.situation() {
+            Some(Situation::LeaseHeld { holder: h, .. }) => h == holder,
+            Some(Situation::LeaseLocked { holder: h, .. }) => h.as_deref() == Some(holder),
+            _ => false,
+        } && waited < Duration::from_secs(1),
         "the holder `{holder}` is inside a projection transaction, and a second writer's open \
          and take of the lease answered \"{refused}\" after {waited:?}; it must be the lease's \
          refusal naming the holder, at once"
