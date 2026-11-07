@@ -1,5 +1,8 @@
 # 110 — A record's or a field's values can be erased from its history
 
+**Proposed** for 0.24.0 on lakelands#1736, 2026-11-07: the operator has
+not accepted it yet, and no build follows it.
+
 ## What is decided
 
 ### One act erases a record, a field of it, or a quarantined row
@@ -36,9 +39,11 @@ both additive. Its doc becomes *which values an act takes back*, since
 `remove_values` and `erase_values` now read the same enum.
 
 - `Record { ty: TypeName, key: RecordKey, field: Option<FieldName> }`,
-  written `{"record": {"type": …, "key": …, "field": …}}`; `field` absent
-  says every field of the record. The key is the record's key as the head
-  reads it. The act follows the record's identity backwards through every
+  written `{"record": {"type": …, "key": …, "field": …}}`; `ty` carries
+  `#[serde(rename = "type")]`, so the member is written `"type"` as a
+  record's is, not `"ty"`; `field` absent says every field of the
+  record. The key is the record's key as the head reads it. The act
+  follows the record's identity backwards through every
   re-keying the log records for it (`crates/lakelands-api/src/event.rs:209`)
   and selects every `record_upserted` and `record_ingested` of its type at
   a key it held, before this position, that wrote the record. A key that
@@ -52,6 +57,26 @@ A record selection takes the values of every hand that wrote the record,
 authored and sourced alike, not one source's. `remove_values` keeps its
 scope: it takes only the values of the source it names, and it refuses
 either new member, naming `erase_values`. Its contract is unchanged.
+
+### `values_removed` does not carry the two new members
+
+`Selection` is also the `selection` member of `values_removed`
+(`crates/lakelands-api/src/event.rs:282`), where `Removal::of` reads it
+(`crates/lakelands-store/src/remove.rs:117`) and `Removal::selects`
+matches its four members (`remove.rs:153`). Only those four belong
+there: a removal selects by its source, and a record or quarantined
+selection names no source and could not be folded by it.
+
+The reader refuses a `values_removed` whose selection is a `record` or a
+`quarantined` selection, rather than letting the fold meet it and
+quietly select nothing. The build adds the check to `misplaced`
+(`crates/lakelands-core/src/log.rs:281`), beside the other
+member-where-it-never-sits flaws and under a `Flaw` that names the
+selection, so the log's reader and a rebuild both refuse the event as
+damage, never skip it. §2's closed set and §2.3's `values_removed` row
+come to say the same: its `selection` is one of the four. The arm the
+fold's match gains for the two members is unreachable, and answers the
+same refusal where it is ever reached.
 
 ### What the act never takes
 
@@ -98,17 +123,32 @@ apart key — and a lake under `docs/log-format/lakes/`. No format before
 ### A close may erase in the same append
 
 A lake setting, `erase_on_close`, default off, is the host's
-configuration through `Location` and server config, never the
-environment. When it is on, every `quarantine_closed` is followed in the
-same append by one `values_erased` for its id, written by
-`system:lakelands` as the close of a landing already is
-(`crates/lakelands-store/src/quarantine.rs:278`). No caller's grant
-selects an erasure and no new verb is asked of the host: dismissing or
-landing closes, and the close erases.
+configuration, held as the lake's own `sys.setting` record as every lake
+setting is (`docs/decisions/063-every-setting-is-in-one-list.md`), never
+read from the environment. When it is on, every `quarantine_closed` an
+ordinary close appends is followed in the same append by one
+`values_erased` for its id. The erase is `system:lakelands`'s in every
+case, a `Draft::system` beside the close
+(`crates/lakelands-store/src/log.rs:68`), whatever writer wrote the
+close, and the append carries both or neither:
+
+- A close by landing is `system:lakelands`'s
+  (`crates/lakelands-store/src/quarantine.rs:330`).
+- A close by resubmission is written in the resubmission's own append,
+  under the resubmitting writer and not `system:lakelands`'s
+  (`crates/lakelands-store/src/ingest.rs:553`, `docs/log-format.md:563`);
+  the erase is `system:lakelands`'s beside it in that append.
+- A close by dismiss is under the dismisser as writer, origin `authored`
+  (`crates/lakelands-store/src/quarantine.rs:394`); the erase is
+  `system:lakelands`'s beside it, not the dismisser's.
+
+No caller's grant selects an erasure, no caller supplies its selection,
+and no new verb is asked of the host: dismissing, landing or resubmitting
+closes, and the configured close erases.
 
 - A close by `source_forgotten`, by a `values_removed` that selects the
-  entry, or by a purge already erases through its own event; no second
-  erase is appended.
+  entry, by a purge, or by this act's own erase of an open entry already
+  erases through its own event; no second erase is appended.
 - Erasing an open entry through the act appends the `values_erased` and a
   `quarantine_closed` with `why: removed` in the same append
   (`ClosedWhy::Removed`, `crates/lakelands-api/src/quarantine.rs:59`).
@@ -143,7 +183,8 @@ decides it.
   needs the bytes gone under a key it can name asks `require_shredded`
   and is answered "no" unless the delivery sealed the row apart.
 - A copy outside the lake — an export, a backup taken through a position
-  before the act, the host's own copy — is not reached.
+  before the act, the host's own copy — still carries the bytes, and
+  this act does not reach it.
 
 ### Verify, export, import, rebuild, mirrors
 
@@ -165,7 +206,8 @@ decides it.
 
 ### The report
 
-`EraseReport` is additive: `selection`, `types` and `fields` (each with
+`EraseReport` is a new type, additive to the contract because nothing
+existing changes: `selection`, `types` and `fields` (each with
 `redacted` and `shredded`, as `RemovedField` has), `versions` (the writes
 it selected), `keys`, `apart`, `kept`, `references`, `unshredded`,
 `recomputed`, `views`, `breaches`, `log_events`, `position`, `report_id`,
@@ -202,14 +244,25 @@ first.
   `Removal`, `Fixed` and the removal's resolution
   (`crates/lakelands-store/src/remove.rs:71`, `:98`, `:117`, `:339`) for
   the key chain instead of a second walk; the event and its fold; the
-  report; the close wiring in `crates/lakelands-store/src/quarantine.rs`;
-  the `.unshredded` and `kept` accounting.
+  report; the close wiring in `crates/lakelands-store/src/quarantine.rs`
+  and `crates/lakelands-store/src/ingest.rs`; the `values_removed`
+  refusal in `misplaced` (`crates/lakelands-core/src/log.rs:281`); the
+  `.unshredded` and `kept` accounting; and the setting's three pieces
+  the `settings` gate reads (063, Gate 16): its `SETTINGS` entry in
+  `crates/lakelands-api/src/settings.rs:102` (`..lake("erase_on_close",
+  PerType::No, "false")` with its `range` and `says`), the
+  `ERASE_ON_CLOSE_SETTING` constant in `crates/lakelands-api/src/seam.rs`
+  beside `ZONE_SETTING` (`seam.rs:748`), and the one product read of the
+  setting by that constant, since a listed lake setting no product file
+  reads is red.
 - **Specification, about 450–650 lines**: the rows below, in
   `crates/lakelands-core/src/conformance/checks/`, one file beside the
   removal's and the quarantine's.
-- **Docs, about 250 lines**: the §2.3 row and the §6 step in
-  `docs/log-format.md`, the vectors and the lake, and the amendments to
-  065 and 085 named above.
+- **Docs, about 250 lines**: the §2.3 rows and the §6 step in
+  `docs/log-format.md` (the new kind, and `values_removed`'s selection
+  set closed to its four), the vectors and the lake, the regenerated
+  `docs/settings.md` (`scripts/settings.py`), and the amendments to 065
+  and 085 named above.
 
 The cut comes first: the act reuses the removal's resolution, its
 `Fixed`/`Removal` types and the `sys:removed` list rather than growing a
@@ -251,6 +304,22 @@ rather than gaining a verb.
     that does not know the kind refuses the event rather than skipping it.
 16. A mirror of a source that wrote a value in the erased record stops,
     and the report names the source.
+17. A `values_removed` whose selection is a record or a quarantined
+    selection is refused as damage by the reader and by a rebuild, and
+    no fold treats it as selecting nothing.
+18. An erase by record follows the record's identity backwards through
+    every re-keying the log records, and selects the writes at each key
+    it held before the act.
+19. A key another record has taken ends the chain: the writes at that
+    key after the takeover are not selected and still read.
+20. A selection of a `sys.` type is refused, as an unreadable selection
+    is, and the log's head does not move.
+21. A preflight appends nothing, answers the same counts the act would,
+    and leaves the head where it was.
+22. With `erase_on_close` set, a resubmitted close erases in the
+    resubmission's own append, the erase written `system:lakelands`, and
+    the resubmitter's grant is not asked for it; with it unset, the
+    close erases nothing.
 
 ## Why
 
@@ -301,6 +370,9 @@ lakelands#1736. 085 kept a refused row whole and taught every read to
 omit its cells, which is a hiding and not an erasure; the host asked for
 the values themselves to be erasable, and for the close to be able to
 erase them. The two additions to `Selection`, the refusal in
-`remove_values` and the `removed` close come with it. 065's and 085's
-rules are amended in the same build where this act lands: 065's doc for
-`Selection`, and 085's line on the close and its "not an erasure".
+`remove_values` and the `removed` close come with it. The two new
+selections are refused in `values_removed` and not folded there: a
+removal selects by its source, so the format's closed set keeps its four
+members. 065's and 085's rules are amended in the same build where this
+act lands: 065's doc for `Selection`, and 085's line on the close and
+its "not an erasure".
