@@ -52,6 +52,10 @@ A member it does not take, at any depth, is refused as `invalid`. The
 refusal names the member, the declaration, and where the member sits
 (`fields[0]`, `relations[1].fields[0]`, `view.measures[2]`).
 
+The form is strict too: a declaration's members are named, never given
+by position, so a sequence where a declaration is asked for is refused,
+naming the object it takes (110).
+
 The rule lives on the contract's declaration types, not beside each
 door, so a door added later cannot forget it. A reader refuses an event
 whose bytes do not re-serialise from its typed form, so a log holding a
@@ -399,3 +403,6 @@ rather than one error at a time.
 - A verb's `requires` reads `payload.<name>` as the call's, as its
   values do, where it was judged with no payload and refused one at
   declare (lakelands#1330).
+- The form is refused as well as the member: a declaration is written
+  with its members named, never as a sequence of them by position
+  (lakelands#725).
