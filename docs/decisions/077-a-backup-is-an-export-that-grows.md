@@ -4,6 +4,9 @@
 
 **Accepted** on lakelands#1369 (2026-10-24), by the operator.
 
+Amended on lakelands#1515, proposed for 0.24.0: a restore may stop at a
+position in its log. No code lands with it.
+
 ### A backup holds the export's segment files and nothing else
 
 `lakelands_core::export::backup` writes into a new or empty directory
@@ -65,12 +68,60 @@ its position.
 ### A restore is an import
 
 `lakelands restore <DIR>` is `import` of the backup's directory: it
-verifies the whole directory, the hash chain and every checkpoint
-against the files before it, refuses `damaged` at the position where it
-stops being the log, and makes the lake at the backup's head, which
-then answers as the lake did at the cut. `--check` verifies only and
+verifies the directory through the position it restores, the hash chain
+and every checkpoint below that position against the files before it,
+refuses `damaged` at the position where it stops being the log, and
+makes the lake at that position, which then answers as the lake did there.
+The position is the backup's head unless `--through <POSITION>` names one
+(`077 § A restore may stop at a position`). `--check` verifies only and
 writes nothing; its exit status is `verify`'s. There is no store
 function of its own.
+
+### A restore may stop at a position
+
+`restore --through <POSITION>` restores the lake at that position instead
+of the backup's head: the import carries the log's events from its first
+through it and no more, so the restored lake's head is the position, and
+its events, positions and hashes through it are the lake's own. The
+position may be 0, which restores the lake at its `lake_created`, and
+otherwise names the last event of an append; a position inside an append
+is refused naming that append's end, and one past the directory's head is
+refused naming the head. Nothing in the backup's directory is written,
+cut or marked, so a run into it afterwards still extends it from its last
+line.
+
+`restore --check --through <POSITION>` verifies the files through the one
+holding the position and no further: the files before that one whole,
+that one through the position's append, and every checkpoint at or below
+the position against the files before it, which the prefix holds whole.
+Damage past the position is not read, so this run neither finds it nor
+refuses the position for it; a check without `--through` still reads the
+whole directory, and is what refuses a backup broken after the state a
+host would go back to.
+
+The prefix is the log as it stood at the position, so a lake whose last
+append started an act of forgetting or removal restores as that lake was:
+mid-act, holding what the act had appended, and the road takes the act up
+at the next writer's open, as it takes up any writer's crash (099); an
+open to read only reports it owed. The head is the position when the
+restore returns; the act appends later, as a write does.
+
+The restored lake is the lake's own, its name inside every hash, so a
+restore to a position is a fork of a lake that went on: it goes into an
+empty directory as every import does, never over the lake it came from,
+and the two are two writers of one name, kept apart as two runs into one
+directory are. The position is what says they part.
+
+The bound is every read the import and a check make of the directory:
+`export::segment_files` lists the prefix's files, the store's `scan` reads
+them and its sealed, forgot and shredded sets are the prefix's, and
+`export::verify` takes the same bound, so `check`, `check_events` and a
+restore read the same prefix and none of them reads a fault past the
+position. The store's `import` takes the position and stops carrying
+there. No method is added to the engine seam, which imports batches and
+knows no position, as this record already held. `lakelands import <DIR>`
+stays bare: an import is the lake an export came from, and going back to
+a state is the restore's.
 
 ### The keys are kept apart
 
@@ -91,12 +142,34 @@ written, the keys put back stay.
 ### A backup older than a forgetting restores refused where its keys are gone
 
 A `forget` destroys a source's keys; its values stay in the log as
-ciphertext. A backup taken before the act holds the log without the
-act. Restored beside the keyring that destroyed the keys, its import
-needs keys the keyring no longer has and is refused `key_missing`: it
-fails closed and brings nothing back. The way out is a backup taken
-after the act, run again into the same directory or a new one: it holds
-the act, and the lake it restores reads the source as forgotten.
+ciphertext. A backup taken before the act, or a position before it, holds
+the log without the act. Restored beside the keyring that destroyed the
+keys, its import needs keys the keyring no longer has and is refused
+`key_missing`: it fails closed and brings nothing back. The way out is a
+backup taken after the act, run again into the same directory or a new
+one, or a position at or past the append that holds the act: it holds the
+act, and the lake it restores reads the source as forgotten.
+
+### A position before a forgetting restores the log, not the keys
+
+A restore carries the log through its position and nothing past it, so a
+position before an act of forgetting restores what the source wrote
+before it and no act: the restored log does not say the source was
+forgotten, because at that position it was not. What is left of the
+source is the keys' question. Where the prefix holds a value sealed under
+a key the act destroyed, the import needs a key the keyring no longer has
+and is refused `key_missing`, as the section above says, and the way out
+is a position at or past the act. Where the prefix holds no such value,
+the restore succeeds, and beside the keyring that destroyed the keys the
+source is still refused a new one (`KeyStore::destroy`): a write that
+would seal a value of it is refused where that value's key is asked for,
+so nothing of it is sealed again, and a write that seals nothing of it is
+not. A `--keys-from` copy taken before the act still holds its keys, and
+is put back only where the root's keyring holds no file for the lake:
+beside the keyring's own file the older copy is refused, because that
+file knows every destroy an older one does not. Restoring it is the
+operator's choice of keys and not the log's, as the keys are kept apart
+above.
 
 ### Before an upgrade, back up into a new directory
 
@@ -137,6 +210,22 @@ A restore that fails closed where the keys are gone keeps that promise
 at the cost of an old backup's use, and a backup taken after the act is
 always at hand.
 
+A host that goes back to a known state knows it by a position, and the
+log is the truth of that state: the prefix through the position is the
+lake as it stood there, so the restore needs no form of its own and no
+engine's help, and the bound is the one `verify` already carries. Damage
+past the position is not the restored lake's and must not stand between a
+host and the state it came from: the prefix verifies whole, and the check
+without a bound is what refuses the directory whole.
+
+A restore cannot carry an act that lies past its position: the positions
+after it would hold events they never held, and the same bytes would fold
+one way in the restored lake and another in the lake they came from, so
+neither log would be the truth (001, 054). The keys therefore answer for
+a source forgotten after the position, as they already answer for a
+backup older than the act: destroyed and refused anew, with the prefix's
+sealed values refused `key_missing` before a lake is made.
+
 ## What it is not
 
 - It is no file copy of a lake directory. A copy of a SQLite directory
@@ -153,9 +242,25 @@ always at hand.
   run across an upgrade.
 - It takes no lock: two runs into one directory at once are the
   operator's to keep apart.
+- A position is no rewind of the backup, and it leaves no mark in it:
+  nothing is cut or written, and a run still extends from the last line.
+- It is no undo of a forgetting: an act past the position is not carried,
+  and a prefix holding values the act's keys sealed is refused
+  `key_missing`.
+- `--through` is the restore's, not the import command's: `lakelands import
+  <DIR>` stays bare, because an import is the lake an export came from.
+- It is no new numbering: the restored lake writes at the position after
+  the one chosen, and its positions and hashes through it are the lake's
+  own.
+- It asserts nothing of the prefix but that the position ends an append:
+  the events before it are what the log holds, and what they mean is the
+  fold's.
 
 ## How it came to be
 
 - A run writing the form a copy of the log writes, and continuing after
   its last whole frame, accepted with 083 (lakelands#1413).
 - Amended by 098 (lakelands#1652), proposed for 0.23.0.
+- Amended on lakelands#1515, proposed for 0.24.0: a restore may stop at a
+  position, restoring the log through it and not the keys; no code lands
+  with it.
