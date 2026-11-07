@@ -15,31 +15,53 @@ does not see it.
 
 `lakelands-api` gains a `strict` module. A `Reader` over
 `serde_json::Value` implements `Deserializer`; its `deserialize_struct`
-refuses a value that is an array, and every value it reads — each
-member of a map, each element of a sequence, each variant's content —
-is read through it. `strict::from_value`, `strict::read` and
-`strict::read_slice` are the entry points beside it.
+refuses a value that is an array, and every value it reads is read
+through it — each member of a map, each element of a sequence, and the
+content of an externally tagged variant. `strict::from_value`,
+`strict::read` and `strict::read_slice` are the entry points beside it.
 
-It cannot see everything. Serde reads two constructs from a buffer of
-its own: the subtree of a `#[serde(flatten)]` member, and the variants
-of an `#[serde(untagged)]` enum. The derive has already turned the
-value into serde's private `Content` before the flattened member or the
-variants are read, and it reads them through serde's own deserializer,
-which takes a struct from a sequence as ever. So every type the
-contract reads through one of those is read by hand instead, the way
-`Search` and `VerbDecl` already are: `Find`, `Get`, `Pattern` and
+It cannot see everything. Serde reads a value from a buffer of its own,
+and the reader over the door's value is never asked, in three cases: the
+subtree of a `#[serde(flatten)]` member; the variants of an
+`#[serde(untagged)]` enum; and the content of a variant of a tagged enum
+(`tag = "…"`, and `tag = "…"` beside `content = "…"`). In each the
+derive has already turned the value into serde's private `Content`
+before the member, the variants or the variant's content are read, and
+it reads them through serde's own deserializer, which takes a struct
+from a sequence as ever. So every type the contract reads through one of
+those is read by hand instead: `Find`, `Get`, `Pattern` and
 `ProposalFilter` (each flattening `ReadAt`), the private `SearchWire`
-(also `ReadAt`), the `Applied` variant of `Outcome` (`SetOff`), and the
-untagged `Condition` and `StatementAnswer`. Each takes a `Value`,
-splits out the members it names, and reads every part through
-`strict`, so a struct beneath the flattened member or the untagged
-variant is refused too. `Search`'s two `serde_json::from_value` calls
-become `strict::from_value`, `SearchWire`'s `as_of` and `valid_at` are
-split out from the members beside them and read as a `ReadAt`, and
-`Declaration` and `GroupKey`, hand-read already, read their parts
-through it as well. `VerbDecl` keeps the wire struct it already reads
-through (`VerbWire`), which takes a map and is read through `strict`
-like any other struct.
+(also `ReadAt`), the untagged `Condition` and `StatementAnswer`, and
+every tagged enum that derives `Deserialize` — `SearchMode`, `Outcome`
+(whose `Applied` also flattens `SetOff`), `ProposedWrite` and `Change`,
+and the tagged enums of error, event, describe, read, location, seam,
+tools, expression and ontology beside them. `Declaration`, hand-read
+already and Serialize-only, is on that list for the reason below. Each
+takes a `Value`, matches the tag where it has one, splits out the
+members it names, and reads every part through `strict`, so a struct
+beneath the flattened member, the untagged variant or the tagged variant
+is refused too. An array where a tagged enum itself is asked for is
+refused naming its tag — `change`, `declare`, `mode`, `outcome`, `write`
+— as a declaration's is, and for the same reason: the members a variant
+takes are known only once the tag that names it is read. `Search`'s two
+`serde_json::from_value` calls become `strict::from_value`, and
+`SearchMode` is read by `Search`'s reader from the mode members it
+already splits out. `SearchWire`'s `as_of` and `valid_at` are split out
+from the members beside them and read as a `ReadAt`, and `Declaration`
+and `GroupKey`, hand-read already, read their parts through it as well.
+
+`Declaration` is also why `Change` is on that list. `Declaration` reads
+a `serde_json::Map` from whatever deserializer it is given, and beneath
+a tag serde has already buffered the value: `Change::Declare`'s
+`Vec<Declaration>` is read from `Content`, so the hand reader is given
+buffered values and its members are a `Value` again — a struct beneath a
+declaration inside a change is read positionally as before, and a
+declaration written as an array there is refused by serde's own words
+("expected a map"), not by this record's sentence. Hand-reading `Change`
+— split `change`, read the rest through `strict` — puts the declaration
+back on the door's value. `VerbDecl` keeps the wire struct it already
+reads through (`VerbWire`), which takes a map and is read through
+`strict` like any other struct.
 
 The rule lives on the contract crate, with the types it reads, and not
 beside each door: a door's part is then one call on the value it
@@ -49,10 +71,13 @@ guarantee — a door that parses to a `Value` and then calls
 implementation is held by a gate over the door crates and the contract:
 it lists every place a text becomes a value or a value becomes a
 contract type, and fails on one that does not go through `strict`; it
-fails on a type in `lakelands-api` whose derive list carries
-`Deserialize` beside a `flatten` or an `untagged` attribute; and an
-entry may be exempt only with an issue number, so the list cannot grow
-silently. A door added later is red until it is listed and reads
+fails on a type in `lakelands-api` whose `Deserialize` is derived
+through a buffer — its serde attributes carry `flatten`, `untagged`,
+`tag = ` or `content = ` — unless its own attributes also name
+`try_from` or `from`, which makes the derive read that other type and
+leaves the buffered attributes to `Serialize` (`VerbDecl` is read
+through `VerbWire`; its `flatten` is `Serialize`'s); and an entry may be
+exempt only with an issue number, so the list cannot grow silently. A door added later is red until it is listed and reads
 through `strict`. Neither the gate nor the reader lands with this
 record; both are owed with the implementation.
 
@@ -106,11 +131,16 @@ A declaration's refusal is its own. `Declaration` is hand-read and asks
 a `serde_json::Map` today (`crates/lakelands-api/src/write.rs`), so
 serde refuses a sequence before the kind is known, with "invalid type:
 sequence, expected a map", and no `takes` exists. Its reader matches the
-value first, refuses an array itself, and fills `takes` from the
-members the declaration's kind takes — `declare` and the members of the
-kind's own reader. The declaration door surfaces it as it surfaces
-every declaration fault, so its sentence names the form at a tool and
-in a bundle alike.
+value first and refuses an array itself. An array carries no `declare`,
+so no kind is known and `takes` cannot be that kind's members: the
+sentence is "write it as an object that takes `declare`", and it is the
+same whatever the declaration would have been. Once the value is an
+object, the kind is read and the rest is that kind's declaration —
+`TypeDecl`, `VerbDecl` and the others — read through `strict` like any
+other struct, so a member it does not take is named by 028 and a
+positional one by this record. The
+declaration door surfaces it as it surfaces every declaration fault, so
+its sentence names the form at a tool and in a bundle alike.
 
 ### Only `deserialize_struct` is refused
 
@@ -124,6 +154,12 @@ A struct with a flattened member is read as a map, so a sequence at its
 own level is not read by `deserialize_struct` at all; serde refuses it
 as a map but cannot name what it would have held. It, and every struct
 beneath it, is hand-read (above) so that the refusal is the same one.
+A tagged enum's variant content is buffered the same way: the struct a
+variant holds is read from `Content`, through `deserialize_struct`, so
+it would take a sequence and the reader would not be asked. So a tagged
+enum is hand-read too, and an array where the enum itself is asked for
+is refused naming its tag, which is the member that would have named
+the variant beneath the array.
 
 ### The rows
 
@@ -137,13 +173,20 @@ its object form still reading:
 - a struct beneath a flattened member: `search` with `"mode": "vector"`
   and `"also": [["a", 1.0]]` is refused naming the vector term's
   `field`, `vector`, `weight` and `model`; `Search`'s `SearchMode` is a
-  flattened member, so it and what is beneath it are read by hand, as
-  `Find`'s, `Get`'s, `Pattern`'s and `ProposalFilter`'s `ReadAt` are;
+  flattened member and a tagged enum, so both buffers are hand-read and
+  what is beneath it is read by hand too, as `Find`'s, `Get`'s,
+  `Pattern`'s and `ProposalFilter`'s `ReadAt` are;
+- a tagged enum: a change written as a sequence is refused naming
+  `change`; a sequence in a change's `declarations` is refused at the
+  declaration, naming `declare`; `Outcome` and `ProposedWrite` are
+  refused in the same way, naming `outcome` and `write`;
 - an untagged answer: an `Outcome` or a `Reply` written as a sequence
   is refused as not the contract's, where an answer is read;
 - a declaration: one given as a sequence is refused as an object whose
-  members are named, naming the members its kind takes, in an argument
-  and on its own door alike;
+  members are named — "write it as an object that takes `declare`" — in
+  an argument and on its own door alike; the declaration's `type` door
+  reads `type` with `plan` and `plan_id` beside it, and a sequence there
+  is refused naming those three;
 - a grant: a principal's entry whose grants are a sequence is refused,
   naming the members a grant takes;
 - the client: an answer with a struct written as a sequence is refused
