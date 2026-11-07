@@ -942,15 +942,17 @@ When fewer answer, a window could win only by being under a third of
 them, so it is counted no further than that, and the other side is the
 two counts added. A whole day is then told by a row of the window, the
 glance finding only the tail outside it: the day walks 2 466, the batch,
-those two rows and the other road's 1 440. When the glance fills, the window is counted to
-`l + 1` and the rows outside it to three times what it counted, so the
-other side still reaches four times the window. That is a glance plus
-four times the window, never more than the five times it was, since a
-window wider than a batch holds more than the glance: the window of
-1 100 in `SERIES_READS_ITS_WINDOW` walks 5 168 where it walked 5 500.
-The choice is the one the whole counts make; a unit test runs ten
-windows of six series sizes through it, to 20 000 rows, where the glance
-fills and a window wins and loses on three times its rows outside it.
+those two rows and the other road's 1 440. When the glance fills, the
+window is counted to `l + 1` and the rows outside it to three times what
+it counted, so the other side still reaches four times the window. That
+is a glance plus four times the window, never more than the five times
+it was, since a window wider than a batch holds more than the glance:
+the window of 1 100 in `SERIES_READS_ITS_WINDOW` walks 5 168 where it
+walked 5 500. The choice is the one the whole counts make; a unit test
+runs thirteen windows of eighteen series sizes through it, to 20 002
+rows, under a ceiling of 100 and above it, where the glance fills and
+where it does not, a window winning and losing on three times its rows
+outside it, four times the window at, one and two past the series.
 `SERIES_READS_ITS_WINDOW` holds the whole of a text of 60 000 told in a
 row or two. `WindowSides`, the engine trait and the log are as they
 were. Under a `limits.window_keys` below the glance, the glance can walk
