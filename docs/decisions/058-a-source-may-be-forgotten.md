@@ -69,7 +69,15 @@ Also refused: `erasable` on a field only authors or the fold write, whose
 values the key of no source seals, and on a relation's field. A field
 once erasable is never declared without it: a source's later values would
 enter the log in plaintext, and a declaration cannot unseal what is
-sealed (lakelands#1042).
+sealed (lakelands#1042). One declaration may drop it: the one that makes
+the field a relation's field. A relation links by the value, so the
+field cannot stay erasable, and refusing the drop would leave a type
+that holds the field sealed unable ever to link by it. The drop is the
+declarer's choice, made in that declaration: the values sealed before
+stay sealed and read in plaintext, and the source's later values enter
+the log in plaintext, as any field's that is not erasable. From then on
+the field is not erasable, so a forget neither counts nor erases its
+values.
 
 A type whose key holds personal data is given a surrogate key. `hosting.md` says so, and also asks for **opaque source ids**: the source id is plaintext in every event's envelope, and in `source_forgotten` itself.
 
@@ -254,7 +262,7 @@ What it gives up is plaintext in the log for the fields that opt in. Those field
 
 - **It is not a door.** An agent cannot forget a source. The act is the host's, beside `purge_source`, `rebuild` and `age`.
 - **It is not encryption at rest.** The projection holds plaintext, and the engine's own encryption, or the disk's, is still the way to protect it at rest (020).
-- **It does not reach** data written before a field was erasable, copies outside the lake (backups, archives, a host's own copies, an export made before), or values a person authored.
+- **It does not reach** data written before a field was erasable, or after a relation's declaration took the mark, copies outside the lake (backups, archives, a host's own copies, an export made before), or values a person authored.
 - **It does not erase keys, types, positions or source ids**, which stay plaintext by design.
 - **It is not a signature, and not access control.** Grants and masks are unchanged.
 
@@ -265,3 +273,4 @@ What it gives up is plaintext in the log for the fields that opt in. Those field
 - The act refolds only the records its sources wrote where nothing else reads them, and rebuilds otherwise, saying why (lakelands#1120). The rebuild under the writer's lock grew with the lake, not with the source: about 32 s on SQLite and 129 s on PostgreSQL at 100 000 records to erase what one source of a hundred held. The fold stays one: the refold runs it over the records the source wrote, the rebuild over every record, and the suite compares them read for read. A host that wants the reference way sets `limits.forget_rebuild`.
 - Amended by 099 (lakelands#1652), proposed for 0.23.0.
 - Amended by 100 (lakelands#1640), proposed for 0.23.0.
+- A field that was erasable may be declared without it in the declaration that makes it a relation's field, where every such drop was refused: a type whose sealed field a host later links by could not link at all.

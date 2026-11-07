@@ -552,7 +552,10 @@ fn initial(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) 
 
 /// `erasable` stands on a type's own field that a source writes and that
 /// is neither a key nor names a record, and a field once erasable stays
-/// so (`docs/decisions/058-a-source-may-be-forgotten.md`).
+/// so (`docs/decisions/058-a-source-may-be-forgotten.md`) unless the
+/// declaration makes it a relation's field: a relation links by the
+/// plaintext, so its later values enter the log plain and the ones sealed
+/// stay sealed.
 fn erasable(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
     let was = |t: &TypeDecl| {
         let now = o.types.get(&t.name).map(|c| &c.decl.fields);
@@ -560,7 +563,7 @@ fn erasable(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>)
     };
     let names = |t: &TypeDecl| t.relations.iter().any(|r| r.via.as_ref() == Some(&f.name));
     let why = match of {
-        Some(t) if !f.erasable && was(t) => Case::ErasableDropped,
+        Some(t) if !f.erasable && was(t) && !names(t) => Case::ErasableDropped,
         _ if !f.erasable => return Ok(()),
         None => Case::ErasableNotOfType,
         Some(_) if !matches!(f.authority, Authority::Source | Authority::Shared) => {

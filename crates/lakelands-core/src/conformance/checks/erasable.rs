@@ -29,7 +29,7 @@ check!(
 
 check!(
     ERASABLE_DECLARED = erasable_is_declared_on_a_sources_own_field_alone_and_stays,
-    "058: `erasable` is refused on a key field, on a field that names a record, on a field only authors or the fold write, and on a relation's field; a field that was erasable is not declared without it; `describe` shows it",
+    "058: `erasable` is refused on a key field, on a field that names a record, on a field only authors or the fold write, and on a relation's field; a field that was erasable is not declared without it, unless that declaration makes it a relation's field; `describe` shows it",
     reopens
 );
 
@@ -569,7 +569,7 @@ async fn erasable_is_declared_on_a_sources_own_field_alone_and_stays(
     let what = "declaring `name` without `erasable`";
     refused_like(
         what,
-        l.try_declare(dropped).await,
+        l.try_declare(dropped.clone()).await,
         &json!({"code": "erasable_dropped"}),
     )?;
     let d = l.describe_type("person").await?;
@@ -582,6 +582,18 @@ async fn erasable_is_declared_on_a_sources_own_field_alone_and_stays(
     ensure!(
         shown == ["name"],
         "`describe` shows `name` alone as erasable; it shows {shown:?}"
+    );
+    dropped.relations = vec![RelationDecl {
+        cardinality: Cardinality::ManyToOne,
+        via: Some("name".into()),
+        ..RelationDecl::to("named", "person")
+    }];
+    l.declare(dropped).await?;
+    let d = l.describe_type("person").await?;
+    ensure!(
+        d.fields.iter().all(|f| !f.erasable),
+        "a relation by `name` takes its mark; `describe` shows {:?}",
+        d.fields
     );
     Ok(())
 }
