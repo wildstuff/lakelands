@@ -80,7 +80,8 @@ at its `made` position, as the purge and forgetting read it (039).
 A record another hand also wrote stays, with that hand's values.
 Co-ownership is 039's: an authored value or another source's co-owns; a
 derived value, the lake's own, and a field declaring `initial` on a
-record the source made do not.
+record the source made do not, nor does a value of a field declaring
+`state_move` whose last write was the type's move (114).
 
 ### Every removed value is redacted; where the keys allow, it is shredded
 
@@ -518,3 +519,5 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
   lakelands#1528).
 - Amended by 099 (lakelands#1652), proposed for 0.23.0.
 - Amended by 100 (lakelands#1640), proposed for 0.23.0.
+- Amended by 114 (lakelands#1630), proposed for 0.24.0: a value a state
+  move wrote does not keep a record, as an `initial` value does not.
