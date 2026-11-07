@@ -1884,9 +1884,10 @@ async fn a_drop_stopped_between_chunks_is_finished_by_the_next_open() {
             "{on:?}: the open never finished the drop; `n` is still dropping"
         );
         // A writer whose drop is whole owes none: a second open finds no
-        // mark and starts nothing.
+        // mark and starts nothing. The lake just dropped lets its lease
+        // go as its last handle goes, so the open waits for it.
         drop(lake);
-        let lake = place.open(OpenMode::Write).await;
+        let lake = place.open_when_free(OpenMode::Write).await;
         let view = lake.engine.view(None).expect("a view");
         let chosen = view.chosen(&"row".into()).expect("the chosen");
         assert!(
