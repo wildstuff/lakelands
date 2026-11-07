@@ -102,9 +102,9 @@ host would go back to.
 The prefix is the log as it stood at the position, so a lake whose last
 append started an act of forgetting or removal restores as that lake was:
 mid-act, holding what the act had appended, and the road takes the act up
-at the lake's next open, as it takes up any writer's crash (099). The
-head is the position when the restore returns; the act appends later, as
-a write does.
+at the next writer's open, as it takes up any writer's crash (099); an
+open to read only reports it owed. The head is the position when the
+restore returns; the act appends later, as a write does.
 
 The restored lake is the lake's own, its name inside every hash, so a
 restore to a position is a fork of a lake that went on: it goes into an
@@ -112,12 +112,16 @@ empty directory as every import does, never over the lake it came from,
 and the two are two writers of one name, kept apart as two runs into one
 directory are. The position is what says they part.
 
-The bound is the store's `import`'s: it takes the position and stops
-carrying there, and `export::verify` takes the same bound, so a check and
-a restore read the same prefix. No method is added to the engine seam,
-which imports batches and knows no position, as this record already held.
-`lakelands import <DIR>` stays bare: an import is the lake an export came
-from, and going back to a state is the restore's.
+The bound is every read the import and a check make of the directory:
+`export::segment_files` lists the prefix's files, the store's `scan` reads
+them and its sealed, forgot and shredded sets are the prefix's, and
+`export::verify` takes the same bound, so `check`, `check_events` and a
+restore read the same prefix and none of them reads a fault past the
+position. The store's `import` takes the position and stops carrying
+there. No method is added to the engine seam, which imports batches and
+knows no position, as this record already held. `lakelands import <DIR>`
+stays bare: an import is the lake an export came from, and going back to
+a state is the restore's.
 
 ### The keys are kept apart
 
@@ -157,11 +161,15 @@ a key the act destroyed, the import needs a key the keyring no longer has
 and is refused `key_missing`, as the section above says, and the way out
 is a position at or past the act. Where the prefix holds no such value,
 the restore succeeds, and beside the keyring that destroyed the keys the
-source is still refused a new one (`KeyStore::destroy`): a write from it
-into the restored lake is refused, so nothing of it is sealed again. A
-`--keys-from` copy taken before the act still holds its keys, which is
-the operator's choice of keys and not the log's, as the keys are kept
-apart above.
+source is still refused a new one (`KeyStore::destroy`): a write that
+would seal a value of it is refused where that value's key is asked for,
+so nothing of it is sealed again, and a write that seals nothing of it is
+not. A `--keys-from` copy taken before the act still holds its keys, and
+is put back only where the root's keyring holds no file for the lake:
+beside the keyring's own file the older copy is refused, because that
+file knows every destroy an older one does not. Restoring it is the
+operator's choice of keys and not the log's, as the keys are kept apart
+above.
 
 ### Before an upgrade, back up into a new directory
 
