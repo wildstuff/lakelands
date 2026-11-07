@@ -1080,3 +1080,49 @@ fn a_types_order_fields_never_name_a_series_pair() {
     }
     assert!(sorted_fields(&TypeName::from("book"), &decl, Some(&setting)).is_empty());
 }
+
+#[test]
+fn the_key_before_a_key_is_the_greatest_below_it() {
+    assert_eq!(key_before(&[], 4), None);
+    assert_eq!(key_before(&[5, 0], 4), Some(vec![5]));
+    assert_eq!(key_before(&[5, 3], 4), Some(vec![5, 2, 0xFF, 0xFF]));
+    assert_eq!(key_before(&[5, 3, 1, 1, 1], 4), Some(vec![5, 3, 1, 1, 0]));
+}
+
+/// Over one series of `n` keys `[1, k]` (`k` in two bytes) and its tail, every
+/// window `lo..=hi` is chosen as the exact counts choose it: the window's road
+/// when four times its rows fit inside the series, at, below or past the
+/// glance's 768 rows outside.
+#[test]
+fn the_series_sides_choose_as_the_whole_counts_do() {
+    let seek = SeriesSeek {
+        field: FieldName::from("at\u{1F}meter"),
+        series: vec![vec![7; 8]],
+    };
+    let key = |k: u16| [&[1][..], &k.to_be_bytes()].concat();
+    for n in [0u16, 3, 40, 200, 2_000, 20_000] {
+        let mut keys: Vec<Vec<u8>> = (0..n).map(|k| prefixed(&seek.series[0], &key(k))).collect();
+        keys.push(seek.tail(0));
+        let los = [0, 0, 10, n / 2, n, 1, 100, 0, 500, 0];
+        let his = [0, u16::MAX, 19, n, u16::MAX, 2, 199, 299, 1_499, 4_999];
+        for (lo, hi) in los.into_iter().zip(his) {
+            let window = Window {
+                field: seek.field.clone(),
+                lo: key(lo),
+                hi: key(hi),
+            };
+            let held = keys
+                .iter()
+                .filter(|k| seek.bounds(0, Some(&window)).holds(k))
+                .count() as u64;
+            let wins = held * WINDOW_RATIO <= keys.len() as u64;
+            let chosen = takes_window(1 << 20, |l| {
+                series_window_sides(&seek, &window, l, |_, w: &Window, cap| {
+                    Ok::<_, ()>(keys.iter().filter(|k| w.holds(k)).count().min(cap as usize) as u64)
+                })
+                .map(Some)
+            });
+            assert_eq!(chosen, Ok(Some(wins)), "{n} keys, window {lo}..={hi}");
+        }
+    }
+}

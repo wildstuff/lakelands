@@ -2132,41 +2132,110 @@ pub fn series_window_keys<E>(
     })
 }
 
-/// The two sides of a pair's window: `inside`, its rows counted a bound
-/// `l + 1`, and `other`, the pair's whole holding of the named series
-/// counted a bound four times `inside`, the series one after another and
-/// every series' tail included. `count(series, window)` counts one
-/// series' rows in a window.
+/// The two sides of a pair's window, counted no further than the choice
+/// needs: `inside`, the window's rows, and `other`, the pair's whole
+/// holding of the named series, every series' tail included. The rows of
+/// the series outside the window are glanced at first, to a bound of
+/// [`WINDOW_BATCH`] less a quarter: when they are fewer, the window would
+/// have to be under a third of them to be the smaller side, so it is
+/// counted no further than that and `other` is the two counts added. A
+/// whole series in its window is told in a row or two this way instead of
+/// counted twice over. When the glance runs out, the window is counted to
+/// `l + 1` and the rows outside it to three times `inside`, so `other`
+/// reaches four times `inside` as the choice asks
+/// (`docs/decisions/097-a-read-in-a-window-walks-its-window.md` §The
+/// smaller side; lakelands#1780). `count(series, window, cap)` counts one
+/// series' rows in an inclusive window, to `cap`.
 pub fn series_window_sides<E>(
     seek: &SeriesSeek,
     window: &Window,
     l: u64,
     mut count: impl FnMut(usize, &Window, u64) -> Result<u64, E>,
 ) -> Result<WindowSides, E> {
-    let mut inside = 0;
-    for i in 0..seek.series.len() {
-        let left = l.saturating_add(1).saturating_sub(inside);
-        if left == 0 {
-            break;
+    let series = seek.series.len();
+    let mut walked = 0;
+    // Each series' rows in the window, then the rows below and above it,
+    // counted in that order until `cap` is reached.
+    let mut sum = |ranges: &dyn Fn(usize) -> Vec<Window>, cap: u64| -> Result<u64, E> {
+        let mut n = 0;
+        'all: for i in 0..series {
+            for range in ranges(i) {
+                let left = cap.saturating_sub(n);
+                if left == 0 {
+                    break 'all;
+                }
+                n += count(i, &range, left)?.min(left);
+            }
         }
-        inside += count(i, &seek.bounds(i, Some(window)), left)?.min(left);
-    }
-    let whole = inside <= l;
-    let cap = inside.saturating_mul(WINDOW_RATIO);
-    let mut other = 0;
-    for i in 0..seek.series.len() {
-        let left = cap.saturating_sub(other);
-        if left == 0 {
-            break;
-        }
-        other += count(i, &seek.holders(i), left)?.min(left);
-    }
-    count_walk((inside + other) as usize);
+        walked += n;
+        Ok(n)
+    };
+    let inside_of = |i: usize| vec![seek.bounds(i, Some(window))];
+    let outside_of = |i: usize| outside(seek, i, window);
+    let glance = (WINDOW_RATIO - 1) * u64::from(WINDOW_BATCH) / WINDOW_RATIO;
+    let out = sum(&outside_of, glance)?;
+    let (inside, whole, out) = if out < glance {
+        let cap = (out / (WINDOW_RATIO - 1) + 1).min(l.saturating_add(1));
+        let inside = sum(&inside_of, cap)?;
+        (inside, inside < cap, out)
+    } else {
+        let inside = sum(&inside_of, l.saturating_add(1))?;
+        let cap = inside.saturating_mul(WINDOW_RATIO - 1);
+        let out = if cap <= glance {
+            out.min(cap)
+        } else {
+            sum(&outside_of, cap)?
+        };
+        (inside, inside <= l, out)
+    };
+    count_walk(walked as usize);
     Ok(WindowSides {
         inside,
         whole,
-        other,
+        other: inside + out,
     })
+}
+
+/// One series' rows outside `window`: those below its least key and
+/// those above its greatest, the tail among them; a range with no key in
+/// it is left out.
+fn outside(seek: &SeriesSeek, i: usize, window: &Window) -> Vec<Window> {
+    let all = seek.holders(i);
+    let inner = seek.bounds(i, Some(window));
+    let mut ranges = Vec::with_capacity(2);
+    let prefix = &seek.series[i];
+    if inner.lo.len() > prefix.len()
+        && let Some(hi) = key_before(&inner.lo, prefix.len() + ORDER_KEY_BYTES)
+    {
+        ranges.push(Window {
+            field: all.field.clone(),
+            lo: all.lo.clone(),
+            hi,
+        });
+    }
+    let mut lo = inner.hi;
+    lo.push(0x00);
+    if lo <= all.hi {
+        ranges.push(Window {
+            field: all.field,
+            lo,
+            hi: all.hi,
+        });
+    }
+    ranges
+}
+
+/// The greatest key below `key` among keys no longer than `max` bytes:
+/// `key` without its last byte where that byte is zero, or with it one
+/// less and `0xFF` after it to `max`. `None` for the empty key.
+pub(crate) fn key_before(key: &[u8], max: usize) -> Option<Vec<u8>> {
+    let (&last, head) = key.split_last()?;
+    let mut out = head.to_vec();
+    if last > 0 {
+        out.push(last - 1);
+        out.resize(max.max(out.len()), 0xFF);
+    }
+    Some(out)
 }
 
 /// The records the edge walks on this thread were handed to find a
