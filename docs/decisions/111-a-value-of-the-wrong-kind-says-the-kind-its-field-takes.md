@@ -8,8 +8,8 @@ the field the value was written to.
 The case, its sentence and its code are the catalogue's already. This
 record states the rule the tree keeps and pins it for every kind, on
 every engine. Whether the answer also carries the value the caller gave
-is left open on lakelands#1644; this record neither adds it nor closes
-the door on it.
+is left open on lakelands#1644; this record adds nothing to the answer
+and rules out one shape of it, a value a function computed.
 
 ## What is decided
 
@@ -114,14 +114,6 @@ carried where the caller gave it and never where a function computed it —
 `read_output` (`crates/lakelands-store/src/backed.rs`) runs the same
 check on a function's output, which is not the value the caller gave.
 
-The field's metadata is not a second door on the question. `Sight::visible`
-tells a field's meta only to a reader who may read the field
-(`crates/lakelands-core/src/rights.rs`), and `Sight::told` drops the meta
-of every field a hiding lowers (`crates/lakelands-core/src/sight.rs`), so
-a text kept in `FieldMeta.error` is not told to one who may not read the
-field. Whatever the issue decides, the choice is what the answer says, not
-who may read the log.
-
 ### The contract changes not at all on the wire; the specification gains the guarantee
 
 No case is added, renamed or retired, no sentence is reworded, and no
@@ -173,51 +165,6 @@ and `refused_in` is the hole described above. `Case` is in the prelude;
 `Shape` is not, so the rows add one import line to
 `crates/lakelands-core/src/conformance/prelude.rs`.
 
-### The build plan
-
-| Step | What it does | Files | Product | Spec |
-|---|---|---|---|---|
-| P1 | the two rows, and the `Shape` re-export | `core/src/conformance/checks/values.rs`, `core/src/conformance/prelude.rs` | 0 | 60 |
-| **Sum** | | | **0** | **60** |
-| **×1.35** | | | **0** | **81** |
-
-Measured at the branch's base (`scripts/gates/core-size.sh`): product
-114 998 of 115 000 (2 free), specification 202 995 of 203 000 (5 free).
-Product does not move: both files are specification, and no product line
-changes. The specification needs 60 lines and has 5 free.
-
-**Cut first, with what each costs:**
-
-1. The `geo` half of the second row (≈ 25 spec lines): cut it and `geo`
-   keeps today's assertion, "a refusal, of some kind", and no row says
-   that no geo value answers `value_shape`. The room is not yielded:
-   60 − 25 leaves 30 over the 5 free.
-2. The `json` half (≈ 7): cut it and no row says a `json` field takes
-   every form. The room is not yielded either.
-3. The nine-kind table (≈ 30): not to cut. The issue's Done-when is met
-   by no part of this change without it, and it is the one place where
-   the answer by kind is said.
-
-The cut does not yield the room, so the build takes a budget row. Under
-`docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md` it adds
-to `docs/budgets.md` one row, dated the day of its own pull request:
-budget `specification`, 203 000 → 203 500, issue lakelands#1644, reason
-"A check that pins the kind and the form a wrong-kind value is refused
-with". It is decisive under that record's first condition — a check that
-pins a rule of a refusal's kind — cutting came first and is named above,
-and the need, 60 lines, is rounded up to the next 500.
-
-### Open for the operator
-
-- Whether `value_shape` carries the value the caller gave, and in which
-  shape. It is asked on lakelands#1644 with the two candidate answers:
-  the sentence as it is with no value, or an optional segment that
-  renders it where the caller gave one. If the answer is the second,
-  it is a further step with product lines of its own, chosen after this
-  one.
-- The specification budget row above needs a maintainer's word on
-  lakelands#1644.
-
 ## Why
 
 A host renders a refusal in its user's language from the case, and a
@@ -237,8 +184,9 @@ leaving the value's place to the operator.
 
 - It is not a new case, a new parameter or a reworded sentence, and
   nothing on the wire moves.
-- It is not a decision on the value given: the record neither adds it nor
-  rules it out, and the question is on the issue.
+- It is not a decision on the value given: that question is on the
+  issue. The one shape it rules out is a value a function computed,
+  which is not the value the caller gave.
 - It is not a fix for the value-carrying cases (`not_decimal`,
   `not_date_time`, `not_date`). Dropping `value` from one is not an
   optional-member change: a shipped code keeps its meaning, so it would
