@@ -2228,7 +2228,7 @@ fn outside(seek: &SeriesSeek, i: usize, window: &Window) -> Vec<Window> {
 /// The greatest key below `key` among keys no longer than `max` bytes:
 /// `key` without its last byte where that byte is zero, or with it one
 /// less and `0xFF` after it to `max`. `None` for the empty key.
-pub fn key_before(key: &[u8], max: usize) -> Option<Vec<u8>> {
+pub(crate) fn key_before(key: &[u8], max: usize) -> Option<Vec<u8>> {
     let (&last, head) = key.split_last()?;
     let mut out = head.to_vec();
     if last > 0 {

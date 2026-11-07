@@ -355,9 +355,8 @@ fields, at the head only, as `chosen` is. A taken-back pair leaves the list.
 - `NUMBER_LOOKUP_READS_ITS_HOLDERS`: `=`, `equal`, `equal_any`, `in`. As built in steps 5 and 6: 60 000 records, 600 of them holding the asked number, read by about 600 rows on every engine; a put moving one holder off it and a drop of another take both out of the set and the put into the other's.
 - `NUMBER_LOOKUP_ONE_TOKEN`: `= 7`, `= 7.00`, `= '7'` find one set, `-0` and `0` are one, and a value that reads as no number keeps no row and is found by its own text on the old road. As built: a decimal field, a 40-digit text held in it and found by `=`, and an `in` with such a value taking the old road.
 - `NUMBER_OUTSIDE_THE_SETTING`: reads as today. As built: before the setting, during it, and after it is retired, the same answers.
-- `SERIES_READS_ITS_WINDOW`: every road, a series under and over `FEW_HOLDERS`, by a text and by a number. As built in steps 9 and 10: 600 000 records over 5 000 texts, one holding a tenth; an aggregate, a count and a page of 1 000 walk and read 1 000, either direction, open bounds walking one more, the same page live-only walking what it reads and no batch more, a text of 600 walking and reading its window, a window of 1 100 chosen beside its holding, and a number series sought by its token.
+- `SERIES_READS_ITS_WINDOW`: every road, a series under and over `FEW_HOLDERS`, by a text and by a number. As built in steps 9 and 10: 600 000 records over 5 000 texts, one holding a tenth; an aggregate, a count and a page of 1 000 walk and read 1 000, either direction, open bounds walking one more, the same page live-only walking what it reads and no batch more, a text of 600 walking and reading its window, a window of 1 100 chosen beside its holding, a window holding the whole text told in a row or two (lakelands#1780), and a number series sought by its token.
 - `SERIES_NO_VALUE_LAST`: records with no value come last in a page, ascending and descending, from the series alone. As built in steps 9 and 10: the page walks the text's whole holding, the records without a value among them and after them, with a day bound on an instant field and a text holding five beside it.
-- `SERIES_WINDOW_WALKS_ABOUT_ITS_ROWS` (lakelands#1780): two series of 1 440 one-minute readings; 24 hourly aggregate steps of one and its whole day walk at most twice the rows they are handed, the day alone at most twice its own, and each answers what a type without the series index answers.
 - `SERIES_IN_MERGES`: `in` over 50 series walks about the rows read plus a seek a series. As built in step 10: a page of 1 000 over 50 texts of 200 walks 1 050 and reads 1 000; a window of 500 walks and reads 500; a window of 7 000 walks and reads 7 000 across texts; and 10 texts of uneven holdings, live-only, a page and its continuation through the merge, either direction, walk no more than a batch ahead of their page.
 - `SERIES_PAIR_WITHOUT_ORDER_INDEX`: a type that writes only `series_index.<type>` builds and keeps its pair, and its page, its window, a count and an aggregate read through it, with no `sort_index.<type>` of its own.
 - `SERIES_SETTING_BUILDS`: before `Keep` the old road, after it the new, one answer. As built in step 8: a build beside reads, the pair told `building` then `kept`, every answer unchanged.
@@ -889,7 +888,9 @@ engine hands them its own index.
   window's 1 000, where the text's 60 000 is neither; a window of 1 100
   is chosen beside the holding, the choice walking the window's 1 100
   and four times them of the holding (5 500 together; 5 168 since
-  lakelands#1780, below) and reading no record, and the walk then reading its 1 100 across two batches; a
+  lakelands#1780, below) and reading no record, and the walk then
+  reading its 1 100 across two batches; a window holding the whole of
+  the text is no smaller side, told in a row or two (lakelands#1780); a
   number series is sought by its token. `SERIES_NO_VALUE_LAST`: a page
   over a text in either direction walks the text's whole holding, the
   records without a value among them and after it, and answers one
@@ -939,19 +940,23 @@ window first: below its least key and above its greatest, the tail
 among them, to a glance of 768 rows (`WINDOW_BATCH` less a quarter).
 When fewer answer, a window could win only by being under a third of
 them, so it is counted no further than that, and the other side is the
-two counts added. A whole day is then told by one row of the window, the
-glance finding none outside it: the day walks 2 466, the batch, that row and
-the other road's 1 440. When the glance fills, the window is counted to
+two counts added. A whole day is then told by a row of the window, the
+glance finding only the tail outside it: the day walks 2 466, the batch,
+those two rows and the other road's 1 440. When the glance fills, the window is counted to
 `l + 1` and the rows outside it to three times what it counted, so the
 other side still reaches four times the window. That is a glance plus
 four times the window, never more than the five times it was, since a
 window wider than a batch holds more than the glance: the window of
 1 100 in `SERIES_READS_ITS_WINDOW` walks 5 168 where it walked 5 500.
-The choice is the one the whole counts make; a unit test runs every
-window of four series sizes through it. `WindowSides`, the engine trait
-and the log are as they were, so the patch is 0.23.1's. A window that
-wins still pays its count; telling it with fewer rows asks for a count
-the trait does not have, and waits.
+The choice is the one the whole counts make; a unit test runs ten
+windows of six series sizes through it, to 20 000 rows, where the glance
+fills and a window wins and loses on three times its rows outside it.
+`SERIES_READS_ITS_WINDOW` holds the whole of a text of 60 000 told in a
+row or two. `WindowSides`, the engine trait and the log are as they
+were. Under a `limits.window_keys` below the glance, the glance can walk
+more rows than the old count did; the choice and the answers are the
+same. A window that wins still pays its count; telling it with fewer
+rows asks for a count the trait does not have, and waits.
 
 ### What the operator decided
 

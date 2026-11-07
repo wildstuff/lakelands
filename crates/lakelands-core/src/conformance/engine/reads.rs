@@ -265,6 +265,13 @@ fn declare(json: Value) -> Declaration {
     serde_json::from_value(json).expect("a declaration in the check is well-formed")
 }
 
+fn type_of(decl: &Declaration) -> &TypeDecl {
+    let Declaration::Type(t) = decl else {
+        unreachable!("the check declares a type")
+    };
+    t
+}
+
 /// The `sort_index.t` setting asking for `fields`, as folded at `at`.
 fn sort_setting(fields: Value, at: u64) -> StoredRecord {
     record(
@@ -2450,9 +2457,7 @@ fn edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_posit
         "relations": [{"name": "approved_by", "target": "partner",
                        "fields": [{"name": "since", "type": {"kind": "date_time"}}]}]
     }));
-    let Declaration::Type(t) = &invoice else {
-        unreachable!("declared as a type")
-    };
+    let t = type_of(&invoice);
     let lt = crate::links::link_types_of(t).remove(0);
     let link = |from: &str, to: &str, since: &str, at: u64| {
         let key = crate::links::link_key(&from.into(), &to.into());
@@ -2698,9 +2703,7 @@ fn walk_field_orders(
     let by = |field: &str, dir| order(field, OrderBy::Value, dir);
     let filters =
         ["w != 'b'", "w = 'a'"].map(|f| crate::expr::parse(f).expect("the check's filter parses"));
-    let Declaration::Type(decl) = decl else {
-        unreachable!("the check declares types")
-    };
+    let decl = type_of(decl);
     // A record first put after `pos` is not among its states there.
     let states: Vec<StoredRecord> = (0..n)
         .map(|i| state(i, pos))
@@ -2795,9 +2798,7 @@ fn sorted_page_reads(engine: &dyn LakeEngine, name: &str, kept: bool, from: u64)
     }
     let decl: Declaration = serde_json::from_value(declared)
         .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     // Every record holds its own `v`, told apart in its first bytes but
     // longer than the index keeps, so each is a run of one that a page
     // continued after it starts from.
@@ -2925,9 +2926,7 @@ fn a_page_at_an_earlier_position_reads_the_head_index_and_the_keys_changed_since
         "declare": "type", "name": "t",
         "fields": [{"name": "v", "type": {"kind": "text"}}]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let v = |n: u64| json!({"v": format!("v{n:04} {}", "past the cut ".repeat(3))});
     let states: Vec<StoredRecord> = (0..N)
         .map(|i| record("t", &format!("k{i:04}"), v((i * 7919) % N), 1))
@@ -3024,9 +3023,7 @@ fn a_records_edges_at_the_head_read_its_links_not_the_type(engine: &dyn LakeEngi
             {"name": "billed_by", "target": "partner", "via": "billed"}
         ]
     }));
-    let Declaration::Type(t) = &invoice else {
-        unreachable!("declared as a type")
-    };
+    let t = type_of(&invoice);
     let lt = crate::links::link_types_of(t).remove(0);
     let partner_of = |i: u64| format!("p{:03}", i % 250);
     fold(engine, 1, |p| {
@@ -3440,9 +3437,7 @@ fn a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view(
             {"name": "w", "type": {"kind": "text"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let mut states: Vec<StoredRecord> = (0..N)
         .map(|i| {
             record(
@@ -3702,9 +3697,7 @@ fn a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept(
         "declare": "type", "name": "t",
         "fields": [{"name": "v", "type": {"kind": "text"}}]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let v = |n: u64| json!({"v": format!("v{n:04}")});
     let mut states: Vec<StoredRecord> = (0..N)
         .map(|i| record("t", &format!("k{i:04}"), v((i * 7919) % N), 1))
@@ -3921,9 +3914,7 @@ fn rows_walked_counts_the_index_rows_each_road_walks(engine: &dyn LakeEngine) ->
             {"name": "rare", "type": {"kind": "text"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     // Every record holds "many", more than `FEW_HOLDERS`; the last five
     // hold "rare" too, so a page under "rare" is the few road. `v` comes in
     // runs of three, so the tenth row both ways ends in a run: a walk down
@@ -4032,9 +4023,7 @@ fn a_page_bounded_on_its_order_field_reads_its_rows(engine: &dyn LakeEngine) -> 
             {"name": "rare", "type": {"kind": "text"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let state = |i: u64| {
         let rare = if [1002, 1005, 1202, 1500].contains(&(i as i64)) {
             "rare"
@@ -4368,9 +4357,7 @@ fn a_window_holds_every_value_the_comparison_admits(engine: &dyn LakeEngine) -> 
         .collect();
     let reads_in =
         |name: &str, filter: &str, dir: Direction, what: &str| -> Result<Vec<String>, Failure> {
-            let Declaration::Type(t) = &decls[name] else {
-                unreachable!("the check declares a type")
-            };
+            let t = type_of(&decls[name]);
             let ty = TypeName::from(name);
             let states: Vec<StoredRecord> = (records.iter())
                 .filter(|r| r.ty.as_str() == name)
@@ -4477,9 +4464,7 @@ fn a_bound_of_one_rank_alone_narrows_the_window(engine: &dyn LakeEngine) -> Held
             {"name": "txt", "type": {"kind": "text"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let mut states: Vec<StoredRecord> = (0..50)
         .map(|i| {
             record(
@@ -4636,9 +4621,7 @@ fn a_window_takes_its_road_only_when_it_is_the_smaller_side(engine: &dyn LakeEng
             {"name": "rare", "type": {"kind": "text"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let states: Vec<StoredRecord> = (0..N)
         .map(|i| {
             let rare = if [1002, 1005, 1202, 1500].contains(&(i as i64)) {
@@ -4814,9 +4797,7 @@ fn a_window_read_admits_every_record_it_reads_as_a_page_does(engine: &dyn LakeEn
             {"name": "from", "type": {"kind": "date_time"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let states: Vec<StoredRecord> = (0..N)
         .map(|i| {
             let from = if i % 4 == 0 {
@@ -4990,9 +4971,7 @@ fn a_window_walk_answers_each_key_once_in_its_indexs_order(engine: &dyn LakeEngi
         "declare": "type", "name": "t",
         "fields": [{"name": "v", "type": {"kind": "number"}}]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     // `v` is a permutation of 0..300, so the index's order and the keys'
     // order hold the same rows in different places.
     let states: Vec<StoredRecord> = (0..N)
@@ -5192,9 +5171,7 @@ fn a_number_read_under_the_lookup_is_handed_its_holders(engine: &dyn LakeEngine)
         "declare": "type", "name": "t",
         "fields": [{"name": "v", "type": {"kind": "number"}}]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let states: Vec<StoredRecord> = (0..N)
         .map(|i| {
             let v = if i < HOLD { 7 } else { i };
@@ -5308,9 +5285,7 @@ fn a_number_field_is_looked_up_by_one_token(engine: &dyn LakeEngine) -> Held {
         "declare": "type", "name": "t",
         "fields": [{"name": "d", "type": {"kind": "decimal"}}]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     // Forty digits: a decimal no token reads, held as a text (097 §A
     // number's exact lookup).
     const LONG: &str = "1234567890123456789012345678901234567890";
@@ -5393,9 +5368,7 @@ fn a_number_field_outside_the_setting_reads_as_today(engine: &dyn LakeEngine) ->
             {"name": "w", "type": {"kind": "text"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let states: Vec<StoredRecord> = (0..30)
         .map(|i| {
             record(
@@ -5515,9 +5488,7 @@ fn a_read_naming_a_series_seeks_the_pairs_window(engine: &dyn LakeEngine) -> Hel
             {"name": "at", "type": {"kind": "number"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let mut states: Vec<StoredRecord> = Vec::new();
     for i in 0..BIG {
         let mut r = record("t", &format!("x{i:05}"), json!({"sym": "x", "at": i}), 1);
@@ -5734,6 +5705,19 @@ fn a_read_naming_a_series_seeks_the_pairs_window(engine: &dyn LakeEngine) -> Hel
         keys_read.len(),
         records.len()
     );
+    // The whole of `x` in a window is told in a row or two (lakelands#1780).
+    let whole = crate::expr::parse("sym = 'x' and at >= 0 and at <= 59999").expect("it parses");
+    let win = core_engines::window(&whole, &at, &StorageKind::Number).expect("`at` opens it");
+    let all = scan_with(|s| s.filter = Some(whole));
+    let before = core_engines::rows_walked();
+    let sides = |l| head.window_sides(&ty, &win, &all, l);
+    let taken = core_engines::takes_window(u64::MAX, sides).must("the pair's two sides")?;
+    let walked = core_engines::rows_walked() - before;
+    ensure!(
+        taken == Some(false) && walked <= 2,
+        "a window holding the whole of `x`'s {BIG} chose {taken:?} and walked {walked} index \
+         rows; it is no smaller side, and the choice walks a row or two to tell it"
+    );
     // A series field of a number: the value's token, `7` and `7.00` one.
     let ndecl = declare(json!({
         "declare": "type", "name": "v",
@@ -5742,9 +5726,7 @@ fn a_read_naming_a_series_seeks_the_pairs_window(engine: &dyn LakeEngine) -> Hel
             {"name": "at", "type": {"kind": "number"}}
         ]
     }));
-    let Declaration::Type(nt) = &ndecl else {
-        unreachable!("the check declares a type")
-    };
+    let nt = type_of(&ndecl);
     let nstates: Vec<StoredRecord> = (0..600_u64)
         .map(|i| {
             let sym = match i < 300 {
@@ -5803,9 +5785,7 @@ fn a_series_read_puts_its_records_without_a_value_last(engine: &dyn LakeEngine) 
             {"name": "seen", "type": {"kind": "date_time"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let mut states: Vec<StoredRecord> = Vec::new();
     for i in 0..40_u64 {
         let day = format!("2026-01-{:02}T12:00:00Z", i % 28 + 1);
@@ -5914,9 +5894,7 @@ fn an_in_of_texts_merges_their_windows_into_one_page(engine: &dyn LakeEngine) ->
             {"name": "at", "type": {"kind": "number"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let names: Vec<String> = (0..SERIES).map(|s| format!("'a{s:02}'")).collect();
     let listed = format!("sym in ({})", names.join(", "));
     let mut states: Vec<StoredRecord> = Vec::new();
@@ -6032,9 +6010,7 @@ fn an_in_of_texts_merges_their_windows_into_one_page(engine: &dyn LakeEngine) ->
             {"name": "at", "type": {"kind": "number"}}
         ]
     }));
-    let Declaration::Type(ut) = &udecl else {
-        unreachable!("the check declares a type")
-    };
+    let ut = type_of(&udecl);
     let mut ustates: Vec<StoredRecord> = Vec::new();
     for s in 0..UNEVEN {
         for i in 0..(300 - 20 * s) {
@@ -6153,9 +6129,7 @@ fn a_kept_pair_is_read_without_an_index_on_its_order_field(engine: &dyn LakeEngi
             {"name": "at", "type": {"kind": "number"}}
         ]
     }));
-    let Declaration::Type(t) = &decl else {
-        unreachable!("the check declares a type")
-    };
+    let t = type_of(&decl);
     let mut states: Vec<StoredRecord> = Vec::new();
     for i in 0..HELD {
         // The last tenth hold no value for the order field, outside the

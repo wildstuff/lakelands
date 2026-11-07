@@ -1089,23 +1089,27 @@ fn the_key_before_a_key_is_the_greatest_below_it() {
     assert_eq!(key_before(&[5, 3, 1, 1, 1], 4), Some(vec![5, 3, 1, 1, 0]));
 }
 
-/// Over one series of `n` keys `[rank, k]` and its tail, every window
-/// `lo..=hi` is chosen as the exact counts choose it: the window's road
-/// when four times its rows fit inside the series.
+/// Over one series of `n` keys `[1, k]` (`k` in two bytes) and its tail, every
+/// window `lo..=hi` is chosen as the exact counts choose it: the window's road
+/// when four times its rows fit inside the series, at, below or past the
+/// glance's 768 rows outside.
 #[test]
 fn the_series_sides_choose_as_the_whole_counts_do() {
     let seek = SeriesSeek {
         field: FieldName::from("at\u{1F}meter"),
         series: vec![vec![7; 8]],
     };
-    for n in [0u8, 3, 40, 200] {
-        let mut keys: Vec<Vec<u8>> = (0..n).map(|k| prefixed(&seek.series[0], &[1, k])).collect();
+    let key = |k: u16| [&[1][..], &k.to_be_bytes()].concat();
+    for n in [0u16, 3, 40, 200, 2_000, 20_000] {
+        let mut keys: Vec<Vec<u8>> = (0..n).map(|k| prefixed(&seek.series[0], &key(k))).collect();
         keys.push(seek.tail(0));
-        for (lo, hi) in [(0u8, 0u8), (0, 255), (10, 19), (n / 2, n), (n, 255), (1, 2)] {
+        let los = [0, 0, 10, n / 2, n, 1, 100, 0, 500, 0];
+        let his = [0, u16::MAX, 19, n, u16::MAX, 2, 199, 299, 1_499, 4_999];
+        for (lo, hi) in los.into_iter().zip(his) {
             let window = Window {
                 field: seek.field.clone(),
-                lo: vec![1, lo],
-                hi: vec![1, hi],
+                lo: key(lo),
+                hi: key(hi),
             };
             let held = keys
                 .iter()
