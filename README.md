@@ -163,7 +163,7 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.23.0`.** Lakelands `0.23.0` is the `lakelands` CLI, its
+> **Status: `0.23.1`.** Lakelands `0.23.1` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
 > conformance suite (1098 checks through the doors and 108 through the
@@ -199,6 +199,11 @@ terrain Lakelands is built for, and where it is not the right tool.
 > (lakelands#1664). The lake 0.23.0 made through its doors is kept,
 > never edited, under `docs/log-format/lakes/23/`, and every later
 > release reads it.
+> **0.23.1 is a patch of `0.23.0`.** A window read of one series whose
+> window holds most of it walked about the rows its probe counted; the
+> engine now glances at the rows outside the window first, to a cap, so
+> that read costs no more than it did and answers as before
+> (lakelands#1780, lakelands#1781).
 
 ## Try it
 
