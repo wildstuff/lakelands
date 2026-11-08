@@ -13,7 +13,7 @@ relation carried by link records offers `link` and `unlink`, with a
 tool of each per relation from the one generator
 (`docs/decisions/035-a-link-is-a-record.md`).
 
-The generic doors are `describe`, `query`, `search`, `propose`,
+The generic doors are `describe`, `query`, `search`, `judge`, `propose`,
 `proposals`, `accept`, `reject`, and the schema doors `declare_type`,
 `add_field`, `recompute`
 (`docs/decisions/022-functions-are-declarations.md`) and `migrate`.
@@ -27,12 +27,16 @@ reads (009), and `subscribe` and `unsubscribe`, which begin and end the
 session's notifications of the changes it may read
 (`docs/decisions/037-the-feed-over-a-network-door.md`).
 
-Six doors of the `Catalog` have no tool of their own: `describe_type`
+Seven doors of the `Catalog` have no tool of their own: `describe_type`
 is `describe` with a `type`, `migrate_apply` is `migrate` with the
 `report_id` of the preflight it applies, `migrate_value_type` and
 `migrate_value_type_apply` are `migrate` with a `value_type`, `apply`
 has no tool, and `ingest` is deliberately not a tool — a source feeds a
-lake through a stream, not through a model. `declare_type` is `declare`
+lake through a stream, not through a model — and `judge` is no tool
+either: it answers a host's question, what a rule will say of records it
+holds or is about to send, and appends nothing
+(`docs/decisions/113-a-judge-answers-what-rules-say-of-records.md`).
+`declare_type` is `declare`
 of a type; `declare` of any other declaration has no tool, as `apply`
 has none.
 
@@ -102,3 +106,7 @@ second rule to keep in step.
   offered orders by `latest`, `known_at` and `seen_at` that their
   doors refuse every time; their schemas offer the value alone, as
   `query`'s does since lakelands#901.
+- Amended at lakelands#1670: `judge` joined the generic doors, and the
+  doors of the `Catalog` without a tool, six after the rewrite, are
+  seven. It is generic, not per-type, so the rule against a fifth
+  per-type door stands as it was.
