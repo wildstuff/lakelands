@@ -1,4 +1,4 @@
-# 110 — A record's or a field's values can be erased from its history
+# 115 — A record's or a field's values can be erased from its history
 
 **Proposed** for 0.24.0 on lakelands#1736, 2026-11-07: the operator has
 not accepted it yet, and no build follows it.
@@ -109,7 +109,7 @@ The act appends one event of a new kind, `values_erased`, in §2 of
 
 | Kind | Payload | Fold |
 |---|---|---|
-| `values_erased` | `selection` (a `record` or a `quarantined` selection, as above), `keys` (the versions of the record's key it destroys, oldest first; absent where none), `apart` (the apart keys it destroys, in id order; absent where none) | The host erased values of one record, one field or one quarantined row (`docs/decisions/110-a-record-s-or-a-field-s-values-can-be-erased.md`). Each non-null member of the patch of every selected write before this position, and every cell of every version of a quarantined id, folds as erased at its own position, `as_of` included; a key field, a reference field and an `initial` excepted. A value sealed under a version `keys` names, or under a key `apart` names, which the key store no longer gives, folds as erased, not as a lost key. Derived values, sets and triggers over an erased value are recomputed or waited as for `values_removed`. |
+| `values_erased` | `selection` (a `record` or a `quarantined` selection, as above), `keys` (the versions of the record's key it destroys, oldest first; absent where none), `apart` (the apart keys it destroys, in id order; absent where none) | The host erased values of one record, one field or one quarantined row (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`). Each non-null member of the patch of every selected write before this position, and every cell of every version of a quarantined id, folds as erased at its own position, `as_of` included; a key field, a reference field and an `initial` excepted. A value sealed under a version `keys` names, or under a key `apart` names, which the key store no longer gives, folds as erased, not as a lost key. Derived values, sets and triggers over an erased value are recomputed or waited as for `values_removed`. |
 
 A new kind is a change of the format (§6): the build raises
 `LOG_FORMAT_VERSION` and `OLDEST_LOG_FORMAT`
