@@ -53,6 +53,13 @@ first ten by key; it is left out when empty, and the preflight says the
 same. Every other authored field co-owns, so a record where a person
 wrote anything else still refuses the purge whole.
 
+A field that declares `state_move` co-owns nothing either, when the write
+that last set it was the type's move: the value is the move's, not an
+author's, and the record goes with its source
+(`docs/decisions/114-a-field-may-belong-to-a-state-move.md`). Such a value
+is not named in `moved`, and removing values and forgetting read the same
+rule.
+
 A type declared without per-field provenance cannot say who brought its
 records in. The purge of a source whole does not search it and names
 it in its report, and a purge of that type alone is refused: opting out
@@ -240,3 +247,6 @@ ingest, because the ingest id carries the version it was written over
   `source_purged` to its `act_whole`, its retirements in parts, and its
   id names the position its report was read at and the selection it read
   there.
+- Amended by 114 (lakelands#1630), proposed for 0.24.0: a value a state
+  move wrote is no author's, and the take-backs read it through one
+  predicate.
