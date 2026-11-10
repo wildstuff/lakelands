@@ -217,6 +217,20 @@ today as well) and the not-hashed paragraph at `docs/log-format.md:501`.
 Decisions 039 and 065 are not owed with the code: their sentence is part
 of this change, below.
 
+### The WIT package moves
+
+The member is on the declaration a caller sees: `field-decl` is mirrored
+at `wit/types.wit` and taken by `add-field` in `wit/schema.wit`, so a
+`state-move` member there changes the contract's shape, and the package
+takes it (decision 034). It joins the one package version the next
+release ships, `lakelands:data@0.24.0`, without a version of its own, and
+the drift test names the member on both sides. The member is a `bool`,
+`false` where a document gives none, so a component built against the
+older package still reads every declaration it could read; this is
+additive in the sense above, and the schema hash and the log format stay
+as this record says. The build carries the WIT member in the same pull
+request as the crate's, and the release notes name it.
+
 ### The two records it amends
 
 This change amends decisions 039 and 065, as the issue's triage orders:
