@@ -580,6 +580,13 @@ fn command() -> Command {
                         .long("check")
                         .action(ArgAction::SetTrue)
                         .help("Verify the backup's chain and change nothing"),
+                )
+                .arg(
+                    Arg::new("through")
+                        .long("through")
+                        .value_name("POSITION")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("Stop at this position: the lake as it stood then, the backup untouched; it must end an append and not pass the backup's head"),
                 ),
         )
         .subcommand(
@@ -766,7 +773,15 @@ async fn dispatch(
                 engines: engines(),
                 ..root.seams()
             };
-            let imported = commands::import(out, location, seams, &dir, name == "restore").await;
+            let imported = commands::import(
+                out,
+                location,
+                seams,
+                &dir,
+                name == "restore",
+                through_of(sub),
+            )
+            .await;
             if let (Err(_), Some(keyring)) = (&imported, put_back) {
                 keyring.unrestore(&lake)?;
             }
@@ -999,6 +1014,14 @@ async fn dispatch(
     }
 }
 
+/// The position `restore --through` names, if it does.
+fn through_of(sub: &ArgMatches) -> Option<lakelands_api::Position> {
+    sub.try_get_one::<u64>("through")
+        .ok()
+        .flatten()
+        .map(|p| lakelands_api::Position(*p))
+}
+
 /// Run `restore --check`: the backup's chain verified as an import would,
 /// nothing opened or written. Its exit status is `verify`'s: 0 the backup
 /// holds, 1 it is damaged or written in a log format this release does not
@@ -1007,10 +1030,11 @@ async fn dispatch(
 fn restore_check(sub: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
     use lakelands_api::error::Situation;
     let dir = PathBuf::from(sub.get_one::<String>("dir").map_or("", String::as_str));
-    let checked = lakelands_core::export::verify(&dir).and_then(|v| {
+    let through = through_of(sub);
+    let checked = lakelands_core::export::verify_through(&dir, through).and_then(|v| {
         let lake = commands::exported_lake(&dir).unwrap_or_default();
         let lake = lakelands_api::LakeId::from(lake);
-        lakelands_store::check_events(&dir, &lake).map(|()| v)
+        lakelands_store::check_events(&dir, &lake, through).map(|()| v)
     });
     let (code, line) = match checked {
         Ok(v) => (

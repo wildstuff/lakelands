@@ -16,7 +16,7 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake,
+    Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, ImportThrough, ImportedLake,
     LARGE_LAKE, Meter, Relimit, Reopen, Standby, Twin, below, continue_below, run_all, run_one,
 };
 use lakelands_engine_mem::MemoryOpener;
@@ -161,9 +161,9 @@ impl Harness for Memory {
         })
     }
 
-    fn importer(&self) -> Import {
+    fn importer_through(&self) -> ImportThrough {
         let opener = self.opener.clone();
-        Arc::new(move |dir, lake, into, host| {
+        Arc::new(move |dir, lake, into, host, through| {
             let opener = opener.clone();
             Box::pin(async move {
                 // Into a lake handed out already, under its opener; a
@@ -181,7 +181,8 @@ impl Harness for Memory {
                     engines: vec![Arc::new(target.clone())],
                     ..host
                 };
-                lakelands_store::import(location.clone(), seams.clone(), dir).await?;
+                lakelands_store::import_through(location.clone(), seams.clone(), dir, through)
+                    .await?;
                 let store = lakelands_store::open(location.clone(), seams, OpenMode::Read).await?;
                 let at = location.clone();
                 let writer: Reopen = Arc::new(move |store, host| {

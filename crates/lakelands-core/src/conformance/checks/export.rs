@@ -72,6 +72,18 @@ check!(
 );
 
 check!(
+    THROUGH = a_restore_through_a_position_holds_the_lake_at_the_end_of_an_append,
+    "077: a restore through a position imports the directory's log through that position and stops: through the genesis the lake holds its `lake_created`, through the end of an append its head is that position and verifies to the hash the lake held there; a position inside an append is refused as a failed precondition, `restore_inside_append`, naming the append's end, and one past the directory's head `restore_past_head`, naming the head; the directory is not changed, and a backup run after it extends it from its last line",
+    given
+);
+
+check!(
+    THROUGH_VERIFY = a_verify_through_a_position_reads_no_damage_past_it,
+    "077: a verify of a directory through a position checks the files that hold the prefix, so a damaged byte in a later file does not refuse it while the unbounded verify does, and it refuses a position inside an append naming its end and one past the head naming the head",
+    given
+);
+
+check!(
     BACKUP_TORN = a_backup_cuts_a_torn_tail_and_refuses_a_log_the_lake_does_not_continue,
     "077: a run cuts the bytes after its directory's last line feed, a stopped run's, removing a file that holds no whole line, and continues; a directory whose last line is not the lake's event at its position, another lake's or another log's or one past the lake's head, is refused as a failed precondition, `backup_other_log` naming the position, and nothing in it is changed, its torn tail included",
     scratch
@@ -2931,4 +2943,166 @@ async fn an_append_torn_between_its_blocks_is_refused_and_a_backup_writes_it_aga
         before.next()
     );
     Ok(())
+}
+
+/// The directory's files and their bytes.
+fn bytes_of(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, Failure> {
+    files(dir)?
+        .into_iter()
+        .map(|f| Ok((f.clone(), read(dir, &f)?)))
+        .collect()
+}
+
+/// The case a refusal carries.
+fn case_of<T>(e: &Result<T, Error>) -> Option<&Case> {
+    e.as_ref().err()?.case().map(|s| &s.case)
+}
+
+async fn a_restore_through_a_position_holds_the_lake_at_the_end_of_an_append(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (scratch, s) = (Scratch::new(given.scratch.clone()), store.as_ref());
+    ingested(s).await?;
+    let dir = scratch.dir("backup");
+    backup(s, &dir).await?;
+    let ends = append_ends(s).await?;
+    let head = s.head().await.must("reading the head")?;
+    let before = bytes_of(&dir)?;
+    let through = |at: Position| {
+        (given.import_through)(
+            dir.clone(),
+            store.lake().clone(),
+            None,
+            import_seams(),
+            Some(at),
+        )
+    };
+    let Some((&inside, &end)) = ends.iter().rev().find(|(p, e)| p < e) else {
+        return Err(Failure::new("the lake holds an append of several events"));
+    };
+    let at = through(Position::GENESIS)
+        .await
+        .map_err(|e| Failure::new(format!("restoring through the genesis: {e}")))?;
+    let got = at.store.head().await.must("reading the restored head")?;
+    ensure!(
+        got == Position::GENESIS,
+        "restored through the genesis the lake's head is that position; it is {got}"
+    );
+    let cut = through(end).await.map_err(|e| {
+        Failure::new(format!(
+            "restoring through the end of an append, {end}: {e}"
+        ))
+    })?;
+    let (want, is) = (
+        s.verify(None, Some(end)).await.must("verifying the lake")?,
+        cut.store
+            .verify(None, None)
+            .await
+            .must("verifying the restored lake")?,
+    );
+    ensure!(
+        (want.through, &want.hash) == (is.through, &is.hash) && is.through == end,
+        "restored through {end} the lake verifies to {} {}, as the lake did there, {} {}",
+        is.through,
+        is.hash.0,
+        want.through,
+        want.hash.0
+    );
+    let told = append_ends(cut.store.as_ref()).await?;
+    ensure!(
+        told.iter().all(|(p, e)| ends.get(p) == Some(e))
+            && told.len() == ends.range(..=end).count(),
+        "the restored lake's feed tells the appends the lake's tells through {end}"
+    );
+    let (past, over) = (Position(head.0 + 1), through(inside).await);
+    ensure!(
+        case_of(&over)
+            == Some(&Case::RestoreInsideAppend {
+                position: inside,
+                end
+            }),
+        "a position inside an append is refused `restore_inside_append` naming its end {end}; it \
+         answered {:?}",
+        over.as_ref().map(|_| ())
+    );
+    let beyond = through(past).await;
+    ensure!(
+        case_of(&beyond)
+            == Some(&Case::RestorePastHead {
+                position: past,
+                head
+            }),
+        "a position past the head is refused `restore_past_head` naming {head}; it answered {:?}",
+        beyond.as_ref().map(|_| ())
+    );
+    ensure!(
+        bytes_of(&dir)? == before,
+        "a restore through a position changes nothing in the directory"
+    );
+    let l = Lake::of(s);
+    let more = fixture::source_record("reading", "r99", json!({"amount": 99}));
+    fixture::delivered(s, &l, "meter", vec![more], "ingesting one more").await?;
+    let more = s.head().await.must("reading the head")?;
+    let run = backup(s, &dir).await?;
+    ensure!(
+        run.since == Some(head)
+            && run.through == more
+            && as_exported(s, &dir, &scratch.dir("e")).await?,
+        "a backup run after the restores extends the directory from {head}; it answered {run:?}"
+    );
+    Ok(())
+}
+
+async fn a_verify_through_a_position_reads_no_damage_past_it(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (scratch, s) = (Scratch::new(given.scratch.clone()), store.as_ref());
+    ingested(s).await?;
+    let dir = scratch.dir("export");
+    write(s, &dir).await?;
+    let names = files(&dir)?;
+    let (Some(last), true) = (names.last(), names.len() > 1) else {
+        return Err(Failure::new("the export holds more than one file"));
+    };
+    let ends = append_ends(s).await?;
+    let digits = last.trim_start_matches("log/").trim_end_matches(".jsonl");
+    let first_of_last = Position(
+        digits
+            .parse()
+            .map_err(|e| Failure::new(format!("{last}: {e}")))?,
+    );
+    let early = ends
+        .iter()
+        .filter(|(_, e)| **e < first_of_last)
+        .map(|(_, e)| *e)
+        .max()
+        .ok_or_else(|| Failure::new("an append ends before the last file"))?;
+    let head = s.head().await.must("reading the head")?;
+    let past = export::verify_through(&dir, Some(Position(head.0 + 1)));
+    ensure!(
+        case_of_any(&past)
+            == Some(Case::RestorePastHead {
+                position: Position(head.0 + 1),
+                head
+            }),
+        "a position past the head is refused naming it; it answered {past:?}"
+    );
+    let mut bytes = read(&dir, last)?;
+    let n = bytes.len() - 2;
+    bytes[n] ^= 1;
+    fs::write(dir.join(last), bytes).map_err(|e| Failure::new(format!("damaging {last}: {e}")))?;
+    let whole = export::verify(&dir);
+    let part = export::verify_through(&dir, Some(early));
+    ensure!(
+        whole.is_err() && part.as_ref().is_ok_and(|v| v.through == early),
+        "a byte damaged in {last} refuses the unbounded verify and not one through {early}, before \
+         it: {whole:?}, {part:?}"
+    );
+    Ok(())
+}
+
+fn case_of_any<T>(e: &Result<T, Error>) -> Option<Case> {
+    case_of(e).cloned()
 }

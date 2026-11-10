@@ -1048,6 +1048,12 @@ async fn an_export_imports_with_its_keys_or_with_its_forgetting(
 }
 
 check!(
+    FORGET_THROUGH = a_position_before_a_forgetting_restores_the_log_and_not_the_keys,
+    "077: a restore through a position before a `forget` is refused `key_missing` beside the key store that destroyed the keys where the prefix holds a value sealed under one, and restores where the prefix holds none, the lake's head that position and the source not yet forgotten in it; through the position of the act, or a later one, it restores the lake reading the source as forgotten, its values erased",
+    given
+);
+
+check!(
     RECLAIM_OWED = a_reclaim_that_fails_keeps_no_writer_out,
     "058 and 065, extended (lakelands#1161, lakelands#1179, 099): a forgetting whose reclaim fails answers its report, the values erased already, with the reclaim owed and its cause, as the lake does and its next preflight; a `rebuild()` whose reclaim fails answers, still owing it; the lake's next writer opens though the reclaim fails again, and the road beside the open tries it, failing, so it still owes, while the writer writes and reads the values erased; the open after the reclaim can run finishes it beside the writer and owes nothing, and the act's repeat answers it done; a removal whose reclaim fails answers as the forgetting does, and so does its preflight; a compact that runs clears what it owed, and the next open reclaims nothing, while one that fails with nothing owed owes nothing; a rebuild a forgetting still owes does not refuse the writer's open: the open answers, the road beside it tries the rebuild and, failing, leaves the act owed, and a write lands",
     given
@@ -2063,6 +2069,79 @@ async fn a_forgotten_source_takes_what_a_state_move_left(store: Store) -> Held {
             && (&before["retired"], &before["co_owned"]) == (&done["retired"], &done["co_owned"]),
         "the paid invoice goes with `billing`, nothing co-owned, as the preflight said: {done} \
          after {before}"
+    );
+    Ok(())
+}
+
+async fn a_position_before_a_forgetting_restores_the_log_and_not_the_keys(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let declared = store.head().await.must("reading the head")?;
+    let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
+    l.ingest("crm", vec![ada]).await.must("ingesting p1")?;
+    let sealed = store.head().await.must("reading the head")?;
+    store
+        .forget_source(&"crm".into(), None)
+        .await
+        .must("forgetting crm")?;
+    let acted = store.head().await.must("reading the head")?;
+    ensure!(
+        declared < sealed && sealed < acted,
+        "the log grows: {declared} {sealed} {acted}"
+    );
+    let base = given.scratch.clone();
+    let _ = std::fs::remove_dir_all(&base);
+    let dir = base.join("backup");
+    crate::export::write(store.as_ref(), &dir)
+        .await
+        .must("exporting")?;
+    let restore = |at: Position| {
+        (given.import_through)(
+            dir.clone(),
+            store.lake().clone(),
+            None,
+            with(&keys),
+            Some(at),
+        )
+    };
+    let refused = restore(sealed).await;
+    ensure!(
+        matches!(
+            &refused,
+            Err(Error::Unavailable { situation })
+                if matches!(**situation, Situation::KeyMissing { .. })
+        ),
+        "restored through {sealed}, where crm's sealed value stands and its key is destroyed, the \
+         import is refused `key_missing`; it answered {:?}",
+        refused.as_ref().map(|_| ())
+    );
+    let bare = restore(declared).await;
+    let bare = bare.map_err(|e| {
+        Failure::new(format!(
+            "restoring through {declared}, before crm wrote: {e}"
+        ))
+    })?;
+    let head = bare.store.head().await.must("reading the restored head")?;
+    ensure!(
+        head == declared,
+        "the lake restored through {declared} has that head; it has {head}"
+    );
+    let after = restore(acted).await;
+    let after = after
+        .map_err(|e| Failure::new(format!("restoring through the act's position {acted}: {e}")))?;
+    let p1 = (after.store.catalog(Default::default()))
+        .get(&l.own, &"person".into(), get_at("p1", Some(sealed)))
+        .await;
+    let p1 = p1
+        .must("reading p1 of the lake restored through the act")?
+        .data;
+    ensure!(
+        !p1.fields.contains_key("name") && p1.meta.get("name").is_some_and(|m| m.erased),
+        "restored through the act, crm's name reads as erased: {p1:?}"
     );
     Ok(())
 }

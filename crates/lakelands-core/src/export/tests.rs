@@ -56,3 +56,24 @@ fn a_tail_torn_between_blocks_reads_back_to_the_start_of_its_append() {
     );
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_prefix_lists_the_files_that_hold_it() {
+    let dir = std::env::temp_dir().join(format!("lakelands-prefix-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("log")).unwrap();
+    for first in [0, 10, 20] {
+        std::fs::write(dir.join(file_name(Position(first))), b"").unwrap();
+    }
+    let n = |through| prefix_files(&dir, through).unwrap().len();
+    assert_eq!(
+        (
+            n(None),
+            n(Some(Position(0))),
+            n(Some(Position(10))),
+            n(Some(Position(19)))
+        ),
+        (3, 1, 2, 2)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

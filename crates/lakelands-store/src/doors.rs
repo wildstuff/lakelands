@@ -215,7 +215,18 @@ pub async fn import(
     seams: Seams,
     dir: std::path::PathBuf,
 ) -> Result<crate::import::Imported> {
-    exec::run(move || crate::import::import(&location, seams, &dir)).await
+    import_through(location, seams, dir, None).await
+}
+
+/// [`import`], the log through `through` only where it is given: the lake's
+/// head is that position (077 § A restore may stop at a position).
+pub async fn import_through(
+    location: Location,
+    seams: Seams,
+    dir: std::path::PathBuf,
+    through: Option<lakelands_api::Position>,
+) -> Result<crate::import::Imported> {
+    exec::run(move || crate::import::import(&location, seams, &dir, through)).await
 }
 
 /// `who` as a write's call sees the lake: followed through its renames,

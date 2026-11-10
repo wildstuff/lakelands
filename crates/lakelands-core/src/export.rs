@@ -649,6 +649,14 @@ pub fn lake_of(dir: &Path) -> Option<String> {
 
 /// An export's segment files, in order.
 pub fn segment_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    prefix_files(dir, None)
+}
+
+/// The segment files that hold the log through `through`, in order: the
+/// files that start at or before it, which are all of them where it is
+/// `None` (077 § A restore may stop at a position). The file that holds
+/// the position is listed whole; reading it stops at the position.
+pub fn prefix_files(dir: &Path, through: Option<Position>) -> Result<Vec<PathBuf>> {
     let log = dir.join("log");
     let mut files: Vec<PathBuf> = fs::read_dir(&log)
         .map_err(|e| io(Doing::Read, &log, e))?
@@ -656,6 +664,10 @@ pub fn segment_files(dir: &Path) -> Result<Vec<PathBuf>> {
         .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
         .collect();
     files.sort();
+    if let Some(through) = through {
+        // A name that gives no position stays, for the verifier to refuse.
+        files.retain(|p| first_of(p).is_none_or(|first| first <= through.0));
+    }
     Ok(files)
 }
 
@@ -737,7 +749,18 @@ fn ends_of(dir: &Path) -> Option<(serde_json::Value, serde_json::Value, Position
 /// Verify an export from its segment files alone, a line at a time: the
 /// chain from position 0 through the last line, and its hash.
 pub fn verify(dir: &Path) -> Result<Verification> {
-    let files = segment_files(dir)?;
+    verify_through(dir, None)
+}
+
+/// [`verify`] through `through` and no further: the files before the one
+/// that holds the position whole, that one through the position's append,
+/// and every checkpoint at or below the position against the files before
+/// it. Damage past the position is not read. A position inside an append
+/// is refused naming the append's end, and one past the head naming the
+/// head (077 § A restore may stop at a position).
+pub fn verify_through(dir: &Path, through: Option<Position>) -> Result<Verification> {
+    let files = prefix_files(dir, through)?;
+    let refused = |case: Case| Error::refused(None, Refusal::Precondition(Box::new(case.into())));
     let mut chain = Chain {
         next: Position::GENESIS,
         prev: Digest::zero(),
@@ -762,6 +785,7 @@ pub fn verify(dir: &Path) -> Result<Verification> {
         let reader = BufReader::new(File::open(path).map_err(|e| io(Doing::Read, path, e))?);
         let mut events = crate::log::Restoring::new(reader, true);
         let mut digest = Sha256::new();
+        let mut stopped = false;
         loop {
             let event = match events.next_event() {
                 Ok(Some(event)) => event,
@@ -799,11 +823,22 @@ pub fn verify(dir: &Path) -> Result<Verification> {
                     return damaged(chain.next, flaw);
                 }
             };
+            let (at, end) = (chain.next, event.end);
             let event = chain.event(event.event, index, first)?;
             digest.update(&event);
             digest.update(b"\n");
+            if through == Some(at) {
+                if end > at {
+                    let (position, end) = (at, end);
+                    return Err(refused(Case::RestoreInsideAppend { position, end }));
+                }
+                stopped = true;
+                break;
+            }
         }
-        events.end().or_else(|flaw| damaged(chain.next, flaw))?;
+        if !stopped {
+            events.end().or_else(|flaw| damaged(chain.next, flaw))?;
+        }
         if chain.next == first {
             let name = name.to_string();
             return damaged(first, Flaw::NoEventIn { name });
@@ -815,6 +850,12 @@ pub fn verify(dir: &Path) -> Result<Verification> {
     }
     if chain.next == Position::GENESIS {
         return damaged(Position::GENESIS, Flaw::NoSegmentFile);
+    }
+    if let Some(position) = through
+        && position >= chain.next
+    {
+        let head = Position(chain.next.0 - 1);
+        return Err(refused(Case::RestorePastHead { position, head }));
     }
     Ok(Verification {
         from: Position::GENESIS,

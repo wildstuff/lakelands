@@ -2522,6 +2522,16 @@
    "position": 1
   },
   {
+   "code": "restore_inside_append",
+   "end": 1,
+   "position": 1
+  },
+  {
+   "code": "restore_past_head",
+   "head": 1,
+   "position": 1
+  },
+  {
    "code": "lake_other",
    "held": "s",
    "lake": "lake",
