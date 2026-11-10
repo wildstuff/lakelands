@@ -53,7 +53,7 @@ use crate::forget::{History, count, counted, each_of, named_now};
 use crate::lake::{Lake, Staged, Writer, owing_now};
 use crate::log::Draft;
 use crate::ontology::Ontology;
-use crate::purge::made_by;
+use crate::purge::{made_by, no_owner};
 use crate::road::{Job, Reach, Turned};
 use crate::writes::{self, Judging, Walked};
 
@@ -600,15 +600,10 @@ fn holder_of(decl: &TypeDecl, g: &Gathered, r: &StoredRecord) -> Option<Holder> 
     if r.retired || (lost.is_empty() && !g.selected.contains(&r.made)) {
         return None;
     }
-    let starts = |f: &FieldName| {
-        decl.fields
-            .iter()
-            .any(|d| &d.name == f && d.initial.is_some())
-    };
     let holds = r.fields.keys().any(|f| {
         let m = r.meta.get(f);
         !decl.key.contains(f)
-            && !starts(f)
+            && !no_owner(decl, f, m)
             && m.is_some_and(|m| !mine(m) && matches!(m.origin, Origin::Authored | Origin::Source))
     });
     Some(Holder {

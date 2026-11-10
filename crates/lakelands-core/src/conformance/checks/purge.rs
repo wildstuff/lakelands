@@ -5,13 +5,15 @@
 //! every type it reached, in one append, as `retire` would retire each; a
 //! record another hand made or also wrote refuses the whole purge.
 
-use lakelands_api::WriteOrigin;
 use lakelands_api::error::RecordName;
 use lakelands_api::seam::AGING_RULE_TYPE;
 use lakelands_api::write::{ObjectSetDecl, PurgeReference, PurgeReport};
+use lakelands_api::{DeliveryId, IngestOpts, WriteOrigin, ingest_all_with};
 
 use super::erasable::{again, person, with};
-use crate::conformance::fixture::{derived, get_at, ingest, source_record, step, type_of};
+use crate::conformance::fixture::{
+    derived, get_at, ingest, refused_like, source_record, step, type_of,
+};
 use crate::conformance::prelude::*;
 
 check!(
@@ -698,6 +700,228 @@ async fn a_field_that_declares_initial_makes_no_owner(store: Store) -> Held {
         "a field that declares `initial` makes no owner: `o3`'s note alone refuses the purge \
          ({whole}: {refused:?}), and without it the purge takes all three and names the two an \
          author moved, as its preflight does; it answered {report:?} after {before:?}"
+    );
+    Ok(())
+}
+
+check!(
+    STATE_MOVE_DECLARED = state_move_is_declared_on_an_authored_field_of_a_types_own,
+    "114: `state_move` is refused as invalid, naming the field and the place `state_move`, on a function's input (`state_move_not_of_type`), a view's field (`state_move_in_view`), a key's field (`state_move_key`) and a field a source writes (`state_move_not_authored`); it stands beside `initial`, on a field only verbs write and on a field that names a record; `describe` answers it, and adding or dropping it leaves the schema hash as it was and steps the declaration's version"
+);
+
+check!(
+    STATE_MOVE_PURGED = a_value_a_state_move_wrote_makes_no_owner,
+    "114: a source's invoice that a verb marked paid, writing `status` and `paid_date`, which declare `state_move`, goes with the source's purge; the purge names nothing in `moved`, and its preflight named the same records"
+);
+
+check!(
+    STATE_MOVE_HAND_EDIT = a_state_move_field_an_author_wrote_co_owns,
+    "114: a `state_move` field an author wrote after the move, through `upsert` or an accepted proposal, co-owns as an authored value does: the purge and its preflight are refused as invalid naming both records, and a later move puts the record back with its source"
+);
+
+check!(
+    STATE_MOVE_OTHER_VERB_WRITE = any_verbs_write_of_a_state_move_field_makes_no_owner,
+    "114: the marker is the write's procedure, not the move: a second verb that sets a `state_move` field outside the state change makes no owner either, so the record goes with its source's purge, which names nothing, as its preflight does"
+);
+
+/// The invoice of decision 114: a sourced `amount`, `status` with an
+/// `initial` value and `paid_date`, both declaring `state_move` where
+/// `moves`; the verb `pay` moves both, the verb `date` sets `paid_date`
+/// alone.
+pub(super) fn invoice(moves: bool) -> Value {
+    json!({"declare": "type", "name": "invoice", "fields": [
+        {"name": "amount", "type": {"kind": "number"}, "authority": "source"},
+        {"name": "status", "type": {"kind": "text"}, "initial": "open", "state_move": moves},
+        {"name": "paid_date", "type": {"kind": "text"}, "state_move": moves}]})
+}
+
+/// The invoice and its two verbs declared, and `keys` brought in by
+/// `billing`, under the delivery `bills`.
+pub(super) async fn invoices(l: &Lake, keys: &[&str]) -> Held {
+    l.declare_json(invoice(true)).await?;
+    let pay = json!([{"field": "status", "value": "'paid'"},
+                     {"field": "paid_date", "value": "'2026-11-10'"}]);
+    let date = json!([{"field": "paid_date", "value": "'2026-11-11'"}]);
+    for (name, set) in [("pay", pay), ("date", date)] {
+        l.declare_json(json!({"declare": "verb", "name": name, "on": "invoice",
+            "risk": "low", "effect": "write", "set": set}))
+            .await?;
+    }
+    let records = keys
+        .iter()
+        .map(|k| source_record("invoice", k, json!({"amount": 1})));
+    let opts = IngestOpts {
+        delivery: Some(DeliveryId::from("bills")),
+        ..IngestOpts::default()
+    };
+    let billing = SourceId::from("billing");
+    let fut = ingest_all_with(l.cat.as_ref(), &l.own, &billing, opts, records.collect());
+    fut.await.must("ingesting from `billing`")?;
+    Ok(())
+}
+
+/// Calls the invoice's verb `verb` on `key`.
+pub(super) async fn call(l: &Lake, verb: &str, key: &str) -> Held {
+    let (verb, key) = (verb.into(), key.into());
+    let called = l.cat.call(
+        &l.own,
+        &verb,
+        Some(&key),
+        patch(json!({})),
+        WriteOpts::default(),
+    );
+    called.await.must(&format!("calling `{verb}` on `{key}`"))?;
+    Ok(())
+}
+
+async fn state_move_is_declared_on_an_authored_field_of_a_types_own(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let text = json!({"kind": "text"});
+    l.declare_json(json!({"declare": "type", "name": "partner",
+        "fields": [{"name": "name", "type": text}]}))
+        .await?;
+    let f = json!({"name": "f", "type": text, "state_move": true});
+    let input = json!({"declare": "function", "name": "loud", "backing": "expr",
+        "inputs": [f], "expr": "upper(f)"});
+    let view = json!({"declare": "type", "name": "t", "key": ["name"],
+        "fields": [{"name": "name", "type": text},
+                   {"name": "f", "type": {"kind": "number"}, "state_move": true}],
+        "view": {"source": "partner", "group_by": ["name"],
+                 "measures": [{"name": "f", "expr": "count()"}]}});
+    let key = json!({"declare": "type", "name": "t", "key": ["f"],
+        "fields": [{"name": "f", "type": text, "required": true, "state_move": true}]});
+    let sourced = json!({"declare": "type", "name": "t",
+        "fields": [{"name": "f", "type": text, "authority": "source", "state_move": true}]});
+    for (what, d, case) in [
+        ("on a function's input", input, "state_move_not_of_type"),
+        ("on a view's field", view, "state_move_in_view"),
+        ("on a key's field", key, "state_move_key"),
+        (
+            "on a field a source writes",
+            sourced,
+            "state_move_not_authored",
+        ),
+    ] {
+        let d: Declaration = serde_json::from_value(d)
+            .map_err(|e| Failure::new(format!("the declaration {what} does not read: {e}")))?;
+        let what = format!("declaring `state_move` {what}");
+        let want =
+            json!({"code": case, "at": [{"code": "field", "name": "f"}, {"code": "state_move"}]});
+        refused_like(&what, l.cat.declare(&l.own, d).await, &want)?;
+    }
+    // Beside `initial`, on a field only verbs write, and on a reference.
+    l.declare_json(json!({"declare": "type", "name": "t", "fields": [
+        {"name": "g", "type": text, "initial": "x", "state_move": true},
+        {"name": "v", "type": text, "authority": "verb", "state_move": true},
+        {"name": "p", "type": {"kind": "reference", "target": "partner"}, "state_move": true}]}))
+        .await?;
+    let mut seen = Vec::new();
+    for moves in [true, false, true] {
+        l.declare_json(invoice(moves)).await?;
+        let d = l.describe_type("invoice").await?;
+        let shown: Vec<_> = (d.fields.iter().filter(|f| f.state_move))
+            .map(|f| f.name.to_string())
+            .collect();
+        seen.push((d.lifecycle.version, d.lifecycle.schema_hash, shown));
+    }
+    let both = ["status", "paid_date"].map(String::from);
+    ensure!(
+        seen.windows(2).all(|w| w[0].0 < w[1].0 && w[0].1 == w[1].1)
+            && seen[0].2 == both
+            && seen[1].2.is_empty()
+            && seen[2].2 == both,
+        "`describe` answers `state_move`, and adding or dropping it steps the version and \
+         leaves the schema hash; declared, dropped and declared again: {seen:?}"
+    );
+    Ok(())
+}
+
+async fn a_value_a_state_move_wrote_makes_no_owner(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    invoices(&l, &["i1", "i2"]).await?;
+    call(&l, "pay", "i1").await?;
+    let billing = SourceId::from("billing");
+    let before = store.purge_preflight(&billing, None).await;
+    let before = before.must("the preflight")?;
+    let report = purge(store.as_ref(), "billing").await?;
+    let (i1, i2) = (
+        live(&l, "invoice", "i1").await?,
+        live(&l, "invoice", "i2").await?,
+    );
+    ensure!(
+        report.retired == 2
+            && report.moved.is_empty()
+            && before.retired == report.retired
+            && before.types == report.types
+            && before.moved.is_empty()
+            && !i1
+            && !i2,
+        "the invoice a verb marked paid goes with `billing`, and neither the purge nor its \
+         preflight names a move: {report:?} after {before:?}; `i1` live {i1}, `i2` live {i2}"
+    );
+    Ok(())
+}
+
+async fn a_state_move_field_an_author_wrote_co_owns(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    invoices(&l, &["i1", "i2", "i3"]).await?;
+    for key in ["i1", "i2"] {
+        call(&l, "pay", key).await?;
+    }
+    l.upsert("invoice", "i1", json!({"paid_date": "2026-11-12"}))
+        .await?;
+    let write = ProposedWrite::Upsert {
+        ty: "invoice".into(),
+        key: "i2".into(),
+        patch: patch(json!({"paid_date": "2026-11-12"})),
+        opts: WriteOpts::default(),
+    };
+    let proposed = l.cat.propose(&l.own, write, "by hand".into()).await;
+    let Outcome::Proposed { proposal, .. } = proposed.must("a proposal")? else {
+        return Err(Failure::new("the upsert is proposed"));
+    };
+    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
+    let billing = SourceId::from("billing");
+    let before = store.purge_preflight(&billing, None).await;
+    let refused = store.purge_source(&billing, None, None).await;
+    let both = Some((2, vec!["i1", "i2"]));
+    let (named, said) = (
+        before.as_ref().err().and_then(shared),
+        refused.as_ref().err().and_then(shared),
+    );
+    ensure!(
+        named == both && said == both,
+        "`paid_date` written by `upsert` on `i1` and by an accepted proposal on `i2` co-owns: \
+         the preflight and the purge are refused naming both; they answered {before:?} and \
+         {refused:?}"
+    );
+    // The move again: the last write decides.
+    for key in ["i1", "i2"] {
+        call(&l, "pay", key).await?;
+    }
+    let report = purge(store.as_ref(), "billing").await?;
+    ensure!(
+        report.retired == 3 && report.moved.is_empty(),
+        "a move after the author's write puts the records back with `billing`: {report:?}"
+    );
+    Ok(())
+}
+
+async fn any_verbs_write_of_a_state_move_field_makes_no_owner(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    invoices(&l, &["i1"]).await?;
+    call(&l, "date", "i1").await?;
+    let billing = SourceId::from("billing");
+    let before = store.purge_preflight(&billing, None).await;
+    let before = before.must("the preflight")?;
+    let report = purge(store.as_ref(), "billing").await?;
+    ensure!(
+        report.retired == 1
+            && report.moved.is_empty()
+            && before.retired == 1
+            && before.moved.is_empty(),
+        "`date` sets `paid_date` outside the move, and the record goes with `billing` all the \
+         same, naming nothing: {report:?} after {before:?}"
     );
     Ok(())
 }

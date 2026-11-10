@@ -232,6 +232,10 @@ pub struct FieldDescription {
     /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub erasable: bool,
+    /// Whether a value a type's verb wrote last is the state move's
+    /// (`docs/decisions/114-a-field-may-belong-to-a-state-move.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub state_move: bool,
     /// What it means.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -282,6 +286,7 @@ impl FieldDescription {
             searchable: decl.searchable,
             sensitive: decl.sensitive,
             erasable: decl.erasable,
+            state_move: decl.state_move,
             description: decl.description,
             label: decl.label,
             embed: decl.embed,

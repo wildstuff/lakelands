@@ -2041,3 +2041,28 @@ async fn a_set_beside_a_forgotten_source_forgets_what_it_owes(
     );
     Ok(())
 }
+
+check!(
+    STATE_MOVE_FORGOTTEN = a_forgotten_source_takes_what_a_state_move_left,
+    "114: forgetting `billing`, whose invoice a verb marked paid through `status` and `paid_date`, which declare `state_move`, retires that invoice and names nothing co-owned, as its preflight said"
+);
+
+async fn a_forgotten_source_takes_what_a_state_move_left(store: Store) -> Held {
+    use super::purge::{call, invoices};
+    let l = Lake::of(store.as_ref());
+    invoices(&l, &["i1"]).await?;
+    call(&l, "pay", "i1").await?;
+    let billing = SourceId::from("billing");
+    let before = store.forget_preflight(&billing).await;
+    let before = shape(&before.must("the preflight")?);
+    let done = store.forget_source(&billing, None).await;
+    let done = shape(&done.must("forgetting `billing`")?);
+    ensure!(
+        done["retired"] == json!([["invoice", 1]])
+            && done["co_owned"] == json!([])
+            && (&before["retired"], &before["co_owned"]) == (&done["retired"], &done["co_owned"]),
+        "the paid invoice goes with `billing`, nothing co-owned, as the preflight said: {done} \
+         after {before}"
+    );
+    Ok(())
+}

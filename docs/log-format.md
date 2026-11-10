@@ -503,6 +503,11 @@ this object:
   field, on a field that names a record, on a field only authors or the
   fold write and on a relation's field, and a field that was erasable is
   never declared without it (`docs/decisions/058-a-source-may-be-forgotten.md`).
+  Nor is `state_move`: it says whose a value a verb wrote is when a
+  source's records are taken back, not what a record holds. It is
+  refused on a key field, on a field of a view, on a field a source
+  writes or that is derived, and on a field that is not a type's own
+  (`docs/decisions/114-a-field-may-belong-to-a-state-move.md`).
 - A relation is exactly `{ "name", "target", "cardinality", "fields" }`.
   `cardinality` is always written, `many_to_one` when the declaration
   leaves it out; `fields` is `[]` when the relation has none.
@@ -1222,7 +1227,7 @@ with that declaration's members beside it. Every member not marked
 | Declaration | Members (default when absent) |
 |---|---|
 | `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `insert_only` (`false`), `retired_by` (`authors`), `description`, `label` (none), `annotations` (`{}`), `constraints` (`[]`: each `{ "name", "holds" }` required, `description` (none), `at_ingest` (`refuse`)) |
-| a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`; an input may leave `type` out, and is bound by a field of any kind) | `name` and `type` (required, but for such an input), `required` (`false`), `authority` (`authored`), `admits` (`[]`: the source ids an `ingest` may write the field under, on a type's own `authored` field alone), `derived` (none), `computed_at` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `initial` (none; on a type's own field alone), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`) |
+| a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`; an input may leave `type` out, and is bound by a field of any kind) | `name` and `type` (required, but for such an input), `required` (`false`), `authority` (`authored`), `admits` (`[]`: the source ids an `ingest` may write the field under, on a type's own `authored` field alone), `derived` (none), `computed_at` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `initial` (none; on a type's own field alone), `erasable` (`false`; on a type's own field alone), `state_move` (`false`; on a type's own field alone), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
 | a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when link records carry it), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`), `derived` (none: `{ "match": [ { "from", "to" } ], "where" }`, a field of the owner and one of the target per pair, and `where` (none) a condition over `from.<field>` and `to.<field>`) |
 | a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean`, `date_time` or `date`), `merge` (`[]`: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |

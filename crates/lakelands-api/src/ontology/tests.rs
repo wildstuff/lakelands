@@ -231,3 +231,22 @@ fn a_verb_without_preconditions_reads_and_writes_as_before() {
         "open"
     );
 }
+
+#[test]
+fn a_state_move_is_written_only_where_declared_and_kept_with_the_shape() {
+    let field = json!({"name": "status", "type": {"kind": "text"}});
+    let plain: FieldDecl = serde_json::from_value(field.clone()).unwrap();
+    assert!(!plain.state_move);
+    let back = serde_json::to_value(&plain).unwrap();
+    assert!(back.get("state_move").is_none(), "{back}");
+    let mut moved = field;
+    moved["state_move"] = json!(true);
+    let mut f: FieldDecl = serde_json::from_value(moved).unwrap();
+    assert_eq!(serde_json::to_value(&f).unwrap()["state_move"], true);
+    f.shape_alone();
+    assert!(
+        f.state_move,
+        "a reader who may not read the field still sees the move"
+    );
+    assert!(!FieldDecl::UNREAD.contains(&"state_move"));
+}

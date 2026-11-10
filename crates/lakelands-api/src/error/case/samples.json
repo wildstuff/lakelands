@@ -348,6 +348,18 @@
    "code": "initial_reference"
   },
   {
+   "code": "state_move_not_of_type"
+  },
+  {
+   "code": "state_move_in_view"
+  },
+  {
+   "code": "state_move_key"
+  },
+  {
+   "code": "state_move_not_authored"
+  },
+  {
    "code": "inverse_twice",
    "inverse": "r",
    "target": "t"
@@ -2820,6 +2832,9 @@
   },
   {
    "code": "erasable"
+  },
+  {
+   "code": "state_move"
   },
   {
    "code": "authority"

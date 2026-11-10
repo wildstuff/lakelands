@@ -384,6 +384,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
         sensitive: false,
         searchable: false,
         erasable: false,
+        state_move: false,
         description: None,
         label: None,
         embed: None,

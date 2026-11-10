@@ -78,6 +78,7 @@ fn field(name: &str, kind: StorageKind) -> FieldDecl {
         sensitive: false,
         searchable: false,
         erasable: false,
+        state_move: false,
         description: None,
         label: None,
         embed: None,

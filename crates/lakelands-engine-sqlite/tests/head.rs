@@ -60,6 +60,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
         sensitive: false,
         searchable: false,
         erasable: false,
+        state_move: false,
         description: None,
         label: None,
         embed: None,

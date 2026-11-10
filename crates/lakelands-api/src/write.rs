@@ -1892,8 +1892,10 @@ pub struct PurgeReport {
     pub references: Vec<PurgeReference>,
     /// Per type and field, in that order, the records retired whose field
     /// with a declared `initial` value an author had written: the purge
-    /// takes them with what was written there. Fields with none are left
-    /// out.
+    /// takes them with what was written there. A value a verb wrote on a
+    /// field that declares `state_move` is not named
+    /// (`docs/decisions/114-a-field-may-belong-to-a-state-move.md`).
+    /// Fields with none are left out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moved: Vec<PurgeMoved>,
     /// Names a preflight's report; `purge_source` may repeat it. Empty on
@@ -1936,7 +1938,8 @@ pub struct PurgeReference {
 }
 
 /// The records a purge takes whose one field with a declared `initial`
-/// value an author had written.
+/// value an author had written, a verb's write on a `state_move` field
+/// aside.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PurgeMoved {
     /// The type.
