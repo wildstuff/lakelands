@@ -71,6 +71,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         sensitive: false,
         searchable: true,
         erasable: false,
+        state_move: false,
         description: None,
         label: None,
         embed: None,

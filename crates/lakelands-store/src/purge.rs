@@ -154,26 +154,43 @@ pub(crate) fn brought_by(r: &StoredRecord, source: &SourceId) -> bool {
     })
 }
 
+/// Whether the value `meta` tells of is a state move's: its field declares
+/// `state_move` and a type's verb, an author's write naming its
+/// procedure, wrote it last
+/// (`docs/decisions/114-a-field-may-belong-to-a-state-move.md`).
+pub(crate) fn moved(decl: &TypeDecl, f: &FieldName, meta: Option<&FieldMeta>) -> bool {
+    let by_verb = meta.is_some_and(|m| m.origin == Origin::Authored && m.procedure.is_some());
+    by_verb && decl.fields.iter().any(|d| &d.name == f && d.state_move)
+}
+
+/// Whether a take-back counts `f`'s value as no owner's: its field declares
+/// an `initial` value, whoever wrote it last, as it is there because the
+/// record is (`docs/decisions/050-a-field-declares-its-initial-value.md`),
+/// or the value is a state move's ([`moved`]).
+pub(crate) fn no_owner(decl: &TypeDecl, f: &FieldName, meta: Option<&FieldMeta>) -> bool {
+    moved(decl, f, meta)
+        || decl
+            .fields
+            .iter()
+            .any(|d| &d.name == f && d.initial.is_some())
+}
+
 /// Whether a field of `r` that holds a value came from another hand than
 /// the sources of `set`: a principal's write, or another source. A field
 /// cleared since holds no value and co-owns nothing, and neither does one
-/// that declares an `initial` value, whoever wrote it last: it is there
-/// because the record is
-/// (`docs/decisions/050-a-field-declares-its-initial-value.md`). Who made
-/// the record is [`made_by`]'s to say.
+/// whose value is [`no_owner`]'s. Who made the record is [`made_by`]'s to
+/// say.
 pub(crate) fn co_owned(decl: &TypeDecl, r: &StoredRecord, set: &[SourceId]) -> bool {
-    let starts = |f: &FieldName| {
-        decl.fields
-            .iter()
-            .any(|d| &d.name == f && d.initial.is_some())
-    };
-    r.fields.keys().filter(|f| !starts(f)).any(|f| {
-        r.meta.get(f).is_some_and(|m| match m.origin {
-            Origin::Authored => true,
-            Origin::Source => !m.source.as_ref().is_some_and(|s| set.contains(s)),
-            _ => false,
+    r.fields
+        .keys()
+        .filter(|f| !no_owner(decl, f, r.meta.get(*f)))
+        .any(|f| {
+            r.meta.get(f).is_some_and(|m| match m.origin {
+                Origin::Authored => true,
+                Origin::Source => !m.source.as_ref().is_some_and(|s| set.contains(s)),
+                _ => false,
+            })
         })
-    })
 }
 
 /// The `made` positions of those of `records` the sources of `set` made:
@@ -518,13 +535,17 @@ pub(crate) fn report<'a>(
         }
     }
     // What an author wrote in a record the purge takes is a field with an
-    // `initial` value: any other would have refused the purge.
-    let mut moved: BTreeMap<(&TypeName, &FieldName), PurgeMoved> = BTreeMap::new();
+    // `initial` value: any other would have refused the purge. A state
+    // move's value is no author's, and is not named.
+    let mut taken_moved: BTreeMap<(&TypeName, &FieldName), PurgeMoved> = BTreeMap::new();
     for r in purged {
-        let authored =
-            |f: &&FieldName| r.meta.get(*f).is_some_and(|m| m.origin == Origin::Authored);
+        let decl = ontology.ty(&r.ty)?;
+        let authored = |f: &&FieldName| {
+            let m = r.meta.get(*f);
+            m.is_some_and(|m| m.origin == Origin::Authored) && !moved(decl, f, m)
+        };
         for f in r.fields.keys().filter(authored) {
-            let m = moved.entry((&r.ty, f)).or_insert_with(|| PurgeMoved {
+            let m = taken_moved.entry((&r.ty, f)).or_insert_with(|| PurgeMoved {
                 ty: r.ty.clone(),
                 field: f.clone(),
                 records: 0,
@@ -605,7 +626,7 @@ pub(crate) fn report<'a>(
         unsearched,
         position: view.position().unwrap_or(Position::GENESIS),
         references,
-        moved: moved.into_values().collect(),
+        moved: taken_moved.into_values().collect(),
         report_id: String::new(),
         set_off: 0,
         max_set_changes: 0,

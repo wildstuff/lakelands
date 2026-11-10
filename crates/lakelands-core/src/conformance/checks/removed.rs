@@ -2539,3 +2539,34 @@ async fn a_report_before_the_first_act_is_stale_only_on_the_overlap(
     )?;
     Ok(())
 }
+
+check!(
+    STATE_MOVE_REMOVED = a_delivery_taken_back_retires_what_a_state_move_left,
+    "114: `billing` delivers `i1` and `i2` as `bills`, a verb marks both paid through `status` and `paid_date`, which declare `state_move`, and an author writes `paid_date` on `i2` after; taking the delivery back retires `i1`, whose moved values make no owner, and keeps `i2`, as its preflight said"
+);
+
+async fn a_delivery_taken_back_retires_what_a_state_move_left(store: Store) -> Held {
+    use super::purge::{call, invoices};
+    let l = Lake::of(store.as_ref());
+    invoices(&l, &["i1", "i2"]).await?;
+    for key in ["i1", "i2"] {
+        call(&l, "pay", key).await?;
+    }
+    l.upsert("invoice", "i2", json!({"paid_date": "2026-11-12"}))
+        .await?;
+    let (billing, bills) = (
+        SourceId::from("billing"),
+        Selection::Delivery("bills".into()),
+    );
+    let before = store.remove_values_preflight(&billing, &bills).await;
+    let before = shape(&before.must("the preflight")?);
+    let done = store.remove_values(&billing, &bills, false, None).await;
+    let done = shape(&done.must("taking `bills` back")?);
+    ensure!(
+        done["retired"] == json!([["invoice", 1]])
+            && done["kept"] == json!([["invoice", ["i2"]]])
+            && (&before["retired"], &before["kept"]) == (&done["retired"], &done["kept"]),
+        "`i1` is retired and `i2` kept, as the preflight said: {done} after {before}"
+    );
+    Ok(())
+}

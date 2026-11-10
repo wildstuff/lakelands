@@ -574,6 +574,27 @@ fn erasable(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>)
     Err(Error::invalid_at(&f.name, at(&on, why)))
 }
 
+/// `state_move` stands on a type's own field, no key, that its authors or
+/// its verbs write and no step derives
+/// (`docs/decisions/114-a-field-may-belong-to-a-state-move.md`).
+fn state_move(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
+    let why = match of {
+        _ if !f.state_move => return Ok(()),
+        None => Case::StateMoveNotOfType,
+        Some(t) if t.view.is_some() => Case::StateMoveInView,
+        Some(_)
+            if !matches!(f.authority, Authority::Authored | Authority::Verb)
+                || f.derived.is_some() =>
+        {
+            Case::StateMoveNotAuthored
+        }
+        Some(t) if t.key.contains(&f.name) => Case::StateMoveKey,
+        Some(_) => return Ok(()),
+    };
+    let on = [owner, &[of_field(&f.name), Place::StateMove]].concat();
+    Err(Error::invalid_at(&f.name, at(&on, why)))
+}
+
 /// A field only verbs write (lakelands#1130) is no key, required only with
 /// an `initial`, as a verb writes a record that stands, and not computed.
 fn verb_written(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
@@ -662,6 +683,7 @@ fn field_type(
     name(Naming::Field, f.name.as_str())?;
     initial(o, owner, f, of)?;
     erasable(o, owner, f, of)?;
+    state_move(owner, f, of)?;
     verb_written(owner, f, of)?;
     writer_filled(owner, f, of)?;
     admitted(owner, f, of)?;

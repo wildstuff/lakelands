@@ -45,7 +45,7 @@ type Kind = (&'static str, Vec<&'static str>, fn(&str) -> bool);
 fn kinds() -> [Kind; 3] {
     [
         ("the type", members!(TypeDecl { name, key, fields, relations, view, valid_from, valid_to, language, field_meta, insert_only, retired_by, description, label, annotations, constraints }), |t| t == "-"),
-        ("a field", members!(FieldDecl { name, ty, required, authority, admits, derived, function, computed_at, depends_on, on_input_change, initial, sensitive, searchable, erasable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
+        ("a field", members!(FieldDecl { name, ty, required, authority, admits, derived, function, computed_at, depends_on, on_input_change, initial, sensitive, searchable, erasable, state_move, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
         ("a relation", members!(RelationDecl { name, target, cardinality, inverse, via, fields, authority, description, annotations, derived }), |t| RELATIONS.contains(&t)),
     ]
 }
@@ -86,6 +86,7 @@ title initial null restated
 secret sensitive null restated
 secret searchable null restated
 secret erasable null refused
+title state_move null restated
 secret description null restated
 secret label null restated
 near embed {"from":["body"],"model":"MODEL"} restated
@@ -157,7 +158,9 @@ fn note() -> Value {
         "derived": {"match": [{"from": "code", "to": "name"}]},
     });
     let required = |n: &str| json!({"name": n, "type": {"kind": "text"}, "required": true});
-    let title = json!({"name": "title", "type": {"kind": "text"}, "initial": "untitled"});
+    let title = json!({
+        "name": "title", "type": {"kind": "text"}, "initial": "untitled", "state_move": true,
+    });
     json!({
         "name": "note", "key": ["code"], "valid_from": "since", "valid_to": "until",
         "language": "de", "field_meta": false, "description": "A note.", "label": "Note",

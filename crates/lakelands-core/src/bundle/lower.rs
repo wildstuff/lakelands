@@ -175,6 +175,7 @@ impl<'a> Lower<'a> {
             sensitive: body.sensitive,
             searchable: body.searchable,
             erasable: body.erasable,
+            state_move: false,
             description: body.description,
             label: body.label,
             embed,

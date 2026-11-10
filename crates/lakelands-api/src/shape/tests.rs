@@ -108,6 +108,7 @@ fn meaning_only_changes_leave_the_hash_alone() {
         f.derived = Some("1 + 1".into());
         f.depends_on = vec!["number".into()];
         f.on_input_change = OnInputChange::Clear;
+        f.state_move = true;
         let r = &mut t.relations[0];
         r.via = None;
         r.inverse = Some("invoices".into());

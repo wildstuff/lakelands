@@ -1,4 +1,4 @@
-package lakelands:data@0.23.0;
+package lakelands:data@0.24.0;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.
@@ -219,6 +219,9 @@ interface types {
         searchable: bool,
         /// Whether a source's values are sealed under its key.
         erasable: bool,
+        /// Whether a value a type's verb wrote last is the state move's,
+        /// and so no owner's when its source is taken back.
+        state-move: bool,
         description: option<string>,
         label: option<string>,
         embed: option<embed-decl>,
@@ -250,6 +253,9 @@ interface types {
         searchable: bool,
         /// Whether a source's values are sealed under its key.
         erasable: bool,
+        /// Whether a value a type's verb wrote last is the state move's,
+        /// and so no owner's when its source is taken back.
+        state-move: bool,
         description: option<string>,
         label: option<string>,
         embed: option<embed-decl>,
@@ -1463,6 +1469,8 @@ interface types {
         searchable: bool,
         sensitive: bool,
         erasable: bool,
+        /// Whether a value a type's verb wrote last is the state move's.
+        state-move: bool,
         description: option<string>,
         label: option<string>,
         embed: option<embed-decl>,

@@ -639,6 +639,8 @@ catalog! {
         Initial => "`initial`",
         /// A field's `erasable`.
         Erasable => "`erasable`",
+        /// A field's `state_move`.
+        StateMove => "`state_move`",
         /// A field's `authority`.
         Authority => "`authority`",
         /// A field's `admits`.
@@ -1059,6 +1061,14 @@ catalog! {
         InitialNotOfType => "only a field of a type declares one",
         /// An `initial` value on a field that names a record.
         InitialReference => "a field that names a record is checked against that record by the door that writes it",
+        /// `state_move` on a field of no type.
+        StateMoveNotOfType => "only a field of a type's own moves with its state",
+        /// `state_move` on a view's field.
+        StateMoveInView => "a view's records are computed, and none is taken",
+        /// `state_move` on a key's field.
+        StateMoveKey => "a key's field is the record's key, which no state move writes",
+        /// `state_move` on a field neither its authors nor its verbs write.
+        StateMoveNotAuthored => "only a field whose authority is `authored` or `verb`, and that no step derives, declares one",
         /// An inverse two relations name onto one target.
         InverseTwice { inverse: RelationName, target: TypeName } => "`{inverse}` is already the inverse of a relation onto `{target}`; an inverse names one relation",
         /// A `json` field named as a type.

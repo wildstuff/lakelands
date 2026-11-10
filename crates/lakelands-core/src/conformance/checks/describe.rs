@@ -174,6 +174,7 @@ fn field_projected(f: &FieldDescription) -> FieldDecl {
         sensitive: f.sensitive,
         searchable: f.searchable,
         erasable: f.erasable,
+        state_move: f.state_move,
         description: f.description.clone(),
         label: f.label.clone(),
         embed: f.embed.clone(),

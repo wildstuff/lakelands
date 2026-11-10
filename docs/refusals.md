@@ -289,6 +289,7 @@ Where in a declaration or a request a case is said.
 | `constraint` | — | `constraint` | A value type's or a type's `constraint`. |
 | `initial` | — | `initial` | A field's `initial` value. |
 | `erasable` | — | `erasable` | A field's `erasable`. |
+| `state_move` | — | `state_move` | A field's `state_move`. |
 | `authority` | — | `authority` | A field's `authority`. |
 | `admits` | — | `admits` | A field's `admits`. |
 | `links` | `name` (TypeName) | the links of `{name}` | The link types of a type's relations. |
@@ -409,6 +410,10 @@ What a refusal is about.
 | `initial_not_authored` | — | only a field its authors or its type's verbs alone write takes one, not one a source writes or the fold computes | An `initial` value on a field its authors do not write alone. |
 | `initial_not_of_type` | — | only a field of a type declares one | An `initial` value on a field of no type. |
 | `initial_reference` | — | a field that names a record is checked against that record by the door that writes it | An `initial` value on a field that names a record. |
+| `state_move_not_of_type` | — | only a field of a type's own moves with its state | `state_move` on a field of no type. |
+| `state_move_in_view` | — | a view's records are computed, and none is taken | `state_move` on a view's field. |
+| `state_move_key` | — | a key's field is the record's key, which no state move writes | `state_move` on a key's field. |
+| `state_move_not_authored` | — | only a field whose authority is `authored` or `verb`, and that no step derives, declares one | `state_move` on a field neither its authors nor its verbs write. |
 | `inverse_twice` | `inverse` (RelationName), `target` (TypeName) | `{inverse}` is already the inverse of a relation onto `{target}`; an inverse names one relation | An inverse two relations name onto one target. |
 | `json_named_as_type` | — | a json field may not carry the name of a type | A `json` field named as a type. |
 | `key_unkeyable` | `field` (FieldName) | it is keyed by `{field}`, whose kind has no string form for a key; a key field is text, a reference, a decimal, a number, a boolean, a date-time or a date | A type keyed by a field no key may be. |

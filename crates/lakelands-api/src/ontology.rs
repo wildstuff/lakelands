@@ -328,6 +328,12 @@ pub struct FieldDecl {
     /// the schema hash: it says how values are kept, not what they are.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub erasable: bool,
+    /// Whether a value of the field a type's verb wrote last is the
+    /// state move's, and so no owner's when its source is taken back
+    /// (`docs/decisions/114-a-field-may-belong-to-a-state-move.md`). Not
+    /// part of the schema hash: it says how a take-back reads a value.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub state_move: bool,
     /// What the field means, for people and agents. Not part of the
     /// schema hash (`docs/decisions/007-schema-hash-covers-shape.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -421,6 +427,8 @@ struct InputWire {
     searchable: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     erasable: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    state_move: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -448,6 +456,7 @@ impl From<&FunctionInput> for InputWire {
             sensitive,
             searchable,
             erasable,
+            state_move,
             description,
             label,
             embed,
@@ -468,6 +477,7 @@ impl From<&FunctionInput> for InputWire {
             sensitive,
             searchable,
             erasable,
+            state_move,
             description,
             label,
             embed,
@@ -496,6 +506,7 @@ impl From<InputWire> for FunctionInput {
                 sensitive: w.sensitive,
                 searchable: w.searchable,
                 erasable: w.erasable,
+                state_move: w.state_move,
                 description: w.description,
                 label: w.label,
                 embed: w.embed,
