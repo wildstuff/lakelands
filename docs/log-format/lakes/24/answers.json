@@ -1,0 +1,197 @@
+{
+  "erasable": [
+    [
+      "person",
+      "p1",
+      {
+        "id": "p1"
+      },
+      {
+        "city": {
+          "erased": true,
+          "known_at": "2026-11-11T20:24:39.664359Z",
+          "origin": "source",
+          "position": 7,
+          "source": "crm",
+          "writer": "human:owner"
+        },
+        "email": {
+          "erased": true,
+          "known_at": "2026-11-11T20:24:39.664359Z",
+          "origin": "source",
+          "position": 7,
+          "source": "crm",
+          "writer": "human:owner"
+        },
+        "id": {
+          "known_at": "2026-11-11T20:24:39.664359Z",
+          "origin": "source",
+          "position": 7,
+          "source": "crm",
+          "writer": "human:owner"
+        },
+        "name": {
+          "erased": true,
+          "known_at": "2026-11-11T20:24:39.664359Z",
+          "origin": "source",
+          "position": 7,
+          "source": "crm",
+          "writer": "human:owner"
+        }
+      }
+    ],
+    [
+      "person",
+      "p2",
+      {
+        "city": "Kiel",
+        "id": "p2",
+        "name": "Bo"
+      },
+      {
+        "city": {
+          "known_at": "2026-11-11T20:24:39.664359Z",
+          "origin": "source",
+          "position": 8,
+          "source": "crm",
+          "writer": "human:owner"
+        },
+        "email": {
+          "erased": true,
+          "known_at": "2026-11-11T20:24:39.664359Z",
+          "origin": "source",
+          "position": 8,
+          "source": "crm",
+          "writer": "human:owner"
+        },
+        "id": {
+          "known_at": "2026-11-11T20:24:39.664359Z",
+          "origin": "source",
+          "position": 8,
+          "source": "crm",
+          "writer": "human:owner"
+        },
+        "name": {
+          "known_at": "2026-11-11T20:24:39.664359Z",
+          "origin": "source",
+          "position": 8,
+          "source": "crm",
+          "writer": "human:owner"
+        }
+      }
+    ],
+    [
+      "invoice",
+      "i1",
+      {
+        "amount": 120,
+        "customer": "acme",
+        "paid_date": "2026-11-10",
+        "status": "paid"
+      },
+      {
+        "amount": {
+          "known_at": "2026-11-11T20:24:39.697310Z",
+          "origin": "source",
+          "position": 9,
+          "source": "billing",
+          "writer": "human:owner"
+        },
+        "customer": {
+          "known_at": "2026-11-11T20:24:39.697310Z",
+          "origin": "source",
+          "position": 9,
+          "source": "billing",
+          "writer": "human:owner"
+        },
+        "paid_date": {
+          "known_at": "2026-11-11T20:24:39.726696Z",
+          "origin": "authored",
+          "position": 14,
+          "procedure": "pay",
+          "procedure_version": "1",
+          "writer": "human:owner"
+        },
+        "status": {
+          "known_at": "2026-11-11T20:24:39.726696Z",
+          "origin": "authored",
+          "position": 14,
+          "procedure": "pay",
+          "procedure_version": "1",
+          "writer": "human:owner"
+        }
+      }
+    ]
+  ],
+  "events": [
+    "0 lake_created",
+    "1 lease_taken",
+    "2 declared",
+    "3 declared",
+    "4 declared",
+    "5 declared",
+    "6 declared",
+    "7 record_ingested",
+    "8 record_ingested",
+    "9 record_ingested",
+    "10 record_ingested",
+    "11 record_quarantined",
+    "12 record_quarantined",
+    "13 verb_called",
+    "14 record_upserted",
+    "15 values_erased",
+    "16 values_erased",
+    "17 values_erased",
+    "18 quarantine_closed",
+    "19 record_upserted",
+    "20 quarantine_closed",
+    "21 values_erased"
+  ],
+  "head": 21,
+  "made_by": "v0.24.0",
+  "records": [
+    [
+      "person",
+      "p1",
+      {
+        "id": "p1"
+      },
+      false
+    ],
+    [
+      "person",
+      "p2",
+      {
+        "city": "Kiel",
+        "id": "p2",
+        "name": "Bo"
+      },
+      false
+    ],
+    [
+      "invoice",
+      "i1",
+      {
+        "amount": 120,
+        "customer": "acme",
+        "paid_date": "2026-11-10",
+        "status": "paid"
+      },
+      false
+    ],
+    [
+      "invoice",
+      "i2",
+      {
+        "amount": 80,
+        "customer": "acme",
+        "status": "open"
+      },
+      false
+    ]
+  ],
+  "types": [
+    "person",
+    "invoice"
+  ]
+}

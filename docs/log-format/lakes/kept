@@ -1,4 +1,7 @@
 # The lakes a release of each format made through its doors, from format
-# 23 on, which every later release reads, each never edited:
+# 23 on, each never edited: a lake of the format this tree writes is read
+# by every engine, and one of an older format is kept as its bytes and
+# refused (record 054).
 # <format>[-<name>] <SHA-256 over "<path in the directory> <blob id>" lines, in byte order>
 23 88577b5d17fe15152c2c786180103dcaa1600ebbde87c8c83b4b2e5c9994effe
+24 72ea277c04ee664ae17bd3484b7ecaae3f6dba206f69d1a32218bcc3a00943c0

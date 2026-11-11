@@ -1559,6 +1559,7 @@ belongs in the suite, not beside one engine:
 
 **kept lake**
 
+- `the_lake_of_format_24_is_read_as_it_answered` — 054, 115: the lake v0.24.0 made through its doors (`docs/log-format/lakes/24/`), in format 24, imported on this engine with the file keyring's file it ships, keeps its log, verifies, and answers as `answers.json` keeps the answers: its head and the position and kind of every event, every live record of each type it names with its fields, a person whose values an erasure took whole, a person with one field erased, and an invoice whose state-move fields a verb moved, each with its provenance; and a writer that opens it and rebuilds its log answers its records so again
 - `the_lake_of_format_23_is_refused` — 054, 115: the lake v0.23.0 made through its doors (`docs/log-format/lakes/23/`), in format 23, kept as its bytes, is refused by a verifier of its export and by an import on this engine as `log_format`, naming the lake, format 23 and the one format this release reads and writes; nothing of it is read and nothing upgraded
 
 **series builds**

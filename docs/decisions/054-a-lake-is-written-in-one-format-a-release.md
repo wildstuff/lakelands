@@ -85,7 +85,9 @@ that restated it.
 ### From the first release with real installations on, every change of the format carries its upgrade path
 
 The operator's green field of 2026-10-31 (098) ends this for formats
-before 23: an older format is refused, and nothing is upgraded.
+before 23: an older format is refused, and nothing is upgraded. 115,
+accepted by the operator on 2026-11-11, ends it for 23 as well: 0.24.0
+reads and writes format 24 alone, and a host re-ingests.
 
 How a lake the release before wrote becomes one the new release reads is
 then part of the change, and the suite proves it on a lake the release
@@ -200,6 +202,30 @@ it), exits 1 and writes no log. There is no upgrade and no translation:
 a host opens the lake with a release that reads format 22, or brings its
 data into a lake of its own.
 
+**0.23.x on a lake that 0.24.0 wrote.** It refuses the lake by its log
+format: `verify` exits 3 and `export` exits 1, both answering "lake
+`kept24` is written in log format 24, and this release reads log formats
+23 to 23 and writes 23; nothing was read from it and nothing appended",
+with the advice "open it with a release that reads log format 24;
+restoring it would not help, it is not damaged"; no byte of the lake
+moves. `restore --check` and `import` of the lake's export refuse it the
+same way, by the number and not as damage (exit 1 each), and write no
+log. There is no downgrade: the way back from a lake 0.24.0 wrote is the
+format-23 lake a host kept beside it, opened with 0.23.x, and the 0.24.0
+lake's data brought into it again by the host.
+
+**0.24.0 on a lake that 0.23.0 wrote.** It refuses the lake by its log
+format, as 0.23.0 refuses one of 22: `verify` exits 3 and `export` exits
+1, both answering "lake `liquidity` is written in log format 23, and
+this release reads log formats 24 to 24 and writes 24; nothing was read
+from it and nothing appended", with the advice "open it with a release
+that reads log format 23; restoring it would not help, it is not
+damaged"; `restore --check` and `import` of an export 0.23.0 wrote
+answer the same, with "restore it" or "import it with a release that
+reads log format 23; it is not damaged", exit 1 and write no log.
+Nothing is translated (115): a host keeps its format-23 lake with the
+0.23.x binary and brings its data into a new lake of 0.24.0.
+
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
 - **The log is never rewritten.** Each format step from 14 on ships a
@@ -240,9 +266,10 @@ data into a lake of its own.
   22 are history that no binary of this tree reads, neither their lakes
   nor their vectors are in the tree, and `scripts/gates/vectors-kept.sh`
   holds from format 23 on. `docs/log-format/lakes/23/`, the lake v0.23.0
-  made, is kept from that release on and read in its own format on every
-  engine, and every later release reads it, record 098 keeping every
-  format from 23 on.
+  made, is kept as its bytes and refused as `log_format` on every engine
+  from 0.24.0 on, which reads format 24 alone (115).
+  `docs/log-format/lakes/24/`, the lake v0.24.0 made, is kept and read in
+  its own format on every engine.
 
 At 100 000 events a step that changes no fold costs one append, and
 about 5 µs an event at each later read of an older event; one that
@@ -349,7 +376,8 @@ them.
   refused its projection's layout and advised a rebuild that cut that
   append (lakelands#1477).
 - Amended by 098 (lakelands#1652), proposed for 0.23.0.
-- Amended by 115 (lakelands#1736), proposed for 0.24.0: its step to 24
+- Amended by 115 (lakelands#1736), accepted for 0.24.0 by the operator
+  on 2026-11-11: its step to 24
   raises the oldest format read with it, so no format before 24 is read.
   `docs/log-format/lakes/23/` stays as its bytes, and every engine
   refuses it as `log_format`, as an older lake is refused.

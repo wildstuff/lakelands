@@ -1,5 +1,10 @@
 # 115 — A record's or a field's values can be erased from its history
 
+**Accepted** by the operator on 2026-11-11, for 0.24.0, on epic
+lakelands#1642, with its step to format 24: a lake of format 23 is
+refused, nothing is translated, and a host brings its data in again by
+a new lake.
+
 ## What is decided
 
 ### One act erases a record, a field of it, or a quarantined row
@@ -375,3 +380,6 @@ removal selects by its source, so the format's closed set keeps its four
 members. 065's and 085's rules are amended in the same build where this
 act lands: 065's doc for `Selection`, and 085's line on the close and
 its "not an erasure".
+
+Accepted by the operator on 2026-11-11 for 0.24.0 (lakelands#1642): the
+step to 24 refuses format 23 rather than reading it, and hosts re-ingest.
