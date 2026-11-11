@@ -5,10 +5,9 @@
 //! conjuncts, and each is judged over the scope the subject gives — a
 //! stored record's read, a candidate's write.
 
-use lakelands_api::ConstraintName;
 use lakelands_api::error::Place;
 use lakelands_api::judge::{JudgeReport, JudgedRecord, Rules, Unjudged, UnjudgedWhy};
-use lakelands_api::ontology::TypeDecl;
+use lakelands_api::ontology::{ConstraintDecl, TypeDecl};
 use lakelands_core::expr::Scope;
 
 use super::*;
@@ -22,9 +21,9 @@ const THE_WRITE_ALONE: [Func; 5] = [
     Func::Created,
 ];
 
-/// A rule judged, typed.
+/// A rule judged: declared, or proposed as if it were, and typed.
 pub(crate) struct Rule {
-    pub name: ConstraintName,
+    pub decl: ConstraintDecl,
     pub holds: Expr,
 }
 
@@ -52,24 +51,27 @@ pub(crate) fn rules(sight: &Sight, decl: &TypeDecl, rules: &Rules) -> Result<Vec
                     let holds = crate::declare::typed(&c.holds, Eval::Constraint);
                     let holds = holds.map_err(Error::invalid)?;
                     Ok(Rule {
-                        name: c.name.clone(),
+                        decl: c.clone(),
                         holds,
                     })
                 })
                 .collect()
         }
-        Rules::Proposed { name, holds } => {
-            let holds = condition(holds, Eval::Constraint, &[Place::Constraint])?;
+        Rules::Proposed { name, holds: asked } => {
+            let holds = condition(asked, Eval::Constraint, &[Place::Constraint])?;
             // A relation `exists()` names is no field: what it reaches is
             // the evaluator's to answer, named with each record.
             let link =
                 |f: &&FieldName| decl.relations.iter().any(|r| r.name.as_str() == f.as_str());
             let read = holds.fields_read().into_iter().filter(|f| !link(f));
             sight.check_probe(decl, read)?;
-            Ok(vec![Rule {
+            let decl = ConstraintDecl {
                 name: name.clone(),
-                holds,
-            }])
+                holds: asked.clone(),
+                description: None,
+                at_ingest: Default::default(),
+            };
+            Ok(vec![Rule { decl, holds }])
         }
     }
 }
@@ -90,7 +92,7 @@ impl Rule {
     /// The refusal a write gives `ty` `key` for breaking this rule.
     fn broken(&self, ty: &TypeName, key: &RecordKey) -> Refusal {
         let case = Case::ConstraintBroken {
-            constraint: self.name.clone(),
+            constraint: self.decl.name.clone(),
             ty: ty.clone(),
             key: key.clone(),
         };
@@ -99,8 +101,9 @@ impl Rule {
 }
 
 impl Judging {
-    /// The record at `index`, `ty` `key`, judged over `scope` by every
-    /// rule, conjunct by conjunct: over a stored record (`stored`) a
+    /// The record at `index`, `ty` `key`, judged over `scope` by each
+    /// rule `chosen` keeps, conjunct by conjunct: over a stored record
+    /// (`stored`) a
     /// conjunct only its write decided is named, not judged; one the
     /// evaluator does not answer is named with the record, never read as
     /// a pass. A rule is named once per reason.
@@ -109,9 +112,10 @@ impl Judging {
         (index, ty, key): (u32, &TypeName, &RecordKey),
         scope: &dyn Scope,
         stored: bool,
+        chosen: impl Fn(&Rule) -> bool,
     ) -> bool {
         let mut refusals = Vec::new();
-        for rule in &self.rules {
+        for rule in self.rules.iter().filter(|r| chosen(r)) {
             let mut broke = false;
             for part in rule.holds.conjuncts() {
                 let why = match stored && part.calls(&THE_WRITE_ALONE) {
@@ -125,9 +129,9 @@ impl Judging {
                     },
                 };
                 let unjudged = &mut self.report.unjudged;
-                let named = |u: &Unjudged| u.constraint == rule.name && u.why == why;
+                let named = |u: &Unjudged| u.constraint == rule.decl.name && u.why == why;
                 if !unjudged.iter().any(named) {
-                    let constraint = rule.name.clone();
+                    let constraint = rule.decl.name.clone();
                     unjudged.push(Unjudged { constraint, why });
                 }
             }
@@ -216,7 +220,7 @@ impl Reader<'_> {
                 settings: Some(self.told()),
                 now: self.now,
             };
-            judging.judge((i as u32, ty, &r.key), &scope, true);
+            judging.judge((i as u32, ty, &r.key), &scope, true, |_| true);
         }
         Ok(judging.report)
     }

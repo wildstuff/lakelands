@@ -185,7 +185,7 @@ mod held;
 mod in_force;
 mod judge;
 pub(crate) use in_force::at_or_below;
-pub(crate) use judge::{Judging, bounded, rules as judged_rules};
+pub(crate) use judge::{Judging, Rule, bounded, rules as judged_rules};
 mod measures;
 mod proposals;
 mod query;

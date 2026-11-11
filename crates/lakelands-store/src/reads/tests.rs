@@ -152,10 +152,15 @@ fn only_a_reads_open_reads_the_wall_clock() {
     assert_eq!(found, expected);
 }
 
-fn rule(name: &str, holds: &str) -> judge::Rule {
-    let holds = crate::declare::typed(&holds.into(), Eval::Constraint).unwrap();
+fn rule(name: &str, holds_text: &str) -> judge::Rule {
+    let holds = crate::declare::typed(&holds_text.into(), Eval::Constraint).unwrap();
     judge::Rule {
-        name: name.into(),
+        decl: lakelands_api::ontology::ConstraintDecl {
+            name: name.into(),
+            holds: holds_text.into(),
+            description: None,
+            at_ingest: Default::default(),
+        },
         holds,
     }
 }
@@ -176,7 +181,7 @@ fn a_judge_names_a_rule_once_per_reason_and_never_reads_it_as_a_pass() {
             now: Timestamp(0),
         };
         let key = RecordKey::from(format!("s{i}").as_str());
-        judging.judge((i as u32, &ty, &key), &scope, true);
+        judging.judge((i as u32, &ty, &key), &scope, true, |_| true);
     }
     let report = judging.report;
     // Over stored records the `changed` part is the write's alone: named
@@ -213,7 +218,7 @@ fn a_candidate_judges_what_a_write_decides_and_answers_what_stops_it() {
     };
     let key: RecordKey = "s0".into();
     // A candidate is no stored record: its `changed` is evaluated.
-    judging.judge((0, &ty, &key), &scope, false);
+    judging.judge((0, &ty, &key), &scope, false, |_| true);
     judging.after(Refusal::TooLarge { max: 1 });
     judging.stopped(1, &"s1".into(), Some(Refusal::TooLarge { max: 2 }));
     judging.stopped(2, &"s2".into(), None);
