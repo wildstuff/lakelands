@@ -109,12 +109,14 @@ the text is parsed once instead of three times.
 
 ### The refusal names the form that is expected
 
-The refusal is a new `JsonFault::Positional { takes }`, whose sentence
-is "its members are named, not given by position: write it as an object
-that takes `name`, `func`". `takes` is the field list serde hands
-`deserialize_struct`, for a derived struct; a hand-written reader knows
-its own members and fills `takes` itself, so the sentence is the same
-wherever the refusal is raised.
+The refusal is a new `Fault::Positional { takes, at }` in `strict`,
+whose sentence is "its members are named, not given by position: write
+it as an object that takes `name`, `func`". `takes` is the field list
+serde hands `deserialize_struct`, for a derived struct; a hand-written
+reader knows its own members and fills `takes` itself, and `at` names
+where a buffered read below the root found the sequence, which the
+reader's own path cannot, so the sentence is the same wherever the
+refusal is raised.
 
 Each door composes it as it composes every other fault, so no door's own
 sentence is rewritten: `ArgumentsUnfit` at a tool, `LineNotRecord` at an

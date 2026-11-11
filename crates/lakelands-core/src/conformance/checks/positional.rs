@@ -43,6 +43,18 @@ async fn a_request_struct_written_as_a_sequence_is_refused(store: Store, _given:
     reads::<Find>(
         json!({"order_by": [{"field": "amount", "dir": "asc"}], "limit": 1}),
         "a find",
+    )?;
+    // A struct beneath a search's flattened, tagged mode is refused by the
+    // same sentence, naming the members of the term it would have held.
+    refused::<Search>(
+        json!({"type": "memo", "mode": "vector", "field": "v", "also": [["a", 1.0]]}),
+        "a search's vector term",
+        &["`field`", "`vector`", "`weight`", "`model`"],
+    )?;
+    reads::<Search>(
+        json!({"type": "memo", "mode": "vector", "field": "v",
+               "also": [{"field": "a", "vector": [1.0]}]}),
+        "a search's vector term",
     )
 }
 
