@@ -631,12 +631,17 @@ impl Deliverer {
     fn kept(&self) -> Result<Option<Position>, String> {
         match std::fs::read(&self.position_file) {
             Ok(bytes) => {
-                let kept: Kept = serde_json::from_slice(&bytes).map_err(|e| {
+                let unreadable = |e: String| {
                     format!(
                         "{} is not a position file: {e}",
                         self.position_file.display()
                     )
-                })?;
+                };
+                let kept: Kept = serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .map_err(|e| unreadable(e.to_string()))
+                    .and_then(|v| {
+                        lakelands_api::strict::from_value(v).map_err(|e| unreadable(e.to_string()))
+                    })?;
                 Ok(Some(Position(kept.next)))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

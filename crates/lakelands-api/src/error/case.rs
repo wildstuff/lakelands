@@ -63,7 +63,7 @@ macro_rules! catalog {
         $(#[$meta])*
         // A parameter is documented by the template that names it.
         #[allow(missing_docs)]
-        #[derive(Clone, Debug, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize)]
+        #[derive(Clone, Debug, PartialEq, Eq, ::serde::Serialize)]
         #[serde(tag = $tag, rename_all = "snake_case")]
         pub enum $set {
             $(
@@ -73,6 +73,50 @@ macro_rules! catalog {
             /// A case this build does not know.
             #[serde(skip)]
             Unknown($crate::error::Unknown),
+        }
+
+        // Serde's `tag` reading buffers a variant's content where the
+        // strict reader cannot see it, so the tag is read here and the
+        // case is read member by member through the strict reader.
+        impl<'de> ::serde::Deserialize<'de> for $set {
+            fn deserialize<D>(d: D) -> ::std::result::Result<$set, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                #[derive(::serde::Deserialize)]
+                #[serde(rename_all = "snake_case")]
+                enum Codes {
+                    $($case,)*
+                }
+
+                fn read<E>(value: ::serde_json::Value) -> ::std::result::Result<$set, E>
+                where
+                    E: ::serde::de::Error,
+                {
+                    let mut map = $crate::strict::object(value, $tag)?;
+                    let code = $crate::strict::code(&mut map, $tag)?;
+                    let code: Codes = ::serde::Deserialize::deserialize(
+                        ::serde::de::value::StrDeserializer::<E>::new(&code),
+                    )?;
+                    Ok(match code {
+                        $(
+                            Codes::$case => {
+                                #[derive(::serde::Deserialize)]
+                                struct __Case {
+                                    $($($(#[$attr])* $param: $ty,)*)?
+                                }
+                                #[allow(unused_variables)]
+                                let __Case {
+                                    $($($param,)*)?
+                                } = $crate::strict::at(map)?;
+                                $set::$case $({ $($param),* })?
+                            }
+                        )*
+                    })
+                }
+
+                read(<::serde_json::Value as ::serde::Deserialize>::deserialize(d)?)
+            }
         }
 
         impl $crate::error::Closed for $set {
@@ -676,6 +720,9 @@ named! {
         Eof = "eof" => "cut short",
         /// A failure to read the bytes.
         Io = "io" => "an I/O failure",
+        /// A sequence where the contract takes an object: its members
+        /// are named, not given by position.
+        Positional { takes: String } = "positional" => "its members are named, not given by position: write it as an object that takes {takes}",
     }
 }
 
@@ -687,6 +734,17 @@ impl From<&serde_json::Error> for JsonFault {
             Category::Data => JsonFault::Data,
             Category::Eof => JsonFault::Eof,
             Category::Io => JsonFault::Io,
+        }
+    }
+}
+
+impl From<&crate::strict::Fault> for JsonFault {
+    fn from(fault: &crate::strict::Fault) -> JsonFault {
+        match fault {
+            crate::strict::Fault::Positional { takes, .. } => JsonFault::Positional {
+                takes: takes.clone(),
+            },
+            _ => JsonFault::Data,
         }
     }
 }
@@ -2249,6 +2307,8 @@ catalog! {
         IngestMediaType => "ingest takes application/x-ndjson",
         /// An ingest line that is not a record.
         LineNotRecord { line: usize, fault: JsonFault, column: usize } => "line {line} is not a record `ingest` takes: {fault}, at column {column}",
+        /// An ingest line refused for its form, which no column names: a line written as a sequence is one serde would have read.
+        LineNotRecordForm { line: usize, fault: JsonFault } => "line {line} is not a record `ingest` takes, and no column names it: {fault}",
         /// An ingest line over the length one may have.
         LineTooLong { line: usize, max: usize } => "line {line} is longer than {max} bytes",
         /// A member the arguments need and do not give.

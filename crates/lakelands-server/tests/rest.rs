@@ -856,8 +856,64 @@ async fn an_ingest_line_with_an_unknown_member_is_refused() {
             (&json!("invalid"), &json!("line_not_record")),
             "{body}"
         );
+        // The second read names the member the fault is at: the column is
+        // serde's own, in the line, and the sentence says the one the
+        // payload names.
+        let column = answer["reason"]["column"].as_u64().unwrap();
+        let message = answer["reason"]["message"].as_str().unwrap();
+        assert!(column > 1, "a member fault names its column: {body}");
+        assert!(
+            message.ends_with(&format!(", at column {column}")),
+            "the sentence says the column the payload names: {body}"
+        );
     }
     task.abort();
+    assert_eq!(store.head().await.unwrap(), head, "nothing was committed");
+}
+
+/// A line written as a sequence where `ingest` takes a record is refused
+/// with the form's sentence and no column: serde reads a struct from a
+/// sequence, so the line has no member a column would name
+/// (`docs/decisions/110-a-struct-is-read-from-an-object.md`).
+#[tokio::test]
+async fn an_ingest_line_written_as_a_sequence_is_refused_with_no_column() {
+    let store = rest_lake(Backend::Memory).await;
+    let (addr, task) = serve(store.clone()).await;
+    let head = store.head().await.unwrap();
+    let block = [
+        "POST /lakes/finance/ingest/bank",
+        "authorization: Bearer k-owner",
+        "content-type: application/x-ndjson",
+        "",
+        r#"["invoice","INV-S",{"amount":"1.00"}]"#,
+    ];
+    let (status, _, body) = exchange(addr, &block).await;
+    let answer: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+    task.abort();
+    assert_eq!(status, "200", "{body}");
+    assert_eq!(
+        (&answer["reason"]["refusal"], &answer["reason"]["code"]),
+        (&json!("invalid"), &json!("line_not_record_form")),
+        "{body}"
+    );
+    assert_eq!(
+        &answer["reason"]["fault"]["code"],
+        &json!("positional"),
+        "{body}"
+    );
+    assert_eq!(&answer["reason"]["line"], &json!(2), "{body}");
+    assert!(
+        answer["reason"].get("column").is_none(),
+        "a sequence names no column: {body}"
+    );
+    let message = answer["reason"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(
+            "its members are named, not given by position: write it as an object that takes"
+        ),
+        "{body}"
+    );
+    assert!(!message.contains("at column"), "{body}");
     assert_eq!(store.head().await.unwrap(), head, "nothing was committed");
 }
 

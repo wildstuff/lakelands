@@ -428,10 +428,13 @@ impl Wire {
         let status = r.status();
         let bytes = self.whole(r.into_body()).await?;
         if status.is_success() {
-            serde_json::from_slice(&bytes).map_err(|_| {
-                let status = Some(status.as_u16());
-                self.unavailable(Exchange::NotTheContract { status })
-            })
+            serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|v| lakelands_api::strict::from_value::<T>(v).ok())
+                .ok_or_else(|| {
+                    let status = Some(status.as_u16());
+                    self.unavailable(Exchange::NotTheContract { status })
+                })
         } else {
             Err(self.error_of(status, &bytes))
         }
@@ -472,10 +475,13 @@ impl Wire {
 
     /// The contract's error a failed answer carries.
     pub(crate) fn error_of(&self, status: hyper::StatusCode, bytes: &[u8]) -> Error {
-        serde_json::from_slice::<Error>(bytes).unwrap_or_else(|_| {
-            let status = status.as_u16();
-            self.unavailable(Exchange::UnexpectedStatus { status })
-        })
+        serde_json::from_slice::<Value>(bytes)
+            .ok()
+            .and_then(|v| lakelands_api::strict::from_value::<Error>(v).ok())
+            .unwrap_or_else(|| {
+                let status = status.as_u16();
+                self.unavailable(Exchange::UnexpectedStatus { status })
+            })
     }
 
     /// The head: the position a `describe` is answered at.

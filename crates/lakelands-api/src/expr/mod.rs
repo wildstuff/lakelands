@@ -113,7 +113,7 @@
 //! position the `known_at` of its event, else the time of the read
 //! (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::id::FieldName;
 
@@ -130,82 +130,85 @@ pub use kept::keepable;
 pub use parse::{ParseError, arity, func_by_name, func_name, parse, print};
 pub use rewrite::{expand, expand_kept, rewrite};
 
-/// An expression in the one grammar, typed. A member this form does not
-/// know is refused, never ignored.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Expr {
-    /// A constant.
-    Lit {
-        /// The constant's value.
-        value: Literal,
-    },
-    /// A field of the record in scope, or `<name>.<field>` in a pattern.
-    Path {
-        /// The path's segments.
-        path: Vec<FieldName>,
-    },
-    /// A comparison.
-    Cmp {
-        /// The comparison.
-        cmp: CmpOp,
-        /// Left side.
-        lhs: Box<Expr>,
-        /// Right side.
-        rhs: Box<Expr>,
-    },
-    /// Arithmetic.
-    Arith {
-        /// The operation.
-        arith: ArithOp,
-        /// Left side.
-        lhs: Box<Expr>,
-        /// Right side.
-        rhs: Box<Expr>,
-    },
-    /// Negation of a number.
-    Neg {
-        /// The operand.
-        arg: Box<Expr>,
-    },
-    /// All of the operands hold.
-    And {
-        /// The operands.
-        args: Vec<Expr>,
-    },
-    /// Any of the operands holds.
-    Or {
-        /// The operands.
-        args: Vec<Expr>,
-    },
-    /// The operand does not hold.
-    Not {
-        /// The operand.
-        arg: Box<Expr>,
-    },
-    /// The value is one of a list.
-    In {
-        /// The value tested.
-        arg: Box<Expr>,
-        /// The candidates.
-        list: Vec<Expr>,
-    },
-    /// The value is absent or cleared.
-    IsNull {
-        /// The value tested.
-        arg: Box<Expr>,
-    },
-    /// A function of the closed set.
-    Call {
-        /// The function.
-        func: Func,
-        /// Its arguments.
-        args: Vec<Expr>,
-    },
+crate::tagged_enum! {
+    tag = "op", names = "snake_case", deny;
+    /// An expression in the one grammar, typed. A member this form does not
+    /// know is refused, never ignored.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+    pub enum Expr {
+        /// A constant.
+        Lit {
+            /// The constant's value.
+            value: Literal,
+        },
+        /// A field of the record in scope, or `<name>.<field>` in a pattern.
+        Path {
+            /// The path's segments.
+            path: Vec<FieldName>,
+        },
+        /// A comparison.
+        Cmp {
+            /// The comparison.
+            cmp: CmpOp,
+            /// Left side.
+            lhs: Box<Expr>,
+            /// Right side.
+            rhs: Box<Expr>,
+        },
+        /// Arithmetic.
+        Arith {
+            /// The operation.
+            arith: ArithOp,
+            /// Left side.
+            lhs: Box<Expr>,
+            /// Right side.
+            rhs: Box<Expr>,
+        },
+        /// Negation of a number.
+        Neg {
+            /// The operand.
+            arg: Box<Expr>,
+        },
+        /// All of the operands hold.
+        And {
+            /// The operands.
+            args: Vec<Expr>,
+        },
+        /// Any of the operands holds.
+        Or {
+            /// The operands.
+            args: Vec<Expr>,
+        },
+        /// The operand does not hold.
+        Not {
+            /// The operand.
+            arg: Box<Expr>,
+        },
+        /// The value is one of a list.
+        In {
+            /// The value tested.
+            arg: Box<Expr>,
+            /// The candidates.
+            list: Vec<Expr>,
+        },
+        /// The value is absent or cleared.
+        IsNull {
+            /// The value tested.
+            arg: Box<Expr>,
+        },
+        /// A function of the closed set.
+        Call {
+            /// The function.
+            func: Func,
+            /// Its arguments.
+            args: Vec<Expr>,
+        },
+    }
 }
 
 /// A constant in an expression.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(
     tag = "type",
     content = "value",
@@ -223,6 +226,33 @@ pub enum Literal {
     Text(String),
     /// A span of time, in microseconds.
     Duration(i64),
+}
+
+impl<'de> Deserialize<'de> for Literal {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Literal, D::Error> {
+        use serde::de::Error as _;
+        let value = serde_json::Value::deserialize(d)?;
+        let mut map = crate::strict::object::<D::Error>(value, "type")?;
+        let ty = crate::strict::code(&mut map, "type")?;
+        let content = map.remove("value");
+        if let Some(member) = map.keys().next() {
+            return Err(D::Error::unknown_field(member, &["type", "value"]));
+        }
+        match ty.as_str() {
+            "null" => match content {
+                None => Ok(Literal::Null),
+                Some(_) => Err(D::Error::custom("`null` takes no `value`")),
+            },
+            "bool" => Ok(Literal::Bool(crate::strict::taken(content)?)),
+            "number" => Ok(Literal::Number(crate::strict::taken(content)?)),
+            "text" => Ok(Literal::Text(crate::strict::taken(content)?)),
+            "duration" => Ok(Literal::Duration(crate::strict::taken(content)?)),
+            other => Err(D::Error::unknown_variant(
+                other,
+                &["null", "bool", "number", "text", "duration"],
+            )),
+        }
+    }
 }
 
 /// Comparisons.
@@ -691,13 +721,23 @@ impl Func {
 
 /// An expression as a caller writes it: the text form, or the typed
 /// form. Both reach the same evaluator.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Condition {
     /// The text form, parsed by the store.
     Text(String),
     /// The typed form.
     Expr(Expr),
+}
+
+impl<'de> Deserialize<'de> for Condition {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Condition, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        match value {
+            serde_json::Value::String(text) => Ok(Condition::Text(text)),
+            value => Ok(Condition::Expr(crate::strict::variant(value, "Condition")?)),
+        }
+    }
 }
 
 impl From<&str> for Condition {

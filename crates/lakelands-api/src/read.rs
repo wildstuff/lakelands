@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::Case;
 use crate::expr::Condition;
@@ -264,7 +264,7 @@ impl From<FieldName> for GroupKey {
 /// `find`: records of one type, filtered, ordered and paged, or
 /// aggregated. It subsumes listing, counting, summing, ranges and
 /// grouping; a view type is found like any other type.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Find {
     /// Which records, in the one expression grammar.
@@ -320,6 +320,72 @@ pub struct Find {
     pub at: ReadAt,
 }
 
+/// `find`'s members: its own, and its time axes read as a [`ReadAt`]
+/// beside them rather than flattened into a buffer.
+impl<'de> Deserialize<'de> for Find {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Find, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            #[serde(default, rename = "where")]
+            filter: Option<Condition>,
+            #[serde(default)]
+            order_by: Vec<Order>,
+            #[serde(default)]
+            limit: Option<u32>,
+            #[serde(default)]
+            cursor: Option<Cursor>,
+            #[serde(default)]
+            after: Option<After>,
+            #[serde(default)]
+            offset: Option<u32>,
+            #[serde(default)]
+            total: bool,
+            #[serde(default)]
+            retired: bool,
+            #[serde(default)]
+            aggregate: Option<Aggregate>,
+            #[serde(default)]
+            with_meta: bool,
+            #[serde(default)]
+            params: Params,
+        }
+        crate::strict::struct_read(
+            d,
+            "Find",
+            &[
+                "where",
+                "order_by",
+                "limit",
+                "cursor",
+                "after",
+                "offset",
+                "total",
+                "retired",
+                "aggregate",
+                "with_meta",
+                "params",
+                "as_of",
+                "valid_at",
+            ],
+            |wire: Wire, at| Find {
+                filter: wire.filter,
+                order_by: wire.order_by,
+                limit: wire.limit,
+                cursor: wire.cursor,
+                after: wire.after,
+                offset: wire.offset,
+                total: wire.total,
+                retired: wire.retired,
+                aggregate: wire.aggregate,
+                with_meta: wire.with_meta,
+                params: wire.params,
+                at,
+            },
+        )
+    }
+}
+
 /// A sort position in `find`'s one order: the row that sorts at `values`
 /// under `order_by`, with key `key`
 /// (`docs/decisions/029-every-answer-has-one-order.md`).
@@ -351,48 +417,51 @@ pub struct ThinnedAct {
     pub gone: u64,
 }
 
-/// The answer to `find`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "shape", rename_all = "snake_case")]
-pub enum Found {
-    /// A page of records.
-    Records {
-        /// The records.
-        rows: Vec<Record>,
-        /// Where the next page starts, if there is one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        next_cursor: Option<Cursor>,
-        /// How many records match, when `total` asked for it: at the
-        /// answer's position, so every page of one walk says the same.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        total: Option<u64>,
-        /// How many retired records match, when `retired` asked for it, at
-        /// the same position.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        retired: Option<u64>,
-        /// The acts that thinned the type this page answers, oldest first;
-        /// for a view, those on its sources.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        thinned: Vec<ThinnedAct>,
-        /// How many of the type's or the view's groups a read at an
-        /// earlier position could not answer because they are stranded,
-        /// and so answer at the head alone.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stranded: Option<u64>,
-    },
-    /// Aggregated groups.
-    Groups {
-        /// One row per group.
-        rows: Vec<Group>,
-        /// The acts that thinned the type or the view's sources, oldest
-        /// first.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        thinned: Vec<ThinnedAct>,
-        /// How many groups the read could not answer because they are
-        /// stranded, and so answer at the head alone.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stranded: Option<u64>,
-    },
+crate::tagged_enum! {
+    tag = "shape", names = "snake_case", permit;
+    /// The answer to `find`.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(tag = "shape", rename_all = "snake_case")]
+    pub enum Found {
+        /// A page of records.
+        Records {
+            /// The records.
+            rows: Vec<Record>,
+            /// Where the next page starts, if there is one.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            next_cursor: Option<Cursor>,
+            /// How many records match, when `total` asked for it: at the
+            /// answer's position, so every page of one walk says the same.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            total: Option<u64>,
+            /// How many retired records match, when `retired` asked for it, at
+            /// the same position.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            retired: Option<u64>,
+            /// The acts that thinned the type this page answers, oldest first;
+            /// for a view, those on its sources.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            thinned: Vec<ThinnedAct>,
+            /// How many of the type's or the view's groups a read at an
+            /// earlier position could not answer because they are stranded,
+            /// and so answer at the head alone.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            stranded: Option<u64>,
+        },
+        /// Aggregated groups.
+        Groups {
+            /// One row per group.
+            rows: Vec<Group>,
+            /// The acts that thinned the type or the view's sources, oldest
+            /// first.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            thinned: Vec<ThinnedAct>,
+            /// How many groups the read could not answer because they are
+            /// stranded, and so answer at the head alone.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            stranded: Option<u64>,
+        },
+    }
 }
 
 /// One group of an aggregation.
@@ -409,7 +478,7 @@ pub struct Group {
 }
 
 /// `get`: one record by key.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Get {
     /// The record's key.
@@ -423,6 +492,32 @@ pub struct Get {
     /// The time axes.
     #[serde(default, flatten)]
     pub at: ReadAt,
+}
+
+/// `get`'s members, read as [`Find`]'s are.
+impl<'de> Deserialize<'de> for Get {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Get, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            key: RecordKey,
+            #[serde(default)]
+            with_meta: bool,
+            #[serde(default)]
+            params: Params,
+        }
+        crate::strict::struct_read(
+            d,
+            "Get",
+            &["key", "with_meta", "params", "as_of", "valid_at"],
+            |wire: Wire, at| Get {
+                key: wire.key,
+                with_meta: wire.with_meta,
+                params: wire.params,
+                at,
+            },
+        )
+    }
 }
 
 /// How much of one embedding field is embedded, as

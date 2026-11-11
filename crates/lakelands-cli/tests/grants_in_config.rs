@@ -322,3 +322,37 @@ fn a_repeat_outside_a_grant_hides_none_inside_one() {
     assert!(said.contains("repeats the key `topic`"), "{said}");
     assert!(said.contains("`clerk`"), "{said}");
 }
+
+/// A grant written as a sequence is refused, naming the members a grant
+/// takes; the same grant as an object reads (record 110).
+#[test]
+fn a_grant_written_as_a_sequence_is_refused() {
+    let root = Lakes::with_articles("positional-grant");
+    root.configure(clerk(json!([])), json!({}));
+    let before = root.lake_files();
+    for refused in [root.serve_as_clerk(), root.read_as_clerk()] {
+        let said = err(&refused);
+        assert!(
+            !refused.status.success(),
+            "a positional grant started: {said}"
+        );
+        for name in [
+            "`default`",
+            "`types`",
+            "`review`",
+            "`schema`",
+            "`ingest`",
+            "`restricted`",
+        ] {
+            assert!(said.contains(name), "{name} is not named in: {said}");
+        }
+        assert!(said.contains("`clerk`"), "no principal: {said}");
+    }
+    assert!(
+        root.lake_files() == before,
+        "a positional grant touched the lake"
+    );
+    root.configure(clerk(json!({"default": "read"})), json!({}));
+    let read = root.read_as_clerk();
+    assert!(read.status.success(), "{}", err(&read));
+}

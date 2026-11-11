@@ -144,8 +144,11 @@ fn show(p: &Path) -> String {
 /// know whose it is, so the file is read again for the place it stopped at.
 fn grant_holder(text: &str) -> Option<String> {
     use serde_path_to_error::Segment;
-    let read = &mut serde_json::Deserializer::from_str(text);
-    let refused = serde_path_to_error::deserialize::<_, Config>(read).err()?;
+    // The strict read says where a positional grant sits, which the plain
+    // read does not refuse; it sorts a map's keys, but a principal's index
+    // in its lake's list is a sequence's, and keeps its place.
+    let file: serde_json::Value = serde_json::from_str(text).ok()?;
+    let refused = lakelands_api::strict::read::<Config>(file.clone()).err()?;
     let place: Vec<&Segment> = refused.path().iter().collect();
     let [
         Segment::Map { key: list },
@@ -159,7 +162,6 @@ fn grant_holder(text: &str) -> Option<String> {
     if list != "principals" || field != "grants" {
         return None;
     }
-    let file: serde_json::Value = serde_json::from_str(text).ok()?;
     let name = file.get(list)?.get(index)?.get("name")?.as_str()?;
     Some(name.to_owned())
 }
@@ -590,7 +592,8 @@ impl Root {
                  `lakelands settings set zone <IANA name>`, as `Europe/Berlin`",
             ));
         }
-        let config: Config = serde_json::from_str(&text).map_err(|e| match grant_holder(&text) {
+        let config: Config =
+            lakelands_api::strict::from_str(&text).map_err(|e| match grant_holder(&text) {
             Some(name) => Failure::new(
                 format!(
                     "{}: the grant of principal `{name}` is not understood: {e}",
@@ -1021,7 +1024,7 @@ impl Root {
             ),
             _ => io(&file, e),
         })?;
-        let mut location: Location = serde_json::from_str(&text).map_err(|e| {
+        let mut location: Location = lakelands_api::strict::from_str(&text).map_err(|e| {
             Failure::new(
                 format!("{} is not a valid location: {e}", show(&file)),
                 "correct the file, or remove it and run `lakelands lake new` again",

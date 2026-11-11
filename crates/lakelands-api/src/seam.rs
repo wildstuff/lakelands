@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::engine::EngineOpener;
 use crate::error::{Case, Place, Refusal, Result, Said};
@@ -27,7 +27,7 @@ use crate::principal::{Principal, WriteContext};
 use crate::record::{Patch, Record, Value};
 
 /// What a caller presents to a door, before it is a principal.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Credential {
     /// An API key.
@@ -48,6 +48,41 @@ pub enum Credential {
         /// The principal's id.
         principal: String,
     },
+}
+
+impl<'de> Deserialize<'de> for Credential {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Credential, D::Error> {
+        use serde::de::Error as _;
+        let value = serde_json::Value::deserialize(d)?;
+        let mut map = crate::strict::object::<D::Error>(value, "kind")?;
+        let kind = crate::strict::code(&mut map, "kind")?;
+        let content = map.remove("value");
+        match kind.as_str() {
+            "api_key" => Ok(Credential::ApiKey(crate::strict::taken(content)?)),
+            "bearer" => Ok(Credential::Bearer(crate::strict::taken(content)?)),
+            "local_user" => Ok(Credential::LocalUser(crate::strict::taken(content)?)),
+            "forwarded" => {
+                #[derive(Deserialize)]
+                struct Wire {
+                    host: String,
+                    principal: String,
+                }
+                let members = match content {
+                    Some(value) => crate::strict::object::<D::Error>(value, "value")?,
+                    None => return Err(D::Error::missing_field("value")),
+                };
+                let wire: Wire = crate::strict::at(members)?;
+                Ok(Credential::Forwarded {
+                    host: wire.host,
+                    principal: wire.principal,
+                })
+            }
+            other => Err(D::Error::unknown_variant(
+                other,
+                &["api_key", "bearer", "local_user", "forwarded"],
+            )),
+        }
+    }
 }
 
 /// Turns a host's identities, roles and policies into one [`Principal`]

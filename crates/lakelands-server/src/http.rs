@@ -533,7 +533,10 @@ pub(crate) async fn forwarded(
     let bad = |case| Turned::new(StatusCode::BAD_REQUEST, Turn::Invalid(case));
     let principal = header(h, PRINCIPAL_HEADER).ok_or_else(|| bad(Case::NoForwardedPrincipal))?;
     let context = match header(h, CONTEXT_HEADER) {
-        Some(c) => serde_json::from_str(c).map_err(|_| bad(Case::ForwardedContextForm))?,
+        Some(c) => serde_json::from_str::<Value>(c)
+            .ok()
+            .and_then(|v| lakelands_api::strict::from_value(v).ok())
+            .ok_or_else(|| bad(Case::ForwardedContextForm))?,
         None => WriteContext::default(),
     };
     let refused = || {

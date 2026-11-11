@@ -37,6 +37,7 @@ pub mod record;
 pub mod seam;
 pub mod settings;
 pub mod shape;
+pub mod strict;
 pub mod time;
 pub mod tools;
 pub mod write;

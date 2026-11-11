@@ -96,7 +96,10 @@ fn advice(case: &Case) -> Option<String> {
         Case::PathNames { argument } => return Some(format!("leave `{argument}` out of the body")),
         Case::PreflightReportId | Case::ApplyNeedsReportId => preflight,
         Case::IngestMediaType => "send one record per line as NDJSON",
-        Case::LineTooLong { .. } | Case::LineNotRecord { .. } | Case::BodyCutOff { .. } => line,
+        Case::LineTooLong { .. }
+        | Case::LineNotRecord { .. }
+        | Case::LineNotRecordForm { .. }
+        | Case::BodyCutOff { .. } => line,
         Case::BodyMediaType | Case::BodyNotJson { .. } => "send the body as JSON",
         Case::BodyTooLarge => "send a smaller body; many records go through ingest",
         Case::ExportNotEmpty => "export into an empty or new directory",

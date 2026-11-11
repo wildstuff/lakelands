@@ -107,6 +107,44 @@ fn a_key_file_is_read_as_written() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A key file of the wrong shape is refused in words that name the form and
+/// never the value it held: a misfiled key reaches no error, and a version
+/// written as a sequence is told its members are named, not given by
+/// position.
+#[test]
+fn a_key_file_of_the_wrong_shape_names_the_form_and_not_the_key() {
+    let dir = scratch("wrong-shape");
+    std::fs::create_dir_all(&dir).unwrap();
+    let held = "ab".repeat(32);
+    let lake = LakeId::from("kept");
+    let crm = SourceId::from("crm");
+    std::fs::write(
+        dir.join("kept.keys.json"),
+        format!(r#"{{"sources": "{held}"}}"#),
+    )
+    .unwrap();
+    let said = FileKeyring::new(&dir)
+        .ids(&lake, &crm)
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("not of the expected shape"), "{said}");
+    assert!(!said.contains(&held), "{said}");
+    std::fs::write(
+        dir.join("kept.keys.json"),
+        format!(r#"{{"sources": {{"crm": [["{held}"]]}}}}"#),
+    )
+    .unwrap();
+    let said = FileKeyring::new(&dir)
+        .ids(&lake, &crm)
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("named, not given by position"), "{said}");
+    for member in ["`keys`", "`apart`", "`destroyed`"] {
+        assert!(said.contains(member), "{member} in {said}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A version destroyed goes with every older one, from another keyring
 /// over the same directory too; the newer ones still open, a version not
 /// held is refused, and the source is given a key again.

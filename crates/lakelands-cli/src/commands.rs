@@ -493,7 +493,7 @@ fn flag<T: serde::de::DeserializeOwned>(
     given: Option<String>,
 ) -> Result<Option<T>, Failure> {
     let Some(given) = given else { return Ok(None) };
-    let read = serde_json::from_value(serde_json::Value::String(given.clone()));
+    let read = lakelands_api::strict::from_value(serde_json::Value::String(given.clone()));
     read.map(Some).map_err(|e| {
         let todo = "give an instant as RFC 3339, and a cursor as a page printed it";
         Failure::new(format!("--{name} `{given}`: {e}"), todo)
@@ -662,7 +662,7 @@ fn ndjson(file: &str, text: &str) -> Result<Vec<SourceRecord>, Failure> {
         .enumerate()
         .filter(|(_, l)| !l.trim().is_empty())
         .map(|(n, l)| {
-            serde_json::from_str(l).map_err(|e| {
+            lakelands_api::strict::from_str::<SourceRecord>(l).map_err(|e| {
                 Failure::new(
                     format!("line {} of {file} is not a source record: {e}", n + 1),
                     "each line must be one JSON object with `type`, `key` and `fields`; nothing was ingested",
@@ -716,7 +716,7 @@ async fn csv(
     (file, text): (&str, &str),
     (map_file, map): (&str, &str),
 ) -> Result<Vec<SourceRecord>, Failure> {
-    let map: CsvMap = serde_json::from_str(map).map_err(|e| {
+    let map: CsvMap = lakelands_api::strict::from_str(map).map_err(|e| {
         Failure::new(
             format!("{map_file} is not a column map: {e}"),
             "a map names `type`, the `key` column, and `fields` from column to field",

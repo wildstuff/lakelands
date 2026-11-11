@@ -42,26 +42,29 @@ pub enum Subject {
     Candidates(Vec<SourceRecord>),
 }
 
-/// The rules a judge judges.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Rules {
-    /// The type's constraints the caller is shown, or those it names; a
-    /// name not among them is refused `not_found`.
-    Declared {
-        /// The constraints, by name; absent, every one shown.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        names: Option<Vec<ConstraintName>>,
-    },
-    /// One condition the caller is considering, checked where a
-    /// constraint is and answered under the name it gives; nothing is
-    /// declared.
-    Proposed {
-        /// The name the answer gives it.
-        name: ConstraintName,
-        /// The condition.
-        holds: Condition,
-    },
+crate::tagged_enum! {
+    tag = "kind", names = "snake_case", deny;
+    /// The rules a judge judges.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+    pub enum Rules {
+        /// The type's constraints the caller is shown, or those it names; a
+        /// name not among them is refused `not_found`.
+        Declared {
+            /// The constraints, by name; absent, every one shown.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            names: Option<Vec<ConstraintName>>,
+        },
+        /// One condition the caller is considering, checked where a
+        /// constraint is and answered under the name it gives; nothing is
+        /// declared.
+        Proposed {
+            /// The name the answer gives it.
+            name: ConstraintName,
+            /// The condition.
+            holds: Condition,
+        },
+    }
 }
 
 /// What the rules say: every record in the subject's order, and every
@@ -99,21 +102,24 @@ pub struct Unjudged {
     pub why: UnjudgedWhy,
 }
 
-/// Why a rule was not judged whole.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum UnjudgedWhy {
-    /// Over stored records it reads what only the write that wrote them
-    /// decided — `preceding()`, `previous()`, `changed()`, `retired()` or
-    /// `created()` — and no read judges that part; the same for every
-    /// record of the call.
-    TheWriteAlone,
-    /// The evaluator answered a case over the record at `index`.
-    Unevaluable {
-        /// The record's place in the subject.
-        index: u32,
-        /// What the evaluator answered.
-        #[serde(with = "crate::error::closed")]
-        case: Case,
-    },
+crate::tagged_enum! {
+    tag = "kind", names = "snake_case", permit;
+    /// Why a rule was not judged whole.
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    pub enum UnjudgedWhy {
+        /// Over stored records it reads what only the write that wrote them
+        /// decided — `preceding()`, `previous()`, `changed()`, `retired()` or
+        /// `created()` — and no read judges that part; the same for every
+        /// record of the call.
+        TheWriteAlone,
+        /// The evaluator answered a case over the record at `index`.
+        Unevaluable {
+            /// The record's place in the subject.
+            index: u32,
+            /// What the evaluator answered.
+            #[serde(with = "crate::error::closed")]
+            case: Case,
+        },
+    }
 }

@@ -1,7 +1,8 @@
 //! Why a lake cannot answer now, and which seam a call needs: closed sets
 //! of cases with their parameters as data. A case's sentence is its
 //! template (`catalog!`, in `case.rs`), and a plain name's is written
-//! beside its name (`named!`); neither is built elsewhere. A host
+//! beside its name (`named!`, which also takes a name with parameters);
+//! neither is built elsewhere. A host
 //! renders the case in its users' language, and the sentence is the
 //! fallback and what is logged
 //! (`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
@@ -29,6 +30,16 @@ pub struct Unknown {
     code: String,
     params: Map<String, Value>,
     message: String,
+}
+
+/// A case this build does not know is made by the wire's reader, which
+/// keeps what it cannot name; it is never read from a value.
+impl<'de> Deserialize<'de> for Unknown {
+    fn deserialize<D: Deserializer<'de>>(_d: D) -> Result<Unknown, D::Error> {
+        Err(serde::de::Error::custom(
+            "a case this build does not know is read from the wire, not from a value",
+        ))
+    }
 }
 
 impl Unknown {
@@ -95,6 +106,17 @@ impl Detail {
             e.line(),
             e.column()
         ))
+    }
+
+    /// A value that is not of the shape its type takes, as `strict`
+    /// refused it: the members the form takes when it names them, and
+    /// otherwise only that the shape is not the expected one — never the
+    /// value's own text, which may be a key.
+    pub fn shape(e: &crate::strict::Fault) -> Detail {
+        match e {
+            crate::strict::Fault::Positional { .. } => Detail(e.to_string()),
+            _ => Detail("not of the expected shape".into()),
+        }
     }
 
     /// A database's or a library's own words for a failure, as its caller
@@ -290,20 +312,23 @@ impl<T: Closed> Closed for Box<T> {
 }
 
 /// A closed set of plain names, written as its name and said as its
-/// sentence. A name this build does not know is kept, written back as it
-/// came, and said as itself in backticks, a backtick or a backslash in it
-/// escaped by a backslash, which no known name's sentence is.
+/// sentence. A case that takes parameters is written as an object naming
+/// its code and them; a plain one stays its name. A name this build does
+/// not know is kept, written back as it came, and said as itself in
+/// backticks, a backtick or a backslash in it escaped by a backslash,
+/// which no known name's sentence is.
 macro_rules! named {
     (
         $(#[$meta:meta])*
         pub enum $set:ident {
-            $( $(#[$doc:meta])* $case:ident = $name:literal => $sentence:literal, )*
+            $( $(#[$doc:meta])* $case:ident $( { $( $field:ident : $fty:ty ),* $(,)? } )? = $name:literal => $sentence:literal, )*
         }
     ) => {
         $(#[$meta])*
         #[derive(Clone, Debug, PartialEq, Eq)]
+        #[allow(missing_docs)]
         pub enum $set {
-            $( $(#[$doc])* $case, )*
+            $( $(#[$doc])* $case $( { $( $field: $fty ),* } )?, )*
             /// A name this build does not know.
             Unknown(String),
         }
@@ -312,16 +337,49 @@ macro_rules! named {
             /// Its name on the wire.
             pub fn name(&self) -> &str {
                 match self {
-                    $( $set::$case => $name, )*
+                    $( $set::$case $( { $( $field : _ ),* } )? => $name, )*
                     $set::Unknown(n) => n,
                 }
+            }
+
+            /// The case an object's members name, its parameters read
+            /// strictly.
+            #[doc(hidden)]
+            #[allow(dead_code)]
+            fn from_members<E: ::serde::de::Error>(
+                mut members: ::serde_json::Map<String, ::serde_json::Value>,
+            ) -> Result<$set, E> {
+                let code = $crate::strict::code::<E>(&mut members, "code")?;
+                Ok(match code.as_str() {
+                    $(
+                        $name => {
+                            $(
+                                $(
+                                    let $field: $fty = $crate::strict::value::<$fty, E>(
+                                        members.remove(stringify!($field)).ok_or_else(|| {
+                                            <E as ::serde::de::Error>::custom(format!(
+                                                "an object that takes `{}` names `{}`",
+                                                $name,
+                                                stringify!($field)
+                                            ))
+                                        })?,
+                                    )?;
+                                )*
+                            )?
+                            $set::$case $( { $( $field ),* } )?
+                        }
+                    )*
+                    _ => $set::Unknown(code),
+                })
             }
         }
 
         impl fmt::Display for $set {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 match self {
-                    $( $set::$case => f.write_str($sentence), )*
+                    $( $set::$case $( { $( $field ),* } )? => {
+                        write!(f, $sentence $(, $( $field = $field ),* )?)
+                    } )*
                     $set::Unknown(n) => {
                         let n = n.replace('\\', "\\\\").replace('`', "\\`");
                         write!(f, "`{n}`")
@@ -340,17 +398,38 @@ macro_rules! named {
 
         impl Serialize for $set {
             fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                s.serialize_str(self.name())
+                match self {
+                    $( $set::$case $( { $( $field ),* } )? => {
+                        let named = !stringify!($( $($field)* )?).is_empty();
+                        if named {
+                            use ::serde::ser::SerializeMap as _;
+                            let mut map = s.serialize_map(None)?;
+                            map.serialize_entry("code", $name)?;
+                            $( $( map.serialize_entry(stringify!($field), $field)?; )* )?
+                            map.end()
+                        } else {
+                            s.serialize_str($name)
+                        }
+                    } )*
+                    $set::Unknown(n) => s.serialize_str(n),
+                }
             }
         }
 
         impl<'de> Deserialize<'de> for $set {
             fn deserialize<D: Deserializer<'de>>(d: D) -> Result<$set, D::Error> {
-                let name = String::deserialize(d)?;
-                Ok(match name.as_str() {
-                    $( $name => $set::$case, )*
-                    _ => $set::Unknown(name),
-                })
+                let members = match <Value as Deserialize>::deserialize(d)? {
+                    Value::String(name) => {
+                        Map::from_iter([("code".to_owned(), Value::String(name))])
+                    }
+                    Value::Object(members) => members,
+                    _ => {
+                        return Err(<D::Error as ::serde::de::Error>::custom(
+                            "a name, or an object naming it and its parameters",
+                        ))
+                    }
+                };
+                $set::from_members::<D::Error>(members)
             }
         }
     };

@@ -12,7 +12,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::id::{FieldName, Position, ProposalId, RecordKey, TypeName, VerbName, Version};
 use crate::write::MigrationReport;
@@ -154,7 +154,8 @@ impl Serialize for Error {
 /// said by the error's `message`.
 impl<'de> Deserialize<'de> for Error {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Error, D::Error> {
-        let mut map = Map::<String, Value>::deserialize(d)?;
+        let value = Value::deserialize(d)?;
+        let mut map = crate::strict::object::<D::Error>(value, "error")?;
         // A refused record of an ingest: its refusal, with its place beside.
         if ["index", "from", "record"]
             .iter()
@@ -168,8 +169,13 @@ impl<'de> Deserialize<'de> for Error {
             let (index, from) = (place(map.remove("index"))?, place(map.remove("from"))?);
             let record = closed::deserialize(map.remove("record").unwrap_or_default());
             let record = record.map_err(|e: serde_json::Error| custom(e.to_string()))?;
-            let full = map.remove("quarantine_full").map(serde_json::from_value);
-            let quarantine_full = full.transpose().map_err(|e| custom(e.to_string()))?;
+            let quarantine_full = match map.remove("quarantine_full") {
+                None => None,
+                Some(v) => Some(crate::strict::value::<
+                    crate::quarantine::QuarantineFull,
+                    D::Error,
+                >(v)?),
+            };
             let error = Error::deserialize(Value::Object(map));
             let error = Box::new(error.map_err(|e| custom(e.to_string()))?);
             return Ok(Error::Ingested {
@@ -180,12 +186,13 @@ impl<'de> Deserialize<'de> for Error {
                 quarantine_full,
             });
         }
-        let message = map
-            .get("message")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let read = closed::deserialize(Value::Object(map)).map(|Plain(e)| e);
-        let mut e = read.map_err(serde::de::Error::custom)?;
+        let message = match map.get("message") {
+            Some(Value::String(message)) => message.clone(),
+            _ => String::new(),
+        };
+        let mut e = closed::deserialize(Value::Object(map))
+            .map(|Plain(e)| e)
+            .map_err(serde::de::Error::custom)?;
         if let Error::Refused {
             reason: Refusal::Unknown(u),
             ..
@@ -194,7 +201,7 @@ impl<'de> Deserialize<'de> for Error {
             missing: Missing::Unknown(u),
         } = &mut e
         {
-            u.says(message.unwrap_or_default());
+            u.says(message);
         }
         Ok(e)
     }
@@ -281,7 +288,9 @@ impl Error {
             )),
         };
         // As the wire reads it back: a kind with no parameter as itself.
-        let read = serde_json::to_value(&alone).and_then(serde_json::from_value);
+        let read = serde_json::to_value(&alone)
+            .ok()
+            .and_then(|v| crate::strict::from_value(v).ok());
         read.unwrap_or(alone)
     }
 
@@ -401,89 +410,92 @@ impl Error {
     }
 }
 
-/// Why a call was refused.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "refusal", rename_all = "snake_case")]
-pub enum Refusal {
-    /// The principal holds no grant for it.
-    NotGranted,
-    /// The call needs the grant it names, which the principal does not
-    /// hold, whatever the lake holds: a change of the lake's types is made
-    /// by a holder of `restricted` alone (062).
-    GrantNeeded {
-        /// The grant, as `Grants` names it.
-        grant: String,
-    },
-    /// The field is written by another authority, through another door
-    /// (a source field through `upsert`, a derived field by anyone, an
-    /// authored field by a source it does not admit or over another
-    /// hand's write), or `retire` is used where only its type's verbs
-    /// retire the record.
-    WrongDoor,
-    /// Only its type's verbs write the field, or retire the record
-    /// (lakelands#1148): these, which its writer may call; shown none, it
-    /// is `wrong_door` (lakelands#1130).
-    VerbsOnly {
-        /// The verbs that write the field or retire the record, by name.
-        verbs: Vec<crate::id::VerbName>,
-    },
-    /// The name is in a reserved namespace: `sys.` for a type,
-    /// `sys.` and `lakelands.` for an annotation key; or a verb is
-    /// declared on a system type that is not a relation's link type.
-    Reserved,
-    /// The request does not fit the lake's map: an unknown field, a
-    /// relation the type does not declare, an expression that does not
-    /// parse or does not type.
-    Invalid(Box<Said>),
-    /// A value breaks a declared constraint or a required field is
-    /// missing.
-    Constraint(Box<Said>),
-    /// A verb's `requires` or one of its preconditions does not hold for
-    /// the record.
-    Precondition(Box<Said>),
-    /// A chain of reactive writes went deeper than the lake allows.
-    TooDeep {
-        /// The lake's ceiling.
-        max: u32,
-    },
-    /// A whole-graph measure would reach more records than the lake
-    /// allows, a `find` would skip more rows than it allows (the refusal
-    /// then names `offset`), a pattern's rows read whole for an order over
-    /// a record a step reaches or for an aggregate would be more than it
-    /// allows (`order_by`, `project`), or a set's declaration or a migration would
-    /// change more memberships than it allows (the refusal names the set),
-    /// or a change to records would select more records than it allows
-    /// (`where`), or a judge would judge more records than it allows
-    /// (`records`); nothing partial is answered or appended.
-    TooLarge {
-        /// The lake's `max_graph_nodes`, `max_offset`, `max_set_changes`,
-        /// `max_change_records` or, for a judge's `records`, `max_limit`.
-        max: u32,
-    },
-    /// A migration would lose information; the report says where.
-    Migration {
-        /// The preflight report.
-        report: Box<MigrationReport>,
-    },
-    /// The proposal is already decided.
-    Decided,
-    /// A retry of a call of a verb that reaches outside the lake, or of
-    /// its acceptance, found no answer of its executor recorded: the call
-    /// is in the log, and a retry runs nothing. The case names its
-    /// position.
-    Unanswered(Box<Said>),
-    /// The host declined the call by its own policy: its verb's executor
-    /// did not run it, and a retry under the same idempotency key answers the same. The host keeps its
-    /// reason in its own trail, under the call's dedup key.
-    Declined(Box<Said>),
-    /// The position asked for is not in the lake's log.
-    OutOfRange {
-        /// The head of the log.
-        head: Position,
-    },
-    /// A refusal this build does not know, said by its error's sentence.
-    #[serde(skip)]
-    Unknown(Unknown),
+crate::tagged_enum! {
+    tag = "refusal", names = "snake_case", permit;
+    /// Why a call was refused.
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+    #[serde(tag = "refusal", rename_all = "snake_case")]
+    pub enum Refusal {
+        /// The principal holds no grant for it.
+        NotGranted,
+        /// The call needs the grant it names, which the principal does not
+        /// hold, whatever the lake holds: a change of the lake's types is made
+        /// by a holder of `restricted` alone (062).
+        GrantNeeded {
+            /// The grant, as `Grants` names it.
+            grant: String,
+        },
+        /// The field is written by another authority, through another door
+        /// (a source field through `upsert`, a derived field by anyone, an
+        /// authored field by a source it does not admit or over another
+        /// hand's write), or `retire` is used where only its type's verbs
+        /// retire the record.
+        WrongDoor,
+        /// Only its type's verbs write the field, or retire the record
+        /// (lakelands#1148): these, which its writer may call; shown none, it
+        /// is `wrong_door` (lakelands#1130).
+        VerbsOnly {
+            /// The verbs that write the field or retire the record, by name.
+            verbs: Vec<crate::id::VerbName>,
+        },
+        /// The name is in a reserved namespace: `sys.` for a type,
+        /// `sys.` and `lakelands.` for an annotation key; or a verb is
+        /// declared on a system type that is not a relation's link type.
+        Reserved,
+        /// The request does not fit the lake's map: an unknown field, a
+        /// relation the type does not declare, an expression that does not
+        /// parse or does not type.
+        Invalid(Box<Said>),
+        /// A value breaks a declared constraint or a required field is
+        /// missing.
+        Constraint(Box<Said>),
+        /// A verb's `requires` or one of its preconditions does not hold for
+        /// the record.
+        Precondition(Box<Said>),
+        /// A chain of reactive writes went deeper than the lake allows.
+        TooDeep {
+            /// The lake's ceiling.
+            max: u32,
+        },
+        /// A whole-graph measure would reach more records than the lake
+        /// allows, a `find` would skip more rows than it allows (the refusal
+        /// then names `offset`), a pattern's rows read whole for an order over
+        /// a record a step reaches or for an aggregate would be more than it
+        /// allows (`order_by`, `project`), or a set's declaration or a migration would
+        /// change more memberships than it allows (the refusal names the set),
+        /// or a change to records would select more records than it allows
+        /// (`where`), or a judge would judge more records than it allows
+        /// (`records`); nothing partial is answered or appended.
+        TooLarge {
+            /// The lake's `max_graph_nodes`, `max_offset`, `max_set_changes`,
+            /// `max_change_records` or, for a judge's `records`, `max_limit`.
+            max: u32,
+        },
+        /// A migration would lose information; the report says where.
+        Migration {
+            /// The preflight report.
+            report: Box<MigrationReport>,
+        },
+        /// The proposal is already decided.
+        Decided,
+        /// A retry of a call of a verb that reaches outside the lake, or of
+        /// its acceptance, found no answer of its executor recorded: the call
+        /// is in the log, and a retry runs nothing. The case names its
+        /// position.
+        Unanswered(Box<Said>),
+        /// The host declined the call by its own policy: its verb's executor
+        /// did not run it, and a retry under the same idempotency key answers the same. The host keeps its
+        /// reason in its own trail, under the call's dedup key.
+        Declined(Box<Said>),
+        /// The position asked for is not in the lake's log.
+        OutOfRange {
+            /// The head of the log.
+            head: Position,
+        },
+        /// A refusal this build does not know, said by its error's sentence.
+        #[serde(skip)]
+        Unknown(Unknown),
+    }
 }
 
 impl Refusal {
@@ -563,52 +575,55 @@ impl fmt::Display for Refusal {
     }
 }
 
-/// What was not found.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Missing {
-    /// A type.
-    Type {
-        /// Its name.
-        name: TypeName,
-    },
-    /// A record.
-    Record {
-        /// Its type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// Its key.
-        key: RecordKey,
-    },
-    /// A verb.
-    Verb {
-        /// Its name.
-        name: VerbName,
-    },
-    /// A function.
-    Function {
-        /// Its name.
-        name: String,
-    },
-    /// A proposal.
-    Proposal {
-        /// Its identifier.
-        id: ProposalId,
-    },
-    /// A quarantined record (085).
-    Quarantined {
-        /// Its id.
-        id: crate::quarantine::QuarantineId,
-    },
-    /// A constraint of the type, among those its caller is shown (113).
-    Constraint {
-        /// Its name, as the caller gave it.
-        name: crate::id::ConstraintName,
-    },
-    /// A thing of a kind this build does not know, said by its error's
-    /// sentence.
-    #[serde(skip)]
-    Unknown(Unknown),
+crate::tagged_enum! {
+    tag = "kind", names = "snake_case", permit;
+    /// What was not found.
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    pub enum Missing {
+        /// A type.
+        Type {
+            /// Its name.
+            name: TypeName,
+        },
+        /// A record.
+        Record {
+            /// Its type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// Its key.
+            key: RecordKey,
+        },
+        /// A verb.
+        Verb {
+            /// Its name.
+            name: VerbName,
+        },
+        /// A function.
+        Function {
+            /// Its name.
+            name: String,
+        },
+        /// A proposal.
+        Proposal {
+            /// Its identifier.
+            id: ProposalId,
+        },
+        /// A quarantined record (085).
+        Quarantined {
+            /// Its id.
+            id: crate::quarantine::QuarantineId,
+        },
+        /// A constraint of the type, among those its caller is shown (113).
+        Constraint {
+            /// Its name, as the caller gave it.
+            name: crate::id::ConstraintName,
+        },
+        /// A thing of a kind this build does not know, said by its error's
+        /// sentence.
+        #[serde(skip)]
+        Unknown(Unknown),
+    }
 }
 
 impl Closed for Missing {

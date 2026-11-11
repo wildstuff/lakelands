@@ -37,114 +37,117 @@ use crate::id::{RelationName, TypeName, VerbName};
 use crate::key::LINK_PREFIX;
 use crate::ontology::{FieldType, StorageKind};
 
-/// The door a tool leads to.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(tag = "door", rename_all = "snake_case")]
-pub enum Door {
-    /// `find` on one type.
-    Find {
-        /// The type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-    },
-    /// `get` on one type.
-    Get {
-        /// The type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-    },
-    /// `upsert` on one type.
-    Upsert {
-        /// The type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-    },
-    /// `change` on one type: a change to the records a condition selects,
-    /// planned first (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
-    Change {
-        /// The type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-    },
-    /// `retire` on one type.
-    Retire {
-        /// The type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-    },
-    /// `link` over one relation of one type.
-    Link {
-        /// The type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The relation.
-        relation: RelationName,
-    },
-    /// `unlink` over one relation of one type.
-    Unlink {
-        /// The type.
-        #[serde(rename = "type")]
-        ty: TypeName,
-        /// The relation.
-        relation: RelationName,
-    },
-    /// `call` of one verb.
-    Call {
-        /// The verb.
-        verb: VerbName,
-    },
-    /// `describe`.
-    Describe,
-    /// `pin`: a door of the MCP session, not of the catalog. It pins
-    /// `as_of` for the session's later reads until cleared.
-    Pin,
-    /// `subscribe`: a door of the MCP session. The session is sent
-    /// `notifications/lakelands/changed` for every change it may see from a
-    /// position on.
-    Subscribe,
-    /// `unsubscribe`: ends the session's subscription.
-    Unsubscribe,
-    /// `query`.
-    Query,
-    /// `cypher`: a statement of the openCypher subset, translated into one
-    /// pattern and run as `query` runs it; a read tool, listed where
-    /// `query` is.
-    Cypher,
-    /// `search`.
-    Search,
-    /// `propose`.
-    Propose,
-    /// `proposals`.
-    Proposals,
-    /// `accept`.
-    Accept,
-    /// `reject`.
-    Reject,
-    /// `declare` of a type.
-    DeclareType,
-    /// `declare`: any declaration. Served over REST only; the generator
-    /// makes no tool of it, so agents author types with `declare_type`.
-    Declare,
-    /// `apply`: a set of declarations as one. Served over REST only, as
-    /// `declare` is.
-    Apply,
-    /// `add_field`.
-    AddField,
-    /// `recompute`.
-    Recompute,
-    /// `migrate`: the preflight, or with a `report_id` argument the
-    /// `migrate_apply` door.
-    Migrate,
-    /// `thin`: the preflight, or with `act` the thinning act itself
-    /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
-    Thin,
-    /// `plan`: a change's plan. Served over REST only; the tools that make
-    /// a change take `plan` and `plan_id` instead
-    /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
-    Plan,
-    /// `enact`: a change made against its plan. Served over REST only, as
-    /// `plan` is.
-    Enact,
+crate::tagged_enum! {
+    tag = "door", names = "snake_case", permit;
+    /// The door a tool leads to.
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+    #[serde(tag = "door", rename_all = "snake_case")]
+    pub enum Door {
+        /// `find` on one type.
+        Find {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+        },
+        /// `get` on one type.
+        Get {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+        },
+        /// `upsert` on one type.
+        Upsert {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+        },
+        /// `change` on one type: a change to the records a condition selects,
+        /// planned first (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
+        Change {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+        },
+        /// `retire` on one type.
+        Retire {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+        },
+        /// `link` over one relation of one type.
+        Link {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The relation.
+            relation: RelationName,
+        },
+        /// `unlink` over one relation of one type.
+        Unlink {
+            /// The type.
+            #[serde(rename = "type")]
+            ty: TypeName,
+            /// The relation.
+            relation: RelationName,
+        },
+        /// `call` of one verb.
+        Call {
+            /// The verb.
+            verb: VerbName,
+        },
+        /// `describe`.
+        Describe,
+        /// `pin`: a door of the MCP session, not of the catalog. It pins
+        /// `as_of` for the session's later reads until cleared.
+        Pin,
+        /// `subscribe`: a door of the MCP session. The session is sent
+        /// `notifications/lakelands/changed` for every change it may see from a
+        /// position on.
+        Subscribe,
+        /// `unsubscribe`: ends the session's subscription.
+        Unsubscribe,
+        /// `query`.
+        Query,
+        /// `cypher`: a statement of the openCypher subset, translated into one
+        /// pattern and run as `query` runs it; a read tool, listed where
+        /// `query` is.
+        Cypher,
+        /// `search`.
+        Search,
+        /// `propose`.
+        Propose,
+        /// `proposals`.
+        Proposals,
+        /// `accept`.
+        Accept,
+        /// `reject`.
+        Reject,
+        /// `declare` of a type.
+        DeclareType,
+        /// `declare`: any declaration. Served over REST only; the generator
+        /// makes no tool of it, so agents author types with `declare_type`.
+        Declare,
+        /// `apply`: a set of declarations as one. Served over REST only, as
+        /// `declare` is.
+        Apply,
+        /// `add_field`.
+        AddField,
+        /// `recompute`.
+        Recompute,
+        /// `migrate`: the preflight, or with a `report_id` argument the
+        /// `migrate_apply` door.
+        Migrate,
+        /// `thin`: the preflight, or with `act` the thinning act itself
+        /// (`docs/decisions/102-a-thinned-series-keeps-its-roll-ups.md`).
+        Thin,
+        /// `plan`: a change's plan. Served over REST only; the tools that make
+        /// a change take `plan` and `plan_id` instead
+        /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+        Plan,
+        /// `enact`: a change made against its plan. Served over REST only, as
+        /// `plan` is.
+        Enact,
+    }
 }
 
 /// One tool: its name, what it is for, its schemas, and its door.

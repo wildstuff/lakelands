@@ -2670,6 +2670,11 @@
    "line": 1
   },
   {
+   "code": "line_not_record_form",
+   "fault": "syntax",
+   "line": 1
+  },
+  {
    "code": "line_too_long",
    "line": 1,
    "max": 1
