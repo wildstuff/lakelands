@@ -160,6 +160,12 @@ belongs in the suite, not beside one engine:
 - `a_patch_with_an_undeclared_field_is_refused_whole` — 015: a field the lake's map does not declare is refused as invalid, and nothing of the patch is written
 - `a_write_breaking_two_record_checks_is_refused_by_the_earlier` — 016, extended (lakelands#338): a record write that breaks two adjacent record checks is refused by the earlier: the type before an empty patch, the key before the fields, field by field in name order with the door before the grant, the grant before the value, the value before the key fill, the key's agreement before a reference, a reference before the version, the version before a required field, a required field before the shape of a setting the store reads; a retry answers its first outcome before any of them
 
+**positional**
+
+- `a_request_struct_written_as_a_sequence_is_refused` — 110: a request struct is read from an object: a sequence is refused, naming the members it takes, and an object naming them reads
+- `a_declaration_written_as_a_sequence_is_refused` — 110: a declaration is read from an object tagged by `declare`: a sequence is refused, naming `declare`, and the tagged object reads
+- `a_grant_written_as_a_sequence_is_refused` — 110: a grant is read from an object: a sequence is refused, naming each member a grant takes, and the object form reads
+
 **positions**
 
 - `every_reply_carries_the_position_it_reflects` — 009: every answer to a read or a write carries the log position it reflects, so what a caller saw can be read again
