@@ -117,7 +117,9 @@ A new kind is a change of the format (§6): the build raises
 for the release, as 0.24.0 makes it. It adds the kind to the closed set
 of §2, a vector set under `docs/log-format/vectors/24/` — an erase by
 record, by field, by quarantine id, and one that destroys a key and an
-apart key — and a lake under `docs/log-format/lakes/`. No format before
+apart key — and, at the 0.24.0 release, the lake that release makes
+through its doors under `docs/log-format/lakes/24/`, as each release
+keeps the lake of its format; the build itself adds none. No format before
 24 is read (`docs/decisions/098-a-lake-stores-what-it-cannot-derive.md`).
 
 ### A close may erase in the same append

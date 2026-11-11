@@ -282,12 +282,18 @@ impl Lake {
             return Ok(drafts);
         }
         // Each ordinary close is followed by the erase of its entry's cells,
-        // in the same append (115). A close `removed` is an act's, whose
-        // erase is the act.
+        // in the same append (115). A close `removed`, `forgotten` or
+        // `purged` is an act's, which already erases through its own event.
+        let ordinary = [
+            ClosedWhy::Landed,
+            ClosedWhy::Resubmitted,
+            ClosedWhy::Dismissed,
+        ];
+        let at = crate::writes::position_after(w, 0);
         let mut out = Vec::with_capacity(drafts.len());
         for d in drafts {
             let erase = match &d.body {
-                EventBody::QuarantineClosed { id, why, .. } if *why != ClosedWhy::Removed => {
+                EventBody::QuarantineClosed { id, why, .. } if ordinary.contains(why) => {
                     Some((d.known_at, id.clone()))
                 }
                 _ => None,
@@ -296,8 +302,11 @@ impl Lake {
             if let Some((now, id)) = erase {
                 self.erased
                     .store(true, std::sync::atomic::Ordering::Release);
+                // The delivery's apart keys go as the act's would; the
+                // restate the erase owes destroys them (row 10).
+                let apart = crate::erase::apart_on_close(self, w, &id, at)?;
                 let selection = lakelands_api::write::Selection::Quarantined(id);
-                let (keys, apart) = (Vec::new(), Vec::new());
+                let keys = Vec::new();
                 let body = EventBody::ValuesErased {
                     selection,
                     keys,

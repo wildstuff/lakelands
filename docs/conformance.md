@@ -1216,6 +1216,8 @@ belongs in the suite, not beside one engine:
 - `a_sys_type_is_not_erased` — 115: a selection of a `sys.` type is refused as `not_found`, as an unknown type is, and the head does not move
 - `a_preflight_appends_nothing` — 115: a preflight appends nothing, leaves the head where it was and answers the counts the act answers; the act under its report id runs
 - `a_resubmission_erases_as_the_system` — 115: with `erase_on_close` set, a resubmission by a holder who may write and ingest and is not the erase's caller closes and erases in its append, the erase written by the system; with it unset, nothing is erased
+- `a_forget_and_a_purge_erase_no_second_time` — 115: with `erase_on_close` set, a forget and a purge close their source's open entries `forgotten` and `purged` and append no `values_erased`: such a close already erases through its own event
+- `a_close_destroys_the_apart_key` — 115: with `erase_on_close` set, dismissing a row its delivery sealed apart erases it and destroys that delivery's apart key, as the act's erase of it does
 
 **removed**
 

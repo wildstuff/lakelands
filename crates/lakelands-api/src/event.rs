@@ -293,21 +293,6 @@ pub enum EventBody {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         apart: Vec<crate::id::KeyId>,
     },
-    /// A host erased the values of one record, one field of it, or one
-    /// quarantined row: each value of a selected write before this event
-    /// reads as erased, at every position, of every hand
-    /// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
-    ValuesErased {
-        /// The selection: a `record` or a `quarantined` one.
-        selection: crate::write::Selection,
-        /// The versions of the owning source's key it destroys, oldest
-        /// first.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        keys: Vec<crate::id::KeyId>,
-        /// The keys of deliveries sealed apart it destroys, in id order.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        apart: Vec<crate::id::KeyId>,
-    },
     /// One part of a thinning act: the records of a type a host thinned
     /// past a horizon, each named by its key. The first part begins the
     /// act and carries the horizon; a later part carries the same horizon
@@ -545,6 +530,21 @@ pub enum EventBody {
         /// `source_forgotten` or `source_purged` it began with.
         act: Position,
     },
+    /// A host erased the values of one record, one field of it, or one
+    /// quarantined row: each value of a selected write before this event
+    /// reads as erased, at every position, of every hand
+    /// (`docs/decisions/115-a-record-s-or-a-field-s-values-can-be-erased.md`).
+    ValuesErased {
+        /// The selection: a `record` or a `quarantined` one.
+        selection: crate::write::Selection,
+        /// The versions of the owning source's key it destroys, oldest
+        /// first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keys: Vec<crate::id::KeyId>,
+        /// The keys of deliveries sealed apart it destroys, in id order.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        apart: Vec<crate::id::KeyId>,
+    },
 }
 
 /// The kinds of one format version: `EventBody::kind` and [`KINDS`] come
@@ -579,7 +579,6 @@ kinds! {
     RecordIngested => "record_ingested",
     SourceForgotten => "source_forgotten",
     ValuesRemoved => "values_removed",
-    ValuesErased => "values_erased",
     RecordRetired => "record_retired",
     RecordRestricted => "record_restricted",
     RecordUnrestricted => "record_unrestricted",
@@ -597,6 +596,7 @@ kinds! {
     SourcePurged => "source_purged",
     ActWhole => "act_whole",
     ValuesThinned => "values_thinned",
+    ValuesErased => "values_erased",
 }
 
 /// What kind of change fired a trigger (lakelands#1217): the write at the

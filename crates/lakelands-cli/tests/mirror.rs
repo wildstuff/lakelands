@@ -1955,3 +1955,57 @@ async fn a_removal_in_the_source_stops_a_type_with_a_field_it_may_take() {
         assert_eq!(seen[0], seen[1], "{engine:?}: the twins stop alike");
     }
 }
+
+/// At the source's erase of one record's values (115), the record's type
+/// stops past the erase, naming the record and the way out, since its
+/// copy may hold what was erased; another type goes on, and a restart
+/// resumes once the host has copied the type again.
+#[tokio::test]
+async fn an_erase_in_the_source_stops_the_records_type() {
+    for engine in engines() {
+        let engine = &engine;
+        let two = Two::new("erased", engine).await;
+        two.upsert("partner", "acme", json!({"name": "acme"})).await;
+        two.upsert("customer", "c1", json!({"code": "c1", "name": "Ada"}))
+            .await;
+        let mut m = two.mirror().await.unwrap();
+        settle(&mut m).await;
+        let record = lakelands_api::write::Selection::Record {
+            ty: "customer".into(),
+            key: "c1".into(),
+            field: None,
+        };
+        two.crm
+            .erase_values(&record, false, None, false)
+            .await
+            .unwrap();
+        two.upsert("partner", "globex", json!({"name": "globex"}))
+            .await;
+        settle(&mut m).await;
+        let stopped = m.kept().types[&TypeName::from("customer")].stopped.clone();
+        let stopped = stopped.unwrap_or_else(|| panic!("{engine:?}: customer stopped"));
+        assert!(
+            stopped.why.contains("erased values of `customer` `c1`")
+                && stopped.why.contains("`mirror:crm:customer`"),
+            "{}",
+            stopped.why
+        );
+        assert!(
+            two.copy("partner", "globex").await.is_some(),
+            "{engine:?}: partner goes on"
+        );
+        drop(m);
+        two.upsert("customer", "c2", json!({"code": "c2", "name": "Bo"}))
+            .await;
+        let mut m = two.mirror().await.unwrap();
+        settle(&mut m).await;
+        assert!(
+            m.kept().types[&TypeName::from("customer")]
+                .stopped
+                .is_none()
+                && two.copy("customer", "c2").await.is_some(),
+            "{engine:?}: a restart resumes: {:?}",
+            m.kept()
+        );
+    }
+}

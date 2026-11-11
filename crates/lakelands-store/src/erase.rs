@@ -70,7 +70,78 @@ pub(crate) fn erase(
         chain: None,
     };
     act.chain = chain(lake, view.as_ref(), &act)?;
-    let earlier = told(lake, view.as_ref())?;
+    let t = walk(lake, w, view.as_ref(), &act, &renames)?;
+    let apart = apart_of(lake, &act, &t)?;
+    let report = report_of(w, view.as_ref(), selection, &t, &apart)?;
+    let mut report = EraseReport {
+        quarantined: entry
+            .as_ref()
+            .filter(|q| q.closed.is_none())
+            .map(|q| q.id.clone()),
+        ..report
+    };
+    if shredded && report.unshredded > 0 {
+        let count = report.unshredded;
+        return Err(Error::invalid(Case::EraseNotShredded { count }));
+    }
+    let digest = serde_json::json!({"erase": selection, "versions": t.versions});
+    let through = at.0.saturating_sub(1);
+    let token = format!(
+        "{through}-{}",
+        lakelands_core::canonical::sha256_hex(&digest)
+    );
+    if id.is_some_and(|id| id != token) {
+        return Err(Error::invalid(Case::EraseReportStale));
+    }
+    let erased = report.fields.iter().any(|f| f.redacted > 0);
+    if preflight || (!erased && report.quarantined.is_none()) {
+        report.report_id = token;
+        if !erased {
+            report.quarantined = None;
+        }
+        return Ok((report, BTreeSet::new()));
+    }
+    let now = lake.clock(w);
+    let mut drafts = vec![Draft::system(
+        now,
+        EventBody::ValuesErased {
+            selection: selection.clone(),
+            keys: Vec::new(),
+            apart: apart.clone(),
+        },
+    )];
+    // An open entry the act empties is closed `removed` in the same append.
+    drafts.extend(
+        entry
+            .filter(|q| q.closed.is_none())
+            .map(|q| Draft::system(now, close_of(&q, ClosedWhy::Removed))),
+    );
+    drop(view);
+    // The append destroys the apart keys once it is durable.
+    let appended = lake.append(w, drafts)?;
+    let view = lake.engine.view(None)?;
+    let mut restate = lake.restate_for_act(view.as_ref(), &act)?;
+    drop(view);
+    while let crate::lake::scrub::Stepped::More = lake.step_act(w, &mut restate, at)? {}
+    let last = appended.last().map_or(at, |e| e.position);
+    report.position = last;
+    report.log_events = last.0;
+    report.report_id = token;
+    let mut own: BTreeSet<Position> = appended.iter().map(|e| e.position).collect();
+    own.extend(owing_now());
+    Ok((report, own))
+}
+
+/// What `act` takes of the log before it, as the walk tallies it.
+fn walk(
+    lake: &Lake,
+    w: &Writer,
+    view: &dyn lakelands_api::engine::ProjectionView,
+    act: &Removal,
+    renames: &[lakelands_api::principal::Renamed],
+) -> Result<Tally> {
+    let at = act.at;
+    let earlier = told(lake, view)?;
     let mut t = Tally::default();
     'walk: for page in lake.pages(Position::GENESIS) {
         for e in page? {
@@ -128,13 +199,18 @@ pub(crate) fn erase(
             t.versions.push(e.position.0);
             t.sources.extend(e.source.clone());
             for f in written {
-                let (ty, f) = named_now(&renames, e.position, ty, f);
+                let (ty, f) = named_now(renames, e.position, ty, f);
                 let tally = t.fields.entry((ty, f.clone())).or_default();
                 tally.0 += 1;
                 tally.1.push(under(&f));
             }
         }
     }
+    Ok(t)
+}
+
+/// The apart keys of `act`'s source the tally `t` lets it destroy.
+fn apart_of(lake: &Lake, act: &Removal, t: &Tally) -> Result<Vec<KeyId>> {
     // A delivery's own apart key goes where it seals nothing outside the
     // selection; no other key is destroyed (115).
     let mut apart = Vec::new();
@@ -145,72 +221,37 @@ pub(crate) fn erase(
             }
         }
     }
-    let report = report_of(lake, w, view.as_ref(), selection, &t, &apart)?;
-    let mut report = EraseReport {
-        quarantined: entry
-            .as_ref()
-            .filter(|q| q.closed.is_none())
-            .map(|q| q.id.clone()),
-        ..report
-    };
-    if shredded && report.unshredded > 0 {
-        let count = report.unshredded;
-        return Err(Error::invalid(Case::EraseNotShredded { count }));
-    }
-    let digest = serde_json::json!({"erase": selection, "versions": t.versions});
-    let through = at.0.saturating_sub(1);
-    let token = format!(
-        "{through}-{}",
-        lakelands_core::canonical::sha256_hex(&digest)
-    );
-    if id.is_some_and(|id| id != token) {
-        return Err(Error::invalid(Case::EraseReportStale));
-    }
-    let erased = report.fields.iter().any(|f| f.redacted > 0);
-    if preflight || (!erased && report.quarantined.is_none()) {
-        report.report_id = token;
-        if !erased {
-            report.quarantined = None;
-        }
-        return Ok((report, BTreeSet::new()));
-    }
-    let now = lake.clock(w);
-    let mut drafts = vec![Draft::system(
-        now,
-        EventBody::ValuesErased {
-            selection: selection.clone(),
-            keys: Vec::new(),
-            apart: apart.clone(),
-        },
-    )];
-    // An open entry the act empties is closed `removed` in the same append.
-    drafts.extend(
-        entry
-            .filter(|q| q.closed.is_none())
-            .map(|q| Draft::system(now, close_of(&q, ClosedWhy::Removed))),
-    );
-    drop(view);
-    let appended = lake.append(w, drafts)?;
-    if let Some(source) = &act.source {
-        lake.keys.destroy_apart(source, &apart)?;
-    }
+    Ok(apart)
+}
+
+/// The apart keys the erase of the closed entry `id` destroys, as the
+/// act's own erase of it would (115).
+pub(crate) fn apart_on_close(
+    lake: &Lake,
+    w: &Writer,
+    id: &lakelands_api::quarantine::QuarantineId,
+    at: Position,
+) -> Result<Vec<KeyId>> {
     let view = lake.engine.view(None)?;
-    let mut restate = lake.restate_for_act(view.as_ref(), &act)?;
-    drop(view);
-    while let crate::lake::scrub::Stepped::More = lake.step_act(w, &mut restate, at)? {}
-    let last = appended.last().map_or(at, |e| e.position);
-    report.position = last;
-    report.log_events = last.0;
-    report.report_id = token;
-    let mut own: BTreeSet<Position> = appended.iter().map(|e| e.position).collect();
-    own.extend(owing_now());
-    Ok((report, own))
+    let renames = lake.renames(Some(view.as_ref()))?;
+    let selection = Selection::Quarantined(id.clone());
+    let act = Removal {
+        at,
+        source: owner(&selection),
+        selection,
+        before: None,
+        keys: Vec::new(),
+        apart: Vec::new(),
+        fixed: Fixed::of(&w.ontology, &renames, at),
+        chain: None,
+    };
+    let t = walk(lake, w, view.as_ref(), &act, &renames)?;
+    apart_of(lake, &act, &t)
 }
 
 /// The report of the tally `t`: the record it touches, kept alive, the
 /// fields and what is computed from them.
 fn report_of(
-    lake: &Lake,
     w: &Writer,
     view: &dyn lakelands_api::engine::ProjectionView,
     selection: &Selection,
@@ -274,7 +315,6 @@ fn report_of(
         }
     }
     let log_events = view.position().map_or(0, |p| p.0);
-    let _ = lake;
     Ok(EraseReport {
         selection: selection.clone(),
         types,

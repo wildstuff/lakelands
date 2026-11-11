@@ -226,6 +226,24 @@ struct Body {
     keys: Vec<lakelands_api::id::KeyId>,
     #[serde(default)]
     apart: Vec<lakelands_api::id::KeyId>,
+    /// A `values_erased`'s selection, read for the source of the
+    /// quarantined row it names.
+    #[serde(default)]
+    selection: Option<Erased>,
+}
+
+/// Of a `values_erased`'s selection, the quarantined id's source, where it
+/// names one.
+#[derive(serde::Deserialize)]
+struct Erased {
+    #[serde(default)]
+    quarantined: Option<Quarantined>,
+}
+
+/// The source of a quarantined id.
+#[derive(serde::Deserialize)]
+struct Quarantined {
+    source: SourceId,
 }
 
 /// Of an event's `sealed`, the version of the key and the source of a
@@ -391,10 +409,17 @@ fn scan(
                 let taken = (event.body.keys.iter()).chain(&event.body.apart);
                 shredded.extend(taken.map(|k| (source.clone(), k.clone())));
             }
-            // An erase names no source: the apart keys it destroyed are
-            // the delivery's own (115).
+            // The apart keys an erase destroyed are the delivery's own: of
+            // the quarantined id's source, and of none for a record's (115).
             if event.body.kind == "values_erased" {
-                erased.extend(event.body.apart.iter().cloned());
+                let of = (event.body.selection.as_ref()).and_then(|s| s.quarantined.as_ref());
+                match of {
+                    Some(q) => {
+                        let apart = event.body.apart.iter();
+                        shredded.extend(apart.map(|k| (q.source.clone(), k.clone())));
+                    }
+                    None => erased.extend(event.body.apart.iter().cloned()),
+                }
             }
             // PostgreSQL keeps an id as its 16 bytes (086); a log another
             // writer made may hold one of another form.

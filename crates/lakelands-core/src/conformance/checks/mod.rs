@@ -867,6 +867,8 @@ pub const ALL: &[Check] = &[
     erase::ERASE_NOT_SYS,
     erase::ERASE_PREFLIGHT,
     erase::ERASE_ON_RESUBMIT,
+    erase::ERASE_NOT_ON_ACT,
+    erase::ERASE_ON_CLOSE_APART,
     removed::REMOVED_BEFORE,
     removed::REMOVED_DELIVERY,
     removed::REMOVED_SET,

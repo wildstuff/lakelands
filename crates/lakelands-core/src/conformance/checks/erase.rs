@@ -111,6 +111,16 @@ check!(
     "115: with `erase_on_close` set, a resubmission by a holder who may write and ingest and is not the erase's caller closes and erases in its append, the erase written by the system; with it unset, nothing is erased"
 );
 
+check!(
+    ERASE_NOT_ON_ACT = a_forget_and_a_purge_erase_no_second_time,
+    "115: with `erase_on_close` set, a forget and a purge close their source's open entries `forgotten` and `purged` and append no `values_erased`: such a close already erases through its own event"
+);
+check!(
+    ERASE_ON_CLOSE_APART = a_close_destroys_the_apart_key,
+    "115: with `erase_on_close` set, dismissing a row its delivery sealed apart erases it and destroys that delivery's apart key, as the act's erase of it does",
+    given
+);
+
 /// `visit` `v1` of `site` `s1`: `duration`, `place` and `site` from
 /// `tracker`, then an authored `note`. The head after the ingest.
 async fn one(store: &dyn LakeStore, l: &Lake) -> Result<Position, Failure> {
@@ -688,5 +698,74 @@ async fn a_resubmission_erases_as_the_system(store: Store) -> Held {
             if on { "once" } else { "nothing" }
         );
     }
+    Ok(())
+}
+
+async fn a_forget_and_a_purge_erase_no_second_time(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(invoice()).await?;
+    l.set(ERASE_ON_CLOSE_SETTING, json!(true)).await?;
+    let web = quarantine_at(&l, "web", "w1", "k1").await?;
+    let erp = quarantine_at(&l, "erp", "e1", "k2").await?;
+    let before = store.head().await.must("reading the head")?;
+    store
+        .forget_source(&SourceId::from("web"), None)
+        .await
+        .must("forgetting `web`")?;
+    store
+        .purge_source(&SourceId::from("erp"), None, None)
+        .await
+        .must("purging `erp`")?;
+    let got = kinds(store.as_ref(), before).await?;
+    let (w, e) = (closed_as(&l, web).await?, closed_as(&l, erp).await?);
+    ensure!(
+        w == Some(ClosedWhy::Forgotten) && e == Some(ClosedWhy::Purged),
+        "the forget closes `web`'s entry `forgotten` and the purge `erp`'s `purged`; \
+         they are {w:?} and {e:?}"
+    );
+    ensure!(
+        !got.iter().any(is_erase),
+        "a forget and a purge append no `values_erased`; they appended {got:?}"
+    );
+    Ok(())
+}
+
+async fn a_close_destroys_the_apart_key(store: Store, given: Given) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    l.set(ERASE_ON_CLOSE_SETTING, json!(true)).await?;
+    let q = source_record("person", "q", json!({"id": "q", "name": "Quin", "zz": 1}));
+    let opts = IngestOpts {
+        sealed_apart: true,
+        ..kept("mon")
+    };
+    fed(&l, &l.own, "crm", opts, vec![q])
+        .await
+        .must("quarantining q apart")?;
+    let (lake, crm) = (store.lake().clone(), SourceId::from("crm"));
+    let apart = keys.apart(&lake, &crm);
+    ensure!(
+        !apart.is_empty(),
+        "the delivery sealed q apart under its own key"
+    );
+    let before = store.head().await.must("reading the head")?;
+    l.cat
+        .dismiss_quarantined(&l.own, &qid("crm", "mon", 0))
+        .await
+        .must("dismissing q")?;
+    let got = kinds(store.as_ref(), before).await?;
+    let named = got
+        .iter()
+        .any(|b| matches!(b, EventBody::ValuesErased { apart: a, .. } if *a == apart));
+    ensure!(
+        named,
+        "the close's `values_erased` names {apart:?} in `apart`; it appended {got:?}"
+    );
+    let left = keys.apart(&lake, &crm);
+    ensure!(
+        left.is_empty(),
+        "the apart key is destroyed; the key store still holds {left:?}"
+    );
     Ok(())
 }
