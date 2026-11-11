@@ -735,9 +735,7 @@ impl<'de> Deserialize<'de> for Condition {
         let value = serde_json::Value::deserialize(d)?;
         match value {
             serde_json::Value::String(text) => Ok(Condition::Text(text)),
-            value => Ok(Condition::Expr(crate::strict::variant(
-                value, "Condition",
-            )?)),
+            value => Ok(Condition::Expr(crate::strict::variant(value, "Condition")?)),
         }
     }
 }

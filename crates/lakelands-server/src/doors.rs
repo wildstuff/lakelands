@@ -56,11 +56,26 @@ impl Fault {
 pub(crate) fn args<T: DeserializeOwned>(door: &str, a: &Map<String, Value>) -> Result<T, Fault> {
     let v = Value::Object(a.clone());
     lakelands_api::strict::read(v.clone()).map_err(|e| {
-        let at = path(&e);
+        // A refusal below the root that a buffered read said in words
+        // carries the place inside it; the reader's path says where that
+        // sits among the arguments.
+        let at = match e.inner() {
+            lakelands_api::strict::Fault::Positional {
+                at: Some(inner), ..
+            } => match path(&e) {
+                Some(outer) => Some(join(&outer, inner)),
+                None => Some(inner.clone()),
+            },
+            _ => path(&e),
+        };
         // A positional refusal says all there is to say: the value's
         // members are not named. No second reading improves on it.
         let positional = matches!(e.inner(), lakelands_api::strict::Fault::Positional { .. });
-        let mut said = if positional { None } else { misfit::<T>(v.clone()) };
+        let mut said = if positional {
+            None
+        } else {
+            misfit::<T>(v.clone())
+        };
         if said.is_none()
             && !positional
             && let Some((within, inner)) =
@@ -462,8 +477,7 @@ fn said(answer: &mut Value) {
         }
         None => return,
     };
-    if let Ok(plan) =
-        lakelands_api::strict::from_value::<lakelands_api::write::Plan>(plan.clone())
+    if let Ok(plan) = lakelands_api::strict::from_value::<lakelands_api::write::Plan>(plan.clone())
     {
         answer["said"] = Value::from(crate::say::plan(&plan));
     }

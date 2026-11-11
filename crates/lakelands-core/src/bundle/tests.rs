@@ -1623,3 +1623,23 @@ fn a_setting_is_declared_with_its_first_value() {
         "{refused:?}"
     );
 }
+
+/// A declaration written as a YAML block sequence is refused, naming the
+/// members a declaration takes; the same declaration as a block mapping
+/// loads (record 110).
+#[test]
+fn a_declaration_written_as_a_sequence_is_refused() {
+    let e = one(
+        &[("types/partner.yaml", "- partner\n- id\n- fields\n")],
+        Problem::Malformed,
+    );
+    for member in ["`name`", "`key`", "`fields`"] {
+        assert!(
+            e.message.contains(member),
+            "{member} is not named in: {}",
+            e.message
+        );
+    }
+    let b = load(&[PARTNER]).expect("the block mapping loads");
+    assert_eq!(ty(&b, "partner").name.as_str(), "partner");
+}

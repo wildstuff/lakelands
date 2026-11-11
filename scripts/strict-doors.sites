@@ -1,0 +1,37 @@
+# Every place a door crate or the contract reads: see scripts/strict-doors.py.
+# <path> <function> <entry point> <value|check|written|exempt lakelands#N>
+crates/lakelands-api/src/read.rs deserialize serde_json::from_value	exempt lakelands#720
+crates/lakelands-api/src/settings.rs default_value serde_json::from_str	value
+crates/lakelands-server/src/http.rs forwarded serde_json::from_str	value
+crates/lakelands-server/src/http.rs read_json serde_json::from_slice	value
+crates/lakelands-server/src/rest.rs order serde_json::from_str	value
+crates/lakelands-server/src/rest.rs query_args serde_json::from_str	value
+crates/lakelands-server/src/rest.rs poll_next serde_json::from_slice	value
+crates/lakelands-server/src/session.rs door serde_json::from_value	value
+crates/lakelands-server/src/stdio.rs serve_io serde_json::from_str	value
+crates/lakelands-client/src/doors.rs line serde_json::from_slice	value
+crates/lakelands-client/src/doors.rs line serde_json::from_slice	value
+crates/lakelands-client/src/feed.rs block serde_json::from_str	value
+crates/lakelands-client/src/feed.rs block serde_json::from_str	value
+crates/lakelands-client/src/wire.rs exchange serde_json::from_slice	value
+crates/lakelands-client/src/wire.rs error_of serde_json::from_slice	value
+crates/lakelands-cli/src/commands.rs change serde_json::from_str	value
+crates/lakelands-cli/src/commands.rs query serde_json::from_str	value
+crates/lakelands-cli/src/commands.rs csv serde_json::from_str	value
+crates/lakelands-cli/src/example.rs held serde_json::from_str	value
+crates/lakelands-cli/src/root.rs grant_holder serde_json::from_str	value
+crates/lakelands-cli/src/root.rs visit_map serde_json::Deserializer::from_str	value
+crates/lakelands-cli/src/root.rs visit_map serde_json::from_str	value
+crates/lakelands-cli/src/settings.rs change serde_json::from_str	value
+crates/lakelands-cli/src/ticker.rs gone serde_json::from_str	value
+crates/lakelands-backings/src/deliver.rs kept serde_json::from_slice	value
+crates/lakelands-backings/src/embed.rs batch serde_json::from_slice	value
+crates/lakelands-backings/src/keyring.rs read serde_json::from_slice	value
+crates/lakelands-backings/src/lib.rs output serde_json::from_slice	value
+crates/lakelands-core/src/bundle/yaml.rs read serde_saphyr::from_str	check
+crates/lakelands-core/src/bundle/yaml.rs read serde_saphyr::from_str	value
+crates/lakelands-core/src/bundle/yaml.rs to serde_saphyr::from_str	written
+
+# Types in the contract whose derived `Deserialize` buffers its input.
+# buffered <path> <type> <exempt lakelands#N>
+buffered crates/lakelands-api/src/error.rs Error	exempt lakelands#1804

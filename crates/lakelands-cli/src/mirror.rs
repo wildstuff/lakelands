@@ -1853,9 +1853,9 @@ impl Mirror {
         if self.kept.types.is_empty() && file.exists() {
             let bytes = std::fs::read(&file)
                 .map_err(|e| format!("{} cannot be read: {e}", file.display()))?;
-            let seeded: Kept = serde_json::from_slice::<serde_json::Value>(&bytes)
-                .map_err(|e| e.to_string())
-                .and_then(|v| lakelands_api::strict::from_value(v).map_err(|e| e.to_string()))
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|e| format!("{} cannot be read: {e}", file.display()))?;
+            let seeded: Kept = lakelands_api::strict::from_str(text)
                 .map_err(|e| format!("{} is not a position file: {e}", file.display()))?;
             self.kept = seeded;
             self.save().await?;

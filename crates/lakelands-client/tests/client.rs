@@ -1351,3 +1351,31 @@ async fn a_change_to_records_is_planned_enacted_and_accepted_over_the_wire() {
     let stale = near.enact(clerk, change, &planned.report_id).await;
     assert!(matches!(stale, Err(Error::Refused { .. })), "{stale:?}");
 }
+
+/// A struct written as a sequence, where an answer is read, is not the
+/// contract's: `Unavailable`, naming the lake, and never the address or
+/// the key (record 110).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_whose_struct_is_a_sequence_is_not_the_contracts() {
+    let (addr, _) = fake(vec![(200, "application/json", "[]".into())]).await;
+    let lake = LakeId::from("finance");
+    let remote = common::remote(addr, &lake, keys(&["owner"]));
+    let c = remote.catalog(WriteContext::default());
+    let e = c
+        .get(&owner(&lake), &"invoice".into(), get("INV-1"))
+        .await
+        .unwrap_err();
+    let Error::Unavailable { situation } = &e else {
+        panic!("expected unavailable, got {e:?}");
+    };
+    let message = situation.to_string();
+    assert!(
+        message.contains("the REST door of lake `finance`"),
+        "{message}"
+    );
+    assert!(
+        !message.contains(&addr.to_string()) && !message.contains("INV"),
+        "{message}"
+    );
+    assert!(!message.contains("k-owner"), "{message}");
+}

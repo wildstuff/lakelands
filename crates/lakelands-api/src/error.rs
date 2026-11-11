@@ -288,7 +288,9 @@ impl Error {
             )),
         };
         // As the wire reads it back: a kind with no parameter as itself.
-        let read = serde_json::to_value(&alone).and_then(serde_json::from_value);
+        let read = serde_json::to_value(&alone)
+            .ok()
+            .and_then(|v| crate::strict::from_value(v).ok());
         read.unwrap_or(alone)
     }
 

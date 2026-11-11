@@ -350,29 +350,39 @@ impl<'de> Deserialize<'de> for Find {
             #[serde(default)]
             params: Params,
         }
-        let mut map = crate::strict::fields::<D::Error, D>(
+        crate::strict::struct_read(
             d,
+            "Find",
             &[
-                "where", "order_by", "limit", "cursor", "after", "offset", "total", "retired",
-                "aggregate", "with_meta", "params", "as_of", "valid_at",
+                "where",
+                "order_by",
+                "limit",
+                "cursor",
+                "after",
+                "offset",
+                "total",
+                "retired",
+                "aggregate",
+                "with_meta",
+                "params",
+                "as_of",
+                "valid_at",
             ],
-        )?;
-        let at = crate::strict::axes(&mut map)?;
-        let wire: Wire = crate::strict::at(map)?;
-        Ok(Find {
-            filter: wire.filter,
-            order_by: wire.order_by,
-            limit: wire.limit,
-            cursor: wire.cursor,
-            after: wire.after,
-            offset: wire.offset,
-            total: wire.total,
-            retired: wire.retired,
-            aggregate: wire.aggregate,
-            with_meta: wire.with_meta,
-            params: wire.params,
-            at,
-        })
+            |wire: Wire, at| Find {
+                filter: wire.filter,
+                order_by: wire.order_by,
+                limit: wire.limit,
+                cursor: wire.cursor,
+                after: wire.after,
+                offset: wire.offset,
+                total: wire.total,
+                retired: wire.retired,
+                aggregate: wire.aggregate,
+                with_meta: wire.with_meta,
+                params: wire.params,
+                at,
+            },
+        )
     }
 }
 
@@ -496,18 +506,17 @@ impl<'de> Deserialize<'de> for Get {
             #[serde(default)]
             params: Params,
         }
-        let mut map = crate::strict::fields::<D::Error, D>(
+        crate::strict::struct_read(
             d,
+            "Get",
             &["key", "with_meta", "params", "as_of", "valid_at"],
-        )?;
-        let at = crate::strict::axes(&mut map)?;
-        let wire: Wire = crate::strict::at(map)?;
-        Ok(Get {
-            key: wire.key,
-            with_meta: wire.with_meta,
-            params: wire.params,
-            at,
-        })
+            |wire: Wire, at| Get {
+                key: wire.key,
+                with_meta: wire.with_meta,
+                params: wire.params,
+                at,
+            },
+        )
     }
 }
 

@@ -587,23 +587,22 @@ impl<'de> Deserialize<'de> for ProposalFilter {
             #[serde(default)]
             cursor: Option<Cursor>,
         }
-        let mut map = crate::strict::fields::<D::Error, D>(
+        crate::strict::struct_read(
             d,
+            "ProposalFilter",
             &[
                 "state", "type", "kind", "limit", "order_by", "cursor", "as_of", "valid_at",
             ],
-        )?;
-        let at = crate::strict::axes(&mut map)?;
-        let wire: Wire = crate::strict::at(map)?;
-        Ok(ProposalFilter {
-            state: wire.state,
-            ty: wire.ty,
-            kind: wire.kind,
-            limit: wire.limit,
-            order_by: wire.order_by,
-            cursor: wire.cursor,
-            at,
-        })
+            |wire: Wire, at| ProposalFilter {
+                state: wire.state,
+                ty: wire.ty,
+                kind: wire.kind,
+                limit: wire.limit,
+                order_by: wire.order_by,
+                cursor: wire.cursor,
+                at,
+            },
+        )
     }
 }
 

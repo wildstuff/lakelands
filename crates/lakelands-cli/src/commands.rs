@@ -662,15 +662,12 @@ fn ndjson(file: &str, text: &str) -> Result<Vec<SourceRecord>, Failure> {
         .enumerate()
         .filter(|(_, l)| !l.trim().is_empty())
         .map(|(n, l)| {
-            serde_json::from_str::<serde_json::Value>(l)
-                .map_err(|e| e.to_string())
-                .and_then(|v| lakelands_api::strict::from_value(v).map_err(|e| e.to_string()))
-                .map_err(|e| {
-                    Failure::new(
-                        format!("line {} of {file} is not a source record: {e}", n + 1),
-                        "each line must be one JSON object with `type`, `key` and `fields`; nothing was ingested",
-                    )
-                })
+            lakelands_api::strict::from_str::<SourceRecord>(l).map_err(|e| {
+                Failure::new(
+                    format!("line {} of {file} is not a source record: {e}", n + 1),
+                    "each line must be one JSON object with `type`, `key` and `fields`; nothing was ingested",
+                )
+            })
         })
         .collect()
 }
@@ -719,15 +716,12 @@ async fn csv(
     (file, text): (&str, &str),
     (map_file, map): (&str, &str),
 ) -> Result<Vec<SourceRecord>, Failure> {
-    let map: CsvMap = serde_json::from_str::<serde_json::Value>(map)
-        .map_err(|e| e.to_string())
-        .and_then(|v| lakelands_api::strict::from_value(v).map_err(|e| e.to_string()))
-        .map_err(|e| {
-            Failure::new(
-                format!("{map_file} is not a column map: {e}"),
-                "a map names `type`, the `key` column, and `fields` from column to field",
-            )
-        })?;
+    let map: CsvMap = lakelands_api::strict::from_str(map).map_err(|e| {
+        Failure::new(
+            format!("{map_file} is not a column map: {e}"),
+            "a map names `type`, the `key` column, and `fields` from column to field",
+        )
+    })?;
     let kinds: BTreeMap<FieldName, StorageKind> = catalog
         .describe_type(who, &map.ty, ReadAt::default())
         .await?

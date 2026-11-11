@@ -116,56 +116,7 @@ macro_rules! catalog {
                     })
                 }
 
-                struct Read;
-
-                impl<'de> ::serde::de::Visitor<'de> for Read {
-                    type Value = $set;
-
-                    fn expecting(
-                        &self,
-                        f: &mut ::std::fmt::Formatter<'_>,
-                    ) -> ::std::fmt::Result {
-                        write!(f, "an object that takes `{}`", $tag)
-                    }
-
-                    fn visit_newtype_struct<E>(
-                        self,
-                        d: E,
-                    ) -> ::std::result::Result<$set, E::Error>
-                    where
-                        E: ::serde::Deserializer<'de>,
-                    {
-                        read(<::serde_json::Value as ::serde::Deserialize>::deserialize(
-                            d,
-                        )?)
-                    }
-
-                    fn visit_map<A>(self, mut access: A) -> ::std::result::Result<$set, A::Error>
-                    where
-                        A: ::serde::de::MapAccess<'de>,
-                    {
-                        let mut map = ::serde_json::Map::new();
-                        while let Some(key) = access.next_key::<::std::string::String>()? {
-                            let value: ::serde_json::Value = access.next_value()?;
-                            map.insert(key, value);
-                        }
-                        read(::serde_json::Value::Object(map))
-                    }
-
-                    fn visit_seq<A>(self, _access: A) -> ::std::result::Result<$set, A::Error>
-                    where
-                        A: ::serde::de::SeqAccess<'de>,
-                    {
-                        Err(<A::Error as ::serde::de::Error>::custom(
-                            $crate::strict::refused($tag),
-                        ))
-                    }
-                }
-
-                d.deserialize_newtype_struct(
-                    ::std::concat!("lakelands.tagged.", $tag),
-                    Read,
-                )
+                read(<::serde_json::Value as ::serde::Deserialize>::deserialize(d)?)
             }
         }
 
@@ -791,10 +742,10 @@ impl From<&serde_json::Error> for JsonFault {
 impl From<&crate::strict::Fault> for JsonFault {
     fn from(fault: &crate::strict::Fault) -> JsonFault {
         match fault {
-            crate::strict::Fault::Positional { takes } => JsonFault::Positional {
+            crate::strict::Fault::Positional { takes, .. } => JsonFault::Positional {
                 takes: takes.clone(),
             },
-            crate::strict::Fault::Other(_) => JsonFault::Data,
+            _ => JsonFault::Data,
         }
     }
 }

@@ -98,6 +98,7 @@ mod paging;
 mod paths;
 mod pattern_tree;
 mod plan;
+mod positional;
 mod positions;
 mod projection_form;
 mod proposal_names;
@@ -199,6 +200,9 @@ pub const ALL: &[Check] = &[
     fields::SPARSE_PATCH,
     fields::UNDECLARED_FIELD_REFUSES_WHOLE_PATCH,
     fields::RECORD_CHECKS_IN_ORDER,
+    positional::REQUEST_SEQUENCE,
+    positional::DECLARATION_SEQUENCE,
+    positional::GRANT_SEQUENCE,
     positions::EVERY_REPLY_CARRIES_ITS_POSITION,
     positions::AS_OF_SEES_THE_STATE_THERE,
     positions::AS_OF_BEFORE_A_WRITE,

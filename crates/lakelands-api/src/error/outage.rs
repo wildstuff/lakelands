@@ -108,6 +108,17 @@ impl Detail {
         ))
     }
 
+    /// A value that is not of the shape its type takes, as `strict`
+    /// refused it: the members the form takes when it names them, and
+    /// otherwise only that the shape is not the expected one — never the
+    /// value's own text, which may be a key.
+    pub fn shape(e: &crate::strict::Fault) -> Detail {
+        match e {
+            crate::strict::Fault::Positional { .. } => Detail(e.to_string()),
+            _ => Detail("not of the expected shape".into()),
+        }
+    }
+
     /// A database's or a library's own words for a failure, as its caller
     /// scrubbed them: an error's code and primary message, never its
     /// detail lines.
@@ -407,35 +418,18 @@ macro_rules! named {
 
         impl<'de> Deserialize<'de> for $set {
             fn deserialize<D: Deserializer<'de>>(d: D) -> Result<$set, D::Error> {
-                struct Read;
-                impl<'de> ::serde::de::Visitor<'de> for Read {
-                    type Value = $set;
-
-                    fn expecting(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                        f.write_str("a name, or an object naming it and its parameters")
+                let members = match <Value as Deserialize>::deserialize(d)? {
+                    Value::String(name) => {
+                        Map::from_iter([("code".to_owned(), Value::String(name))])
                     }
-
-                    fn visit_str<E: ::serde::de::Error>(self, name: &str) -> Result<$set, E> {
-                        let mut members = ::serde_json::Map::new();
-                        members.insert(
-                            "code".to_owned(),
-                            ::serde_json::Value::String(name.to_owned()),
-                        );
-                        $set::from_members::<E>(members)
+                    Value::Object(members) => members,
+                    _ => {
+                        return Err(<D::Error as ::serde::de::Error>::custom(
+                            "a name, or an object naming it and its parameters",
+                        ))
                     }
-
-                    fn visit_map<A: ::serde::de::MapAccess<'de>>(
-                        self,
-                        mut map: A,
-                    ) -> Result<$set, A::Error> {
-                        let mut members = ::serde_json::Map::new();
-                        while let Some(key) = map.next_key::<String>()? {
-                            members.insert(key, map.next_value::<::serde_json::Value>()?);
-                        }
-                        $set::from_members::<A::Error>(members)
-                    }
-                }
-                d.deserialize_any(Read)
+                };
+                $set::from_members::<D::Error>(members)
             }
         }
     };

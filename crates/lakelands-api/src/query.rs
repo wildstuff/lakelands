@@ -258,25 +258,24 @@ impl<'de> Deserialize<'de> for Pattern {
             #[serde(default)]
             cursor: Option<Cursor>,
         }
-        let mut map = crate::strict::fields::<D::Error, D>(
+        crate::strict::struct_read(
             d,
+            "Pattern",
             &[
                 "start", "steps", "to", "project", "order_by", "limit", "cursor", "as_of",
                 "valid_at",
             ],
-        )?;
-        let at = crate::strict::axes(&mut map)?;
-        let wire: Wire = crate::strict::at(map)?;
-        Ok(Pattern {
-            start: wire.start,
-            steps: wire.steps,
-            to: wire.to,
-            project: wire.project,
-            order_by: wire.order_by,
-            limit: wire.limit,
-            cursor: wire.cursor,
-            at,
-        })
+            |wire: Wire, at| Pattern {
+                start: wire.start,
+                steps: wire.steps,
+                to: wire.to,
+                project: wire.project,
+                order_by: wire.order_by,
+                limit: wire.limit,
+                cursor: wire.cursor,
+                at,
+            },
+        )
     }
 }
 
@@ -932,26 +931,33 @@ impl<'de> Deserialize<'de> for SearchWire {
             #[serde(default)]
             text_as_of: bool,
         }
-        let mut map = crate::strict::fields::<D::Error, D>(
+        crate::strict::struct_read(
             d,
+            "SearchWire",
             &[
-                "type", "k", "cursor", "where", "rerank", "with_meta", "matches", "text_as_of",
-                "as_of", "valid_at",
+                "type",
+                "k",
+                "cursor",
+                "where",
+                "rerank",
+                "with_meta",
+                "matches",
+                "text_as_of",
+                "as_of",
+                "valid_at",
             ],
-        )?;
-        let at = crate::strict::axes(&mut map)?;
-        let own: Own = crate::strict::at(map)?;
-        Ok(SearchWire {
-            ty: own.ty,
-            k: own.k,
-            cursor: own.cursor,
-            filter: own.filter,
-            rerank: own.rerank,
-            with_meta: own.with_meta,
-            matches: own.matches,
-            text_as_of: own.text_as_of,
-            at,
-        })
+            |own: Own, at| SearchWire {
+                ty: own.ty,
+                k: own.k,
+                cursor: own.cursor,
+                filter: own.filter,
+                rerank: own.rerank,
+                with_meta: own.with_meta,
+                matches: own.matches,
+                text_as_of: own.text_as_of,
+                at,
+            },
+        )
     }
 }
 

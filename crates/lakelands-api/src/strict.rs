@@ -15,6 +15,7 @@
 //! members it splits out, so its own refusal is this one.
 
 use std::fmt;
+use std::marker::PhantomData;
 
 use serde::de::{self, DeserializeOwned, DeserializeSeed, Visitor};
 use serde::forward_to_deserialize_any;
@@ -27,6 +28,25 @@ pub enum Fault {
     Positional {
         /// The members the form takes, each in backticks, joined by `, `.
         takes: String,
+        /// Where the sequence sat, when a buffered read below the root
+        /// said it; `None` where the reader's own path says where.
+        at: Option<String>,
+    },
+    /// A member the form does not take, and the members it takes.
+    NoMember {
+        /// The member it does not take.
+        member: String,
+        /// The members it takes.
+        takes: &'static [&'static str],
+    },
+    /// A member the form takes and was not given.
+    Missing(&'static str),
+    /// A name that is not one of the variants a tagged form takes.
+    Variant {
+        /// The name it was given.
+        name: String,
+        /// The names it takes.
+        takes: &'static [&'static str],
     },
     /// Anything else, in serde's words.
     Other(String),
@@ -40,11 +60,10 @@ const POSITIONAL: &str =
 impl Fault {
     /// The refusal of a sequence where `fields` are asked for by name.
     fn positional(fields: &[&str]) -> Fault {
-        let takes = (fields.iter())
-            .map(|field| format!("`{field}`"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        Fault::Positional { takes }
+        Fault::Positional {
+            takes: listed(fields),
+            at: None,
+        }
     }
 }
 
@@ -54,10 +73,126 @@ pub fn refused(tag: &str) -> String {
     format!("{POSITIONAL}`{tag}`")
 }
 
+/// The refusal of a sequence where an object that names `fields` is
+/// asked for: for a type that reads itself by hand, and so meets the
+/// sequence in a visitor of its own.
+pub fn positional(fields: &[&str]) -> String {
+    Fault::positional(fields).to_string()
+}
+
+/// Reads a struct's members as they are written, its time axes apart:
+/// `wire` reads the members the struct names, and `build` puts them and
+/// the axes together.
+///
+/// The members are taken one at a time, as the text writes them, so a
+/// member's refusal keeps the place it was met at; none is buffered
+/// first. A sequence where the struct is asked for is refused in this
+/// module's words, whether the reader refuses it before the visitor or it
+/// is met here.
+pub fn struct_read<'de, D, W, T>(
+    d: D,
+    name: &'static str,
+    names: &'static [&'static str],
+    build: impl FnOnce(W, crate::read::ReadAt) -> T,
+) -> Result<T, D::Error>
+where
+    D: de::Deserializer<'de>,
+    W: DeserializeOwned,
+{
+    /// The members a struct takes, less its time axes, which are read
+    /// apart once the ones beside them are read.
+    struct Members<M> {
+        map: M,
+        axes: Map<String, Value>,
+    }
+
+    impl<'de, M: de::MapAccess<'de>> de::MapAccess<'de> for &mut Members<M> {
+        type Error = M::Error;
+
+        fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+        where
+            K: de::DeserializeSeed<'de>,
+        {
+            loop {
+                let Some(key) = self.map.next_key_seed(PhantomData::<String>)? else {
+                    return Ok(None);
+                };
+                if key == "as_of" || key == "valid_at" {
+                    let value = self.map.next_value_seed(PhantomData::<Value>)?;
+                    self.axes.insert(key, value);
+                    continue;
+                }
+                return seed
+                    .deserialize(de::value::StringDeserializer::<M::Error>::new(key))
+                    .map(Some);
+            }
+        }
+
+        fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+        where
+            V: de::DeserializeSeed<'de>,
+        {
+            self.map.next_value_seed(seed)
+        }
+    }
+
+    struct Visit<W, T, F> {
+        build: F,
+        names: &'static [&'static str],
+        _taken: PhantomData<fn() -> (W, T)>,
+    }
+
+    impl<'de, W: DeserializeOwned, T, F: FnOnce(W, crate::read::ReadAt) -> T> Visitor<'de>
+        for Visit<W, T, F>
+    {
+        type Value = T;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an object that names the members it takes")
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<T, M::Error> {
+            let mut members = Members {
+                map,
+                axes: Map::new(),
+            };
+            let wire = serde::Deserialize::deserialize(de::value::MapAccessDeserializer::new(
+                &mut members,
+            ))?;
+            let at = axes(&mut members.axes)?;
+            Ok((self.build)(wire, at))
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, _seq: A) -> Result<T, A::Error> {
+            Err(de::Error::custom(positional(self.names)))
+        }
+    }
+
+    d.deserialize_struct(
+        name,
+        names,
+        Visit {
+            build,
+            names,
+            _taken: PhantomData,
+        },
+    )
+}
+
 impl fmt::Display for Fault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Fault::Positional { takes } => write!(f, "{POSITIONAL}{takes}"),
+            Fault::Positional { takes, at } => match at {
+                Some(at) => write!(f, "at `{at}`: {POSITIONAL}{takes}"),
+                None => write!(f, "{POSITIONAL}{takes}"),
+            },
+            Fault::NoMember { member, takes } => {
+                write!(f, "unknown field `{member}`, {}", expected(takes))
+            }
+            Fault::Missing(member) => write!(f, "missing field `{member}`"),
+            Fault::Variant { name, takes } => {
+                write!(f, "unknown variant `{name}`, {}", expected(takes))
+            }
             Fault::Other(said) => f.write_str(said),
         }
     }
@@ -66,13 +201,39 @@ impl fmt::Display for Fault {
 impl std::error::Error for Fault {}
 
 impl de::Error for Fault {
+    /// The structure a member a struct does not take is said with is kept,
+    /// so a door that reads again for its words finds it there.
+    fn unknown_field(member: &str, takes: &'static [&'static str]) -> Fault {
+        Fault::NoMember {
+            member: member.to_owned(),
+            takes,
+        }
+    }
+
+    fn missing_field(member: &'static str) -> Fault {
+        Fault::Missing(member)
+    }
+
+    fn unknown_variant(name: &str, takes: &'static [&'static str]) -> Fault {
+        Fault::Variant {
+            name: name.to_owned(),
+            takes,
+        }
+    }
+
     fn custom<T: fmt::Display>(said: T) -> Fault {
         // A nested reader says its refusal through here; the sentence is
-        // read back so that a positional refusal stays one.
+        // read back so that a positional refusal stays one, and where a
+        // buffered read below the root said the sequence sat.
         let said = said.to_string();
-        match said.strip_prefix(POSITIONAL) {
+        let (at, rest) = match said.strip_prefix("at `").and_then(|r| r.split_once("`: ")) {
+            Some((at, rest)) => (Some(at.to_owned()), rest),
+            None => (None, said.as_str()),
+        };
+        match rest.strip_prefix(POSITIONAL) {
             Some(takes) => Fault::Positional {
-                takes: takes.to_string(),
+                takes: takes.to_owned(),
+                at,
             },
             None => Fault::Other(said),
         }
@@ -94,18 +255,48 @@ pub fn from_value<T: DeserializeOwned>(
     read(value)
 }
 
-/// Reads a list of `T` from `value`, each element strictly.
+/// Reads each of a list's members strictly, in [`read`]'s words.
 pub fn read_slice<T: DeserializeOwned>(
     value: Value,
 ) -> Result<Vec<T>, serde_path_to_error::Error<Fault>> {
     read(value)
 }
 
-/// Reads `T` from `value`, in another reader's words.
+/// Reads `T` from JSON `text`: a form written by position is refused in
+/// [`Fault::Positional`]'s words, and every other misfit is said in serde's
+/// own, met in the order the text writes the members.
+///
+/// The text is read once as a value, which sorts a map's keys; a refusal
+/// that is not a sequence's is read again as the text is written, so the
+/// file's first misfit is the one named.
+pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, String> {
+    let value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    from_value::<T>(value).map_err(|refused| match refused.inner() {
+        Fault::Positional { .. } => refused.to_string(),
+        _ => serde_json::from_str::<T>(text)
+            .err()
+            .map_or_else(|| refused.to_string(), |said| said.to_string()),
+    })
+}
+
+/// Reads `T` from `value`, in another reader's words: a member a struct
+/// does not take, or one it needs, is said as that reader says it, so a
+/// door that reads again for its words sees the same member; anything
+/// else is said in this reader's words, where it stopped.
 pub fn value<T: DeserializeOwned, E: de::Error>(value: Value) -> Result<T, E> {
-    read(value).map_err(|e| match e.path().to_string().as_str() {
-        "." => E::custom(e.inner().to_string()),
-        path => E::custom(format!("at `{path}`: {}", e.inner())),
+    read(value).map_err(|e| {
+        let path = e.path().to_string();
+        // A member a struct does not take is refused while its name is
+        // read, so the path is that member's own name rather than where
+        // the struct sits; the reader that asked for the struct says
+        // where, as it says it for every member.
+        match e.inner() {
+            Fault::NoMember { member, takes } => E::unknown_field(member, takes),
+            Fault::Missing(member) => E::missing_field(member),
+            Fault::Variant { name, takes } => E::unknown_variant(name, takes),
+            inner if path == "." => E::custom(inner.to_string()),
+            inner => E::custom(format!("at `{path}`: {inner}")),
+        }
     })
 }
 
@@ -145,27 +336,7 @@ pub fn code<E: de::Error>(map: &mut Map<String, Value>, tag: &str) -> Result<Str
             "`{tag}` is {}, not a name",
             kind(&other)
         ))),
-        None => Err(E::custom(format!(
-            "an object that takes `{tag}` names one"
-        ))),
-    }
-}
-
-/// A struct's members, taken from `d`: an object's, or the refusal of a
-/// sequence, naming the members it would have given by position.
-pub fn fields<'de, E, D>(d: D, names: &[&str]) -> Result<Map<String, Value>, E>
-where
-    E: de::Error,
-    D: de::Deserializer<'de>,
-{
-    match serde::Deserialize::deserialize(d).map_err(E::custom)? {
-        Value::Object(map) => Ok(map),
-        Value::Array(_) => Err(E::custom(Fault::positional(names))),
-        other => Err(E::custom(format!(
-            "an object that takes {}, not {}",
-            listed(names),
-            kind(&other)
-        ))),
+        None => Err(E::custom(format!("an object that takes `{tag}` names one"))),
     }
 }
 
@@ -189,7 +360,7 @@ pub fn axes<E: de::Error>(members: &mut Map<String, Value>) -> Result<crate::rea
 pub fn variant<T: DeserializeOwned, E: de::Error>(value: Value, name: &str) -> Result<T, E> {
     read(value).map_err(|e| match e.inner() {
         Fault::Positional { .. } => E::custom(e.inner().to_string()),
-        Fault::Other(_) => E::custom(format!(
+        _ => E::custom(format!(
             "data did not match any variant of untagged enum {name}"
         )),
     })
@@ -201,6 +372,16 @@ fn listed(names: &[&str]) -> String {
         .map(|name| format!("`{name}`"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// What serde says a form takes, after a member or a name it does not:
+/// each in backticks, joined by `, `.
+fn expected(takes: &[&str]) -> String {
+    match takes {
+        [] => "there are no fields".into(),
+        [one] => format!("expected `{one}`"),
+        many => format!("expected one of {}", listed(many)),
+    }
 }
 
 /// The name of a value's form, for a sentence that says what was found.
@@ -341,14 +522,18 @@ impl<'de> de::MapAccess<'de> for Members {
         match self.members.next() {
             Some((key, value)) => {
                 self.value = Some(value);
-                seed.deserialize(de::value::StrDeserializer::<Fault>::new(&key)).map(Some)
+                seed.deserialize(de::value::StrDeserializer::<Fault>::new(&key))
+                    .map(Some)
             }
             None => Ok(None),
         }
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Fault> {
-        let value = self.value.take().ok_or_else(|| de::Error::custom("a value with no key"))?;
+        let value = self
+            .value
+            .take()
+            .ok_or_else(|| de::Error::custom("a value with no key"))?;
         seed.deserialize(Reader(value))
     }
 
@@ -385,10 +570,7 @@ impl<'de> de::EnumAccess<'de> for Unit {
     type Error = Fault;
     type Variant = NoValue;
 
-    fn variant_seed<V: DeserializeSeed<'de>>(
-        self,
-        seed: V,
-    ) -> Result<(V::Value, NoValue), Fault> {
+    fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, NoValue), Fault> {
         let made = seed.deserialize(de::value::StrDeserializer::<Fault>::new(&self.0))?;
         Ok((made, NoValue))
     }
@@ -408,11 +590,7 @@ impl<'de> de::VariantAccess<'de> for NoValue {
         Err(de::Error::custom("this variant takes no value"))
     }
 
-    fn tuple_variant<V: Visitor<'de>>(
-        self,
-        _len: usize,
-        _visitor: V,
-    ) -> Result<V::Value, Fault> {
+    fn tuple_variant<V: Visitor<'de>>(self, _len: usize, _visitor: V) -> Result<V::Value, Fault> {
         Err(de::Error::custom("this variant takes no value"))
     }
 
@@ -432,10 +610,7 @@ impl<'de> de::EnumAccess<'de> for Variant {
     type Error = Fault;
     type Variant = Content;
 
-    fn variant_seed<V: DeserializeSeed<'de>>(
-        self,
-        seed: V,
-    ) -> Result<(V::Value, Content), Fault> {
+    fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Content), Fault> {
         let made = seed.deserialize(de::value::StrDeserializer::<Fault>::new(&self.0))?;
         Ok((made, Content(self.1)))
     }
@@ -448,7 +623,7 @@ impl<'de> de::VariantAccess<'de> for Content {
     type Error = Fault;
 
     fn unit_variant(self) -> Result<(), Fault> {
-        match self.0 .0 {
+        match self.0.0 {
             Value::Null => Ok(()),
             other => Err(de::Error::custom(format!(
                 "expected null, found {}",
@@ -461,11 +636,7 @@ impl<'de> de::VariantAccess<'de> for Content {
         seed.deserialize(self.0)
     }
 
-    fn tuple_variant<V: Visitor<'de>>(
-        self,
-        len: usize,
-        visitor: V,
-    ) -> Result<V::Value, Fault> {
+    fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, Fault> {
         de::Deserializer::deserialize_tuple(self.0, len, visitor)
     }
 
@@ -572,11 +743,7 @@ macro_rules! tagged_variant {
         let fields: Fields = $crate::strict::at::<Fields, $e>($map)?;
         Ok($name::$variant { $($field: fields.$field),* })
     }};
-    ([deny] $name:ident, $variant:ident ( $ty:ty ), $map:ident, $e:ty) => {{
-        let fields: $ty = $crate::strict::at::<$ty, $e>($map)?;
-        Ok($name::$variant(fields))
-    }};
-    ([permit] $name:ident, $variant:ident ( $ty:ty ), $map:ident, $e:ty) => {{
+    ([$mode:ident] $name:ident, $variant:ident ( $ty:ty ), $map:ident, $e:ty) => {{
         let fields: $ty = $crate::strict::at::<$ty, $e>($map)?;
         Ok($name::$variant(fields))
     }};
